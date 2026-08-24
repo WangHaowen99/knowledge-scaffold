@@ -30,6 +30,12 @@ _EXPLICIT_DECISION_REQUESTS = (
     re.compile(r"以下(?:有|提供)?(?:[0-9一二三四五六七八九十两]+个?)?(?:互斥)?选项"),
 )
 
+_FREE_TEXT_REQUESTS = (
+    re.compile(r"请(?:您|你)?(?:直接)?(?:告诉|告知|描述|说明|补充|输入|填写|提供)"),
+    re.compile(r"(?:您|你)可以直接(?:告诉|告知|描述|说明|补充|输入|填写|提供)"),
+    re.compile(r"等待(?:您|你)(?:进一步)?(?:描述|说明|补充|输入|填写|提供)"),
+)
+
 _CONFIRMATION_CARD_CLAIMS = (
     re.compile(r"确认卡(?:片)?[^。！？\n]{0,8}(?:已|已经|现已)(?:成功)?(?:生成|创建|展示|发出|提交)"),
     re.compile(r"(?:已|已经|现已)(?:成功)?(?:生成|创建|展示|发出|提交)[^。！？\n]{0,8}确认卡(?:片)?"),
@@ -39,6 +45,14 @@ _CONFIRMATION_CARD_CLAIMS = (
 def requests_explicit_decision(text: str) -> bool:
     compact = str(text or "").strip()
     return bool(compact and any(pattern.search(compact) for pattern in _EXPLICIT_DECISION_REQUESTS))
+
+
+def requests_user_input(text: str) -> bool:
+    compact = str(text or "").strip()
+    return bool(compact and (
+        requests_explicit_decision(compact)
+        or any(pattern.search(compact) for pattern in _FREE_TEXT_REQUESTS)
+    ))
 
 
 def claims_confirmation_card(text: str) -> bool:
@@ -278,6 +292,8 @@ class DecisionCardSafetyRail(AgentRail):
         text = _response_text(response)
         if requests_explicit_decision(text):
             self._context.decision_request_in_text = True
+        if requests_user_input(text):
+            self._context.user_input_request_in_text = True
         if claims_confirmation_card(text):
             self._context.confirmation_claimed_in_text = True
 
@@ -302,7 +318,7 @@ class AskRail(BaseInterruptRail):
             if (
                 self._context
                 and self._context.confirmation_required
-                and not self._context.decision_request_in_text
+                and not self._context.user_input_request_in_text
             ):
                 return self.reject(tool_result=json.dumps({
                     "error": "OVERALL_CONFIRMATION_REQUIRED",
@@ -327,6 +343,7 @@ class AskRail(BaseInterruptRail):
                         "selected": {"type": "array", "items": {"type": "string"}},
                         "action": {"type": "string"},
                         "files": {"type": "array", "items": {"type": "string"}},
+                        "text": {"type": "string", "minLength": 1},
                     },
                     "additionalProperties": True,
                 },
@@ -372,13 +389,23 @@ class ConfirmationRail(BaseInterruptRail):
         del auto_confirm_config
         arguments = _arguments_from_call(tool_call)
         if user_input is None:
-            if self._context.decision_request_in_text and not self._context.decision_card_requested:
+            if self._context.user_input_request_in_text and not self._context.decision_card_requested:
+                free_text = not self._context.decision_request_in_text
                 return self.reject(tool_result=json.dumps({
-                    "error": "BUSINESS_DECISION_CARD_REQUIRED",
-                    "reason": "本轮正文正在要求用户从互斥业务选项中选择，不能同时改用候选确认承载这个决定",
+                    "error": (
+                        "USER_INPUT_CARD_REQUIRED"
+                        if free_text else
+                        "BUSINESS_DECISION_CARD_REQUIRED"
+                    ),
+                    "reason": (
+                        "本轮正文正在要求用户补充说明，不能同时改用候选确认承载这个输入"
+                        if free_text else
+                        "本轮正文正在要求用户从互斥业务选项中选择，不能同时改用候选确认承载这个决定"
+                    ),
                     "instruction": (
+                        "立即调用 ask，把同一补充请求放入可输入的问题卡。"
+                        if free_text else
                         "立即调用 ask，把同一问题整理成少量互斥的业务选项；保留自由输入。"
-                        "request_confirmation 只用于接受或退回已经冻结的整体候选，不能代替业务选项卡。"
                     ),
                 }, ensure_ascii=False))
             if self._context.confirmation_guard is not None and not self._context.confirmation_guard():
@@ -890,11 +917,26 @@ def _arguments_from_call(tool_call: Any) -> dict[str, Any]:
 def _normalized_options(raw: Any, kind: str) -> list[dict[str, Any]]:
     options = [dict(item) for item in raw or [] if isinstance(item, Mapping)]
     if kind != "material_request":
-        return options
+        return [
+            {
+                **option,
+                **({
+                    "requiresText": True,
+                    "textPrompt": str(option.get("textPrompt") or "请补充具体说明"),
+                } if option.get("requiresText") is True else {}),
+            }
+            for option in options
+        ]
     # 上传已有独立的文件选择器；资料请求里的判断动作必须互斥、稳定，
     # 不让模型生成的同义选项增加用户的判断成本。
     return [
-        {"label": "我口述", "description": "直接说明做法，作为 user-decision 证据继续", "value": "oral"},
+        {
+            "label": "我口述",
+            "description": "直接说明做法，作为 user-decision 证据继续",
+            "value": "oral",
+            "requiresText": True,
+            "textPrompt": "请口述需要补充的业务背景或做法",
+        },
         {"label": "让我先找找", "description": "保留问题，稍后在对话里补充资料", "value": "later"},
         {"label": "跳过", "description": "记录资料缺口，不阻塞其他建模工作", "value": "skip"},
     ]

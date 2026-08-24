@@ -610,6 +610,27 @@ try {
 
 try {
   const html = renderToString(<Block block={{
+    type: 'ask',
+    interaction: {
+      id: 'content-fix-smoke', kind: 'clarification', status: 'pending',
+      payload: {
+        question: '知识内容是否需要调整？',
+        options: [{
+          label: '内容需要修改', description: '说明需要修改的位置和内容', value: 'content_fix',
+          requiresText: true, textPrompt: '请描述具体需要修改的地方',
+        }],
+      },
+    },
+  }} />);
+  if (!html.includes('内容需要修改') || !html.includes('aria-expanded="false"')
+    || !html.includes('wb-ask-manual')) {
+    throw new Error('需要补充文字的选项没有保留待展开状态');
+  }
+  console.log('✓ 问题卡支持选项后继续补充文字');
+} catch (e) { console.log('✗ 问题卡补充文字:', e.message); bad++; }
+
+try {
+  const html = renderToString(<Block block={{
     type: 'confirm',
     interaction: {
       id: 'impact-confirm-smoke', kind: 'confirmation', status: 'pending',

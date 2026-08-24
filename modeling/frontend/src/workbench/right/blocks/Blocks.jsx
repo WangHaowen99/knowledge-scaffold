@@ -88,6 +88,7 @@ function AskBlock({ b }) {
 
 function LiveAsk({ interaction }) {
   const [manual, setManual] = useState('');
+  const [followUpOption, setFollowUpOption] = useState(null);
   const [sending, setSending] = useState(false);
   const manualInput = useRef(null);
   const payload = interaction.payload || {};
@@ -100,17 +101,23 @@ function LiveAsk({ interaction }) {
   };
   return (
     <div className={`card ${material ? 'card-accent' : 'card-wait'}`}>
-      <div className="card-h">{material ? <><Icon name="upload" size={12} />需要补充资料</> : '需要你决定'}</div>
+      <div className="card-h">{material
+        ? <><Icon name="upload" size={12} />需要补充资料</>
+        : options.length ? '需要你决定' : '需要你补充'}</div>
       <div className="card-b">
         <div className="wb-text" style={{ marginBottom: 'var(--s-3)' }}>
           <MarkdownContent>{userFacingText(payload.question)}</MarkdownContent>
         </div>
         {options.map((option) => (
-          <button key={option.value || option.label} className="wb-opt" disabled={sending}
+          <button key={option.value || option.label}
+            className={`wb-opt ${followUpOption === option ? 'on' : ''}`}
+            disabled={sending} aria-pressed={followUpOption === option}
+            aria-expanded={option.requiresText ? followUpOption === option : undefined}
             onClick={() => {
               const value = option.value || option.label;
-              if (material && value === 'oral') {
-                manualInput.current?.focus();
+              if (option.requiresText) {
+                setFollowUpOption(option);
+                setManual('');
                 return;
               }
               void submit({ value, selected: [value] });
@@ -124,12 +131,38 @@ function LiveAsk({ interaction }) {
             <span className="t2">选择文件，或拖到输入框</span>
           </button>
         )}
-        <div style={{ display: 'flex', gap: 6, marginTop: 'var(--s-3)' }}>
-          <input ref={manualInput} className="input" value={manual} onChange={(event) => setManual(event.target.value)}
-            placeholder={material ? '也可以直接口述内容…' : '或者直接说明你们的口径…'} />
-          <button className="btn btn-p btn-sm" disabled={sending || !manual.trim()}
-            onClick={() => void submit({ value: manual.trim(), action: material ? 'oral' : 'manual' })}>提交</button>
-        </div>
+        {followUpOption ? (
+          <form className="wb-ask-followup" onSubmit={(event) => {
+            event.preventDefault();
+            const value = followUpOption.value || followUpOption.label;
+            void submit({
+              value,
+              selected: [value],
+              text: manual.trim(),
+              ...(material && value === 'oral' ? { action: 'oral' } : {}),
+            });
+          }}>
+            <label htmlFor={`ask-followup-${interaction.id}`}>
+              {userFacingText(followUpOption.textPrompt || '请补充具体说明')}
+            </label>
+            <textarea id={`ask-followup-${interaction.id}`} ref={manualInput} autoFocus rows={3}
+              value={manual} onChange={(event) => setManual(event.target.value)} />
+            <div className="wb-ask-followup-actions">
+              <button type="button" className="btn btn-sm" disabled={sending}
+                onClick={() => { setFollowUpOption(null); setManual(''); }}>返回</button>
+              <button type="submit" className="btn btn-p btn-sm" disabled={sending || !manual.trim()}>提交</button>
+            </div>
+          </form>
+        ) : (
+          <form className="wb-ask-manual" onSubmit={(event) => {
+            event.preventDefault();
+            void submit({ value: manual.trim(), action: material ? 'oral' : 'manual' });
+          }}>
+            <input ref={manualInput} className="input" value={manual} onChange={(event) => setManual(event.target.value)}
+              placeholder={material ? '也可以直接口述内容…' : '或者直接说明你们的口径…'} />
+            <button type="submit" className="btn btn-p btn-sm" disabled={sending || !manual.trim()}>提交</button>
+          </form>
+        )}
       </div>
     </div>
   );

@@ -72,6 +72,7 @@ class ToolContext:
     interjection_reply_required: bool = False
     release_declined: bool = False
     decision_request_in_text: bool = False
+    user_input_request_in_text: bool = False
     confirmation_claimed_in_text: bool = False
     decision_card_requested: bool = False
 
@@ -735,7 +736,13 @@ class AskTool(Tool):
                             "type": "array",
                             "items": {
                                 "type": "object",
-                                "properties": {"label": STRING, "description": STRING, "value": STRING},
+                                "properties": {
+                                    "label": STRING,
+                                    "description": STRING,
+                                    "value": STRING,
+                                    "requiresText": {"type": "boolean"},
+                                    "textPrompt": {"type": "string", "minLength": 1, "maxLength": 500},
+                                },
                                 "required": ["label", "description", "value"],
                                 "additionalProperties": False,
                             },

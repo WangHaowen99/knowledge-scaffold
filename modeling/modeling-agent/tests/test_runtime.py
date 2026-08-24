@@ -14,6 +14,7 @@ from modeling_agent.rails import (
     ConfirmationRail,
     ReleaseConfirmationRail,
     claims_confirmation_card,
+    requests_user_input,
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import RUN_RUNNING, RunRecord
@@ -273,6 +274,33 @@ async def test_material_request_adds_oral_later_and_skip_options() -> None:
     decision = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
     assert [item["value"] for item in decision.request.ui_options] == ["oral", "later", "skip"]
     assert [item["label"] for item in decision.request.ui_options] == ["我口述", "让我先找找", "跳过"]
+    assert decision.request.ui_options[0]["requiresText"] is True
+    assert decision.request.ui_options[0]["textPrompt"] == "请口述需要补充的业务背景或做法"
+
+
+async def test_ask_option_can_require_follow_up_text() -> None:
+    rail = AskRail()
+    tool_call = type("Call", (), {
+        "arguments": json.dumps({
+            "question": "知识内容是否需要调整？",
+            "kind": "clarification",
+            "options": [{
+                "label": "内容需要修改",
+                "description": "说明需要修改的位置和内容",
+                "value": "content_fix",
+                "requiresText": True,
+                "textPrompt": "请描述具体需要修改的地方",
+            }],
+        }, ensure_ascii=False),
+    })()
+
+    decision = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+
+    option = decision.request.ui_options[0]
+    assert option["value"] == "content_fix"
+    assert option["requiresText"] is True
+    assert option["textPrompt"] == "请描述具体需要修改的地方"
+    assert decision.request.payload_schema["properties"]["text"]["minLength"] == 1
 
 
 async def test_material_parse_event_is_durable_idempotent_and_continues_without_fake_user(settings) -> None:
@@ -1814,6 +1842,100 @@ async def test_text_only_choice_request_is_retried_until_ask_card(settings) -> N
         interaction = runtime.store.pending_interaction("project_text_only_decision")
         assert interaction is not None and interaction.kind == "business_decision"
         assert model.calls == 2
+    finally:
+        await runtime.shutdown()
+
+
+async def test_text_only_description_request_is_retried_until_input_card(settings) -> None:
+    prompt = (
+        "您选择了‘内容需要修改’。请告诉我具体哪些地方需要调整，"
+        "我会据此修改后重新提交。您可以直接描述需要改的地方，我来修改。"
+    )
+    assert requests_user_input(prompt)
+    assert not requests_user_input("内容完成后，可以在这里查看修改说明。")
+    model = ScriptedModel(
+        [
+            [],
+            [ToolTurn("ask", {
+                "question": "请描述具体需要修改的地方",
+                "kind": "clarification",
+            })],
+        ],
+        final=prompt,
+    )
+    gateway = FakeGateway()
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_text_only_description",
+            token="token_1",
+            message="继续核对知识内容",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_text_only_description")
+        assert interaction is not None and interaction.kind == "clarification"
+        assert interaction.payload["question"] == "请描述具体需要修改的地方"
+        assert model.calls == 2
+        assert not any(call["tool"] == "transition_project_state" for call in gateway.calls)
+    finally:
+        await runtime.shutdown()
+
+
+async def test_required_option_text_must_be_present_before_resume(settings) -> None:
+    model = ScriptedModel(
+        [[ToolTurn("ask", {
+            "question": "知识内容是否需要调整？",
+            "kind": "clarification",
+            "options": [{
+                "label": "内容需要修改",
+                "description": "说明需要修改的位置和内容",
+                "value": "content_fix",
+                "requiresText": True,
+                "textPrompt": "请描述具体需要修改的地方",
+            }],
+        })]],
+        final="修改说明已收到。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_required_option_text",
+            token="token_1",
+            message="核对知识内容",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        interaction = runtime.store.pending_interaction("project_required_option_text")
+        assert interaction is not None
+
+        with pytest.raises(AgentRuntimeError) as captured:
+            await runtime.answer_interaction(
+                project_id="project_required_option_text",
+                interaction_id=interaction.id,
+                token="token_2",
+                answer={"value": "content_fix", "selected": ["content_fix"]},
+            )
+        assert captured.value.code == "INTERACTION_TEXT_REQUIRED"
+        assert runtime.store.pending_interaction("project_required_option_text").id == interaction.id
+        assert runtime.store.require_run(started["id"]).status == "waiting"
+        assert model.calls == 1
+
+        await runtime.answer_interaction(
+            project_id="project_required_option_text",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "value": "content_fix",
+                "selected": ["content_fix"],
+                "text": "将客户分类从三级调整为四级。",
+            },
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        assert completed["status"] == "completed", completed["error"]
+        assert runtime.store.pending_interaction("project_required_option_text") is None
     finally:
         await runtime.shutdown()
 

@@ -885,6 +885,13 @@ class AgentService:
             raise AgentRuntimeError("INTERACTION_NOT_FOUND", "待答问题不存在", status=404)
         if interaction.project_id != project_id:
             raise AgentRuntimeError("INTERACTION_NOT_FOUND", "待答问题不存在", status=404)
+        required_text_option = _required_text_option(interaction.payload, answer)
+        if required_text_option is not None and not str(answer.get("text") or "").strip():
+            raise AgentRuntimeError(
+                "INTERACTION_TEXT_REQUIRED",
+                str(required_text_option.get("textPrompt") or "请补充具体说明后再提交"),
+                status=400,
+            )
         direct_confirmation = (
             interaction.kind == "confirmation"
             and answer.get("action") != "interject"
@@ -1459,7 +1466,7 @@ class AgentService:
                     live.confirmation_required = True
                 if (
                     result.get("result_type") == "success"
-                    and context.decision_request_in_text
+                    and context.user_input_request_in_text
                     and not context.decision_card_requested
                     and not context.interjection_reply_required
                     and live.restore_interaction is None
@@ -1470,11 +1477,15 @@ class AgentService:
                             "你刚才在普通文字里要求用户从业务选项中选择，但尚未生成可操作的问题卡。"
                             "立即调用 ask，把同一问题整理成少量互斥选项并保留自由输入；"
                             "不要改用 request_confirmation，也不要再次只输出文字选项。"
+                            if context.decision_request_in_text else
+                            "你刚才在普通文字里要求用户补充描述，但尚未生成可输入的问题卡。"
+                            "立即调用 ask，把同一补充请求放入问题卡；可以不提供选项，并保留自由输入。"
+                            "不要继续执行项目、转换阶段，也不要再次只用普通文字索要输入。"
                         )
                         continue
                     result = {
                         "result_type": "error",
-                        "output": "助手没能把待选择的业务问题整理成可操作卡片，本轮已停止；已有内容保持不变。",
+                        "output": "助手没能把待用户补充的问题整理成可操作卡片，本轮已停止；已有内容保持不变。",
                         "streamed": False,
                     }
                 if result.get("result_type") == "success" and live.confirmation_required:
@@ -1974,6 +1985,28 @@ def _interaction_from_result(run: RunRecord, result: dict[str, Any]) -> Interact
         kind=kind,
         payload=payload,
     )
+
+
+def _required_text_option(
+    payload: dict[str, Any],
+    answer: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw_selected = answer.get("selected")
+    selected = {
+        str(value)
+        for value in raw_selected
+        if str(value).strip()
+    } if isinstance(raw_selected, (list, tuple, set)) else set()
+    value = str(answer.get("value") or "").strip()
+    if value:
+        selected.add(value)
+    for option in payload.get("options") or []:
+        if not isinstance(option, dict) or option.get("requiresText") is not True:
+            continue
+        option_value = str(option.get("value") or option.get("label") or "").strip()
+        if option_value and option_value in selected:
+            return option
+    return None
 
 
 def _interaction_from_stream(run: RunRecord, payload: Any) -> InteractionRecord:
