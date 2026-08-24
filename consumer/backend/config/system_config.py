@@ -94,7 +94,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "model": {"env": "LLM_MODEL", "type": "str", "default": ""},
         "api_key": {"env": "LLM_API_KEY", "type": "secret", "default": ""},
         "timeout": {"env": "LLM_TIMEOUT", "type": "int", "default": 600},
-        "max_tokens": {"env": "LLM_MAX_TOKENS", "type": "int", "default": 4096},
+        "max_tokens": {"env": "LLM_MAX_TOKENS", "type": "int", "default": 8192},
         "temperature": {"env": "LLM_TEMPERATURE", "type": "float", "default": 0.7},
     },
     "storage": {
@@ -203,7 +203,7 @@ _LLM_PROFILE_DEFAULTS: dict[str, Any] = {
     "model": "",
     "api_key": "",
     "timeout": 600,
-    "max_tokens": 4096,
+    "max_tokens": 8192,
     "temperature": 0.7,
     "enabled": True,
 }

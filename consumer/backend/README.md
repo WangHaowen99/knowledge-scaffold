@@ -117,13 +117,13 @@ Important variables:
 | `LLM_MODEL` | Main model id | empty |
 | `LLM_API_KEY` | Main model API key | none |
 | `LLM_TIMEOUT` | Main model timeout in seconds | `600` |
-| `LLM_MAX_TOKENS` | Main model max tokens | `4096` |
+| `LLM_MAX_TOKENS` | Main model max tokens | `8192` |
 | `LLM_TEMPERATURE` | Main model temperature | `0.7` |
 | `TASK_LLM_BASE_URL` | Optional lightweight endpoint for titles and reasoning summaries | falls back to `LLM_BASE_URL` |
 | `TASK_LLM_MODEL` | Optional lightweight model id for titles and reasoning summaries | falls back to `LLM_MODEL` |
 | `TASK_LLM_API_KEY` | Optional lightweight API key | falls back to `LLM_API_KEY` |
 | `TASK_LLM_TIMEOUT` | Lightweight model timeout in seconds | `600` |
-| `TASK_LLM_MAX_TOKENS` | Lightweight model max tokens | `4096` |
+| `TASK_LLM_MAX_TOKENS` | Lightweight model max tokens | `8192` |
 | `TASK_LLM_TEMPERATURE` | Lightweight model temperature | `0.7` |
 | `SYSTEM_CONFIG_PATH` | Optional saved system config file path | `<consumer>/.onto-runtime/config/system_config.json` |
 | `CHAT_STORAGE_DIR` | Session JSON storage; release defaults resolve to `<PROJECT_ROOT>/data/chats` | `<PROJECT_ROOT>/data/chats` |

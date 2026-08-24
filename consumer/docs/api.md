@@ -1894,7 +1894,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "model": "",
     "has_api_key": false,
     "timeout": 600,
-    "max_tokens": 4096,
+    "max_tokens": 8192,
     "temperature": 0.7
   },
   "llm_profiles": {
@@ -2016,7 +2016,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "model": "gpt-4.1",
     "has_api_key": true,
     "timeout": 600,
-    "max_tokens": 4096,
+    "max_tokens": 8192,
     "temperature": 0.7
   }
 }

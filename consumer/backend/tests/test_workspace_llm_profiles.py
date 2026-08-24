@@ -156,7 +156,7 @@ def test_workspace_private_profiles_encrypt_and_publicize_secrets(tmp_path, monk
             "has_api_key": True,
             "base_url": "https://private.example/v1",
             "timeout": 600,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "temperature": 0.7,
         }
     ]
