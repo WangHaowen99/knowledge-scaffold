@@ -16,6 +16,14 @@ _STATE_CODE = re.compile(
     r"(?:idle|queued|running|waiting|suspended|completed|failed|cancelled)$",
     re.IGNORECASE,
 )
+_PRIVATE_REASONING = re.compile(
+    r"(?:system\s+prompt|developer\s+message|api[_-]?key|authorization|bearer\s+[A-Za-z0-9._-]+|"
+    r"password|service[_-]?token|run[_-]?credential|token[_-]?fingerprint|sk-[A-Za-z0-9_-]{8,}|"
+    r"tool\s*(?:call|arguments?)|工具参数|系统指令|系统提示|系统消息|开发者消息|密钥|认证信息|访问令牌|"
+    r"[\"']?(?:arguments|path|projectId|runId|sessionId)[\"']?\s*[:=])",
+    re.IGNORECASE,
+)
+_REASONING_BOUNDARY = frozenset("\n。！？；")
 
 _PHASE_LABELS = {
     "intake": "资料准备",
@@ -152,3 +160,50 @@ class VisibleTextSanitizer:
 def sanitize_visible_text(text: str) -> str:
     sanitizer = VisibleTextSanitizer()
     return sanitizer.feed(text) + sanitizer.finish()
+
+
+class VisibleReasoningSanitizer:
+    """Stream public reasoning while dropping lines that may expose runtime secrets."""
+
+    def __init__(self) -> None:
+        self._visible = VisibleTextSanitizer()
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        self._pending += self._visible.feed(text)
+        return self._drain(complete=False)
+
+    def finish(self) -> str:
+        self._pending += self._visible.finish()
+        return self._drain(complete=True)
+
+    def _drain(self, *, complete: bool) -> str:
+        parts: list[str] = []
+        start = 0
+        for index, character in enumerate(self._pending):
+            if character not in _REASONING_BOUNDARY:
+                continue
+            parts.append(_sanitize_reasoning_segment(self._pending[start:index + 1]))
+            start = index + 1
+        if complete:
+            if start < len(self._pending):
+                parts.append(_sanitize_reasoning_segment(self._pending[start:]))
+            self._pending = ""
+        else:
+            self._pending = self._pending[start:]
+            if len(self._pending) > 800:
+                parts.append(_sanitize_reasoning_segment(self._pending))
+                self._pending = ""
+        return "".join(parts)
+
+
+def _sanitize_reasoning_segment(segment: str) -> str:
+    if not segment:
+        return ""
+    if _PRIVATE_REASONING.search(segment):
+        suffix = "\n" if segment.endswith("\n") else ""
+        return f"（内部配置已隐藏）{suffix}"
+    if len(segment) > 600:
+        suffix = "\n" if segment.endswith("\n") else ""
+        return f"（较长的资料摘录已隐藏）{suffix}"
+    return segment

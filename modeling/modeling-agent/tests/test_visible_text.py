@@ -1,4 +1,8 @@
-from modeling_agent.visible_text import VisibleTextSanitizer, sanitize_visible_text
+from modeling_agent.visible_text import (
+    VisibleReasoningSanitizer,
+    VisibleTextSanitizer,
+    sanitize_visible_text,
+)
 
 
 def test_visible_text_hides_runtime_implementation_but_keeps_business_values() -> None:
@@ -48,3 +52,17 @@ def test_streaming_sanitizer_handles_internal_token_split_across_chunks() -> Non
 
     assert visible == "结果：本次评测，修订 当前版本。"
     assert parts[0] == "结果："
+
+
+def test_reasoning_sanitizer_removes_private_line_split_across_chunks() -> None:
+    sanitizer = VisibleReasoningSanitizer()
+    parts = [
+        sanitizer.feed("先分析资料结构。\nsystem pro"),
+        sanitizer.feed("mpt 与 api_key=top-secret 不展示。\narguments={\"path\":\"rules/demo.md\"}\n再核对字段。"),
+        sanitizer.finish(),
+    ]
+    visible = "".join(parts)
+
+    assert visible == "先分析资料结构。\n（内部配置已隐藏）\n（内部配置已隐藏）\n再核对字段。"
+    assert "top-secret" not in visible
+    assert "rules/demo.md" not in visible

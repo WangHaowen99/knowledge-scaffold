@@ -804,6 +804,24 @@ try {
   console.log('✓ Agent 增量消息实时合并');
 } catch (e) { console.log('✗ Agent 增量消息:', e.message); bad++; }
 
+store.set({ messages: [], lastSeq: 0 });
+actions.handleEvent({
+  eventType: 'reasoning_delta', seq: 1, messageId: 'reasoning-smoke', role: 'assistant',
+  delta: '先核对资料结构。',
+});
+try {
+  const streaming = renderToString(<App />);
+  if (!streaming.includes('正在思考') || !streaming.includes('先核对资料结构')) {
+    throw new Error('思考过程没有在输出时展开');
+  }
+  actions.handleEvent({ eventType: 'reasoning_done', seq: 2, messageId: 'reasoning-smoke', role: 'assistant' });
+  const completed = renderToString(<App />);
+  if (!completed.includes('思考过程') || !completed.includes('先核对资料结构') || completed.includes('正在思考')) {
+    throw new Error('思考过程完成状态不正确');
+  }
+  console.log('✓ LLM 思考过程独立折叠展示');
+} catch (e) { console.log('✗ LLM 思考过程:', e.message); bad++; }
+
 store.set({
   messages: [{
     id: 'accepted-smoke', role: 'user',

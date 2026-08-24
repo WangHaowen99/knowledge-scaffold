@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -585,15 +587,127 @@ class ReleaseConfirmationRail(BaseInterruptRail):
 
 class ActivityRail(AgentRail):
     priority = 10
+    _STATE_KEY = "_modeling_model_call_metrics"
+    _INSPECTORS_KEY = "_stream_chunk_inspectors"
 
-    def __init__(self, emit: EventSink) -> None:
+    def __init__(self, emit: EventSink, actor: str = "modeling_leader") -> None:
         self._emit = emit
+        self._actor = actor
 
-    async def before_model_call(self, _ctx: AgentCallbackContext) -> None:
+    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        now = time.monotonic()
+        call_id = f"model_{uuid.uuid4().hex[:12]}"
+        ctx.extra[self._STATE_KEY] = {
+            "callId": call_id,
+            "startedAt": now,
+            "chunks": 0,
+            "reasoningChunks": 0,
+            "reasoningChars": 0,
+            "contentChunks": 0,
+            "contentChars": 0,
+            "firstChunkAt": None,
+            "firstReasoningAt": None,
+            "firstContentAt": None,
+            "inputMessages": len(getattr(ctx.inputs, "messages", None) or []),
+            "inputChars": _messages_size(getattr(ctx.inputs, "messages", None) or []),
+            "toolDefinitions": len(getattr(ctx.inputs, "tools", None) or []),
+        }
+        inspectors = ctx.extra.get(self._INSPECTORS_KEY)
+        if not isinstance(inspectors, list):
+            inspectors = []
+        inspectors = [
+            inspector for inspector in inspectors
+            if getattr(inspector, "__self__", None) is not self
+        ]
+        inspectors.append(self.inspect_stream_chunk)
+        ctx.extra[self._INSPECTORS_KEY] = inspectors
         self._emit("progress", {
             "text": "助手正在整理下一步",
             "detail": "正在根据已读取的事实判断下一项可执行工作",
             "counters": {},
+        })
+        self._emit("model_call", {
+            "callId": call_id,
+            "actor": self._actor,
+            "phase": "started",
+            "inputMessages": ctx.extra[self._STATE_KEY]["inputMessages"],
+            "inputChars": ctx.extra[self._STATE_KEY]["inputChars"],
+            "toolDefinitions": ctx.extra[self._STATE_KEY]["toolDefinitions"],
+        })
+
+    async def inspect_stream_chunk(self, ctx: AgentCallbackContext, chunk: Any) -> None:
+        state = ctx.extra.get(self._STATE_KEY)
+        if not isinstance(state, dict):
+            return
+        now = time.monotonic()
+        state["chunks"] += 1
+        state["firstChunkAt"] = state["firstChunkAt"] or now
+        reasoning = str(getattr(chunk, "reasoning_content", "") or "")
+        content = str(getattr(chunk, "content", "") or "")
+        if reasoning:
+            state["reasoningChunks"] += 1
+            state["reasoningChars"] += len(reasoning)
+            state["firstReasoningAt"] = state["firstReasoningAt"] or now
+        if content:
+            state["contentChunks"] += 1
+            state["contentChars"] += len(content)
+            state["firstContentAt"] = state["firstContentAt"] or now
+
+    async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        self._finish_model_call(ctx)
+
+    async def on_model_exception(self, ctx: AgentCallbackContext) -> None:
+        self._finish_model_call(ctx, error=ctx.exception)
+
+    def _finish_model_call(self, ctx: AgentCallbackContext, error: Exception | None = None) -> None:
+        state = ctx.extra.get(self._STATE_KEY)
+        if not isinstance(state, dict) or state.get("finished"):
+            return
+        state["finished"] = True
+        response = getattr(ctx.inputs, "response", None)
+        messages = getattr(ctx.inputs, "messages", None) or []
+        tools = getattr(ctx.inputs, "tools", None) or []
+        state["inputMessages"] = len(messages)
+        state["inputChars"] = _messages_size(messages)
+        state["toolDefinitions"] = len(tools)
+        finish_reason = str(getattr(response, "finish_reason", "") or "")
+        usage = getattr(response, "usage_metadata", None)
+        tool_calls = getattr(response, "tool_calls", None) or []
+        if error is not None:
+            outcome = "timeout" if _is_timeout_error(error) else "error"
+        elif tool_calls:
+            outcome = "tool_calls"
+        elif state["contentChars"]:
+            outcome = "content"
+        elif state["reasoningChars"]:
+            outcome = "reasoning_only"
+        elif not state["chunks"]:
+            outcome = "zero_chunk"
+        else:
+            outcome = "empty_content"
+        started_at = float(state["startedAt"])
+        elapsed = lambda value: round((float(value) - started_at) * 1000) if value else None
+        self._emit("model_call", {
+            "callId": state["callId"],
+            "actor": self._actor,
+            "phase": "failed" if error is not None else "completed",
+            "outcome": outcome,
+            "durationMs": round((time.monotonic() - started_at) * 1000),
+            "firstChunkMs": elapsed(state["firstChunkAt"]),
+            "firstReasoningMs": elapsed(state["firstReasoningAt"]),
+            "firstContentMs": elapsed(state["firstContentAt"]),
+            "chunks": state["chunks"],
+            "reasoningChunks": state["reasoningChunks"],
+            "reasoningChars": state["reasoningChars"],
+            "contentChunks": state["contentChunks"],
+            "contentChars": state["contentChars"],
+            "finishReason": finish_reason,
+            "inputMessages": state["inputMessages"],
+            "inputChars": state["inputChars"],
+            "inputTokens": _usage_value(usage, "input_tokens"),
+            "outputTokens": _usage_value(usage, "output_tokens"),
+            "reasoningTokens": _usage_value(usage, "reasoning_tokens"),
+            "errorType": type(error).__name__ if error is not None else "",
         })
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
@@ -627,6 +741,35 @@ class ActivityRail(AgentRail):
             "summary": summary,
             "toolCallId": _tool_call_id(ctx),
         })
+
+
+def _messages_size(messages: list[Any]) -> int:
+    total = 0
+    for message in messages:
+        content = message.get("content", "") if isinstance(message, Mapping) else getattr(message, "content", "")
+        if isinstance(content, list):
+            total += sum(len(str(item)) for item in content)
+        else:
+            total += len(str(content or ""))
+    return total
+
+
+def _usage_value(usage: Any, name: str) -> int:
+    value = usage.get(name, 0) if isinstance(usage, Mapping) else getattr(usage, name, 0)
+    return int(value or 0)
+
+
+def _is_timeout_error(error: BaseException) -> bool:
+    current: BaseException | None = error
+    for _depth in range(4):
+        if current is None:
+            break
+        name = type(current).__name__.lower()
+        message = str(current).lower()
+        if "timeout" in name or "timed out" in message or "timeout" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def check_write_safety(tool: str, arguments: dict[str, Any]) -> list[str]:

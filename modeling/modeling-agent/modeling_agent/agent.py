@@ -5,7 +5,8 @@ from pathlib import Path
 from shutil import copytree
 from typing import Any
 
-from openjiuwen.core.foundation.llm import init_model
+from openjiuwen.core.foundation.llm.model import Model
+from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.rails.skills.skill_use_rail import SkillUseRail
@@ -75,17 +76,25 @@ class AgentBundle:
 def build_model(settings: Settings) -> Any:
     if not settings.llm_base_url or not settings.llm_model:
         raise RuntimeError("未配置建模模型，请设置 MODELING_LLM_BASE_URL 和 MODELING_LLM_MODEL")
-    return init_model(
-        provider="OpenAI",
-        model_name=settings.llm_model,
-        # 部分内网 OpenAI 兼容端点不校验密钥，但 SDK 构造器仍要求非空。
-        # 该占位值不授予任何权限；真实密钥存在时始终使用真实值。
-        api_key=settings.llm_api_key or "not-required",
-        api_base=settings.llm_base_url,
-        temperature=0.2,
-        max_tokens=settings.llm_max_tokens,
-        timeout=settings.llm_timeout_seconds,
-        max_retries=3,
+    return Model(
+        model_client_config=ModelClientConfig(
+            client_provider="OpenAI",
+            # 部分内网 OpenAI 兼容端点不校验密钥，但 SDK 构造器仍要求非空。
+            # 该占位值不授予任何权限；真实密钥存在时始终使用真实值。
+            api_key=settings.llm_api_key or "not-required",
+            api_base=settings.llm_base_url,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=3,
+            verify_ssl=False,
+            stream_first_chunk_timeout=settings.llm_first_chunk_timeout_seconds,
+            stream_idle_timeout=settings.llm_idle_timeout_seconds,
+        ),
+        model_config=ModelRequestConfig(
+            model=settings.llm_model,
+            temperature=0.2,
+            top_p=0.1,
+            max_tokens=settings.llm_max_tokens,
+        ),
     )
 
 
@@ -115,7 +124,7 @@ def build_agent(
             enable_cache=False,
             include_tools=False,
         ),
-        ActivityRail(context.emit),
+        ActivityRail(context.emit, actor="modeling_leader"),
     ]
     agent = create_deep_agent(
         resolved_model,
@@ -168,7 +177,7 @@ def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[Sub
             ),
             tools=tools,
             model=model,
-            rails=[ToolBoundaryRail(context), ActivityRail(context.emit)],
+            rails=[ToolBoundaryRail(context), ActivityRail(context.emit, actor=agent_id)],
             max_iterations=min(60, settings.max_iterations),
             parallel_tool_calls=True,
             restrict_to_work_dir=True,

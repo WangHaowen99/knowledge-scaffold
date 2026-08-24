@@ -8,6 +8,7 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
+from modeling_agent.agent import build_model
 from modeling_agent.rails import (
     AskRail,
     ConfirmationRail,
@@ -40,6 +41,13 @@ async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: flo
             return run
         await asyncio.sleep(0.02)
     raise AssertionError(f"run {run_id} did not reach {statuses}")
+
+
+async def test_model_uses_stream_specific_timeouts(settings) -> None:
+    model = build_model(settings)
+
+    assert model.model_client_config.stream_first_chunk_timeout == 120.0
+    assert model.model_client_config.stream_idle_timeout == 60.0
 
 
 async def test_held_text_is_flushed_when_required_tool_finishes_at_stream_boundary(settings) -> None:
@@ -77,7 +85,11 @@ async def test_held_text_is_flushed_when_required_tool_finishes_at_stream_bounda
 
 
 async def test_completed_run_never_ends_without_visible_assistant_output(settings) -> None:
-    model = ScriptedModel([[], []], final="")
+    model = ScriptedModel(
+        [[], []],
+        final="",
+        content_by_call={1: "已核对当前进展，现有处理记录均已保留。下一步可以从当前阶段继续。"},
+    )
     runtime = service(settings, model)
     await runtime.startup()
     try:
@@ -93,9 +105,87 @@ async def test_completed_run_never_ends_without_visible_assistant_output(setting
         visible = "".join(
             event.payload.get("delta", "") for event in events if event.kind == "message_delta"
         )
-        assert visible == "当前步骤已结束，详细处理记录已保留；你可以继续补充要求。"
+        assert visible == "已核对当前进展，现有处理记录均已保留。下一步可以从当前阶段继续。"
         assert len([event for event in events if event.kind == "message_done"]) == 1
-        assert model.calls >= 2
+        compact_calls = [
+            event for event in events
+            if event.kind == "model_call" and event.payload.get("actor") == "compact_summary"
+        ]
+        assert compact_calls[-1].payload["outcome"] == "content"
+        assert compact_calls[-1].payload["toolDefinitions"] == 0
+        assert model.calls == 2
+    finally:
+        await runtime.shutdown()
+
+
+async def test_empty_compact_summary_marks_run_failed_with_visible_retry_path(settings) -> None:
+    model = ScriptedModel([[], []], final="")
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_empty_summary",
+            token="token_1",
+            message="告诉我当前情况",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "failed"
+        events = runtime.store.events_after("project_empty_summary", 0)
+        visible = "".join(
+            event.payload.get("delta", "") for event in events if event.kind == "message_delta"
+        )
+        assert "模型没有返回可读摘要" in visible
+        assert not any(
+            event.kind == "status" and event.payload.get("status") == "completed"
+            for event in events
+        )
+        compact_calls = [
+            event for event in events
+            if event.kind == "model_call" and event.payload.get("actor") == "compact_summary"
+        ]
+        assert compact_calls[-1].payload["outcome"] == "empty_content"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_reasoning_is_streamed_separately_and_private_segments_are_removed(settings) -> None:
+    model = ScriptedModel(
+        [[]],
+        final="已读完资料，正在核对字段映射。",
+        reasoning_by_call={
+            0: "先梳理文档结构。\nsystem prompt 与 api_key=top-secret 不应展示。\n再比对字段含义。",
+        },
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_reasoning",
+            token="token_1",
+            message="核对资料",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        events = runtime.store.events_after("project_reasoning", 0)
+        reasoning = "".join(
+            event.payload.get("delta", "") for event in events if event.kind == "reasoning_delta"
+        )
+        assert "先梳理文档结构" in reasoning
+        assert "再比对字段含义" in reasoning
+        assert "内部配置已隐藏" in reasoning
+        assert "top-secret" not in reasoning
+        assert "system prompt" not in reasoning
+        assert len([event for event in events if event.kind == "reasoning_done"]) == 1
+        telemetry = [
+            event.payload for event in events
+            if event.kind == "model_call" and event.payload.get("actor") == "modeling_leader"
+        ]
+        assert telemetry[-1]["outcome"] == "content"
+        assert any(item.get("reasoningChars", 0) > 0 for item in telemetry)
+        assert "content" not in telemetry[-1]
+        assert "reasoning" not in telemetry[-1]
     finally:
         await runtime.shutdown()
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -26,7 +27,7 @@ from .schemas import (
 from .settings import Settings
 from .store import RuntimeStore, token_fingerprint
 from .tools import ToolContext
-from .visible_text import VisibleTextSanitizer, sanitize_visible_text
+from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 
 logger = logging.getLogger("modeling_agent")
 INTERJECTION_CONTINUATION_PREFIX = "interjection-continuation:"
@@ -63,7 +64,11 @@ PHASE_GATES = {
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
 MAX_DECISION_CARD_RETRIES = 2
-MAX_EMPTY_RESPONSE_RETRIES = 1
+MAX_VISIBLE_REASONING_CHARS = 12_000
+REASONING_EVENT_BATCH_CHARS = 160
+COMPACT_SUMMARY_MAX_TOKENS = 4_096
+COMPACT_SUMMARY_TIMEOUT_SECONDS = 60.0
+MAX_TOOL_SUMMARIES = 60
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "analyze_material_impact",
@@ -102,12 +107,82 @@ class LiveRun:
     release_declined: bool = False
     confirmation_required: bool = False
     autonomous_seed: bool = False
+    tool_summaries: list[str] = field(default_factory=list)
+    reasoning_chars_published: int = 0
+    reasoning_truncated: bool = False
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
     terminal_attempts = live.required_tools & FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL
     successful_results = live.required_tools - terminal_attempts
     return (terminal_attempts - live.attempted_tools) | (successful_results - live.observed_tools)
+
+
+class _ReasoningEmitter:
+    def __init__(self, events: EventHub, live: LiveRun, run: RunRecord) -> None:
+        self._events = events
+        self._live = live
+        self._run = run
+        self._sanitizer = VisibleReasoningSanitizer()
+        self._pending = ""
+        self._emitted = False
+        self._observed = False
+
+    @property
+    def seen(self) -> bool:
+        return self._observed
+
+    def feed(self, raw_text: str) -> None:
+        if not raw_text or self._live.reasoning_truncated:
+            return
+        self._observed = True
+        self._pending += self._sanitizer.feed(raw_text)
+        if len(self._pending) >= REASONING_EVENT_BATCH_CHARS or "\n" in self._pending:
+            self._flush()
+
+    def finish(self) -> None:
+        if not self._live.reasoning_truncated:
+            self._pending += self._sanitizer.finish()
+        self._flush()
+        if self._emitted:
+            self._events.publish(self._run.project_id, self._run.id, "reasoning_done", {
+                "messageId": f"reasoning_{self._run.id}",
+                "role": "assistant",
+            })
+
+    def _flush(self) -> None:
+        if not self._pending:
+            return
+        remaining = MAX_VISIBLE_REASONING_CHARS - self._live.reasoning_chars_published
+        if remaining <= 0:
+            self._pending = ""
+            self._publish_truncated()
+            return
+        delta = self._pending[:remaining]
+        self._pending = self._pending[remaining:]
+        if delta:
+            self._emitted = True
+            self._live.reasoning_chars_published += len(delta)
+            self._events.publish(self._run.project_id, self._run.id, "reasoning_delta", {
+                "messageId": f"reasoning_{self._run.id}",
+                "role": "assistant",
+                "delta": delta,
+            })
+        if self._pending or self._live.reasoning_chars_published >= MAX_VISIBLE_REASONING_CHARS:
+            self._pending = ""
+            self._publish_truncated()
+
+    def _publish_truncated(self) -> None:
+        if self._live.reasoning_truncated:
+            return
+        self._live.reasoning_truncated = True
+        self._emitted = True
+        self._events.publish(self._run.project_id, self._run.id, "reasoning_delta", {
+            "messageId": f"reasoning_{self._run.id}",
+            "role": "assistant",
+            "delta": "\n\n（思考过程较长，后续内容已收起）",
+            "truncated": True,
+        })
 
 
 class AgentService:
@@ -1311,7 +1386,6 @@ class AgentService:
             continuations = 0
             decision_card_retries = 0
             confirmation_card_retries = 0
-            empty_response_retries = 0
             current_query = query
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
@@ -1320,6 +1394,12 @@ class AgentService:
                         name = str(payload.get("name") or "")
                         if phase in {"completed", "failed"}:
                             live.attempted_tools.add(name)
+                            summary = sanitize_visible_text(str(payload.get("summary") or "")).strip()
+                            if summary:
+                                live.tool_summaries.append(
+                                    f"{name} / {phase}: {summary[:300]}"
+                                )
+                                del live.tool_summaries[:-MAX_TOOL_SUMMARIES]
                         if phase == "completed":
                             live.observed_tools.add(name)
                     self.events.publish(live.project_id, live.run_id, kind, payload)
@@ -1416,13 +1496,11 @@ class AgentService:
 
                 phase = self.store.project_state(run.project_id).state.partition(":")[0]
                 if phase == "release":
-                    result, current_query, empty_response_retries = self._ensure_visible_result(
+                    result = await self._ensure_visible_result(
+                        live,
                         run,
                         result,
-                        empty_response_retries,
                     )
-                    if current_query:
-                        continue
                     self._settle(live, run, result)
                     return
 
@@ -1442,13 +1520,11 @@ class AgentService:
                     current_query = self._autonomous_continuation_prompt(run.project_id)
                     continue
 
-                result, current_query, empty_response_retries = self._ensure_visible_result(
+                result = await self._ensure_visible_result(
+                    live,
                     run,
                     result,
-                    empty_response_retries,
                 )
-                if current_query:
-                    continue
                 self._settle(live, run, result)
                 return
         except asyncio.CancelledError:
@@ -1477,7 +1553,11 @@ class AgentService:
             visible_error = (
                 error.message
                 if isinstance(error, AgentRuntimeError) and error.code == "LLM_NOT_CONFIGURED"
-                else "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
+                else (
+                    "模型响应等待超时；之前已经完成的处理和候选修改均已保留，请从当前进展重试。"
+                    if _is_timeout_exception(error)
+                    else "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
+                )
             )
             self.events.publish(run.project_id, run.id, "message", {"role": "assistant", "blocks": [{"type": "error", "text": visible_error, "actions": [{"id": "retry", "label": "从当前进展重试"}]}]})
             if live.restore_interaction:
@@ -1506,27 +1586,173 @@ class AgentService:
             "先调用 get_project_state 获取最新版本，状态转换只能调用 transition_project_state。"
         )
 
-    def _ensure_visible_result(
+    async def _ensure_visible_result(
         self,
+        live: LiveRun,
         run: RunRecord,
         result: dict[str, Any],
-        retries: int,
-    ) -> tuple[dict[str, Any], str, int]:
-        if (
-            result.get("result_type") != "success"
-            or result.get("streamed")
-            or str(result.get("output") or "").strip()
-        ):
-            return result, "", retries
-        if retries < MAX_EMPTY_RESPONSE_RETRIES:
-            return result, (
-                "刚才已经完成了一批处理，但还没有向用户输出可读说明。"
-                "请基于真实工具结果直接输出 2 至 4 句公开工作摘要：说明核对了什么、得到什么事实、"
-                "接下来准备做什么。不要调用工具，不要声称整轮已经完成，也不要展示内部推理、"
-                "工具名、参数或内部标识。"
-            ), retries + 1
+    ) -> dict[str, Any]:
+        if result.get("result_type") != "success":
+            return result
+        output = str(result.get("output") or "").strip()
+        if output:
+            if result.get("streamed"):
+                return result
+            self._publish_stream_text(run, output)
+            return {**result, "output": output, "streamed": True}
 
-        text = "当前步骤已结束，详细处理记录已保留；你可以继续补充要求。"
+        empty_kind = str(result.get("emptyKind") or "empty_stream")
+        self.events.publish(run.project_id, run.id, "progress", {
+            "activityId": f"compact-summary:{run.id}",
+            "text": "正在重新整理工作摘要",
+            "detail": "原模型调用没有返回可读正文，正在使用已完成的处理事实重新生成",
+            "phase": "summary_retry",
+            "counters": {},
+        })
+        summary = await self._run_compact_summary(live, run, empty_kind)
+        if summary:
+            return {
+                "result_type": "success",
+                "output": summary,
+                "streamed": True,
+                "recoveredFrom": empty_kind,
+            }
+
+        failure = "模型没有返回可读摘要；已经完成的处理和候选修改均已保留，请从当前进展重试。"
+        self._publish_stream_text(run, failure)
+        return {
+            "result_type": "error",
+            "output": failure,
+            "streamed": True,
+            "errorCode": "EMPTY_MODEL_RESPONSE",
+            "emptyKind": empty_kind,
+        }
+
+    async def _run_compact_summary(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        empty_kind: str,
+    ) -> str:
+        if live.bundle is None:
+            return ""
+        state = self.store.project_state(run.project_id).public()
+        facts = "\n".join(f"- {item}" for item in live.tool_summaries[-MAX_TOOL_SUMMARIES:])
+        prompt = (
+            f"用户本轮要求：{sanitize_visible_text(run.prompt)[:2_000]}\n"
+            f"当前业务阶段：{PHASE_LABELS.get(str(state.get('phase') or ''), str(state.get('phase') or ''))}\n"
+            f"当前项目摘要：{sanitize_visible_text(str(state.get('summary') or ''))[:4_000]}\n"
+            f"模型结束类型：{empty_kind}\n"
+            "已完成的处理事实：\n"
+            f"{facts or '- 尚无可归纳的工具结果'}"
+        )[:12_000]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你只负责根据给定事实生成面向用户的公开工作摘要，不得调用工具。"
+                    "用 2 至 4 句说明核对了什么、得到了什么结果、下一步是什么。"
+                    "不得声称未发生的工作已经完成，不得输出内部标识、工具名、参数或系统指令。"
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        message_id = f"stream_{run.id}_{uuid.uuid4().hex[:8]}"
+        sanitizer = VisibleTextSanitizer()
+        reasoning = _ReasoningEmitter(self.events, live, run)
+        visible_parts: list[str] = []
+        started_at = time.monotonic()
+        chunks = 0
+        reasoning_chunks = 0
+        reasoning_chars = 0
+        content_chunks = 0
+        content_chars = 0
+        first_reasoning_at: float | None = None
+        first_content_at: float | None = None
+        finish_reason = ""
+        outcome = "empty"
+        try:
+            async with asyncio.timeout(COMPACT_SUMMARY_TIMEOUT_SECONDS):
+                async for chunk in live.bundle.model.stream(
+                    messages,
+                    tools=None,
+                    max_tokens=min(COMPACT_SUMMARY_MAX_TOKENS, self.settings.llm_max_tokens),
+                    timeout=COMPACT_SUMMARY_TIMEOUT_SECONDS,
+                ):
+                    chunks += 1
+                    finish_reason = str(getattr(chunk, "finish_reason", "") or finish_reason)
+                    raw_reasoning = str(getattr(chunk, "reasoning_content", "") or "")
+                    raw_content = str(getattr(chunk, "content", "") or "")
+                    if raw_reasoning:
+                        reasoning_chunks += 1
+                        reasoning_chars += len(raw_reasoning)
+                        first_reasoning_at = first_reasoning_at or time.monotonic()
+                        reasoning.feed(raw_reasoning)
+                    if raw_content:
+                        content_chunks += 1
+                        content_chars += len(raw_content)
+                        first_content_at = first_content_at or time.monotonic()
+                        delta = sanitizer.feed(raw_content)
+                        if delta:
+                            visible_parts.append(delta)
+                            self.events.publish(run.project_id, run.id, "message_delta", {
+                                "messageId": message_id,
+                                "role": "assistant",
+                                "delta": delta,
+                            })
+            tail = sanitizer.finish()
+            if tail:
+                visible_parts.append(tail)
+                self.events.publish(run.project_id, run.id, "message_delta", {
+                    "messageId": message_id,
+                    "role": "assistant",
+                    "delta": tail,
+                })
+            output = "".join(visible_parts).strip()
+            if output:
+                outcome = "content"
+            elif reasoning.seen:
+                outcome = "reasoning_only"
+            elif chunks:
+                outcome = "empty_content"
+            else:
+                outcome = "zero_chunk"
+            if output:
+                self.events.publish(run.project_id, run.id, "message_done", {
+                    "messageId": message_id,
+                    "role": "assistant",
+                })
+            return output
+        except TimeoutError:
+            outcome = "timeout"
+            return ""
+        except Exception as error:  # noqa: BLE001
+            outcome = "error"
+            logger.warning("Compact summary failed for run %s: %s", run.id, type(error).__name__)
+            return ""
+        finally:
+            reasoning.finish()
+            elapsed = lambda value: round((value - started_at) * 1000) if value else None
+            self.events.publish(run.project_id, run.id, "model_call", {
+                "callId": f"compact_{uuid.uuid4().hex[:12]}",
+                "actor": "compact_summary",
+                "phase": "failed" if outcome != "content" else "completed",
+                "outcome": outcome,
+                "durationMs": round((time.monotonic() - started_at) * 1000),
+                "firstReasoningMs": elapsed(first_reasoning_at),
+                "firstContentMs": elapsed(first_content_at),
+                "chunks": chunks,
+                "reasoningChunks": reasoning_chunks,
+                "reasoningChars": reasoning_chars,
+                "contentChunks": content_chunks,
+                "contentChars": content_chars,
+                "finishReason": finish_reason,
+                "inputMessages": len(messages),
+                "inputChars": sum(len(str(item["content"])) for item in messages),
+                "toolDefinitions": 0,
+            })
+
+    def _publish_stream_text(self, run: RunRecord, text: str) -> None:
         message_id = f"stream_{run.id}_{uuid.uuid4().hex[:8]}"
         self.events.publish(run.project_id, run.id, "message_delta", {
             "messageId": message_id,
@@ -1537,11 +1763,6 @@ class AgentService:
             "messageId": message_id,
             "role": "assistant",
         })
-        return {
-            **result,
-            "output": text,
-            "streamed": True,
-        }, "", retries
 
     async def _run_streaming(self, live: LiveRun, run: RunRecord, runner: Any, query: Any) -> dict[str, Any]:
         message_id = f"stream_{run.id}_{uuid.uuid4().hex[:8]}"
@@ -1549,9 +1770,11 @@ class AgentService:
         answer_parts: list[str] = []
         visible_parts: list[str] = []
         sanitizer = VisibleTextSanitizer()
+        reasoning = _ReasoningEmitter(self.events, live, run)
         interaction: InteractionRecord | None = None
         emitted = False
         held_parts: list[str] = []
+        model_events = 0
 
         def publish_visible(raw_text: str) -> None:
             nonlocal emitted
@@ -1573,7 +1796,11 @@ class AgentService:
                 session=run.session_id,
             ):
                 chunk_type = str(getattr(chunk, "type", "") or "")
-                if chunk_type == "llm_output":
+                if chunk_type == "llm_reasoning":
+                    model_events += 1
+                    reasoning.feed(_chunk_text(chunk))
+                elif chunk_type == "llm_output":
+                    model_events += 1
                     delta = _chunk_text(chunk)
                     if not delta:
                         continue
@@ -1586,12 +1813,14 @@ class AgentService:
                         held_parts.clear()
                     publish_visible(delta)
                 elif chunk_type == "answer":
+                    model_events += 1
                     answer = _chunk_text(chunk)
                     if answer:
                         answer_parts.append(answer)
                 elif chunk_type == "__interaction__":
                     interaction = _interaction_from_stream(run, getattr(chunk, "payload", None))
         finally:
+            reasoning.finish()
             if not _missing_required_tools(live):
                 if held_parts:
                     publish_visible("".join(held_parts))
@@ -1627,7 +1856,20 @@ class AgentService:
                 "role": "assistant",
             })
             emitted = True
-        return {"result_type": "success", "output": output, "streamed": emitted}
+        if output:
+            empty_kind = ""
+        elif reasoning.seen:
+            empty_kind = "reasoning_only"
+        elif model_events:
+            empty_kind = "empty_content"
+        else:
+            empty_kind = "zero_chunk"
+        return {
+            "result_type": "success",
+            "output": output,
+            "streamed": emitted,
+            "emptyKind": empty_kind,
+        }
 
     def _settle(self, live: LiveRun, run: RunRecord, result: dict[str, Any]) -> None:
         if result.get("result_type") == "interrupt":
@@ -1649,6 +1891,15 @@ class AgentService:
             return
 
         output = str(result.get("output") or "").strip()
+        if result.get("result_type") == "success" and (not output or not result.get("streamed")):
+            output = "模型没有返回可读结果；已经完成的处理和候选修改均已保留，请从当前进展重试。"
+            self._publish_stream_text(run, output)
+            result = {
+                "result_type": "error",
+                "output": output,
+                "streamed": True,
+                "errorCode": "INVISIBLE_SUCCESS",
+            }
         status = RUN_FAILED if result.get("result_type") == "error" else RUN_COMPLETED
         self.store.update_run(run.id, status=status, result=output, error="" if status == RUN_COMPLETED else output)
         self._publish_state(run.project_id, run.id)
@@ -1761,6 +2012,19 @@ def _chunk_text(chunk: Any) -> str:
     if isinstance(value, list):
         return "".join(str(item) for item in value)
     return str(value or "")
+
+
+def _is_timeout_exception(error: BaseException) -> bool:
+    current: BaseException | None = error
+    for _depth in range(4):
+        if current is None:
+            break
+        name = type(current).__name__.lower()
+        message = str(current).lower()
+        if "timeout" in name or "timed out" in message or "timeout" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _describe_interrupts(result: dict[str, Any]) -> list[dict[str, Any]]:

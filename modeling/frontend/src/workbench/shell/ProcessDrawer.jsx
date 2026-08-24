@@ -107,7 +107,7 @@ export default function ProcessDrawer({ onClose }) {
             </table>
             <div className="t-sm muted" style={{ padding: 'var(--s-5)' }}>
               服务重启后会从最近保存点继续，不重复已经完成的步骤。
-              处理记录不展示模型内部推理、密钥和完整资料正文。
+              思考过程已过滤内部配置、密钥、工具参数和完整资料正文。
             </div>
           </> : (
             <div style={{ padding: 'var(--s-5)' }}>

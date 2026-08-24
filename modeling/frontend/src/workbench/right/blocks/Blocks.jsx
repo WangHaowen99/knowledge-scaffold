@@ -9,6 +9,7 @@ import { userFacingText } from '../../lib/userFacingText.js';
 export function Block({ block }) {
   switch (block.type) {
     case 'text':      return <div className="wb-text"><MarkdownContent>{userFacingText(block.text)}</MarkdownContent></div>;
+    case 'reasoning': return <ReasoningBlock block={block} />;
     case 'plan':      return <PlanBlock items={block.items} />;
     case 'ask':       return block.interaction?.status === 'answered' ? <AnsweredInteraction interaction={block.interaction} /> : <AskBlock b={block} />;
     case 'material':  return <MaterialRequest />;
@@ -21,6 +22,21 @@ export function Block({ block }) {
     case 'uploadResult': return <UploadResult block={block} />;
     default:          return null;
   }
+}
+
+function ReasoningBlock({ block }) {
+  const [expanded, setExpanded] = useState(Boolean(block.streaming));
+  return (
+    <details className="wb-reasoning" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary>
+        <span>{block.streaming ? '正在思考' : '思考过程'}</span>
+        {block.truncated && <small>已收起较长内容</small>}
+      </summary>
+      <div className="wb-reasoning-body wb-text">
+        <MarkdownContent>{userFacingText(block.text)}</MarkdownContent>
+      </div>
+    </details>
+  );
 }
 
 function AnsweredInteraction({ interaction }) {

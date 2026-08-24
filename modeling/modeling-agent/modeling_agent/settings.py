@@ -31,6 +31,8 @@ class Settings:
     host: str
     port: int
     skills_dir: Path
+    llm_first_chunk_timeout_seconds: float = 120.0
+    llm_idle_timeout_seconds: float = 60.0
 
     @property
     def runtime_db(self) -> Path:
@@ -56,6 +58,12 @@ class Settings:
             host=os.getenv("MODELING_AGENT_HOST", "0.0.0.0"),
             port=_integer("MODELING_AGENT_PORT", 5110, 1, 65535),
             skills_dir=Path(os.getenv("MODELING_AGENT_SKILLS_DIR", str(package_root / "skills"))).resolve(),
+            llm_first_chunk_timeout_seconds=_number(
+                "MODELING_LLM_FIRST_CHUNK_TIMEOUT_SECONDS", 120.0, 10.0, 600.0,
+            ),
+            llm_idle_timeout_seconds=_number(
+                "MODELING_LLM_IDLE_TIMEOUT_SECONDS", 60.0, 10.0, 300.0,
+            ),
         )
 
     def with_runtime_llm(self, config: dict[str, object]) -> "Settings":

@@ -353,6 +353,58 @@ export const actions = {
           : message),
       }));
     }
+    if (eventType === 'reasoning_delta' && event.messageId && event.delta) {
+      store.set((state) => {
+        const index = state.messages.findIndex((message) => message.id === event.messageId);
+        if (index < 0) {
+          return { messages: [...state.messages, {
+            id: event.messageId,
+            role: event.role || 'assistant',
+            createdAt: event.createdAt,
+            blocks: [{
+              type: 'reasoning',
+              text: String(event.delta),
+              streaming: true,
+              truncated: Boolean(event.truncated),
+            }],
+          }] };
+        }
+        const messages = [...state.messages];
+        const message = messages[index];
+        const blocks = [...(message.blocks || [])];
+        const reasoningIndex = blocks.findIndex((block) => block.type === 'reasoning');
+        if (reasoningIndex < 0) {
+          blocks.push({
+            type: 'reasoning',
+            text: String(event.delta),
+            streaming: true,
+            truncated: Boolean(event.truncated),
+          });
+        } else {
+          const block = blocks[reasoningIndex];
+          blocks[reasoningIndex] = {
+            ...block,
+            text: `${block.text || ''}${event.delta}`,
+            streaming: true,
+            truncated: Boolean(block.truncated || event.truncated),
+          };
+        }
+        messages[index] = { ...message, blocks };
+        return { messages };
+      });
+    }
+    if (eventType === 'reasoning_done' && event.messageId) {
+      store.set((state) => ({
+        messages: state.messages.map((message) => message.id === event.messageId
+          ? {
+            ...message,
+            blocks: (message.blocks || []).map((block) => block.type === 'reasoning'
+              ? { ...block, streaming: false }
+              : block),
+          }
+          : message),
+      }));
+    }
     if (eventType === 'interaction') {
       if (event.status === 'answered') {
         store.set((state) => ({
