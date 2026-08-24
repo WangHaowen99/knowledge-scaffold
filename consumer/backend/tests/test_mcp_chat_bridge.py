@@ -388,7 +388,7 @@ def test_workflow_bridge_rebinds_and_revalidates_token_ontology(monkeypatch):
     assert status_code == 200
     assert body["ok"] is True
     assert captured["ontology_id"] == "knowledge_package_demo"
-    assert orchestrator.last_run_kwargs["arguments"]["selected_ontology_id"] == "knowledge_package_demo"
+    assert orchestrator.last_run_kwargs["arguments"] is None
     assert orchestrator.last_run_kwargs["user_context"]["selected_ontology_id"] == "knowledge_package_demo"
 
 
@@ -443,6 +443,7 @@ def test_workflow_bridge_syncs_legacy_argument_ontology_to_context(monkeypatch):
 
     assert status_code == 200
     assert body["ok"] is True
+    assert orchestrator.last_run_kwargs["arguments"] is None
     assert orchestrator.last_run_kwargs["user_context"]["selected_ontology_id"] == "knowledge_package_demo"
 
 
@@ -579,10 +580,7 @@ def test_workflow_bridge_preflights_bound_ontology_for_deterministic_operation(
         execution_timeout_seconds=1,
     )
 
-    expected_arguments = {
-        "code": "A",
-        "selected_ontology_id": "knowledge_package_demo",
-    }
+    expected_arguments = {"code": "A"}
     assert status_code == 200
     assert body["ok"] is True
     assert captured_preflight["arguments"] == expected_arguments

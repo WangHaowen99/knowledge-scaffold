@@ -99,9 +99,8 @@ def execute_mcp_chat_workflow(
             (arguments or {}).get("selected_ontology_id") or ""
         ).strip()
         if selected_ontology_id:
-            # The orchestrator locks ontology selection from user_context, while
-            # structured arguments are used by direct execution. Keep both
-            # channels aligned so an MCP token binding also constrains the main
+            # The orchestrator locks ontology selection from user_context.
+            # Mirror the validated MCP binding there so it constrains the main
             # agent and every ontology-scoped tool invocation.
             context = bind_chat_arguments(
                 arguments=context,
@@ -115,6 +114,12 @@ def execute_mcp_chat_workflow(
             trace=_trace_snapshot(trace_collector),
             error_type=exc.error_type,
         )
+    # Ontology selection is protocol-owned runtime context, not an Operation
+    # business argument. Keeping it in arguments breaks strict input schemas
+    # and can leak an undeclared --selected-ontology-id flag to handlers.
+    business_arguments = dict(arguments or {})
+    business_arguments.pop("selected_ontology_id", None)
+    arguments = business_arguments or None
     if scope.ontology_id and selected_ontology_id:
         try:
             validate_runtime_ontology_availability(
