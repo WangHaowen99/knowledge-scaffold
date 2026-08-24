@@ -31,9 +31,11 @@ export default function FlowView() {
   const readableSource = displayEvidenceReferences(source, demo ? [] : materials);
 
   return (
-    <MermaidPreview source={source} readableSource={readableSource} path={focus.target}
-      focusNode={focusNode} fallbackFlow={demo ? demoFlow : undefined}
-      note={`${focusNode ? `助手正指向节点 ${focusNode}` : '点左栏文件或消息上的定位入口可切换视图'} · 绿色节点为本轮新增`} />
+    <div className="wb-flow-view">
+      <MermaidPreview source={source} readableSource={readableSource} path={focus.target}
+        focusNode={focusNode} fallbackFlow={demo ? demoFlow : undefined}
+        note={`${focusNode ? `助手正指向节点 ${focusNode}` : '点左栏文件或消息上的定位入口可切换视图'} · 绿色节点为本轮新增`} />
+    </div>
   );
 }
 

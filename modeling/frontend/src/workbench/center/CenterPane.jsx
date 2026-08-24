@@ -69,6 +69,7 @@ export default function CenterPane() {
   const pendingReference = pending?.kind === 'studio'
     ? pending.elementId || '知识包 Studio'
     : pendingMaterial?.filename || pending?.node || pending?.target?.split('/').pop() || '新位置';
+  const fullContent = focus.kind === 'flow' || focus.kind === 'file';
 
   return (
     <>
@@ -97,8 +98,8 @@ export default function CenterPane() {
         )}
         <span className="t-xs">{sub}</span>
       </div>
-      <div className={`wb-scroll${focus.kind === 'studio' ? ' wb-studio-scroll' : ''}`}>
-        <div className={`wb-canvas fade-in${focus.kind === 'studio' ? ' wb-studio-canvas' : ''}`} key={focus.kind + focus.target}>
+      <div className={`wb-scroll${focus.kind === 'studio' ? ' wb-studio-scroll' : ''}${fullContent ? ' wb-content-scroll' : ''}`}>
+        <div className={`wb-canvas fade-in${focus.kind === 'studio' ? ' wb-studio-canvas' : ''}${fullContent ? ' wb-content-canvas' : ''}`} key={focus.kind + focus.target}>
           {follow && focusReference && (
             <div className="wb-focus">
               <Icon name="arrow" size={13} />

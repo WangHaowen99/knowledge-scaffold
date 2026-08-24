@@ -1,0 +1,13 @@
+/* 文件和流程图使用中栏全部可用空间，其他业务视图仍保持紧凑阅读宽度。 */
+.wb-content-scroll { display: flex; }
+.wb-content-canvas { width: 100%; max-width: none; min-height: 100%; padding: var(--s-4); }
+.wb-content-canvas > .wb-focus { flex: none; }
+.wb-content-canvas > .wb-doc { width: 100%; min-height: 100%; }
+
+.wb-content-canvas .wb-markdown,
+.wb-content-canvas .wb-structured { width: 100%; max-width: none; margin: 0; }
+
+.wb-flow-view { display: flex; flex-direction: column; width: 100%; min-height: 100%; }
+.wb-flow-view .wb-flow-toolbar { flex: none; }
+.wb-flow-view .wb-mermaid-viewport,
+.wb-flow-view .wb-flow-source { flex: 1; min-height: 360px; max-height: none; }
