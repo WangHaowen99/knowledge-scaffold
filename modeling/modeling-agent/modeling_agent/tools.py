@@ -22,6 +22,10 @@ ConfirmationGuard = Callable[[], bool]
 ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
+LEADER_DOCUMENT_PAGE_CHARS = 6_000
+LEADER_TABLE_SAMPLE_ROWS = 5
+TABLE_FIELD_SAMPLE_VALUES = 3
+TABLE_SAMPLE_VALUE_CHARS = 120
 
 VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "write_file",
@@ -725,6 +729,7 @@ class CoreTool(Tool):
 
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
         arguments = input_dict(inputs)
+        arguments = _bounded_source_arguments(self.spec.name, arguments)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         activity_id = f"{self.spec.name}:{started_after}"
         if self.spec.name == "read_documents_fully":
@@ -803,10 +808,84 @@ class CoreTool(Tool):
             self.context.validation_repair.record_success(self.spec.name)
         if not result.get("error") and self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(_compact_source_result(self.spec.name, result), ensure_ascii=False)
 
     async def stream(self, inputs: Any, **kwargs: Any):
         yield await self.invoke(inputs, **kwargs)
+
+
+def _bounded_source_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    bounded = dict(arguments)
+    if name == "read_document":
+        bounded["limit"] = _bounded_positive_integer(
+            bounded.get("limit"), LEADER_DOCUMENT_PAGE_CHARS,
+        )
+    elif name == "read_table_rows":
+        bounded["limit"] = _bounded_positive_integer(
+            bounded.get("limit"), LEADER_TABLE_SAMPLE_ROWS,
+        )
+    return bounded
+
+
+def _bounded_positive_integer(value: Any, maximum: int) -> int:
+    try:
+        parsed = int(value or maximum)
+    except (TypeError, ValueError):
+        parsed = maximum
+    return min(max(1, parsed), maximum)
+
+
+def _compact_source_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("error") or name != "describe_table":
+        return result
+    table = result.get("table")
+    if not isinstance(table, Mapping):
+        return result
+    raw_fields = table.get("fields")
+    if not isinstance(raw_fields, list):
+        return result
+    fields = [_compact_table_field(field) for field in raw_fields if isinstance(field, Mapping)]
+    return {
+        **result,
+        "table": {
+            "name": table.get("name"),
+            "documentId": table.get("documentId"),
+            "rowCount": table.get("rowCount"),
+            "fieldCount": len(fields),
+            "fields": fields,
+        },
+    }
+
+
+def _compact_table_field(field: Mapping[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: field[key]
+        for key in (
+            "name", "inferredType", "type", "nullable", "required",
+            "unique", "isPrimaryKey", "primaryKeyCandidate", "distinctRatio",
+            "description", "comment",
+        )
+        if key in field
+    }
+    for sample_key in ("sampleValues", "samples", "examples"):
+        samples = field.get(sample_key)
+        if not isinstance(samples, list):
+            continue
+        compact[sample_key] = [
+            _compact_sample_value(value)
+            for value in samples[:TABLE_FIELD_SAMPLE_VALUES]
+        ]
+        break
+    return compact
+
+
+def _compact_sample_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    text = str(value)
+    if len(text) <= TABLE_SAMPLE_VALUE_CHARS:
+        return text
+    return f"{text[:TABLE_SAMPLE_VALUE_CHARS]}..."
 
 
 def _full_read_heading(filenames: Any) -> str:

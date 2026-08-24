@@ -1071,6 +1071,74 @@ async def test_full_read_tool_emits_real_checkpoint_progress(monkeypatch) -> Non
     assert any(call["tool"] == "get_material_analysis_progress" for call in gateway.calls)
 
 
+async def test_source_tools_bound_leader_context_without_losing_schema_fields() -> None:
+    long_sample = "样" * 500
+    gateway = FakeGateway({
+        "read_document": {
+            "filename": "产品手册.docx",
+            "content": "正文" * 3_000,
+            "offset": 0,
+            "endOffset": 6_000,
+            "nextOffset": 6_000,
+            "totalChars": 90_000,
+            "eof": False,
+        },
+        "describe_table": {
+            "table": {
+                "name": "客户表",
+                "documentId": "doc-schema",
+                "rowCount": 100,
+                "fields": [{
+                    "name": "customer_id",
+                    "inferredType": "string",
+                    "distinctRatio": 1,
+                    "sampleValues": [long_sample, "C002", "C003", "C004"],
+                    "largeUnusedProfile": "x" * 20_000,
+                }],
+            },
+        },
+        "read_table_rows": {
+            "table": "客户表",
+            "rows": [[f"C{index:03d}"] for index in range(5)],
+            "nextOffset": 5,
+            "totalRows": 100,
+        },
+    })
+    context = ToolContext(
+        project_id="project_context_budget",
+        run_id="run_context_budget",
+        token="token_context_budget",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+
+    read_document = CoreTool(next(spec for spec in CORE_TOOL_SPECS if spec.name == "read_document"), context)
+    describe_table = CoreTool(next(spec for spec in CORE_TOOL_SPECS if spec.name == "describe_table"), context)
+    read_rows = CoreTool(next(spec for spec in CORE_TOOL_SPECS if spec.name == "read_table_rows"), context)
+
+    document = json.loads(await read_document.invoke({"filename": "产品手册.docx", "limit": 20_000}))
+    described = json.loads(await describe_table.invoke({"document_id": "doc-schema", "table": "客户表"}))
+    rows = json.loads(await read_rows.invoke({
+        "document_id": "doc-schema", "table": "客户表", "offset": 0, "limit": 50,
+    }))
+
+    assert document["nextOffset"] == 6_000
+    assert described["table"]["fieldCount"] == 1
+    assert described["table"]["fields"][0]["name"] == "customer_id"
+    assert described["table"]["fields"][0]["distinctRatio"] == 1
+    assert len(described["table"]["fields"][0]["sampleValues"]) == 3
+    assert len(described["table"]["fields"][0]["sampleValues"][0]) <= 123
+    assert "largeUnusedProfile" not in described["table"]["fields"][0]
+    assert len(json.dumps(described, ensure_ascii=False)) < 2_000
+    assert len(rows["rows"]) == 5
+    calls = {call["tool"]: call["arguments"] for call in gateway.calls}
+    assert calls["read_document"]["limit"] == 6_000
+    assert calls["read_table_rows"]["limit"] == 5
+
+    await read_document.invoke({"filename": "产品手册.docx", "limit": "invalid"})
+    assert gateway.calls[-1]["arguments"]["limit"] == 6_000
+
+
 async def test_free_input_while_waiting_resumes_as_interjection(settings) -> None:
     original_question = {
         "question": "请选择业务范围",
