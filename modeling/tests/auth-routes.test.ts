@@ -83,6 +83,7 @@ before(async () => {
   process.env.AUTH_JWT_ISSUER = ISS;
   process.env.AUTH_JWT_AUDIENCE = AUD;
   process.env.CONSUMER_API_URL = upstreamBaseUrl;
+  process.env.MODELING_SERVICE_TOKEN = 'route-test-modeling-service-token';
   process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'mtool-route-test-'));
   process.env.EVAL_DB_URL = 'mysql://root:eval-secret@mysql.local:3306';
 
@@ -401,6 +402,35 @@ test('过期 token 访问不存在项目只返回一次 401，后续请求仍可
   assert.deepEqual(health.json(), { status: 'ok' });
 });
 
+test('Agent 运行时模型配置同时要求用户身份和服务令牌', async () => {
+  let response = await app.inject({
+    method: 'GET',
+    url: '/internal/agent/llm-config',
+    headers: { 'x-modeling-service-token': process.env.MODELING_SERVICE_TOKEN! },
+  });
+  assert.equal(response.statusCode, 401);
+
+  const token = await signToken({}, 'agent-config-user');
+  response = await app.inject({
+    method: 'GET',
+    url: '/internal/agent/llm-config',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.statusCode, 403);
+
+  response = await app.inject({
+    method: 'GET',
+    url: '/internal/agent/llm-config',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'x-modeling-service-token': process.env.MODELING_SERVICE_TOKEN!,
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json().code, 'LLM_NOT_CONFIGURED');
+  assert.equal(response.headers['cache-control'], 'no-store');
+});
+
 test('平台 LLM 默认配置 API 同时要求登录和 admin 角色', async () => {
   let response = await app.inject({ method: 'GET', url: '/api/admin/llm-defaults' });
   assert.equal(response.statusCode, 401);
@@ -421,7 +451,7 @@ test('平台 LLM 默认配置 API 同时要求登录和 admin 角色', async () 
   assert.deepEqual(response.json().defaults, { main: null, task: null });
 });
 
-test('新注册用户初始化当时的默认快照，老用户与既有快照不受 admin 后续修改影响', async () => {
+test('admin 平台默认对新老账号即时生效，注册快照保留为删除默认后的兜底', async () => {
   const adminToken = await signToken({ role: 'admin' }, 'registration-platform-admin');
   const adminHeaders = { authorization: `Bearer ${adminToken}` };
   const configured = await app.inject({
@@ -453,15 +483,15 @@ test('新注册用户初始化当时的默认快照，老用户与既有快照�
     const firstSnapshot = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
     assert.equal(firstSnapshot.json().llm.model, 'registration-default-v1');
     assert.equal(firstSnapshot.json().llm.maxTokens, 5000);
-    assert.equal(firstSnapshot.json().llm.source, 'default_snapshot');
+    assert.equal(firstSnapshot.json().llm.source, 'platform_default');
 
     const existingToken = await signToken({}, 'existing_without_default_snapshot');
     const existing = await app.inject({
       method: 'GET', url: '/api/settings',
       headers: { authorization: `Bearer ${existingToken}` },
     });
-    assert.equal(existing.json().llm.source, 'env');
-    assert.notEqual(existing.json().llm.model, 'registration-default-v1');
+    assert.equal(existing.json().llm.source, 'platform_default');
+    assert.equal(existing.json().llm.model, 'registration-default-v1');
 
     const updated = await app.inject({
       method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
@@ -473,9 +503,9 @@ test('新注册用户初始化当时的默认快照，老用户与既有快照�
     assert.equal(updated.statusCode, 200, updated.body);
     revision = updated.json().defaults.main.revision;
 
-    const firstStillV1 = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
-    assert.equal(firstStillV1.json().llm.model, 'registration-default-v1');
-    assert.equal(firstStillV1.json().llm.maxTokens, 5000);
+    const firstUsesV2 = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
+    assert.equal(firstUsesV2.json().llm.model, 'registration-default-v2');
+    assert.equal(firstUsesV2.json().llm.maxTokens, 6000);
 
     routes.set('POST /register', {
       status: 200,
@@ -538,7 +568,7 @@ test('注册成功会清理同名旧账号的 Modeling LLM 配置，注册失败
   const configured = await app.inject({
     method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
     payload: {
-      purpose: 'main', baseUrl: 'faux', model: 'future-default-must-not-fallback',
+      purpose: 'main', baseUrl: 'faux', model: 'future-unified-default',
       maxTokens: 4096, expectedRevision: 0,
     },
   });
@@ -548,8 +578,8 @@ test('注册成功会清理同名旧账号的 Modeling LLM 配置，注册失败
     const settings = await app.inject({
       method: 'GET', url: '/api/settings', headers: { authorization: `Bearer ${userToken}` },
     });
-    assert.equal(settings.json().llm.source, 'env');
-    assert.notEqual(settings.json().llm.model, 'future-default-must-not-fallback');
+    assert.equal(settings.json().llm.source, 'platform_default');
+    assert.equal(settings.json().llm.model, 'future-unified-default');
   } finally {
     await app.inject({
       method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
@@ -721,8 +751,8 @@ test('主模型与后台任务模型可分别同步平台默认，任务默认�
     });
     assert.equal(response.statusCode, 200, response.body);
     let settings = await app.inject({ method: 'GET', url: '/api/settings', headers: userHeaders });
-    assert.equal(settings.json().llm.source, 'env');
-    assert.equal(settings.json().taskLlm.source, 'default_snapshot');
+    assert.equal(settings.json().llm.source, 'platform_default');
+    assert.equal(settings.json().taskLlm.source, 'platform_default');
     assert.equal(settings.json().taskLlm.model, 'purpose-main-default');
 
     const taskDefault = await app.inject({
@@ -742,7 +772,7 @@ test('主模型与后台任务模型可分别同步平台默认，任务默认�
     assert.equal(response.statusCode, 200, response.body);
     settings = await app.inject({ method: 'GET', url: '/api/settings', headers: userHeaders });
     assert.equal(settings.json().llm.model, 'purpose-main-default');
-    assert.equal(settings.json().taskLlm.model, 'purpose-main-default');
+    assert.equal(settings.json().taskLlm.model, 'purpose-task-default');
 
     response = await app.inject({
       method: 'POST', url: '/api/settings/llm/sync-default', headers: userHeaders,
@@ -765,7 +795,7 @@ test('主模型与后台任务模型可分别同步平台默认，任务默认�
   }
 });
 
-test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不会自动追写', async () => {
+test('使用平台默认会清除个人覆盖，admin 后续修改立即生效', async () => {
   const adminToken = await signToken({ role: 'admin' }, 'sync-platform-admin');
   const userAToken = await signToken({}, 'sync_user_a');
   const userBToken = await signToken({}, 'sync_user_b');
@@ -820,7 +850,7 @@ test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不
     const userB = await app.inject({ method: 'GET', url: '/api/settings', headers: userBHeaders });
     assert.deepEqual(userA.json().llm, {
       baseUrl: 'faux', model: 'platform-default-model', maxTokens: 7777, contextWindow: 1000000,
-      apiKeySet: false, personalApiKeySet: false, source: 'default_snapshot', userIsolated: true,
+      apiKeySet: false, personalApiKeySet: false, source: 'platform_default', userIsolated: true,
       platformDefaultAvailable: true,
     });
     assert.equal(userB.json().llm.model, 'personal-model-b');
@@ -838,9 +868,9 @@ test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不
     assert.equal(updated.statusCode, 200, updated.body);
     revision = updated.json().defaults.main.revision;
 
-    const userAStillV1 = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
-    assert.equal(userAStillV1.json().llm.model, 'platform-default-model');
-    assert.equal(userAStillV1.json().llm.maxTokens, 7777);
+    const userAUsesV2 = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
+    assert.equal(userAUsesV2.json().llm.model, 'platform-default-model-v2');
+    assert.equal(userAUsesV2.json().llm.maxTokens, 8888);
     const userBAfterAdminUpdate = await app.inject({ method: 'GET', url: '/api/settings', headers: userBHeaders });
     assert.equal(userBAfterAdminUpdate.json().llm.model, 'personal-model-b');
 

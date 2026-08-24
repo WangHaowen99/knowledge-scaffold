@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 
-export type LlmSettingSource = 'user' | 'default_snapshot' | 'main' | 'settings' | 'env';
+export type LlmSettingSource = 'user' | 'platform_default' | 'default_snapshot' | 'main' | 'settings' | 'env';
 export interface LlmSettings {
   baseUrl: string;
   model: string;
@@ -30,6 +30,7 @@ interface ResolveLlmInput {
   personal?: UserLlmSettingsSnapshot;
   personalTask?: UserLlmSettingsSnapshot;
   assignedDefaults?: { main?: LlmSettings; task?: LlmSettings };
+  platformDefaults?: { main?: LlmSettings; task?: LlmSettings };
   legacy?: LegacyLlmSettingsSnapshot;
 }
 
@@ -88,6 +89,7 @@ function deploymentMainSettings(
 export function resolveLlmSource(input: ResolveLlmInput): LlmSettingSource {
   if (input.username) {
     if (hasLlmProviderOverride(input.personal)) return 'user';
+    if (input.platformDefaults?.main) return 'platform_default';
     return input.assignedDefaults?.main ? 'default_snapshot' : 'env';
   }
   return input.legacy?.baseUrl !== null && input.legacy?.baseUrl !== undefined ? 'settings' : 'env';
@@ -96,6 +98,7 @@ export function resolveLlmSource(input: ResolveLlmInput): LlmSettingSource {
 export function resolveTaskLlmSource(input: ResolveLlmInput): LlmSettingSource {
   if (input.username) {
     if (input.personalTask && Object.values(input.personalTask).some((value) => value !== null)) return 'user';
+    if (input.platformDefaults?.task ?? input.platformDefaults?.main) return 'platform_default';
     return input.assignedDefaults?.task ? 'default_snapshot' : 'main';
   }
   const deploymentTaskConfigured = Boolean(
@@ -104,9 +107,9 @@ export function resolveTaskLlmSource(input: ResolveLlmInput): LlmSettingSource {
   return deploymentTaskConfigured ? 'env' : resolveLlmSource(input);
 }
 
-// 平台模板只在注册/主动同步时复制为用户快照；运行时不得读取当前平台默认兜底。
+// admin 平台默认是统一运行时兜底；个人端点覆盖仍保持最高优先级。
 export function resolveLlmSettings(input: ResolveLlmInput): LlmSettings {
-  const { username, personal, assignedDefaults } = input;
+  const { username, personal, assignedDefaults, platformDefaults } = input;
   if (username && hasLlmProviderOverride(personal)) {
     return {
       baseUrl: (personal?.baseUrl ?? '').trim(),
@@ -122,6 +125,9 @@ export function resolveLlmSettings(input: ResolveLlmInput): LlmSettings {
       ),
     };
   }
+  if (username && platformDefaults?.main) {
+    return fromAssignedDefault(platformDefaults.main, personal?.maxTokens, personal?.contextWindow);
+  }
   if (username && assignedDefaults?.main) {
     return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens, personal?.contextWindow);
   }
@@ -133,15 +139,15 @@ export function resolveLlmSettings(input: ResolveLlmInput): LlmSettings {
 }
 
 /**
- * 认证用户优先读取个人任务模型与同步时固化的 task 快照；两者均为空时使用其主模型。
- * 未绑定用户的后台流程保留部署 task/main 回退。当前平台模板不参与运行时解析。
+ * 认证用户优先读取个人任务模型，其次读取 admin 平台 task/main 默认；均为空时
+ * 使用固化快照或主模型。未绑定用户的后台流程保留部署 task/main 回退。
  */
 export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
-  const { username, personalTask, assignedDefaults } = input;
+  const { username, personalTask, assignedDefaults, platformDefaults } = input;
   const main = resolveLlmSettings(input);
 
   if (username && hasLlmProviderOverride(personalTask)) {
-    const fallback = assignedDefaults?.task ?? main;
+    const fallback = platformDefaults?.task ?? assignedDefaults?.task ?? main;
     return {
       baseUrl: (personalTask?.baseUrl ?? '').trim(),
       model: (personalTask?.model ?? '').trim(),
@@ -149,6 +155,14 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
       maxTokens: normalizedMaxTokens(personalTask?.maxTokens, fallback.maxTokens),
       contextWindow: normalizedContextWindow(personalTask?.contextWindow, fallback.contextWindow),
     };
+  }
+
+  if (username && (platformDefaults?.task ?? platformDefaults?.main)) {
+    return fromAssignedDefault(
+      platformDefaults.task ?? platformDefaults.main!,
+      personalTask?.maxTokens,
+      personalTask?.contextWindow,
+    );
   }
 
   if (username && assignedDefaults?.task) {

@@ -192,6 +192,7 @@ import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
 import { registerAgentCoreRoutes } from './agent/core-routes.js';
+import { registerAgentLlmConfigRoutes } from './agent/llm-config-routes.js';
 import { registerPackageFusionRoutes } from './agent/package-fusion-routes.js';
 import { registerAgentProxyRoutes } from './agent/proxy-routes.js';
 import {
@@ -552,6 +553,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   app.register(async (r) => {
     r.addHook('onRequest', (_req, _reply, done) => runWithLlmRequest(done));
     r.addHook('preHandler', requireAuth);
+
+    registerAgentLlmConfigRoutes(r);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
 

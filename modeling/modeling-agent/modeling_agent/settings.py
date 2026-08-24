@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -21,6 +21,7 @@ def _number(name: str, default: float, minimum: float, maximum: float) -> float:
 class Settings:
     data_dir: Path
     core_base_url: str
+    service_token: str
     llm_base_url: str
     llm_api_key: str
     llm_model: str
@@ -45,6 +46,7 @@ class Settings:
         return cls(
             data_dir=Path(os.getenv("MODELING_AGENT_DATA_DIR", "./data/agent")).resolve(),
             core_base_url=os.getenv("MODELING_CORE_BASE_URL", "http://127.0.0.1:5100").rstrip("/"),
+            service_token=os.getenv("MODELING_SERVICE_TOKEN", ""),
             llm_base_url=os.getenv("MODELING_LLM_BASE_URL", "").rstrip("/"),
             llm_api_key=os.getenv("MODELING_LLM_API_KEY", ""),
             llm_model=os.getenv("MODELING_LLM_MODEL", ""),
@@ -56,9 +58,20 @@ class Settings:
             skills_dir=Path(os.getenv("MODELING_AGENT_SKILLS_DIR", str(package_root / "skills"))).resolve(),
         )
 
+    def with_runtime_llm(self, config: dict[str, object]) -> "Settings":
+        max_tokens = int(config.get("maxTokens") or self.llm_max_tokens)
+        return replace(
+            self,
+            llm_base_url=str(config.get("baseUrl") or "").rstrip("/"),
+            llm_api_key=str(config.get("apiKey") or ""),
+            llm_model=str(config.get("model") or ""),
+            llm_max_tokens=min(self.llm_max_tokens, max_tokens),
+        )
+
     def public_config(self) -> dict[str, object]:
         return {
             "coreBaseUrl": self.core_base_url,
             "modelConfigured": bool(self.llm_base_url and self.llm_model),
+            "dynamicModelConfig": len(self.service_token) >= 32,
             "maxIterations": self.max_iterations,
         }

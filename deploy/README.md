@@ -45,7 +45,7 @@
 
 - Linux / macOS，Docker ≥ 20.10，Docker Compose v2（`docker compose`）或 v1 ≥ 1.28（`docker-compose`；本方案使用 compose profiles，更旧的 v1 会失败，preflight 会检查）；
 - 宿主端口 5055、8888、5100 空闲（形态 C 另需 3306）；
-- 一个真实 OpenAI-compatible LLM 端点。新 modeling-agent 必须配置 Base URL 与模型名，端点要求鉴权时还需 API Key；
+- 一个可供 admin 在部署后配置的 OpenAI-compatible LLM 端点；LLM 不再是部署前置条件；
 - 目标机可访问 Docker Hub 或已配镜像源（首次构建需拉取 `python`、`node:22-slim`、`nginx`、`mysql:8` 等基础镜像）。
 
 自动检查（**先跑这个**）：
@@ -64,7 +64,7 @@ cd $REPO
 ```bash
 cd $REPO
 cp -n consumer/backend/.env.example consumer/backend/.env
-# 编辑 consumer/backend/.env，至少填写下方 5 项
+# 编辑 consumer/backend/.env，至少填写下方 3 项
 ./deploy/deploy.sh
 ```
 
@@ -74,12 +74,9 @@ cp -n consumer/backend/.env.example consumer/backend/.env
 AUTH_SERVER_URL=http://auth-server:5056
 AUTH_SERVER_ADMIN_TOKEN=<至少 16 个字符的独立共享密钥>
 AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次部署使用的独立强密码>
-MODELING_LLM_BASE_URL=<真实 OpenAI-compatible Base URL>
-MODELING_LLM_MODEL=<模型名>
-MODELING_LLM_API_KEY=<端点无需鉴权时可留空>
 ```
 
-脚本会在 `MCP_TOKEN_SECRET` 缺失时生成独立随机值并安全写回 `.env`，在缺少对应 tag 时构建固定版本 JiuwenBox 镜像，然后启动 consumer、auth-server、MCP 与 JiuwenBox。之后探测网络和 socket 卷，再构建并启动 `mw-modeling-agent` 与 `mw-modeling`；所有容器健康且 `/workbench.html` 返回成功后才报告部署完成。
+脚本会在 `MCP_TOKEN_SECRET` 或 `MODELING_SERVICE_TOKEN` 缺失时分别生成独立随机值并安全写回 `.env`，在缺少对应 tag 时构建固定版本 JiuwenBox 镜像，然后启动 consumer、auth-server、MCP 与 JiuwenBox。之后探测网络和 socket 卷，再构建并启动 `mw-modeling-agent` 与 `mw-modeling`；所有容器健康且 `/workbench.html` 返回成功后才报告部署完成。
 
 ### 3.2 形态 C 附加说明（评测闭环）
 
@@ -107,7 +104,7 @@ auth-server 已是必备组件，无需额外开关。脚本校验配置后把�
 
 1. **consumer 改密**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录，按提示修改初始密码；`users.json` 创建后可从环境中移除该初始密码。
 2. **consumer 配模型**：控制台 → 配置中心 → 全局配置 → 模型池：添加 OpenAI-compatible 模型并「测试」通过、设为默认。（若已在 `backend/.env` 配了 `LLM_*` 可跳过。）
-3. **进入新建模工作台**（形态 B/C）：打开 `http://localhost:5100/workbench.html#/create`，用 consumer 账号登录。Agent 模型取部署时注入的 `MODELING_LLM_*`；页面里的旧 core 模型配置不能替代 Agent 部署配置。
+3. **配置并进入新建模工作台**（形态 B/C）：打开 `http://localhost:5100/workbench.html#/create`，先用 `admin` 登录，在「配置中心 → 大模型 → 平台默认」填写 Base URL、模型名和 API Key，测试通过后保存。该配置会立即成为所有未设置个人覆盖账号的 core 与 Agent 统一默认，新任务无需重启容器即可使用。
    - **consumer 服务**：默认已指向容器网内 backend，点「测试连接」，须三项全绿（服务可达 / 认证通过 / 模型就绪——第三项依赖步骤 2）。
    - **评测数据**（形态 C）：评测库地址默认已注入，无需改动。
 4. **验证**：执行第 7 节验证清单。
@@ -148,12 +145,13 @@ curl -fsS http://127.0.0.1:5100/workbench.html
 
 | 变量 | compose 默认 | 说明 |
 | --- | --- | --- |
-| `MODELING_LLM_BASE_URL` / `MODELING_LLM_MODEL` | 空 | 新 Workbench Agent 必填的真实 OpenAI-compatible 端点与模型 |
-| `MODELING_LLM_API_KEY` | 空 | 端点需要鉴权时必填；不会打印到部署日志 |
+| `MODELING_LLM_BASE_URL` / `MODELING_LLM_MODEL` | 空 | 可选部署兜底；推荐由 admin 登录 Workbench 后配置平台默认 |
+| `MODELING_LLM_API_KEY` | 空 | 可选部署兜底密钥；admin 页面保存的 Key 会加密存储且不回显 |
 | `MODELING_LLM_MAX_TOKENS` | `128000` | 单次模型输出 token 上限；与上下文窗口独立 |
 | `MODELING_LLM_CONTEXT_WINDOW` | `1000000` | 输入+输出总上下文 token 窗口；按所选模型 API 实际上限填写 |
 | `MODELING_AGENT_PIP_INDEX_URL` | 清华 PyPI 镜像 | 构建 modeling-agent 时使用的 Python 包索引；内网可设为企业镜像 |
 | `MODELING_AGENT_PIP_TIMEOUT` / `MODELING_AGENT_PIP_RETRIES` | `120` / `10` | modeling-agent 依赖下载的单次读取超时秒数与重试次数 |
+| `MODELING_SERVICE_TOKEN` | 自动生成 | modeling core、Agent 与 consumer 的服务间认证令牌；至少 32 字符，不是管理员 Token |
 | `MODELING_TASK_LLM_*` | 空 | 无用户上下文的后台流程部署兜底；认证用户可在配置中心单独配置后台任务模型，留空则使用个人主模型 |
 | `AUTH_ISSUER_URL` | `http://auth-server:5056` | modeling 登录与 JWT 验签的 auth-server 地址 |
 | `CONSUMER_API_URL` | `http://backend:5055` | 评测用 consumer 地址默认值（页面可覆盖） |
@@ -219,7 +217,7 @@ docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密�
 | backend 起不来 / 不健康 | `./deploy/deploy-stack.sh logs backend` | 常见为 `.env` 格式错误或模型端点不通；改后重跑 `up` |
 | modeling 报「未找到 consumer 网络」 | `docker network ls \| grep onto-agent` | 先 `up --consumer-only`，或手动 `export CONSUMER_NETWORK=<实际网络名>` |
 | modeling 报「未找到 JiuwenBox socket 卷」 | `docker volume ls \| grep onto-jiuwenbox-sock` | 先用根部署脚本启动 consumer/JiuwenBox，或显式设置 `JIUWENBOX_SOCKET_VOLUME` |
-| modeling-agent 报模型未配置 | `./deploy/deploy-stack.sh logs modeling-agent` | 在 `consumer/backend/.env` 填写真实的 `MODELING_LLM_BASE_URL` 与 `MODELING_LLM_MODEL` 后重跑根部署脚本 |
+| modeling-agent 报模型未配置 | `./deploy/deploy-stack.sh logs modeling-agent` | 使用 admin 登录 Workbench，在「配置中心 → 大模型 → 平台默认」配置并测试主模型；无需重启容器 |
 | 构建 modeling-agent 时访问 `files.pythonhosted.org` 超时 | 查看 Docker 构建日志中的 `ReadTimeoutError` | 更新到包含镜像配置的版本后重跑；企业网络可在 `backend/.env` 设置 `MODELING_AGENT_PIP_INDEX_URL=<内网 PyPI simple 地址>` |
 | 建模工作台登录 401 | `docker exec mw-modeling node -e "fetch('http://backend:5055/health').then(r=>console.log(r.status))"` | 预期打印 200；不通说明不在同一网络——用脚本重新 `up`；账号密码须是 consumer 的有效账号 |
 | 建模评测报连不上 consumer | 建模页面 配置中心 → consumer 服务 → 测试连接 | 「模型就绪」红：先在 consumer 控制台配模型池；「认证」红：token 过期，重新登录 |

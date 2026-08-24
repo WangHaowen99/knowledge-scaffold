@@ -117,11 +117,11 @@ export default function AdminLlmDefaults({ onChanged }) {
       <div className="admin-llm-status">
         <span className={`tag ${saved ? 'tag-ok' : 'tag-draft'}`}>{saved ? `已启用 · r${saved.revision}` : '未设置'}</span>
         {saved && <span>最后由 {saved.updatedBy} 更新</span>}
-        {!saved && <span>{purpose === 'task' ? '新建快照时跟随主模型' : '新用户不写入默认快照'}</span>}
+        {!saved && <span>{purpose === 'task' ? '未设置时跟随平台主模型' : '尚未配置统一默认模型'}</span>}
       </div>
 
       <div className="admin-llm-policy">
-        保存只更新默认模板，不会修改已有用户；仅新注册用户和主动同步的用户会采用当前值。
+        保存后立即作为所有账号的运行时默认；账号已有个人覆盖时仍优先使用个人配置。
       </div>
 
       {data.encryptionKeyMode === 'managed' && (

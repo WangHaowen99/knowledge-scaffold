@@ -138,6 +138,55 @@ ensure_mcp_token_secret() {
         "Set MCP_TOKEN_SECRET to an independent random value of at least 32 characters in ${env_file}"
 }
 
+ensure_modeling_service_token() {
+    local env_file="${BUNDLE_ROOT}/backend/.env"
+    local secret generated_secret temp_file
+    require_file "${env_file}"
+    secret="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?MODELING_SERVICE_TOKEN[[:space:]]*=[[:space:]]*//p' "${env_file}" | tail -n 1)"
+    secret="${secret%\"}"
+    secret="${secret#\"}"
+    secret="${secret%\'}"
+    secret="${secret#\'}"
+    if [ -z "${secret}" ]; then
+        generated_secret="$(generate_modeling_service_token)"
+        temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || die "Cannot update ${env_file}"
+        chmod 600 "${temp_file}"
+        awk -v secret="${generated_secret}" '
+            BEGIN { updated = 0 }
+            /^[[:space:]]*(export[[:space:]]+)?MODELING_SERVICE_TOKEN[[:space:]]*=/ {
+                if (!updated) { print "MODELING_SERVICE_TOKEN=" secret; updated = 1 }
+                next
+            }
+            { print }
+            END { if (!updated) print "MODELING_SERVICE_TOKEN=" secret }
+        ' "${env_file}" > "${temp_file}" || {
+            rm -f "${temp_file}"
+            die "Cannot update ${env_file}"
+        }
+        mv "${temp_file}" "${env_file}"
+        chmod 600 "${env_file}"
+        log "MODELING_SERVICE_TOKEN was missing; generated and saved it in backend/.env"
+        return 0
+    fi
+    [ "${#secret}" -ge 32 ] || die \
+        "Set MODELING_SERVICE_TOKEN to a random value of at least 32 characters in ${env_file}"
+    chmod 600 "${env_file}" || die "Cannot secure ${env_file}"
+}
+
+generate_modeling_service_token() {
+    local generated_secret
+    if command -v openssl >/dev/null 2>&1; then
+        generated_secret="$(openssl rand -hex 32)" || die "Failed to generate MODELING_SERVICE_TOKEN"
+    elif command -v python3 >/dev/null 2>&1; then
+        generated_secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            || die "Failed to generate MODELING_SERVICE_TOKEN"
+    else
+        die "Cannot generate MODELING_SERVICE_TOKEN: openssl or Python 3 is required"
+    fi
+    [ "${#generated_secret}" -eq 64 ] || die "Failed to generate MODELING_SERVICE_TOKEN"
+    printf '%s' "${generated_secret}"
+}
+
 generate_mcp_token_secret() {
     local generated_secret
     if command -v openssl >/dev/null 2>&1; then

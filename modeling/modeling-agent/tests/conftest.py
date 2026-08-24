@@ -127,6 +127,7 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         data_dir=tmp_path / "agent-data",
         core_base_url="http://127.0.0.1:5100",
+        service_token="s" * 32,
         llm_base_url="http://127.0.0.1:9/unused",
         llm_api_key="unused",
         llm_model="scripted",

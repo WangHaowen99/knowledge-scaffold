@@ -30,10 +30,10 @@ test('settings modal: 个人 LLM 可主动同步平台默认并按可用状态�
 
   assert.match(source, /config=\{llmPurpose === 'main' \? s\.llm : s\.taskLlm\}/);
   assert.match(source, /syncDefaultLlm\(purpose\)/);
-  assert.match(source, /同步默认 LLM 配置/);
+  assert.match(source, /使用平台默认配置/);
   assert.match(source, /disabled=\{!config\.platformDefaultAvailable \|\| syncing \|\| testing\}/);
   assert.match(source, /CircleHelp/);
-  assert.match(source, /只有 admin 账号设置了默认 LLM 配置后，才可使用。/);
+  assert.match(source, /清除当前用途的个人覆盖，改用 admin 统一配置的平台默认。/);
   assert.match(source, /className="cfg-sync-help" tabIndex=\{0\}/);
   const styles = await import('node:fs').then(({ readFileSync }) => (
     readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8')
@@ -78,7 +78,7 @@ test('admin LLM 默认配置的测试与保存按钮等宽并右对齐', async (
   const styles = readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
 
   assert.match(component, /className="admin-llm-primary-actions"/);
-  assert.match(component, /保存只更新默认模板，不会修改已有用户/);
+  assert.match(component, /保存后立即作为所有账号的运行时默认/);
   assert.match(styles, /\.admin-llm-primary-actions \{[^}]*grid-template-columns: repeat\(2, 112px\);[^}]*margin-left: auto;/s);
   assert.match(styles, /\.admin-llm-primary-actions \.btn \{[^}]*width: 100%;[^}]*justify-content: center;/s);
 });

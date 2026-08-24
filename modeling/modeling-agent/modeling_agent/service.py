@@ -122,9 +122,11 @@ class AgentService:
         self.store = store or RuntimeStore(settings.runtime_db)
         self.events = EventHub(self.store)
         self._owns_gateway = gateway is None
-        self._gateway = gateway or HttpCoreGateway(settings.core_base_url)
-        self._model_factory = model_factory or (lambda: build_model(settings))
-        self._model: Any = None
+        self._gateway = gateway or HttpCoreGateway(
+            settings.core_base_url,
+            service_token=settings.service_token,
+        )
+        self._model_factory = model_factory
         self._live: dict[str, LiveRun] = {}
         self._started = False
         self._shutting_down = False
@@ -1289,8 +1291,17 @@ class AgentService:
 
         run = self.store.require_run(live.run_id)
         try:
-            if self._model is None:
-                self._model = self._model_factory()
+            if self._model_factory is not None:
+                model = self._model_factory()
+            elif len(self.settings.service_token) < 32:
+                model = build_model(self.settings)
+            else:
+                runtime_llm = await self._gateway.model_config(
+                    project_id=live.project_id,
+                    run_id=live.run_id,
+                    token=live.token,
+                )
+                model = build_model(self.settings.with_runtime_llm(runtime_llm))
             self.store.update_run(run.id, status=RUN_RUNNING)
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
@@ -1334,7 +1345,7 @@ class AgentService:
                     confirmation_required=live.confirmation_required,
                     release_declined=live.release_declined,
                 )
-                live.bundle = build_agent(self.settings, context, model=self._model)
+                live.bundle = build_agent(self.settings, context, model=model)
                 boundary = self.events.publish(
                     run.project_id,
                     run.id,
@@ -1447,7 +1458,11 @@ class AgentService:
             logger.exception("Agent run %s failed", run.id)
             self.store.update_run(run.id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
             self._publish_state(run.project_id, run.id)
-            visible_error = "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
+            visible_error = (
+                error.message
+                if isinstance(error, AgentRuntimeError) and error.code == "LLM_NOT_CONFIGURED"
+                else "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
+            )
             self.events.publish(run.project_id, run.id, "message", {"role": "assistant", "blocks": [{"type": "error", "text": visible_error, "actions": [{"id": "retry", "label": "从当前进展重试"}]}]})
             if live.restore_interaction:
                 self._restore_interaction(run, live.restore_interaction)

@@ -4,7 +4,7 @@ import { getSettings, saveSettings, syncDefaultLlm, testLlm, testConsumer } from
 import AdminLlmDefaults from './AdminLlmDefaults.jsx';
 import LlmPurposeTabs from './LlmPurposeTabs.jsx';
 
-const SYNC_DEFAULT_HELP = '只有 admin 账号设置了默认 LLM 配置后，才可使用。';
+const SYNC_DEFAULT_HELP = '清除当前用途的个人覆盖，改用 admin 统一配置的平台默认。';
 const LLM_FIELD_SUFFIXES = [
   'BaseUrl', 'Model', 'ApiKey', 'ApiKeyClear', 'ProviderClear', 'MaxTokens', 'ContextWindow',
 ];
@@ -188,7 +188,7 @@ function LlmTab({
     try {
       await syncDefaultLlm(purpose);
       await onDefaultSynced();
-      setSyncResult({ ok: true, message: `已同步平台默认${purpose === 'main' ? '主模型' : '后台任务模型'}配置` });
+      setSyncResult({ ok: true, message: `已使用平台默认${purpose === 'main' ? '主模型' : '后台任务模型'}配置` });
     } catch (e) {
       setSyncResult({ ok: false, message: `同步失败：${e.message}` });
     } finally { setSyncing(false); }
@@ -207,7 +207,7 @@ function LlmTab({
         : <>
       <LlmPurposeTabs purpose={purpose} onChange={onPurposeChange} ariaLabel="个人 LLM 用途" />
       <div className="field">
-        <label>Base URL <span className="lbl-src">{{ user: '个人配置', default_snapshot: '默认配置快照', main: '使用主模型', settings: '兼容设置', env: '部署配置' }[config.source]}</span></label>
+        <label>Base URL <span className="lbl-src">{{ user: '个人配置', platform_default: '平台默认', default_snapshot: '默认配置快照', main: '使用主模型', settings: '兼容设置', env: '部署配置' }[config.source]}</span></label>
         <input value={field('BaseUrl') ?? ''} onChange={(event) => {
           setField('BaseUrl')(event);
           setFieldValue('ProviderClear', false);
@@ -254,7 +254,7 @@ function LlmTab({
             onClick={syncDefault}
             title={config.platformDefaultAvailable ? '使用对应的平台默认并清除当前用途的个人 LLM 覆盖' : undefined}>
             <RefreshCw size={14} aria-hidden="true" />
-            {syncing ? '同步中…' : '同步默认 LLM 配置'}
+            {syncing ? '切换中…' : '使用平台默认配置'}
           </button>
           <span className="cfg-sync-help" tabIndex={0} aria-label={SYNC_DEFAULT_HELP} data-tooltip={SYNC_DEFAULT_HELP}>
             <CircleHelp size={16} aria-hidden="true" />
