@@ -8,9 +8,14 @@ import { AuthoringState, getAuthoringState } from '../authoring/state.js';
 import type { AuthoringInteraction, JsonObject } from '../authoring/types.js';
 import { getDb, nowIso } from '../db/index.js';
 import type { PackageSpec, Project } from '../types.js';
-import { getCheck, type CheckFinding } from '../workflow/package-check.js';
+import { getCheck, saveCheck, type CheckFinding } from '../workflow/package-check.js';
+import type {
+  CandidateQualityDecision,
+  PackageApplyCandidate,
+} from '../workflow/package-chat.js';
 import { renderPackage, type PackageFiles } from '../workflow/package-render.js';
 import {
+  inspectGeneratedKnowledge,
   validateGeneratedKnowledge,
   type KnowledgeGenerationContext,
   type KnowledgeStructureValidation,
@@ -19,15 +24,24 @@ import {
 import { AiConstructionOrchestrator } from './orchestrator.js';
 import { throwIfCancelled } from '../cancellation.js';
 import { reportLongTaskProgress } from './task-progress.js';
+import {
+  blockingFindingFingerprints,
+  evaluateRepairQualityGate,
+  type RepairExecutionStatus,
+  type RepairQualityGate,
+  type RepairQualityOutcome,
+} from './repair-quality.js';
 
 export const DEFAULT_AUTOMATIC_REPAIR_LIMIT = 2;
 
 export type RepairAuthority = 'automatic' | 'approval_required' | 'expert_decision';
+export type RepairDisposition = RepairAuthority | 'external_data_required' | 'retryable_infrastructure';
 export type RepairAttemptStatus = 'running' | 'completed' | 'waiting_user' | 'stopped' | 'failed';
 
 export interface ClassifiedRepairFinding {
   finding: CheckFinding;
   authority: RepairAuthority;
+  disposition: RepairDisposition;
   reason: string;
 }
 
@@ -52,8 +66,19 @@ export interface PackageRepairAttempt {
   outputRevision?: string;
   authority: RepairAuthority;
   status: RepairAttemptStatus;
+  executionStatus: RepairExecutionStatus;
+  qualityOutcome: RepairQualityOutcome;
   findingsBefore: CheckFinding[];
   findingsAfter: CheckFinding[];
+  targetFingerprints: string[];
+  resolvedFingerprints: string[];
+  introducedFingerprints: string[];
+  beforeBlockingCount: number;
+  afterBlockingCount?: number;
+  candidateRevision?: string;
+  qualityGate?: RepairQualityGate;
+  retryCount: number;
+  nextAction?: JsonObject;
   actions: JsonObject[];
   error?: string;
   createdAt: string;
@@ -70,6 +95,13 @@ export interface ControlledRepairResult {
   message: ReturnType<AiConstructionOrchestrator['startKnowledgeRepair']>['message'];
 }
 
+export class RepairQualityGateRejectedError extends Error {
+  constructor(public readonly gate: RepairQualityGate) {
+    super(gate.reasons.join('；') || '修复候选未通过质量门禁');
+    this.name = 'RepairQualityGateRejectedError';
+  }
+}
+
 export interface ControlledRepairRunnerOptions {
   orchestrator: AiConstructionOrchestrator;
   packages?: PackageArtifactStore;
@@ -77,6 +109,13 @@ export interface ControlledRepairRunnerOptions {
   state?: AuthoringState;
   attempts?: ControlledRepairAttemptStore;
   validator?: KnowledgeStructureValidator;
+  candidateValidator?: KnowledgeStructureValidator;
+  persistValidation?: (
+    projectId: string,
+    version: string,
+    findings: CheckFinding[],
+    revision: string,
+  ) => void;
   checkReader?: typeof getCheck;
   maxAutomaticAttempts?: number;
 }
@@ -101,6 +140,8 @@ const FRONTMATTER_CATEGORIES = new Set([
 ]);
 
 const EXPERT_DECISION_PATTERN = /(阈值|门槛|判断条件|流程分支|分支条件|异常策略|计算口径|统计口径|口径冲突|公式|冲突裁决|知识冲突|空值语义|无证据|证据与假设|业务边界)/;
+const EXTERNAL_DATA_PATTERN = /(sourceColumn|来源(?:表|字段|列)|数据源|缺少(?:字段|列|资料|证据)|无证据知识|证据不足|无法绑定|映射失效)/i;
+const RETRYABLE_INFRASTRUCTURE_PATTERN = /(insufficient_quota|429|额度|限流|服务重启|网络|超时|ECONN|HTTP 5\d\d)/i;
 const SAFE_MAPPING_STRUCTURE_PATTERN = /(缺少 schema_version|缺少 default_provider_alias|缺少 objects 映射)/;
 
 function cloneFinding(finding: CheckFinding): CheckFinding {
@@ -123,6 +164,20 @@ function repairMessageKey(kind: string, ...tokens: Array<string | number>): stri
 }
 
 export function classifyRepairFinding(finding: CheckFinding): ClassifiedRepairFinding {
+  if (finding.disposition) {
+    const authority: RepairAuthority = finding.disposition === 'automatic'
+      ? 'automatic'
+      : finding.disposition === 'expert_decision'
+        || finding.disposition === 'external_data_required'
+        ? 'expert_decision'
+        : 'approval_required';
+    return {
+      finding: cloneFinding(finding),
+      authority,
+      disposition: finding.disposition,
+      reason: `校验器已将该问题标记为 ${finding.disposition}`,
+    };
+  }
   const safeFormat = finding.source === 'format'
     && SAFE_FORMAT_CATEGORIES.has(finding.category)
     && (finding.category !== 'mapping 非法' || SAFE_MAPPING_STRUCTURE_PATTERN.test(finding.message));
@@ -130,20 +185,39 @@ export function classifyRepairFinding(finding: CheckFinding): ClassifiedRepairFi
     return {
       finding: cloneFinding(finding),
       authority: 'automatic',
+      disposition: 'automatic',
       reason: '该问题只涉及可由当前规格唯一重新生成的知识包结构',
     };
   }
   const businessText = `${finding.category}\n${finding.message}\n${finding.suggestion ?? ''}`;
+  if (RETRYABLE_INFRASTRUCTURE_PATTERN.test(businessText)) {
+    return {
+      finding: cloneFinding(finding),
+      authority: 'approval_required',
+      disposition: 'retryable_infrastructure',
+      reason: '该问题来自模型或校验基础设施，应恢复当前步骤而不是修改知识包',
+    };
+  }
+  if (EXTERNAL_DATA_PATTERN.test(businessText)) {
+    return {
+      finding: cloneFinding(finding),
+      authority: 'expert_decision',
+      disposition: 'external_data_required',
+      reason: '当前资料或数据源不能证明所需字段，必须补充数据或缩小适用范围',
+    };
+  }
   if (EXPERT_DECISION_PATTERN.test(businessText)) {
     return {
       finding: cloneFinding(finding),
       authority: 'expert_decision',
+      disposition: 'expert_decision',
       reason: '该问题涉及业务判断，系统不能替领域专家选择口径或分支',
     };
   }
   return {
     finding: cloneFinding(finding),
     authority: 'approval_required',
+    disposition: 'approval_required',
     reason: '修复会改变知识语义，必须先展示方案并由用户确认',
   };
 }
@@ -263,6 +337,9 @@ export function buildAutomaticRepairPlan(
 type RepairTargetKind = 'object' | 'operation' | 'rule' | 'metric' | 'script';
 
 export interface RepairTarget { targetKind: RepairTargetKind; targetKey: string }
+const REPAIR_TARGET_KINDS = new Set<RepairTargetKind>([
+  'object', 'operation', 'rule', 'metric', 'script',
+]);
 
 /**
  * 找出该校验发现可能涉及的知识资源。
@@ -338,27 +415,54 @@ export function buildSemanticRepairPlan(
     ...finding,
     suggestion: [finding.suggestion, expertDecision].filter(Boolean).join('\n'),
   } : finding);
-  if (!target) {
+  const collections: Record<RepairTargetKind, Array<{ key: string }>> = {
+    object: spec.objects,
+    operation: spec.operations,
+    rule: spec.rules ?? [],
+    metric: spec.metrics ?? [],
+    script: spec.scripts ?? [],
+  };
+  const structuredTargets = (finding.repairTargets ?? []).flatMap((item) => (
+    collections[item.targetKind]?.some((resource) => resource.key === item.targetKey)
+      ? [{
+        targetKind: item.targetKind,
+        targetKey: item.targetKey,
+        instruction: item.instruction,
+      }]
+      : []
+  ));
+  const targets = [...new Map([
+    ...structuredTargets,
+    ...(explicitTarget && !structuredTargets.some((item) => (
+      item.targetKind === explicitTarget.targetKind && item.targetKey === explicitTarget.targetKey
+    )) ? [{ ...explicitTarget, instruction: finding.suggestion || finding.message }] : []),
+    ...(!structuredTargets.length && target
+      ? [{ ...target, instruction: finding.suggestion || `修复“${finding.category}”：${finding.message}` }]
+      : []),
+  ].map((item) => [`${item.targetKind}:${item.targetKey}`, item])).values()];
+  if (!targets.length) {
     throw new RepairTargetUnresolvedError(finding, repairTargetCandidates(spec, finding));
   }
-  const instruction = [
-    finding.suggestion || `修复“${finding.category}”：${finding.message}`,
-    expertDecision ? `专家明确决策：${expertDecision}` : '',
-  ].filter(Boolean).join('\n');
+  const resourceList = targets.map((item) => `${item.targetKind}:${item.targetKey}`).join('、');
   return {
-    summary: `修复 ${target.targetKind}:${target.targetKey} 的“${finding.category}”问题`,
+    summary: `修复 ${resourceList} 的“${finding.category}”问题`,
     message: [
       `当前校验发现：${finding.message}`,
-      `请严格只修改 ${target.targetKind}:${target.targetKey}，落实以下修复要求：`,
-      instruction,
+      `请严格只修改以下 ${targets.length} 个资源，逐项落实各自要求：`,
+      ...targets.map((item) => `- ${item.targetKind}:${item.targetKey}：${item.instruction}`),
+      expertDecision ? `专家明确决策：${expertDecision}` : '',
       '不得顺带修改计划外资源，也不得把示例答案写成通用知识。',
-    ].join('\n'),
-    changes: [{
-      id: '0',
-      ...target,
+    ].filter(Boolean).join('\n'),
+    changes: targets.map((item, index) => ({
+      id: String(index),
+      targetKind: item.targetKind,
+      targetKey: item.targetKey,
       action: 'modify',
-      description: instruction,
-    }],
+      description: [
+        item.instruction,
+        expertDecision ? `专家明确决策：${expertDecision}` : '',
+      ].filter(Boolean).join('\n'),
+    })),
     risks: [
       '该修改会改变知识语义，应用后必须重新执行阶段校验。',
       ...(expertDecision ? ['方案必须忠实落实专家决策，不得自行扩展业务口径。'] : []),
@@ -374,11 +478,14 @@ export function parseExpertRepairTarget(response: JsonObject): RepairTarget | un
       && (item as Record<string, unknown>).questionId === 'repair_target'
   )) as Record<string, unknown> | undefined;
   const selected = Array.isArray(picked?.selected) ? picked!.selected.map(String) : [];
-  const [value] = selected.filter(Boolean);
+  const [value] = selected.map((item) => item.trim()).filter(Boolean);
   if (!value) return undefined;
-  const [targetKind, targetKey] = value.split(':');
-  if (!targetKind || !targetKey) return undefined;
-  return { targetKind: targetKind as RepairTarget['targetKind'], targetKey };
+  const separator = value.indexOf(':');
+  if (separator <= 0) return undefined;
+  const targetKind = value.slice(0, separator).trim() as RepairTargetKind;
+  const targetKey = value.slice(separator + 1).trim();
+  if (!REPAIR_TARGET_KINDS.has(targetKind) || !targetKey) return undefined;
+  return { targetKind, targetKey };
 }
 
 export function parseExpertRepairDecision(response: JsonObject): string {
@@ -399,7 +506,31 @@ export function parseExpertRepairDecision(response: JsonObject): string {
   return decision.slice(0, 8_000);
 }
 
+function jsonArray<T>(value: unknown, fallback: T[] = []): T[] {
+  try {
+    const parsed = JSON.parse(String(value ?? ''));
+    return Array.isArray(parsed) ? parsed as T[] : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function jsonObject<T extends JsonObject>(value: unknown): T | undefined {
+  try {
+    const parsed = JSON.parse(String(value ?? ''));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as T : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function attemptFromRow(row: any): PackageRepairAttempt {
+  const findingsBefore = jsonArray<CheckFinding>(row.findings_before_json);
+  const findingsAfter = jsonArray<CheckFinding>(row.findings_after_json);
+  const fallbackExecution: RepairExecutionStatus = row.status === 'running'
+    ? 'running'
+    : row.status === 'waiting_user' ? 'waiting_user'
+      : row.status === 'completed' || row.status === 'stopped' ? 'finished' : 'failed';
   return {
     id: row.id,
     projectId: row.project_id,
@@ -408,9 +539,24 @@ function attemptFromRow(row: any): PackageRepairAttempt {
     outputRevision: row.output_revision_oid ?? undefined,
     authority: row.authority,
     status: row.status,
-    findingsBefore: JSON.parse(row.findings_before_json),
-    findingsAfter: JSON.parse(row.findings_after_json),
-    actions: JSON.parse(row.actions_json),
+    executionStatus: row.execution_status ?? fallbackExecution,
+    qualityOutcome: row.quality_outcome ?? 'unknown_legacy',
+    findingsBefore,
+    findingsAfter,
+    targetFingerprints: jsonArray<string>(row.target_fingerprints_json,
+      blockingFindingFingerprints(findingsBefore).slice(0, 1)),
+    resolvedFingerprints: jsonArray<string>(row.resolved_fingerprints_json),
+    introducedFingerprints: jsonArray<string>(row.introduced_fingerprints_json),
+    beforeBlockingCount: Number(row.before_blocking_count
+      ?? findingsBefore.filter((finding) => finding.severity === '错误').length),
+    ...(row.after_blocking_count == null ? {} : { afterBlockingCount: Number(row.after_blocking_count) }),
+    ...(row.candidate_revision_oid ? { candidateRevision: row.candidate_revision_oid } : {}),
+    ...(jsonObject<RepairQualityGate & JsonObject>(row.quality_gate_json)
+      ? { qualityGate: jsonObject<RepairQualityGate & JsonObject>(row.quality_gate_json) as unknown as RepairQualityGate }
+      : {}),
+    retryCount: Number(row.retry_count ?? 0),
+    ...(jsonObject<JsonObject>(row.next_action_json) ? { nextAction: jsonObject<JsonObject>(row.next_action_json) } : {}),
+    actions: jsonArray<JsonObject>(row.actions_json),
     error: row.error ?? undefined,
     createdAt: row.created_at,
     completedAt: row.completed_at ?? undefined,
@@ -442,32 +588,56 @@ export class ControlledRepairAttemptStore {
     authority: RepairAuthority;
     status?: Extract<RepairAttemptStatus, 'running' | 'waiting_user'>;
     findings: CheckFinding[];
+    targetFindings?: CheckFinding[];
     actions?: JsonObject[];
   }): PackageRepairAttempt {
+    const status = input.status ?? 'running';
+    const targetFingerprints = blockingFindingFingerprints(input.targetFindings ?? input.findings);
+    const beforeBlockingCount = input.findings.filter((finding) => finding.severity === '错误').length;
     const attempt: PackageRepairAttempt = {
       id: `pra_${randomUUID().slice(0, 12)}`,
       projectId: input.projectId,
       rootRevision: input.rootRevision,
       inputRevision: input.inputRevision,
       authority: input.authority,
-      status: input.status ?? 'running',
+      status,
+      executionStatus: status === 'waiting_user' ? 'waiting_user' : 'running',
+      qualityOutcome: 'unresolved',
       findingsBefore: input.findings.map(cloneFinding),
       findingsAfter: [],
+      targetFingerprints,
+      resolvedFingerprints: [],
+      introducedFingerprints: [],
+      beforeBlockingCount,
+      retryCount: 0,
+      ...(status === 'waiting_user' ? {
+        nextAction: { id: 'open_interaction', label: '处理当前问题' },
+      } : {}),
       actions: input.actions ?? [],
       createdAt: nowIso(),
     };
     this.db.prepare(`INSERT INTO package_repair_attempts (
       id, project_id, root_revision_oid, input_revision_oid, authority, status,
-      findings_before_json, findings_after_json, actions_json, created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      execution_status, quality_outcome, findings_before_json, findings_after_json,
+      target_fingerprints_json, resolved_fingerprints_json, introduced_fingerprints_json,
+      before_blocking_count, retry_count, next_action_json, actions_json, created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       attempt.id,
       attempt.projectId,
       attempt.rootRevision,
       attempt.inputRevision,
       attempt.authority,
       attempt.status,
+      attempt.executionStatus,
+      attempt.qualityOutcome,
       JSON.stringify(attempt.findingsBefore),
       '[]',
+      JSON.stringify(attempt.targetFingerprints),
+      '[]',
+      '[]',
+      attempt.beforeBlockingCount,
+      0,
+      attempt.nextAction ? JSON.stringify(attempt.nextAction) : null,
       JSON.stringify(attempt.actions),
       attempt.createdAt,
     );
@@ -479,19 +649,71 @@ export class ControlledRepairAttemptStore {
     outputRevision: string,
     findingsAfter: CheckFinding[],
     actions?: JsonObject[],
+    qualityGate?: RepairQualityGate,
   ): PackageRepairAttempt {
+    const attempt = this.get(attemptId);
+    const gate = qualityGate ?? evaluateRepairQualityGate({
+      before: attempt.findingsBefore,
+      after: findingsAfter,
+      targetFingerprints: attempt.targetFingerprints,
+    });
+    if (!gate.passed) {
+      this.failQualityGate(attemptId, outputRevision, findingsAfter, gate, actions);
+      throw new RepairQualityGateRejectedError(gate);
+    }
     const completedAt = nowIso();
     const result = this.db.prepare(`UPDATE package_repair_attempts SET
-      status = 'completed', output_revision_oid = ?, findings_after_json = ?,
+      status = 'completed', execution_status = 'finished', quality_outcome = ?,
+      output_revision_oid = ?, findings_after_json = ?,
+      resolved_fingerprints_json = ?, introduced_fingerprints_json = ?,
+      after_blocking_count = ?, quality_gate_json = ?, next_action_json = NULL,
       actions_json = COALESCE(?, actions_json), completed_at = ?, error = NULL
       WHERE id = ? AND status IN ('running', 'waiting_user')`).run(
+      gate.outcome,
       outputRevision,
       JSON.stringify(findingsAfter),
+      JSON.stringify(gate.resolvedFingerprints),
+      JSON.stringify(gate.introducedFingerprints),
+      gate.afterBlockingCount,
+      JSON.stringify(gate),
       actions ? JSON.stringify(actions) : null,
       completedAt,
       attemptId,
     );
     if (Number(result.changes) !== 1) throw new Error('修复尝试已经处理或不存在');
+    return this.get(attemptId);
+  }
+
+  recordCandidate(attemptId: string, candidateRevision: string): PackageRepairAttempt {
+    this.db.prepare(`UPDATE package_repair_attempts SET candidate_revision_oid = ?,
+      execution_status = 'validating' WHERE id = ? AND status IN ('running', 'waiting_user')`)
+      .run(candidateRevision, attemptId);
+    return this.get(attemptId);
+  }
+
+  recordQualityAssessment(
+    attemptId: string,
+    gate: RepairQualityGate,
+    action: JsonObject,
+    findingsAfter: CheckFinding[] = [],
+  ): PackageRepairAttempt {
+    const attempt = this.get(attemptId);
+    const actions = [...attempt.actions, action];
+    this.db.prepare(`UPDATE package_repair_attempts SET quality_outcome = ?,
+      resolved_fingerprints_json = ?, introduced_fingerprints_json = ?,
+      after_blocking_count = ?, quality_gate_json = ?, findings_after_json = ?, actions_json = ?,
+      retry_count = retry_count + ?
+      WHERE id = ? AND status IN ('running', 'waiting_user')`).run(
+        gate.outcome,
+        JSON.stringify(gate.resolvedFingerprints),
+        JSON.stringify(gate.introducedFingerprints),
+        gate.afterBlockingCount,
+        JSON.stringify(gate),
+        JSON.stringify(findingsAfter),
+        JSON.stringify(actions),
+        gate.passed ? 0 : 1,
+        attemptId,
+      );
     return this.get(attemptId);
   }
 
@@ -503,21 +725,37 @@ export class ControlledRepairAttemptStore {
     return this.get(attemptId);
   }
 
-  recordRetryableFailure(attemptId: string, reason: string): PackageRepairAttempt {
+  recordRetryableFailure(
+    attemptId: string,
+    reason: string,
+    incrementRetry = true,
+  ): PackageRepairAttempt {
     const attempt = this.get(attemptId);
     if (attempt.status !== 'waiting_user') throw new Error('修复尝试当前不能重试');
     const actions = [
       ...attempt.actions,
       { type: 'apply_failed', reason: reason.trim().slice(0, 3_000), at: nowIso() },
     ];
-    this.db.prepare(`UPDATE package_repair_attempts SET error = ?, actions_json = ?
+    this.db.prepare(`UPDATE package_repair_attempts SET error = ?, actions_json = ?,
+      execution_status = 'waiting_user',
+      retry_count = retry_count + ?, next_action_json = ?
       WHERE id = ? AND status = 'waiting_user'`)
-      .run(reason.trim().slice(0, 3_000), JSON.stringify(actions), attemptId);
+      .run(
+        reason.trim().slice(0, 3_000),
+        JSON.stringify(actions),
+        incrementRetry ? 1 : 0,
+        JSON.stringify({ id: 'retry_repair', label: '根据失败原因重试当前修复' }),
+        attemptId,
+      );
     return this.get(attemptId);
   }
 
   stop(attemptId: string, reason: string): PackageRepairAttempt {
-    return this.finishWithStatus(attemptId, 'stopped', reason);
+    return this.finishWithStatus(attemptId, 'stopped', reason, 'rejected');
+  }
+
+  markStale(attemptId: string, reason: string): PackageRepairAttempt {
+    return this.finishWithStatus(attemptId, 'stopped', reason, 'stale');
   }
 
   fail(
@@ -525,15 +763,30 @@ export class ControlledRepairAttemptStore {
     reason: string,
     outputRevision?: string,
     findingsAfter: CheckFinding[] = [],
+    qualityGate?: RepairQualityGate,
   ): PackageRepairAttempt {
+    const attempt = this.get(attemptId);
+    const gate = qualityGate ?? (findingsAfter.length ? evaluateRepairQualityGate({
+      before: attempt.findingsBefore,
+      after: findingsAfter,
+      targetFingerprints: attempt.targetFingerprints,
+    }) : undefined);
     const result = this.db.prepare(`UPDATE package_repair_attempts SET
-      status = 'failed', error = ?, output_revision_oid = COALESCE(?, output_revision_oid),
-      findings_after_json = ?, completed_at = ?
+      status = 'failed', execution_status = 'failed', quality_outcome = ?, error = ?,
+      output_revision_oid = COALESCE(?, output_revision_oid), findings_after_json = ?,
+      resolved_fingerprints_json = ?, introduced_fingerprints_json = ?,
+      after_blocking_count = ?, quality_gate_json = ?, next_action_json = ?, completed_at = ?
       WHERE id = ? AND status IN ('running', 'waiting_user')`)
       .run(
+        gate?.outcome ?? 'unresolved',
         reason.trim().slice(0, 3_000),
         outputRevision ?? null,
         JSON.stringify(findingsAfter),
+        JSON.stringify(gate?.resolvedFingerprints ?? []),
+        JSON.stringify(gate?.introducedFingerprints ?? []),
+        gate?.afterBlockingCount ?? null,
+        JSON.stringify(gate ?? {}),
+        JSON.stringify({ id: 'repair_knowledge_structure', label: '重新校验并继续修复' }),
         nowIso(),
         attemptId,
       );
@@ -554,15 +807,61 @@ export class ControlledRepairAttemptStore {
       .all(projectId, rootRevision) as any[]).map(attemptFromRow);
   }
 
+  latestForProject(projectId: string): PackageRepairAttempt | undefined {
+    const row = this.db.prepare(`SELECT * FROM package_repair_attempts
+      WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId);
+    return row ? attemptFromRow(row) : undefined;
+  }
+
   private finishWithStatus(
     attemptId: string,
     status: Extract<RepairAttemptStatus, 'stopped' | 'failed'>,
     reason: string,
+    qualityOutcome: Extract<RepairQualityOutcome, 'rejected' | 'stale' | 'unresolved'> = 'unresolved',
   ): PackageRepairAttempt {
     const result = this.db.prepare(`UPDATE package_repair_attempts SET
-      status = ?, error = ?, completed_at = ?
+      status = ?, execution_status = ?, quality_outcome = ?, error = ?,
+      next_action_json = NULL, completed_at = ?
       WHERE id = ? AND status IN ('running', 'waiting_user')`)
-      .run(status, reason.trim().slice(0, 3_000), nowIso(), attemptId);
+      .run(
+        status,
+        status === 'failed' ? 'failed' : 'finished',
+        qualityOutcome,
+        reason.trim().slice(0, 3_000),
+        nowIso(),
+        attemptId,
+      );
+    if (Number(result.changes) !== 1) throw new Error('修复尝试已经处理或不存在');
+    return this.get(attemptId);
+  }
+
+  private failQualityGate(
+    attemptId: string,
+    outputRevision: string,
+    findingsAfter: CheckFinding[],
+    gate: RepairQualityGate,
+    actions?: JsonObject[],
+  ): PackageRepairAttempt {
+    const reason = gate.reasons.join('；') || '修复候选未通过质量门禁';
+    const result = this.db.prepare(`UPDATE package_repair_attempts SET
+      status = 'failed', execution_status = 'failed', quality_outcome = ?, error = ?,
+      output_revision_oid = ?, findings_after_json = ?, resolved_fingerprints_json = ?,
+      introduced_fingerprints_json = ?, after_blocking_count = ?, quality_gate_json = ?,
+      next_action_json = ?, actions_json = COALESCE(?, actions_json), completed_at = ?
+      WHERE id = ? AND status IN ('running', 'waiting_user')`).run(
+        gate.outcome,
+        reason.slice(0, 3_000),
+        outputRevision,
+        JSON.stringify(findingsAfter),
+        JSON.stringify(gate.resolvedFingerprints),
+        JSON.stringify(gate.introducedFingerprints),
+        gate.afterBlockingCount,
+        JSON.stringify(gate),
+        JSON.stringify({ id: 'adjust_repair_plan', label: '调整方案或人工修改' }),
+        actions ? JSON.stringify(actions) : null,
+        nowIso(),
+        attemptId,
+      );
     if (Number(result.changes) !== 1) throw new Error('修复尝试已经处理或不存在');
     return this.get(attemptId);
   }
@@ -601,6 +900,34 @@ export function repairFindingFromPayload(value: unknown): CheckFinding {
     ...(typeof finding.releaseBlocking === 'boolean'
       ? { releaseBlocking: finding.releaseBlocking }
       : {}),
+    ...(typeof finding.code === 'string' && finding.code.trim()
+      ? { code: finding.code.trim() }
+      : {}),
+    ...(['automatic', 'approval_required', 'expert_decision', 'external_data_required', 'retryable_infrastructure']
+      .includes(String(finding.disposition ?? ''))
+      ? { disposition: finding.disposition as CheckFinding['disposition'] }
+      : {}),
+    ...(typeof finding.path === 'string' && finding.path.trim()
+      ? { path: finding.path.trim() }
+      : {}),
+    ...(finding.facts && typeof finding.facts === 'object' && !Array.isArray(finding.facts)
+      ? { facts: JSON.parse(JSON.stringify(finding.facts)) as Record<string, unknown> }
+      : {}),
+    ...(typeof finding.impact === 'string' && finding.impact.trim()
+      ? { impact: finding.impact.trim() }
+      : {}),
+    ...(Array.isArray(finding.repairTargets) ? {
+      repairTargets: finding.repairTargets.flatMap((target) => {
+        if (!target || typeof target !== 'object' || Array.isArray(target)) return [];
+        const item = target as Record<string, unknown>;
+        const targetKind = String(item.targetKind ?? '').trim();
+        const targetKey = String(item.targetKey ?? '').trim();
+        const instruction = String(item.instruction ?? '').trim();
+        if (!REPAIR_TARGET_KINDS.has(targetKind as RepairTargetKind)
+          || !targetKey || !instruction) return [];
+        return [{ targetKind: targetKind as RepairTargetKind, targetKey, instruction }];
+      }),
+    } : {}),
   };
 }
 
@@ -615,6 +942,8 @@ export class ControlledRepairRunner {
   private readonly state: AuthoringState;
   private readonly attempts: ControlledRepairAttemptStore;
   private readonly validator: KnowledgeStructureValidator;
+  private readonly candidateValidator: KnowledgeStructureValidator;
+  private readonly persistValidation: ControlledRepairRunnerOptions['persistValidation'];
   private readonly checkReader: typeof getCheck;
   private readonly maxAutomaticAttempts: number;
 
@@ -625,6 +954,11 @@ export class ControlledRepairRunner {
     this.adapter = options.adapter ?? new PiAuthoringAdapter(this.state);
     this.attempts = options.attempts ?? new ControlledRepairAttemptStore();
     this.validator = options.validator ?? validateGeneratedKnowledge;
+    this.candidateValidator = options.candidateValidator
+      ?? options.validator
+      ?? inspectGeneratedKnowledge;
+    this.persistValidation = options.persistValidation
+      ?? (options.validator ? undefined : saveCheck);
     this.checkReader = options.checkReader ?? getCheck;
     this.maxAutomaticAttempts = Math.max(
       1,
@@ -652,7 +986,7 @@ export class ControlledRepairRunner {
             type: 'superseded_by_revision',
             revision: current.revision.oid,
           });
-          this.attempts.stop(attemptId, '知识包内容已经变化，旧修复待办失效');
+          this.attempts.markStale(attemptId, '知识包内容已经变化，旧修复待办失效');
         } catch { /* 旧审计已经结束时只关闭待办 */ }
       }
       try {
@@ -751,20 +1085,86 @@ export class ControlledRepairRunner {
           rootRevision,
           inputRevision: current.revision.oid,
           authority: 'automatic',
-          findings: automaticFindings
+          findings: validation.findings,
+          targetFindings: automaticFindings
             .filter((item) => actedFindingIds.has(item.finding.id))
             .map((item) => item.finding),
           actions: automaticPlan.actions as unknown as JsonObject[],
         });
         let committedRevision: string | undefined;
+        let candidateId: string | undefined;
         let attemptCompleted = false;
         try {
-          const saved = await this.packages.saveFiles(project.id, {
+          const candidate = await this.packages.createCandidateRevision(project.id, {
             expectedRevision: current.revision.oid,
-            files: Object.fromEntries(Object.entries(automaticPlan.files).map(([path, content]) => [
-              `package/${path}`,
-              content,
-            ])),
+            groups: [{
+              id: `repair-${attempt.id.replace(/^pra_/, '')}`,
+              summary: `自动修复 ${automaticPlan.actions.length} 个知识文件`,
+              changes: Object.entries(automaticPlan.files).map(([path, content]) => ({
+                kind: 'write' as const,
+                path: `package/${path}`,
+                content,
+              })),
+            }],
+            action: {
+              cause: 'automatic_repair_candidate',
+              summary: `生成知识包结构修复候选（${automaticPlan.actions.length} 个文件）`,
+              actorKind: 'system',
+              actorName: '知识包修复助手',
+            },
+          });
+          candidateId = candidate.id;
+          this.attempts.recordCandidate(attempt.id, candidate.id);
+          const preview = await this.packages.previewCandidateRevision(project.id, candidate.id);
+          const candidateValidation = await this.candidateValidator(project, {
+            spec: preview.spec,
+            coverage: preview.coverage,
+            files: preview.files,
+            version: current.packageVersion,
+            revisionId: `candidate:${candidate.id}`,
+          }, context);
+          const gate = evaluateRepairQualityGate({
+            before: attempt.findingsBefore,
+            after: candidateValidation.findings,
+            targetFingerprints: attempt.targetFingerprints,
+            changedPaths: preview.diff.map((item) => item.path),
+            allowedPaths: automaticPlan.actions.map((action) => `package/${action.path}`),
+          });
+          if (!gate.passed) {
+            await this.packages.rejectCandidateRevision(project.id, {
+              candidateId: candidate.id,
+              note: gate.reasons.join('；'),
+              action: {
+                cause: 'automatic_repair_candidate_rejected',
+                summary: '自动修复候选未通过质量门禁',
+                actorKind: 'system',
+                actorName: '知识包修复助手',
+              },
+            });
+            this.attempts.fail(
+              attempt.id,
+              gate.reasons.join('；'),
+              undefined,
+              candidateValidation.findings,
+              gate,
+            );
+            const attempts = this.attempts.listChain(project.id, rootRevision);
+            const update = this.orchestrator.stopKnowledgeRepair(project.id, {
+              messageKey: repairMessageKey('candidate_rejected', attempt.id),
+              reason: `自动修复候选未改变当前知识包：${gate.reasons.join('；')}`,
+              attempts: automaticPlan.actions.map((action) => action.summary),
+            });
+            return {
+              status: 'stopped',
+              revision: current.revision.oid,
+              validation,
+              attempts,
+              ...update,
+            };
+          }
+          const accepted = await this.packages.acceptCandidateRevision(project.id, {
+            candidateId: candidate.id,
+            note: '自动结构修复候选已通过完整质量门禁',
             action: {
               cause: 'automatic_repair',
               summary: `自动修复知识包结构（${automaticPlan.actions.length} 个文件）`,
@@ -772,21 +1172,22 @@ export class ControlledRepairRunner {
               actorName: '知识包修复助手',
             },
           });
-          committedRevision = saved.revision.oid;
-          current = saved;
-          packageFiles = await this.packages.readPackageFiles(project.id, saved.revision.oid);
-          validation = await this.validator(project, {
-            spec: current.spec,
-            coverage: current.coverage,
-            files: packageFiles.files,
-            version: current.packageVersion,
-            revisionId: current.revision.oid,
-          }, context);
+          committedRevision = accepted.revision.oid;
+          current = await this.requireCurrent(project.id);
+          packageFiles = await this.packages.readPackageFiles(project.id, accepted.revision.oid);
+          validation = candidateValidation;
+          this.persistValidation?.(
+            project.id,
+            current.packageVersion,
+            validation.findings,
+            accepted.revision.oid,
+          );
           this.attempts.complete(
             attempt.id,
             current.revision.oid,
             validation.findings,
             automaticPlan.actions as unknown as JsonObject[],
+            gate,
           );
           attemptCompleted = true;
           latestUpdate = this.orchestrator.completeKnowledgeRepair(project.id, {
@@ -794,6 +1195,13 @@ export class ControlledRepairRunner {
             messageKey: repairMessageKey('auto_completed', attempt.id),
             version: current.packageVersion,
             validation,
+            quality: {
+              outcome: gate.afterBlockingCount === 0 ? 'resolved' : 'improved',
+              beforeBlockingCount: gate.beforeBlockingCount,
+              afterBlockingCount: gate.afterBlockingCount,
+              resolvedCount: gate.resolvedFingerprints.length,
+              introducedCount: gate.introducedFingerprints.length,
+            },
             summary: automaticPlan.actions.map((action) => action.summary).join('；'),
           });
           repaired = true;
@@ -811,13 +1219,30 @@ export class ControlledRepairRunner {
               this.attempts.fail(attempt.id, reason, committedRevision);
             }
           } catch { /* 保留原始错误 */ }
+          if (candidateId && !committedRevision) {
+            try {
+              await this.packages.rejectCandidateRevision(project.id, {
+                candidateId,
+                note: reason,
+                action: {
+                  cause: 'automatic_repair_candidate_failed',
+                  summary: '自动修复候选执行失败',
+                  actorKind: 'system',
+                  actorName: '知识包修复助手',
+                },
+              });
+            } catch { /* 候选已拒绝或已失效时保留原始错误 */ }
+          }
           try { this.orchestrator.failKnowledgeRepair(project.id, reason); } catch { /* 保留原始错误 */ }
           throw error;
         }
       }
 
-      const validationFailure = blocking.find((finding) => finding.category === '语义校验执行失败');
-      if (validationFailure) {
+      const infrastructureFailure = classified.find((item) => (
+        item.disposition === 'retryable_infrastructure'
+      ));
+      if (infrastructureFailure) {
+        const validationFailure = infrastructureFailure.finding;
         this.orchestrator.startKnowledgeRepair(project.id, {
           inputRevisionOid: current.revision.oid,
           messageKey: repairMessageKey('validator_failed', rootRevision),
@@ -830,12 +1255,24 @@ export class ControlledRepairRunner {
           findings: [validationFailure],
           actions: [{ type: 'validation_retry_required' }],
         });
-        this.attempts.stop(attempt.id, validationFailure.message);
+        const infrastructureGate = evaluateRepairQualityGate({
+          before: validation.findings,
+          after: [validationFailure],
+          targetFingerprints: [],
+          validationFailures: [validationFailure.message],
+        });
+        this.attempts.fail(
+          attempt.id,
+          validationFailure.message,
+          undefined,
+          [validationFailure],
+          infrastructureGate,
+        );
         const attempts = this.attempts.listChain(project.id, rootRevision);
         const update = this.orchestrator.stopKnowledgeRepair(project.id, {
           messageKey: repairMessageKey('validator_stopped', rootRevision),
-          reason: `语义校验执行失败，系统没有修改知识包：${validationFailure.message}`,
-          attempts: ['重新执行语义校验', '检查任务模型配置和服务连通性'],
+          reason: `修复所需服务暂时不可用，系统没有修改知识包：${validationFailure.message}`,
+          attempts: ['恢复当前步骤', '检查任务模型配置、额度和服务连通性'],
           retryable: true,
         });
         return {
@@ -874,26 +1311,41 @@ export class ControlledRepairRunner {
         inputRevision: current.revision.oid,
         authority,
         status: 'waiting_user',
-        findings: [human.finding],
+        findings: validation.findings,
+        targetFindings: [human.finding],
       });
       const run = this.adapter.start(project.id, '逐项修复知识包', current.revision.oid, {
         purpose: 'controlled_repair',
         repairAttemptId: attempt.id,
         taskId,
         authority,
+        disposition: human.disposition,
         finding: findingForPayload(human.finding),
       }).run;
 
       let requested;
       if (authority === 'expert_decision') {
+        const externalDataRequired = human.disposition === 'external_data_required';
         requested = this.adapter.request(project.id, run.id, 'question_batch', {
           purpose: 'controlled_repair_expert',
           repairAttemptId: attempt.id,
           taskId,
           requiredRole: 'domain_expert',
+          disposition: human.disposition,
+          findingFingerprints: attempt.targetFingerprints,
+          queue: {
+            groupId: `repair:${current.revision.oid}`,
+            order: 1,
+            dependsOn: [],
+            independent: false,
+          },
           finding: findingForPayload(human.finding),
-          title: `请明确“${human.finding.category}”的业务决策`,
-          description: `${human.finding.message}\n系统不会自行选择业务阈值、流程分支、计算口径或冲突结论。`,
+          title: externalDataRequired
+            ? `请确认“${human.finding.category}”的数据处理方式`
+            : `请明确“${human.finding.category}”的业务决策`,
+          description: externalDataRequired
+            ? `${human.finding.message}\n系统不会虚构来源表、字段或资料证据；请补充数据，或明确缩小本版适用范围。`
+            : `${human.finding.message}\n系统不会自行选择业务阈值、流程分支、计算口径或冲突结论。`,
           ...(target ? {} : {
             repairCandidates: repairTargetCandidates(current.spec, human.finding)
               .map((item) => ({ targetKind: item.targetKind, targetKey: item.targetKey })),
@@ -904,7 +1356,9 @@ export class ControlledRepairRunner {
               kind: 'text',
               q: human.finding.suggestion
                 ? `请给出明确决策，以便落实：${human.finding.suggestion}`
-                : '请给出应采用的业务规则、口径或分支结论。',
+                : externalDataRequired
+                  ? '请说明数据从哪里获得；若当前没有，请说明缩小范围、输出 insufficient_data 或暂不启用的处理方式。'
+                  : '请给出应采用的业务规则、口径或分支结论。',
               required: true,
             },
             // 冲突类问题涉及多个资源，系统不能替业务挑；早先只在文案里要求
@@ -999,9 +1453,19 @@ export class ControlledRepairRunner {
     if (pending.baseRevision && pending.baseRevision !== current.revision.oid) {
       throw new Error('知识包内容已经变化，请基于最新校验结果重新处理');
     }
-    const plan = buildSemanticRepairPlan(
-      current.spec, finding, decision, parseExpertRepairTarget(response),
-    );
+    const candidates = repairTargetCandidates(current.spec, finding);
+    const targetAnswer = Array.isArray(response.answers)
+      ? response.answers.find((item) => item && typeof item === 'object' && !Array.isArray(item)
+        && (item as Record<string, unknown>).questionId === 'repair_target')
+      : undefined;
+    const explicitTarget = parseExpertRepairTarget(response);
+    if (targetAnswer && (!explicitTarget || !candidates.some((candidate) => (
+      candidate.targetKind === explicitTarget.targetKind
+        && candidate.targetKey === explicitTarget.targetKey
+    )))) {
+      throw new RepairTargetUnresolvedError(finding, candidates);
+    }
+    const plan = buildSemanticRepairPlan(current.spec, finding, decision, explicitTarget);
     const answered = this.adapter.respond(project.id, pending.id, requestId, response);
     const existing = this.state.snapshot(project.id).pendingInteractions.find((item) => (
       item.type === 'change_plan' && item.payload.parentInteractionId === pending.id
@@ -1020,6 +1484,8 @@ export class ControlledRepairRunner {
       taskId: String(pending.payload.taskId ?? ''),
       expertDecision: decision,
       finding: findingForPayload(finding),
+      disposition: pending.payload.disposition ?? 'expert_decision',
+      findingFingerprints: pending.payload.findingFingerprints ?? [],
     }).run;
     const requested = this.adapter.request(project.id, run.id, 'change_plan', {
       purpose: 'controlled_repair',
@@ -1028,6 +1494,14 @@ export class ControlledRepairRunner {
       taskId: String(pending.payload.taskId ?? ''),
       expertDecision: decision,
       finding: findingForPayload(finding),
+      disposition: pending.payload.disposition ?? 'expert_decision',
+      findingFingerprints: pending.payload.findingFingerprints ?? [],
+      queue: pending.payload.queue ?? {
+        groupId: `repair:${current.revision.oid}`,
+        order: 1,
+        dependsOn: [],
+        independent: false,
+      },
       requiredRole: 'domain_expert',
       title: '确认专家决策的落实方案',
       summary: plan.summary,
@@ -1051,6 +1525,70 @@ export class ControlledRepairRunner {
     return { interaction: requested.interaction, run: requested.run, replayed: false };
   }
 
+  async assessApprovedPlanCandidate(
+    project: Project,
+    context: KnowledgeGenerationContext,
+    attemptId: string,
+    candidate: PackageApplyCandidate,
+    allowedPaths: string[] = [],
+  ): Promise<CandidateQualityDecision> {
+    const attempt = this.attempts.get(attemptId);
+    const current = await this.requireCurrent(project.id);
+    if (candidate.baseRevision !== attempt.inputRevision
+      || current.revision.oid !== candidate.baseRevision) {
+      return {
+        accepted: false,
+        disposition: 'rejected',
+        feedback: '知识包基线已经变化，请基于当前版本重新生成修复方案。',
+      };
+    }
+    const validation = await this.candidateValidator(project, {
+      spec: candidate.spec,
+      coverage: candidate.coverage,
+      files: candidate.files,
+      version: candidate.version,
+      revisionId: `candidate:${attempt.id}`,
+    }, context);
+    const baselineFiles = (await this.packages.readPackageFiles(
+      project.id,
+      candidate.baseRevision,
+    )).files;
+    const changedPaths = [...new Set([
+      ...Object.keys(candidate.files),
+      ...Object.keys(baselineFiles),
+    ])].filter((path) => candidate.files[path] !== baselineFiles[path]);
+    const gate = evaluateRepairQualityGate({
+      before: attempt.findingsBefore,
+      after: validation.findings,
+      targetFingerprints: attempt.targetFingerprints,
+      changedPaths,
+      allowedPaths,
+    });
+    const feedback = gate.passed
+      ? `本轮目标问题已解决；必须修复的问题从 ${gate.beforeBlockingCount} 个变为 ${gate.afterBlockingCount} 个，且没有新增必须修复的问题。`
+      : [
+        ...gate.reasons,
+        ...validation.findings.filter((finding) => finding.severity === '错误')
+          .slice(0, 8)
+          .map((finding) => `${finding.category} · ${finding.target}：${finding.message}`),
+      ].join('\n');
+    this.attempts.recordQualityAssessment(attemptId, gate, {
+      type: gate.passed ? 'candidate_quality_accepted' : 'candidate_quality_rejected',
+      feedback: feedback.slice(0, 8_000),
+      gate: JSON.parse(JSON.stringify(gate)) as JsonObject,
+    }, validation.findings);
+    return {
+      accepted: gate.passed,
+      disposition: gate.passed ? 'accepted' : 'rejected',
+      feedback,
+      ...(gate.validationFailures.length ? {
+        retryable: !gate.validationFailures.some((failure) => (
+          /insufficient[_ -]?quota|quota.*exhaust|额度.{0,20}(?:耗尽|不足)/iu.test(failure)
+        )),
+      } : {}),
+    };
+  }
+
   async completeApprovedPlan(
     project: Project,
     context: KnowledgeGenerationContext,
@@ -1058,23 +1596,53 @@ export class ControlledRepairRunner {
   ) {
     const attempt = this.attempts.get(attemptId);
     const current = await this.requireCurrent(project.id);
-    const packageFiles = await this.packages.readPackageFiles(project.id, current.revision.oid);
-    const validation = await this.validator(project, {
-      spec: current.spec,
-      coverage: current.coverage,
-      files: packageFiles.files,
-      version: current.packageVersion,
-      revisionId: current.revision.oid,
-    }, context);
+    let validation: KnowledgeStructureValidation;
+    let gate: RepairQualityGate;
+    if (attempt.qualityGate?.passed) {
+      gate = attempt.qualityGate;
+      validation = {
+        errors: attempt.findingsAfter.filter((finding) => finding.severity === '错误').length,
+        warnings: attempt.findingsAfter.filter((finding) => finding.severity === '警告').length,
+        hints: attempt.findingsAfter.filter((finding) => finding.severity === '提示').length,
+        findings: attempt.findingsAfter,
+      };
+      this.persistValidation?.(
+        project.id,
+        current.packageVersion,
+        validation.findings,
+        current.revision.oid,
+      );
+    } else {
+      const packageFiles = await this.packages.readPackageFiles(project.id, current.revision.oid);
+      validation = await this.validator(project, {
+        spec: current.spec,
+        coverage: current.coverage,
+        files: packageFiles.files,
+        version: current.packageVersion,
+        revisionId: current.revision.oid,
+      }, context);
+      gate = evaluateRepairQualityGate({
+        before: attempt.findingsBefore,
+        after: validation.findings,
+        targetFingerprints: attempt.targetFingerprints,
+      });
+    }
     this.attempts.complete(attempt.id, current.revision.oid, validation.findings, [
       ...attempt.actions,
       { type: 'plan_approved', outputRevision: current.revision.oid },
-    ]);
+    ], gate);
     const update = this.orchestrator.completeKnowledgeRepair(project.id, {
       packageRevisionOid: current.revision.oid,
       messageKey: repairMessageKey('plan_completed', attempt.id),
       version: current.packageVersion,
       validation,
+      quality: {
+        outcome: gate.afterBlockingCount === 0 ? 'resolved' : 'improved',
+        beforeBlockingCount: gate.beforeBlockingCount,
+        afterBlockingCount: gate.afterBlockingCount,
+        resolvedCount: gate.resolvedFingerprints.length,
+        introducedCount: gate.introducedFingerprints.length,
+      },
       summary: '已按确认方案修改知识包并重新校验',
     });
     return { current, validation, ...update };
@@ -1089,9 +1657,9 @@ export class ControlledRepairRunner {
     });
   }
 
-  failPlan(projectId: string, attemptId: string, reason: string) {
+  failPlan(projectId: string, attemptId: string, reason: string, incrementRetry = true) {
     try {
-      const attempt = this.attempts.recordRetryableFailure(attemptId, reason);
+      const attempt = this.attempts.recordRetryableFailure(attemptId, reason, incrementRetry);
       const finding = attempt.findingsBefore[0];
       return this.orchestrator.waitForKnowledgeRepair(projectId, {
         messageKey: repairMessageKey('plan_retry', attemptId),

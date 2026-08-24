@@ -3,13 +3,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [--consumer-only|--modeling-only]
 
-Deploy all services by calling each service deploy script.
+Deploy the full stack, including the Modeling Workbench, from either a source
+checkout or an extracted release package.
 EOF
 }
 
@@ -49,11 +49,23 @@ if [ "${CONSUMER_ONLY}" = "1" ] && [ "${MODELING_ONLY}" = "1" ]; then
     die "--consumer-only and --modeling-only cannot be used together"
 fi
 
+DEPLOY_ARGS=()
+if [ "${CONSUMER_ONLY}" = "1" ]; then
+    DEPLOY_ARGS+=(--consumer-only)
+elif [ "${MODELING_ONLY}" = "1" ]; then
+    DEPLOY_ARGS+=(--modeling-only)
+fi
+
 if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
     CONSUMER_DEPLOY="${SCRIPT_DIR}/deploy-consumer.sh"
     MODELING_DEPLOY="${SCRIPT_DIR}/modeling/deploy.sh"
+elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
+    log "Detected source checkout; deploying with deploy-stack.sh"
+    bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
+    log "Deployment finished successfully"
+    exit 0
 else
-    die "This deploy.sh is the release-package dispatcher. Build and extract a release package first, or use ${SCRIPT_DIR}/deploy-stack.sh for source deployment."
+    die "Could not find source or release deployment scripts under ${SCRIPT_DIR}"
 fi
 
 if [ "${MODELING_ONLY}" = "0" ]; then
@@ -64,7 +76,7 @@ fi
 
 if [ "${CONSUMER_ONLY}" = "0" ]; then
     [ -f "${MODELING_DEPLOY}" ] || die "Modeling deploy script not found: ${MODELING_DEPLOY}"
-    log "Deploying modeling service"
+    log "Deploying Modeling Workbench (core + Agent)"
     bash "${MODELING_DEPLOY}"
 fi
 

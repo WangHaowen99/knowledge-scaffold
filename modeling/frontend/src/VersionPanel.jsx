@@ -20,7 +20,6 @@ const styles = {
   title: { color: '#101828', fontSize: 13, fontWeight: 700 },
   current: { padding: '1px 5px', borderRadius: 4, background: '#ecfdf3', color: '#067647', fontSize: 11, fontWeight: 650 },
   package: { color: '#475467', fontSize: 11.5 },
-  shortId: { display: 'block', marginTop: 3, color: '#98a2b3', fontSize: 10.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   summary: { flex: '2 1 160px', minWidth: 0, color: '#344054', fontSize: 12.5, overflowWrap: 'anywhere' },
   meta: { display: 'block', marginTop: 3, color: '#667085', fontSize: 11.5 },
   actions: { display: 'flex', flex: '0 1 auto', gap: 6, marginLeft: 'auto', justifyContent: 'flex-end', flexWrap: 'wrap' },
@@ -34,8 +33,6 @@ const styles = {
   error: { marginBottom: 10, padding: '8px 10px', color: '#b42318', background: '#fef3f2', borderRadius: 6, fontSize: 12.5 },
   diff: { marginTop: 14 },
 };
-
-const shortId = (value) => String(value || '').slice(0, 8);
 
 const formatTime = (value) => {
   const date = new Date(value);
@@ -134,7 +131,6 @@ export default function VersionPanel({
                     {isCurrent && <span style={styles.current}>当前</span>}
                     {item.packageVersion && <span style={styles.package}>v{item.packageVersion.replace(/^v/i, '')}</span>}
                   </span>
-                  <span style={styles.shortId}>{shortId(item.id)}</span>
                 </button>
 
                 <div style={styles.summary}>

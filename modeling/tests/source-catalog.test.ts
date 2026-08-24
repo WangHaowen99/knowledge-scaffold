@@ -148,6 +148,19 @@ test('文档来源按真实资料补齐修订 ID 并规范化文件名', () => {
   });
 });
 
+test('文档来源外层书名号不影响唯一文件匹配', () => {
+  const catalog = createSourceCatalog([], [{ id: 'doc_flow', filename: '全流程业务判决逻辑.md' }]);
+  const object: SpecObject = {
+    key: 'flow', title: '业务流程', description: '流程', fields: [],
+    sourceRefs: [{ kind: 'document', filename: '【全流程业务判决逻辑.md】' }],
+  };
+  const result = catalog.canonicalizeObjects([object]);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.value[0].sourceRefs, [{
+    kind: 'document', documentId: 'doc_flow', filename: '全流程业务判决逻辑.md',
+  }]);
+});
+
 test('文档来源不存在或同名修订不唯一时拒绝静默绑定', () => {
   const catalog = createSourceCatalog([], [
     { id: 'doc_first', filename: '制度.md' },

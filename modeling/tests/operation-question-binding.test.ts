@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   bindOperationCompetencyQuestions,
   packageIntentQuestions,
+  questionsMatch,
 } from '../src/workflow/spec-validation.js';
 
 const operation = (overrides = {}) => ({
@@ -46,4 +47,15 @@ test('覆盖问题只从当前知识包 operation 提取并按首次出现顺序
     '如何查询企业客户?',
     'How to query balance?',
   ]);
+});
+
+test('领域问题匹配统一全角和半角标点', () => {
+  assert.equal(questionsMatch(
+    '如何确定补货路径（直营网点或区域仓）？',
+    '如何确定补货路径(直营网点或区域仓)?',
+  ), true);
+  assert.equal(questionsMatch(
+    '检查装置负荷；计算产品收率、能耗成本与路线收益？',
+    '检查装置负荷;计算产品收率、能耗成本与路线收益?',
+  ), true);
 });

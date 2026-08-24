@@ -6,12 +6,16 @@ import { test } from 'node:test';
 import PackageChat, {
   interactionBusyState,
   interactionResponseChangedPackage,
+  repairRuntimeMessageId,
   shouldOpenWarningReview,
+  taskRuntimeMessageId,
 } from '../frontend/src/PackageChat.jsx';
 import PendingInteraction, { toggleQuestionSelection } from '../frontend/src/PendingInteraction.jsx';
+import PendingInteractionQueue from '../frontend/src/PendingInteractionQueue.jsx';
 import PaneResizeHandle from '../frontend/src/PaneResizeHandle.jsx';
 import { resizePaneWidth } from '../frontend/src/paneResize.js';
 import {
+  constructionInteractionQueue,
   isConstructionInteraction,
   isCurrentConstructionInteraction,
   selectCurrentConstructionInteraction,
@@ -56,6 +60,18 @@ test('确认知识包修复方案后显示明确的修复进度而不是普通�
   assert.equal(interactionBusyState('script_contract'), 'script_generation');
   assert.equal(interactionBusyState('script_generation'), 'script_apply');
   assert.equal(interactionBusyState('modeling_brief'), 'interaction');
+});
+
+test('受控修复方案应用期间建立统一 Job 并持续更新心跳', () => {
+  const controllerSource = readFileSync(
+    new URL('../src/authoring/controlled-repair-controller.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(controllerSource, /purpose: 'controlled_repair_apply'/);
+  assert.match(controllerSource, /startJobHeartbeat\(/);
+  assert.match(controllerSource, /currentStep: '按确认方案修改知识文件'/);
+  assert.match(controllerSource, /currentStep: '重新执行知识包格式、引用、来源映射和规则检查'/);
+  assert.match(controllerSource, /CONTROLLED_REPAIR_APPLY_FAILED/);
 });
 
 test('脚本候选允许多选具体流程，但暂不生成与具体流程互斥', () => {
@@ -108,6 +124,113 @@ const packageCheckSource = readFileSync(
   'utf8',
 );
 const stylesSource = readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
+const runObservabilitySource = readFileSync(
+  new URL('../frontend/src/RunObservabilityPanel.jsx', import.meta.url),
+  'utf8',
+);
+const workflowM2Source = readFileSync(new URL('../src/workflow/m2.ts', import.meta.url), 'utf8');
+
+test('统一 Job 运行卡展示耗时、剩余时间和可恢复出口', () => {
+  assert.match(packageChatSource, /activeRunObservability/);
+  assert.match(runObservabilitySource, /预计剩余/);
+  assert.match(runObservabilitySource, /任务长时间没有更新/);
+  assert.doesNotMatch(runObservabilitySource, /Job \{job\.jobId\}|最后心跳/);
+  assert.match(stylesSource, /\.pchat-job-observability\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(stylesSource, /\.pchat-job-observability > span[\s\S]*overflow-wrap:\s*anywhere/);
+});
+
+test('知识包修复运行信息合并到语义方案卡且不再显示下方独立运行区', () => {
+  const messages = [{
+    id: 'repair-status', role: 'assistant', createdAt: '2026-08-19T08:00:00.000Z',
+    blocks: [{
+      type: 'status', title: '知识包语义修复方案等待确认',
+      summary: '确认方案前不会修改当前知识包', milestoneId: 'knowledge_confirmed',
+      progress: 61,
+    }, { type: 'text', text: '无证据知识 · operation:RecommendProduct' }],
+  }];
+  assert.equal(repairRuntimeMessageId(messages), 'repair-status');
+  const html = renderToStaticMarkup(React.createElement(PackageChat, {
+    projectId: 'project-repair-runtime',
+    structuredMessages: messages,
+    authoring: { activeRuns: [{
+      id: 'ar-repair', intent: '应用知识包修复方案', status: 'running',
+      createdAt: '2026-08-19T08:00:00.000Z', updatedAt: '2026-08-19T08:01:00.000Z',
+      state: {
+        purpose: 'controlled_repair_apply', jobId: 'ar-repair', phase: '方案应用',
+        currentStep: '按确认方案修改知识文件', progress: 10,
+        lastHeartbeatAt: new Date().toISOString(),
+        eta: { minMinutes: 5, maxMinutes: 30, confidence: 'low' },
+      },
+    }] },
+  }));
+  assert.match(html, /has-job-runtime/);
+  assert.match(html, /正在应用知识包修复方案/);
+  assert.doesNotMatch(html, /Job ar-repair/);
+  assert.match(html, /任务 10%/);
+  assert.match(html, /已运行/);
+  assert.doesNotMatch(html, /最后心跳/);
+  assert.match(html, />取消</);
+  assert.doesNotMatch(html, /pchat-standalone-run/);
+});
+
+test('建模总进度展示在助手头部，运行卡只展示当前任务进度', () => {
+  const messages = [{
+    id: 'task-progress', key: 'progress.task.task-knowledge', role: 'assistant', taskId: 'task-knowledge',
+    blocks: [{ type: 'status', title: '正在生成第 1/2 批规则和指标', progress: 33 }],
+  }];
+  const html = renderToStaticMarkup(React.createElement(PackageChat, {
+    projectId: 'project-progress-layout',
+    structuredMessages: messages,
+    aiConstruction: {
+      progress: {
+        percent: 50, currentMilestoneId: 'knowledge_confirmed', currentTaskId: 'task-knowledge',
+        totalMilestones: 6,
+      },
+      tasks: [{
+        id: 'task-knowledge', milestoneId: 'knowledge_confirmed', title: '生成知识结构', status: 'running',
+      }],
+    },
+    authoring: { activeRuns: [{
+      id: 'run-knowledge', intent: '生成知识结构', status: 'running',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      state: {
+        taskId: 'task-knowledge', currentStep: '正在生成第 1/2 批规则和指标', progress: 33,
+        lastHeartbeatAt: new Date().toISOString(), eta: { minMinutes: 4, maxMinutes: 8, confidence: 'medium' },
+      },
+    }] },
+  }));
+
+  assert.match(html, /pchat-overall-progress/);
+  assert.match(html, /AI 辅助建模总进度/);
+  assert.match(html, /阶段 4\/6 · 50%/);
+  assert.match(html, /任务 33%/);
+  assert.match(html, /已运行/);
+  assert.match(html, /预计剩余：4–8 分钟/);
+  assert.doesNotMatch(html, /pchat-standalone-run|Job run-knowledge|最后心跳/);
+});
+
+test('重试时把统一 Job 绑定到最新运行的进度卡', () => {
+  const messages = [
+    {
+      id: 'old-progress', key: 'progress.task.task-knowledge.run.run-old',
+      taskId: 'task-knowledge', blocks: [{ type: 'status', title: '旧运行进度' }],
+    },
+    {
+      id: 'new-start', key: 'knowledge.start.run-new',
+      taskId: 'task-knowledge', blocks: [{ type: 'status', title: '重新开始知识生成' }],
+    },
+    {
+      id: 'new-progress', key: 'progress.task.task-knowledge.run.run-new',
+      taskId: 'task-knowledge', blocks: [{ type: 'status', title: '当前运行进度' }],
+    },
+  ];
+  assert.equal(taskRuntimeMessageId(messages, 'task-knowledge'), 'new-progress');
+});
+
+test('知识结构生成在模型批次内部持续维护统一 Job 心跳', () => {
+  assert.match(workflowM2Source, /startJobHeartbeat\(/);
+  assert.match(workflowM2Source, /finally\s*\{\s*stopJobHeartbeat\(\)/);
+});
 
 test('建模完成被可暂缓的提醒拦截时打开影响复核区', () => {
   assert.equal(shouldOpenWarningReview({ data: { code: 'PACKAGE_WARNINGS_UNREVIEWED' } }), true);
@@ -184,7 +307,8 @@ test('自由对话由服务端持久化而不是保存在浏览器标签页', ()
   assert.doesNotMatch(packageChatSource, /historyForApi/);
   assert.match(packageChatSource, /requestId/);
   assert.match(packageChatSource, /await refreshConstruction\(\)/);
-  assert.match(packageWorkspaceSource, /selectCurrentConstructionInteraction\(/);
+  assert.match(packageWorkspaceSource, /constructionInteractionQueue\(/);
+  assert.match(packageChatSource, /<PendingInteractionQueue/);
 });
 
 test('知识包建模助手内置建模资料多文件上传入口', () => {
@@ -243,7 +367,7 @@ test('知识包建模助手在对话流中展示可恢复的建模目标问题',
   assert.match(html, /请描述要解决的问题、使用者、典型场景和期望结果/);
 });
 
-test('知识包修改方案支持填写意见后调整，脚本生成方案保持原有动作', () => {
+test('知识包与脚本修改方案都支持填写意见后原位调整', () => {
   const packagePlan = renderToStaticMarkup(React.createElement(PendingInteraction, {
     interaction: {
       id: 'package-plan', type: 'change_plan', status: 'pending',
@@ -267,7 +391,8 @@ test('知识包修改方案支持填写意见后调整，脚本生成方案保�
 
   assert.match(packagePlan, /调整方案/);
   assert.match(packagePlan, /调整方案时请填写修改意见/);
-  assert.doesNotMatch(scriptPlan, /调整方案/);
+  assert.match(scriptPlan, /调整方案/);
+  assert.match(scriptPlan, /调整方案时请填写修改意见/);
 });
 
 test('流程选择的其他输入明确表示补充说明而不是标题', () => {
@@ -360,6 +485,48 @@ test('受控修复确认优先于更早创建的暂缓理由表单', () => {
   assert.equal(selected?.id, 'repair-current');
 });
 
+test('待办队列展示全部当前事项并服从显式顺序', () => {
+  const queue = constructionInteractionQueue([
+    {
+      id: 'expert-second', type: 'question_batch', baseRevision: 'rev-current',
+      payload: { purpose: 'controlled_repair_expert', queue: { order: 2 } },
+    },
+    {
+      id: 'scenario-first', type: 'scenario_review',
+      payload: { purpose: 'scenario_review', queue: { order: 1 } },
+    },
+    {
+      id: 'stale-repair', type: 'change_plan', baseRevision: 'rev-old',
+      payload: { purpose: 'controlled_repair', queue: { order: 0 } },
+    },
+  ], 'rev-current');
+  assert.deepEqual(queue.map((interaction) => interaction.id), [
+    'scenario-first', 'expert-second',
+  ]);
+});
+
+test('待办队列把当前项、依赖排队项和真实数量同时展示', () => {
+  const html = renderToStaticMarkup(React.createElement(PendingInteractionQueue, {
+    interactions: [{
+      id: 'current', type: 'question_batch',
+      payload: { purpose: 'controlled_repair_expert', title: '确认指标来源' },
+    }, {
+      id: 'queued', type: 'change_plan',
+      payload: {
+        purpose: 'controlled_repair', title: '确认修复方案',
+        queue: { dependsOn: ['current'], independent: false },
+      },
+    }],
+    activeInteractionId: 'current',
+  }));
+  assert.match(html, /待处理事项/);
+  assert.match(html, /确认指标来源/);
+  assert.match(html, /确认修复方案/);
+  assert.match(html, /排队/);
+  assert.match(html, /disabled=""/);
+  assert.match(html, /共 2 项/);
+});
+
 test('升级前创建的受控修复自由输入待办按互斥建议恢复为选择卡片', () => {
   const html = renderToStaticMarkup(React.createElement(PackageChat, {
     projectId: 'project-legacy-repair',
@@ -403,6 +570,77 @@ test('只有一个明确修复建议时优先展示采用建议选项', () => {
   assert.match(html, /采用校验建议/);
   assert.match(html, /type="radio"/);
   assert.doesNotMatch(html, /请填写处理决定/);
+});
+
+test('专家业务建议不会覆盖修复目标选项', () => {
+  const html = renderToStaticMarkup(React.createElement(PendingInteraction, {
+    interaction: {
+      id: 'interaction-repair-target',
+      type: 'question_batch',
+      status: 'pending',
+      payload: {
+        purpose: 'controlled_repair_expert',
+        finding: {
+          userSuggestion: '请确认应使用哪个金额字段。',
+          expertOptions: [{
+            label: '改引用 hit_bid_amt',
+            description: '使用招投标明细的中标金额字段',
+            decision: 'step_8_field_fix:replace proj_hit_bid_tx_cap with hit_bid_amt',
+          }],
+        },
+        questions: [
+          {
+            id: 'expert_decision',
+            kind: 'text',
+            q: '请给出业务决策',
+            required: true,
+          },
+          {
+            id: 'repair_target',
+            kind: 'single',
+            q: '请选择本次要修改哪一个资源',
+            required: true,
+            options: [
+              { label: '营销线索事件', value: 'object:营销线索事件' },
+              { label: '招投标线索事件', value: 'object:招投标线索事件' },
+              { label: '金融需求识别与产品推荐', value: 'operation:金融需求识别与产品推荐' },
+            ],
+          },
+        ],
+      },
+    },
+    onSubmit: () => {},
+  }));
+
+  assert.match(html, /处理方式 1/);
+  assert.match(html, /招投标线索事件/);
+  assert.match(html, /金融需求识别与产品推荐/);
+  assert.doesNotMatch(html, /step_8_field_fix:replace/);
+});
+
+test('知识生成批次失败时先展示具体校验问题再让专家决策', () => {
+  const html = renderToStaticMarkup(React.createElement(PendingInteraction, {
+    interaction: {
+      id: 'generation-gate',
+      type: 'decision',
+      status: 'pending',
+      payload: {
+        purpose: 'generation_gate_skip',
+        prompt: '请选择重新生成或跳过该批次。',
+        issues: ['指标 route_profit 引用了不存在的规则 route_mapping。'],
+        options: [
+          { value: 'retry', label: '重新生成' },
+          { value: 'skip', label: '跳过该批继续' },
+        ],
+      },
+    },
+    onSubmit: () => {},
+  }));
+
+  assert.match(html, /未通过原因（1）/);
+  assert.match(html, /指标 route_profit 引用了不存在的规则 route_mapping/);
+  assert.match(html, /重新生成/);
+  assert.match(html, /跳过该批继续/);
 });
 
 test('流程图待确认时中栏展示可编辑草稿且右栏提交已保存修订', () => {
@@ -553,11 +791,12 @@ test('知识包编辑中栏不再提供数据源配置跳转入口', () => {
   assert.match(packageWorkspaceSource, /\['data', '数据源'\]/);
 });
 
-test('知识包校验存在错误时可从检查栏自动修复', () => {
+test('知识包校验存在错误时按处置类别逐项处理', () => {
   assert.match(packageCheckSource, /repairAiConstructionKnowledge/);
   assert.match(packageCheckSource, /counts\?\.错误 > 0/);
-  assert.match(packageCheckSource, /自动修复错误/);
-  assert.match(packageCheckSource, /根据当前检查结果自动修改知识包，并重新检查/);
+  assert.match(packageCheckSource, /逐项处理错误/);
+  assert.match(packageCheckSource, /DISPOSITION_ACTION/);
+  assert.match(packageCheckSource, /候选通过复检后应用/);
 });
 
 test('知识包检查栏始终提供当前可操作的重新检查入口', () => {
@@ -566,6 +805,15 @@ test('知识包检查栏始终提供当前可操作的重新检查入口', () =>
   assert.match(reviewPanelSource, /onRecheck=\{onCheckRecheck\}/);
   assert.match(packageWorkspaceSource, /const recheckPackage = useCallback/);
   assert.match(packageWorkspaceSource, /onCheckRecheck=\{recheckPackage\}/);
+});
+
+test('确定性检查通过后提供可逐项选择的警告复核入口', () => {
+  assert.match(packageCheckSource, /pcheck-warning-acceptance/);
+  assert.match(packageCheckSource, /pendingWarnings\.map/);
+  assert.match(packageCheckSource, /selectedWarnings\.includes/);
+  assert.match(packageCheckSource, /说明所选警告为什么不影响本轮建模结论/);
+  assert.match(packageCheckSource, /acceptPackageWarnings/);
+  assert.match(packageCheckSource, /'validation'/);
 });
 
 test('动态任务弹层压平为单层卡片容器', () => {
@@ -708,4 +956,17 @@ test('自动重查挂在工作区而不是体检面板，评测与诊断页签�
   assert.doesNotMatch(packageCheckSource, /synchronizePackageCheck/);
   assert.match(packageCheckSource, /rechecking = false/);
   assert.match(packageWorkspaceSource, /packageCheck=\{\{/);
+});
+
+test('访谈题卡打开事件立即回源会话', () => {
+  assert.match(packageWorkspaceSource, /event\?\.type === 'authoring\.interaction\.opened'/);
+  assert.match(packageWorkspaceSource, /else void load\(\{ advance: true \}\)/);
+  assert.match(packageWorkspaceSource, /options\?\.advance === true \? advanceProjectSession : getProjectSession/);
+});
+
+test('waiting 运行缺少题卡时显示恢复出口而不是运行计时', () => {
+  assert.match(packageChatSource, /waitingPackageChatRun/);
+  assert.match(packageChatSource, /waitingCardMissing/);
+  assert.match(packageChatSource, /重新加载访谈题卡/);
+  assert.match(packageChatSource, /waitingInteractionRecoveryDelay/);
 });

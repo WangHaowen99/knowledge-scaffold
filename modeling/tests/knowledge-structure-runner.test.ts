@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  inspectGeneratedKnowledge,
   KnowledgeStructureRunner,
 } from '../src/ai-construction/knowledge-structure-runner.js';
 import { GenerationWaitingForExpert } from '../src/workflow/generation-gate.js';
-import { semanticCheckFailureFinding } from '../src/workflow/package-check.js';
 import type { FlowchartOutput } from '../src/authoring/workflow-extras.js';
 import type { PackageSpec, Project } from '../src/types.js';
 
@@ -47,6 +47,24 @@ const spec: PackageSpec = {
   rules: [{ key: 'Complete', title: '完整性规则', content: '资料完整才能进入审批。' }],
   metrics: [],
 };
+
+test('默认知识检查只执行确定性格式和规则校验', async () => {
+  const validation = await inspectGeneratedKnowledge(project, {
+    spec,
+    coverage: { covered: [], uncovered: [] },
+    files: {},
+    version: '1.0.0',
+    revisionId: 'revision-deterministic-check',
+  }, {
+    tables: [],
+    documents: [],
+  });
+
+  assert.ok(validation.findings.length > 0);
+  assert.ok(validation.findings.every((finding) => (
+    finding.source === 'format' || finding.source === 'rule'
+  )));
+});
 
 test('runner 依次启动生成、执行校验并提交结构化完成摘要', async () => {
   const calls: Array<[string, unknown?]> = [];
@@ -206,10 +224,4 @@ test('模型两次自动补交仍失败时转为专家决策，不直接标记�
   assert.equal(result.status, 'waiting_user');
   assert.equal(result.interaction.id, interaction.id);
   assert.deepEqual(calls, ['start', 'wait']);
-});
-
-test('语义检查服务异常降级为警告而不是知识包错误', () => {
-  const finding = semanticCheckFailureFinding(new Error('模型服务暂不可用'));
-  assert.equal(finding.severity, '警告');
-  assert.equal(finding.category, '语义校验执行失败');
 });

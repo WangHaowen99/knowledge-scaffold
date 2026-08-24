@@ -63,6 +63,7 @@ function rowToProject(r: any): Project {
     : 'standard';
   return {
     id: r.id, owner: r.owner, kind: r.kind === 'package' ? 'package' : 'modeling',
+    runtime: r.runtime === 'agent' ? 'agent' : 'legacy',
     name: r.name, domain: r.domain, background: r.background,
     targetUsers: r.target_users ?? undefined, glossaryPrefs: r.glossary_prefs ?? undefined,
     sensitivityLevel,
@@ -74,6 +75,7 @@ function rowToProject(r: any): Project {
 export function createProject(input: {
   owner: string; name: string; domain?: string; background?: string;
   kind?: ProjectKind;
+  runtime?: Project['runtime'];
   targetUsers?: string; glossaryPrefs?: string;
   sensitivityLevel?: ProjectSensitivity;
   workflowProfile?: Partial<ProjectWorkflowProfile>;
@@ -82,6 +84,7 @@ export function createProject(input: {
   const id = `pj_${randomUUID().slice(0, 12)}`;
   const now = nowIso();
   const kind: ProjectKind = input.kind === 'package' ? 'package' : 'modeling';
+  const runtime: Project['runtime'] = input.runtime === 'agent' ? 'agent' : 'legacy';
   const sensitivityLevel: ProjectSensitivity = input.sensitivityLevel === 'restricted'
     ? 'restricted'
     : 'standard';
@@ -89,21 +92,42 @@ export function createProject(input: {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare(`INSERT INTO projects
-      (id, owner, kind, name, domain, background, target_users, glossary_prefs,
+      (id, owner, kind, runtime, name, domain, background, target_users, glossary_prefs,
         sensitivity_level, workflow_profile_json,
         stage, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, input.owner, kind, input.name, input.domain ?? '', input.background ?? '',
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, input.owner, kind, runtime, input.name, input.domain ?? '', input.background ?? '',
         input.targetUsers ?? null, input.glossaryPrefs ?? null,
         sensitivityLevel, JSON.stringify(workflowProfile),
         kind === 'package' ? 'review' : 'project_setup', now, now);
-    new AiConstructionTaskGraph(db).initialize(id, aiConstructionGraphSourceForProjectKind(kind));
+    if (runtime === 'legacy') {
+      new AiConstructionTaskGraph(db).initialize(id, aiConstructionGraphSourceForProjectKind(kind));
+    }
     db.exec('COMMIT');
   } catch (error) {
     if (db.isTransaction) db.exec('ROLLBACK');
     throw error;
   }
   return getProject(id)!;
+}
+
+export function claimAgentRuntime(id: string): Project | null {
+  const project = getProject(id);
+  if (!project || project.runtime === 'agent') return project;
+  const db = getDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(`UPDATE projects SET runtime = 'agent', updated_at = ? WHERE id = ?`).run(nowIso(), id);
+    db.prepare('DELETE FROM ai_construction_messages WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM ai_construction_graphs WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM workflow_step_progress WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM wf_nodes WHERE project_id = ?').run(id);
+    db.exec('COMMIT');
+  } catch (error) {
+    if (db.isTransaction) db.exec('ROLLBACK');
+    throw error;
+  }
+  return getProject(id);
 }
 
 export interface UpdateProjectInput {
@@ -156,8 +180,80 @@ export function getProject(id: string): Project | null {
 
 export function listProjects(owner: string): Project[] {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM projects WHERE owner = ? ORDER BY updated_at DESC').all(owner);
+  const rows = db.prepare(`SELECT p.* FROM projects p
+    LEFT JOIN project_members m ON m.project_id = p.id AND m.username = ?
+    WHERE p.owner = ? OR m.username IS NOT NULL
+    ORDER BY p.updated_at DESC`).all(owner, owner);
   return rows.map(rowToProject);
+}
+
+export type ProjectMemberRole = 'owner' | 'modeler' | 'viewer';
+
+export interface ProjectMember {
+  username: string;
+  role: ProjectMemberRole;
+  addedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function projectMemberRole(projectId: string, username: string): ProjectMemberRole | null {
+  const project = getProject(projectId);
+  if (!project) return null;
+  if (project.owner === username) return 'owner';
+  const row = getDb().prepare(`SELECT role FROM project_members
+    WHERE project_id = ? AND username = ?`).get(projectId, username) as { role?: string } | undefined;
+  return row?.role === 'modeler' ? 'modeler' : row?.role === 'viewer' ? 'viewer' : null;
+}
+
+export function canReadProject(projectId: string, username: string): boolean {
+  return projectMemberRole(projectId, username) !== null;
+}
+
+export function canWriteProject(projectId: string, username: string): boolean {
+  return ['owner', 'modeler'].includes(projectMemberRole(projectId, username) ?? '');
+}
+
+export function listProjectMembers(projectId: string): ProjectMember[] {
+  const project = getProject(projectId);
+  if (!project) return [];
+  const rows = getDb().prepare(`SELECT username, role, added_by, created_at, updated_at
+    FROM project_members WHERE project_id = ? ORDER BY created_at, username`).all(projectId) as Array<any>;
+  return [{
+    username: project.owner,
+    role: 'owner',
+    addedBy: project.owner,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  }, ...rows.map((row) => ({
+    username: row.username,
+    role: row.role,
+    addedBy: row.added_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }))];
+}
+
+export function setProjectMember(
+  projectId: string,
+  owner: string,
+  username: string,
+  role: Exclude<ProjectMemberRole, 'owner'>,
+): ProjectMember[] {
+  const project = getProject(projectId);
+  if (!project || project.owner !== owner) throw new Error('只有项目负责人可以管理成员');
+  const normalized = String(username ?? '').trim();
+  if (!normalized || normalized.length > 128) throw new Error('请输入有效的成员用户名');
+  if (normalized === project.owner) throw new Error('项目负责人不需要重复添加');
+  if (!['viewer', 'modeler'].includes(role)) throw new Error('成员角色无效');
+  const now = nowIso();
+  getDb().prepare(`INSERT INTO project_members
+    (project_id, username, role, added_by, created_at, updated_at)
+    VALUES (?,?,?,?,?,?)
+    ON CONFLICT(project_id, username) DO UPDATE SET
+      role = excluded.role, added_by = excluded.added_by, updated_at = excluded.updated_at`)
+    .run(projectId, normalized, role, owner, now, now);
+  return listProjectMembers(projectId);
 }
 
 export function deleteProject(id: string, owner: string): boolean {

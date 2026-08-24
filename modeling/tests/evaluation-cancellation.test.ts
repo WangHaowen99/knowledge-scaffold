@@ -10,6 +10,7 @@ const {
   cancelEvaluation,
   cancelEvaluationsForProject,
   startEvaluation,
+  waitForEvaluation,
 } = await import('../src/evaluation/engine.js');
 const { saveProjectDataSource } = await import('../src/evaluation/data-source-repo.js');
 const m3repo = await import('../src/workflow/m3-repo.js');
@@ -135,4 +136,31 @@ test('评测尚未进入后台执行时取消不会再启动外部写入', async
   const round = await cancelEvaluation(project.id, started.roundId);
   assert.equal(executionCalls, 0);
   assert.equal(round.status, 'failed');
+});
+
+test('Agent 可以等待后台评测真实结束后再继续推进', async () => {
+  const project = prepareProject('Agent 等待评测终态');
+  let finishExecution = () => {};
+  const executionGate = new Promise<void>((resolve) => { finishExecution = resolve; });
+  const started = startEvaluation({
+    projectId: project.id,
+    owner: 'alice',
+    token: 'access-token',
+    packageSnapshot: packageSnapshot('revision-agent-wait'),
+  }, {
+    runRound: async ({ roundId }) => {
+      await executionGate;
+      m3repo.roundProgress(roundId, 1, 1);
+      m3repo.finishRound(roundId, 'done');
+    },
+  });
+
+  let settled = false;
+  const waiting = waitForEvaluation(project.id, started.roundId).finally(() => { settled = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  finishExecution();
+  const round = await waiting;
+  assert.equal(round.status, 'done');
+  assert.equal(round.passCount, 1);
 });

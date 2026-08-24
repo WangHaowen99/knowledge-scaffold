@@ -29,10 +29,31 @@ test('Modeling uses its service credential to provision an owned shadow workspac
     const result = await provisionShadowWorkspace('pj_demo-123', 'alice', {
       baseUrl: `http://127.0.0.1:${address.port}`,
       serviceToken: 's'.repeat(32),
+      managedModelProfile: {
+        provider: 'openai_compatible',
+        baseUrl: 'https://model.example/v1',
+        model: 'qwen3.5-plus',
+        apiKey: 'private-key',
+        timeout: 600,
+        maxTokens: 8192,
+        temperature: 0.2,
+      },
     });
 
     assert.equal(seenAuth, `Bearer ${'s'.repeat(32)}`);
-    assert.deepEqual(seenBody, { project_id: 'pj_demo-123', owner: 'alice' });
+    assert.deepEqual(seenBody, {
+      project_id: 'pj_demo-123',
+      owner: 'alice',
+      managed_model_profile: {
+        provider: 'openai_compatible',
+        base_url: 'https://model.example/v1',
+        model: 'qwen3.5-plus',
+        api_key: 'private-key',
+        timeout: 600,
+        max_tokens: 8192,
+        temperature: 0.2,
+      },
+    });
     assert.equal(result.created, true);
     assert.equal(result.workspace.id, 'mw-shadow-pj-demo-123');
   } finally {

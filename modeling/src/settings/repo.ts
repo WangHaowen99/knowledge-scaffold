@@ -337,9 +337,9 @@ export function getTaskLlmSettings(username: string | undefined = currentLlmUser
 export interface EvalBindingDefaults { provider: string; url: string; token: string; scene: string; }
 export function getEvalBindingDefaults(): EvalBindingDefaults {
   return {
-    provider: getSetting('eval_binding_provider') || 'nl2sql_template',
-    url: getSetting('eval_binding_url') || '',
-    token: getSetting('eval_binding_token') || '',
-    scene: getSetting('eval_binding_scene') || '',
+    provider: getSetting('eval_binding_provider') || config.evalBinding.provider,
+    url: getSetting('eval_binding_url') || config.evalBinding.url,
+    token: getSetting('eval_binding_token') || config.evalBinding.token,
+    scene: getSetting('eval_binding_scene') || config.evalBinding.scene,
   };
 }

@@ -43,7 +43,7 @@ test('历史无证据确认卡转成业务专家能理解的说明和选项', ()
   assert.doesNotMatch(html, /content 断言|Yield_1_Percent|LogicTankID|Product 表/);
 });
 
-test('新语义检查生成的专家选项使用通俗文案但保留执行决策', () => {
+test('结构化专家选项使用通俗文案但保留执行决策', () => {
   let submitted;
   const html = renderToStaticMarkup(React.createElement(PendingInteraction, {
     interaction: {

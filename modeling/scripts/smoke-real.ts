@@ -109,7 +109,7 @@ async function main() {
   });
   const ctx = { tables: TABLES, documents: DOCS };
 
-  step('节点 3 初步分析（agent：探查工具 + submit_analysis）');
+  step('节点 3 初步分析（动态分段 Map-Reduce + 持久化检查点）');
   const { analysis } = await runAnalyze(project.id, TABLES, DOCS);
   ok((analysis.candidateObjects?.length ?? 0) >= 1, `候选对象 ${analysis.candidateObjects?.length} 个：${(analysis.candidateObjects ?? []).map((o: any) => o.name).join('、')}`);
   ok((analysis.openQuestions?.length ?? 0) >= 1, `开放问题 ${analysis.openQuestions?.length} 条`);

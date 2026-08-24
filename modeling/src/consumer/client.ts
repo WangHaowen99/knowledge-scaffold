@@ -53,6 +53,16 @@ export interface ShadowWorkspaceProvisionResult {
 interface ShadowWorkspaceProvisionOptions {
   baseUrl?: string;
   serviceToken?: string;
+  modelProfileRef?: string;
+  managedModelProfile?: {
+    provider: string;
+    baseUrl: string;
+    model: string;
+    apiKey: string;
+    timeout: number;
+    maxTokens: number;
+    temperature: number;
+  };
   signal?: AbortSignal;
 }
 
@@ -98,7 +108,7 @@ export async function provisionShadowWorkspace(
   owner: string,
   options: ShadowWorkspaceProvisionOptions = {},
 ): Promise<ShadowWorkspaceProvisionResult> {
-  const { signal, ...serviceOptions } = options;
+  const { signal, modelProfileRef, managedModelProfile, ...serviceOptions } = options;
   const response = await modelingServiceFetch(
     '/agentic/internal/modeling/shadow-workspaces/ensure',
     {
@@ -106,7 +116,22 @@ export async function provisionShadowWorkspace(
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ project_id: projectId, owner }),
+      body: JSON.stringify({
+        project_id: projectId,
+        owner,
+        ...(modelProfileRef ? { model_profile_ref: modelProfileRef } : {}),
+        ...(managedModelProfile ? {
+          managed_model_profile: {
+            provider: managedModelProfile.provider,
+            base_url: managedModelProfile.baseUrl,
+            model: managedModelProfile.model,
+            api_key: managedModelProfile.apiKey,
+            timeout: managedModelProfile.timeout,
+            max_tokens: managedModelProfile.maxTokens,
+            temperature: managedModelProfile.temperature,
+          },
+        } : {}),
+      }),
       signal,
     },
     serviceOptions,

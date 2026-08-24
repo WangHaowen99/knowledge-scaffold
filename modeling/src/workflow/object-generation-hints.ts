@@ -47,13 +47,16 @@ export function buildObjectGenerationHints(
   analysis: AnalysisResult | undefined,
   tables: DataDictTable[],
 ): ObjectGenerationHint[] {
-  const hints: ObjectGenerationHint[] = (analysis?.candidateObjects?.length
-    ? analysis.candidateObjects
-    : tables.map((table) => ({
-      name: table.name,
-      rationale: `来自数据表 ${table.name}`,
-      sourceTables: [table.name],
-    }))).map((candidate) => ({ ...candidate, sourceTables: [...candidate.sourceTables] }));
+  // Excel/CSV 已经给出可执行的物理 Schema 时，对象集合以 Sheet 为准。
+  // 文档候选只能为这些对象补证据，不能再扩张对象目录；否则几十张 Sheet
+  // 会叠加出几百个语义对象，既拖慢生成，也使后续数据绑定不可执行。
+  const hasUploadedStructuredSheet = tables.some((table) => Boolean(table.documentId));
+  if (hasUploadedStructuredSheet) return [];
+  // 物理 Sheet 由服务端确定性生成。Agent 只负责没有物理表绑定的逻辑对象，
+  // 避免领域 Reduce 把几十张 Sheet 聚合成一个无法执行的数据对象。
+  const hints: ObjectGenerationHint[] = (analysis?.candidateObjects ?? [])
+    .filter((candidate) => candidate.sourceTables.length === 0)
+    .map((candidate) => ({ ...candidate, sourceTables: [] }));
   const tableNames = new Set(tables.map((table) => table.name));
 
   for (const candidate of analysis?.candidateArtifacts?.filter((item) => item.kind === 'object') ?? []) {
@@ -66,14 +69,32 @@ export function buildObjectGenerationHints(
       hint.materialEvidence = [...(hint.materialEvidence ?? []), materialEvidence(candidate)];
       continue;
     }
+    // 表格对象已经确定性生成；绑定真实 Sheet 的分段候选只用于提供证据。
+    if (candidate.sources.some((source) => tableNames.has(source))) continue;
+    if (candidate.readiness !== 'extractable') continue;
     hints.push({
       name: candidate.name,
       rationale: candidate.rationale,
-      sourceTables: candidate.sources.filter((source) => tableNames.has(source)),
+      sourceTables: [],
       materialEvidence: [materialEvidence(candidate)],
     });
   }
   return hints;
+}
+
+/**
+ * Excel/CSV 只决定物理对象边界，不应把文档规则和指标排除在知识生成之外。
+ * 规则与指标可以引用 Sheet 字段，也可以引用产品手册中的业务口径；两者
+ * 在生成前由候选处置计划和批次质量门禁分别约束。只有需要补充业务口径的
+ * 候选留给专家，不把可提取候选静默延期到“增量建模”。
+ */
+export function buildKnowledgeGenerationCandidates(
+  analysis: AnalysisResult | undefined,
+  tables: DataDictTable[],
+): ArtifactCandidate[] {
+  void tables;
+  return (analysis?.candidateArtifacts ?? [])
+    .filter((item) => item.kind === 'rule' || item.kind === 'metric');
 }
 
 /** 文档来源由分析证据确定，不能因为生成模型漏填 sourceRefs 就丢失。 */

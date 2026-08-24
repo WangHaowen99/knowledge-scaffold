@@ -10,130 +10,13 @@ const { createProject } = await import('../src/projects/repo.js');
 const { getDb } = await import('../src/db/index.js');
 const {
   getCheck,
-  getSemanticCheckCache,
-  runStableSemanticCheck,
   saveCheck,
-  semanticCheckInputHash,
 } = await import('../src/workflow/package-check.js');
 const { getPackageWarningReview } = await import('../src/workflow/warning-acceptance.js');
 const { deferPackageErrors, getPackageErrorDeferral } = await import('../src/workflow/package-error-deferral.js');
 const { ArtifactRevisionRepo } = await import('../src/artifacts/revision-repo.js');
 
-function semanticSpec(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'semantic-cache-agent',
-    name: '语义缓存测试',
-    description: '测试重复检查结果是否稳定',
-    version: '1.0.0',
-    language: 'zh-CN',
-    defaultProviderAlias: 'default',
-    objects: [{
-      key: 'Product', title: '产品', description: '产品业务定义',
-      fields: [{ key: 'name', name: '名称', type: 'string', required: true }],
-      relations: [], sourceRefs: [], sourceTables: [],
-    }],
-    operations: [], rules: [], metrics: [], scripts: [], status: 'draft',
-    ...overrides,
-  } as any;
-}
-
-test('语义检查哈希忽略版本号和发布状态但响应业务内容变化', () => {
-  const project = createProject({ owner: 'alice', name: '语义哈希' });
-  const baseline = semanticCheckInputHash(project, semanticSpec());
-  const metadataOnly = semanticCheckInputHash(project, semanticSpec({
-    version: '1.0.1', status: 'review',
-  }));
-  const changed = semanticCheckInputHash(project, semanticSpec({
-    objects: [{
-      key: 'Product', title: '产品', description: '产品业务定义已修改',
-      fields: [{ key: 'name', name: '名称', type: 'string', required: true }],
-      relations: [], sourceRefs: [], sourceTables: [],
-    }],
-  }));
-
-  assert.equal(metadataOnly, baseline);
-  assert.notEqual(changed, baseline);
-});
-
-test('语义检查哈希覆盖超长脚本被模型传输摘要省略的中段', () => {
-  const project = createProject({ owner: 'alice', name: '超长脚本语义哈希' });
-  const source = `${'head\n'.repeat(3_000)}${'middle-a\n'.repeat(1_500)}${'tail\n'.repeat(2_000)}`;
-  const changed = source.replace('middle-a\n', 'middle-b\n');
-  const withScript = (sourceCode: string) => semanticSpec({ scripts: [{
-    key: 'calculate_product', title: '产品计算', description: '计算产品结果',
-    runtime: 'python', entrypoint: 'calculate_product.py', timeoutSeconds: 30,
-    parameters: [], outputs: [], boundaries: [], sourceCode,
-  }] });
-
-  assert.notEqual(
-    semanticCheckInputHash(project, withScript(source)),
-    semanticCheckInputHash(project, withScript(changed)),
-  );
-});
-
-test('同一业务内容的重复检查复用首次语义结果', async () => {
-  const project = createProject({ owner: 'alice', name: '语义结果复用' });
-  const spec = semanticSpec();
-  const existing = [{
-    id: 'stable-semantic-warning', source: 'semantic' as const, severity: '警告' as const,
-    category: '业务边界', target: 'Product', message: '需要确认产品适用范围',
-  }];
-  let runs = 0;
-  const first = await runStableSemanticCheck(project, spec, {
-    existingFindings: existing,
-    runner: async () => {
-      runs += 1;
-      return [{
-        id: 'drifted-error', source: 'semantic', severity: '错误', category: '新错误',
-        target: 'Product', message: '同一内容被重新判定为错误',
-      }];
-    },
-  });
-  const second = await runStableSemanticCheck(project, semanticSpec({
-    version: '1.0.1', status: 'review',
-  }), {
-    runner: async () => {
-      runs += 1;
-      return [];
-    },
-  });
-
-  assert.equal(runs, 0);
-  assert.equal(first.reused, true);
-  assert.equal(second.reused, true);
-  assert.deepEqual(second.findings.map((finding) => finding.id), ['stable-semantic-warning']);
-  assert.deepEqual(
-    getSemanticCheckCache(project.id, semanticCheckInputHash(project, spec))
-      ?.map((finding) => finding.id),
-    ['stable-semantic-warning'],
-  );
-});
-
-test('强制语义复查会显式运行模型并更新缓存', async () => {
-  const project = createProject({ owner: 'alice', name: '强制语义复查' });
-  const spec = semanticSpec();
-  let runs = 0;
-  const result = await runStableSemanticCheck(project, spec, {
-    force: true,
-    existingFindings: [],
-    runner: async () => {
-      runs += 1;
-      return [{
-        id: 'forced-semantic-hint', source: 'semantic', severity: '提示', category: '复查',
-        target: 'Product', message: '强制复查的新结果',
-      }];
-    },
-  });
-
-  assert.equal(runs, 1);
-  assert.equal(result.reused, false);
-  assert.deepEqual(
-    getSemanticCheckCache(project.id, result.semanticHash)?.map((finding) => finding.id),
-    ['forced-semantic-hint'],
-  );
-});
-
-test('迟到的旧修订校验不会覆盖已保存的新修订校验', () => {
+ test('迟到的旧修订校验不会覆盖已保存的新修订校验', () => {
   const project = createProject({ owner: 'alice', name: '校验修订历史' });
   saveCheck(project.id, '2.0.0', [{
     id: 'finding-b', source: 'rule', severity: '警告', category: '新修订',

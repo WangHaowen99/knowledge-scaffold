@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { Type } from '@earendil-works/pi-ai';
 import { getDb, nowIso } from '../db/index.js';
-import { buildLlm } from '../llm/provider.js';
-import { makeAgent, runAgent } from './agent.js';
 import { findObjectDataMappingProblems } from './data-mapping.js';
 import { validateKey } from './keys.js';
 import {
@@ -21,12 +18,10 @@ import { sourceRefsFor, tableSourceFor, tableSourcesFor } from './source-referen
 import { duplicateScriptEntrypoints, normalizeCompetencyQuestion, questionsMatch } from './spec-validation.js';
 import type { PackageFiles } from './package-render.js';
 import { validateGeneratedScriptSafety } from './script-safety.js';
-import type { DataDictTable, PackageSpec, Project } from '../types.js';
+import type { DataDictTable, PackageSpec } from '../types.js';
 
-// 包体检（知识包完善阶段）双层：
-// ① spec 语义层——规则引擎（确定性，代码直查）+ 语义检查（LLM agent）。
-//    规则集基于既有知识包检查实践整理，
-//    rule-check / semantic-check / coverage-check agent，按本工具的 objects/operations 格式适配。
+// 包体检（知识包完善阶段）只执行确定性检查：
+// ① spec 规则层——引用、来源映射、主键、输入使用和领域问题覆盖等代码规则。
 // ② 渲染产物层（runFormatChecks）——对最终 files（含 override 后内容）校验包格式：
 //    必选文件、frontmatter、索引-详情一致性、manifest/mappings 结构、key 合法性。
 //    override 写入与导出前都过这层（routes.ts），人工改坏的包不再原样导出。
@@ -48,8 +43,21 @@ export interface CheckFinding {
   userSuggestion?: string;
   /** 专家可直接选择的通俗方案；decision 保留系统执行所需细节。 */
   expertOptions?: Array<{ label: string; description: string; decision: string }>;
+  /** 必须实际修改的资源。对照引用不得列入，受控修复据此建立显式变更边界。 */
+  repairTargets?: Array<{
+    targetKind: 'object' | 'operation' | 'rule' | 'metric' | 'script';
+    targetKey: string;
+    instruction: string;
+  }>;
   /** 发布时必须修复，不能作为已知限制带入发布。 */
   releaseBlocking?: boolean;
+  /** 稳定错误码和处置类别由校验器直接给出；旧记录缺失时由修复层兼容推断。 */
+  code?: string;
+  disposition?: 'automatic' | 'approval_required' | 'expert_decision'
+    | 'external_data_required' | 'retryable_infrastructure';
+  path?: string;
+  facts?: Record<string, unknown>;
+  impact?: string;
 }
 
 function mappingIdentifier(value: unknown): string {
@@ -63,18 +71,6 @@ function normalizedMappingIdentifier(value: unknown): string {
 
 function hasUnsafeMappingText(value: string): boolean {
   return /[\r\n\u2028\u2029\p{Cc}]/u.test(value);
-}
-
-export function semanticCheckFailureFinding(error: unknown): CheckFinding {
-  return {
-    id: `semantic_check_failed_${Date.now()}`,
-    source: 'semantic',
-    severity: '警告',
-    category: '语义校验执行失败',
-    target: 'package',
-    message: error instanceof Error ? error.message : String(error),
-    suggestion: '重新执行知识结构校验；若仍失败，请检查任务模型配置和服务连通性',
-  };
 }
 
 function normalizeFindingIdentityPart(value: string): string {
@@ -623,323 +619,6 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   }
 
   return out;
-}
-
-// ---- 语义检查（LLM agent，checklist 源自 semantic-check-agent） ----
-const SEMANTIC_SCRIPT_SOURCE_LIMIT = 20_000;
-
-function semanticScriptSource(sourceCode: string): string {
-  if (sourceCode.length <= SEMANTIC_SCRIPT_SOURCE_LIMIT) return sourceCode;
-  const headLength = 12_000;
-  const tailLength = SEMANTIC_SCRIPT_SOURCE_LIMIT - headLength;
-  const omitted = sourceCode.length - headLength - tailLength;
-  return [
-    sourceCode.slice(0, headLength),
-    `# [语义检查传输摘要：中间省略仅用于控制语义检查上下文，共省略 ${omitted} 个字符；知识包中的实际源码未被截断]`,
-    sourceCode.slice(-tailLength),
-  ].join('\n');
-}
-
-export function buildSemanticCheckPrompt(project: Project, spec: PackageSpec) {
-  const system = [
-    '你是知识包语义体检员（package_check）。逐项检查规格并用 submit_findings 提交结构化发现。',
-    '对每个操作检查：',
-    '1) 逻辑步骤完整性——流程是否缺分支、缺异常路径、条件不完整；',
-    '2) 输入参数使用——输入表中的参数是否都在流程中被用到；',
-    '3) 输出可推导性——输出能否由流程步骤推导出来；',
-    '4) 兜底完整性——流程中引用其他操作/查询数据时，结果可能为空/0/失败的（转换型/判断型/数值计算型/查询型四类），是否有显式兜底（跳过/空值传递/估算/默认值）或天然保护（上游已过滤、成熟态数据、纯查询不触发动作）；两者皆无报「警告/兜底缺失」；',
-    '5) 空值语义——确定性空值（业务真为零）与未知性空值（未读到/未同步）是否被混同代入计算；混同报「错误/空值语义模糊」；',
-    '6) 口径一致性——同一业务量（如成本、周期、数量）在不同操作间的计算口径是否互相矛盾；矛盾报「错误/口径冲突」，并指出冲突双方。',
-    '7) 参数化与泛化——规则、操作和脚本是否把一次示例中的主体、批次、日期、数量或答案写成固定知识；不得把示例中的具体输入或答案写成通用规则。发现这种情况报「错误/样例硬编码」。',
-    '8) 变体覆盖——流程是否能处理边界、异常和未见过的输入组合；只复述单一路径、没有适用范围或缺少必要分支时，报「警告/泛化边界不足」。',
-    '9) 证据与假设边界——阈值、公式、枚举、流程分支和对象关系是否有资料、确认流程或专家决策依据；模型推测被写成确定事实时，报「错误/无证据知识」。',
-    '10) 确定性能力——多步骤计算、聚合、排序、分配或格式转换是否通过参数化 script 执行，并声明输入输出、边界和失败处理；只在文字中给出不可验证计算时，报「警告/确定性能力缺失」。',
-    '长脚本可能包含“语义检查传输摘要”标记；这只表示检查载荷省略了源码中段，首尾仍来自完整源码。不得把传输摘要标记误判为知识包源码截断，也不得仅因摘要标记报告完整性问题。',
-    '对每个对象检查：字段描述歧义、关联对象是否有字段/外键支撑、业务定义是否自洽。',
-    'target 填对象/操作的 key；suggestion 写成可直接执行的修缮指令；确无问题就提交空数组，不要为凑数报告风格偏好。',
-    '同时生成面向业务专家的说明：业务专家不需要理解代码、表名、字段 key、函数名或“断言”等技术术语。',
-    'userMessage 用 1~2 句话说清“目前不确定什么、可能导致什么业务影响”；userSuggestion 说清专家需要确认什么。',
-    'expertOptions 在存在多种合理处理方式时提供 2~4 项：label 不超过 18 个字，description 只讲业务含义，decision 保留系统执行所需的完整技术决策。',
-    '严重级别为“错误”时，message 必须是完整句子，说清冲突双方或缺失内容及业务影响；同时给出 suggestion、userSuggestion 或 expertOptions 中的至少一种可执行处理方式。不确定或只能输出半句话时必须降为“警告”或“提示”，不得提交阻断性错误。',
-    `项目背景：${project.background || project.domain || project.name}`,
-  ].join('\n');
-
-  const body = [
-    '【当前规格】',
-    JSON.stringify({
-      objects: spec.objects,
-      operations: spec.operations,
-      rules: spec.rules ?? [],
-      metrics: spec.metrics ?? [],
-      scripts: (spec.scripts ?? []).map((script) => ({
-        ...script,
-        sourceCode: semanticScriptSource(script.sourceCode),
-      })),
-    }),
-    '请完成语义体检并提交发现。',
-  ].join('\n');
-  return { system, body };
-}
-
-type RawSemanticFinding = {
-  severity?: unknown;
-  category?: unknown;
-  target?: unknown;
-  message?: unknown;
-  suggestion?: unknown;
-  userMessage?: unknown;
-  userSuggestion?: unknown;
-  expertOptions?: unknown;
-};
-
-function splitMessageAndSuggestion(value: string): { message: string; suggestion?: string } {
-  const separator = '","suggestion":"';
-  const index = value.indexOf(separator);
-  const clean = (text: string) => text.replace(/"\}\]?\s*$/u, '').trim();
-  if (index < 0) return { message: clean(value) };
-  const message = value.slice(0, index).trim();
-  const suggestion = clean(value.slice(index + separator.length));
-  return { message, ...(suggestion ? { suggestion } : {}) };
-}
-
-function recoverMergedSemanticFindings(finding: RawSemanticFinding): RawSemanticFinding[] {
-  const message = typeof finding.message === 'string' ? finding.message : '';
-  const separator = /"\}\s*,\s*\{\s*"severity"\s*:\s*"/u;
-  if (!separator.test(message)) return [finding];
-  const segments = message.split(separator);
-  const first = splitMessageAndSuggestion(segments.shift() ?? '');
-  const recovered: RawSemanticFinding[] = [{
-    ...finding,
-    message: first.message,
-    ...(first.suggestion ? { suggestion: first.suggestion } : {}),
-  }];
-  const categorySeparator = '","category":"';
-  const targetSeparator = '","target":"';
-  const messageSeparator = '","message":"';
-  for (const segment of segments) {
-    const categoryAt = segment.indexOf(categorySeparator);
-    const targetAt = categoryAt < 0 ? -1 : segment.indexOf(targetSeparator, categoryAt + categorySeparator.length);
-    const messageAt = targetAt < 0 ? -1 : segment.indexOf(messageSeparator, targetAt + targetSeparator.length);
-    if (categoryAt < 1 || targetAt < 0 || messageAt < 0) return [finding];
-    const content = splitMessageAndSuggestion(segment.slice(messageAt + messageSeparator.length));
-    recovered.push({
-      severity: segment.slice(0, categoryAt),
-      category: segment.slice(categoryAt + categorySeparator.length, targetAt),
-      target: segment.slice(targetAt + targetSeparator.length, messageAt),
-      message: content.message,
-      ...(content.suggestion ? { suggestion: content.suggestion } : {}),
-    });
-  }
-  return recovered;
-}
-
-type SemanticFindingCompletenessInput = {
-  severity?: unknown;
-  category?: unknown;
-  message?: unknown;
-  suggestion?: unknown;
-  userSuggestion?: unknown;
-  expertOptions?: unknown;
-};
-
-function semanticBlockingFindingIsIncomplete(finding: SemanticFindingCompletenessInput): boolean {
-  if (String(finding.severity ?? '').trim() !== '错误') return false;
-  const message = String(finding.message ?? '').trim();
-  const suggestion = String(finding.suggestion ?? '').trim();
-  const userSuggestion = String(finding.userSuggestion ?? '').trim();
-  const expertOptions = Array.isArray(finding.expertOptions) ? finding.expertOptions : [];
-  const hasAction = suggestion.length >= 6 || userSuggestion.length >= 6 || expertOptions.length > 0;
-  const isCompleteSentence = message.length >= 18 && /[。！？；.!?)]$/u.test(message);
-  return !hasAction && !isCompleteSentence;
-}
-
-export function normalizeSemanticFindings(
-  input: RawSemanticFinding[],
-): Omit<CheckFinding, 'id' | 'source'>[] {
-  const expanded = input.flatMap(recoverMergedSemanticFindings).slice(0, 100);
-  return expanded.map((finding) => {
-    const severity = String(finding.severity ?? '').trim();
-    const category = String(finding.category ?? '').trim();
-    const target = String(finding.target ?? '').trim();
-    const message = String(finding.message ?? '').trim();
-    if (!['错误', '警告', '提示'].includes(severity) || !category || !target || !message) {
-      throw new Error('语义校验返回的发现格式不正确');
-    }
-    const suggestion = typeof finding.suggestion === 'string' ? finding.suggestion.trim() : '';
-    const userMessage = typeof finding.userMessage === 'string' ? finding.userMessage.trim() : '';
-    const userSuggestion = typeof finding.userSuggestion === 'string' ? finding.userSuggestion.trim() : '';
-    const expertOptions = Array.isArray(finding.expertOptions)
-      ? finding.expertOptions.flatMap((option) => {
-        if (!option || typeof option !== 'object' || Array.isArray(option)) return [];
-        const value = option as Record<string, unknown>;
-        const label = typeof value.label === 'string' ? value.label.trim() : '';
-        const description = typeof value.description === 'string' ? value.description.trim() : '';
-        const decision = typeof value.decision === 'string' ? value.decision.trim() : '';
-        return label && description && decision ? [{
-          label: label.slice(0, 80),
-          description: description.slice(0, 500),
-          decision: decision.slice(0, 2_000),
-        }] : [];
-      }).slice(0, 4)
-      : [];
-    const incompleteBlockingFinding = semanticBlockingFindingIsIncomplete({
-      severity,
-      category,
-      message,
-      suggestion,
-      userSuggestion,
-      expertOptions,
-    });
-    const normalizedMessage = incompleteBlockingFinding
-      ? `语义检查只返回了不完整描述“${message}”，缺少完整原因、业务影响或可执行处理方式，本项不作为必须修复的错误。`
-      : message;
-    return {
-      severity: (incompleteBlockingFinding ? '提示' : severity) as Severity,
-      category: (incompleteBlockingFinding ? '语义校验结果不完整' : category).slice(0, 200),
-      target: target.slice(0, 500),
-      message: normalizedMessage.slice(0, 8_000),
-      ...(suggestion ? { suggestion: suggestion.slice(0, 4_000) } : {}),
-      ...(userMessage ? { userMessage: userMessage.slice(0, 1_000) } : {}),
-      ...(userSuggestion ? { userSuggestion: userSuggestion.slice(0, 1_000) } : {}),
-      ...(expertOptions.length ? { expertOptions } : {}),
-    };
-  });
-}
-
-export function semanticFindingsNeedRecheck(
-  findings: Array<Pick<CheckFinding, 'source' | 'message'> & Partial<Pick<CheckFinding,
-    'severity' | 'category' | 'suggestion' | 'userSuggestion' | 'expertOptions'>>>,
-): boolean {
-  return findings.some((finding) => finding.source === 'semantic'
-    && (finding.category === '语义校验执行失败'
-      || finding.category === '语义校验结果不完整'
-      || semanticBlockingFindingIsIncomplete(finding)
-      || /"\}\s*,\s*\{\s*"severity"\s*:/u.test(finding.message)));
-}
-
-export async function runSemanticCheck(project: Project, spec: PackageSpec): Promise<CheckFinding[]> {
-  const cap: { findings?: RawSemanticFinding[] } = {};
-  const submitFindings = {
-    name: 'submit_findings',
-    label: '提交体检发现',
-    description: '提交语义检查发现（没有问题时提交空数组）',
-    parameters: Type.Object({
-      findings: Type.Array(Type.Object({
-        severity: Type.Union([Type.Literal('错误'), Type.Literal('警告'), Type.Literal('提示')]),
-        category: Type.String(),
-        target: Type.String(),
-        message: Type.String(),
-        suggestion: Type.Optional(Type.String()),
-        userMessage: Type.Optional(Type.String()),
-        userSuggestion: Type.Optional(Type.String()),
-        expertOptions: Type.Optional(Type.Array(Type.Object({
-          label: Type.String(),
-          description: Type.String(),
-          decision: Type.String(),
-        }))),
-      })),
-    }),
-    async execute(_id: string, params: any) {
-      cap.findings = params.findings ?? [];
-      return { content: [{ type: 'text' as const, text: `已记录 ${params.findings?.length ?? 0} 条发现。` }], details: {}, terminate: true };
-    },
-  };
-
-  const prompt = buildSemanticCheckPrompt(project, spec);
-  const agent = makeAgent(buildLlm(), prompt.system, [submitFindings] as any);
-  await runAgent(agent, prompt.body);
-  return normalizeSemanticFindings(cap.findings ?? [])
-    .map((f) => createCheckFinding({ ...f, id: fid(), source: 'semantic' as const }));
-}
-
-export function semanticCheckInputHash(project: Project, spec: PackageSpec): string {
-  const prompt = buildSemanticCheckPrompt(project, spec);
-  const fullBusinessSpec = JSON.stringify({
-    objects: spec.objects,
-    operations: spec.operations,
-    rules: spec.rules ?? [],
-    metrics: spec.metrics ?? [],
-    scripts: spec.scripts ?? [],
-  });
-  return createHash('sha256')
-    .update(prompt.system)
-    .update('\0')
-    .update(fullBusinessSpec)
-    .digest('hex');
-}
-
-function semanticOnly(findings: CheckFinding[]): CheckFinding[] {
-  return findings
-    .filter((finding) => finding.source === 'semantic')
-    .map((finding) => ({ ...withCheckFindingFingerprint(finding) }));
-}
-
-export function getSemanticCheckCache(
-  projectId: string,
-  semanticHash: string,
-): CheckFinding[] | null {
-  const row = getDb().prepare(`SELECT findings_json FROM package_semantic_check_cache
-    WHERE project_id = ? AND semantic_hash = ?`).get(projectId, semanticHash) as
-    { findings_json?: string } | undefined;
-  if (!row?.findings_json) return null;
-  return semanticOnly(JSON.parse(row.findings_json) as CheckFinding[]);
-}
-
-export function saveSemanticCheckCache(
-  projectId: string,
-  semanticHash: string,
-  findings: CheckFinding[],
-): void {
-  const semantic = semanticOnly(findings);
-  if (semanticFindingsNeedRecheck(semantic)) return;
-  getDb().prepare(`INSERT INTO package_semantic_check_cache
-    (project_id, semantic_hash, findings_json, created_at) VALUES (?,?,?,?)
-    ON CONFLICT(project_id, semantic_hash) DO UPDATE SET
-      findings_json = excluded.findings_json,
-      created_at = excluded.created_at`).run(
-    projectId,
-    semanticHash,
-    JSON.stringify(semantic),
-    nowIso(),
-  );
-}
-
-export interface StableSemanticCheckOptions {
-  force?: boolean;
-  /** 当前知识包修订已有的完整检查结果，用于升级后立即建立稳定基线。 */
-  existingFindings?: CheckFinding[];
-  runner?: (project: Project, spec: PackageSpec) => Promise<CheckFinding[]>;
-}
-
-export interface StableSemanticCheckResult {
-  semanticHash: string;
-  findings: CheckFinding[];
-  reused: boolean;
-  source: 'revision' | 'cache' | 'fresh';
-}
-
-export async function runStableSemanticCheck(
-  project: Project,
-  spec: PackageSpec,
-  options: StableSemanticCheckOptions = {},
-): Promise<StableSemanticCheckResult> {
-  const semanticHash = semanticCheckInputHash(project, spec);
-  if (!options.force && options.existingFindings !== undefined) {
-    const existing = semanticOnly(options.existingFindings);
-    if (!semanticFindingsNeedRecheck(existing)) {
-      saveSemanticCheckCache(project.id, semanticHash, existing);
-      return { semanticHash, findings: existing, reused: true, source: 'revision' };
-    }
-  }
-  if (!options.force) {
-    const cached = getSemanticCheckCache(project.id, semanticHash);
-    if (cached !== null) {
-      return { semanticHash, findings: cached, reused: true, source: 'cache' };
-    }
-  }
-  const findings = semanticOnly(await (options.runner ?? runSemanticCheck)(project, spec));
-  saveSemanticCheckCache(project.id, semanticHash, findings);
-  return { semanticHash, findings, reused: false, source: 'fresh' };
 }
 
 export interface PackageCheckResult {

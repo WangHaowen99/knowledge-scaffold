@@ -33,9 +33,9 @@ const packageWorkspaceSource = readFileSync(
   'utf8',
 );
 
-test('内容检查按钮明确说明会自动修复错误并重新检查', () => {
-  assert.match(packageCheckSource, /自动修复错误/);
-  assert.match(packageCheckSource, /根据当前检查结果自动修改知识包，并重新检查/);
+test('内容检查按钮明确说明会逐项处理错误并复检候选', () => {
+  assert.match(packageCheckSource, /逐项处理错误/);
+  assert.match(packageCheckSource, /逐项分类处理当前知识包错误，并在候选通过复检后应用/);
   assert.doesNotMatch(packageCheckSource, />继续修复</);
 });
 
@@ -114,10 +114,11 @@ test('任务概览明确区分运行、等待用户和完成状态', () => {
   assert.match(packageChatSource, /pchat-task-status__label/);
 });
 
-test('当前任务概览隐藏已有完成替代项的历史过时任务', () => {
+test('当前任务概览不计入历史过时任务', () => {
   const tasks = effectiveTaskPlanTasks([
     { id: 'old', kind: 'completion_review', milestoneId: 'construction_completed', title: '检查 AI 辅助构建成果', status: 'stale' },
     { id: 'current', kind: 'completion_review', milestoneId: 'construction_completed', title: '检查 AI 辅助构建成果', status: 'completed' },
+    { id: 'orphan', kind: 'package_repair', milestoneId: 'construction_completed', title: '历史可选修复', status: 'stale' },
   ]);
 
   assert.deepEqual(tasks.map((task) => task.id), ['current']);

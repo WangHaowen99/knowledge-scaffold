@@ -62,7 +62,12 @@ export async function authFetch(path, options = {}) {
 }
 
 export async function api(path, options = {}) {
-  const res = await authFetch(path, options);
+  let res;
+  try {
+    res = await authFetch(path, options);
+  } catch (cause) {
+    throw Object.assign(new Error('网络连接中断，请稍后重试；已经提交的数据不会丢失'), { cause });
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status, data });
@@ -85,6 +90,10 @@ export const register = (username, email, password) =>
   api('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) });
 export const me = () => api('/api/me');
 export const listProjects = () => api('/api/projects');
+export const listProjectMembers = (id) => api(`/api/projects/${encodeURIComponent(id)}/members`);
+export const setProjectMember = (id, username, role) => api(`/api/projects/${encodeURIComponent(id)}/members`, {
+  method: 'PUT', body: JSON.stringify({ username, role }),
+});
 export const createProject = (input) => api('/api/projects', { method: 'POST', body: JSON.stringify(input) });
 export const deleteProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`, {
   method: 'DELETE', body: JSON.stringify({ confirmed: true }),
@@ -98,12 +107,27 @@ export const updateProject = (id, input) => api(`/api/projects/${encodeURICompon
   method: 'PUT', body: JSON.stringify(input),
 });
 export const getProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`);
-export const uploadDocument = (id, file) => {
+export const uploadDocument = (id, file, replacementOf = '', directives = {}) => {
   const form = new FormData();
   form.append('file', file);
-  return api(`/api/projects/${encodeURIComponent(id)}/documents`, { method: 'POST', body: form });
+  const query = new URLSearchParams();
+  if (replacementOf) query.set('replacementOf', replacementOf);
+  if (directives.purpose) query.set('purpose', directives.purpose);
+  if (directives.readingMode) query.set('readingMode', directives.readingMode);
+  if (directives.autoContinue === false) query.set('agentFollowUp', '0');
+  if (directives.uploadBatchId) query.set('uploadBatchId', directives.uploadBatchId);
+  if (directives.uploadBatchSize) query.set('uploadBatchSize', String(directives.uploadBatchSize));
+  const suffix = query.size ? `?${query}` : '';
+  return api(`/api/projects/${encodeURIComponent(id)}/documents${suffix}`, { method: 'POST', body: form });
 };
+export const updateDocumentDirectives = (id, docId, directives) => api(
+  `/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}/directives`,
+  { method: 'PATCH', body: JSON.stringify(directives) },
+);
 export const deleteDocument = (id, docId) => api(`/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' });
+export const downloadDocument = async (id, docId) => requireOkResponse(await authFetch(
+  `/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}/download`,
+));
 export const listMaterialRevisions = (id, sourceKey = '') => api(
   `/api/projects/${encodeURIComponent(id)}/documents/revisions${sourceKey ? `?sourceKey=${encodeURIComponent(sourceKey)}` : ''}`,
 );

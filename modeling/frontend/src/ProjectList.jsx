@@ -1,20 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { listProjects, createProject, deleteProject } from './api.js';
-
-const DEFAULT_FORM = {
-  name: '',
-  domain: '',
-  background: '',
-  targetUsers: '',
-  glossaryPrefs: '',
-  sensitivityLevel: 'standard',
-  workflowProfile: {
-    enabledSteps: [],
-    requiredSteps: [],
-    releaseRequested: true,
-    externalResearch: false,
-  },
-};
+import { listProjects, deleteProject, listProjectMembers, setProjectMember } from './api.js';
 
 export function projectConstructionSummary(project) {
   if (project.kind === 'package') {
@@ -33,8 +18,9 @@ export function projectConstructionSummary(project) {
   return { label, percent, title: `建模进度：${label}（${percent}%）` };
 }
 
-export function ProjectCard({ project: p, onOpen, onRequestDelete, deleting = false }) {
+export function ProjectCard({ project: p, onOpen, onRequestDelete, onRequestShare, deleting = false }) {
   const summary = projectConstructionSummary(p);
+  const accessRole = p.accessRole || 'owner';
   return (
     <div
       className={`pj-card ${p.kind === 'package' ? 'package' : ''}`}
@@ -48,7 +34,14 @@ export function ProjectCard({ project: p, onOpen, onRequestDelete, deleting = fa
         onOpen(p);
       }}
     >
-      <button
+      {accessRole === 'owner' && onRequestShare && <button
+        type="button"
+        className="pj-share"
+        aria-label={`共享项目：${p.name}`}
+        title="管理项目成员"
+        onClick={(event) => { event.stopPropagation(); onRequestShare(p); }}
+      >成员</button>}
+      {accessRole === 'owner' && <button
         type="button"
         className="pj-delete"
         aria-label={`删除项目：${p.name}`}
@@ -58,7 +51,7 @@ export function ProjectCard({ project: p, onOpen, onRequestDelete, deleting = fa
           event.stopPropagation();
           onRequestDelete(p);
         }}
-      >{deleting ? '…' : '×'}</button>
+      >{deleting ? '…' : '×'}</button>}
       <h3 title={p.name}>{p.name}</h3>
       <div className={`pd ${p.background ? '' : 'pd-empty'}`}>{p.background || '暂无说明'}</div>
       {p.kind !== 'package' && (
@@ -69,6 +62,8 @@ export function ProjectCard({ project: p, onOpen, onRequestDelete, deleting = fa
       )}
       <div className="pm">
         <span className="tag tag-lang">{summary.label}</span>
+        {accessRole === 'viewer' && <span className="tag">只读成员</span>}
+        {accessRole === 'modeler' && <span className="tag tag-ok">建模成员</span>}
         {p.domain && <span className="tag tag-ok" title={p.domain}>{p.domain}</span>}
         <span className="pj-date">{(p.updatedAt || '').slice(0, 10)}</span>
       </div>
@@ -103,41 +98,16 @@ export default function ProjectList({ onOpen }) {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState(DEFAULT_FORM);
-  const [err, setErr] = useState('');
-  const [submitting, setSubmitting] = useState(false);
   const [deleteErr, setDeleteErr] = useState('');
   const [deleting, setDeleting] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [sharing, setSharing] = useState(null);
 
   const load = () => listProjects()
     .then((d) => { setProjects(d.projects); setLoadErr(''); })
     .catch((e) => setLoadErr(e.message || '项目列表加载失败'))
     .finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
-  useEffect(() => {
-    if (!creating) return undefined;
-    const onKeyDown = (e) => { if (e.key === 'Escape' && !submitting) setCreating(false); };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [creating, submitting]);
-
-  const submit = async () => {
-    if (submitting) return;
-    if (!form.name.trim()) { setErr('项目名必填'); return; }
-    setSubmitting(true);
-    try {
-      const { project } = await createProject(form);
-      setCreating(false);
-      onOpen(project);
-    } catch (e) { setErr(e.message); } finally { setSubmitting(false); }
-  };
-
-  const setProfile = (patch) => setForm({
-    ...form,
-    workflowProfile: { ...form.workflowProfile, ...patch },
-  });
 
   const requestDelete = (project) => {
     setDeleting(project);
@@ -191,10 +161,12 @@ export default function ProjectList({ onOpen }) {
             project={p}
             onOpen={onOpen}
             onRequestDelete={requestDelete}
+            onRequestShare={setSharing}
             deleting={deleteBusy && deleting?.id === p.id}
           />
         ))}
-        <button className="pj-card pj-new" data-tour="pj-new" onClick={() => { setCreating(true); setErr(''); }}>
+        <button className="pj-card pj-new" data-tour="pj-new"
+          onClick={() => window.location.assign('/workbench.html#/create')}>
           <span className="pj-new-ic">＋</span>
           <span>新建项目</span>
         </button>
@@ -203,69 +175,54 @@ export default function ProjectList({ onOpen }) {
         <ProjectDeleteDialog project={deleting} busy={deleteBusy} error={deleteErr}
           onCancel={() => { if (!deleteBusy) setDeleting(null); }} onConfirm={confirmDelete} />
       )}
-
-      {creating && (
-        <div className="modal-ov" onClick={(e) => { if (e.target === e.currentTarget) setCreating(false); }}>
-          <div className="modal">
-            <h3>新建项目</h3>
-            <form onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            <div className="field"><label>项目名 *</label>
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus /></div>
-            <div className="field"><label>业务领域</label>
-              <input value={form.domain} placeholder="如：对公营销"
-                onChange={(e) => setForm({ ...form, domain: e.target.value })} /></div>
-            <div className="field"><label>目标用户</label>
-              <input value={form.targetUsers} placeholder="如：客户经理"
-                onChange={(e) => setForm({ ...form, targetUsers: e.target.value })} /></div>
-            <div className="field"><label>项目背景（可选）</label>
-              <textarea rows={3} placeholder="可填写项目来源或背景；建模目标将在 AI 辅助构建中单独确认"
-                value={form.background} onChange={(e) => setForm({ ...form, background: e.target.value })} /></div>
-            <div className="field"><label>资料级别</label>
-              <select value={form.sensitivityLevel} onChange={(e) => {
-                const sensitivityLevel = e.target.value;
-                setForm({
-                  ...form,
-                  sensitivityLevel,
-                  workflowProfile: {
-                    ...form.workflowProfile,
-                    externalResearch: sensitivityLevel === 'restricted'
-                      ? false
-                      : form.workflowProfile.externalResearch,
-                  },
-                });
-              }}>
-                <option value="standard">普通</option>
-                <option value="restricted">敏感</option>
-              </select>
-            </div>
-            <fieldset className="pj-options">
-              <legend>流程</legend>
-              <p className="pj-options-note">
-                建模阶段统一使用 AI 辅助构建；验证阶段固定包含场景推演、数据源绑定和评测。
-              </p>
-              <label><input type="checkbox"
-                checked={form.workflowProfile.releaseRequested}
-                onChange={(e) => setProfile({ releaseRequested: e.target.checked })} />正式交付</label>
-              <label><input type="checkbox"
-                disabled={form.sensitivityLevel === 'restricted'}
-                checked={form.workflowProfile.externalResearch}
-                onChange={(e) => setProfile({ externalResearch: e.target.checked })} />联网调研</label>
-            </fieldset>
-            <details className="pj-more">
-              <summary>更多设置</summary>
-              <div className="field"><label>术语偏好</label>
-                <input value={form.glossaryPrefs} placeholder="如：统一称为客户经理"
-                  onChange={(e) => setForm({ ...form, glossaryPrefs: e.target.value })} /></div>
-            </details>
-            {err && <div className="lerr">{err}</div>}
-            <div className="foot">
-              <button type="button" className="btn" disabled={submitting} onClick={() => setCreating(false)}>取消</button>
-              <button type="submit" className="btn btn-p" disabled={submitting}>{submitting ? '创建中…' : '创建'}</button>
-            </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {sharing && <ProjectMemberDialog project={sharing} onClose={() => setSharing(null)} />}
     </div>
   );
+}
+
+export function ProjectMemberDialog({ project, onClose }) {
+  const [members, setMembers] = useState([]);
+  const [username, setUsername] = useState('');
+  const [role, setRole] = useState('viewer');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void listProjectMembers(project.id)
+      .then((result) => setMembers(result.members || []))
+      .catch((cause) => setError(cause.message || '成员列表加载失败'));
+  }, [project.id]);
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!username.trim() || busy) return;
+    setBusy(true); setError('');
+    try {
+      const result = await setProjectMember(project.id, username.trim(), role);
+      setMembers(result.members || []);
+      setUsername('');
+    } catch (cause) {
+      setError(cause.message || '成员保存失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="modal-ov">
+    <form className="modal pj-member-modal" role="dialog" aria-modal="true" aria-labelledby="project-member-title" onSubmit={save}>
+      <h3 id="project-member-title">项目成员</h3>
+      <p>添加成员后，对方会在项目列表直接看到这个项目。</p>
+      <div className="pj-member-list">{members.map((member) => <div key={member.username}>
+        <b>{member.username}</b><span>{member.role === 'owner' ? '项目负责人' : member.role === 'modeler' ? '建模成员' : '只读成员'}</span>
+      </div>)}</div>
+      <label><span>成员用户名</span><input className="input" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+      <label><span>权限</span><select className="input" value={role} onChange={(event) => setRole(event.target.value)}>
+        <option value="viewer">只读成员</option>
+        <option value="modeler">建模成员</option>
+      </select></label>
+      {error && <div className="lerr" role="alert">{error}</div>}
+      <div className="foot"><button type="button" className="btn" onClick={onClose}>关闭</button>
+        <button className="btn btn-p" disabled={!username.trim() || busy}>{busy ? '保存中…' : '添加成员'}</button></div>
+    </form>
+  </div>;
 }

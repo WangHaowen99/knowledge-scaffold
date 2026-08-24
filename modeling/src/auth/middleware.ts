@@ -3,6 +3,7 @@ import { decodeJwt } from 'jose';
 import { getAuthClient } from './client.js';
 import type { AuthUser } from '../types.js';
 import { enterLlmUser } from '../llm/user-context.js';
+import { authenticateAgentRunCredential } from '../agent/run-credential.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -25,6 +26,19 @@ function cacheExpiry(token: string, now: number): number {
 }
 
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
+  const runCredential = String(req.headers['x-modeling-agent-credential'] ?? '').trim();
+  if (req.url.startsWith('/internal/agent/tools/') && runCredential) {
+    const internalUser = authenticateAgentRunCredential(
+      String(req.headers['x-modeling-project'] ?? '').trim(),
+      String(req.headers['x-modeling-run'] ?? '').trim(),
+      runCredential,
+    );
+    if (internalUser) {
+      req.user = internalUser;
+      enterLlmUser(internalUser.username);
+      return;
+    }
+  }
   const header = req.headers.authorization ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token) {

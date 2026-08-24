@@ -8,13 +8,16 @@
  * 关键不是报「第几批」，而是**报已经产出了什么**：用户真正想知道的是「它在干活吗、
  * 干出什么了」。所以 produced 是主要内容，批次序号只是进度条的依据。
  *
- * 消息用固定 key 就地更新（progressOnly），不会在时间线里堆出几十条。
+ * 消息在同一次运行内用固定 key 就地更新（progressOnly），不会在时间线里堆出几十条。
+ * 重试会创建新的 authoring run，必须生成一张位于时间线末尾的新进度卡；否则新运行
+ * 会继续回写很早以前的历史卡，用户停在底部时就看不到任何实时进度。
  * 深层代码只要有 projectId 就能调，不必把上报通道一路当参数传下去——
  * 与 cancellation.ts 的取舍一致。
  */
 import { AiConstructionMessageStore, notifyAiConstructionMessageWritten } from './messages.js';
 import { AiConstructionTaskGraph, type AiConstructionTaskKind } from './task-graph.js';
 import { getAuthoringState } from '../authoring/state.js';
+import { getPiAuthoringAdapter } from '../authoring/pi-adapter.js';
 import { getDb } from '../db/index.js';
 
 export interface LongTaskProgressInput {
@@ -29,6 +32,14 @@ export interface LongTaskProgressInput {
   total: number;
   /** 本轮任务已经跑了多久，用于按实测速度推算剩余 */
   elapsedMs: number;
+  /** 若任务已有统一 Job，则同时更新 Job 的阶段、进度、估时和心跳。 */
+  authoringRunId?: string;
+  phase?: string;
+  retryCount?: number;
+}
+
+export function longTaskProgressMessageKey(taskId: string, authoringRunId?: string): string {
+  return `progress.task.${taskId}${authoringRunId ? `.run.${authoringRunId}` : ''}`;
 }
 
 /**
@@ -70,7 +81,7 @@ export function reportLongTaskProgress(projectId: string, input: LongTaskProgres
       notifyAiConstructionMessageWritten((command) => getAuthoringState().apply(command)),
     );
     messages.upsert(projectId, {
-      key: `progress.task.${task.id}`,
+      key: longTaskProgressMessageKey(task.id, input.authoringRunId),
       role: 'assistant',
       taskId: task.id,
       progressOnly: true,
@@ -88,6 +99,19 @@ export function reportLongTaskProgress(projectId: string, input: LongTaskProgres
         },
       ],
     });
+    if (input.authoringRunId) {
+      try {
+        getPiAuthoringAdapter().heartbeat(projectId, input.authoringRunId, {
+          phase: input.phase ?? input.title,
+          currentStep: input.title,
+          progress: percent,
+          retryCount: input.retryCount ?? 0,
+          eta: eta
+            ? { minMinutes: eta.minMinutes, maxMinutes: eta.maxMinutes, confidence: 'medium' }
+            : { minMinutes: null, maxMinutes: null, confidence: 'low' },
+        });
+      } catch { /* 统一 Job 观测失败不能阻断实际任务 */ }
+    }
   } catch {
     /* 进度展示失败不阻断实际任务 */
   }

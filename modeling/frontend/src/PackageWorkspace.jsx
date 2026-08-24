@@ -4,11 +4,13 @@ import { getPackage, getPackageCheck, runPackageCheck } from './api.js';
 import { synchronizePackageCheck } from './packageCheckRefresh.js';
 import {
   addFlowchartDiagram,
+  advanceProjectSession,
   getFlowchartDraft,
   getProjectSession,
   getRevisionDiff,
   listAiConstructionMessages,
   listRevisions,
+  previewMermaidFlowchartImport,
   respondToScenarioReview,
   restoreRevision,
   saveFlowchartDraft,
@@ -31,7 +33,10 @@ import { activeOperationOf } from './activeRun.js';
 import ReleasePanel from './ReleasePanel.jsx';
 import VersionPanel from './VersionPanel.jsx';
 import { ScenarioPanel } from './WorkflowExtraPanels.jsx';
-import { selectCurrentConstructionInteraction } from './constructionInteraction.js';
+import {
+  constructionInteractionQueue,
+  isConstructionInteraction,
+} from './constructionInteraction.js';
 import CandidateRevisionPanel, { CandidateRevisionCanvas } from './CandidateRevisionPanel.jsx';
 import {
   advanceProjectEventReplayGate,
@@ -117,6 +122,7 @@ export default function PackageWorkspace({
   const [candidateRefreshKey, setCandidateRefreshKey] = useState(0);
   const [candidateAttentionKey, setCandidateAttentionKey] = useState('');
   const [pendingInteractionAttentionKey, setPendingInteractionAttentionKey] = useState('');
+  const [selectedPendingInteractionId, setSelectedPendingInteractionId] = useState('');
   const activeCheckRunsRef = useRef(0);
   const sessionCursorRef = useRef(0);
   // 回放闸门与合并加载的定时器跨事件存活，因此放在 ref 而不是订阅副作用的闭包里
@@ -127,9 +133,11 @@ export default function PackageWorkspace({
   const [flowchartDraftLoading, setFlowchartDraftLoading] = useState(false);
   const [flowchartEditorState, setFlowchartEditorState] = useState(null);
   const [flowchartAddOpen, setFlowchartAddOpen] = useState(false);
+  const [flowchartAddMode, setFlowchartAddMode] = useState('assistant');
   const [flowchartAddBusy, setFlowchartAddBusy] = useState(false);
   const [flowchartSubmitBusy, setFlowchartSubmitBusy] = useState(false);
   const [flowchartAddError, setFlowchartAddError] = useState('');
+  const [flowchartAddedDiagramId, setFlowchartAddedDiagramId] = useState('');
   const [scenarioReviewFocusRequested, setScenarioReviewFocusRequested] = useState(false);
   const [packageDraftDirty, setPackageDraftDirty] = useState(false);
   const workspaceDirtyRef = useRef(false);
@@ -144,6 +152,7 @@ export default function PackageWorkspace({
   }, []);
   const focusPendingInteraction = useCallback((interaction) => {
     if (!interaction?.id) return;
+    setSelectedPendingInteractionId(interaction.id);
     setPendingInteractionAttentionKey(`${interaction.id}:${Date.now()}`);
   }, []);
   const openPendingInteraction = useCallback((result) => {
@@ -167,6 +176,12 @@ export default function PackageWorkspace({
     setWarningReview(result.warningReview ?? null);
     setErrorDeferral(result.errorDeferral ?? null);
     setRepairAvailability(result.repair ?? null);
+    if (result.packageRepair) {
+      setSession((current) => current ? {
+        ...current,
+        packageRepair: result.packageRepair,
+      } : current);
+    }
   }, []);
   const startCheckRun = useCallback(() => {
     activeCheckRunsRef.current += 1;
@@ -217,16 +232,18 @@ export default function PackageWorkspace({
     const open = (event) => {
       if (event.detail?.projectId !== projectId) return;
       setFlowchartAddError('');
+      setFlowchartAddMode('assistant');
       setFlowchartAddOpen(true);
     };
     window.addEventListener('mw-flowchart-add-open', open);
     return () => window.removeEventListener('mw-flowchart-add-open', open);
   }, [projectId]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options) => {
     try {
+      const readSession = options?.advance === true ? advanceProjectSession : getProjectSession;
       const [nextSession, nextPackage, nextCheck] = await Promise.all([
-        getProjectSession(projectId),
+        readSession(projectId),
         getPackage(projectId),
         getPackageCheck(projectId),
       ]);
@@ -354,6 +371,12 @@ export default function PackageWorkspace({
       }
       scheduleLoad();
     };
+    // 题卡打开事件就是后端已切到 waiting 的信号。立即回源会话，不等普通事件的
+    // 200ms 防抖，保证 waiting 状态与 pendingInteraction 在同一轮渲染中到达。
+    if (event?.type === 'authoring.interaction.opened' && !replay.historical) {
+      if (workspaceDirtyRef.current) deferredRefreshRef.current = true;
+      else void load({ advance: true });
+    }
     // 消息随事件内联送达，先贴上去让回显立即可见；任务图等其余状态仍按需回源。
     const liveMessage = liveAiConstructionMessage(event);
     if (liveMessage && !replay.historical) {
@@ -404,10 +427,17 @@ export default function PackageWorkspace({
   const scenarioProgress = (session?.workflow?.progress ?? [])
     .find((item) => item.stepId === 'scenario');
   const pendingInteractions = session?.authoring?.pendingInteractions ?? [];
-  const constructionInteraction = selectCurrentConstructionInteraction(
+  const constructionQueue = constructionInteractionQueue(
     pendingInteractions,
     pkg?.revision,
   );
+  const pendingQueueKey = constructionQueue.map((interaction) => interaction.id).join(':');
+  const selectedQueueInteraction = constructionQueue.find((interaction) => (
+    interaction.id === selectedPendingInteractionId
+  )) ?? constructionQueue[0] ?? null;
+  const constructionInteraction = isConstructionInteraction(selectedQueueInteraction)
+    ? selectedQueueInteraction
+    : null;
   const processReview = constructionInteraction?.type === 'flowchart_review'
     && constructionInteraction?.payload?.purpose === 'process_review'
     ? constructionInteraction
@@ -418,6 +448,20 @@ export default function PackageWorkspace({
   const openScenarioCollaboration = useCallback(() => {
     setScenarioReviewFocusRequested(true);
   }, []);
+  const selectPendingInteraction = useCallback((interaction) => {
+    if (!interaction?.id) return;
+    if (interaction.type === 'scenario_review') {
+      setScenarioReviewFocusRequested(true);
+      if (embedded) onNavigate?.('scenario');
+      else setTab('scenario');
+      return;
+    }
+    focusPendingInteraction(interaction);
+  }, [embedded, focusPendingInteraction, onNavigate]);
+  useEffect(() => {
+    if (constructionQueue.some((interaction) => interaction.id === selectedPendingInteractionId)) return;
+    setSelectedPendingInteractionId(constructionQueue[0]?.id ?? '');
+  }, [pendingQueueKey, selectedPendingInteractionId]);
   useEffect(() => {
     if (!scenarioReviewFocusRequested || activeTab !== 'scenario' || !scenarioInteraction) return;
     scenarioReviewRef.current?.focus({ preventScroll: true });
@@ -459,6 +503,7 @@ export default function PackageWorkspace({
       setFlowchartDraftError('');
       setFlowchartEditorState(null);
       setFlowchartAddOpen(false);
+      setFlowchartAddedDiagramId('');
       setFlowchartSubmitBusy(false);
       return () => { active = false; };
     }
@@ -466,6 +511,7 @@ export default function PackageWorkspace({
     setFlowchartDraft(null);
     setFlowchartEditorState(null);
     setFlowchartAddOpen(false);
+    setFlowchartAddedDiagramId('');
     setFlowchartSubmitBusy(false);
     setFlowchartAddError('');
     setFlowchartDraftError('');
@@ -499,9 +545,43 @@ export default function PackageWorkspace({
         expectedRevision: flowchartDraft.draftRevision,
       });
       setFlowchartDraft(saved);
+      setFlowchartAddedDiagramId(saved.document?.diagrams?.at(-1)?.id || '');
       setFlowchartAddOpen(false);
     } catch (cause) {
       setFlowchartAddError(cause instanceof Error ? cause.message : '流程图添加失败');
+    } finally {
+      setFlowchartAddBusy(false);
+    }
+  };
+
+  const previewMermaidImport = async (input) => {
+    if (!processReview || !flowchartDraft) throw new Error('流程图确认已结束');
+    if (flowchartEditorState?.dirty) throw new Error('请先保存当前流程图修改，再导入 Mermaid');
+    setFlowchartAddBusy(true);
+    try {
+      return await previewMermaidFlowchartImport(projectId, processReview.id, {
+        ...input,
+        expectedRevision: flowchartDraft.draftRevision,
+      });
+    } finally {
+      setFlowchartAddBusy(false);
+    }
+  };
+
+  const importMermaid = async (input) => {
+    if (!processReview || !flowchartDraft) throw new Error('流程图确认已结束');
+    if (flowchartEditorState?.dirty) throw new Error('请先保存当前流程图修改，再导入 Mermaid');
+    setFlowchartAddBusy(true);
+    try {
+      const saved = await addFlowchartDiagram(projectId, processReview.id, {
+        mode: 'mermaid',
+        ...input,
+        expectedRevision: flowchartDraft.draftRevision,
+      });
+      setFlowchartDraft(saved);
+      setFlowchartAddedDiagramId(saved.document?.diagrams?.at(-1)?.id || '');
+      setFlowchartAddOpen(false);
+      return saved;
     } finally {
       setFlowchartAddBusy(false);
     }
@@ -631,11 +711,18 @@ export default function PackageWorkspace({
               key={`${projectId}:${processReview.id}`}
               document={flowchartDraft.document}
               savedRevision={flowchartDraft.draftRevision}
+              initialDiagramId={flowchartAddedDiagramId}
               disabled={interactionBusy || flowchartAddBusy || flowchartSubmitBusy}
               onSave={saveCurrentFlowchartDraft}
               onStateChange={setFlowchartEditorState}
               onRecommendDiagram={() => {
                 setFlowchartAddError('');
+                setFlowchartAddMode('assistant');
+                setFlowchartAddOpen(true);
+              }}
+              onImportMermaid={() => {
+                setFlowchartAddError('');
+                setFlowchartAddMode('mermaid');
                 setFlowchartAddOpen(true);
               }}
               onCreateBlankDiagram={() => { void addFlowchart({ mode: 'blank' }); }}
@@ -643,6 +730,7 @@ export default function PackageWorkspace({
           </div>
           <FlowchartAddDialog
             open={flowchartAddOpen}
+            initialMode={flowchartAddMode}
             candidates={flowchartDraft.availableCandidates}
             modelingGoal={flowchartDraft.modelingGoal}
             busy={flowchartAddBusy}
@@ -655,6 +743,8 @@ export default function PackageWorkspace({
                 : { candidateTitle: candidate?.title || '' }),
             }); }}
             onAddAi={(instruction) => { void addFlowchart({ mode: 'ai', instruction }); }}
+            onPreviewMermaid={previewMermaidImport}
+            onImportMermaid={importMermaid}
           />
         </>;
       }
@@ -798,6 +888,7 @@ export default function PackageWorkspace({
                     warningReview,
                     errorDeferral,
                     repair: repairAvailability,
+                    packageRepair: session.packageRepair ?? null,
                     rechecking,
                     error: checkError,
                     pendingInteractions,
@@ -833,6 +924,8 @@ export default function PackageWorkspace({
               packageRevision={pkg?.revision ?? ''}
               activeOperation={activeOperationOf(session)}
               pendingInteraction={constructionInteraction}
+              pendingInteractions={constructionQueue}
+              onPendingInteractionSelect={selectPendingInteraction}
               pendingInteractionAttentionKey={pendingInteractionAttentionKey}
               candidateRevisionAttentionKey={candidateAttentionKey}
               candidateRevisionPanel={<CandidateRevisionPanel projectId={projectId}

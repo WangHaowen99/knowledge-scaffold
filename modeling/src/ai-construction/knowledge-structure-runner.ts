@@ -5,9 +5,7 @@ import type { PackageGenerationOptions } from '../workflow/m2.js';
 import {
   runFormatChecks,
   runRuleChecks,
-  runSemanticCheck,
   saveCheck,
-  semanticCheckFailureFinding,
   type CheckFinding,
 } from '../workflow/package-check.js';
 import { GenerationWaitingForExpert } from '../workflow/generation-gate.js';
@@ -61,26 +59,28 @@ function findingCounts(findings: CheckFinding[]): Omit<KnowledgeStructureValidat
   };
 }
 
+export async function inspectGeneratedKnowledge(
+  _project: Project,
+  generated: GeneratedKnowledgeStructure,
+  context: KnowledgeGenerationContext,
+): Promise<KnowledgeStructureValidation> {
+  const findings = [
+    ...runFormatChecks(generated.spec, generated.files),
+    ...runRuleChecks(generated.spec, context.tables, []),
+  ]
+    .sort((left, right) => ['错误', '警告', '提示'].indexOf(left.severity)
+      - ['错误', '警告', '提示'].indexOf(right.severity));
+  return { ...findingCounts(findings), findings };
+}
+
 export async function validateGeneratedKnowledge(
   project: Project,
   generated: GeneratedKnowledgeStructure,
   context: KnowledgeGenerationContext,
 ): Promise<KnowledgeStructureValidation> {
-  const deterministic = [
-    ...runFormatChecks(generated.spec, generated.files),
-    ...runRuleChecks(generated.spec, context.tables, []),
-  ];
-  let semantic: CheckFinding[];
-  try {
-    semantic = await runSemanticCheck(project, generated.spec);
-  } catch (error) {
-    semantic = [semanticCheckFailureFinding(error)];
-  }
-  const findings = [...deterministic, ...semantic]
-    .sort((left, right) => ['错误', '警告', '提示'].indexOf(left.severity)
-      - ['错误', '警告', '提示'].indexOf(right.severity));
-  saveCheck(project.id, generated.version, findings, generated.revisionId);
-  return { ...findingCounts(findings), findings };
+  const validation = await inspectGeneratedKnowledge(project, generated, context);
+  saveCheck(project.id, generated.version, validation.findings, generated.revisionId);
+  return validation;
 }
 
 /**

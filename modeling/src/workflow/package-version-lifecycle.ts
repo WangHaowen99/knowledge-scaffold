@@ -51,7 +51,14 @@ export function nextValidationCandidateVersion(input: {
   changeLevel?: PackageChangeLevel;
 }): string {
   const current = parseVersion(input.currentVersion);
-  if (input.currentStatus === 'draft') return '1.0.0-rc.1';
+  if (input.currentStatus === 'draft') {
+    if (current.prerelease) throw new Error('草稿版本不能带预发布标识');
+    // 本地新建草稿从 0.x 收敛到首个 1.0 候选。稳定草稿默认只进入同版本
+    // 验证；调用方只有在掌握“这是导入基线”等来源事实时才显式请求递增。
+    if (current.major === 0n) return '1.0.0-rc.1';
+    const target = input.changeLevel ? bump(current, input.changeLevel) : current;
+    return `${stableVersion(target)}-rc.1`;
+  }
   if (input.currentStatus === 'review') {
     const rc = current.prerelease ? RC_PATTERN.exec(current.prerelease) : null;
     if (rc) return `${stableVersion(current)}-rc.${BigInt(rc[1]) + 1n}`;

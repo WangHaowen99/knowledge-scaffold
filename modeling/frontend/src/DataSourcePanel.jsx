@@ -99,7 +99,7 @@ function pairText(property, value) {
   return property && value ? `${property} = ${value}` : '未配置';
 }
 
-export default function DataSourcePanel({ projectId, onAdvance }) {
+export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRequest = saveDataSource }) {
   const [form, setForm] = useState(null);
   const [saved, setSaved] = useState(null);
   const [providerSelectionChanged, setProviderSelectionChanged] = useState(false);
@@ -238,7 +238,7 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       const outcome = await runGraphImportContextRequest({
         contextKey,
         isCurrent: (key) => projectContextRef.current === key,
-        request: () => saveDataSource(contextKey, dataSourceFormPayload(submittedForm)),
+        request: () => saveDataSourceRequest(contextKey, dataSourceFormPayload(submittedForm)),
       });
       if (outcome.kind === 'stale') return;
       const result = outcome.value;

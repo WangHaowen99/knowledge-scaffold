@@ -5,7 +5,6 @@ const STATUS_PRIORITY = [
   'failed',
   'ready',
   'pending',
-  'stale',
   'skipped',
   'completed',
 ];
@@ -17,26 +16,14 @@ const STATUS_DISPLAY = {
   failed: { label: '需要处理', tone: 'error' },
   ready: { label: '可开始', tone: 'ready' },
   pending: { label: '待规划', tone: 'idle' },
-  stale: { label: '待确认', tone: 'waiting' },
   skipped: { label: '已跳过', tone: 'idle' },
   completed: { label: '已完成', tone: 'complete' },
 };
 
-function sameTaskSlot(task, replacement) {
-  if (task?.milestoneId && replacement?.milestoneId
-    && task.milestoneId !== replacement.milestoneId) return false;
-  if (task?.kind && replacement?.kind) return task.kind === replacement.kind;
-  return String(task?.title ?? '').trim() === String(replacement?.title ?? '').trim();
-}
-
 export function effectiveTaskPlanTasks(tasks = []) {
-  const source = (Array.isArray(tasks) ? tasks : []).filter((task) => task?.status !== 'cancelled');
-  return source.filter((task) => {
-    if (task?.status !== 'stale') return true;
-    return !source.some((replacement) => replacement?.id !== task.id
-      && !['stale', 'cancelled'].includes(replacement?.status)
-      && sameTaskSlot(task, replacement));
-  });
+  return (Array.isArray(tasks) ? tasks : []).filter(
+    (task) => !['stale', 'cancelled'].includes(task?.status),
+  );
 }
 
 export function summarizeTaskPlan(tasks = []) {

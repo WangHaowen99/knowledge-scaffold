@@ -34,6 +34,42 @@ manifest_get() {
     sed -n 's/^[[:space:]]*"'${key}'":[[:space:]]*"\([^"]*\)".*$/\1/p' "${manifest}" | head -n 1
 }
 
+env_get() {
+    local file="$1"
+    local key="$2"
+    local value
+    value="$([ -f "${file}" ] && grep -E "^${key}=" "${file}" | tail -n 1 | cut -d= -f2- || true)"
+    value="${value%$'\r'}"
+    printf '%s' "${value}" | sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/"
+}
+
+load_env_if_unset() {
+    local file="$1"
+    local key="$2"
+    local value
+    [ -z "${!key:-}" ] || return 0
+    value="$(env_get "${file}" "${key}")"
+    [ -z "${value}" ] || { printf -v "${key}" '%s' "${value}"; export "${key}"; }
+}
+
+load_modeling_env() {
+    local file
+    local key
+    for file in "$@"; do
+        for key in MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY \
+                   MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
+                   MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS; do
+            load_env_if_unset "${file}" "${key}"
+        done
+    done
+    case "${MODELING_LLM_BASE_URL:-}" in
+        http://*|https://*) ;;
+        *) die "Modeling Workbench requires a real http(s) MODELING_LLM_BASE_URL; faux mode is not supported by modeling-agent" ;;
+    esac
+    [ -n "${MODELING_LLM_MODEL:-}" ] || die \
+        "Modeling Workbench requires MODELING_LLM_MODEL; set it in backend/.env, the package .env, or the shell"
+}
+
 detect_host_arch() {
     case "$(uname -m)" in
         x86_64|amd64)
@@ -53,6 +89,14 @@ container_network() {
     docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "${container}" 2>/dev/null | head -n 1
 }
 
+consumer_container() {
+    if docker inspect onto-agent-backend >/dev/null 2>&1; then
+        printf 'onto-agent-backend\n'
+        return 0
+    fi
+    docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)|^backend$' | head -n 1 || true
+}
+
 detect_consumer_network() {
     local container=""
     local network=""
@@ -62,11 +106,7 @@ detect_consumer_network() {
         return 0
     fi
 
-    if docker inspect onto-agent-backend >/dev/null 2>&1; then
-        container="onto-agent-backend"
-    else
-        container="$(docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)' | head -n 1 || true)"
-    fi
+    container="$(consumer_container)"
 
     if [ -n "${container}" ]; then
         network="$(container_network "${container}")"
@@ -77,6 +117,18 @@ detect_consumer_network() {
     fi
 
     docker network ls --format '{{.Name}}' | grep -E '(^|_|-)onto-agent-network$|^onto-agent_default$' | head -n 1 || true
+}
+
+detect_jiuwenbox_socket_volume() {
+    local container
+    local volume
+    container="$(consumer_container)"
+    if [ -n "${container}" ]; then
+        volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/run/jiuwenbox"}}{{println .Name}}{{end}}{{end}}' \
+            "${container}" 2>/dev/null | head -n 1 || true)"
+        [ -z "${volume}" ] || { printf '%s\n' "${volume}"; return 0; }
+    fi
+    docker volume ls --format '{{.Name}}' | grep -E '(^|_)onto-jiuwenbox-sock$' | head -n 1 || true
 }
 
 container_health() {
@@ -107,6 +159,20 @@ wait_for_container() {
     return 1
 }
 
+wait_for_http() {
+    local url="$1"
+    local timeout_seconds="${2:-60}"
+    local elapsed=0
+    while [ "${elapsed}" -lt "${timeout_seconds}" ]; do
+        if curl -fsS --max-time 5 "${url}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
 deploy_release() {
     local manifest_file="$1"
     local bundle_root="$2"
@@ -115,7 +181,10 @@ deploy_release() {
     local host_arch
     local image
     local image_tar
+    local agent_image
+    local agent_image_tar
     local network
+    local jiuwenbox_volume
 
     release_arch="$(manifest_get "${manifest_file}" release_arch)"
     host_arch="$(detect_host_arch)"
@@ -124,48 +193,71 @@ deploy_release() {
 
     image="$(manifest_get "${manifest_file}" modeling_image)"
     image_tar="$(manifest_get "${manifest_file}" modeling_image_tar)"
+    agent_image="$(manifest_get "${manifest_file}" modeling_agent_image)"
+    agent_image_tar="$(manifest_get "${manifest_file}" modeling_agent_image_tar)"
     [ -n "${image}" ] || die "modeling_image is missing in manifest.json"
     [ -n "${image_tar}" ] || die "modeling_image_tar is missing in manifest.json"
+    [ -n "${agent_image}" ] || die "modeling_agent_image is missing in manifest.json"
+    [ -n "${agent_image_tar}" ] || die "modeling_agent_image_tar is missing in manifest.json"
     [ -f "${bundle_root}/${image_tar}" ] || die "Modeling image tar not found: ${bundle_root}/${image_tar}"
+    [ -f "${bundle_root}/${agent_image_tar}" ] || die "Agent image tar not found: ${bundle_root}/${agent_image_tar}"
+
+    load_modeling_env "${bundle_root}/backend/.env" "${bundle_root}/.env"
 
     network="$(detect_consumer_network)"
     [ -n "${network}" ] || die "Could not detect consumer Docker network; deploy consumer first or set CONSUMER_NETWORK"
+    jiuwenbox_volume="${JIUWENBOX_SOCKET_VOLUME:-$(detect_jiuwenbox_socket_volume)}"
+    [ -n "${jiuwenbox_volume}" ] || die "Could not detect JiuwenBox socket volume; deploy consumer sandbox first or set JIUWENBOX_SOCKET_VOLUME"
 
     log "Loading modeling image ${image}"
     docker load -i "${bundle_root}/${image_tar}" >/dev/null
+    log "Loading modeling Agent image ${agent_image}"
+    docker load -i "${bundle_root}/${agent_image_tar}" >/dev/null
 
     log "Starting modeling on consumer network ${network}"
-    MODELING_IMAGE="${image}" CONSUMER_NETWORK="${network}" compose \
+    MODELING_IMAGE="${image}" MODELING_AGENT_IMAGE="${agent_image}" CONSUMER_NETWORK="${network}" \
+        JIUWENBOX_SOCKET_VOLUME="${jiuwenbox_volume}" compose \
         -p mw-modeling \
         -f "${compose_file}" \
         --project-directory "${bundle_root}" \
         up -d
 
+    wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
-    log "Modeling deployment finished successfully"
+    wait_for_http "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 \
+        || die "Modeling Workbench page did not become reachable"
+    log "Modeling Workbench deployment finished: http://localhost:${MODELING_PORT:-5100}/workbench.html#/create"
 }
 
 deploy_source() {
     local repo_root
     local compose_file
     local network
+    local jiuwenbox_volume
 
     repo_root="$(cd "${SCRIPT_DIR}/../.." && pwd)"
     compose_file="${repo_root}/deploy/docker-compose.modeling.yml"
     [ -f "${compose_file}" ] || die "Source compose file not found: ${compose_file}"
 
+    load_modeling_env "${repo_root}/consumer/backend/.env" "${repo_root}/deploy/.env"
+
     network="$(detect_consumer_network)"
     [ -n "${network}" ] || die "Could not detect consumer Docker network; deploy consumer first or set CONSUMER_NETWORK"
+    jiuwenbox_volume="${JIUWENBOX_SOCKET_VOLUME:-$(detect_jiuwenbox_socket_volume)}"
+    [ -n "${jiuwenbox_volume}" ] || die "Could not detect JiuwenBox socket volume; deploy consumer sandbox first or set JIUWENBOX_SOCKET_VOLUME"
 
     log "Starting modeling from source on consumer network ${network}"
-    CONSUMER_NETWORK="${network}" compose \
+    CONSUMER_NETWORK="${network}" JIUWENBOX_SOCKET_VOLUME="${jiuwenbox_volume}" compose \
         -p mw-modeling \
         -f "${compose_file}" \
         --project-directory "${repo_root}/deploy" \
         up -d --build
 
+    wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
-    log "Modeling deployment finished successfully"
+    wait_for_http "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 \
+        || die "Modeling Workbench page did not become reachable"
+    log "Modeling Workbench deployment finished: http://localhost:${MODELING_PORT:-5100}/workbench.html#/create"
 }
 
 if [ "$#" -gt 0 ]; then
@@ -174,6 +266,7 @@ fi
 
 command -v docker >/dev/null 2>&1 || die "Docker is required"
 docker info >/dev/null 2>&1 || die "Docker daemon is not reachable"
+command -v curl >/dev/null 2>&1 || die "curl is required for Workbench health checks"
 
 if [ -f "${SCRIPT_DIR}/manifest.json" ]; then
     deploy_release "${SCRIPT_DIR}/manifest.json" "$(cd "${SCRIPT_DIR}/.." && pwd)" "${SCRIPT_DIR}/docker-compose.release.yml"

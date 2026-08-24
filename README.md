@@ -150,18 +150,15 @@ MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
 5. 新建对话并选择知识包，然后发送问题；
 6. 在对话右侧查看知识读取、数据查询、工具调用和脚本执行过程。
 
-### 可选：启动知识包建模工作台
+### 启动知识包建模工作台
 
-consumer 启动完成后，在仓库根目录执行：
+在 `consumer/backend/.env` 配置 `MODELING_LLM_BASE_URL`、`MODELING_LLM_MODEL` 和端点需要的 `MODELING_LLM_API_KEY`，然后从仓库根目录执行统一部署入口：
 
 ```bash
-docker compose -p mw-modeling \
-  -f deploy/docker-compose.modeling.yml \
-  --project-directory deploy \
-  up -d --build
+./deploy/deploy.sh
 ```
 
-访问 `http://localhost:5100`。详细配置与工作流见 [modeling/README.md](modeling/README.md)。
+脚本会部署 consumer、auth-server、JiuwenBox，以及 Workbench 所需的 `modeling` core 和 `modeling-agent`。访问 `http://localhost:5100/workbench.html#/create`。详细配置与工作流见 [modeling/README.md](modeling/README.md)。
 
 ## 系统架构
 

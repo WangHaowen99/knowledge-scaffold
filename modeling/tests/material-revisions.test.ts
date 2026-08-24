@@ -9,6 +9,7 @@ import {
   analyzeMaterialImpact,
   applyMaterialInvalidation,
   listMaterialImpacts,
+  resolveMaterialImpactScope,
   storeMaterialImpact,
 } from '../src/documents/material-impact.js';
 import type { PackageSpec } from '../src/types.js';
@@ -46,10 +47,10 @@ test('旧 documents 表在完整 schema 建索引前补齐资料修订列', () =
 
   ensureDocumentRevisionColumns(db);
   assert.doesNotThrow(() => db.exec(schema));
-  const row = db.prepare(`SELECT source_key, revision_no, lifecycle_status
+  const row = db.prepare(`SELECT source_key, revision_no, lifecycle_status, raw_content
     FROM documents WHERE id = 'legacy-doc'`).get() as any;
   assert.deepEqual({ ...row }, {
-    source_key: 'legacy-doc', revision_no: 1, lifecycle_status: 'active',
+    source_key: 'legacy-doc', revision_no: 1, lifecycle_status: 'active', raw_content: null,
   });
 });
 
@@ -63,6 +64,42 @@ test('新 schema 兼容尚未使用资料修订字段的旧写入方', () => {
   const document = repo.get('legacy-insert');
   assert.equal(document?.sourceKey, 'legacy-insert');
   assert.equal(document?.revisionNo, 1);
+  assert.equal(document?.purpose, 'auto');
+  assert.equal(document?.readingMode, 'on_demand');
+  assert.equal(document?.directiveRevision, 0);
+});
+
+test('资料用途与阅读方式随修订继承，且数据 Schema 只接受表格', () => {
+  const { repo } = setup();
+  const first = repo.insert({
+    projectId: 'project-material', filename: 'schema.xlsx', kind: 'excel',
+    purpose: 'schema', readingMode: 'full', parseStatus: 'parsed',
+    tables: [{ name: '设备', fields: [], rowCount: 20 }],
+  });
+  assert.equal(first.document.purpose, 'schema');
+  assert.equal(first.document.readingMode, 'full');
+
+  const replacement = repo.insert({
+    projectId: 'project-material', filename: 'schema.xlsx', kind: 'excel',
+    parseStatus: 'parsed', tables: [{ name: '设备', fields: [], rowCount: 21 }],
+  });
+  assert.equal(replacement.document.purpose, 'schema');
+  assert.equal(replacement.document.readingMode, 'full');
+
+  const guide = repo.insert({
+    projectId: 'project-material', filename: 'guide.md', kind: 'markdown',
+    parseStatus: 'parsed', textContent: '业务说明',
+  }).document;
+  assert.throws(() => repo.updateDirectives(guide.id, { purpose: 'schema', readingMode: 'on_demand' }), /Excel 或 CSV/);
+  const updated = repo.updateDirectives(guide.id, {
+    purpose: 'goal', readingMode: 'full', expectedDirectiveRevision: 0,
+  });
+  assert.equal(updated.purpose, 'goal');
+  assert.equal(updated.readingMode, 'full');
+  assert.equal(updated.directiveRevision, 1);
+  assert.throws(() => repo.updateDirectives(guide.id, {
+    purpose: 'evidence', readingMode: 'on_demand', expectedDirectiveRevision: 0,
+  }), /其他位置更新/);
 });
 
 test('同名资料形成不可变修订且仅返回活动版本', () => {
@@ -81,6 +118,7 @@ test('同名资料形成不可变修订且仅返回活动版本', () => {
   assert.equal(second.document.sourceKey, first.document.sourceKey);
   assert.equal(second.document.revisionNo, 2);
   assert.equal(second.document.supersedesId, first.document.id);
+  assert.equal(repo.rawContent(second.document.id)?.toString('utf8'), '# 流程\n第二步');
   assert.deepEqual(repo.list('project-material').map((item) => item.id), [second.document.id]);
   const history = repo.history('project-material', first.document.sourceKey);
   assert.deepEqual(history.map((item) => [item.revisionNo, item.lifecycleStatus]), [
@@ -105,6 +143,31 @@ test('纯格式变化保留修订但不传播语义失效', () => {
   assert.equal(next.change.semanticChanged, false);
   assert.notEqual(next.document.contentHash, next.change.previous?.contentHash);
   assert.equal(next.document.semanticHash, next.change.previous?.semanticHash);
+});
+
+test('后台解析完成时才计算资料修订的最终语义变化', () => {
+  const { repo } = setup();
+  const first = repo.insert({
+    projectId: 'project-material', filename: 'policy.md', kind: 'markdown',
+    parseStatus: 'parsed', textContent: '规则 A\n阈值 10', rawContent: Buffer.from('规则 A\n阈值 10'),
+  });
+  const pending = repo.insert({
+    projectId: 'project-material', filename: 'policy.md', kind: 'markdown',
+    parseStatus: 'pending', rawContent: Buffer.from('  规则 A  \r\n\r\n 阈值   10  '),
+  });
+
+  assert.equal(pending.document.parseStatus, 'pending');
+  assert.deepEqual(repo.pending().map((item) => item.id), [pending.document.id]);
+  const completed = repo.completeParse(pending.document.id, {
+    parseStatus: 'parsed', textContent: '  规则 A  \r\n\r\n 阈值   10  ',
+  });
+
+  assert.equal(completed.document.parseStatus, 'parsed');
+  assert.deepEqual(repo.pending(), []);
+  assert.equal(completed.change.kind, 'format_only');
+  assert.equal(completed.change.semanticChanged, false);
+  assert.equal(completed.document.semanticHash, first.document.semanticHash);
+  assert.notEqual(completed.document.contentHash, first.document.contentHash);
 });
 
 test('删除资料只停用活动修订并保留完整历史', () => {
@@ -189,8 +252,8 @@ test('影响分析只命中引用旧资料修订的知识资源', () => {
   ]);
 });
 
-test('格式变化和未被引用的新资料不会使知识与评测过时', () => {
-  const { repo } = setup();
+test('格式变化不传播失效，新增资料在语义核对完成前不作废任何内容', () => {
+  const { db, repo } = setup();
   const first = repo.insert({
     projectId: 'project-material', filename: 'policy.md', kind: 'markdown',
     parseStatus: 'parsed', textContent: '策略', rawContent: Buffer.from('策略'),
@@ -205,7 +268,26 @@ test('格式变化和未被引用的新资料不会使知识与评测过时', ()
   });
 
   assert.equal(analyzeMaterialImpact(format.change, packageWithMaterialEvidence(first.document.id)).earliestMilestone, undefined);
-  assert.equal(analyzeMaterialImpact(added.change, packageWithMaterialEvidence(first.document.id)).earliestMilestone, undefined);
+  const addedImpact = analyzeMaterialImpact(added.change, packageWithMaterialEvidence(first.document.id));
+  assert.equal(addedImpact.scopeResolved, false);
+  assert.equal(addedImpact.earliestMilestone, undefined);
+  assert.deepEqual(addedImpact.affectedResources, []);
+  assert.deepEqual(applyMaterialInvalidation(db, 'project-material', addedImpact), { staleTaskIds: [] });
+
+  const stored = storeMaterialImpact(db, 'project-material', added.change, addedImpact);
+  const resolved = resolveMaterialImpactScope(
+    db,
+    'project-material',
+    stored.id,
+    packageWithMaterialEvidence(first.document.id),
+    [{ kind: 'object', key: 'Policy' }],
+  );
+  assert.equal(resolved.scopeResolved, true);
+  assert.deepEqual(resolved.directResources, [{ kind: 'object', key: 'Policy' }]);
+  assert.deepEqual(resolved.affectedResources.map((item) => `${item.kind}:${item.key}`).sort(), [
+    'object:Policy', 'operation:Handle', 'script:calculate',
+  ]);
+  assert.equal(listMaterialImpacts(db, 'project-material')[0]?.scopeResolved, true);
 });
 
 test('资料变更只生成定向复核任务，不再推倒已确认阶段', () => {

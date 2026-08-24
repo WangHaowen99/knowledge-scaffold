@@ -1,7 +1,7 @@
 import type { FlowchartDocument } from './types.js';
 
 const DIAGRAM_TITLE_MAX_LENGTH = 80;
-const FORBIDDEN_FILE_CHARS = /[<>:"/\\|?*#&%\u0000-\u001f\u007f]/u;
+const FORBIDDEN_FILE_CHARS = /[<>:"/\\|?*#&%()\uFF08\uFF09\u0000-\u001f\u007f]/gu;
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
 const LEGACY_DIAGRAM_PATH = /^diagrams\/process_\d+\.mmd$/u;
 
@@ -11,20 +11,27 @@ function normalizedTitle(value: string): string {
   return String(value ?? '').normalize('NFC').trim();
 }
 
+function legacyDiagramFilePath(titleValue: string): string {
+  const title = normalizedTitle(titleValue);
+  return `diagrams/${title}.mmd`;
+}
+
 export function diagramFilePath(titleValue: string): string {
   const title = normalizedTitle(titleValue);
-  if (
-    !title
-    || title.length > DIAGRAM_TITLE_MAX_LENGTH
-    || title === '.'
-    || title === '..'
-    || title.endsWith('.')
-    || FORBIDDEN_FILE_CHARS.test(title)
-    || WINDOWS_RESERVED_NAME.test(title)
-  ) {
+  if (!title || title.length > DIAGRAM_TITLE_MAX_LENGTH || title === '.' || title === '..') {
     throw new Error(`流程名称“${title || String(titleValue ?? '')}”不能用于流程图文件名`);
   }
-  return `diagrams/${title}.mmd`;
+  // 标题仍保留原文展示；只有派生文件名做跨平台安全化，避免 / 变成目录、
+  // 括号破坏 Markdown/URL，以及控制字符进入 Git 文件路径。
+  const stem = title
+    .replace(FORBIDDEN_FILE_CHARS, '_')
+    .replace(/_+/gu, '_')
+    .replace(/[ ._]+$/gu, '')
+    .replace(/^[ ._]+/gu, '');
+  if (!stem || WINDOWS_RESERVED_NAME.test(stem)) {
+    throw new Error(`流程名称“${title}”不能用于流程图文件名`);
+  }
+  return `diagrams/${stem}.mmd`;
 }
 
 export function diagramFileEntries<T extends DiagramIdentity>(diagrams: T[]) {
@@ -53,6 +60,11 @@ export function obsoleteDiagramFilePaths(
       if (Array.isArray(previous.diagrams)) {
         for (const entry of diagramFileEntries(previous.diagrams)) {
           if (currentFiles[entry.path] !== undefined) managedPaths.add(entry.path);
+          // 兼容升级前括号、空格等标题直接形成的旧派生文件名。
+          const legacyPath = legacyDiagramFilePath(entry.diagram.title);
+          if (legacyPath !== entry.path && currentFiles[legacyPath] !== undefined) {
+            managedPaths.add(legacyPath);
+          }
         }
       }
     } catch {

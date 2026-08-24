@@ -22,6 +22,26 @@ function sampleDocument() {
 
 const sampleFiles = ['index.md', DIAGRAM_DOCUMENT_PATH, 'diagrams/受理流程.mmd', 'diagrams/审批流程.mmd'];
 
+test('特殊字符流程标题仍能从派生文件定位源流程', () => {
+  const document = { diagrams: [{ id: 'special', title: '申请/审批（企业）', nodes: [], edges: [] }] };
+  const target = resolveDiagramTarget({
+    path: 'diagrams/申请_审批_企业.mmd',
+    files: [DIAGRAM_DOCUMENT_PATH, 'diagrams/申请_审批_企业.mmd'],
+    documentContent: JSON.stringify(document),
+  });
+  assert.equal(target?.activeDiagramId, 'special');
+});
+
+test('升级前的括号流程文件仍能定位源流程', () => {
+  const document = { diagrams: [{ id: 'legacy', title: '申请（企业）', nodes: [], edges: [] }] };
+  const target = resolveDiagramTarget({
+    path: 'diagrams/申请（企业）.mmd',
+    files: [DIAGRAM_DOCUMENT_PATH, 'diagrams/申请（企业）.mmd'],
+    documentContent: JSON.stringify(document),
+  });
+  assert.equal(target?.activeDiagramId, 'legacy');
+});
+
 test('process_N.mmd 映射为 0 基图序号', () => {
   assert.equal(diagramIndexFromPath('diagrams/process_1.mmd'), 0);
   assert.equal(diagramIndexFromPath('diagrams/process_12.mmd'), 11);

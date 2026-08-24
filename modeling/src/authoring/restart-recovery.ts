@@ -86,9 +86,25 @@ export function recoverInterruptedAuthoringWork(
     // 「正在处理」并挡住重新触发。
     result.inflightOperations = Number(db.prepare('DELETE FROM inflight_operations').run().changes);
 
-    result.authoringRuns = Number(db.prepare(`UPDATE authoring_runs
-      SET status = 'failed', error = ?, updated_at = ?, finished_at = ?
-      WHERE status IN ('queued', 'running')`).run(reason, at, at).changes);
+    const interruptedRuns = db.prepare(`SELECT id, state_json FROM authoring_runs
+      WHERE status IN ('queued', 'running')`).all() as Array<{ id: string; state_json: string | null }>;
+    const updateInterruptedRun = db.prepare(`UPDATE authoring_runs
+      SET status = 'failed', state_json = ?, error = ?, updated_at = ?, finished_at = ?
+      WHERE id = ? AND status IN ('queued', 'running')`);
+    for (const run of interruptedRuns) {
+      let state: Record<string, unknown> = {};
+      try {
+        const parsed = run.state_json ? JSON.parse(run.state_json) : {};
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) state = parsed;
+      } catch { /* 损坏的旧状态也要收敛到可恢复失败 */ }
+      state.phase = '失败';
+      state.currentStep = state.currentStep || '服务重启恢复';
+      state.errorCode = 'SERVICE_RESTART';
+      state.recoveryAction = 'retry_last_step';
+      state.lastHeartbeatAt = at;
+      updateInterruptedRun.run(JSON.stringify(state), reason, at, at, run.id);
+    }
+    result.authoringRuns = interruptedRuns.length;
 
     result.constructionTasks = Number(db.prepare(`UPDATE ai_construction_tasks
       SET status = 'failed', reason = ?, updated_at = ?
