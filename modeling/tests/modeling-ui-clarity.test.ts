@@ -32,6 +32,34 @@ const packageWorkspaceSource = readFileSync(
   new URL('../frontend/src/PackageWorkspace.jsx', import.meta.url),
   'utf8',
 );
+const workbenchBaseStyles = readFileSync(
+  new URL('../frontend/src/workbench/base.css', import.meta.url),
+  'utf8',
+);
+const workbenchBlocksSource = readFileSync(
+  new URL('../frontend/src/workbench/right/blocks/Blocks.jsx', import.meta.url),
+  'utf8',
+);
+
+function cssRuleBody(source: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return source.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`))?.[1] || '';
+}
+
+test('工作台主按钮在交互和提交状态保持可读', () => {
+  for (const selector of [
+    '.wb .btn-p:hover',
+    '.wb .btn-p:active',
+    '.wb .btn-p:focus-visible',
+    '.wb .btn-p[disabled]',
+  ]) {
+    const rule = cssRuleBody(workbenchBaseStyles, selector);
+    assert.match(rule, /background:\s*var\(--grad-p\)/, `${selector} 必须保留主按钮背景`);
+    assert.match(rule, /color:\s*#fff/, `${selector} 必须保留白色文字`);
+  }
+  assert.match(workbenchBlocksSource, /aria-busy=\{sending\}/);
+  assert.match(workbenchBlocksSource, /sending \? '正在接受…'/);
+});
 
 test('内容检查按钮明确说明会逐项处理错误并复检候选', () => {
   assert.match(packageCheckSource, /逐项处理错误/);

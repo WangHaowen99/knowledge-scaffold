@@ -170,9 +170,9 @@ function LiveConfirm({ interaction }) {
             <button className="btn" disabled={sending} onClick={() => setReturning(false)}>取消</button>
           </div>
         </> : <div className="btn-row" style={{ marginTop: 'var(--s-4)' }}>
-          <button className="btn btn-p" disabled={sending || selected.length === 0}
+          <button className="btn btn-p" disabled={sending || selected.length === 0} aria-busy={sending}
             onClick={() => void respond({ approved: true, review_mode: 'full', selected_groups: selected, sampled_groups: [] })}>
-            接受已选（{selected.length}）
+            {sending ? '正在接受…' : `接受已选（${selected.length}）`}
           </button>
           {selectable.length > 3 && <button className="btn" disabled={sending}
             onClick={() => {

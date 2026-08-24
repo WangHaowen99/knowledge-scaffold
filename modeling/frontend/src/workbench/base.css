@@ -62,9 +62,11 @@ body { overflow: hidden; }
 .wb .btn:active { background: var(--c-surface-3); }
 .wb .btn[disabled] { opacity: .42; pointer-events: none; }
 .wb .btn-p { background: var(--grad-p); border-color: transparent; color: #fff; font-weight: 600; box-shadow: var(--c-p-shadow); }
-.wb .btn-p:hover { filter: brightness(1.07); border-color: transparent;
+.wb .btn-p:hover { background: var(--grad-p); border-color: transparent; color: #fff; filter: brightness(1.07);
   box-shadow: 0 5px 14px -4px rgba(42, 120, 214, .55), inset 0 1px 0 rgba(255, 255, 255, .16); }
-.wb .btn-p:active { filter: brightness(.97); }
+.wb .btn-p:active { background: var(--grad-p); border-color: transparent; color: #fff; filter: brightness(.97); }
+.wb .btn-p:focus-visible { background: var(--grad-p); border-color: transparent; color: #fff; }
+.wb .btn-p[disabled] { background: var(--grad-p); border-color: transparent; color: #fff; }
 .wb .btn-danger { color: var(--c-stale); border-color: var(--c-stale-line); }
 .wb .btn-danger:hover { background: var(--c-stale-bg); border-color: #efb4ae; }
 .wb .btn-ghost { border-color: transparent; background: transparent; color: var(--c-muted); padding: 4px 8px; font-size: var(--t-sm); }
