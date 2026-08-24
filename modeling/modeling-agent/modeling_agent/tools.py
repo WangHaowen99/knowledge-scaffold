@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from collections.abc import Awaitable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -75,6 +76,60 @@ class ToolContext:
     user_input_request_in_text: bool = False
     confirmation_claimed_in_text: bool = False
     decision_card_requested: bool = False
+    validation_repair: CandidateValidationRepairState = field(default_factory=lambda: CandidateValidationRepairState())
+
+
+@dataclass
+class CandidateValidationRepairState:
+    attempts: int = 0
+    last_fingerprint: str = ""
+    repeated_findings: bool = False
+    stopped: bool = False
+    last_report: dict[str, Any] = field(default_factory=dict)
+
+    def record(self, report: Mapping[str, Any]) -> dict[str, Any]:
+        findings = report.get("findings")
+        fingerprint_source: Any = findings if isinstance(findings, list) and findings else {
+            "error": report.get("error"),
+            "reason": report.get("reason"),
+            "validatorVersion": report.get("validatorVersion"),
+        }
+        encoded = json.dumps(fingerprint_source, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        fingerprint = f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+        self.attempts += 1
+        self.repeated_findings = fingerprint == self.last_fingerprint
+        self.last_fingerprint = fingerprint
+        self.stopped = self.repeated_findings or self.attempts > 3
+        self.last_report = dict(report)
+        return {
+            "repairAttempt": self.attempts,
+            "findingFingerprint": fingerprint,
+            "repeatedFinding": self.repeated_findings,
+            "repairStopped": self.stopped,
+        }
+
+    def reset(self) -> None:
+        self.attempts = 0
+        self.last_fingerprint = ""
+        self.repeated_findings = False
+        self.stopped = False
+        self.last_report = {}
+
+    def decorate(self, report: Mapping[str, Any]) -> dict[str, Any]:
+        repair = self.record(report)
+        decorated = {**report, **repair}
+        if repair["repairStopped"]:
+            decorated["retryable"] = False
+            decorated["instruction"] = (
+                "自动修正已停止：相同 findings 连续出现，或三轮修正后仍未通过。"
+                "必须保留并向用户说明全部 findings，不要继续改写候选或重复预检。"
+            )
+        else:
+            decorated["instruction"] = (
+                "这是可自动修正的确定性校验失败。完整处理 findings 中每一项，"
+                "只修改涉及的文件，然后重新校验；不得只处理 reason 摘要。"
+            )
+        return decorated
 
 
 STRING = {"type": "string"}
@@ -560,6 +615,8 @@ class CoreTool(Tool):
         except BaseException:
             call.cancel()
             raise
+        if result.get("error") and result.get("retryable") is True and isinstance(result.get("findings"), list):
+            result = self.context.validation_repair.decorate(result)
         if not result.get("error") and self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
         return json.dumps(result, ensure_ascii=False)

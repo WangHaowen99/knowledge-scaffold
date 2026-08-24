@@ -8,7 +8,7 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
-from modeling_agent.agent import build_model
+from modeling_agent.agent import _system_prompt, build_model
 from modeling_agent.rails import (
     AskRail,
     ConfirmationRail,
@@ -25,6 +25,7 @@ from modeling_agent.tools import (
     CoreTool,
     ProjectStateTool,
     RequestConfirmationTool,
+    CandidateValidationRepairState,
     ToolContext,
 )
 
@@ -189,6 +190,91 @@ async def test_reasoning_is_streamed_separately_and_private_segments_are_removed
         assert "reasoning" not in telemetry[-1]
     finally:
         await runtime.shutdown()
+
+
+async def test_package_contract_is_injected_into_initial_agent_context() -> None:
+    prompt = _system_prompt("建模方法", {
+        "validatorVersion": "package-format-v1",
+        "manifest": {
+            "requiredFields": ["kind", "status"],
+            "platformManagedFields": ["kind", "status"],
+        },
+        "markdown": {
+            "details": {
+                "operation": {
+                    "requiredSections": ["业务目标", "输入", "输出"],
+                },
+            },
+        },
+    })
+
+    assert "本轮知识包生成契约（来自核心确定性校验器）" in prompt
+    assert '"validatorVersion": "package-format-v1"' in prompt
+    assert '"requiredFields"' in prompt
+    assert '"platformManagedFields"' in prompt
+    assert '"requiredSections"' in prompt
+    assert '"业务目标"' in prompt
+    assert "生成、修正和确认候选都必须以这份" in prompt
+
+
+async def test_candidate_validation_repair_allows_three_distinct_rounds_then_stops() -> None:
+    state = CandidateValidationRepairState()
+
+    for attempt in range(1, 4):
+        result = state.record({
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "findings": [{"ruleId": f"rule-{attempt}", "path": f"file-{attempt}.md"}],
+        })
+        assert result["repairAttempt"] == attempt
+        assert result["repairStopped"] is False
+
+    stopped = state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "findings": [{"ruleId": "rule-4", "path": "file-4.md"}],
+    })
+    assert stopped["repairAttempt"] == 4
+    assert stopped["repeatedFinding"] is False
+    assert stopped["repairStopped"] is True
+
+
+async def test_quick_file_validation_error_reaches_agent_with_full_findings_and_repair_state() -> None:
+    finding = {
+        "ruleId": "knowledge-markdown.frontmatter",
+        "path": "objects/inventory.md",
+        "message": "objects/inventory.md 缺少 YAML frontmatter",
+        "suggestion": "补齐本文件 frontmatter",
+    }
+    gateway = FakeGateway({
+        "write_file": {
+            "error": "KNOWLEDGE_FILE_INVALID",
+            "reason": "候选文件快速校验未通过",
+            "retryable": True,
+            "validatorVersion": "knowledge-markdown-v1",
+            "findingCount": 1,
+            "findings": [finding],
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+    tool = CoreTool(spec, context)
+
+    result = json.loads(await tool.invoke({
+        "path": "objects/inventory.md",
+        "content": "# 库存对象",
+        "change_group": "inventory",
+    }))
+
+    assert result["error"] == "KNOWLEDGE_FILE_INVALID"
+    assert result["findings"] == [finding]
+    assert result["repairAttempt"] == 1
+    assert result["repairStopped"] is False
+    assert "完整处理 findings" in result["instruction"]
 
 
 async def test_real_openjiuwen_runner_focus_interrupt_and_resume(settings, caplog) -> None:
@@ -955,6 +1041,10 @@ async def test_restored_confirmation_accepts_the_same_frozen_candidate(settings)
         "prepare_confirmation_groups": {"change_groups": groups},
         "request_confirmation_preflight": {
             "candidate_revision": "candidate_goal",
+            "validation_receipt": {
+                "candidateHash": "sha256:goal",
+                "validatorVersion": "package-contract-v2",
+            },
             "auto_approved": False,
             "change_groups": groups,
             "focus": {"kind": "diff", "target": ".modeling/goal.md"},
@@ -994,9 +1084,96 @@ async def test_restored_confirmation_accepts_the_same_frozen_candidate(settings)
         confirmations = [call for call in gateway.calls if call["tool"] == "request_confirmation"]
         assert len(confirmations) == 1
         assert confirmations[0]["arguments"]["expected_candidate_revision"] == "candidate_goal"
+        assert confirmations[0]["arguments"]["expected_candidate_hash"] == "sha256:goal"
+        assert confirmations[0]["arguments"]["expected_validator_version"] == "package-contract-v2"
         assert confirmations[0]["arguments"]["review"]["approved"] is True
         assert [call["tool"] for call in gateway.calls].count("prepare_confirmation_groups") == 1
         assert [call["tool"] for call in gateway.calls].count("request_confirmation_preflight") == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_legacy_confirmation_without_receipt_is_retired_and_revalidated_before_new_card(settings) -> None:
+    groups = [{"id": "knowledge", "tier": "structural", "title": "确认知识修改", "impact": []}]
+    model = ScriptedModel([
+        [ToolTurn("request_confirmation", {"summary": "确认旧候选"})],
+        [ToolTurn("request_confirmation", {"summary": "重新确认已校验候选"})],
+    ])
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {"change_groups": groups},
+        "request_confirmation": {
+            "error": "CANDIDATE_REVALIDATION_REQUIRED",
+            "reason": "待确认候选或校验规则已经变化，原确认不能继续提交",
+            "retryable": False,
+            "next": ["重新执行完整候选预检，并基于新的确认卡再次决定"],
+        },
+    })
+    original_call = gateway.call
+    preflight_count = 0
+
+    async def changing_preflight(**kwargs):
+        nonlocal preflight_count
+        if kwargs["tool"] == "request_confirmation_preflight":
+            gateway.calls.append({
+                "projectId": kwargs["project_id"],
+                "runId": kwargs["run_id"],
+                "token": kwargs["token"],
+                "tool": kwargs["tool"],
+                "arguments": kwargs["arguments"],
+            })
+            preflight_count += 1
+            return {
+                "candidate_revision": "candidate-legacy",
+                "auto_approved": False,
+                "change_groups": groups,
+                **({
+                    "validation_receipt": {
+                        "candidateHash": "sha256:revalidated",
+                        "validatorVersion": "package-contract-v2",
+                    },
+                } if preflight_count > 1 else {}),
+            }
+        return await original_call(**kwargs)
+
+    gateway.call = changing_preflight  # type: ignore[method-assign]
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_legacy_confirmation",
+            token="token_1",
+            message="继续处理旧候选",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        old_interaction = runtime.store.pending_interaction("project_legacy_confirmation")
+        assert old_interaction is not None
+        assert old_interaction.payload.get("validationReceipt") is None
+
+        await runtime.answer_interaction(
+            project_id="project_legacy_confirmation",
+            interaction_id=old_interaction.id,
+            token="token_2",
+            answer={"approved": True, "review_mode": "full", "selected_groups": ["knowledge"]},
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+
+        assert waiting["status"] == "waiting", waiting["error"]
+        assert runtime.store.get_interaction(old_interaction.id).status == "answered"
+        new_interaction = runtime.store.pending_interaction("project_legacy_confirmation")
+        assert new_interaction is not None and new_interaction.id != old_interaction.id
+        assert new_interaction.payload["validationReceipt"] == {
+            "candidateHash": "sha256:revalidated",
+            "validatorVersion": "package-contract-v2",
+        }
+        assert preflight_count == 2
+        system_text = "\n".join(
+            block.get("text", "")
+            for event in runtime.store.events_after("project_legacy_confirmation", 0)
+            if event.kind == "message" and event.payload.get("role") == "system"
+            for block in event.payload.get("blocks", [])
+        )
+        assert "接受操作未生效" in system_text
+        assert "需要再次确认" in system_text
     finally:
         await runtime.shutdown()
 
@@ -1022,6 +1199,10 @@ async def test_normal_confirmation_applies_candidate_and_autonomously_reaches_ne
         "prepare_confirmation_groups": {"change_groups": groups},
         "request_confirmation_preflight": {
             "candidate_revision": "candidate-knowledge",
+            "validation_receipt": {
+                "candidateHash": "sha256:knowledge",
+                "validatorVersion": "package-contract-v2",
+            },
             "auto_approved": False,
             "change_groups": groups,
         },
@@ -1074,6 +1255,8 @@ async def test_normal_confirmation_applies_candidate_and_autonomously_reaches_ne
         confirmations = [call for call in gateway.calls if call["tool"] == "request_confirmation"]
         assert len(confirmations) == 1
         assert confirmations[0]["arguments"]["expected_candidate_revision"] == "candidate-knowledge"
+        assert confirmations[0]["arguments"]["expected_candidate_hash"] == "sha256:knowledge"
+        assert confirmations[0]["arguments"]["expected_validator_version"] == "package-contract-v2"
         assert confirmations[0]["arguments"]["review"]["approved"] is True
         next_interaction = runtime.store.pending_interaction("project_normal_confirmation")
         assert next_interaction is not None and next_interaction.kind == "business_decision"
@@ -1714,6 +1897,10 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         },
         "request_confirmation_preflight": {
             "candidate_revision": "candidate_goal",
+            "validation_receipt": {
+                "candidateHash": "sha256:goal",
+                "validatorVersion": "package-contract-v2",
+            },
             "auto_approved": False,
             "change_groups": [{"id": "regroup_caliber_1", "tier": "caliber", "title": "建模目标确认"}],
             "focus": {"kind": "diff", "target": ".modeling/goal.md"},
@@ -1736,9 +1923,68 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
     assert [call["tool"] for call in gateway.calls] == ["prepare_confirmation_groups", "request_confirmation_preflight"]
     assert gateway.calls[1]["arguments"]["change_groups"][0]["id"] == "regroup_caliber_1"
     assert decision.request.metadata["candidateRevision"] == "candidate_goal"
+    assert decision.request.metadata["validationReceipt"] == {
+        "candidateHash": "sha256:goal",
+        "validatorVersion": "package-contract-v2",
+    }
     assert events == [
         ("focus", {"target": {"kind": "diff", "target": ".modeling/goal.md"}}),
     ]
+
+
+async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_result() -> None:
+    finding = {
+        "ruleId": "manifest.required.status",
+        "path": "manifest.yaml",
+        "message": "manifest 缺少必选字段 status",
+        "suggestion": "以当前正式 manifest.yaml 为基线补回 status",
+    }
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {
+            "change_groups": [{"id": "indexes", "tier": "index", "title": "知识索引同步"}],
+        },
+        "request_confirmation_preflight": {
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-format-v1",
+            "findingCount": 1,
+            "findings": [finding],
+            "next": ["逐项修正后重新预检"],
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    rail = ConfirmationRail(context)
+    tool_call = type("Call", (), {"arguments": '{"summary":"确认知识索引"}'})()
+
+    decision = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+
+    delivered = json.loads(decision.tool_result)
+    assert delivered["error"] == "CANDIDATE_FORMAT_INVALID"
+    assert delivered["retryable"] is True
+    assert delivered["validatorVersion"] == "package-format-v1"
+    assert delivered["findingCount"] == 1
+    assert delivered["findings"] == [finding]
+    assert delivered["next"] == ["逐项修正后重新预检"]
+    assert delivered["repairAttempt"] == 1
+    assert delivered["repairStopped"] is False
+    assert delivered["findingFingerprint"].startswith("sha256:")
+    assert "完整处理 findings" in delivered["instruction"]
+
+    repeated = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    repeated_result = json.loads(repeated.tool_result)
+    assert repeated_result["findings"] == [finding]
+    assert repeated_result["repairAttempt"] == 2
+    assert repeated_result["repeatedFinding"] is True
+    assert repeated_result["repairStopped"] is True
+    assert repeated_result["retryable"] is False
+    assert "自动修正已停止" in repeated_result["instruction"]
 
 
 async def test_text_choice_request_rejects_confirmation_and_opens_ask_card(settings) -> None:

@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
+import { updateManifestPlatformMetadata } from '../workflow/package-contract.js';
 import { renderPackage } from '../workflow/package-render.js';
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { validateGeneratedScriptSafety } from '../workflow/script-safety.js';
@@ -2133,25 +2134,14 @@ function metadataChanges(current: readonly ArtifactFile[], spec: PackageSpec): A
 }
 
 function updateManifestMetadata(content: string, spec: PackageSpec): string {
-  // Updating version/status must not turn untouched execution-contract debt from an imported
-  // baseline into a blocker. Candidate acceptance validates scripts it actually changes.
-  const generated = renderPackage(spec, { validateScripts: false })['manifest.yaml'];
-  const metadata = new Map(
-    generated.split('\n')
-      .filter((line) => /^(version|status):/.test(line))
-      .map((line) => [line.slice(0, line.indexOf(':')), line]),
-  );
-  let updated = content;
-  for (const key of ['version', 'status']) {
-    const replacement = metadata.get(key);
-    if (!replacement) continue;
-    const pattern = new RegExp(`^${key}:.*$`, 'm');
-    if (!pattern.test(updated)) {
-      throw new PackageArtifactStoreError('invalid_package', `manifest.yaml 缺少 ${key}`);
-    }
-    updated = updated.replace(pattern, replacement);
+  try {
+    return updateManifestPlatformMetadata(content, spec);
+  } catch (cause) {
+    throw new PackageArtifactStoreError(
+      'invalid_package',
+      cause instanceof Error ? cause.message : 'manifest.yaml 元数据不正确',
+    );
   }
-  return updated;
 }
 
 function validateChangedCandidateScripts(

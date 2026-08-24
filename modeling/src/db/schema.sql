@@ -599,6 +599,19 @@ CREATE TABLE IF NOT EXISTS agent_candidate_group_metadata (
   PRIMARY KEY (candidate_id, group_id)
 );
 
+-- 候选冻结前的确定性校验回执。接受时必须重新计算候选哈希并匹配当前校验器版本，
+-- 防止用户确认后候选内容变化或旧校验结果被新版本规则继续复用。
+CREATE TABLE IF NOT EXISTS agent_candidate_validation_receipts (
+  candidate_id       TEXT PRIMARY KEY REFERENCES artifact_candidate_revisions(id) ON DELETE CASCADE,
+  project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  base_revision_oid  TEXT NOT NULL,
+  candidate_hash     TEXT NOT NULL,
+  validator_version  TEXT NOT NULL,
+  validated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_candidate_validation_receipts_project
+  ON agent_candidate_validation_receipts(project_id, validated_at DESC);
+
 CREATE TABLE IF NOT EXISTS agent_confirmations (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

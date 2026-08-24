@@ -24,7 +24,18 @@ import { startCurrentEvaluation, startEvaluation, waitForEvaluation } from '../e
 import { projectEvaluationDatabaseName } from '../evaluation/project-evaluation-database.js';
 import { advanceStage, getProject } from '../projects/repo.js';
 import type { DataDictTable, Project } from '../types.js';
-import { validateKnowledgeMarkdownContract } from '../workflow/knowledge-markdown-contract.js';
+import {
+  KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
+  validateKnowledgeMarkdownFile,
+  validateKnowledgeMarkdownContract,
+} from '../workflow/knowledge-markdown-contract.js';
+import {
+  PACKAGE_CONTRACT_VERSION,
+  PACKAGE_FORMAT_VALIDATOR_VERSION,
+  mergeAgentManifest,
+  packageGenerationContract,
+} from '../workflow/package-contract.js';
+import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
 import {
   isReleaseCandidateVersion,
   nextValidationCandidateVersion,
@@ -81,6 +92,14 @@ interface WorkspaceRow {
   base_revision_oid: string;
   candidate_id: string | null;
   lease_expires_at: string;
+}
+
+interface CandidateValidationReceipt {
+  candidateRevision: string;
+  baseRevision: string;
+  candidateHash: string;
+  validatorVersion: string;
+  validatedAt: string;
 }
 
 interface ChangeRow {
@@ -343,6 +362,7 @@ export class AgentCoreService {
 
   async invoke(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
     if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
+    if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
     const workspace = await this.ensureWorkspace(context);
     switch (tool) {
@@ -501,6 +521,7 @@ export class AgentCoreService {
         resumed: false,
         supersededChanges,
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
+        packageContract: packageGenerationContract(),
         display: { text: '知识包版本已变化，已按当前内容重新准备修改' },
       };
     }
@@ -511,6 +532,7 @@ export class AgentCoreService {
         runId: workspace.run_id,
         resumed: Boolean(existing),
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
+        packageContract: packageGenerationContract(),
         display: { text: existing ? '已继续上次未完成的修改' : '已准备本次修改' },
       };
     }
@@ -552,6 +574,7 @@ export class AgentCoreService {
       resumed: true,
       preservedChanges: this.changes(this.workspace(context.project.id)!).length,
       runCredential: issueAgentRunCredential(context.project.id, context.runId, context.username),
+      packageContract: packageGenerationContract(),
       display: { text: '已继续上次未完成的修改' },
     };
   }
@@ -1151,8 +1174,9 @@ export class AgentCoreService {
 
   private async writeFile(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
     const path = packagePath(text(args.path, 'path'));
-    const content = text(args.content, 'content', true);
+    let content = text(args.content, 'content', true);
     const evidence = stringArray(args.evidence);
+    let manifestNormalization: { ignoredFields: string[] } | undefined;
     if (path.startsWith('knowledge/')) {
       throw new AgentCoreError(
         'INVALID_KNOWLEDGE_PATH',
@@ -1181,6 +1205,62 @@ export class AgentCoreService {
       throw new AgentCoreError('WRITE_UNSAFE', '单个候选文件超过 100 万字符', ['拆分为多个单一职责文件后重试'], 400);
     }
     await this.assertCandidateStageGate(workspace, path);
+    if (path === 'manifest.yaml') {
+      const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
+      const current = await this.overlay(workspace);
+      try {
+        const merged = mergeAgentManifest(
+          base.files['manifest.yaml'],
+          current.files['manifest.yaml'],
+          content,
+        );
+        content = merged.content;
+        manifestNormalization = { ignoredFields: merged.ignoredFields };
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : 'manifest.yaml 不符合知识包生成契约';
+        throw new AgentCoreError(
+          'MANIFEST_CONTRACT_INVALID',
+          message,
+          ['读取本轮 packageContract，只提交 description 和 resources 后重试'],
+          400,
+          {
+            retryable: true,
+            validatorVersion: PACKAGE_CONTRACT_VERSION,
+            findingCount: 1,
+            findings: [{
+              ruleId: 'manifest.yaml.structured-content',
+              path: 'manifest.yaml',
+              message,
+              suggestion: '保留平台管理字段，只提交合法 YAML 的 description 和 resources',
+            }],
+          },
+        );
+      }
+    }
+    if (/^(?:objects|operations|rules|metrics)\/.+\.md$/u.test(path)) {
+      const current = await this.overlay(workspace);
+      const candidateFiles = { ...current.files, [path]: content };
+      const existingIssues = path in current.files
+        ? new Set(validateKnowledgeMarkdownFile(path, current.files[path], current.files))
+        : new Set<string>();
+      const introducedIssues = validateKnowledgeMarkdownFile(path, content, candidateFiles)
+        .filter((issue) => !existingIssues.has(issue));
+      if (introducedIssues.length) {
+        const findings = introducedIssues.map(knowledgeValidationFinding);
+        throw new AgentCoreError(
+          'KNOWLEDGE_FILE_INVALID',
+          `候选文件快速校验未通过：${introducedIssues.join('；')}`,
+          ['完整处理 findings 中当前文件的每一项后重新写入；不要修改无关文件'],
+          400,
+          {
+            retryable: true,
+            validatorVersion: KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
+            findingCount: findings.length,
+            findings,
+          },
+        );
+      }
+    }
     assertMaterialEvidenceReferences(workspace.project_id, evidence);
     const groupId = path.startsWith('.modeling/') && path !== '.modeling/goal.md'
       ? RUNTIME_GROUP
@@ -1191,6 +1271,7 @@ export class AgentCoreService {
       evidence, reason: null,
     });
     return { ok: true, path, changeGroup: groupId, candidate: true,
+      ...(manifestNormalization ? { manifestNormalization } : {}),
       display: { text: `已写入候选文件《${path}》` } };
   }
 
@@ -1961,8 +2042,11 @@ export class AgentCoreService {
       }
       const focusPath = candidate.groups.flatMap((group) => group.changes)
         .find((change) => change.path.startsWith('package/'))?.path;
+      await this.assertFrozenCandidateValid(workspace, candidate);
+      const validationReceipt = this.recordCandidateValidationReceipt(candidate);
       return {
         candidate_revision: candidate.id,
+        validation_receipt: validationReceipt,
         change_groups: groups.map((group) => ({ ...group, autoApproved: false })),
         auto_approved: false,
         ...(focusPath ? { focus: { kind: 'diff', target: publicPath(focusPath) } } : {}),
@@ -2000,21 +2084,8 @@ export class AgentCoreService {
     }
     for (const group of requested) this.assertTier(group, changes.filter((item) => item.group_id === group.id));
     this.assertScriptCandidatesTested(workspace, changes);
-    if (changes.some((item) => /^(?:objects|operations|rules|metrics)\//u.test(item.path))) {
-      const { files } = await this.overlay(workspace);
-      const issues = validateKnowledgeMarkdownContract(files);
-      const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
-      const baselineIssues = new Set(validateKnowledgeMarkdownContract(base.files));
-      const introducedIssues = issues.filter((issue) => !baselineIssues.has(issue));
-      if (introducedIssues.length) {
-        throw new AgentCoreError(
-          'KNOWLEDGE_CONTRACT_INVALID',
-          `知识候选新增了 consumer 无法解析的问题：${introducedIssues.slice(0, 8).join('；')}${introducedIssues.length > 8 ? `；另有 ${introducedIssues.length - 8} 项` : ''}`,
-          ['只修正本次实际受影响的内容；不要为导入基线的历史格式问题重写无关文件'],
-          409,
-          { issues: introducedIssues, baselineIssueCount: baselineIssues.size },
-        );
-      }
+    if (changes.some((item) => !item.path.startsWith('.modeling/'))) {
+      await this.assertCandidateFormatValid(workspace, changes);
     }
 
     let candidate: PackageCandidateRevision;
@@ -2074,13 +2145,168 @@ export class AgentCoreService {
       .filter((group) => group.id !== RUNTIME_GROUP)
       .flatMap((group) => group.changes)
       .map((change) => publicPath(change.path))[0];
+    const validationReceipt = this.recordCandidateValidationReceipt(candidate);
     return {
       candidate_revision: candidate.id,
+      validation_receipt: validationReceipt,
       change_groups: publicGroups.map((group) => ({ ...group, autoApproved: !askGroups.some((item) => item.id === group.id) })),
       auto_approved: askGroups.length === 0,
       ...(focusPath ? { focus: { kind: 'diff', target: focusPath } } : {}),
       display: { text: askGroups.length ? `有 ${askGroups.length} 组变更需要确认` : '候选变更符合项目自动确认策略' },
     };
+  }
+
+  private async assertCandidateFormatValid(workspace: WorkspaceRow, changes: ChangeRow[]) {
+    const candidate = await this.overlay(workspace, changes);
+    const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
+    this.assertPackageFilesValid(base, candidate);
+  }
+
+  private async assertFrozenCandidateValid(workspace: WorkspaceRow, candidate: PackageCandidateRevision) {
+    const preview = await this.artifacts.previewCandidateRevision(workspace.project_id, candidate.id);
+    const base = await this.artifacts.readPackageFiles(workspace.project_id, candidate.baseRevision);
+    this.assertPackageFilesValid(base, preview);
+  }
+
+  private assertPackageFilesValid(
+    base: Pick<PackageArtifactFiles, 'spec' | 'files'>,
+    candidate: Pick<PackageArtifactFiles, 'spec' | 'files'>,
+  ) {
+    const baselineErrors = runFormatChecks(base.spec, base.files)
+      .filter((finding) => finding.severity === '错误');
+    const baselineIdentities = new Set(baselineErrors.map(formatFindingIdentity));
+    const introduced = runFormatChecks(candidate.spec, candidate.files)
+      .filter((finding) => finding.severity === '错误')
+      .filter((finding) => !baselineIdentities.has(formatFindingIdentity(finding)));
+    if (introduced.length) {
+      const findings = introduced.map(agentValidationFinding);
+      throw new AgentCoreError(
+        'CANDIDATE_FORMAT_INVALID',
+        `候选格式校验未通过：${findings.map((finding) => `${finding.path}：${finding.message}`).join('；')}`,
+        ['按 findings 逐项修正对应候选文件，然后重新发起确认；不要修改无关文件'],
+        409,
+        {
+          retryable: true,
+          validatorVersion: PACKAGE_FORMAT_VALIDATOR_VERSION,
+          findingCount: findings.length,
+          findings,
+        },
+      );
+    }
+
+    const baselineKnowledgeIssues = new Set(validateKnowledgeMarkdownContract(base.files));
+    const introducedKnowledgeIssues = validateKnowledgeMarkdownContract(candidate.files)
+      .filter((issue) => !baselineKnowledgeIssues.has(issue));
+    if (!introducedKnowledgeIssues.length) return;
+    const findings = introducedKnowledgeIssues.map(knowledgeValidationFinding);
+    throw new AgentCoreError(
+      'KNOWLEDGE_CONTRACT_INVALID',
+      `知识候选新增了 consumer 无法解析的问题：${introducedKnowledgeIssues.slice(0, 8).join('；')}${introducedKnowledgeIssues.length > 8 ? `；另有 ${introducedKnowledgeIssues.length - 8} 项` : ''}`,
+      ['按 findings 逐项修正本次实际受影响的文件；不要为导入基线的历史格式问题重写无关文件'],
+      409,
+      {
+        retryable: true,
+        validatorVersion: KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
+        findingCount: findings.length,
+        findings,
+        issues: introducedKnowledgeIssues,
+        baselineIssueCount: baselineKnowledgeIssues.size,
+      },
+    );
+  }
+
+  private candidateValidationHash(candidateId: string): { baseRevision: string; candidateHash: string } {
+    const row = this.db.prepare(`SELECT base_revision_oid, groups_json
+      FROM artifact_candidate_revisions WHERE id = ?`).get(candidateId) as
+      | { base_revision_oid: string; groups_json: string }
+      | undefined;
+    if (!row) {
+      throw new AgentCoreError('NO_CANDIDATE', '确认请求对应的候选已经失效', ['重新生成候选并发起确认'], 409);
+    }
+    const baseRevision = String(row.base_revision_oid);
+    const candidateHash = `sha256:${createHash('sha256')
+      .update('agent-candidate-validation-v1\0')
+      .update(baseRevision)
+      .update('\0')
+      .update(String(row.groups_json))
+      .digest('hex')}`;
+    return { baseRevision, candidateHash };
+  }
+
+  private recordCandidateValidationReceipt(candidate: PackageCandidateRevision): CandidateValidationReceipt {
+    const { baseRevision, candidateHash } = this.candidateValidationHash(candidate.id);
+    const validatedAt = nowIso();
+    this.db.prepare(`INSERT INTO agent_candidate_validation_receipts (
+      candidate_id, project_id, base_revision_oid, candidate_hash, validator_version, validated_at
+    ) VALUES (?,?,?,?,?,?) ON CONFLICT(candidate_id) DO UPDATE SET
+      project_id = excluded.project_id,
+      base_revision_oid = excluded.base_revision_oid,
+      candidate_hash = excluded.candidate_hash,
+      validator_version = excluded.validator_version,
+      validated_at = excluded.validated_at`).run(
+      candidate.id,
+      candidate.projectId,
+      baseRevision,
+      candidateHash,
+      PACKAGE_CONTRACT_VERSION,
+      validatedAt,
+    );
+    return {
+      candidateRevision: candidate.id,
+      baseRevision,
+      candidateHash,
+      validatorVersion: PACKAGE_CONTRACT_VERSION,
+      validatedAt,
+    };
+  }
+
+  private assertCandidateValidationReceipt(
+    workspace: WorkspaceRow,
+    candidate: PackageCandidateRevision,
+    args: Record<string, unknown>,
+  ) {
+    const receipt = this.db.prepare(`SELECT base_revision_oid, candidate_hash, validator_version, validated_at
+      FROM agent_candidate_validation_receipts WHERE candidate_id = ? AND project_id = ?`).get(
+      candidate.id,
+      workspace.project_id,
+    ) as { base_revision_oid: string; candidate_hash: string; validator_version: string; validated_at: string } | undefined;
+    const current = this.candidateValidationHash(candidate.id);
+    const expectedCandidate = String(args.expected_candidate_revision ?? '').trim();
+    const expectedHash = String(args.expected_candidate_hash ?? '').trim();
+    const expectedValidator = String(args.expected_validator_version ?? '').trim();
+    const valid = Boolean(
+      receipt
+      && candidate.status === 'pending'
+      && candidate.baseRevision === workspace.base_revision_oid
+      && receipt.base_revision_oid === current.baseRevision
+      && receipt.candidate_hash === current.candidateHash
+      && receipt.validator_version === PACKAGE_CONTRACT_VERSION
+      && expectedCandidate === candidate.id
+      && expectedHash === current.candidateHash
+      && expectedValidator === PACKAGE_CONTRACT_VERSION
+    );
+    if (valid) return;
+    throw new AgentCoreError(
+      'CANDIDATE_REVALIDATION_REQUIRED',
+      '待确认候选或校验规则已经变化，原确认不能继续提交',
+      ['重新执行完整候选预检，并基于新的确认卡再次决定'],
+      409,
+      {
+        retryable: false,
+        expectedCandidateRevision: expectedCandidate || null,
+        currentCandidateRevision: candidate.id,
+        expectedCandidateHash: expectedHash || null,
+        currentCandidateHash: current.candidateHash,
+        expectedValidatorVersion: expectedValidator || null,
+        currentValidatorVersion: PACKAGE_CONTRACT_VERSION,
+        receipt: receipt ? {
+          baseRevision: receipt.base_revision_oid,
+          candidateHash: receipt.candidate_hash,
+          validatorVersion: receipt.validator_version,
+          validatedAt: receipt.validated_at,
+        } : null,
+      },
+    );
   }
 
   private async confirm(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
@@ -2100,6 +2326,7 @@ export class AgentCoreService {
     const reviewMode = normalizeReviewMode(review.review_mode, requested.length === 0 && automatic.length === groups.length);
     const selectedIds = new Set(selected);
     const candidate = await this.artifacts.getCandidateRevision(workspace.project_id, workspace.candidate_id);
+    this.assertCandidateValidationReceipt(workspace, candidate, args);
     const selectedChanges = candidate.groups
       .filter((group) => selectedIds.has(group.id))
       .flatMap((group) => group.changes)
@@ -3426,6 +3653,52 @@ function withPackageProvenance(content: string, path: string, provenance: string
 
 function tierLabel(tier: Tier): string {
   return { caliber: '业务口径', structural: '知识结构', index: '索引', script: '脚本' }[tier];
+}
+
+function formatFindingIdentity(finding: CheckFinding): string {
+  return JSON.stringify([
+    finding.source,
+    finding.severity,
+    finding.category.normalize('NFKC').trim(),
+    finding.target.normalize('NFKC').trim(),
+    finding.message.normalize('NFKC').trim().replace(/\s+/gu, ' '),
+  ]);
+}
+
+function agentValidationFinding(finding: CheckFinding) {
+  const missingManifestField = finding.target === 'manifest.yaml'
+    ? /manifest 缺少必选字段 ([A-Za-z_][\w-]*)/u.exec(finding.message)?.[1]
+    : undefined;
+  const ruleId = missingManifestField
+    ? `manifest.required.${missingManifestField}`
+    : finding.target === 'manifest.yaml' && /kind 必须为 ontology-package/u.test(finding.message)
+      ? 'manifest.kind.ontology-package'
+      : finding.target === 'manifest.yaml' && /status 不正确/u.test(finding.message)
+        ? 'manifest.status.allowed-value'
+        : `format.${String(finding.fingerprint ?? finding.id).replace(/^check:/u, '').slice(0, 16)}`;
+  return {
+    ruleId,
+    fingerprint: finding.fingerprint ?? finding.id,
+    source: finding.source,
+    category: finding.category,
+    path: finding.path ?? finding.target,
+    message: finding.message,
+    suggestion: finding.suggestion ?? `修正《${finding.target}》后重新执行候选预检`,
+  };
+}
+
+function knowledgeValidationFinding(issue: string) {
+  const path = /^([^\s]+\.md)\b/u.exec(issue)?.[1] ?? 'knowledge-package';
+  const digest = createHash('sha256').update(issue.normalize('NFKC')).digest('hex').slice(0, 16);
+  return {
+    ruleId: `knowledge-markdown.${digest}`,
+    fingerprint: `knowledge:${digest}`,
+    source: 'knowledge-markdown',
+    category: 'Markdown 消费契约',
+    path,
+    message: issue,
+    suggestion: `只修正《${path}》中该问题对应的 frontmatter、章节、表格或引用后重新预检`,
+  };
 }
 
 function materialPurposeLabel(purpose: string | undefined): string {

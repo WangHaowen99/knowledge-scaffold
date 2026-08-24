@@ -168,6 +168,7 @@ class HttpCoreGateway:
             code = str(payload.get("code") or payload.get("error") or "CORE_TOOL_FAILED")
             reason = str(payload.get("reason") or payload.get("error") or "工具执行失败")
             return {
+                **payload,
                 "error": code,
                 "reason": reason,
                 "next": payload.get("next") or [],

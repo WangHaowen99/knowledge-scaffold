@@ -125,3 +125,51 @@ async def test_non_object_success_is_reported_as_core_protocol_error() -> None:
         assert "空" not in result["display"]["text"]
     finally:
         await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_core_validation_error_preserves_every_detail_for_agent() -> None:
+    finding = {
+        "ruleId": "manifest.required.status",
+        "path": "manifest.yaml",
+        "message": "manifest 缺少必选字段 status",
+        "suggestion": "以当前正式 manifest.yaml 为基线补回 status",
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={
+            "code": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-format-v1",
+            "findingCount": 1,
+            "findings": [finding],
+            "next": ["逐项修正后重新预检"],
+            "display": {"text": "候选格式校验未通过"},
+        })
+
+    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    await gateway._client.aclose()  # noqa: SLF001
+    gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
+    try:
+        result = await gateway.call(
+            project_id="project_demo",
+            run_id="run_demo",
+            token="token_demo",
+            tool="request_confirmation_preflight",
+            arguments={},
+        )
+
+        assert result == {
+            "code": "CANDIDATE_FORMAT_INVALID",
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-format-v1",
+            "findingCount": 1,
+            "findings": [finding],
+            "next": ["逐项修正后重新预检"],
+            "display": {"text": "候选格式校验未通过"},
+        }
+    finally:
+        await gateway.aclose()

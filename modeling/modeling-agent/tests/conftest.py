@@ -16,6 +16,15 @@ from modeling_agent.service import AgentService
 from modeling_agent.settings import Settings
 
 
+TEST_PACKAGE_CONTRACT = {
+    "validatorVersion": "package-format-test-v1",
+    "manifest": {
+        "requiredFields": ["kind", "schema_version", "id", "name", "description", "version", "status"],
+        "platformManagedFields": ["kind", "schema_version", "id", "version", "status"],
+    },
+}
+
+
 @dataclass(frozen=True)
 class ToolTurn:
     name: str
@@ -128,7 +137,10 @@ class FakeGateway:
                 or self.credentials.get(run_id)
                 or f"arc_{run_id}_secret"
             )
-        return dict(self.responses.get(tool, {"ok": True, "display": {"text": f"{tool} 完成"}}))
+        result = dict(self.responses.get(tool, {"ok": True, "display": {"text": f"{tool} 完成"}}))
+        if tool == "claim_candidate_workspace":
+            result.setdefault("packageContract", TEST_PACKAGE_CONTRACT)
+        return result
 
     async def aclose(self) -> None:
         return None

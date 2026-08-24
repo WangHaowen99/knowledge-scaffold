@@ -13,6 +13,14 @@ import {
   findObjectAliasConflicts,
 } from './object-alias-validation.js';
 import { parseObjectIndex } from './object-index.js';
+import {
+  PACKAGE_DETAIL_RESOURCES,
+  PACKAGE_INDEX_DETAIL_DIRECTORIES,
+  PACKAGE_INDEX_RESOURCES,
+  PACKAGE_REQUIRED_FILES,
+  packageManifestIssues,
+  parsePackageManifest,
+} from './package-contract.js';
 import { packageMappingResource } from './package-data-source.js';
 import { sourceRefsFor, tableSourceFor, tableSourcesFor } from './source-references.js';
 import { duplicateScriptEntrypoints, normalizeCompetencyQuestion, questionsMatch } from './spec-validation.js';
@@ -295,22 +303,6 @@ export function runRuleChecks(
 // 索引声明的详情文件存在、manifest 可解析且必选字段齐、mappings JSON 结构合法、key 合法性。
 // 纯渲染产物由构造保证通过；这层的目标是拦截 override 改坏的内容（routes 写入与导出前调用）。
 
-const REQUIRED_FILES = ['manifest.yaml', 'index.md', 'objects/index.md', 'operations/index.md'];
-const MANIFEST_REQUIRED = ['kind', 'schema_version', 'id', 'name', 'description', 'version'];
-// index 文件 → 期望 resource；详情目录 → 期望 resource
-const INDEX_RESOURCE: Record<string, string> = {
-  'index.md': 'root', 'objects/index.md': 'object_index', 'operations/index.md': 'operation_index',
-  'rules/index.md': 'rule_index', 'metrics/index.md': 'metric_index', 'scripts/index.md': 'script_index',
-};
-const DETAIL_RESOURCE: Record<string, string> = {
-  objects: 'object', operations: 'operation', rules: 'rule', metrics: 'metric', scripts: 'script',
-};
-// 索引文件 → 其表格声明的详情所在目录
-const INDEX_DETAIL_DIR: [string, string][] = [
-  ['objects/index.md', 'objects'], ['operations/index.md', 'operations'],
-  ['rules/index.md', 'rules'], ['metrics/index.md', 'metrics'], ['scripts/index.md', 'scripts'],
-];
-
 // 解析 frontmatter 顶层扁平字段（嵌套块的子行带缩进，不会被匹配——够用于 resource/key/title 校验）
 function parseFrontmatter(md: string): Record<string, string> | null {
   if (!md.startsWith('---\n')) return null;
@@ -385,7 +377,7 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   }
 
   // 1) 必选文件存在且非空（规范 §2.1）
-  for (const p of REQUIRED_FILES) {
+  for (const p of PACKAGE_REQUIRED_FILES) {
     if (!(p in files) || !files[p].trim()) add('错误', '必选文件缺失', p, `必选文件 ${p} 缺失或为空，本体包不能被稳定消费`);
   }
   for (const o of spec.objects ?? []) {
@@ -398,17 +390,24 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   // 2) manifest 可解析且必选字段齐（规范 §6）
   const mani = files['manifest.yaml'];
   if (mani?.trim()) {
-    const kv: Record<string, string> = {};
-    for (const line of mani.split('\n')) {
-      const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
-      if (!m) continue;
-      let v = m[2].trim();
-      if (v.startsWith('"')) { try { v = JSON.parse(v); } catch { /* 保留原文 */ } }
-      kv[m[1]] = v;
-    }
-    if (kv.kind !== 'ontology-package') add('错误', 'manifest 非法', 'manifest.yaml', `manifest 的 kind 必须为 ontology-package（当前：${kv.kind ?? '缺失'}）`);
-    for (const f of MANIFEST_REQUIRED) {
-      if (!kv[f]) add('错误', 'manifest 非法', 'manifest.yaml', `manifest 缺少必选字段 ${f}`);
+    try {
+      for (const issue of packageManifestIssues(parsePackageManifest(mani))) {
+        add(
+          '错误',
+          'manifest 非法',
+          'manifest.yaml',
+          issue.message,
+          issue.suggestion,
+        );
+      }
+    } catch (error) {
+      add(
+        '错误',
+        'manifest 非法',
+        'manifest.yaml',
+        error instanceof Error ? error.message : 'manifest.yaml 不是合法 YAML',
+        '按知识包生成契约修正 manifest.yaml 的 YAML 结构',
+      );
     }
   }
 
@@ -420,7 +419,7 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
     for (const k of ['resource', 'key', 'title']) {
       if (!fm[k]) add('错误', 'frontmatter 不完整', path, `${path} 的 frontmatter 缺少 ${k} 字段`);
     }
-    const expected = INDEX_RESOURCE[path] ?? DETAIL_RESOURCE[path.split('/')[0]];
+    const expected = PACKAGE_INDEX_RESOURCES[path] ?? PACKAGE_DETAIL_RESOURCES[path.split('/')[0]];
     if (expected && fm.resource && fm.resource !== expected) {
       add('错误', 'resource 声明不符', path, `${path} 的 resource 应为 ${expected}（当前：${fm.resource}）`);
     }
@@ -430,7 +429,7 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   }
 
   // 4) 索引声明的详情文件必须存在（规范 §2.2）
-  for (const [idxPath, dir] of INDEX_DETAIL_DIR) {
+  for (const [idxPath, dir] of PACKAGE_INDEX_DETAIL_DIRECTORIES) {
     const content = files[idxPath];
     if (!content) continue;
     for (const key of tableFirstColumn(content)) {

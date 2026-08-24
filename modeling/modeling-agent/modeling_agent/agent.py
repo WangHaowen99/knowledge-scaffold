@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import copytree
@@ -52,6 +53,8 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 需要人决定时只用 ask 或 request_confirmation。即便等待决定，用户也可以自由插话；若收到反问，先回答，再重新提出仍未解决的原问题。
 - 收到插话或反问后，直接用最终自然语言回答并结束这次小回合；服务端会自动恢复仍未解决的原问题。不要在同一小回合再次调用 ask 或 request_confirmation。
 - 候选写完后直接调用 request_confirmation 并只提供面向用户的业务摘要；确认分组由系统按实际路径自动整理，不要猜测或填写变更组 ID，也不要先用 ask 重复询问同一项确认。
+- 知识包生成契约由核心校验器在本轮开始时注入。写候选前必须遵守其中的 requiredFields、platformManagedFields 和目录契约；平台管理字段只能从当前正式文件保留，不能自行重建或猜测。
+- request_confirmation 的确定性预检失败时，完整读取返回的 validatorVersion、retryable 和 findings；逐项按 ruleId、path、message、suggestion 修正后重新预检，不得只处理摘要中的第一条错误，也不得把可自动修复的格式问题交给用户。最多自动修正三轮；repairStopped=true 或相同 findingFingerprint 连续出现时立即停止，完整报告 findings，不得继续改写或重复预检。
 - 用户在确认卡退回候选，并在反馈中明确表示“撤销修改”“不需要修改”或“保持已确认版本”时，调用 discard_rejected_candidate_changes 放弃退回后残留的业务候选；不要为了清空待处理内容伪造无意义 diff。工具成功后留在原业务阶段，继续处理仍然有效的下一步。
 - 资料不足时主动 ask(kind='material_request')。允许口述、稍后补资料或跳过，不把文件当唯一出口。
 - 资料默认由你判断用途并按需读取。用户在上传卡或自然语言中明确指定“建模目标依据”“数据 Schema”“通用业务依据”或“全文精读”时，先调用 set_material_directive 忠实保存；不得再次询问用户分类。
@@ -104,6 +107,7 @@ def build_agent(
     context: ToolContext,
     *,
     model: Any | None = None,
+    package_contract: dict[str, Any] | None = None,
 ) -> AgentBundle:
     resolved_model = model or build_model(settings)
     workspace = settings.data_dir / "runtime-workspaces" / context.run_id
@@ -135,7 +139,7 @@ def build_agent(
             description="主动推进知识包建模、协调专家决定并控制工作台焦点",
         ),
         tool_owner_id=context.run_id,
-        system_prompt=f"{SYSTEM_PROMPT}\n\n# 建模方法 Skill\n\n{leader_skill}",
+        system_prompt=_system_prompt(leader_skill, package_contract or {}),
         tools=build_tools(context),
         subagents=_subagents(settings, context, resolved_model),
         rails=rails,
@@ -153,6 +157,17 @@ def build_agent(
         enable_task_planning=False,
     )
     return AgentBundle(agent=agent, model=resolved_model)
+
+
+def _system_prompt(leader_skill: str, package_contract: dict[str, Any]) -> str:
+    contract = json.dumps(package_contract, ensure_ascii=False, sort_keys=True, indent=2)
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        "# 本轮知识包生成契约（来自核心确定性校验器）\n\n"
+        f"```json\n{contract}\n```\n\n"
+        "生成、修正和确认候选都必须以这份带 validatorVersion 的契约为准。\n\n"
+        f"# 建模方法 Skill\n\n{leader_skill}"
+    )
 
 
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:

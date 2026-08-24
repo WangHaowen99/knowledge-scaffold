@@ -122,6 +122,21 @@ class WriteSafetyRail(AgentRail):
         name = _tool_name(ctx)
         if name not in self.WRITE_TOOLS:
             return
+        if self._context.validation_repair.stopped:
+            result = {
+                **self._context.validation_repair.last_report,
+                "error": "CANDIDATE_REPAIR_STOPPED",
+                "retryable": False,
+                "repairAttempt": self._context.validation_repair.attempts,
+                "findingFingerprint": self._context.validation_repair.last_fingerprint,
+                "repeatedFinding": self._context.validation_repair.repeated_findings,
+                "repairStopped": True,
+                "instruction": "自动修正已停止。保留并向用户说明完整 findings，不要继续改写候选或重复预检。",
+                "display": {"text": "候选自动修正已停止，需要检查校验明细"},
+            }
+            self._emit("tool", {"name": name, "phase": "rejected", "summary": result["display"]["text"]})
+            _skip_tool(ctx, result)
+            return
         args = _call_args(ctx)
         goal_documents: list[Mapping[str, Any]] = []
         if name == "write_file" and str(args.get("path") or "") == ".modeling/goal.md":
@@ -442,7 +457,22 @@ class ConfirmationRail(BaseInterruptRail):
                 arguments=normalized_arguments,
             )
             if preflight.get("error"):
+                if preflight.get("retryable") is True and isinstance(preflight.get("findings"), list):
+                    preflight = self._context.validation_repair.decorate(preflight)
                 return self.reject(tool_result=json.dumps(preflight, ensure_ascii=False))
+            self._context.validation_repair.reset()
+            validation_receipt = preflight.get("validation_receipt")
+            receipt_arguments = {
+                "expected_candidate_revision": preflight.get("candidate_revision"),
+                "expected_candidate_hash": (
+                    validation_receipt.get("candidateHash")
+                    if isinstance(validation_receipt, Mapping) else ""
+                ),
+                "expected_validator_version": (
+                    validation_receipt.get("validatorVersion")
+                    if isinstance(validation_receipt, Mapping) else ""
+                ),
+            }
             if preflight.get("auto_approved") is True:
                 automatic_review = {
                     "approved": True,
@@ -454,7 +484,11 @@ class ConfirmationRail(BaseInterruptRail):
                     ],
                     "sampled_groups": [],
                 }
-                return self.approve(new_args=json.dumps({**normalized_arguments, "review": automatic_review}, ensure_ascii=False))
+                return self.approve(new_args=json.dumps({
+                    **normalized_arguments,
+                    **receipt_arguments,
+                    "review": automatic_review,
+                }, ensure_ascii=False))
             groups = preflight.get("change_groups") or groups
             focus = preflight.get("focus")
             if isinstance(focus, Mapping):
@@ -479,6 +513,7 @@ class ConfirmationRail(BaseInterruptRail):
                         "summary": arguments.get("summary"),
                         "changeGroups": groups,
                         "candidateRevision": preflight.get("candidate_revision"),
+                        "validationReceipt": validation_receipt,
                     },
                 )
             )

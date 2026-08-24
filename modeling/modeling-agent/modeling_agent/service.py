@@ -26,7 +26,7 @@ from .schemas import (
 )
 from .settings import Settings
 from .store import RuntimeStore, token_fingerprint
-from .tools import ToolContext
+from .tools import CandidateValidationRepairState, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 
 logger = logging.getLogger("modeling_agent")
@@ -110,6 +110,8 @@ class LiveRun:
     tool_summaries: list[str] = field(default_factory=list)
     reasoning_chars_published: int = 0
     reasoning_truncated: bool = False
+    package_contract: dict[str, Any] = field(default_factory=dict)
+    validation_repair: CandidateValidationRepairState = field(default_factory=CandidateValidationRepairState)
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -379,7 +381,7 @@ class AgentService:
         )
         self._publish_state(project_id, run_id)
         try:
-            await self._claim_workspace(project_id=project_id, run_id=run_id, token=token)
+            claimed = await self._claim_workspace(project_id=project_id, run_id=run_id, token=token)
         except Exception as error:
             self.store.update_run(run_id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
             self._publish_state(project_id, run_id)
@@ -403,6 +405,7 @@ class AgentService:
                 else _release_reentry_requested(prompt)
             ),
             confirmation_required=confirmation_required,
+            package_contract=dict(claimed.get("packageContract") or {}),
             autonomous_seed=(
                 confirmation_required
                 or bool(intent_required_tools)
@@ -903,6 +906,9 @@ class AgentService:
         confirmation_result: dict[str, Any] | None = None
         if direct_confirmation:
             approved = answer.get("approved") is True
+            validation_receipt = interaction.payload.get("validationReceipt")
+            if not isinstance(validation_receipt, dict):
+                validation_receipt = {}
             confirmation_result = await self._gateway.call(
                 project_id=project_id,
                 run_id=interaction.run_id,
@@ -912,11 +918,48 @@ class AgentService:
                     "summary": str(interaction.payload.get("summary") or interaction.payload.get("question") or "确认待修改内容"),
                     "change_groups": interaction.payload.get("changeGroups") or [],
                     "expected_candidate_revision": str(interaction.payload.get("candidateRevision") or ""),
+                    "expected_candidate_hash": str(validation_receipt.get("candidateHash") or ""),
+                    "expected_validator_version": str(validation_receipt.get("validatorVersion") or ""),
                     "review": dict(answer),
                 },
             )
             if confirmation_result.get("error"):
                 reason = str(confirmation_result.get("reason") or "待修改内容没有成功结算")
+                error_code = str(confirmation_result.get("error") or "CONFIRMATION_FAILED")
+                if approved and error_code == "CANDIDATE_REVALIDATION_REQUIRED":
+                    superseded_answer = {
+                        "approved": False,
+                        "action": "superseded",
+                        "reason": reason,
+                    }
+                    self.store.answer_interaction(interaction.id, superseded_answer)
+                    run = self.store.require_run(interaction.run_id)
+                    self.events.publish(run.project_id, run.id, "interaction", {
+                        "id": interaction.id,
+                        "status": "answered",
+                        "answer": superseded_answer,
+                    })
+                    self.events.publish(run.project_id, run.id, "message", {
+                        "role": "system",
+                        "blocks": [{
+                            "type": "text",
+                            "text": "刚才的待确认内容已变化，接受操作未生效；助手正在重新校验，新的内容需要再次确认。",
+                        }],
+                    })
+                    return await self._resume(
+                        run,
+                        token,
+                        {interaction.tool_call_id: {
+                            "action": "settled_confirmation",
+                            "result": confirmation_result,
+                            "continuation": (
+                                "旧确认卡已经作废，用户的接受没有应用到任何候选。"
+                                "立即重新执行完整预检；若有 findings，自动修正后重新预检。"
+                                "只有通过后才能展示新的确认卡，绝不能沿用刚才的接受结果。"
+                            ),
+                        }},
+                        autonomous_seed=True,
+                    )
                 failed_interaction = self.store.set_interaction_submission_error(interaction.id, reason)
                 if failed_interaction is not None:
                     self.events.publish(
@@ -926,7 +969,7 @@ class AgentService:
                         failed_interaction.public(),
                     )
                 raise AgentRuntimeError(
-                    str(confirmation_result.get("error") or "CONFIRMATION_FAILED"),
+                    error_code,
                     reason,
                     status=409,
                     details={"next": confirmation_result.get("next") or []},
@@ -1279,7 +1322,7 @@ class AgentService:
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
-        await self._claim_workspace(project_id=run.project_id, run_id=run.id, token=token)
+        claimed = await self._claim_workspace(project_id=run.project_id, run_id=run.id, token=token)
         from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
         resume = InteractiveInput()
@@ -1304,6 +1347,7 @@ class AgentService:
             release_declined=release_declined,
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
+            package_contract=dict(claimed.get("packageContract") or {}),
         )
         if steering:
             await live.steering.put(steering)
@@ -1325,7 +1369,7 @@ class AgentService:
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) != RUN_WAITING:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
-        await self._claim_workspace(project_id=run.project_id, run_id=run.id, token=token)
+        claimed = await self._claim_workspace(project_id=run.project_id, run_id=run.id, token=token)
         self.store.update_run(
             run.id,
             status=RUN_QUEUED,
@@ -1342,13 +1386,14 @@ class AgentService:
             release_reentry_authorized=release_reentry_authorized,
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
+            package_contract=dict(claimed.get("packageContract") or {}),
         )
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
         updated = self.store.require_run(run.id)
         return self._run_public(updated, self.store.project_state(run.project_id))
 
-    async def _claim_workspace(self, *, project_id: str, run_id: str, token: str) -> None:
+    async def _claim_workspace(self, *, project_id: str, run_id: str, token: str) -> dict[str, Any]:
         claimed = await self._gateway.call(
             project_id=project_id,
             run_id=run_id,
@@ -1363,11 +1408,20 @@ class AgentService:
                 status=409,
                 details={"next": claimed.get("next") or []},
             )
+        package_contract = claimed.get("packageContract")
+        if not isinstance(package_contract, dict) or not str(package_contract.get("validatorVersion") or ""):
+            raise AgentRuntimeError(
+                "PACKAGE_CONTRACT_UNAVAILABLE",
+                "核心服务没有提供带版本的知识包生成契约，Agent 已停止生成候选",
+                status=503,
+                details={"next": ["同步部署核心服务与 Agent 后从当前进度重试"]},
+            )
         credential = getattr(self._gateway, "run_credential", None)
         if callable(credential):
             issued = str(credential(run_id) or "")
             if issued:
                 self.store.update_run(run_id, run_credential=issued)
+        return claimed
 
     async def _execute(self, live: LiveRun, query: Any) -> None:
         from openjiuwen.core.runner.runner import Runner
@@ -1433,8 +1487,14 @@ class AgentService:
                     ),
                     confirmation_required=live.confirmation_required,
                     release_declined=live.release_declined,
+                    validation_repair=live.validation_repair,
                 )
-                live.bundle = build_agent(self.settings, context, model=model)
+                live.bundle = build_agent(
+                    self.settings,
+                    context,
+                    model=model,
+                    package_contract=live.package_contract,
+                )
                 boundary = self.events.publish(
                     run.project_id,
                     run.id,
