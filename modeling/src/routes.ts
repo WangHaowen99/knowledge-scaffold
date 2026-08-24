@@ -705,21 +705,39 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     // ---- 项目（节点 1）----
     r.get('/api/projects', async (req) => ({
-      projects: listProjects(req.user!.username).map((project) => {
+      projects: await Promise.all(listProjects(req.user!.username).map(async (project) => {
         const construction = aiConstruction.snapshot(project.id);
         const currentTask = construction?.tasks.find(
           (task) => task.id === construction.progress.currentTaskId,
         );
+        let agentState: Record<string, unknown> | null = null;
+        if (project.runtime === 'agent') {
+          try {
+            const response = await fetch(
+              `${config.agentBaseUrl}/v1/projects/${encodeURIComponent(project.id)}/state`,
+              {
+                headers: { authorization: String(req.headers.authorization ?? '') },
+                signal: AbortSignal.timeout(3_000),
+              },
+            );
+            if (!response.ok) throw new Error(`Agent state returned ${response.status}`);
+            const payload = await response.json() as { state?: Record<string, unknown> };
+            agentState = payload.state ?? null;
+          } catch (error) {
+            req.log.warn({ err: error, projectId: project.id }, '项目列表暂时无法读取 Agent 状态');
+          }
+        }
         return {
           ...project,
           accessRole: projectMemberRole(project.id, req.user!.username),
+          agentState,
           construction: construction ? {
             status: construction.status,
             progress: construction.progress,
             currentTask: currentTask ? { id: currentTask.id, title: currentTask.title } : null,
           } : null,
         };
-      }),
+      })),
     }));
 
     r.get('/api/projects/:id/members', async (req, reply) => {

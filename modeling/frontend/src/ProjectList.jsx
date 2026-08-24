@@ -1,10 +1,52 @@
 import React, { useEffect, useState } from 'react';
 import { listProjects, deleteProject, listProjectMembers, setProjectMember } from './api.js';
 
+const AGENT_PHASE_PROGRESS = {
+  intake: 5,
+  goal: 20,
+  process: 40,
+  knowledge: 60,
+  increment: 60,
+  validation: 75,
+  evaluation: 90,
+  release: 100,
+};
+
+function agentStateSummary(state) {
+  if (!state) {
+    return { label: '进度暂不可用', percent: 0, title: '暂时无法读取建模助手的项目进度' };
+  }
+  const phase = String(state.phase || String(state.state || '').split(':')[0] || 'intake');
+  const execution = String(state.execution || String(state.state || '').split(':')[1] || 'idle');
+  const phaseLabel = state.phaseLabel || ({
+    intake: '资料与目标准备',
+    goal: '目标确认',
+    process: '流程建模',
+    knowledge: '知识建模',
+    increment: '增量建模',
+    validation: '确定性验证',
+    evaluation: '评测',
+    release: '发布交付',
+  }[phase] || '项目推进');
+  const suffix = {
+    queued: '待执行',
+    running: '进行中',
+    waiting: '待确认',
+    suspended: '待继续',
+    completed: '已完成',
+    failed: '受阻',
+    cancelled: '已暂停',
+  }[execution] || '';
+  const label = `${phaseLabel}${suffix}`;
+  const percent = AGENT_PHASE_PROGRESS[phase] ?? 0;
+  return { label, percent, title: `项目进度：${label}（${percent}%）` };
+}
+
 export function projectConstructionSummary(project) {
   if (project.kind === 'package') {
     return { label: '知识包工作区', percent: null, title: '打开知识包工作区' };
   }
+  if (project.runtime === 'agent') return agentStateSummary(project.agentState);
   const construction = project.construction;
   if (!construction) {
     return { label: '待进入建模', percent: 0, title: '进入项目后初始化 AI 辅助构建' };

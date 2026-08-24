@@ -32,6 +32,49 @@ test('project card: modeling progress comes from the unified construction graph'
   });
 });
 
+test('project card: agent projects use the unique project agent state', async () => {
+  const { projectConstructionSummary } = await import('../frontend/src/ProjectList.jsx');
+  assert.deepEqual(projectConstructionSummary({
+    ...project,
+    kind: 'modeling',
+    runtime: 'agent',
+    agentState: {
+      state: 'evaluation:completed',
+      phase: 'evaluation',
+      phaseLabel: '评测',
+      execution: 'completed',
+    },
+  }), {
+    label: '评测已完成',
+    percent: 90,
+    title: '项目进度：评测已完成（90%）',
+  });
+  assert.deepEqual(projectConstructionSummary({
+    ...project,
+    kind: 'modeling',
+    runtime: 'agent',
+    agentState: { state: 'knowledge:waiting', phase: 'knowledge', execution: 'waiting' },
+  }), {
+    label: '知识建模待确认',
+    percent: 60,
+    title: '项目进度：知识建模待确认（60%）',
+  });
+});
+
+test('project card: unavailable agent state is not reported as waiting to start', async () => {
+  const { projectConstructionSummary } = await import('../frontend/src/ProjectList.jsx');
+  assert.deepEqual(projectConstructionSummary({
+    ...project,
+    kind: 'modeling',
+    runtime: 'agent',
+    agentState: null,
+  }), {
+    label: '进度暂不可用',
+    percent: 0,
+    title: '暂时无法读取建模助手的项目进度',
+  });
+});
+
 test('project card: top-right close action does not open the project', async () => {
   const { ProjectCard } = await import('../frontend/src/ProjectList.jsx');
   let opened = 0;
