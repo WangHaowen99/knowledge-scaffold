@@ -42,6 +42,8 @@ _CONFIRMATION_CARD_CLAIMS = (
     re.compile(r"(?:已|已经|现已)(?:成功)?(?:生成|创建|展示|发出|提交)[^。！？\n]{0,8}确认卡(?:片)?"),
 )
 
+MERMAID_SOURCE_VALIDATOR_VERSION = "mermaid-source-v1"
+
 
 def requests_explicit_decision(text: str) -> bool:
     compact = str(text or "").strip()
@@ -237,6 +239,21 @@ class WriteSafetyRail(AgentRail):
             _skip_tool(ctx, result)
             return
         args = _call_args(ctx)
+        mermaid_findings = _mermaid_source_findings(name, args)
+        if mermaid_findings:
+            result = self._context.validation_repair.decorate({
+                "error": "MERMAID_CONTENT_INVALID",
+                "reason": "Mermaid 候选源码校验未通过",
+                "retryable": True,
+                "validatorVersion": MERMAID_SOURCE_VALIDATOR_VERSION,
+                "findingCount": len(mermaid_findings),
+                "findings": mermaid_findings,
+                "next": ["按 findings 删除代码围栏并修正流程图声明后，重新写入同一候选文件"],
+                "display": {"text": "流程图源码格式需要自动修正"},
+            })
+            self._emit("tool", {"name": name, "phase": "rejected", "summary": result["display"]["text"]})
+            _skip_tool(ctx, result)
+            return
         goal_documents: list[Mapping[str, Any]] = []
         if name == "write_file" and str(args.get("path") or "") == ".modeling/goal.md":
             inventory = await self._context.gateway.call(
@@ -326,6 +343,31 @@ class WriteSafetyRail(AgentRail):
         if not repair_recovery:
             result = self._context.validation_repair.decorate(result)
         _skip_tool(ctx, result)
+
+
+def _mermaid_source_findings(tool: str, arguments: dict[str, Any]) -> list[dict[str, str]]:
+    path = str(arguments.get("path") or "").strip()
+    if tool != "write_file" or not re.fullmatch(r"diagrams/[^/]+\.mmd", path):
+        return []
+    content = str(arguments.get("content") or "").lstrip("\ufeff")
+    lines = content.splitlines()
+    findings: list[dict[str, str]] = []
+    if any(re.match(r"^\s*(?:`{3,}|~{3,})", line) for line in lines):
+        findings.append({
+            "ruleId": "mermaid.no-markdown-fence",
+            "path": path,
+            "message": f"{path} 必须保存裸 Mermaid 源码，不能包含 Markdown 代码围栏",
+            "suggestion": "删除开头的 ```mermaid 和结尾的 ``` 等代码围栏，只保留 Mermaid 源码正文",
+        })
+    declaration = next((line.strip() for line in lines if line.strip() and not line.strip().startswith("%%")), "")
+    if declaration not in {"flowchart TD", "flowchart LR"}:
+        findings.append({
+            "ruleId": "mermaid.flowchart-declaration",
+            "path": path,
+            "message": f"{path} 的首个有效行必须是 flowchart TD 或 flowchart LR",
+            "suggestion": "保留前置 %% 注释，并让首个非空、非注释行使用 flowchart TD 或 flowchart LR",
+        })
+    return findings
 
 
 def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> str:

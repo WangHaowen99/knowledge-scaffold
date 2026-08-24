@@ -237,7 +237,7 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
 
   assert.equal(claimed.statusCode, 200, claimed.body);
   const contract = claimed.json().packageContract;
-  assert.equal(contract.validatorVersion, 'package-contract-v3');
+  assert.equal(contract.validatorVersion, 'package-contract-v4');
   assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
   assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
   assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
@@ -247,6 +247,13 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
   ]);
   assert.match(contract.authoring.goalEvidence.invariants.join('\n'), /正文中的每个 material token/u);
   assert.match(contract.validators.packageFormat, /^package-format-/u);
+  assert.equal(contract.validators.mermaidSource, 'mermaid-source-v1');
+  assert.deepEqual(contract.packageFormat.diagrams, {
+    pathPattern: 'diagrams/*.mmd',
+    rawMermaidSourceOnly: true,
+    allowedDeclarations: ['flowchart TD', 'flowchart LR'],
+    markdownCodeFencesAllowed: false,
+  });
   assert.ok(contract.manifest.requiredFields.includes('status'));
   assert.deepEqual(
     contract.manifest.platformManagedFields,
@@ -412,6 +419,65 @@ description: 用于验证流程确认后的知识写入。
   }, runId);
   assert.equal(staleGoalCannotAuthorizeProcess.statusCode, 409, staleGoalCannotAuthorizeProcess.body);
   assert.equal(staleGoalCannotAuthorizeProcess.json().gate, 'goal_confirmed');
+});
+
+test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Mermaid 源码契约', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  const group = { id: 'mermaid-contract', tier: 'caliber', title: '确认流程图源码' };
+
+  const fenced = await tool(app, project.id, 'write_file', {
+    path: 'diagrams/process.mmd',
+    content: '```mermaid\nflowchart TD\nA --> B\n```\n',
+    change_group: group.id,
+    evidence: ['user-decision:confirmed-process'],
+  }, runId);
+  assert.equal(fenced.statusCode, 400, fenced.body);
+  assert.equal(fenced.json().code, 'MERMAID_CONTENT_INVALID');
+  assert.equal(fenced.json().retryable, true);
+  assert.equal(fenced.json().validatorVersion, 'mermaid-source-v1');
+  assert.deepEqual(fenced.json().findings.map((finding: any) => finding.ruleId), [
+    'mermaid.no-markdown-fence',
+    'mermaid.flowchart-declaration',
+  ]);
+
+  const corrected = await tool(app, project.id, 'write_file', {
+    path: 'diagrams/process.mmd',
+    content: 'flowchart TD\nA --> B\n',
+    change_group: group.id,
+    evidence: ['user-decision:confirmed-process'],
+  }, runId);
+  assert.equal(corrected.statusCode, 200, corrected.body);
+
+  getDb().prepare(`UPDATE agent_candidate_changes SET content = ?
+    WHERE project_id = ? AND run_id = ? AND path = 'diagrams/process.mmd'`)
+    .run('```mermaid\nflowchart TD\nA --> B\n```\n', project.id, runId);
+  const blocked = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'CANDIDATE_FORMAT_INVALID');
+  assert.equal(blocked.json().retryable, true);
+  assert.deepEqual(blocked.json().findings.map((finding: any) => finding.ruleId), [
+    'mermaid.no-markdown-fence',
+    'mermaid.flowchart-declaration',
+  ]);
+
+  const repaired = await tool(app, project.id, 'write_file', {
+    path: 'diagrams/process.mmd',
+    content: '%% evidence: user-decision:confirmed-process\nflowchart TD\nA --> B\n',
+    change_group: group.id,
+    evidence: ['user-decision:confirmed-process'],
+  }, runId);
+  assert.equal(repaired.statusCode, 200, repaired.body);
+  const accepted = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(accepted.statusCode, 200, accepted.body);
 });
 
 test('Agent 候选写入只在确认后形成 Git 修订，并留下复核方式', async (t) => {
@@ -1802,7 +1868,7 @@ test('平台保留 manifest 管理字段，底层预检仍把详细错误返回�
   assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
   assert.equal(receipt.baseRevision, current.revision.oid);
   assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
-  assert.equal(receipt.validatorVersion, 'package-contract-v3');
+  assert.equal(receipt.validatorVersion, 'package-contract-v4');
 });
 
 test('接受候选前必须匹配预检回执中的内容哈希和校验器版本', async (t) => {

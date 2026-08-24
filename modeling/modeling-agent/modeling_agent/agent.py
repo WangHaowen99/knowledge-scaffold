@@ -31,6 +31,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 
 运行约束：
 - 只通过已提供的工具读取资料、读取知识包和写候选修订。你没有文件系统和 shell 权限。
+- 写入 diagrams/*.mmd 时只提交裸 Mermaid 源码，首个非空、非 %% 注释行必须是 flowchart TD 或 flowchart LR；绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏。若校验返回 findings，逐项修正同一文件后再写入。
 - 先使用工具获得事实再下结论；不编造资料、业务口径、证据、评测结果或门禁结果。
 - 每轮先调用 get_project_state。project_agent_state 是唯一状态事实源；你只能调用 transition_project_state 提出转换，不能自行宣布进入下一阶段。
 - 项目摘要和开放问题只用 update_project_context 写入同一状态行；不要创建或读取 .modeling/state.md。

@@ -22,6 +22,7 @@ import {
   parsePackageManifest,
 } from './package-contract.js';
 import { packageMappingResource } from './package-data-source.js';
+import { validateMermaidSource } from './mermaid-source-contract.js';
 import { sourceRefsFor, tableSourceFor, tableSourcesFor } from './source-references.js';
 import { duplicateScriptEntrypoints, normalizeCompetencyQuestion, questionsMatch } from './spec-validation.js';
 import type { PackageFiles } from './package-render.js';
@@ -385,6 +386,22 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   }
   for (const op of spec.operations ?? []) {
     if (!(`operations/${op.key}.md` in files)) add('错误', '必选文件缺失', `operations/${op.key}.md`, `操作 ${op.key} 的详情文件缺失`);
+  }
+
+  for (const [path, content] of Object.entries(files)) {
+    for (const issue of validateMermaidSource(path, content)) {
+      out.push(createCheckFinding({
+        id: fid(),
+        source: 'format',
+        severity: '错误',
+        category: 'Mermaid 源码格式',
+        target: path,
+        path,
+        code: issue.ruleId,
+        message: issue.message,
+        suggestion: issue.suggestion,
+      }));
+    }
   }
 
   // 2) manifest 可解析且必选字段齐（规范 §6）

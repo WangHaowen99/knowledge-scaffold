@@ -5,9 +5,10 @@ import {
   KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
   knowledgeMarkdownGenerationContract,
 } from './knowledge-markdown-contract.js';
+import { MERMAID_SOURCE_VALIDATOR_VERSION } from './mermaid-source-contract.js';
 
-export const PACKAGE_CONTRACT_VERSION = 'package-contract-v3';
-export const PACKAGE_FORMAT_VALIDATOR_VERSION = 'package-format-v2';
+export const PACKAGE_CONTRACT_VERSION = 'package-contract-v4';
+export const PACKAGE_FORMAT_VALIDATOR_VERSION = 'package-format-v3';
 export const PACKAGE_MANIFEST_KIND = 'ontology-package';
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = '0.1';
 export const PACKAGE_STATUSES = ['draft', 'review', 'released', 'deprecated'] as const;
@@ -62,6 +63,7 @@ export function packageGenerationContract() {
       writeBoundary: 'write-boundary-v2',
       interactionBoundary: 'interaction-boundary-v1',
       confirmationBoundary: 'confirmation-boundary-v1',
+      mermaidSource: MERMAID_SOURCE_VALIDATOR_VERSION,
     },
     manifest: {
       path: 'manifest.yaml',
@@ -94,6 +96,12 @@ export function packageGenerationContract() {
         uniqueEntrypoints: true,
         sourceMustPassDeterministicSafetyValidation: true,
         changedScriptsRequireCurrentSandboxTestReceipt: true,
+      },
+      diagrams: {
+        pathPattern: 'diagrams/*.mmd',
+        rawMermaidSourceOnly: true,
+        allowedDeclarations: ['flowchart TD', 'flowchart LR'],
+        markdownCodeFencesAllowed: false,
       },
     },
     markdown: knowledgeMarkdownGenerationContract(),

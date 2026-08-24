@@ -616,6 +616,74 @@ async def test_multi_section_diagram_allows_distinct_source_positions() -> None:
     assert call.inputs.tool_result is None
 
 
+@pytest.mark.asyncio
+async def test_mermaid_fence_enters_candidate_auto_repair_and_repeated_finding_stops() -> None:
+    context = ToolContext(
+        project_id="project_process",
+        run_id="run_process",
+        token="token_process",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    rail = WriteSafetyRail(context)
+    arguments = {
+        "path": "diagrams/process.mmd",
+        "content": "```mermaid\nflowchart TD\nA --> B\n```\n",
+        "evidence": ["user-decision:confirmed-process"],
+    }
+
+    context.validation_repair.begin_round("model-1")
+    first = _write_call_context(arguments)
+    await rail.before_tool_call(first)  # type: ignore[arg-type]
+    first_result = json.loads(first.inputs.tool_result)
+    assert first_result["error"] == "MERMAID_CONTENT_INVALID"
+    assert first_result["retryable"] is True
+    assert first_result["validatorVersion"] == "mermaid-source-v1"
+    assert first_result["repairAttempt"] == 1
+    assert first_result["repairStopped"] is False
+    assert [finding["ruleId"] for finding in first_result["findings"]] == [
+        "mermaid.no-markdown-fence",
+        "mermaid.flowchart-declaration",
+    ]
+
+    context.validation_repair.begin_round("model-2")
+    repeated = _write_call_context(arguments)
+    await rail.before_tool_call(repeated)  # type: ignore[arg-type]
+    repeated_result = json.loads(repeated.inputs.tool_result)
+    assert repeated_result["repairAttempt"] == 2
+    assert repeated_result["repeatedFinding"] is False
+    assert repeated_result["repairStopped"] is False
+
+    context.validation_repair.begin_round("model-3")
+    blocked = context.validation_repair.blocked_result()
+    assert blocked["repairAttempt"] == 2
+    assert blocked["repeatedFinding"] is True
+    assert blocked["repairStopped"] is True
+    assert blocked["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_mermaid_raw_source_passes_write_rail() -> None:
+    context = ToolContext(
+        project_id="project_process",
+        run_id="run_process",
+        token="token_process",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    evidence = "material:doc_process#offset=1200"
+    call = _write_call_context({
+        "path": "diagrams/process.mmd",
+        "content": f"%% provenance: generated\n%% evidence: {evidence}\nflowchart LR\nA --> B\n",
+        "evidence": [evidence],
+    })
+
+    await WriteSafetyRail(context).before_tool_call(call)  # type: ignore[arg-type]
+
+    assert call.extra == {}
+    assert call.inputs.tool_result is None
+
+
 @pytest.mark.parametrize(
     ("tool", "path", "phase", "allowed"),
     [

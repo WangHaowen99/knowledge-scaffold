@@ -215,6 +215,8 @@ async def test_package_contract_is_injected_into_initial_agent_context() -> None
     assert '"requiredSections"' in prompt
     assert '"业务目标"' in prompt
     assert "生成、修正和确认候选都必须以这份" in prompt
+    assert "diagrams/*.mmd 时只提交裸 Mermaid 源码" in prompt
+    assert "绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏" in prompt
 
 
 async def test_candidate_validation_repair_aggregates_parallel_files_as_one_round() -> None:

@@ -37,6 +37,10 @@ import {
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
 import {
+  MERMAID_SOURCE_VALIDATOR_VERSION,
+  validateMermaidSource,
+} from '../workflow/mermaid-source-contract.js';
+import {
   isReleaseCandidateVersion,
   nextValidationCandidateVersion,
   promoteReleaseCandidate,
@@ -1203,6 +1207,21 @@ export class AgentCoreService {
     }
     if (content.length > MAX_FILE_CHARS) {
       throw new AgentCoreError('WRITE_UNSAFE', '单个候选文件超过 100 万字符', ['拆分为多个单一职责文件后重试'], 400);
+    }
+    const mermaidIssues = validateMermaidSource(path, content);
+    if (mermaidIssues.length) {
+      throw new AgentCoreError(
+        'MERMAID_CONTENT_INVALID',
+        `Mermaid 候选源码校验未通过：${mermaidIssues.map((issue) => issue.message).join('；')}`,
+        ['按 findings 删除 Markdown 代码围栏并修正流程图声明后，重新写入同一候选文件'],
+        400,
+        {
+          retryable: true,
+          validatorVersion: MERMAID_SOURCE_VALIDATOR_VERSION,
+          findingCount: mermaidIssues.length,
+          findings: mermaidIssues,
+        },
+      );
     }
     await this.assertCandidateStageGate(workspace, path);
     if (path === 'manifest.yaml') {
@@ -3669,13 +3688,13 @@ function agentValidationFinding(finding: CheckFinding) {
   const missingManifestField = finding.target === 'manifest.yaml'
     ? /manifest 缺少必选字段 ([A-Za-z_][\w-]*)/u.exec(finding.message)?.[1]
     : undefined;
-  const ruleId = missingManifestField
+  const ruleId = finding.code ?? (missingManifestField
     ? `manifest.required.${missingManifestField}`
     : finding.target === 'manifest.yaml' && /kind 必须为 ontology-package/u.test(finding.message)
       ? 'manifest.kind.ontology-package'
       : finding.target === 'manifest.yaml' && /status 不正确/u.test(finding.message)
         ? 'manifest.status.allowed-value'
-        : `format.${String(finding.fingerprint ?? finding.id).replace(/^check:/u, '').slice(0, 16)}`;
+        : `format.${String(finding.fingerprint ?? finding.id).replace(/^check:/u, '').slice(0, 16)}`);
   return {
     ruleId,
     fingerprint: finding.fingerprint ?? finding.id,
