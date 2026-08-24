@@ -117,6 +117,8 @@ import {
   evaluationDatabaseUrlSummary,
   selectEvaluationDatabaseUrlOverride,
 } from './evaluation/evaluation-database-target.js';
+import { validateEvaluationDatabaseExcelContents } from './evaluation/eval-db.js';
+import { shadowWorkspaceId } from './evaluation/shadow-workspace.js';
 import {
   cancelGraphImportUpload,
   cancelGraphImportRun,
@@ -356,6 +358,21 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
     replaceConfirmed,
     databaseUrl: selectEvaluationDatabaseUrlOverride(databaseUrlMode, customDatabaseUrl),
   };
+}
+
+async function readQuickEvaluationDatabaseUpload(req: any): Promise<{
+  filename: string;
+  buffer: Buffer;
+}> {
+  let upload: { filename: string; buffer: Buffer } | undefined;
+  for await (const part of req.parts()) {
+    if (part.type !== 'file') continue;
+    if (upload) throw new Error('一次只能上传一个 Excel 文件');
+    upload = { filename: part.filename, buffer: await part.toBuffer() };
+  }
+  if (!upload) throw new Error('缺少 Excel 文件');
+  validateEvaluationDatabaseExcelContents(upload.filename, upload.buffer);
+  return upload;
 }
 
 function isAgentWorkflowFactRequest(req: FastifyRequest): boolean {
@@ -1952,6 +1969,58 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             ...upload,
           }, options.evaluationDatabaseDependencies);
           return reply.code(202).send(result);
+        } catch (error) {
+          if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
+            return reply.code(409).send({ error: error.message, run: error.run });
+          }
+          if (error instanceof EvaluationDatabaseImportCapacityError) {
+            return reply.code(429).send({ error: error.message });
+          }
+          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+    });
+
+    r.post('/api/projects/:id/evaluation-database/quick-import', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:evaluation-database-import`, reply, async () => {
+        try {
+          assertProjectEvaluationDatabaseImportAvailable(c.p.id);
+          const upload = await readQuickEvaluationDatabaseUpload(req);
+          const defaults = getEvalBindingDefaults();
+          if (!['nl2sql_template', 'nl2sql_http'].includes(defaults.provider)) {
+            throw new Error('平台默认数据源不是 NL2SQL，无法一键导入 Excel');
+          }
+          if (!defaults.url) throw new Error('平台尚未配置 NL2SQL 数据服务 URL');
+          const database = await createProjectEvaluationDatabase(
+            { projectId: c.p.id },
+            options.evaluationDatabaseDependencies,
+          );
+          const token = (req.headers.authorization ?? '').slice(7);
+          const dataSource = await configureProjectDataSource({
+            projectId: c.p.id,
+            owner: req.user!.username,
+            token,
+            input: {
+              mode: 'connection',
+              provider: defaults.provider as 'nl2sql_template' | 'nl2sql_http',
+              config: {
+                url: defaults.url,
+                token: defaults.token,
+                scene: database.database,
+                evaluation_workspace_id: shadowWorkspaceId(c.p.id),
+              },
+            },
+            testConnection: options.dataSourceConnectionTester,
+            syncConnection: options.dataSourceConsumerSync,
+          });
+          const result = startProjectEvaluationDatabaseImport({
+            projectId: c.p.id,
+            ...upload,
+            replaceConfirmed: true,
+          }, options.evaluationDatabaseDependencies);
+          return reply.code(202).send({ ...result, dataSource, database });
         } catch (error) {
           if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
             return reply.code(409).send({ error: error.message, run: error.run });

@@ -72,7 +72,7 @@ export default function EvaluationView() {
 }
 
 export function EvaluationSetupPanel({ projectId, onSaved }) {
-  return <section className="wb-eval-section"><div className="wb-eval-section-head"><div className="wb-eval-icon"><Database size={17} /></div><div><h3>评测数据源</h3><p>确定真实问题是否需要查询业务数据</p></div></div><div className="mwr wb-eval-data-source"><DataSourcePanel projectId={projectId} saveDataSourceRequest={saveEvaluationDataSource} onAdvance={onSaved} /></div></section>;
+  return <section className="wb-eval-section"><div className="wb-eval-section-head"><div className="wb-eval-icon"><Database size={17} /></div><div><h3>评测数据源</h3><p>确定真实问题是否需要查询业务数据</p></div></div><div className="mwr wb-eval-data-source"><DataSourcePanel projectId={projectId} saveDataSourceRequest={saveEvaluationDataSource} onAdvance={onSaved} quickExcelImport /></div></section>;
 }
 
 function CasesPanel({ projectId, cases, suggestedCount, sourceReady, onChanged, onOpenSetup, onOpenRuns }) {

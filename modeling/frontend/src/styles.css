@@ -1628,6 +1628,15 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 
 /* ---- 数据源配置：Excel 写入 Neo4j ---- */
 .mwr .gi-panel { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--hair); }
+.mwr .edi-quick { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 18px; margin-bottom: 18px; padding: 14px 16px; border: 1px solid #c9dcf7; border-radius: 8px; background: #f7faff; }
+.mwr .edi-quick-copy { min-width: 0; display: flex; align-items: flex-start; gap: 11px; color: var(--blue-d); }
+.mwr .edi-quick-copy > div { min-width: 0; display: grid; gap: 3px; }
+.mwr .edi-quick-copy b { color: var(--ink); font-size: 14px; }
+.mwr .edi-quick-copy span { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.mwr .edi-quick > .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap; }
+.mwr .edi-quick-status { grid-column: 1 / -1; margin: 0; }
+.mwr .edi-quick-status .btn { float: right; margin-left: 12px; }
+@media (max-width: 720px) { .mwr .edi-quick { grid-template-columns: 1fr; } .mwr .edi-quick > .btn { width: 100%; } }
 .mwr .gi-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 12px; }
 .mwr .gi-title { font-size: 14px; font-weight: 750; margin-bottom: 4px; }
 .mwr .gi-subtitle { color: var(--muted); font-size: 12px; line-height: 1.65; }

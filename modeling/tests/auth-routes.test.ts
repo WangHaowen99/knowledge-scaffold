@@ -84,6 +84,8 @@ before(async () => {
   process.env.AUTH_JWT_AUDIENCE = AUD;
   process.env.CONSUMER_API_URL = upstreamBaseUrl;
   process.env.MODELING_SERVICE_TOKEN = 'route-test-modeling-service-token';
+  process.env.MODELING_EVAL_BINDING_URL = 'http://nl2sql.default:8080';
+  process.env.MODELING_EVAL_BINDING_TOKEN = 'quick-import-secret';
   process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'mtool-route-test-'));
   process.env.EVAL_DB_URL = 'mysql://root:eval-secret@mysql.local:3306';
 
@@ -2552,6 +2554,38 @@ test('NL2SQL 评测库 API：使用 EVAL_DB_URL 建库并按已保存 Scene 导�
   });
   assert.ok(evaluationDatabaseQueries.some((sql) => sql.startsWith('CREATE TABLE `')));
   assert.doesNotMatch(raw.public_config_json, /eval-secret|project-secret|import-secret/);
+
+  const quickProject = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: 'Excel 一键导入项目' },
+  });
+  const quickProjectId = quickProject.json().project.id;
+  insertPackageVersion(quickProjectId, '1.0.0', {
+    id: 'quick-import-api', name: 'Excel 一键导入项目', description: '测试一键导入',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'default', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+  const quickForm = multipartExcel('quick.xlsx', excel);
+  const quickImported = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${quickProjectId}/evaluation-database/quick-import`,
+    headers: { authorization: `Bearer ${token}`, ...quickForm.headers },
+    payload: quickForm.payload,
+  });
+  assert.equal(quickImported.statusCode, 202, quickImported.body);
+  const quickBody = quickImported.json();
+  assert.equal(quickBody.run.status, 'running');
+  assert.equal(quickBody.dataSource.provider, 'nl2sql_template');
+  assert.equal(quickBody.dataSource.config.url, 'http://nl2sql.default:8080');
+  assert.equal(quickBody.dataSource.config.scene, projectEvaluationDatabaseName(quickProjectId));
+  assert.equal(quickBody.dataSource.config.has_token, true);
+  assert.doesNotMatch(quickImported.body, /quick-import-secret|eval-secret/);
+  assert.equal(evaluationDatabaseImportTasks.length, 1);
+  await evaluationDatabaseImportTasks.shift()!();
+  const quickRuns = await app.inject({
+    method: 'GET', url: `/api/projects/${quickProjectId}/evaluation-database/imports`, headers,
+  });
+  assert.equal(quickRuns.json().imports[0].status, 'done');
+  assert.equal(quickRuns.json().imports[0].tableCount, 1);
 });
 
 test('评测用例 API：手工新增和修改均推进项目阶段', async () => {
