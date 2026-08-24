@@ -37,7 +37,7 @@ import zipfile
 import zlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 _logger = logging.getLogger(__name__)
 
@@ -407,6 +407,13 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
     """
     if not pkg_root.is_dir():
         raise ValueError(f"Package root is not a directory: {pkg_root}")
+
+    if _is_skill_source_package(pkg_root):
+        profile = PackageFormatProfile(manifest_kind="skill-source")
+        profile.conversion_actions.append(
+            "source: convert SKILL.md/object/logic layout to v0.1"
+        )
+        return profile
 
     # The ontology files may live under an ``ontology/`` subdirectory or
     # directly at the package root.
@@ -1189,6 +1196,623 @@ def _strip_empty_key_field_rows(text: str) -> tuple[str, bool]:
 
 
 # ===========================================================================
+#  SKILL.md source-format conversion
+# ===========================================================================
+
+_SOURCE_OBJECT_SECTION_TITLES = ("对象属性清单", "实体属性清单")
+_SOURCE_OBJECT_DESC_TITLES = ("对象描述", "实体描述")
+_SOURCE_OBJECT_ENGLISH_TITLES = ("英文名称", "实体英文名称")
+_SOURCE_OBJECT_ALIAS_TITLES = ("对象别名", "实体别名")
+_SOURCE_OPERATION_DESC_TITLE = "业务描述"
+_SOURCE_OPERATION_LOGIC_RELATION_TITLE = "与logic的关联"
+_SOURCE_OPERATION_TRIGGER_TITLE = "触发条件"
+_SOURCE_OPERATION_INPUT_TITLE = "输入"
+_SOURCE_OPERATION_OUTPUT_TITLE = "输出"
+_SOURCE_OPERATION_LOGIC_TITLE = "逻辑描述"
+_MARKDOWN_HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]*(.+?)[ \t]*$")
+_MARKDOWN_SEPARATOR_CELL_RE = re.compile(r"^:?-+:?$")
+
+
+def _is_skill_source_package(pkg_root: Path) -> bool:
+    """Return whether *pkg_root* uses the legacy SKILL.md source layout."""
+    try:
+        if not pkg_root.is_dir():
+            return False
+        if (pkg_root / "manifest.yaml").is_file():
+            return False
+        if not (pkg_root / "SKILL.md").is_file():
+            return False
+        return any(
+            (pkg_root / folder).is_dir() for folder in ("object", "logic")
+        )
+    except OSError:
+        return False
+
+
+def _extract_markdown_section(
+    text: str,
+    titles: Sequence[str],
+) -> list[str]:
+    """Extract the body of the first Markdown section matching *titles*."""
+    title_set = {title.strip() for title in titles if title.strip()}
+    if not title_set:
+        return []
+
+    lines = text.splitlines()
+    start = -1
+    start_level = 0
+    for index, line in enumerate(lines):
+        match = _MARKDOWN_HEADING_RE.match(line)
+        if not match:
+            continue
+        if match.group(2).strip() not in title_set:
+            continue
+        start = index + 1
+        start_level = len(match.group(1))
+        break
+    if start < 0:
+        return []
+
+    end = len(lines)
+    for index in range(start, len(lines)):
+        match = _MARKDOWN_HEADING_RE.match(lines[index])
+        if match and len(match.group(1)) <= start_level:
+            end = index
+            break
+    return lines[start:end]
+
+
+def _section_first_text(text: str, titles: Sequence[str]) -> str:
+    """Return the first non-empty line from a named Markdown section."""
+    for line in _extract_markdown_section(text, titles):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("{说明："):
+            return stripped
+    return ""
+
+
+def _section_joined_text(text: str, titles: Sequence[str], joiner: str = "，") -> str:
+    """Return the non-empty text lines from a named Markdown section."""
+    lines = [
+        line.strip()
+        for line in _extract_markdown_section(text, titles)
+        if line.strip() and not line.strip().startswith("{说明：")
+    ]
+    return joiner.join(lines)
+
+
+def _extract_markdown_table(section: Sequence[str]) -> list[list[str]]:
+    """Return the first Markdown table in *section* as header plus rows."""
+    lines = [line.strip() for line in section]
+    for index in range(len(lines) - 1):
+        header = lines[index]
+        separator = lines[index + 1]
+        if not header.startswith("|") or not separator.startswith("|"):
+            continue
+        header_cells = [cell.strip() for cell in header.strip("|").split("|")]
+        separator_cells = [
+            cell.strip() for cell in separator.strip("|").split("|")
+        ]
+        if not header_cells or len(header_cells) != len(separator_cells):
+            continue
+        if not all(
+            _MARKDOWN_SEPARATOR_CELL_RE.match(cell.replace(" ", ""))
+            for cell in separator_cells
+        ):
+            continue
+
+        rows = [header_cells]
+        for row_line in lines[index + 2:]:
+            if not row_line.startswith("|"):
+                break
+            rows.append([cell.strip() for cell in row_line.strip("|").split("|")])
+        return rows
+    return []
+
+
+def _filter_markdown_table(
+    table: Sequence[Sequence[str]],
+    columns: Sequence[str],
+) -> list[list[str]]:
+    """Keep only *columns* from a Markdown table represented as rows."""
+    if not table:
+        return [list(columns)]
+    headers = list(table[0])
+    indexes = {
+        column: headers.index(column)
+        for column in columns
+        if column in headers
+    }
+    result = [list(columns)]
+    for row in table[1:]:
+        result.append([
+            row[indexes[column]]
+            if column in indexes and indexes[column] < len(row)
+            else ""
+            for column in columns
+        ])
+    return result
+
+
+def _build_markdown_table(rows: Sequence[Sequence[str]]) -> str:
+    """Render header-plus-data rows as a Markdown table."""
+    if not rows:
+        return ""
+    lines = ["| " + " | ".join(rows[0]) + " |"]
+    lines.append("| " + " | ".join(["---"] * len(rows[0])) + " |")
+    for row in rows[1:]:
+        escaped = [cell.replace("|", "\\|") for cell in row]
+        lines.append("| " + " | ".join(escaped) + " |")
+    return "\n".join(lines)
+
+
+def _split_source_alias_values(value: str) -> list[str]:
+    """Split source alias text and drop explicit empty markers."""
+    result: list[str] = []
+    for item in re.split(r"[,，、;/；]", value or ""):
+        cleaned = item.strip()
+        if cleaned and cleaned != "无" and cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
+def _sanitize_field_alias_cell(value: str, claimed: set[str]) -> str:
+    """Drop placeholder aliases and cross-field duplicates."""
+    kept: list[str] = []
+    for alias in _split_source_alias_values(value):
+        compare = alias.strip().lower()
+        if not compare or compare in claimed:
+            continue
+        claimed.add(compare)
+        kept.append(alias)
+    return "，".join(kept)
+
+
+def _render_source_object(
+    path: Path,
+    text: Optional[str] = None,
+    errors: Optional[list[str]] = None,
+) -> str:
+    """Render a source object document as a v0.1 object detail file."""
+    if text is None:
+        text = path.read_text(encoding="utf-8")
+    text, _ = _strip_empty_key_field_rows(text)
+    table = _extract_markdown_table(
+        _extract_markdown_section(text, _SOURCE_OBJECT_SECTION_TITLES)
+    )
+    filtered = _filter_markdown_table(
+        table, ("中文名称", "英文名称", "描述", "属性别名")
+    )
+    kept_rows: list[list[str]] = []
+    missing_key_names: list[str] = []
+    for row in filtered[1:]:
+        if not (row[0].strip() or row[1].strip() or row[3].strip()):
+            continue
+        if not row[1].strip() and (row[0].strip() or row[3].strip()):
+            missing_key_names.append(row[0].strip() or row[3].strip())
+        kept_rows.append(row)
+    if missing_key_names and errors is not None:
+        errors.append(
+            "source: {} contains field rows without an English name: {}".format(
+                path.name, "、".join(missing_key_names)
+            )
+        )
+    filtered = [filtered[0]] + kept_rows
+    claimed_aliases: set[str] = set()
+    for row in filtered[1:]:
+        row[3] = _sanitize_field_alias_cell(row[3], claimed_aliases)
+    body = "# 实体属性清单\n\n{}\n".format(_build_markdown_table(filtered))
+    aliases = _split_source_alias_values(
+        _section_joined_text(text, _SOURCE_OBJECT_ALIAS_TITLES)
+    )
+    frontmatter: dict[str, object] = {
+        "resource": "object",
+        "key": path.stem,
+        "title": path.stem,
+    }
+    if aliases:
+        frontmatter["aliases"] = aliases
+    return _build_frontmatter(frontmatter) + "\n" + body
+
+
+def _source_operation_tag(text: str) -> str:
+    """Infer the operation tag from the source logic relation section."""
+    for line in _extract_markdown_section(
+        text, (_SOURCE_OPERATION_LOGIC_RELATION_TITLE,)
+    ):
+        if "被logic调用" not in line and "被流程使用" not in line:
+            continue
+        value = ""
+        if ">" in line:
+            value = line.split(">", 1)[1].strip()
+        elif "：" in line:
+            value = line.split("：", 1)[1].strip()
+        elif ":" in line:
+            value = line.split(":", 1)[1].strip()
+        if value and not value.startswith("无"):
+            return "子流程"
+    return "主流程"
+
+
+def _render_source_operation(path: Path) -> str:
+    """Render a source logic document as a v0.1 operation detail file."""
+    text = path.read_text(encoding="utf-8")
+    tag = _source_operation_tag(text)
+    input_section = _extract_markdown_section(
+        text, (_SOURCE_OPERATION_INPUT_TITLE,)
+    )
+    output_section = _extract_markdown_section(
+        text, (_SOURCE_OPERATION_OUTPUT_TITLE,)
+    )
+    logic_section = _extract_markdown_section(
+        text, (_SOURCE_OPERATION_LOGIC_TITLE,)
+    )
+
+    def render_section(lines: Sequence[str]) -> str:
+        return "\n".join(line.rstrip() for line in lines if line.strip()).strip()
+
+    blocks = [
+        "# 管理标签\n#{}".format(tag),
+        "# 输入\n\n{}".format(render_section(input_section) or "无"),
+        "# 输出\n\n{}".format(render_section(output_section) or "无"),
+        "# 逻辑描述\n\n{}".format(render_section(logic_section) or "无"),
+    ]
+    frontmatter: dict[str, object] = {
+        "resource": "operation",
+        "key": path.stem,
+        "title": path.stem,
+        "uses": {"objects": []},
+    }
+    return _build_frontmatter(frontmatter) + "\n" + "\n\n".join(blocks) + "\n"
+
+
+def _write_support_index(path: Path, resource: str, key: str, title: str) -> None:
+    """Write a minimal v0.1 support directory index."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _build_frontmatter({
+            "resource": resource,
+            "key": key,
+            "title": title,
+        }) + "\n# {}\n".format(title),
+        encoding="utf-8",
+    )
+
+
+_SOURCE_SCRIPT_BOUND_RE = re.compile(
+    r"^\s*#\s*(?:工具流程|关联logic)\s*[：:]\s*(.+?)\s*$"
+)
+
+
+def _source_script_dir(pkg_root: Path) -> Optional[Path]:
+    """Locate the source script directory, preferring ``scripts/``."""
+    for name in ("scripts", "action"):
+        candidate = pkg_root / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _source_asset_dir(pkg_root: Path) -> Optional[Path]:
+    """Locate the source asset directory, preferring ``asset/``."""
+    for name in ("asset", "assets"):
+        candidate = pkg_root / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _source_script_operation(source_file: Path, logic_keys: set[str]) -> str:
+    """Return the bound logic name from a script header comment."""
+    try:
+        lines = source_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    for line in lines[:200]:
+        match = _SOURCE_SCRIPT_BOUND_RE.match(line)
+        if not match:
+            continue
+        candidate = match.group(1).strip()
+        if candidate in logic_keys:
+            return candidate
+    return ""
+
+
+def _source_script_key(candidate: str, used: set[str]) -> str:
+    """Return a unique script descriptor key for the payload file."""
+    base = candidate.strip() or "script"
+    if base.lower() == "index":
+        base = "script"
+    key = base
+    index = 2
+    while key in used:
+        key = "{}_{}".format(base, index)
+        index += 1
+    used.add(key)
+    return key
+
+
+_SOURCE_COPY_SKIP_DIRS = frozenset({
+    "__pycache__", ".git", ".venv", "venv", "node_modules",
+})
+_SOURCE_COPY_SKIP_NAMES = frozenset({".DS_Store", "Thumbs.db", ".gitignore"})
+
+
+def _copy_source_files(source_dir: Path, target_dir: Path) -> list[Path]:
+    """Copy *source_dir* content into *target_dir* preserving structure."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+    for source_file in sorted(
+        source_dir.rglob("*"),
+        key=lambda item: str(item.relative_to(source_dir)).lower(),
+    ):
+        if not source_file.is_file() or source_file.is_symlink():
+            continue
+        relative = source_file.relative_to(source_dir)
+        if any(part in _SOURCE_COPY_SKIP_DIRS for part in relative.parts):
+            continue
+        if source_file.name in _SOURCE_COPY_SKIP_NAMES:
+            continue
+        if source_file.suffix.lower() == ".pyc":
+            continue
+        target_file = target_dir / relative
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_file, target_file)
+        copied.append(target_file)
+    return copied
+
+
+def _convert_source_scripts(
+    pkg_root: Path,
+    output_root: Path,
+    logic_keys: set[str],
+) -> tuple[int, list[str]]:
+    """Convert source action/scripts payloads into v0.1 scripts layout."""
+    source_dir = _source_script_dir(pkg_root)
+    if source_dir is None:
+        return 0, []
+    payload_files = _copy_source_files(source_dir, output_root / "scripts")
+    script_dir = output_root / "scripts"
+    used_keys: set[str] = set()
+    rows: list[list[str]] = []
+    descriptors: list[Path] = []
+    for payload_file in sorted(
+        script_dir.rglob("*"),
+        key=lambda item: str(item.relative_to(script_dir)).lower(),
+    ):
+        if not payload_file.is_file() or payload_file.suffix.lower() != ".py":
+            continue
+        if payload_file.stem.startswith("_"):
+            continue
+        relative = payload_file.relative_to(script_dir).as_posix()
+        operation_key = _source_script_operation(payload_file, logic_keys)
+        if not operation_key:
+            continue
+        key = _source_script_key(payload_file.stem, used_keys)
+        descriptor = script_dir / "{}.md".format(key)
+        descriptor.write_text(
+            _build_frontmatter({
+                "resource": "script",
+                "key": key,
+                "title": key,
+                "bound_operation": operation_key,
+                "runtime": "python",
+                "entrypoint": relative,
+            })
+            + "\n# 输入参数\n\n{}\n".format(
+                _build_markdown_table([
+                    ["参数 key", "CLI 参数", "类型", "必填", "是否多值", "说明", "别名", "Action"],
+                ])
+            ),
+            encoding="utf-8",
+        )
+        descriptors.append(descriptor)
+        rows.append([key, key, operation_key, relative])
+    script_dir.joinpath("index.md").write_text(
+        _build_frontmatter({
+            "resource": "script_index",
+            "key": "scripts",
+            "title": "脚本目录",
+        })
+        + "\n# 脚本目录\n\n{}\n".format(
+            _build_markdown_table([
+                ["script key", "标题", "绑定 operation", "入口"],
+                *rows,
+            ])
+        ),
+        encoding="utf-8",
+    )
+    return len(payload_files), [str(path) for path in descriptors]
+
+
+def _convert_source_assets(pkg_root: Path, output_root: Path) -> int:
+    """Convert source asset files into the v0.1 ``assets/`` layout."""
+    source_dir = _source_asset_dir(pkg_root)
+    if source_dir is None:
+        return 0
+    return len(_copy_source_files(source_dir, output_root / "assets"))
+
+
+def _convert_skill_source_package(
+    pkg_root: Path,
+    output_root: Path,
+) -> ConversionResult:
+    """Convert a legacy SKILL.md source package to the v0.1 layout."""
+    if not pkg_root.is_dir():
+        raise ValueError(f"Source is not a directory: {pkg_root}")
+    if output_root.exists():
+        raise ValueError(f"Output directory already exists: {output_root}")
+
+    result = ConversionResult(
+        source_root=str(pkg_root),
+        output_root=str(output_root),
+    )
+    metadata = _parse_frontmatter(pkg_root / "SKILL.md")
+    for field_name in ("id", "name", "description", "version"):
+        if not str(metadata.get(field_name) or "").strip():
+            result.errors.append(f"source: SKILL.md missing {field_name}")
+    ontology_id = str(metadata.get("id") or "").strip()
+    if ontology_id and not _MANIFEST_ID_RE.match(ontology_id):
+        result.errors.append(
+            "source: SKILL.md id must contain only letters, digits, "
+            "dots, underscores, or hyphens"
+        )
+    if result.errors:
+        return result
+
+    manifest = {
+        "kind": "ontology-package",
+        "schema_version": "0.1",
+        "id": ontology_id,
+        "name": str(metadata["name"]),
+        "description": str(metadata["description"]),
+        "version": str(metadata["version"]),
+        "language": str(metadata.get("language") or "zh-CN"),
+    }
+    output_root.mkdir(parents=True)
+    _save_yaml_file(output_root / "manifest.yaml", manifest)
+    output_root.joinpath("index.md").write_text(
+        _build_frontmatter({
+            "resource": "root",
+            "key": "root",
+            "title": manifest["name"],
+        }) + "\n# {}\n\n{}\n".format(manifest["name"], manifest["description"]),
+        encoding="utf-8",
+    )
+
+    object_files = sorted((pkg_root / "object").rglob("*.md"))
+    objects_dir = output_root / "objects"
+    objects_dir.mkdir()
+    object_rows: list[list[str]] = []
+    for source_file in object_files:
+        target_file = objects_dir / source_file.name
+        if target_file.exists():
+            result.errors.append(
+                f"source: duplicate object filename: {source_file.name}"
+            )
+            continue
+        text = source_file.read_text(encoding="utf-8")
+        target_file.write_text(
+            _render_source_object(source_file, text=text, errors=result.errors),
+            encoding="utf-8",
+        )
+        object_rows.append([
+            source_file.stem,
+            _section_first_text(text, _SOURCE_OBJECT_ENGLISH_TITLES),
+            _section_joined_text(text, _SOURCE_OBJECT_ALIAS_TITLES),
+            _section_first_text(text, _SOURCE_OBJECT_DESC_TITLES),
+            "",
+        ])
+
+    objects_dir.joinpath("index.md").write_text(
+        _build_frontmatter({
+            "resource": "object_index",
+            "key": "objects",
+            "title": "对象目录",
+        }) + "\n# 实体清单\n\n{}\n".format(
+            _build_markdown_table([
+                ["中文名称", "英文名称", "别名", "业务定义", "领域分类"],
+                *object_rows,
+            ])
+        ),
+        encoding="utf-8",
+    )
+
+    operation_files = sorted((pkg_root / "logic").rglob("*.md"))
+    logic_keys = {path.stem for path in operation_files}
+    operations_dir = output_root / "operations"
+    operations_dir.mkdir()
+    operation_rows: list[list[str]] = []
+    for source_file in operation_files:
+        target_file = operations_dir / source_file.name
+        if target_file.exists():
+            result.errors.append(
+                f"source: duplicate logic filename: {source_file.name}"
+            )
+            continue
+        target_file.write_text(
+            _render_source_operation(source_file), encoding="utf-8"
+        )
+        text = source_file.read_text(encoding="utf-8")
+        operation_rows.append([
+            source_file.stem,
+            _source_operation_tag(text),
+            _section_first_text(text, (_SOURCE_OPERATION_DESC_TITLE,)),
+            _section_first_text(text, (_SOURCE_OPERATION_TRIGGER_TITLE,)),
+        ])
+
+    operations_dir.joinpath("index.md").write_text(
+        _build_frontmatter({
+            "resource": "operation_index",
+            "key": "operations",
+            "title": "操作目录",
+        }) + "\n# Operations 逻辑清单\n\n{}\n".format(
+            _build_markdown_table([
+                ["名称", "标签", "业务描述", "触发条件"],
+                *operation_rows,
+            ])
+        ),
+        encoding="utf-8",
+    )
+
+    script_count, script_descriptors = _convert_source_scripts(
+        pkg_root, output_root, logic_keys
+    )
+    asset_count = _convert_source_assets(pkg_root, output_root)
+    ignored_files = []
+    for path in pkg_root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.relative_to(pkg_root).parts[0] in {
+            "object", "logic", "scripts", "action", "asset", "assets", "SKILL.md",
+        }:
+            continue
+        ignored_files.append(
+            str(path.relative_to(pkg_root)).replace("\\", "/")
+        )
+    ignored_files.sort()
+
+    _write_support_index(
+        output_root / "rules" / "index.md", "rule_index", "rules", "规则目录"
+    )
+    _write_support_index(
+        output_root / "metrics" / "index.md",
+        "metric_index",
+        "metrics",
+        "指标目录",
+    )
+    mappings_dir = output_root / "mappings"
+    mappings_dir.mkdir()
+    mappings_dir.joinpath("object-data-mappings.json").write_text(
+        json.dumps(
+            {"schema_version": "0.1", "objects": {}},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    result.actions_applied.extend([
+        "source: generated manifest.yaml and index.md from SKILL.md",
+        f"source: converted {len(object_rows)} object documents",
+        f"source: converted {len(operation_rows)} logic documents",
+        f"source: copied {script_count} script payload files",
+        f"source: generated {len(script_descriptors)} script descriptors",
+        f"source: copied {asset_count} asset files",
+        "source: uses.objects left empty (logic-object relations are not inferred)",
+        "source: generated rules, metrics, and mappings support files",
+    ])
+    if ignored_files:
+        result.actions_applied.append(
+            "source: ignored {} file(s) outside converted directories: {}".format(
+                len(ignored_files), "、".join(ignored_files[:5])
+            )
+        )
+    result.success = len(result.errors) == 0
+    return result
+
+
+# ===========================================================================
 #  Package converter
 # ===========================================================================
 
@@ -1709,6 +2333,9 @@ def convert_package(
     Returns:
         A :class:`ConversionResult`.
     """
+    if _is_skill_source_package(pkg_root):
+        return _convert_skill_source_package(pkg_root, output_root)
+
     if profile is None:
         profile = detect_package_format(pkg_root)
 
@@ -1799,6 +2426,18 @@ def _extract_zip(zip_path: Path, dest_dir: Path) -> Path:
         raise ValueError("Zip contains multiple ontology package roots")
     if manifest_roots:
         return manifest_roots[0]
+
+    skill_roots: list[Path] = []
+    for candidate in dest_dir.rglob("SKILL.md"):
+        parent = candidate.parent
+        if parent in skill_roots:
+            continue
+        if _is_skill_source_package(parent):
+            skill_roots.append(parent)
+    if len(skill_roots) > 1:
+        raise ValueError("Zip contains multiple source package roots")
+    if skill_roots:
+        return skill_roots[0]
     return dest_dir
 
 
