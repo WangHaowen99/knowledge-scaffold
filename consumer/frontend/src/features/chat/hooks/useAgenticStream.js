@@ -1,15 +1,15 @@
 /**
- * Hook for handling agent-stream.v2 SSE streams.
+ * Hook for projecting canonical PublicEvent streams into chat messages.
  */
 
 import { useRef, useCallback, useLayoutEffect } from 'react';
 import createLogger from '../../../shared/lib/logger';
 import {
-  AGENT_STREAM_EVENT,
-  applyAgentV2Event,
+  applyLocalRunTermination,
+  applyPublicEvent,
   closeOpenSegment,
-  isAgentV2Envelope,
 } from '../lib/streamHelpers';
+import { isPublicEvent } from '../lib/publicEvent';
 import { buildRunRequestPayload, createIdempotencyKey } from '../lib/runAdmission';
 import { messageStatusForTerminalRun } from '../lib/streamLifecycle';
 import { isMessageUpdateScopeCurrent } from '../lib/streamUpdateScope';
@@ -185,55 +185,6 @@ const useAgenticStream = ({
     turnMessageIdsRef.current = next;
   }, []);
 
-  const rebindRunTracking = useCallback((fromRunId, toRunId, targetSessionId = null, options = {}) => {
-    if (!fromRunId || !toRunId || fromRunId === toRunId) return;
-    if (
-      options.scopeEpoch !== undefined
-      && !isMessageUpdateScopeCurrent(options.scopeEpoch, scopeEpochRef.current)
-    ) return;
-
-    const trackedEntries = Array.from(turnMessageIdsRef.current.entries())
-      .filter(([key]) => key.startsWith(`${fromRunId}::`));
-    const trackedId = trackedEntries[0]?.[1];
-    if (trackedId) {
-      const remappedId = trackedId === `${fromRunId}:turn` ? `${toRunId}:turn` : trackedId;
-      trackedEntries.forEach(([key, messageId]) => {
-        const turnId = key.slice(`${fromRunId}::`.length);
-        turnMessageIdsRef.current.delete(key);
-        turnMessageIdsRef.current.set(
-          turnTrackingKey(toRunId, turnId === 'pending' ? null : turnId),
-          messageId === `${fromRunId}:turn` ? remappedId : messageId,
-        );
-      });
-    }
-
-    queueMessageUpdate((prev) => {
-      const next = prev.slice();
-      let idx = trackedId ? next.findIndex((msg) => msg.id === trackedId) : -1;
-
-      if (idx === -1) {
-        idx = next.findIndex(
-          (msg) => msg.runId === fromRunId && msg.kind === 'agent_step' && msg.stepLabel === TURN_STEP_LABEL
-        );
-      }
-
-      if (idx === -1) return prev;
-
-      const current = next[idx];
-      const nextId = current.id === `${fromRunId}:turn` ? `${toRunId}:turn` : current.id;
-      next[idx] = {
-        ...current,
-        id: nextId,
-        runId: toRunId,
-        ts: Date.now(),
-      };
-
-      const currentTurnId = normalizedTurnId(current.turnId);
-      turnMessageIdsRef.current.set(turnTrackingKey(toRunId, currentTurnId), nextId);
-      return next;
-    }, targetSessionId, options);
-  }, [queueMessageUpdate]);
-
   const upsertTurnBubble = useCallback((
     runId,
     turnId,
@@ -323,14 +274,9 @@ const useAgenticStream = ({
 
   const finalizeErroredRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null, turnId = null) => {
     upsertTurnBubble(runId, turnId, (current) => {
-      const next = applyAgentV2Event(current, {
-        protocol: 'agent-stream.v2',
-        type: 'turn.finished',
-        payload: {
-          status: 'error',
-          error: errorText,
-        },
-        source: { node: 'client', component: 'stream' },
+      const next = applyLocalRunTermination(current, {
+        status: 'failed',
+        error: errorText,
       });
       return {
         ...next,
@@ -342,15 +288,10 @@ const useAgenticStream = ({
 
   const finalizeCancelledRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null, turnId = null) => {
     upsertTurnBubble(runId, turnId, (current) => {
-      const next = applyAgentV2Event(current, {
-        protocol: 'agent-stream.v2',
-        type: 'turn.finished',
-        payload: {
-          status: 'cancelled',
-          error: errorText,
-          cancel_reason: 'user_stop',
-        },
-        source: { node: 'client', component: 'stream' },
+      const next = applyLocalRunTermination(current, {
+        status: 'cancelled',
+        error: errorText,
+        cancelReason: 'user_stop',
       });
       return {
         ...next,
@@ -361,37 +302,31 @@ const useAgenticStream = ({
   }, [clearRunTracking, upsertTurnBubble]);
 
   const createEventDispatcher = useCallback((runId, targetSessionId = null, runLifecycle = null) => {
-    return (eventLabel, data) => {
+    return (publicEvent) => {
       if (
         runLifecycle?.scopeEpoch !== undefined
         && !isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)
       ) return false;
-      let envelope = null;
-      if (eventLabel === AGENT_STREAM_EVENT && isAgentV2Envelope(data)) {
-        envelope = data;
-      } else if (eventLabel === 'message' && data?.event === AGENT_STREAM_EVENT && isAgentV2Envelope(data?.data)) {
-        envelope = data.data;
-      }
-
-      if (!envelope) {
-        logger.debug('Ignoring non-agent.v2 SSE event', { eventLabel });
+      if (!isPublicEvent(publicEvent)) {
+        logger.debug('Ignoring invalid PublicEvent');
         return false;
       }
 
       // run.started is consumed by StreamManager for lifecycle state, but it
       // is not a turn event and must not create a visible assistant bubble.
-      if (envelope.type === 'run.started') return false;
+      if (publicEvent.event_type === 'run.started') return false;
 
       const activeRunId = runLifecycle?.activeRunId || currentRunIdRef.current || runId;
-      const eventRunId = envelope.run_id || activeRunId;
-      const eventTurnId = normalizedTurnId(envelope.turn_id);
-      const isTerminalEnvelope = envelope.type === 'turn.finished';
-      if (envelope.run_id && envelope.run_id !== activeRunId) {
-        rebindRunTracking(activeRunId, envelope.run_id, targetSessionId, {
-          immediate: isTerminalEnvelope,
-          scopeEpoch: runLifecycle?.scopeEpoch,
+      if (activeRunId && publicEvent.run_id !== activeRunId) {
+        logger.warn('Ignoring PublicEvent for another run', {
+          activeRunId,
+          eventRunId: publicEvent.run_id,
         });
+        return false;
       }
+      const eventRunId = publicEvent.run_id;
+      const eventTurnId = normalizedTurnId(publicEvent.turn_id);
+      const isTerminalEvent = publicEvent.event_type === 'turn.finished';
 
       if (runLifecycle) {
         runLifecycle.activeRunId = eventRunId;
@@ -401,22 +336,22 @@ const useAgenticStream = ({
       upsertTurnBubble(
         eventRunId,
         eventTurnId,
-        (current) => applyAgentV2Event(current, envelope),
+        (current) => applyPublicEvent(current, publicEvent),
         targetSessionId,
-        { immediate: isTerminalEnvelope, scopeEpoch: runLifecycle?.scopeEpoch },
+        { immediate: isTerminalEvent, scopeEpoch: runLifecycle?.scopeEpoch },
       );
 
-      if (isTerminalEnvelope) {
+      if (isTerminalEvent) {
         clearRunTracking(eventRunId, eventTurnId);
       }
 
       return false;
     };
-  }, [clearRunTracking, rebindRunTracking, upsertTurnBubble]);
+  }, [clearRunTracking, upsertTurnBubble]);
 
   const createStreamCallbacks = useCallback((runId, targetSessionId, runLifecycle, onSessionUpdated = null) => ({
     onEvent: createEventDispatcher(runId, targetSessionId, runLifecycle),
-    onComplete: (terminalStatus = 'success') => {
+    onComplete: (terminalStatus = 'completed') => {
       if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
       const trackedRunId = runLifecycle.activeRunId || runId;
       if (!trackedRunId) return;

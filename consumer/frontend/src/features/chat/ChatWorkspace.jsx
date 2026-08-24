@@ -140,7 +140,7 @@ function AgentModePicker({ value, onChange, disabled }) {
 
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
-// useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
+// useChatSessions 下发。新版 PublicEvent 流由 useStreamManager / useAgenticStream 统一投影。
 export default function ChatWorkspace({
   chat,
   streamManager,

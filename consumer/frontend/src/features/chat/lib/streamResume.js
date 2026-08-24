@@ -1,28 +1,11 @@
-const EVENT_ID_SEQUENCE = /:(\d+)$/;
-
 export const normalizeSequence = (value) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
 
-export const getEnvelopeSequence = (envelope) => {
-  const explicit = normalizeSequence(envelope?.seq);
-  if (explicit) return explicit;
-  const match = EVENT_ID_SEQUENCE.exec(String(envelope?.event_id || ''));
-  return match ? normalizeSequence(match[1]) : 0;
-};
-
-export const getEnvelopeIdentity = (envelope) => {
-  const eventId = String(envelope?.event_id || '').trim();
-  if (eventId) return eventId;
-  const sequence = getEnvelopeSequence(envelope);
-  const runId = String(envelope?.run_id || '').trim();
-  return sequence && runId ? `${runId}:${sequence}` : '';
-};
-
-export const classifyEnvelope = (envelope, cursor = 0, seenEventIds = new Set()) => {
-  const sequence = getEnvelopeSequence(envelope);
-  const identity = getEnvelopeIdentity(envelope);
+export const classifyPublicEvent = (event, cursor = 0, seenEventIds = new Set()) => {
+  const sequence = normalizeSequence(event?.seq);
+  const identity = String(event?.event_id || '').trim();
   const duplicate = Boolean(
     (sequence && sequence <= normalizeSequence(cursor))
     || (identity && seenEventIds.has(identity))

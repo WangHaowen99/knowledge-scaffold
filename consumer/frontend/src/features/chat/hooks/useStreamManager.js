@@ -11,11 +11,11 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import createLogger from '../../../shared/lib/logger';
 import { authFetch } from '../../../shared/api/auth';
+import { publicErrorMessage } from '../lib/streamHelpers';
 import {
-  AGENT_STREAM_EVENT,
-  isAgentV2Envelope,
-  publicErrorMessage,
-} from '../lib/streamHelpers';
+  decodePublicEventFrame,
+  PublicEventProtocolError,
+} from '../lib/publicEvent';
 import { parseSSEMessage, takeSSEFrames } from '../lib/sse';
 import {
   AGENTIC_RUNS_ENDPOINT,
@@ -26,13 +26,13 @@ import {
   buildRunCancelUrl,
   buildRunEventsUrl,
   buildRunUrl,
-  classifyEnvelope,
+  classifyPublicEvent,
   normalizeSequence,
 } from '../lib/streamResume';
 import {
   abortStreamController,
   abortStreamControllers,
-  classifyRunProgressFromEnvelope,
+  classifyRunProgressFromPublicEvent,
   isSilentStreamAbort,
   isTerminalRunStatus,
   resolveRunStartedAt,
@@ -83,7 +83,7 @@ const useStreamManager = () => {
   // AbortControllers: Map<sessionId, AbortController>
   const abortControllersRef = useRef(new Map());
 
-  // Stream metadata: Map<sessionId, { runId, runType }>
+  // Stream metadata: Map<sessionId, { runId, runStatus, lastSeq }>
   const streamMetaRef = useRef(new Map());
 
   /**
@@ -231,64 +231,35 @@ const useStreamManager = () => {
     let terminalStatus = '';
     let receivedEvent = false;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (value) buffer += decoder.decode(value, { stream: !done });
-      if (done) buffer += decoder.decode();
-      const { frames: parts, remainder } = takeSSEFrames(buffer, { done });
-      buffer = remainder;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buffer += decoder.decode(value, { stream: !done });
+        if (done) buffer += decoder.decode();
+        const { frames: parts, remainder } = takeSSEFrames(buffer, { done });
+        buffer = remainder;
 
-      let shouldStop = false;
-      for (const part of parts) {
-        const parsed = parseSSEMessage(part);
-        if (!parsed) continue;
-        receivedEvent = true;
-
-        let { event, data } = parsed;
-        if ((event === 'message' || !event) && data && typeof data === 'object') {
-          if (data.event && data.data) {
-            event = data.event;
-            data = data.data;
-          } else if (!event && (data.event || data.type)) {
-            event = data.event || data.type;
+        let shouldStop = false;
+        for (const part of parts) {
+          const parsed = parseSSEMessage(part);
+          if (!parsed) continue;
+          const activeMeta = streamMetaRef.current.get(sessionId);
+          if (!activeMeta || activeMeta.streamToken !== streamToken) {
+            await reader.cancel();
+            return { terminalStatus: '', superseded: true };
           }
-        }
 
-        const activeMeta = streamMetaRef.current.get(sessionId);
-        if (!activeMeta || activeMeta.streamToken !== streamToken) {
-          await reader.cancel();
-          return { terminalStatus: '', superseded: true };
-        }
-
-        if (
-          data
-          && typeof data === 'object'
-          && data.schema_version
-          && typeof data.event_type === 'string'
-        ) {
-          data = {
-            protocol: 'agent-stream.v2',
-            event_id: data.event_id,
-            seq: data.seq,
-            ts: Date.parse(data.created_at) || Date.now(),
-            session_id: data.session_id,
-            run_id: data.run_id,
-            turn_id: data.turn_id,
-            type: data.event_type,
-            source: data.source || {},
-            payload: data.payload || {},
-          };
-          event = AGENT_STREAM_EVENT;
-        }
-
-        if (event === AGENT_STREAM_EVENT && isAgentV2Envelope(data)) {
-          const classification = classifyEnvelope(
-            data,
+          const publicEvent = decodePublicEventFrame(parsed, {
+            expectedRunId: activeMeta.runId,
+            expectedSessionId: sessionId,
+          });
+          const classification = classifyPublicEvent(
+            publicEvent,
             activeMeta.lastSeq,
             activeMeta.seenEventIds,
           );
           if (classification.duplicate) {
-            logger.debug('Ignoring replayed SSE envelope', {
+            logger.debug('Ignoring replayed PublicEvent', {
               sessionId,
               eventId: classification.identity,
               sequence: classification.sequence,
@@ -296,49 +267,51 @@ const useStreamManager = () => {
             continue;
           }
 
-          activeMeta.runId = data.run_id || activeMeta.runId;
-          activeMeta.runType = data.type || activeMeta.runType;
-          if (data.type === 'run.started' || data.type === 'turn.started') {
-            activeMeta.runStatus = 'running';
+          logger.debug('PublicEvent received', {
+            sessionId,
+            eventType: publicEvent.event_type,
+            sequence: publicEvent.seq,
+          });
+          if (onEvent?.(publicEvent)) {
+            logger.debug('Stream handler requested break', { sessionId });
+            shouldStop = true;
           }
+
+          activeMeta.runStatus = publicEvent.status;
           activeMeta.lastSeq = classification.nextCursor;
           if (classification.identity) activeMeta.seenEventIds.add(classification.identity);
-          const progress = classifyRunProgressFromEnvelope(data);
-          if (progress?.phase) {
-            activeMeta.progressPhase = progress.phase;
-          }
+          const progress = classifyRunProgressFromPublicEvent(publicEvent);
+          if (progress?.phase) activeMeta.progressPhase = progress.phase;
           streamMetaRef.current.set(sessionId, activeMeta);
+          receivedEvent = true;
 
           updateStreamState(sessionId, {
             runId: activeMeta.runId,
             cursor: activeMeta.lastSeq,
-            status: data.type === 'turn.finished' ? 'finalizing' : 'streaming',
+            status: publicEvent.event_type === 'turn.finished' ? 'finalizing' : 'streaming',
             startedAt: activeMeta.startedAt,
             progressPhase: activeMeta.progressPhase,
           });
 
-          if (data.type === 'turn.finished') {
-            terminalStatus = String(data.payload?.status || 'success');
+          if (publicEvent.event_type === 'turn.finished') {
+            terminalStatus = publicEvent.status;
           }
+          if (shouldStop) break;
         }
 
-        logger.debug('SSE event', { sessionId, event });
-        if (onEvent?.(event, data)) {
-          logger.debug('Stream handler requested break', { sessionId });
-          shouldStop = true;
+        if (shouldStop || terminalStatus) {
+          if (!terminalStatus) terminalStatus = 'completed';
+          await reader.cancel();
+          break;
+        }
+        if (done) {
+          logger.debug('Stream response ended', { sessionId, terminal: Boolean(terminalStatus) });
           break;
         }
       }
-
-      if (shouldStop || terminalStatus) {
-        if (!terminalStatus) terminalStatus = 'success';
-        await reader.cancel();
-        break;
-      }
-      if (done) {
-        logger.debug('Stream response ended', { sessionId, terminal: Boolean(terminalStatus) });
-        break;
-      }
+    } catch (error) {
+      await reader.cancel(error).catch(() => {});
+      throw error;
     }
 
     return { terminalStatus, superseded: false, receivedEvent };
@@ -419,6 +392,7 @@ const useStreamManager = () => {
         reconnectAttempts = result.receivedEvent ? 0 : reconnectAttempts + 1;
       } catch (error) {
         if (error.name === 'AbortError') throw error;
+        if (error instanceof PublicEventProtocolError) throw error;
         reconnectAttempts += 1;
         logger.warn('Run event stream disconnected; retrying from cursor', {
           sessionId,
@@ -460,7 +434,6 @@ const useStreamManager = () => {
     abortControllersRef.current.set(sessionId, controller);
     streamMetaRef.current.set(sessionId, {
       runId: null,
-      runType: null,
       runStatus: 'admitting',
       streamToken,
       lastSeq: 0,
@@ -562,7 +535,6 @@ const useStreamManager = () => {
     abortControllersRef.current.set(sessionId, controller);
     streamMetaRef.current.set(sessionId, {
       runId,
-      runType: null,
       runStatus: status === 'queued' ? 'queued' : 'running',
       streamToken,
       lastSeq: cursor,

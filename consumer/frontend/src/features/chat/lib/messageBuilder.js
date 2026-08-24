@@ -4,11 +4,11 @@
 
 import createLogger from '../../../shared/lib/logger.js';
 import {
-  AGENT_STREAM_EVENT,
-  applyAgentV2Event,
+  applyPublicEvent,
   closeOpenSegment,
-  isAgentV2Envelope,
 } from './streamHelpers.js';
+import { storedAgentEventToPublicEvent } from './legacyAgentEvent.js';
+import { publicEventTimestamp } from './publicEvent.js';
 import { applyInteractionCancellation, INTERACTION_CANCELLED_TYPE } from './pendingInteraction.js';
 
 const logger = createLogger('MessageBuilder');
@@ -68,7 +68,7 @@ export const buildMessagesFromEvents = (events = []) => {
 
   logger.debug(`Processing ${events.length} events`);
 
-  events.forEach((event) => {
+  events.forEach((event, eventIndex) => {
     const eventLabel = event?.event;
     const data = event?.data;
 
@@ -97,23 +97,22 @@ export const buildMessagesFromEvents = (events = []) => {
       return;
     }
 
-    if (eventLabel !== AGENT_STREAM_EVENT || !isAgentV2Envelope(data)) {
-      return;
-    }
+    const publicEvent = storedAgentEventToPublicEvent(event, { index: eventIndex });
+    if (!publicEvent) return;
 
     // run.started is a run-level control event. It has no turn-scoped
     // rendering data and must not create a phantom assistant bubble during
     // durable session hydration.
-    if (data.type === 'run.started') return;
+    if (publicEvent.event_type === 'run.started') return;
 
-    const runId = data.run_id || 'unknown-run';
-    const idx = ensureTurnBubble(runId, data.turn_id);
+    const runId = publicEvent.run_id || 'unknown-run';
+    const idx = ensureTurnBubble(runId, publicEvent.turn_id);
     const current = messages[idx];
 
-    const next = applyAgentV2Event(current, data);
+    const next = applyPublicEvent(current, publicEvent);
     messages[idx] = {
       ...next,
-      ts: data.ts || Date.now(),
+      ts: publicEventTimestamp(publicEvent),
     };
   });
 

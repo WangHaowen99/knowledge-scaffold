@@ -1,9 +1,4 @@
-import { buildMessagesFromEvents } from './messageBuilder.js';
-import {
-  AGENT_STREAM_EVENT,
-  isAgentV2Envelope,
-  publicErrorMessage,
-} from './streamHelpers.js';
+import { publicErrorMessage } from './streamHelpers.js';
 
 const TERMINAL_STATUSES = new Set(['finished', 'error', 'cancelled', 'awaiting']);
 const BUSINESS_DATA_TOOLS = new Set(['business_data_search']);
@@ -107,7 +102,9 @@ export const conversationKindForTool = (toolName) => {
 
 export const conversationKindForSegment = (segment) => {
   const type = stringValue(segment?.type).trim().toLowerCase();
-  if (type === 'tool') return conversationKindForTool(segment?.meta?.tool_name);
+  if (type === 'tool') {
+    return conversationKindForTool(segment?.meta?.tool_name || segment?.meta?.name);
+  }
   if (type === 'subagent' || type === 'subagent_group') return 'subagent';
   if (type === 'reasoning') return 'reasoning';
   if (type === 'content') return 'content';
@@ -499,29 +496,15 @@ const normalizeMessage = (message, index, occurrences) => {
   };
 };
 
-const durableEventsFromEnvelopes = (envelopes) => (Array.isArray(envelopes) ? envelopes : [])
-  .map((item) => {
-    if (item?.event && item?.data) return item;
-    if (isAgentV2Envelope(item)) return { event: AGENT_STREAM_EVENT, data: item };
-    return null;
-  })
-  .filter(Boolean);
-
 const resolveMessages = (input) => {
-  if (Array.isArray(input)) {
-    const looksLikeEnvelope = input.some((item) => isAgentV2Envelope(item) || item?.event === AGENT_STREAM_EVENT);
-    return looksLikeEnvelope ? buildMessagesFromEvents(durableEventsFromEnvelopes(input)) : input;
-  }
+  if (Array.isArray(input)) return input;
   if (Array.isArray(input?.messages) && input.messages.length > 0) return input.messages;
-  if (Array.isArray(input?.envelopes)) {
-    return buildMessagesFromEvents(durableEventsFromEnvelopes(input.envelopes));
-  }
   return [];
 };
 
 /**
- * Canonical renderer input for a conversation. Existing messages are authoritative;
- * raw agent.v2 envelopes are accepted as a hydration fallback.
+ * Canonical renderer input for a conversation. Hydration adapters must project
+ * stored events into messages before they reach this renderer boundary.
  */
 export const buildConversationViewModel = (input = []) => {
   const occurrences = new Map();

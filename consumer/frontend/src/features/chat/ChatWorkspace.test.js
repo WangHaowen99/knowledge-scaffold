@@ -15,6 +15,7 @@ const agenticStreamSource = readFileSync(join(currentDir, 'hooks/useAgenticStrea
 const streamManagerSource = readFileSync(join(currentDir, 'hooks/useStreamManager.js'), 'utf8');
 const runAdmissionSource = readFileSync(join(currentDir, 'lib/runAdmission.js'), 'utf8');
 const chatSessionsSource = readFileSync(join(currentDir, 'hooks/useChatSessions.js'), 'utf8');
+const messageBuilderSource = readFileSync(join(currentDir, 'lib/messageBuilder.js'), 'utf8');
 
 test('automatic ontology selection does not claim that business data is ready', () => {
   const status = getChatDataSourceStatus(null);
@@ -93,6 +94,17 @@ test('agent stream ownership remains mounted while the chat surface changes', ()
   assert.equal(appShellSource.includes('const agenticStream = useAgenticStream({'), true);
   assert.equal(appShellSource.includes('agenticStream={agenticStream}'), true);
   assert.equal(chatSource.includes('const { sendAgentic, resumeAgentic } = agenticStream;'), true);
+});
+
+test('live chat consumes PublicEvent while legacy decoding stays in hydration', () => {
+  assert.equal(streamManagerSource.includes('decodePublicEventFrame'), true);
+  assert.equal(streamManagerSource.includes('error instanceof PublicEventProtocolError'), true);
+  assert.equal(streamManagerSource.includes('reader.cancel(error).catch'), true);
+  assert.equal(streamManagerSource.includes('agent-stream.v2'), false);
+  assert.equal(agenticStreamSource.includes('applyPublicEvent'), true);
+  assert.equal(agenticStreamSource.includes('applyLocalRunTermination'), true);
+  assert.equal(agenticStreamSource.includes('agent-stream.v2'), false);
+  assert.equal(messageBuilderSource.includes('storedAgentEventToPublicEvent'), true);
 });
 
 test('trace panel has one accessible toggle and keeps the mobile backdrop close action', () => {

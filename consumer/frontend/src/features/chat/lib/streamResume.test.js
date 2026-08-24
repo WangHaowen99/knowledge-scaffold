@@ -5,26 +5,21 @@ import {
   buildRunCancelUrl,
   buildRunEventsUrl,
   buildRunUrl,
-  classifyEnvelope,
-  getEnvelopeIdentity,
-  getEnvelopeSequence,
+  classifyPublicEvent,
   normalizeSequence,
 } from './streamResume.js';
 
-test('normalizes cursor values and falls back to event id sequence', () => {
+test('normalizes cursor values', () => {
   assert.equal(normalizeSequence('12'), 12);
   assert.equal(normalizeSequence('-1'), 0);
-  assert.equal(getEnvelopeSequence({ seq: 8, event_id: 'run-a:7' }), 8);
-  assert.equal(getEnvelopeSequence({ event_id: 'run-a:7' }), 7);
-  assert.equal(getEnvelopeIdentity({ run_id: 'run-a', seq: 4 }), 'run-a:4');
 });
 
-test('rejects replayed envelopes by cursor or stable event id', () => {
+test('rejects replayed PublicEvents by cursor or stable event id', () => {
   const seen = new Set(['run-a:5']);
-  assert.equal(classifyEnvelope({ run_id: 'run-a', seq: 4 }, 4, seen).duplicate, true);
-  assert.equal(classifyEnvelope({ run_id: 'run-a', seq: 5 }, 0, seen).duplicate, true);
+  assert.equal(classifyPublicEvent({ event_id: 'run-a:4', seq: 4 }, 4, seen).duplicate, true);
+  assert.equal(classifyPublicEvent({ event_id: 'run-a:5', seq: 5 }, 0, seen).duplicate, true);
 
-  const fresh = classifyEnvelope({ run_id: 'run-a', seq: 6 }, 4, seen);
+  const fresh = classifyPublicEvent({ event_id: 'run-a:6', seq: 6 }, 4, seen);
   assert.equal(fresh.duplicate, false);
   assert.equal(fresh.nextCursor, 6);
 });

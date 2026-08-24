@@ -1,11 +1,5 @@
 const LIVE_STATUSES = new Set(['running', 'streaming', 'queued', 'reconnecting', 'finalizing']);
 const TERMINAL_STATUSES = new Set(['completed', 'finished', 'success', 'succeeded', 'failed', 'error', 'cancelled', 'canceled', 'interrupted']);
-const TERMINAL_EVENT_TYPES = new Set([
-  'tool.finished',
-  'turn.finished',
-  'turn.failed',
-  'turn.cancelled',
-]);
 
 const NODE_CANDIDATE_FIELDS = new Set([
   'element_class',
@@ -274,7 +268,9 @@ const addUnit = (units, value, context) => {
     toolName: stringValue(
       value?.toolName
       ?? value?.tool_name
-      ?? value?.meta?.tool_name,
+      ?? value?.name
+      ?? value?.meta?.tool_name
+      ?? value?.meta?.name,
     ),
     position: units.length,
   });
@@ -339,41 +335,6 @@ const collectMessage = (message, units, rootOntologyId = '') => {
   blocks.forEach((block) => collectBlock(block, context, units));
 };
 
-const collectEnvelopeUnits = (envelopes, units, rootOntologyId = '') => {
-  const terminalRuns = new Set();
-  const terminalTools = new Set();
-  envelopes.forEach((envelope) => {
-    const type = stringValue(envelope?.type).toLocaleLowerCase();
-    const runId = stringValue(envelope?.run_id ?? envelope?.runId);
-    if (TERMINAL_EVENT_TYPES.has(type)) terminalRuns.add(runId);
-    if (type === 'tool.finished') {
-      terminalTools.add(`${runId}:${stringValue(envelope?.payload?.tool_call_id)}`);
-    }
-  });
-
-  envelopes.forEach((envelope) => {
-    const type = stringValue(envelope?.type).toLocaleLowerCase();
-    if (!type.startsWith('tool.')) return;
-    const payload = plainObject(envelope.payload) ? envelope.payload : {};
-    const runId = stringValue(envelope.run_id ?? envelope.runId);
-    const toolKey = `${runId}:${stringValue(payload.tool_call_id)}`;
-    const live = !terminalRuns.has(runId)
-      && !terminalTools.has(toolKey)
-      && type !== 'tool.finished';
-    addUnit(units, {
-      ...payload,
-      type,
-      ts: envelope.ts,
-    }, {
-      live,
-      liveOverride: live,
-      runId,
-      ontologyId: ontologyIdFrom(envelope) || ontologyIdFrom(payload) || rootOntologyId,
-      timestamp: timestampValue(envelope.ts),
-    });
-  });
-};
-
 const collectTraceUnits = (input) => {
   const units = [];
   const rootOntologyId = ontologyIdFrom(input);
@@ -384,13 +345,7 @@ const collectTraceUnits = (input) => {
       : (Array.isArray(input?.envelopes)
         ? input.envelopes
         : (plainObject(input) ? [input] : [])));
-  const envelopes = values.filter((value) => (
-    plainObject(value)
-    && stringValue(value.type).includes('.')
-    && plainObject(value.payload)
-  ));
-  if (envelopes.length) collectEnvelopeUnits(envelopes, units, rootOntologyId);
-  values.filter((value) => !envelopes.includes(value)).forEach((value) => {
+  values.forEach((value) => {
     const kind = stringValue(value?.kind ?? value?.type).toLocaleLowerCase();
     if (['tool', 'business_data', 'web_search', 'subagent_group'].includes(kind)) {
       collectBlock(value, {
@@ -437,8 +392,8 @@ export const graphEdgeIdentity = (edge, index = 0) => [
 ].join('::');
 
 /**
- * Project raw agent.v2 envelopes, hydrated messages or canonical chat blocks onto
- * the static ontology graph. All matching is exact after light identifier
+ * Project hydrated messages or canonical chat blocks onto the static ontology
+ * graph. All matching is exact after light identifier
  * normalization so user prose cannot accidentally light up the graph.
  */
 export const deriveGraphRuntimeState = (graph, traceInput, options = {}) => {
