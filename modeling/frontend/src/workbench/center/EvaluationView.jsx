@@ -12,7 +12,7 @@ import {
   reviewEvaluationOptimization, updateEvaluationSuggestion, updateEvaluationTestcase,
 } from '../lib/api.js';
 
-const TABS = [['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果'], ['diagnose', '失败诊断'], ['optimize', '优化建议']];
+const TABS = [['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果']];
 const STATUS = { running: ['运行中', 'wait'], done: ['已完成', 'ok'], failed: ['运行失败', 'stale'] };
 const VERDICT = { pass: ['通过', 'ok'], partial: ['部分通过', 'wait'], fail: ['未通过', 'stale'], error: ['运行错误', 'stale'] };
 const KINDS = [
@@ -27,8 +27,6 @@ export default function EvaluationView() {
   const [tab, setTab] = useState('setup');
   const [facts, setFacts] = useState({ source: undefined, cases: undefined, rounds: undefined });
   const [round, setRound] = useState(null);
-  const [diagnoses, setDiagnoses] = useState([]);
-  const [suggestions, setSuggestions] = useState([]);
   const [error, setError] = useState('');
   const loadFacts = useCallback(async () => {
     if (!projectId) return;
@@ -40,10 +38,7 @@ export default function EvaluationView() {
   const openRound = useCallback(async (roundId) => {
     if (!projectId || !roundId) return;
     try {
-      const [detail, diagnosisData, suggestionData] = await Promise.all([
-        getEvaluationRound(projectId, roundId), listEvaluationDiagnoses(projectId, roundId), listEvaluationSuggestions(projectId, roundId),
-      ]);
-      setRound(detail); setDiagnoses(diagnosisData.diagnoses || []); setSuggestions(suggestionData.suggestions || []); setError('');
+      setRound(await getEvaluationRound(projectId, roundId)); setError('');
     } catch (cause) { setError(cause.message || '评测结果读取失败'); }
   }, [projectId]);
   useEffect(() => { void loadFacts(); }, [loadFacts]);
@@ -53,7 +48,7 @@ export default function EvaluationView() {
     return () => window.clearInterval(timer);
   }, [loadFacts, openRound, round?.round?.id, round?.round?.status]);
   const official = useMemo(() => (facts.cases || []).filter((item) => item.source === 'manual'), [facts.cases]);
-  const counts = { cases: official.length, runs: facts.rounds?.length || 0, diagnose: diagnoses.length, optimize: suggestions.filter((item) => item.status === 'pending').length };
+  const counts = { cases: official.length, runs: facts.rounds?.length || 0 };
   const loading = facts.source === undefined || facts.cases === undefined || facts.rounds === undefined;
   return <div className="wb-eval">
     <div className="tabs wb-eval-tabs" role="tablist" aria-label="评测与优化工作区">
@@ -64,9 +59,7 @@ export default function EvaluationView() {
     {loading ? <div className="empty"><LoaderCircle className="wb-spin" size={18} /> 正在读取评测事实</div> : <>
       {tab === 'setup' && <EvaluationSetupPanel projectId={projectId} onSaved={(source) => { setFacts((old) => ({ ...old, source })); setTab('cases'); }} />}
       {tab === 'cases' && <CasesPanel projectId={projectId} cases={official} suggestedCount={facts.cases.length - official.length} sourceReady={Boolean(facts.source)} onChanged={(cases) => setFacts((old) => ({ ...old, cases }))} onOpenSetup={() => setTab('setup')} onOpenRuns={() => setTab('runs')} />}
-      {tab === 'runs' && <RunsPanel rounds={facts.rounds} current={round} onOpen={(id) => void openRound(id)} onDiagnose={() => setTab('diagnose')} />}
-      {tab === 'diagnose' && <DiagnosisPanel projectId={projectId} round={round} diagnoses={diagnoses} onChanged={setDiagnoses} onGoRuns={() => setTab('runs')} onAdvance={() => setTab('optimize')} />}
-      {tab === 'optimize' && <OptimizationPanel projectId={projectId} round={round} diagnoses={diagnoses} suggestions={suggestions} onChanged={setSuggestions} onGoDiagnose={() => setTab('diagnose')} />}
+      {tab === 'runs' && <RunsPanel rounds={facts.rounds} current={round} onOpen={(id) => void openRound(id)} />}
     </>}
   </div>;
 }
@@ -103,13 +96,13 @@ function CaseEditor({ item, index, busy, onSave, onDelete }) {
 }
 
 export const evaluationScopeLabel = (scope) => scope?.kind === 'fusion_source' ? `来源回归 · ${scope.sourceName || '未命名来源'}` : '正式融合包';
-export function RunsPanel({ rounds, current, onOpen, onDiagnose }) {
+export function RunsPanel({ rounds, current, onOpen }) {
   if (!rounds.length) return <div className="wb-eval-empty">助手开始正式评测后，运行进度和结果会显示在这里</div>;
-  return <section className="wb-eval-runs"><div className="wb-eval-round-list">{rounds.map((item) => { const [label, tone] = STATUS[item.status] || [item.status, 'plain']; return <button key={item.id} className={current?.round?.id === item.id ? 'on' : ''} onClick={() => onOpen(item.id)}><span><b>{formatTime(item.createdAt)}</b><small>{evaluationScopeLabel(item.scope)} · v{item.packageVersion}</small></span><span className={`pill pill-${tone}`}>{label}</span></button>; })}</div>{current && <RoundDetail value={current} onDiagnose={onDiagnose} />}</section>;
+  return <section className="wb-eval-runs"><div className="wb-eval-round-list">{rounds.map((item) => { const [label, tone] = STATUS[item.status] || [item.status, 'plain']; return <button key={item.id} className={current?.round?.id === item.id ? 'on' : ''} onClick={() => onOpen(item.id)}><span><b>{formatTime(item.createdAt)}</b><small>{evaluationScopeLabel(item.scope)} · v{item.packageVersion}</small></span><span className={`pill pill-${tone}`}>{label}</span></button>; })}</div>{current && <RoundDetail value={current} />}</section>;
 }
-function RoundDetail({ value, onDiagnose }) {
+function RoundDetail({ value }) {
   const { round, results = [] } = value; const failed = results.filter((item) => item.verdict !== 'pass'); const [statusLabel, statusTone] = STATUS[round.status] || [round.status, 'plain']; const progress = round.progressTotal ? Math.round(round.progressDone / round.progressTotal * 100) : 0;
-  return <div className="wb-eval-round-detail"><div className="wb-eval-round-summary"><div><b>{statusLabel}</b><span>{evaluationScopeLabel(round.scope)} · 通过 {round.passCount}/{round.progressTotal || results.length}</span></div><span className={`pill pill-${statusTone}`}>{round.status === 'running' ? `${progress}%` : statusLabel}</span></div>{round.status === 'running' && <div className="wb-eval-progress"><span style={{ width: `${progress}%` }} /></div>}{failed.length > 0 && ['done', 'failed'].includes(round.status) && <div className="wb-eval-next"><Search size={18} /><div><b>{failed.length} 条用例需要分析</b><span>让 Agent 读取失败回答、判定理由和执行 trace，定位真正根因。</span></div><button className="btn btn-p btn-sm" onClick={onDiagnose}>分析失败原因 <ChevronRight size={14} /></button></div>}{results.map((result, index) => { const [label, tone] = VERDICT[result.verdict] || ['待判定', 'plain']; return <article className="wb-eval-result" key={result.id}><div><b>{index + 1}. {result.question}</b><span className={`pill pill-${tone}`}>{label}</span></div>{result.finalAnswer && <p><strong>回答</strong>{result.finalAnswer}</p>}{result.reason && <p><strong>判定</strong>{result.reason}</p>}</article>; })}{round.status === 'failed' && round.log && <pre className="wb-eval-log">{round.log}</pre>}</div>;
+  return <div className="wb-eval-round-detail"><div className="wb-eval-round-summary"><div><b>{statusLabel}</b><span>{evaluationScopeLabel(round.scope)} · 通过 {round.passCount}/{round.progressTotal || results.length}</span></div><span className={`pill pill-${statusTone}`}>{round.status === 'running' ? `${progress}%` : statusLabel}</span></div>{round.status === 'running' && <div className="wb-eval-progress"><span style={{ width: `${progress}%` }} /></div>}{failed.length > 0 && ['done', 'failed'].includes(round.status) && <div className="wb-eval-next"><Search size={18} /><div><b>{failed.length} 条用例未通过</b><span>失败回答和判定理由已在下方结果中列出。</span></div></div>}{results.map((result, index) => { const [label, tone] = VERDICT[result.verdict] || ['待判定', 'plain']; return <article className="wb-eval-result" key={result.id}><div><b>{index + 1}. {result.question}</b><span className={`pill pill-${tone}`}>{label}</span></div>{result.finalAnswer && <p><strong>回答</strong>{result.finalAnswer}</p>}{result.reason && <p><strong>判定</strong>{result.reason}</p>}</article>; })}{round.status === 'failed' && round.log && <pre className="wb-eval-log">{round.log}</pre>}</div>;
 }
 
 function DiagnosisPanel({ projectId, round, diagnoses, onChanged, onGoRuns, onAdvance }) {
