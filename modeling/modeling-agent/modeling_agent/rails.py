@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -958,11 +959,6 @@ class ActivityRail(AgentRail):
         ]
         inspectors.append(self.inspect_stream_chunk)
         ctx.extra[self._INSPECTORS_KEY] = inspectors
-        self._emit("progress", {
-            "text": "助手正在整理下一步",
-            "detail": "正在根据已读取的事实判断下一项可执行工作",
-            "counters": {},
-        })
         self._emit("model_call", {
             "callId": call_id,
             "actor": self._actor,
@@ -1054,17 +1050,21 @@ class ActivityRail(AgentRail):
         spec = tool_spec(name)
         display = _display_text(spec.display if spec else "正在处理", _call_args(ctx))
         tool_call_id = _tool_call_id(ctx)
+        trace_group_id = tool_trace_group_id(name, _call_args(ctx))
         self._emit("progress", {
             "text": display,
             "detail": tool_work_detail(name),
             "counters": {},
         })
-        self._emit("tool", {
+        payload = {
             "name": name,
             "phase": "started",
             "summary": display,
             "toolCallId": tool_call_id,
-        })
+        }
+        if trace_group_id:
+            payload["traceGroupId"] = trace_group_id
+        self._emit("tool", payload)
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         name = _tool_name(ctx)
@@ -1082,7 +1082,7 @@ class ActivityRail(AgentRail):
             phase = "repairing"
         else:
             phase = "failed" if result.get("error") else "completed"
-        self._emit("tool", {
+        payload = {
             "name": name,
             "phase": phase,
             "summary": summary,
@@ -1093,7 +1093,11 @@ class ActivityRail(AgentRail):
             "repairAttempt": result.get("repairAttempt"),
             "repairRoundId": str(result.get("repairRoundId") or ""),
             "findingCount": int(result.get("findingCount") or 0),
-        })
+        }
+        trace_group_id = tool_trace_group_id(name, _call_args(ctx))
+        if trace_group_id:
+            payload["traceGroupId"] = trace_group_id
+        self._emit("tool", payload)
 
 
 def _messages_size(messages: list[Any]) -> int:
@@ -1110,6 +1114,22 @@ def _messages_size(messages: list[Any]) -> int:
 def _usage_value(usage: Any, name: str) -> int:
     value = usage.get(name, 0) if isinstance(usage, Mapping) else getattr(usage, name, 0)
     return int(value or 0)
+
+
+def tool_trace_group_id(name: str, arguments: dict[str, Any]) -> str:
+    paged_arguments = {
+        "read_document": {"offset", "limit"},
+        "read_table_rows": {"offset", "limit"},
+    }.get(name)
+    if not paged_arguments:
+        return ""
+    identity = {
+        key: value for key, value in arguments.items()
+        if key not in paged_arguments
+    }
+    encoded = json.dumps({"name": name, "identity": identity}, ensure_ascii=False, sort_keys=True, default=str)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+    return f"paged:{name}:{digest}"
 
 
 def _is_timeout_error(error: BaseException) -> bool:

@@ -323,7 +323,7 @@ CORE_TOOL_SPECS = (
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
         "read_document",
-        "分页精读资料正文。必须从 offset=0 开始并沿 nextOffset 读到 eof。",
+        "按需分页读取资料正文。局部核对先检索再读取命中范围；需要全文覆盖时必须改用 read_documents_fully，禁止串行翻页替代。",
         {"filename": STRING, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 20000}},
         ("filename",),
         display="正在读取资料",

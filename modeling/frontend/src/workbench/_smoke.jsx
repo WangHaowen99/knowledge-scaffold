@@ -652,7 +652,7 @@ try {
 } catch (e) { console.log('✗ 确认卡变更范围:', e.message); bad++; }
 
 store.set({
-  activity: { text: '助手正在整理下一步', startedAt: Date.now(), sub: [] },
+  activity: { text: '正在读取资料《示例资料》', startedAt: Date.now(), sub: [] },
   run: { id: 'run-smoke', status: 'running' },
 });
 actions.handleEvent({
@@ -661,7 +661,7 @@ actions.handleEvent({
 });
 try {
   const html = renderToString(<App />);
-  if (html.includes('助手运行中') || html.includes('助手正在整理下一步') || store.get().activity) {
+  if (html.includes('助手运行中') || html.includes('正在读取资料《示例资料》') || store.get().activity) {
     throw new Error('等待确认时仍显示助手运行活动');
   }
   if (!html.includes('退回调整')) throw new Error('确认卡缺少退回调整入口');
@@ -1013,24 +1013,55 @@ try {
   console.log('✓ 主流程不暴露运行时实现');
 } catch (e) { console.log('✗ 主流程实现隔离:', e.message); bad++; }
 
-store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null, drawerOpen: true });
 actions.handleEvent({
   eventType: 'tool', seq: 1, runId: 'run-trace', toolCallId: 'call-read',
+  traceGroupId: 'paged:read_document:fixture',
   name: 'read_document', phase: 'started', summary: '正在读取资料', createdAt: '2026-01-01T00:00:00Z',
 });
 actions.handleEvent({
   eventType: 'tool', seq: 2, runId: 'run-trace', toolCallId: 'call-read',
+  traceGroupId: 'paged:read_document:fixture',
   name: 'read_document', phase: 'completed', summary: '资料读取完成', createdAt: '2026-01-01T00:00:01Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 3, runId: 'run-trace', toolCallId: 'call-read-next',
+  traceGroupId: 'paged:read_document:fixture',
+  name: 'read_document', phase: 'started', summary: '正在读取资料', createdAt: '2026-01-01T00:00:02Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 4, runId: 'run-trace', toolCallId: 'call-read-next',
+  traceGroupId: 'paged:read_document:fixture',
+  name: 'read_document', phase: 'completed', summary: '资料读取完成', createdAt: '2026-01-01T00:00:03Z',
 });
 try {
   const [entry] = store.get().trace;
   if (store.get().trace.length !== 1 || entry?.phase !== 'completed'
     || entry?.summary !== '资料读取完成' || !entry?.at.endsWith(':00')
-    || entry?.createdAt !== '2026-01-01T00:00:00Z' || entry?.seq !== 1) {
-    throw new Error('同一工具调用的开始和结束没有合并为一条处理记录');
+    || entry?.createdAt !== '2026-01-01T00:00:00Z' || entry?.seq !== 1
+    || entry?.segmentCount !== 2
+    || !renderToString(<App />).includes('2 个连续分段')) {
+    throw new Error('同一分页动作没有合并为一条处理记录');
   }
-  console.log('✓ 工具开始与结束合并为单条处理记录');
+  console.log('✓ 连续分页读取合并为单条处理记录');
 } catch (e) { console.log('✗ 工具处理记录合并:', e.message); bad++; }
+
+store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0 });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-legacy-trace', toolCallId: 'legacy-page-1',
+  name: 'read_document', phase: 'completed', summary: '正在读取资料《历史资料》', createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-legacy-trace', toolCallId: 'legacy-page-2',
+  name: 'read_document', phase: 'completed', summary: '正在读取资料《历史资料》', createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const [entry] = store.get().trace;
+  if (store.get().trace.length !== 1 || entry?.segmentCount !== 2) {
+    throw new Error('旧分页轨迹回放后仍逐页重复展示');
+  }
+  console.log('✓ 历史分页轨迹按资料聚合');
+} catch (e) { console.log('✗ 历史分页轨迹聚合:', e.message); bad++; }
 
 try {
   const awaiting = {

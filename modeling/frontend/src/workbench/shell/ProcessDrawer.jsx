@@ -107,7 +107,7 @@ export default function ProcessDrawer({ onClose }) {
                         <span className="wb-trace-actor">{item.actor || '助手'}</span>
                         <span className={`wb-trace-status is-${status.tone}`}>{status.label}</span>
                       </div>
-                      <div className="wb-trace-summary">{humanizeTraceSummary(item.summary, item.name)}</div>
+                      <div className="wb-trace-summary">{traceSummary(item)}</div>
                     </div>
                   </article>
                 );
@@ -223,4 +223,10 @@ export function humanizeTraceSummary(summary, toolName = '') {
   };
   for (const [internal, label] of Object.entries(gates)) text = text.replaceAll(internal, label);
   return userFacingText(text.replace(/\s*\/\s*(?:running|waiting|suspended|completed|failed)\b/giu, ''));
+}
+
+export function traceSummary(item = {}) {
+  const summary = humanizeTraceSummary(item.summary, item.name);
+  const count = Number(item.segmentCount) || 0;
+  return count > 1 ? `${summary} · ${count} 个连续分段` : summary;
 }

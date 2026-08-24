@@ -177,7 +177,7 @@ def _system_prompt(leader_skill: str, package_contract: dict[str, Any]) -> str:
 
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:
     material_tools = build_core_tools(context, {
-        "list_documents", "read_document", "search_documents",
+        "list_documents", "read_document", "read_documents_fully", "search_documents",
         "list_tables", "describe_table", "read_table_rows",
     })
     package_read_names = {

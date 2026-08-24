@@ -15,6 +15,7 @@ from modeling_agent.rails import (
     ReleaseConfirmationRail,
     claims_confirmation_card,
     requests_user_input,
+    tool_trace_group_id,
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import RUN_RUNNING, RunRecord
@@ -50,6 +51,16 @@ async def test_model_uses_stream_specific_timeouts(settings) -> None:
 
     assert model.model_client_config.stream_first_chunk_timeout == 120.0
     assert model.model_client_config.stream_idle_timeout == 60.0
+
+
+async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() -> None:
+    first = tool_trace_group_id("read_document", {"filename": "a.docx", "offset": 0, "limit": 20_000})
+    second = tool_trace_group_id("read_document", {"filename": "a.docx", "offset": 20_000, "limit": 20_000})
+    other = tool_trace_group_id("read_document", {"filename": "b.docx", "offset": 0, "limit": 20_000})
+
+    assert first == second
+    assert first != other
+    assert tool_trace_group_id("read_file", {"path": "rules/example.md"}) == ""
 
 
 async def test_held_text_is_flushed_when_required_tool_finishes_at_stream_boundary(settings) -> None:

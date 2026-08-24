@@ -849,7 +849,15 @@ export const actions = {
 export function mergeToolTrace(trace, event, seq) {
   const toolCallId = String(event.toolCallId || '');
   const createdAt = event.createdAt || new Date().toISOString();
-  const id = toolCallId
+  const legacySubject = event.name === 'read_document'
+    ? String(event.summary || '').match(/《([^》]+)》/u)?.[1] || ''
+    : '';
+  const traceGroupId = String(event.traceGroupId || (
+    legacySubject ? `legacy:${event.name}:${legacySubject}` : ''
+  ));
+  const id = traceGroupId
+    ? `tool-group:${event.runId || ''}:${traceGroupId}`
+    : toolCallId
     ? `tool:${event.runId || ''}:${toolCallId}`
     : seq || `${Date.now()}-${event.name}`;
   const entry = {
@@ -868,8 +876,10 @@ export function mergeToolTrace(trace, event, seq) {
     repairAttempt: event.repairAttempt ?? null,
     repairRoundId: event.repairRoundId || '',
     findingCount: Number(event.findingCount) || 0,
+    segmentCount: 1,
+    toolCallIds: toolCallId ? [toolCallId] : [],
   };
-  if (!toolCallId) return [...trace, entry].slice(-300);
+  if (!toolCallId && !traceGroupId) return [...trace, entry].slice(-300);
   const index = trace.findIndex((item) => item.id === id);
   if (index < 0) {
     const legacyIndex = legacyRejectedTraceIndex(trace, event, seq, createdAt);
@@ -886,12 +896,18 @@ export function mergeToolTrace(trace, event, seq) {
     return merged.slice(-300);
   }
   const merged = [...trace];
+  const previousCallIds = merged[index].toolCallIds || [];
+  const nextCallIds = toolCallId && !previousCallIds.includes(toolCallId)
+    ? [...previousCallIds, toolCallId]
+    : previousCallIds;
   merged[index] = {
     ...merged[index],
     ...entry,
     seq: merged[index].seq || entry.seq,
     createdAt: merged[index].createdAt || entry.createdAt,
     at: merged[index].at || entry.at,
+    segmentCount: Math.max(1, nextCallIds.length || merged[index].segmentCount || 1),
+    toolCallIds: nextCallIds,
   };
   return merged.slice(-300);
 }
