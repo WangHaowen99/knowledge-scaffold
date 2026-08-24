@@ -45,6 +45,45 @@
 }
 .wb-head b { color: var(--c-ink-2); font-weight: 600; }
 
+/* ---------- 过程抽屉：最新记录在上方的紧凑时间轴 ---------- */
+.wb-trace-list { padding: var(--s-2) var(--s-5) 0; background: var(--c-surface); }
+.wb-trace-item {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: var(--s-3);
+  position: relative; min-height: 62px; padding: var(--s-4) var(--s-3);
+  border-bottom: 1px solid var(--c-line-soft); transition: background var(--e-fast);
+}
+.wb-trace-item:hover { background: var(--c-surface-2); }
+.wb-trace-item:last-child { border-bottom: 0; }
+.wb-trace-rail { position: relative; display: flex; justify-content: center; padding-top: 5px; }
+.wb-trace-rail::after {
+  content: ''; position: absolute; top: 17px; bottom: calc(var(--s-4) * -1 - 1px);
+  width: 1px; background: var(--c-line);
+}
+.wb-trace-item:last-child .wb-trace-rail::after { display: none; }
+.wb-trace-rail i {
+  position: relative; z-index: 1; width: 9px; height: 9px; border: 2px solid var(--c-surface);
+  border-radius: 50%; background: var(--c-faint); box-shadow: 0 0 0 1px var(--c-line);
+}
+.wb-trace-item.is-active .wb-trace-rail i { background: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-bg); animation: wb-pulse 1.5s ease-in-out infinite; }
+.wb-trace-item.is-done .wb-trace-rail i { background: var(--c-ok); box-shadow: 0 0 0 1px var(--c-ok-line); }
+.wb-trace-item.is-waiting .wb-trace-rail i { background: var(--c-wait); box-shadow: 0 0 0 2px var(--c-wait-bg); }
+.wb-trace-item.is-failed .wb-trace-rail i { background: var(--c-stale); box-shadow: 0 0 0 2px var(--c-stale-bg); }
+.wb-trace-content { min-width: 0; }
+.wb-trace-meta { display: flex; align-items: center; gap: var(--s-3); min-width: 0; }
+.wb-trace-meta time { flex: none; color: var(--c-muted); font-family: var(--font-mono); font-size: var(--t-sm); }
+.wb-trace-actor { min-width: 0; overflow: hidden; color: var(--c-agent); font-size: var(--t-sm); text-overflow: ellipsis; white-space: nowrap; }
+.wb-trace-status {
+  flex: none; margin-left: auto; padding: 1px 7px; border-radius: var(--r-full);
+  background: var(--c-surface-3); color: var(--c-muted); font-size: var(--t-xs); white-space: nowrap;
+}
+.wb-trace-status.is-active { background: var(--c-accent-bg); color: var(--c-accent); }
+.wb-trace-status.is-done { background: var(--c-ok-bg); color: var(--c-ok); }
+.wb-trace-status.is-waiting { background: var(--c-wait-bg); color: var(--c-wait); }
+.wb-trace-status.is-failed { background: var(--c-stale-bg); color: var(--c-stale); }
+.wb-trace-summary { margin-top: var(--s-1); color: var(--c-ink-2); font-size: var(--t-md); line-height: 1.6; overflow-wrap: anywhere; }
+.wb-trace-empty { padding: 56px var(--s-5); color: var(--c-faint); text-align: center; }
+.wb-trace-note { padding: var(--s-4) var(--s-6) var(--s-6); border-top: 1px solid var(--c-line-soft); color: var(--c-muted); font-size: var(--t-sm); line-height: 1.7; }
+
 /* ---------- 左栏：树 ---------- */
 .wb-tree { padding: var(--s-2) 0 var(--s-7); font-size: var(--t-md); }
 .wb-tree .grp {

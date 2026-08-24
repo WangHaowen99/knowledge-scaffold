@@ -26,7 +26,7 @@ import {
   SCENES,
   studioFocusFromLocation,
 } from './lib/appStore.js';
-import { humanizeTraceSummary, restoredVersionMessage } from './shell/ProcessDrawer.jsx';
+import { humanizeTraceSummary, newestTraceFirst, restoredVersionMessage } from './shell/ProcessDrawer.jsx';
 import { userFacingText } from './lib/userFacingText.js';
 import {
   evidenceLabel,
@@ -937,10 +937,15 @@ store.set({
   focus: { kind: 'empty', target: '' },
   messages: [],
   drawerOpen: true,
-  trace: [{ at: '08:10', name: 'get_project_state', phase: 'completed', summary: '当前项目状态：评测 / running' }],
+  trace: [
+    { id: 21, seq: 21, createdAt: '2026-08-24T08:10:00Z', at: '16:10:00', name: 'get_project_state', phase: 'completed', summary: '当前项目状态：评测 / running' },
+    { id: 23, seq: 23, createdAt: '2026-08-24T08:11:00Z', at: '16:11:00', name: 'transition_project_state', phase: 'completed', summary: '最新轨迹记录' },
+    { id: 22, seq: 22, createdAt: '2026-08-24T08:11:00Z', at: '16:11:00', name: 'update_plan', phase: 'completed', summary: '同秒较早记录' },
+  ],
 });
 try {
   const html = renderToString(<App />);
+  const orderedTrace = newestTraceFirst(store.get().trace);
   const message = restoredVersionMessage('1.0.0', {});
   const leakedText = "评测轮次 rd_64bea577-467，基于修订 588743e；request_release；evaluation:running；评测库查询失败：Unknown database 'mv_shadow_pj_796c0f3e_156'；结果 5/5，版本 v1.0.0。";
   const agentText = userFacingText(leakedText);
@@ -961,6 +966,12 @@ try {
     || humanizeTraceSummary('处理完成', 'read_document') !== '当前步骤已完成'
     || !html.includes('当前阶段：评测')) {
     throw new Error('历史过程摘要没有翻译成业务语言');
+  }
+  if (orderedTrace.map((item) => item.seq).join(',') !== '23,22,21'
+    || !html.includes('最新轨迹记录') || !html.includes('同秒较早记录')
+    || html.indexOf('最新轨迹记录') > html.indexOf('同秒较早记录')
+    || html.indexOf('同秒较早记录') > html.indexOf('当前阶段：评测')) {
+    throw new Error('运行轨迹没有按生成时间和事件序号倒序展示');
   }
   if (/rd_64bea577|588743e|request_release|evaluation:running|mv_shadow_pj|Unknown database/.test(agentText + agentHtml)
     || !agentText.includes('本次评测') || !agentText.includes('当前版本') || !agentHtml.includes('本次评测')
@@ -993,7 +1004,8 @@ actions.handleEvent({
 try {
   const [entry] = store.get().trace;
   if (store.get().trace.length !== 1 || entry?.phase !== 'completed'
-    || entry?.summary !== '资料读取完成' || !entry?.at.endsWith(':00')) {
+    || entry?.summary !== '资料读取完成' || !entry?.at.endsWith(':00')
+    || entry?.createdAt !== '2026-01-01T00:00:00Z' || entry?.seq !== 1) {
     throw new Error('同一工具调用的开始和结束没有合并为一条处理记录');
   }
   console.log('✓ 工具开始与结束合并为单条处理记录');

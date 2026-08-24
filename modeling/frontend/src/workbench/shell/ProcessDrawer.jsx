@@ -8,16 +8,16 @@ import { normalizeVersion, versionTitle } from '../../revision-state.js';
 import { userFacingText } from '../lib/userFacingText.js';
 
 const TRACE = [
-  ['14:01:07', '助手', '正在核对当前进展', '完成'],
-  ['14:01:08', '助手', '已找到 6 份项目资料', '完成'],
-  ['14:01:09', '助手', '3 份资料正在并行分析', '进行中'],
-  ['14:01:22', '资料分析', '找到 14 段与安全库存相关的内容', '完成'],
-  ['14:01:31', '资料分析', '已读到《作业手册》的相关章节', '完成'],
-  ['14:01:44', '资料分析', '已核对库存明细的字段与样例', '完成'],
-  ['14:02:35', '助手', '3 份资料分析完成，正在汇总', '完成'],
-  ['14:02:40', '助手', '已形成采购申请流程草案', '完成'],
-  ['14:02:41', '助手', '找到 3 处相关知识引用', '完成'],
-  ['14:03:02', '助手', '需要确认 D2 的可用量口径', '等待决定'],
+  { id: 1, createdAt: '2026-01-01T14:01:07', at: '14:01:07', actor: '助手', summary: '正在核对当前进展', phase: 'completed' },
+  { id: 2, createdAt: '2026-01-01T14:01:08', at: '14:01:08', actor: '助手', summary: '已找到 6 份项目资料', phase: 'completed' },
+  { id: 3, createdAt: '2026-01-01T14:01:09', at: '14:01:09', actor: '助手', summary: '3 份资料正在并行分析', phase: 'started' },
+  { id: 4, createdAt: '2026-01-01T14:01:22', at: '14:01:22', actor: '资料分析', summary: '找到 14 段与安全库存相关的内容', phase: 'completed' },
+  { id: 5, createdAt: '2026-01-01T14:01:31', at: '14:01:31', actor: '资料分析', summary: '已读到《作业手册》的相关章节', phase: 'completed' },
+  { id: 6, createdAt: '2026-01-01T14:01:44', at: '14:01:44', actor: '资料分析', summary: '已核对库存明细的字段与样例', phase: 'completed' },
+  { id: 7, createdAt: '2026-01-01T14:02:35', at: '14:02:35', actor: '助手', summary: '3 份资料分析完成，正在汇总', phase: 'completed' },
+  { id: 8, createdAt: '2026-01-01T14:02:40', at: '14:02:40', actor: '助手', summary: '已形成采购申请流程草案', phase: 'completed' },
+  { id: 9, createdAt: '2026-01-01T14:02:41', at: '14:02:41', actor: '助手', summary: '找到 3 处相关知识引用', phase: 'completed' },
+  { id: 10, createdAt: '2026-01-01T14:03:02', at: '14:03:02', actor: '助手', summary: '需要确认 D2 的可用量口径', phase: 'waiting' },
 ];
 
 /* 可审计 ≠ 常驻界面。工具轨迹、子 agent、检查点全部收进抽屉。 */
@@ -34,6 +34,7 @@ export default function ProcessDrawer({ onClose }) {
   const [loadingDiff, setLoadingDiff] = useState(false);
   const [versionError, setVersionError] = useState('');
   const canCancel = !demo && ['queued', 'running', 'suspended'].includes(run?.status);
+  const traceRows = newestTraceFirst(demo ? TRACE : trace);
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -93,19 +94,27 @@ export default function ProcessDrawer({ onClose }) {
         </div>
         <div className="wb-scroll" style={{ background: 'var(--c-surface)' }}>
           {tab === 'trace' ? <>
-            <table className="grid" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)' }}>
-              <tbody>
-                {(demo ? TRACE : trace.map((item) => [item.at, '助手', humanizeTraceSummary(item.summary, item.name), phaseLabel(item.phase)])).map((r, i) => (
-                  <tr key={i} style={r[3].startsWith('等待') ? { background: 'var(--c-wait-bg)' } : undefined}>
-                    <td className="faint" style={{ width: 66 }}>{r[0]}</td>
-                    <td style={{ width: 108, color: 'var(--c-agent)' }}>{r[1]}</td>
-                    <td className="ellip">{r[2]}</td>
-                    <td className="muted" style={{ width: 96, textAlign: 'right' }}>{r[3]}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="t-sm muted" style={{ padding: 'var(--s-5)' }}>
+            <div className="wb-trace-list" role="list" aria-label="运行轨迹，最新记录在前">
+              {traceRows.map((item, index) => {
+                const status = phasePresentation(item.phase);
+                return (
+                  <article className={`wb-trace-item is-${status.tone}`} role="listitem"
+                    key={item.id ?? `${item.createdAt || item.at}-${index}`}>
+                    <div className="wb-trace-rail" aria-hidden="true"><i /></div>
+                    <div className="wb-trace-content">
+                      <div className="wb-trace-meta">
+                        <time dateTime={item.createdAt || undefined}>{item.at || formatTraceTime(item.createdAt)}</time>
+                        <span className="wb-trace-actor">{item.actor || '助手'}</span>
+                        <span className={`wb-trace-status is-${status.tone}`}>{status.label}</span>
+                      </div>
+                      <div className="wb-trace-summary">{humanizeTraceSummary(item.summary, item.name)}</div>
+                    </div>
+                  </article>
+                );
+              })}
+              {!traceRows.length && <div className="wb-trace-empty">暂无处理记录</div>}
+            </div>
+            <div className="wb-trace-note">
               服务重启后会从最近保存点继续，不重复已经完成的步骤。
               思考过程已过滤内部配置、密钥、工具参数和完整资料正文。
             </div>
@@ -138,8 +147,45 @@ const S = {
     borderLeft: '1px solid var(--c-line)', boxShadow: 'var(--sh-3)', display: 'flex', flexDirection: 'column' },
 };
 
-function phaseLabel(phase) {
-  return ({ started: '进行中', completed: '完成', failed: '失败', rejected: '未执行' })[phase] || '已记录';
+function phasePresentation(phase) {
+  return ({
+    started: { label: '进行中', tone: 'active' },
+    completed: { label: '已完成', tone: 'done' },
+    failed: { label: '失败', tone: 'failed' },
+    rejected: { label: '未执行', tone: 'muted' },
+    waiting: { label: '等待决定', tone: 'waiting' },
+  })[phase] || { label: '已记录', tone: 'muted' };
+}
+
+export function newestTraceFirst(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftTime = traceTimestamp(left.item);
+      const rightTime = traceTimestamp(right.item);
+      if (leftTime !== rightTime) return rightTime - leftTime;
+      const leftSeq = Number(left.item?.seq ?? left.item?.id);
+      const rightSeq = Number(right.item?.seq ?? right.item?.id);
+      if (Number.isFinite(leftSeq) && Number.isFinite(rightSeq) && leftSeq !== rightSeq) return rightSeq - leftSeq;
+      return right.index - left.index;
+    })
+    .map(({ item }) => item);
+}
+
+function traceTimestamp(item) {
+  const createdAt = Date.parse(String(item?.createdAt || ''));
+  if (Number.isFinite(createdAt)) return createdAt;
+  const parts = String(item?.at || '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/u);
+  if (!parts) return Number.NEGATIVE_INFINITY;
+  return Number(parts[1]) * 3_600 + Number(parts[2]) * 60 + Number(parts[3] || 0);
+}
+
+function formatTraceTime(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return '';
+  return [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map((part) => String(part).padStart(2, '0'))
+    .join(':');
 }
 
 export function restoredVersionMessage(packageVersion, target) {

@@ -82,7 +82,7 @@ export const downloadMaterial = downloadDocument;
 export const downloadPackage = async (id) => requireOkResponse(await authFetch(exportPackageUrl(id)));
 export const createModelingProject = (input) => createProject({ ...input, runtime: 'agent' });
 
-export function subscribeAgent(id, { after = 0, onEvent, onError } = {}) {
+export function subscribeAgent(id, { after = 0, onEvent } = {}) {
   let stopped = false;
   let cursor = Math.max(0, Number(after) || 0);
   let controller = null;
@@ -114,9 +114,9 @@ export function subscribeAgent(id, { after = 0, onEvent, onError } = {}) {
         }
       }
       if (!stopped) throw new Error('助手事件流已断开');
-    } catch (error) {
+    } catch {
       if (stopped || active.signal.aborted) return;
-      onError?.(error);
+      // 事件日志可按 cursor 续传，短暂断线只需在这里重试，不能冒充内容读取失败。
       const delay = Math.min(15_000, 1_000 * (2 ** Math.min(failures++, 4)));
       reconnect = setTimeout(connect, delay);
     } finally {

@@ -293,7 +293,8 @@ export const actions = {
       store.set({ activity: progressActivity(event, store.get().activity) });
     }
     if (eventType === 'tool') {
-      const line = `${timeOf(event.createdAt)} · ${event.summary || '处理完成'}`;
+      const createdAt = event.createdAt || new Date().toISOString();
+      const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
       const activity = replaying ? null : store.get().activity;
       store.set((state) => ({
         activity: activity ? { ...activity, sub: [line, ...(activity.sub || [])].slice(0, 8) } : activity,
@@ -847,12 +848,15 @@ export const actions = {
 
 function mergeToolTrace(trace, event, seq) {
   const toolCallId = String(event.toolCallId || '');
+  const createdAt = event.createdAt || new Date().toISOString();
   const id = toolCallId
     ? `tool:${event.runId || ''}:${toolCallId}`
     : seq || `${Date.now()}-${event.name}`;
   const entry = {
     id,
-    at: timeOf(event.createdAt),
+    seq,
+    createdAt,
+    at: timeOf(createdAt),
     name: event.name,
     phase: event.phase,
     summary: event.summary,
@@ -864,6 +868,8 @@ function mergeToolTrace(trace, event, seq) {
   merged[index] = {
     ...merged[index],
     ...entry,
+    seq: merged[index].seq || entry.seq,
+    createdAt: merged[index].createdAt || entry.createdAt,
     at: merged[index].at || entry.at,
   };
   return merged.slice(-300);

@@ -45,9 +45,9 @@ function Workbench() {
         void actions.send(`请开始为“${snapshot.project.name}”建模。先完整读取已上传资料，主动确认目标并持续推进下一步。`);
       }
       if (!stopped) {
+        // 事件流会携带游标自动重连；瞬时断线不属于内容读取失败。
         unsubscribe = subscribeAgent(projectId, {
           onEvent: actions.handleEvent,
-          onError: (error) => store.set({ error: error instanceof Error ? error.message : '助手连接中断，正在重连' }),
         });
       }
     }).catch(() => undefined);
