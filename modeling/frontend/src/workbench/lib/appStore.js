@@ -855,6 +855,8 @@ export function mergeToolTrace(trace, event, seq) {
   const entry = {
     id,
     seq,
+    runId: event.runId || '',
+    toolCallId,
     createdAt,
     at: timeOf(createdAt),
     name: event.name,
@@ -869,7 +871,20 @@ export function mergeToolTrace(trace, event, seq) {
   };
   if (!toolCallId) return [...trace, entry].slice(-300);
   const index = trace.findIndex((item) => item.id === id);
-  if (index < 0) return [...trace, entry].slice(-300);
+  if (index < 0) {
+    const legacyIndex = legacyRejectedTraceIndex(trace, event, seq, createdAt);
+    if (legacyIndex < 0) return [...trace, entry].slice(-300);
+    const merged = [...trace];
+    merged[legacyIndex] = {
+      ...merged[legacyIndex],
+      ...entry,
+      phase: 'rejected',
+      seq: merged[legacyIndex].seq || entry.seq,
+      createdAt: merged[legacyIndex].createdAt || entry.createdAt,
+      at: merged[legacyIndex].at || entry.at,
+    };
+    return merged.slice(-300);
+  }
   const merged = [...trace];
   merged[index] = {
     ...merged[index],
@@ -879,6 +894,22 @@ export function mergeToolTrace(trace, event, seq) {
     at: merged[index].at || entry.at,
   };
   return merged.slice(-300);
+}
+
+function legacyRejectedTraceIndex(trace, event, seq, createdAt) {
+  if (event.phase !== 'failed' || !event.toolCallId || !event.runId || !seq) return -1;
+  const eventTime = Date.parse(createdAt);
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const item = trace[index];
+    if (item.phase !== 'rejected' || item.toolCallId) continue;
+    if (item.runId !== event.runId || item.name !== event.name || item.summary !== event.summary) continue;
+    if (Number(seq) - Number(item.seq) !== 1) continue;
+    const itemTime = Date.parse(String(item.createdAt || ''));
+    const elapsed = eventTime - itemTime;
+    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 2_000) continue;
+    return index;
+  }
+  return -1;
 }
 
 function projectFromUrl() {

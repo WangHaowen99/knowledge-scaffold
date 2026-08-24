@@ -60,3 +60,37 @@ test('最终停止覆盖同一调用且前端提供修正中与阻塞标签', ()
   assert.match(drawerSource, /repairing:\s*\{ label: '自动修正中'/u);
   assert.match(drawerSource, /blocked:\s*\{ label: '需要处理'/u);
 });
+
+test('历史 Rail 拒绝与紧邻的失败终态合并为一条未执行记录', () => {
+  const rejected = mergeToolTrace([], {
+    runId: 'run-old',
+    name: 'write_file',
+    phase: 'rejected',
+    summary: '候选自动修正已停止，需要检查校验明细',
+    createdAt: '2026-08-24T12:47:06.104Z',
+  }, 2951);
+
+  const merged = mergeToolTrace(rejected, {
+    runId: 'run-old',
+    toolCallId: 'call-old-write',
+    name: 'write_file',
+    phase: 'failed',
+    summary: '候选自动修正已停止，需要检查校验明细',
+    createdAt: '2026-08-24T12:47:06.105Z',
+  }, 2952);
+  const nonAdjacent = mergeToolTrace(rejected, {
+    runId: 'run-old',
+    toolCallId: 'call-other-write',
+    name: 'write_file',
+    phase: 'failed',
+    summary: '候选自动修正已停止，需要检查校验明细',
+    createdAt: '2026-08-24T12:47:09.105Z',
+  }, 2954);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, 'tool:run-old:call-old-write');
+  assert.equal(merged[0].phase, 'rejected');
+  assert.equal(merged[0].seq, 2951);
+  assert.equal(merged[0].toolCallId, 'call-old-write');
+  assert.equal(nonAdjacent.length, 2);
+});
