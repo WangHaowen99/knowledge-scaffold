@@ -152,6 +152,8 @@ curl -fsS http://127.0.0.1:5100/workbench.html
 | `MODELING_LLM_API_KEY` | 空 | 端点需要鉴权时必填；不会打印到部署日志 |
 | `MODELING_LLM_MAX_TOKENS` | `128000` | 单次模型输出 token 上限；与上下文窗口独立 |
 | `MODELING_LLM_CONTEXT_WINDOW` | `1000000` | 输入+输出总上下文 token 窗口；按所选模型 API 实际上限填写 |
+| `MODELING_AGENT_PIP_INDEX_URL` | 清华 PyPI 镜像 | 构建 modeling-agent 时使用的 Python 包索引；内网可设为企业镜像 |
+| `MODELING_AGENT_PIP_TIMEOUT` / `MODELING_AGENT_PIP_RETRIES` | `120` / `10` | modeling-agent 依赖下载的单次读取超时秒数与重试次数 |
 | `MODELING_TASK_LLM_*` | 空 | 无用户上下文的后台流程部署兜底；认证用户可在配置中心单独配置后台任务模型，留空则使用个人主模型 |
 | `AUTH_ISSUER_URL` | `http://auth-server:5056` | modeling 登录与 JWT 验签的 auth-server 地址 |
 | `CONSUMER_API_URL` | `http://backend:5055` | 评测用 consumer 地址默认值（页面可覆盖） |
@@ -159,6 +161,15 @@ curl -fsS http://127.0.0.1:5100/workbench.html
 | `PORT` / `DATA_DIR` | `5100` / `/data`（卷 `modeling-data`） | 服务端口 / SQLite 数据目录 |
 | compose：`MODELING_PORT` / `MODELING_TAG` | `5100` / `latest` | 宿主端口 / 镜像 tag |
 | compose：`CONSUMER_NETWORK` | `consumer_onto-agent-network` | consumer 网络实际名（脚本自动探测注入） |
+
+源码部署时可在 `consumer/backend/.env` 设置上述 `MODELING_AGENT_PIP_*` 变量。制作发布包时，构建发生在部署之前，应通过 shell 环境变量传入：
+
+```bash
+MODELING_AGENT_PIP_INDEX_URL=https://pypi.example.com/simple \
+MODELING_AGENT_PIP_TIMEOUT=120 \
+MODELING_AGENT_PIP_RETRIES=10 \
+./deploy/build.sh v1.2.0
+```
 
 ### 6.3 auth-server（compose 透传，前缀 `AUTH_`）
 
@@ -209,6 +220,7 @@ docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密�
 | modeling 报「未找到 consumer 网络」 | `docker network ls \| grep onto-agent` | 先 `up --consumer-only`，或手动 `export CONSUMER_NETWORK=<实际网络名>` |
 | modeling 报「未找到 JiuwenBox socket 卷」 | `docker volume ls \| grep onto-jiuwenbox-sock` | 先用根部署脚本启动 consumer/JiuwenBox，或显式设置 `JIUWENBOX_SOCKET_VOLUME` |
 | modeling-agent 报模型未配置 | `./deploy/deploy-stack.sh logs modeling-agent` | 在 `consumer/backend/.env` 填写真实的 `MODELING_LLM_BASE_URL` 与 `MODELING_LLM_MODEL` 后重跑根部署脚本 |
+| 构建 modeling-agent 时访问 `files.pythonhosted.org` 超时 | 查看 Docker 构建日志中的 `ReadTimeoutError` | 更新到包含镜像配置的版本后重跑；企业网络可在 `backend/.env` 设置 `MODELING_AGENT_PIP_INDEX_URL=<内网 PyPI simple 地址>` |
 | 建模工作台登录 401 | `docker exec mw-modeling node -e "fetch('http://backend:5055/health').then(r=>console.log(r.status))"` | 预期打印 200；不通说明不在同一网络——用脚本重新 `up`；账号密码须是 consumer 的有效账号 |
 | 建模评测报连不上 consumer | 建模页面 配置中心 → consumer 服务 → 测试连接 | 「模型就绪」红：先在 consumer 控制台配模型池；「认证」红：token 过期，重新登录 |
 | 查询类评测用例全失败 | 确认 `--with-eval` 已启用 + NL2SQL 桥接已启动（3.2 节） | 在 consumer 控制台该影子工作区配置数据连接指向 NL2SQL 服务 |

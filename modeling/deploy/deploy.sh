@@ -58,7 +58,9 @@ load_modeling_env() {
     for file in "$@"; do
         for key in MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY \
                    MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
-                   MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS; do
+                   MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS \
+                   MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
+                   MODELING_AGENT_PIP_RETRIES; do
             load_env_if_unset "${file}" "${key}"
         done
     done

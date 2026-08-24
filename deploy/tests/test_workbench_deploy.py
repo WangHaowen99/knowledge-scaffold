@@ -109,6 +109,46 @@ def test_workbench_agent_is_built_and_described_in_release_manifests() -> None:
         ) in script
 
 
+def test_modeling_agent_pip_download_is_resilient_and_configurable() -> None:
+    dockerfile = (MODELING_ROOT / "modeling-agent" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    compose = (DEPLOY_ROOT / "docker-compose.modeling.yml").read_text(
+        encoding="utf-8"
+    )
+    build = (MODELING_ROOT / "build.sh").read_text(encoding="utf-8")
+    root_deploy = (DEPLOY_ROOT / "deploy-stack.sh").read_text(encoding="utf-8")
+    modeling_deploy = (MODELING_ROOT / "deploy" / "deploy.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert dockerfile.count(
+        "ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
+    ) == 2
+    assert dockerfile.count("ARG PIP_DEFAULT_TIMEOUT=120") == 2
+    assert dockerfile.count("ARG PIP_RETRIES=10") == 2
+    assert dockerfile.count('--index-url "${PIP_INDEX_URL}"') == 2
+    assert dockerfile.count('--timeout "${PIP_DEFAULT_TIMEOUT}"') == 2
+    assert dockerfile.count('--retries "${PIP_RETRIES}"') == 2
+
+    assert "PIP_INDEX_URL: ${MODELING_AGENT_PIP_INDEX_URL:-" in compose
+    assert "PIP_DEFAULT_TIMEOUT: ${MODELING_AGENT_PIP_TIMEOUT:-120}" in compose
+    assert "PIP_RETRIES: ${MODELING_AGENT_PIP_RETRIES:-10}" in compose
+    for argument, value in (
+        ("PIP_INDEX_URL", "AGENT_PIP_INDEX_URL"),
+        ("PIP_DEFAULT_TIMEOUT", "AGENT_PIP_TIMEOUT"),
+        ("PIP_RETRIES", "AGENT_PIP_RETRIES"),
+    ):
+        assert f'--build-arg "{argument}=${{{value}}}"' in build
+    for script in (root_deploy, modeling_deploy):
+        for variable in (
+            "MODELING_AGENT_PIP_INDEX_URL",
+            "MODELING_AGENT_PIP_TIMEOUT",
+            "MODELING_AGENT_PIP_RETRIES",
+        ):
+            assert variable in script
+
+
 def test_modeling_release_package_contains_core_and_agent_images(tmp_path: Path) -> None:
     modeling_root = tmp_path / "modeling"
     fake_bin = tmp_path / "bin"

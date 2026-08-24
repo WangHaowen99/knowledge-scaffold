@@ -91,6 +91,10 @@ services:
       context: ../modeling/modeling-agent
       dockerfile: Dockerfile
       target: runtime
+      args:
+        PIP_INDEX_URL: ${MODELING_AGENT_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_DEFAULT_TIMEOUT: ${MODELING_AGENT_PIP_TIMEOUT:-120}
+        PIP_RETRIES: ${MODELING_AGENT_PIP_RETRIES:-10}
     image: mw-modeling-agent:${MODELING_TAG:-latest}
     container_name: mw-modeling-agent
     restart: unless-stopped
