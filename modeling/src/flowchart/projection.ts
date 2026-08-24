@@ -76,7 +76,8 @@ function markdownLinkText(value: string): string {
 
 function renderMermaid(diagram: FlowchartDiagram): string {
   const nodeIds = new Map(diagram.nodes.map((node) => [node.id, mermaidNodeId(node.id)]));
-  const lines = ['flowchart TD'];
+  const direction = diagram.layout?.direction === 'TB' ? 'TD' : diagram.layout?.direction ?? 'TD';
+  const lines = [`flowchart ${direction}`];
   for (const node of diagram.nodes) {
     const id = nodeIds.get(node.id)!;
     const label = mermaidText(node.label || '未命名节点');

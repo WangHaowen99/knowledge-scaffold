@@ -103,6 +103,7 @@ export function reduceFlowchartEditorSession(session, action) {
     if (session.dirty && !action.force) return session;
     const replacement = createFlowchartEditorSession(action.document, {
       savedRevision: action.savedRevision ?? session.savedRevision,
+      activeDiagramId: action.activeDiagramId || session.activeDiagramId,
     });
     if (documentsEqual(replacement.document, session.document)
       && replacement.savedRevision === session.savedRevision) return session;

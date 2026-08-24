@@ -3,6 +3,7 @@
 // 点击 .mmd 时读结构化源文档交给流程图编辑器，而不是解析 mermaid 文本。
 const PROCESS_MMD_PATTERN = /^diagrams\/process_(\d+)\.mmd$/u;
 const DIAGRAM_MMD_PATTERN = /^diagrams\/[^/]+\.mmd$/u;
+const UNSAFE_DIAGRAM_FILENAME_CHARS = /[<>:"/\\|?*#&%()\uFF08\uFF09\u0000-\u001f\u007f]/gu;
 
 export const DIAGRAM_DOCUMENT_PATH = 'diagrams/processes.json';
 
@@ -51,7 +52,8 @@ export function resolveDiagramTarget({ path, files, documentContent }) {
   const document = parseDiagramDocument(documentContent);
   if (!document) return null;
   const namedIndex = document.diagrams.findIndex((diagram) => (
-    `diagrams/${String(diagram?.title ?? '').normalize('NFC').trim()}.mmd` === path
+    diagramPathForTitle(diagram?.title) === path
+      || legacyDiagramPathForTitle(diagram?.title) === path
   ));
   const index = namedIndex >= 0 ? namedIndex : diagramIndexFromPath(path);
   if (index === null) return null;
@@ -59,4 +61,19 @@ export function resolveDiagramTarget({ path, files, documentContent }) {
   // .mmd 存在但无法关联到源文档中的流程图，交回原文视图，避免错误回写。
   if (!activeDiagramId) return null;
   return { index, document, activeDiagramId };
+}
+
+// 与后端 file-path.ts 保持同一套规则：标题原文可含特殊字符，派生 mmd 文件名不可含。
+function diagramPathForTitle(value) {
+  const stem = String(value ?? '').normalize('NFC').trim()
+    .replace(UNSAFE_DIAGRAM_FILENAME_CHARS, '_')
+    .replace(/_+/gu, '_')
+    .replace(/[ ._]+$/gu, '')
+    .replace(/^[ ._]+/gu, '');
+  return stem ? `diagrams/${stem}.mmd` : '';
+}
+
+function legacyDiagramPathForTitle(value) {
+  const title = String(value ?? '').normalize('NFC').trim();
+  return title ? `diagrams/${title}.mmd` : '';
 }

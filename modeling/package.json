@@ -21,6 +21,7 @@
     "e2e:browser": "tsx scripts/browser-journey.ts",
     "check:anti-overfit": "tsx scripts/anti-overfit-guard.ts",
     "check:llm": "tsx --env-file=.env scripts/check-llm.ts",
+    "repair:history": "tsx scripts/package-repair-history-migration.ts",
     "smoke:real": "tsx --env-file=.env scripts/smoke-real.ts"
   },
   "dependencies": {

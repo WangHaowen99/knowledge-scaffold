@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS projects (
   owner         TEXT NOT NULL,
   kind          TEXT NOT NULL DEFAULT 'modeling'
                 CHECK (kind IN ('modeling', 'package')),
+  runtime       TEXT NOT NULL DEFAULT 'legacy'
+                CHECK (runtime IN ('legacy', 'agent')),
   name          TEXT NOT NULL,
   domain        TEXT NOT NULL DEFAULT '',
   background    TEXT NOT NULL DEFAULT '',
@@ -15,6 +17,19 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  username      TEXT NOT NULL,
+  role          TEXT NOT NULL CHECK (role IN ('viewer', 'modeler')),
+  added_by      TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (project_id, username)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_members_username
+  ON project_members(username, updated_at DESC);
 
 -- 唯一的可恢复建模任务图。由项目创建或会话推进入口显式初始化。
 CREATE TABLE IF NOT EXISTS ai_construction_graphs (
@@ -96,6 +111,8 @@ CREATE TABLE IF NOT EXISTS ai_construction_confirmations (
                           'project_owner', 'modeler', 'domain_expert', 'validator'
                         )),
   note                  TEXT,
+  invalidated_at        TEXT,
+  invalidated_by_rollback_id TEXT,
   created_at            TEXT NOT NULL,
   FOREIGN KEY (project_id, milestone_id)
     REFERENCES ai_construction_milestones(project_id, milestone_id) ON DELETE CASCADE,
@@ -103,6 +120,32 @@ CREATE TABLE IF NOT EXISTS ai_construction_confirmations (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_construction_confirmations_project
   ON ai_construction_confirmations(project_id, created_at);
+
+-- 阶段回退需要同时恢复 Git 知识包和 SQLite 任务图。先持久化意图，Git 恢复成功后
+-- 再原子收敛任务图；进程若在两步之间退出，同一个 request_id 可以安全续做。
+CREATE TABLE IF NOT EXISTS ai_construction_milestone_rollbacks (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  request_id            TEXT NOT NULL,
+  target_milestone_id   TEXT NOT NULL,
+  graph_revision_before INTEGER NOT NULL,
+  graph_revision_after  INTEGER,
+  base_package_revision_oid TEXT NOT NULL,
+  current_package_revision_oid TEXT NOT NULL,
+  restored_package_revision_oid TEXT,
+  actor_username        TEXT NOT NULL,
+  reason                TEXT NOT NULL,
+  impact_json           TEXT NOT NULL,
+  response_json         TEXT,
+  status                TEXT NOT NULL DEFAULT 'prepared'
+                        CHECK (status IN ('prepared', 'package_restored', 'completed', 'failed')),
+  error                 TEXT,
+  created_at            TEXT NOT NULL,
+  completed_at          TEXT,
+  UNIQUE (project_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_construction_milestone_rollbacks_project
+  ON ai_construction_milestone_rollbacks(project_id, created_at);
 
 CREATE TABLE IF NOT EXISTS ai_construction_task_adjustments (
   id                    TEXT PRIMARY KEY,
@@ -157,10 +200,16 @@ CREATE TABLE IF NOT EXISTS documents (
   revision_no   INTEGER NOT NULL DEFAULT 1,
   filename      TEXT NOT NULL,
   kind          TEXT NOT NULL,
+  purpose       TEXT NOT NULL DEFAULT 'auto'
+                  CHECK (purpose IN ('auto', 'goal', 'schema', 'evidence')),
+  reading_mode  TEXT NOT NULL DEFAULT 'on_demand'
+                  CHECK (reading_mode IN ('on_demand', 'full')),
+  directive_revision INTEGER NOT NULL DEFAULT 0,
   parse_status  TEXT NOT NULL DEFAULT 'pending',
   parse_error   TEXT,
   text_content  TEXT,
   tables_json   TEXT,               -- DataDictTable[] JSON（excel）
+  raw_content   BLOB,               -- 新上传资料保留原始字节，支持可追溯下载与复用
   content_hash  TEXT NOT NULL DEFAULT '',
   semantic_hash TEXT NOT NULL DEFAULT '',
   lifecycle_status TEXT NOT NULL DEFAULT 'active'
@@ -188,6 +237,19 @@ CREATE TABLE IF NOT EXISTS material_revision_impacts (
 );
 CREATE INDEX IF NOT EXISTS idx_material_revision_impacts_project
   ON material_revision_impacts(project_id, created_at);
+
+-- modeling core 到新 Agent 运行时的可靠事件 outbox。这里只记录上传/解析事实与
+-- 投递状态，不保存业务阶段；project_agent_state 仍是唯一业务状态源。
+CREATE TABLE IF NOT EXISTS agent_project_event_outbox (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  event_type    TEXT NOT NULL CHECK (event_type IN ('material_parse', 'studio_review', 'fusion_review', 'package_import')),
+  payload_json  TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_project_event_outbox_pending
+  ON agent_project_event_outbox(project_id, delivered_at, created_at);
 
 CREATE TABLE IF NOT EXISTS wf_nodes (
   id            TEXT PRIMARY KEY,
@@ -275,6 +337,30 @@ CREATE INDEX IF NOT EXISTS idx_authoring_interactions_run
 CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_interactions_response
   ON authoring_interactions(project_id, response_id)
   WHERE response_id IS NOT NULL;
+
+-- 知识结构生成批次检查点。只记录生成阶段产物，不保存或改写上游资料分析结果。
+-- 同一生成计划恢复时复用已完成批次，避免额度、网络或服务重启后从对象阶段重跑。
+CREATE TABLE IF NOT EXISTS generation_batch_checkpoints (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id        TEXT NOT NULL REFERENCES authoring_runs(id) ON DELETE CASCADE,
+  plan_hash     TEXT NOT NULL,
+  phase         TEXT NOT NULL,
+  batch_kind    TEXT NOT NULL CHECK (batch_kind IN ('object', 'knowledge', 'operation')),
+  batch_index   INTEGER NOT NULL CHECK (batch_index > 0),
+  dependency_hash TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'skipped')),
+  output_json   TEXT NOT NULL DEFAULT '{}',
+  issues_json   TEXT NOT NULL DEFAULT '[]',
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  invalidated_at TEXT,
+  invalidated_reason TEXT,
+  invalidated_by_rollback_id TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (run_id, phase)
+);
+CREATE INDEX IF NOT EXISTS idx_generation_batch_checkpoints_project
+  ON generation_batch_checkpoints(project_id, run_id, batch_index);
 
 -- 可编辑流程草稿。当前修订只保存在头记录中，文档内容按修订不可变保存。
 CREATE TABLE IF NOT EXISTS flowchart_drafts (
@@ -442,6 +528,154 @@ CREATE INDEX IF NOT EXISTS idx_artifact_candidates_project
   ON artifact_candidate_revisions(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifact_candidates_pending
   ON artifact_candidate_revisions(project_id, status, created_at DESC);
+
+-- 新 Agent 运行时的项目级候选工作区。Agent 只在这里累积修改；只有人工确认后
+-- 才通过 artifact_candidate_revisions 写入 Git 事实版本。
+CREATE TABLE IF NOT EXISTS agent_candidate_workspaces (
+  project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  run_id            TEXT NOT NULL,
+  owner             TEXT NOT NULL,
+  base_revision_oid TEXT NOT NULL,
+  candidate_id      TEXT REFERENCES artifact_candidate_revisions(id) ON DELETE SET NULL,
+  lease_expires_at  TEXT NOT NULL,
+  credential_hash   TEXT,
+  credential_expires_at TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_workspace_run
+  ON agent_candidate_workspaces(run_id);
+
+CREATE TABLE IF NOT EXISTS agent_candidate_changes (
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id            TEXT NOT NULL,
+  path              TEXT NOT NULL,
+  kind              TEXT NOT NULL CHECK (kind IN ('write', 'delete')),
+  content           TEXT,
+  group_id          TEXT NOT NULL,
+  evidence_json     TEXT NOT NULL DEFAULT '[]',
+  reason            TEXT,
+  updated_at        TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_changes_group
+  ON agent_candidate_changes(project_id, run_id, group_id);
+
+-- 确定性脚本只有在隔离沙箱对当前源码全量通过后才能进入确认。
+-- source_hash 将测试结果绑定到实际候选内容，避免旧脚本的通过结果授权新脚本。
+CREATE TABLE IF NOT EXISTS agent_script_test_receipts (
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id            TEXT NOT NULL,
+  script_path       TEXT NOT NULL,
+  source_hash       TEXT NOT NULL,
+  total             INTEGER NOT NULL CHECK (total > 0),
+  passed            INTEGER NOT NULL CHECK (passed = total),
+  failed            INTEGER NOT NULL CHECK (failed = 0),
+  sandbox           TEXT NOT NULL CHECK (sandbox = 'jiuwenbox'),
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id, script_path, source_hash)
+);
+
+-- Studio 写接口的幂等回执。这里只保存一次 HTTP 写操作的输入摘要和响应，
+-- 不表达项目阶段或当前业务状态；项目业务状态仍以 project_agent_state 为唯一来源。
+CREATE TABLE IF NOT EXISTS studio_mutation_receipts (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  client_mutation_id  TEXT NOT NULL,
+  request_hash        TEXT NOT NULL,
+  response_json       TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  PRIMARY KEY (project_id, client_mutation_id)
+);
+
+-- artifact candidate 的 groups_json 保持通用格式；工作台所需的分诊层级与影响提示
+-- 单独保存，避免把 Agent UI 语义耦合进底层 Git 仓库。
+CREATE TABLE IF NOT EXISTS agent_candidate_group_metadata (
+  candidate_id      TEXT NOT NULL REFERENCES artifact_candidate_revisions(id) ON DELETE CASCADE,
+  group_id          TEXT NOT NULL,
+  tier              TEXT NOT NULL CHECK (tier IN ('caliber', 'structural', 'index', 'script')),
+  title             TEXT NOT NULL,
+  impact_json       TEXT NOT NULL DEFAULT '[]',
+  warning           TEXT,
+  PRIMARY KEY (candidate_id, group_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_confirmations (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  candidate_id      TEXT NOT NULL REFERENCES artifact_candidate_revisions(id) ON DELETE CASCADE,
+  revision_oid      TEXT NOT NULL,
+  actor_username    TEXT NOT NULL,
+  review_mode       TEXT NOT NULL CHECK (review_mode IN ('full', 'sequential', 'sampled', 'automatic')),
+  selected_groups_json TEXT NOT NULL,
+  sampled_groups_json  TEXT NOT NULL DEFAULT '[]',
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_confirmations_project
+  ON agent_confirmations(project_id, created_at DESC);
+
+-- 融合来源是只读输入事实，不承载项目当前状态；所有实际导入仍进入 Agent 候选工作区。
+CREATE TABLE IF NOT EXISTS agent_package_sources (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  filename          TEXT NOT NULL,
+  package_id        TEXT NOT NULL,
+  package_name      TEXT NOT NULL,
+  package_version   TEXT NOT NULL,
+  spec_json         TEXT NOT NULL,
+  files_json        TEXT NOT NULL,
+  uploaded_by       TEXT NOT NULL,
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_package_sources_project
+  ON agent_package_sources(project_id, created_at DESC);
+
+-- 来源知识包一经上传便按原始字节只读保存。旧的 files_json 继续服务单包 merge，
+-- 批量融合只读取这里的完整归档，避免丢失根文件和二进制资产。
+CREATE TABLE IF NOT EXISTS agent_package_source_archives (
+  source_id         TEXT PRIMARY KEY REFERENCES agent_package_sources(id) ON DELETE CASCADE,
+  fingerprint       TEXT NOT NULL,
+  coverage_json     TEXT NOT NULL,
+  text_files_json   TEXT NOT NULL,
+  warnings_json     TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS agent_package_source_files (
+  source_id         TEXT NOT NULL REFERENCES agent_package_sources(id) ON DELETE CASCADE,
+  path              TEXT NOT NULL,
+  content           BLOB NOT NULL,
+  PRIMARY KEY (source_id, path)
+);
+
+-- 融合计划是一次批量编译的可审计输入。ledger_json 在待裁决时保存逐元素
+-- 去向要求，生成候选后保存编译器给出的最终 fused key 和 provenance。
+CREATE TABLE IF NOT EXISTS agent_package_fusion_plans (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  expected_revision_oid TEXT NOT NULL,
+  source_ids_json       TEXT NOT NULL,
+  plan_json             TEXT NOT NULL,
+  ledger_json           TEXT NOT NULL,
+  quality_json          TEXT,
+  output_digest         TEXT,
+  status                TEXT NOT NULL CHECK (status IN (
+                          'awaiting_decisions', 'ready', 'compiling', 'candidate', 'failed'
+                        )),
+  candidate_id          TEXT REFERENCES artifact_candidate_revisions(id) ON DELETE SET NULL,
+  error                 TEXT,
+  created_by            TEXT NOT NULL,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_package_fusion_plans_project
+  ON agent_package_fusion_plans(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_confirm_policy (
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  tier              TEXT NOT NULL CHECK (tier IN ('structural', 'index')),
+  mode              TEXT NOT NULL CHECK (mode IN ('ask', 'auto')),
+  updated_at        TEXT NOT NULL,
+  PRIMARY KEY (project_id, tier)
+);
 
 -- 人工编辑草稿。Git revision 是事实基线；语义版本字段只用于展示和历史追踪。
 CREATE TABLE IF NOT EXISTS package_drafts (
@@ -621,6 +855,7 @@ CREATE TABLE IF NOT EXISTS eval_rounds (
   current_item_started_at TEXT,
   log           TEXT NOT NULL DEFAULT '',        -- 轮次执行日志（换行分隔）
   artifact_revision_oid TEXT,                    -- 本轮固定使用的 Git 修订
+  evaluation_scope_json TEXT NOT NULL DEFAULT '{"kind":"current"}',
   created_at    TEXT NOT NULL,
   finished_at   TEXT
 );
@@ -771,13 +1006,7 @@ CREATE TABLE IF NOT EXISTS package_check_revisions (
 CREATE INDEX IF NOT EXISTS idx_package_check_revisions_project
   ON package_check_revisions(project_id, created_at DESC);
 
-CREATE TABLE IF NOT EXISTS package_semantic_check_cache (
-  project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  semantic_hash  TEXT NOT NULL,
-  findings_json  TEXT NOT NULL,
-  created_at     TEXT NOT NULL,
-  PRIMARY KEY (project_id, semantic_hash)
-);
+DROP TABLE IF EXISTS package_semantic_check_cache;
 
 -- 受控修复逐次审计。root_revision_oid 把自动重试绑定到同一修订链；
 -- 用户或其他流程产生的新修订不会沿用上一条链的重试额度。
@@ -793,8 +1022,28 @@ CREATE TABLE IF NOT EXISTS package_repair_attempts (
   status               TEXT NOT NULL CHECK (
                          status IN ('running', 'completed', 'waiting_user', 'stopped', 'failed')
                        ),
+  execution_status     TEXT NOT NULL DEFAULT 'pending' CHECK (
+                         execution_status IN (
+                           'pending', 'running', 'waiting_user', 'validating', 'finished', 'failed'
+                         )
+                       ),
+  quality_outcome      TEXT NOT NULL DEFAULT 'unknown_legacy' CHECK (
+                         quality_outcome IN (
+                           'unresolved', 'resolved', 'improved', 'regressed',
+                           'stale', 'rejected', 'unknown_legacy'
+                         )
+                       ),
   findings_before_json TEXT NOT NULL DEFAULT '[]',
   findings_after_json  TEXT NOT NULL DEFAULT '[]',
+  target_fingerprints_json     TEXT NOT NULL DEFAULT '[]',
+  resolved_fingerprints_json   TEXT NOT NULL DEFAULT '[]',
+  introduced_fingerprints_json TEXT NOT NULL DEFAULT '[]',
+  before_blocking_count         INTEGER NOT NULL DEFAULT 0,
+  after_blocking_count          INTEGER,
+  candidate_revision_oid       TEXT,
+  quality_gate_json             TEXT NOT NULL DEFAULT '{}',
+  retry_count                   INTEGER NOT NULL DEFAULT 0,
+  next_action_json              TEXT,
   actions_json         TEXT NOT NULL DEFAULT '[]',
   error                TEXT,
   created_at           TEXT NOT NULL,
@@ -833,16 +1082,79 @@ CREATE TABLE IF NOT EXISTS package_override_migration_archive (
 CREATE INDEX IF NOT EXISTS idx_package_override_archive_project
   ON package_override_migration_archive(project_id, migrated_at);
 
--- 资料分析的批次级缓存。补传资料后只重跑内容变了的批次，其余直接复用，
--- 避免为已经分析过的几十份材料重复付一次 LLM 成本和等待时间。
--- 键是批次材料内容的哈希（含已确认建模目标），不是批次序号——序号会随增删平移。
-CREATE TABLE IF NOT EXISTS material_analysis_batch_cache (
-  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  cache_key   TEXT NOT NULL,
-  payload     TEXT NOT NULL,
-  created_at  TEXT NOT NULL,
-  PRIMARY KEY (project_id, cache_key)
+-- 旧“四份材料一批”的缓存已被内容定义分段检查点取代；升级时移除，避免保留
+-- 无生产消费者的第二套缓存状态。该表只存可重算的模型分析缓存，不含用户原始资料。
+DROP TABLE IF EXISTS material_analysis_batch_cache;
+
+-- 全文资料分析 Map-Reduce 事实源。分段计划在一次运行创建时冻结；模型失败、
+-- 进程重启或普通限流后复用 completed 分段，只领取尚未完成的部分。
+CREATE TABLE IF NOT EXISTS material_analysis_runs (
+  id                       TEXT PRIMARY KEY,
+  project_id               TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_set_fingerprint   TEXT NOT NULL,
+  brief_fingerprint        TEXT NOT NULL,
+  model_id                 TEXT NOT NULL,
+  protocol_version         TEXT NOT NULL,
+  plan_json                TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'running'
+                           CHECK (status IN ('running', 'paused', 'failed', 'completed')),
+  stage                    TEXT NOT NULL DEFAULT 'planning',
+  result_json              TEXT,
+  error                    TEXT,
+  created_at               TEXT NOT NULL,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  UNIQUE (
+    project_id, source_set_fingerprint, brief_fingerprint, model_id, protocol_version
+  )
 );
+CREATE INDEX IF NOT EXISTS idx_material_analysis_runs_project
+  ON material_analysis_runs(project_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS material_analysis_chunks (
+  run_id                   TEXT NOT NULL REFERENCES material_analysis_runs(id) ON DELETE CASCADE,
+  document_key             TEXT NOT NULL,
+  document_id              TEXT,
+  filename                 TEXT NOT NULL,
+  revision_fingerprint     TEXT NOT NULL,
+  chunk_index              INTEGER NOT NULL,
+  start_offset             INTEGER NOT NULL,
+  end_offset               INTEGER NOT NULL,
+  content_hash             TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  attempt_count            INTEGER NOT NULL DEFAULT 0,
+  payload_json             TEXT,
+  error                    TEXT,
+  started_at               TEXT,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  PRIMARY KEY (run_id, document_key, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_chunks_status
+  ON material_analysis_chunks(run_id, status, document_key, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_chunks_reuse
+  ON material_analysis_chunks(
+    document_key, revision_fingerprint, start_offset, end_offset, content_hash, status
+  );
+
+CREATE TABLE IF NOT EXISTS material_analysis_document_summaries (
+  run_id                   TEXT NOT NULL REFERENCES material_analysis_runs(id) ON DELETE CASCADE,
+  document_key             TEXT NOT NULL,
+  document_id              TEXT,
+  filename                 TEXT NOT NULL,
+  revision_fingerprint     TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  attempt_count            INTEGER NOT NULL DEFAULT 0,
+  payload_json             TEXT,
+  error                    TEXT,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  PRIMARY KEY (run_id, document_key)
+);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_document_summaries_status
+  ON material_analysis_document_summaries(run_id, status, document_key);
 
 -- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
 -- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，

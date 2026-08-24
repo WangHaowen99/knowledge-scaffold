@@ -10,6 +10,34 @@ import {
 } from './helpers/data-source-fixtures.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-data-source-'));
+process.env.MODELING_EVAL_BINDING_PROVIDER = 'nl2sql_template';
+process.env.MODELING_EVAL_BINDING_URL = 'http://modeling-nl2sql:5600';
+process.env.MODELING_EVAL_BINDING_SCENE = 'environment_scene';
+
+test('data source defaults：页面设置优先，缺省时使用同栈 NL2SQL 环境配置', async () => {
+  const settings = await import('../src/settings/repo.js');
+  for (const key of [
+    'eval_binding_provider', 'eval_binding_url', 'eval_binding_token', 'eval_binding_scene',
+  ]) settings.deleteSetting(key);
+
+  assert.deepEqual(settings.getEvalBindingDefaults(), {
+    provider: 'nl2sql_template',
+    url: 'http://modeling-nl2sql:5600',
+    token: '',
+    scene: 'environment_scene',
+  });
+
+  settings.setSetting('eval_binding_url', 'http://configured-nl2sql:5600');
+  settings.setSetting('eval_binding_scene', 'configured_scene');
+  assert.deepEqual(settings.getEvalBindingDefaults(), {
+    provider: 'nl2sql_template',
+    url: 'http://configured-nl2sql:5600',
+    token: '',
+    scene: 'configured_scene',
+  });
+  settings.deleteSetting('eval_binding_url');
+  settings.deleteSetting('eval_binding_scene');
+});
 
 test('data source：规范化连接输入并校验成对隔离字段', () => {
   const normalized = normalizeDataSourceInput(neo4jInput({

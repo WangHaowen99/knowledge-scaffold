@@ -35,6 +35,10 @@ export function ensureDocumentRevisionColumns(db: DatabaseSync): void {
   ensureColumn(db, 'documents', 'lifecycle_status', "TEXT NOT NULL DEFAULT 'active'");
   ensureColumn(db, 'documents', 'supersedes_id', 'TEXT');
   ensureColumn(db, 'documents', 'retired_at', 'TEXT');
+  ensureColumn(db, 'documents', 'raw_content', 'BLOB');
+  ensureColumn(db, 'documents', 'purpose', "TEXT NOT NULL DEFAULT 'auto'");
+  ensureColumn(db, 'documents', 'reading_mode', "TEXT NOT NULL DEFAULT 'on_demand'");
+  ensureColumn(db, 'documents', 'directive_revision', 'INTEGER NOT NULL DEFAULT 0');
   db.exec("UPDATE documents SET source_key = id WHERE source_key IS NULL OR source_key = ''");
 }
 
@@ -222,6 +226,40 @@ export function ensureTaskKindCoverage(db: DatabaseSync): void {
   }
 }
 
+/** 扩展 Core -> Agent outbox 的封闭事件类型，同时保留旧库中的未投递事件。 */
+export function ensureAgentProjectEventKinds(db: DatabaseSync): void {
+  const row = db.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'agent_project_event_outbox'`).get() as { sql?: string } | undefined;
+  if (!row?.sql || row.sql.includes("'package_import'")) return;
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE agent_project_event_outbox_next (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        event_type    TEXT NOT NULL CHECK (event_type IN ('material_parse', 'studio_review', 'fusion_review', 'package_import')),
+        payload_json  TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        delivered_at TEXT
+      );
+      INSERT INTO agent_project_event_outbox_next (
+        id, project_id, event_type, payload_json, created_at, delivered_at
+      ) SELECT id, project_id, event_type, payload_json, created_at, delivered_at
+        FROM agent_project_event_outbox;
+      DROP TABLE agent_project_event_outbox;
+      ALTER TABLE agent_project_event_outbox_next RENAME TO agent_project_event_outbox;
+      CREATE INDEX idx_agent_project_event_outbox_pending
+        ON agent_project_event_outbox(project_id, delivered_at, created_at);
+      COMMIT;`);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* 没有活动事务时忽略 */ }
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 /**
  * 旧版按读取时机投影的任务图已经包含真实进度，只迁移来源标记。
  * 不重建任务图，避免改写既有任务、里程碑、确认记录和 revision。
@@ -246,11 +284,13 @@ export function getDb(): DatabaseSync {
   ensureDocumentRevisionColumns(db);
   db.exec(schema);
   migrateLegacyAiConstructionGraphSources(db);
+  ensureAgentProjectEventKinds(db);
   ensureFlowchartReviewInteraction(db);
   ensureEvaluationRepairTaskKind(db);
   ensureTaskKindCoverage(db);
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
+  ensureColumn(db, 'projects', 'runtime', "TEXT NOT NULL DEFAULT 'legacy'");
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'projects', 'workflow_profile_json', `TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}'`);
   // 旧库的用户 LLM 配置表可能没有上下文窗口列；保留 NULL 以继续回退部署默认值。
@@ -261,14 +301,49 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'package_versions', 'revision_oid', 'TEXT');
   // 旧库已有 inflight_operations 时 CREATE TABLE IF NOT EXISTS 不会补列
   ensureColumn(db, 'inflight_operations', 'cancel_requested', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'agent_candidate_workspaces', 'credential_hash', 'TEXT');
+  ensureColumn(db, 'agent_candidate_workspaces', 'credential_expires_at', 'TEXT');
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
+  ensureColumn(db, 'generation_batch_checkpoints', 'dependency_hash', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'generation_batch_checkpoints', 'invalidated_at', 'TEXT');
+  ensureColumn(db, 'generation_batch_checkpoints', 'invalidated_reason', 'TEXT');
+  ensureColumn(db, 'generation_batch_checkpoints', 'invalidated_by_rollback_id', 'TEXT');
+  ensureColumn(db, 'package_repair_attempts', 'execution_status', "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, 'package_repair_attempts', 'quality_outcome', "TEXT NOT NULL DEFAULT 'unknown_legacy'");
+  ensureColumn(db, 'package_repair_attempts', 'target_fingerprints_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'package_repair_attempts', 'resolved_fingerprints_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'package_repair_attempts', 'introduced_fingerprints_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'package_repair_attempts', 'before_blocking_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'package_repair_attempts', 'after_blocking_count', 'INTEGER');
+  ensureColumn(db, 'package_repair_attempts', 'candidate_revision_oid', 'TEXT');
+  ensureColumn(db, 'package_repair_attempts', 'quality_gate_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'package_repair_attempts', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'package_repair_attempts', 'next_action_json', 'TEXT');
+  db.exec(`UPDATE package_repair_attempts SET execution_status = CASE status
+      WHEN 'running' THEN 'running'
+      WHEN 'waiting_user' THEN 'waiting_user'
+      WHEN 'completed' THEN 'finished'
+      WHEN 'stopped' THEN 'finished'
+      ELSE 'failed'
+    END
+    WHERE execution_status = 'pending'`);
+  db.exec(`UPDATE package_repair_attempts SET quality_outcome = CASE status
+      WHEN 'stopped' THEN 'rejected'
+      WHEN 'failed' THEN 'unresolved'
+      ELSE quality_outcome
+    END
+    WHERE quality_outcome = 'unknown_legacy' AND status <> 'completed'`);
+  ensureColumn(db, 'ai_construction_confirmations', 'invalidated_at', 'TEXT');
+  ensureColumn(db, 'ai_construction_confirmations', 'invalidated_by_rollback_id', 'TEXT');
+  ensureColumn(db, 'ai_construction_milestone_rollbacks', 'current_package_revision_oid', 'TEXT NOT NULL DEFAULT \'\'');
   ensureColumn(db, 'graph_import_uploads', 'package_revision_oid', 'TEXT');
   ensureColumn(db, 'graph_import_runs', 'package_revision_oid', 'TEXT');
   ensureColumn(db, 'eval_rounds', 'artifact_revision_oid', 'TEXT');
   ensureColumn(db, 'eval_rounds', 'phase', "TEXT NOT NULL DEFAULT 'workspace'");
   ensureColumn(db, 'eval_rounds', 'phase_started_at', 'TEXT');
   ensureColumn(db, 'eval_rounds', 'current_item_started_at', 'TEXT');
+  ensureColumn(db, 'eval_rounds', 'evaluation_scope_json', `TEXT NOT NULL DEFAULT '{"kind":"current"}'`);
   ensureColumn(db, 'eval_result_traces', 'tool_failures_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'eval_result_traces', 'trace_status', "TEXT NOT NULL DEFAULT 'complete'");
   ensureColumn(db, 'eval_result_traces', 'trace_error', 'TEXT');

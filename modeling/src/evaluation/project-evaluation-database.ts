@@ -3,6 +3,7 @@ import {
   resolveEvaluationDatabaseTarget,
   type EvaluationDatabaseTarget,
 } from './evaluation-database-target.js';
+import { config } from '../config.js';
 
 const PROJECT_DATABASE_NAME_MAX_LENGTH = 60;
 
@@ -64,7 +65,7 @@ export async function createProjectEvaluationDatabase(
   const database = projectEvaluationDatabaseName(input.projectId);
   const target = resolveEvaluationDatabaseTarget(
     database,
-    input.databaseUrl || dependencies.databaseUrl,
+    input.databaseUrl || dependencies.databaseUrl || config.evalDbAdminUrl || config.evalDbUrl,
   );
   let client: ProjectDatabaseAdminClient | undefined;
   try {

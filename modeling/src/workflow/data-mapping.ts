@@ -61,6 +61,13 @@ export function findObjectDataMappingProblemsForObjects(
     const sources = tableSourcesFor(object);
     // 概念对象、运行时输入和专家补充对象允许暂不绑定建模资料。
     if (!sources.length) continue;
+    if (sources.length > 1) {
+      problems.push({
+        objectKey: object.key,
+        message: `对象「${object.title || object.key}」同时绑定了 ${sources.length} 张来源表，但当前数据绑定一次只能执行一张物理表；不得把多张表的字段并集映射为同一物理对象。请保留逐来源明细对象，并将汇总对象改为不声明表格 sourceRefs 和 sourceColumn 的派生业务对象，通过关系、操作和说明引用这些明细对象`,
+      });
+      continue;
+    }
 
     const resolvedTables = sources.flatMap((source) => {
       const table = tableByName.get(source.table);

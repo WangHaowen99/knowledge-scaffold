@@ -92,10 +92,12 @@ export interface WorkflowNode {
 // ---- 数据字典（Excel 解析产物）----
 export interface DataDictField {
   name: string;
+  sourceColumn?: string;
   note?: string;
   inferredType: 'string' | 'number' | 'boolean' | 'date' | 'unknown';
   sampleValues: string[];
   distinctRatio: number; // 唯一值比例，接近 1 提示可能是主键
+  nonEmptyRatio?: number;
 }
 
 export type DataDictCellKind = 'blank' | 'string' | 'number' | 'boolean' | 'date';
@@ -126,6 +128,9 @@ export interface DocumentRecord {
   revisionNo?: number;
   filename: string;
   kind: 'markdown' | 'text' | 'pdf' | 'word' | 'excel' | 'csv' | 'unknown';
+  purpose?: 'auto' | 'goal' | 'schema' | 'evidence';
+  readingMode?: 'on_demand' | 'full';
+  directiveRevision?: number;
   parseStatus: 'pending' | 'parsed' | 'failed';
   parseError?: string;
   // 文本类：提取的正文；excel：数据字典
@@ -156,6 +161,23 @@ export interface ArtifactCandidate {
   sources: string[];
   evidence?: string;
   readiness: 'extractable' | 'needs_clarification';
+}
+
+export type CandidateDispositionStatus =
+  | 'generated'
+  | 'merged'
+  | 'deferred'
+  | 'needs_clarification'
+  | 'excluded';
+
+export interface CandidateDisposition {
+  candidateId: string;
+  kind: KnowledgeArtifactKind;
+  name: string;
+  status: CandidateDispositionStatus;
+  resourceKeys?: string[];
+  mergedIntoCandidateId?: string;
+  reason: string;
 }
 
 /** 后端全文读取账本的持久化快照；不能由模型自行声明。 */
@@ -231,6 +253,7 @@ export interface Project {
   id: string;
   owner: string;
   kind: ProjectKind;
+  runtime: 'legacy' | 'agent';
   name: string;
   domain: string;
   background: string; // 场景背景（节点 1 一次性表单）
@@ -423,6 +446,8 @@ export interface PackageSpec {
   scripts?: SpecScript[]; // 可选受控 Python 脚本；须绑定包内 operation
   defaultProviderAlias: string;
   dataSourceType?: PackageDataSourceType; // 缺省仅用于兼容历史版本，沿用 object key resource
+  /** 全量分析候选的处理账本；用于证明候选已生成、合并、延期或明确排除。 */
+  candidateDispositions?: CandidateDisposition[];
   valueBindings?: SpecValueBinding[]; // Data Mapping 顶层 value_bindings，可由批量确认生成
 }
 

@@ -13,6 +13,7 @@ import {
   partitionAtomicChangePlan,
   PackageCandidateRejectedError,
   PackageCandidateValidationError,
+  preserveUnaffectedPackageFiles,
   resolveChangePlanTargets,
   resolvePackageApplyTimeoutMs,
   runCandidateQualityLoop,
@@ -20,6 +21,33 @@ import {
   type AtomicResourcePatch,
   type ChangePlan,
 } from '../src/workflow/package-chat.js';
+
+test('修复候选保留计划未影响的人工流程文件', () => {
+  const previousCanonical = {
+    'rules/R1.md': '旧规则\n',
+  };
+  const currentFiles = {
+    ...previousCanonical,
+    'diagrams/processes.json': '{"reviewed":true}\n',
+    'diagrams/main.mmd': 'flowchart TD\n  reviewed --> end\n',
+    'attachments/readme.txt': '人工附件\n',
+  };
+  const nextCanonical = {
+    ...previousCanonical,
+    'rules/R1.md': '新规则\n',
+  };
+
+  const candidate = preserveUnaffectedPackageFiles(
+    currentFiles,
+    previousCanonical,
+    nextCanonical,
+  );
+
+  assert.equal(candidate['rules/R1.md'], '新规则\n');
+  assert.equal(candidate['diagrams/processes.json'], '{"reviewed":true}\n');
+  assert.equal(candidate['diagrams/main.mmd'], 'flowchart TD\n  reviewed --> end\n');
+  assert.equal(candidate['attachments/readme.txt'], '人工附件\n');
+});
 
 test('同一资源的多项同类修改会在确认和执行前合并', () => {
   const normalized = normalizeChangePlan({
@@ -824,6 +852,28 @@ test('候选补丁越过计划边界时把失败原因交给下一次生成', as
   assert.equal(accepted.candidate, '只修改计划内资源的候选');
   assert.equal(calls, 2);
   assert.match(feedbacks[1], /计划外.*WeightedRevenue/);
+});
+
+test('伪造来源表标识列被反馈后可在下一次候选中纠正', async () => {
+  const feedbacks: string[] = [];
+  const accepted = await runCandidateQualityLoop({
+    maxAttempts: 3,
+    generate: async (_attempt, feedback) => {
+      feedbacks.push(feedback);
+      if (!feedback) {
+        throw new PackageCandidateValidationError(
+          '对象「线索事件明细」属性「evt_src_table」对应的来源字段「evt_src_table」在来源表「招投标明细」中不存在',
+        );
+      }
+      return '改用真实事件编号作为主键的候选';
+    },
+    validate: async () => ({ accepted: true, feedback: '来源映射有效' }),
+  });
+
+  assert.equal(accepted.status, 'accepted');
+  assert.equal(accepted.attempts, 2);
+  assert.match(feedbacks[1], /evt_src_table.*不存在/u);
+  assert.match(feedbacks[1], /只提交计划内资源/u);
 });
 
 test('候选连续生成失败时保留可反馈给专家的校验原因', async () => {

@@ -121,6 +121,39 @@ export interface AiConstructionConfirmationSnapshot {
   packageRevisionOid: string;
   actor: { username: string; role: AiConstructionActorRole };
   note?: string;
+  invalidatedAt?: string;
+  invalidatedByRollbackId?: string;
+  createdAt: string;
+}
+
+export interface AiConstructionMilestoneRollbackPreview {
+  projectId: string;
+  graphRevision: number;
+  targetMilestone: Pick<AiConstructionMilestoneSnapshot, 'id' | 'title' | 'ordinal' | 'status'>;
+  allowed: boolean;
+  reason?: string;
+  preservedMilestones: Array<Pick<AiConstructionMilestoneSnapshot, 'id' | 'title' | 'status'>>;
+  affectedMilestones: Array<Pick<AiConstructionMilestoneSnapshot, 'id' | 'title' | 'status'>>;
+  affectedTasks: Array<Pick<AiConstructionTaskSnapshot, 'id' | 'title' | 'kind' | 'status' | 'milestoneId'>>;
+  restoreRevisionOid?: string;
+  downstreamWorkflowSteps: string[];
+  preservedOutputs: string[];
+  invalidatedOutputs: string[];
+  eta: { minMinutes: number; maxMinutes: number };
+}
+
+export interface AiConstructionMilestoneRollbackSnapshot {
+  id: string;
+  projectId: string;
+  requestId: string;
+  targetMilestoneId: string;
+  graphRevisionBefore: number;
+  graphRevisionAfter: number;
+  basePackageRevisionOid: string;
+  restoredPackageRevisionOid: string;
+  actor: string;
+  reason: string;
+  impact: AiConstructionMilestoneRollbackPreview;
   createdAt: string;
 }
 
@@ -394,25 +427,13 @@ function isTaskResolved(task: AiConstructionTaskSnapshot): boolean {
   return task.status === 'completed' || task.status === 'skipped' || task.status === 'cancelled';
 }
 
-function isSupersededStaleTask(
-  task: AiConstructionTaskSnapshot,
-  tasks: AiConstructionTaskSnapshot[],
-): boolean {
-  return task.status === 'stale' && tasks.some((replacement) => (
-    replacement.id !== task.id
-    && replacement.milestoneId === task.milestoneId
-    && replacement.kind === task.kind
-    && !['stale', 'cancelled'].includes(replacement.status)
-  ));
-}
-
 function deriveProgress(
   graphStatus: AiConstructionGraphStatus,
   milestones: AiConstructionMilestoneSnapshot[],
   tasks: AiConstructionTaskSnapshot[],
   measured: MeasuredTaskDurations = {},
 ): AiConstructionProgressSnapshot {
-  const effectiveTasks = tasks.filter((task) => !isSupersededStaleTask(task, tasks));
+  const effectiveTasks = tasks.filter((task) => !['stale', 'cancelled'].includes(task.status));
   const confirmedMilestones = milestones.filter((item) => item.status === 'confirmed').length;
   const completedTasks = effectiveTasks.filter((item) => item.status === 'completed').length;
   const currentMilestone = milestones.find((item) => item.status === 'active');
@@ -633,6 +654,75 @@ export class AiConstructionTaskGraph {
       throw error;
     }
 
+    return this.snapshot(projectId)!;
+  }
+
+  /** 导入成功后，以导入 revision 原子建立单一基线事实。 */
+  establishImportedBaseline(projectId: string, packageRevisionOid: string): AiConstructionTaskGraphSnapshot {
+    const revision = packageRevisionOid.trim();
+    if (!revision) throw new AiConstructionTaskGraphError('INVALID_TRANSITION', '导入基线缺少知识包修订');
+    const current = this.snapshot(projectId);
+    if (!current) throw new AiConstructionTaskGraphError('GRAPH_NOT_FOUND', '导入项目尚未初始化任务图');
+    if (current.source !== 'package_import') {
+      throw new AiConstructionTaskGraphError('INVALID_TRANSITION', '只有导入知识包项目可以建立导入基线');
+    }
+    const milestone = current.milestones.find((item) => item.id === 'construction_completed');
+    if (current.status === 'completed' && milestone?.status === 'confirmed') {
+      if (milestone.confirmedRevisionOid !== revision) {
+        throw new AiConstructionTaskGraphError('REVISION_CONFLICT', '导入基线已经指向另一知识包修订');
+      }
+      return current;
+    }
+    const ownsTransaction = !this.db.isTransaction;
+    if (ownsTransaction) this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const locked = this.snapshot(projectId);
+      const task = locked?.tasks.find((item) => item.kind === 'package_baseline_review');
+      if (!locked || locked.source !== 'package_import' || locked.confirmations.length
+        || locked.tasks.length !== 1 || !task
+        || task.status !== 'pending' || task.milestoneId !== 'materials_ready') {
+        throw new AiConstructionTaskGraphError(
+          'INVALID_TRANSITION', '导入基线任务已被推进，不能覆盖现有建模事实',
+        );
+      }
+      const now = nowIso();
+      const graphRevision = locked.revision + 1;
+      this.db.prepare(`UPDATE ai_construction_tasks
+        SET milestone_id = 'construction_completed', title = '建立导入知识包基线',
+          goal = '把导入知识包的不可变修订登记为后续增量的比较基线。',
+          status = 'completed', reason = 'system/import：以导入知识包作为增量基线，不重跑既有建模阶段',
+          input_revision_oid = ?, output_revision_oid = ?, updated_at = ?
+        WHERE project_id = ? AND id = ?`)
+        .run(revision, revision, now, projectId, task.id);
+      this.db.prepare(`DELETE FROM ai_construction_milestones
+        WHERE project_id = ? AND milestone_id <> 'construction_completed'`).run(projectId);
+      this.db.prepare(`UPDATE ai_construction_milestones
+        SET ordinal = 1, title = '导入基线已建立', status = 'confirmed',
+          confirmed_revision_oid = ?, updated_at = ?
+        WHERE project_id = ? AND milestone_id = 'construction_completed'`)
+        .run(revision, now, projectId);
+      this.db.prepare(`INSERT INTO ai_construction_confirmations
+        (id, project_id, milestone_id, graph_revision, package_revision_oid,
+          actor_username, actor_role, note, created_at)
+        VALUES (?, ?, 'construction_completed', ?, ?, 'system/import', 'project_owner', ?, ?)`)
+        .run(
+          `confirm_${randomUUID().slice(0, 12)}`,
+          projectId,
+          graphRevision,
+          revision,
+          '用户通过浏览器导入已有知识包，以该不可变修订作为后续增量基线',
+          now,
+        );
+      this.db.prepare(`UPDATE ai_construction_graphs
+        SET revision = ?, status = 'completed', updated_at = ? WHERE project_id = ?`)
+        .run(graphRevision, now, projectId);
+      if (ownsTransaction) this.db.exec('COMMIT');
+    } catch (error) {
+      if (ownsTransaction) {
+        try { this.db.exec('ROLLBACK'); } catch { /* ignore missing transaction */ }
+      }
+      throw error;
+    }
     return this.snapshot(projectId)!;
   }
 
@@ -1021,6 +1111,164 @@ export class AiConstructionTaskGraph {
     }));
   }
 
+  previewMilestoneRollback(
+    projectId: string,
+    milestoneId: string,
+  ): AiConstructionMilestoneRollbackPreview {
+    const graph = this.snapshot(projectId);
+    if (!graph) throw new AiConstructionTaskGraphError('GRAPH_NOT_FOUND', '项目尚未初始化 AI 辅助构建');
+    const target = graph.milestones.find((item) => item.id === milestoneId);
+    if (!target || target.id === INCREMENT_MILESTONE_ID) {
+      throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '回退阶段不存在或不属于主建模流程');
+    }
+    const targetTasks = graph.tasks.filter((item) => item.milestoneId === target.id
+      && !['cancelled', 'stale'].includes(item.status));
+    const preservedMilestones = graph.milestones.filter((item) => item.ordinal < target.ordinal);
+    const affectedMilestones = graph.milestones.filter((item) => item.ordinal >= target.ordinal);
+    const affectedIds = new Set(affectedMilestones.map((item) => item.id));
+    const affectedTasks = graph.tasks.filter((item) => affectedIds.has(item.milestoneId)
+      && !['stale', 'cancelled'].includes(item.status));
+    const previousRevision = [...preservedMilestones].reverse()
+      .find((item) => item.status === 'confirmed' && item.confirmedRevisionOid)?.confirmedRevisionOid;
+    const restoreRevisionOid = previousRevision
+      ?? targetTasks.find((item) => item.inputRevisionOid)?.inputRevisionOid
+      ?? target.confirmedRevisionOid;
+    const allowed = target.status === 'confirmed'
+      && targetTasks.length > 0
+      && Boolean(restoreRevisionOid)
+      && !graph.tasks.some((item) => item.status === 'running');
+    let reason: string | undefined;
+    if (target.status !== 'confirmed') reason = '只能回退到已经确认的历史阶段';
+    else if (!targetTasks.length) reason = '这个阶段没有可重新执行的任务';
+    else if (!restoreRevisionOid) reason = '找不到该阶段开始前的知识包版本';
+    else if (graph.tasks.some((item) => item.status === 'running')) reason = '当前仍有建模任务运行，请先停止后再回退';
+    const [minMinutes, maxMinutes] = durationForTasks(affectedTasks);
+    const materialPreserved = preservedMilestones.some((item) => item.id === 'materials_ready');
+    return {
+      projectId,
+      graphRevision: graph.revision,
+      targetMilestone: {
+        id: target.id, title: target.title, ordinal: target.ordinal, status: target.status,
+      },
+      allowed,
+      ...(reason ? { reason } : {}),
+      preservedMilestones: preservedMilestones.map((item) => ({
+        id: item.id, title: item.title, status: item.status,
+      })),
+      affectedMilestones: affectedMilestones.map((item) => ({
+        id: item.id, title: item.title, status: item.status,
+      })),
+      affectedTasks: affectedTasks.map((item) => ({
+        id: item.id, title: item.title, kind: item.kind,
+        status: item.status, milestoneId: item.milestoneId,
+      })),
+      restoreRevisionOid,
+      downstreamWorkflowSteps: ['scenario', 'data_source', 'evaluate', 'diagnose', 'optimize', 'release'],
+      preservedOutputs: [
+        '原始资料与资料修订历史',
+        '全文读取分段与文档摘要',
+        ...(materialPreserved ? ['资料分析结论与知识候选'] : []),
+        ...preservedMilestones.map((item) => `${item.title}产出`),
+      ],
+      invalidatedOutputs: [
+        `${target.title}的当前确认`,
+        ...affectedMilestones.filter((item) => item.id !== target.id).map((item) => `${item.title}及其派生产物`),
+        '场景推演、数据源导入结果、评测、诊断、优化和发布状态',
+      ],
+      eta: { minMinutes, maxMinutes },
+    };
+  }
+
+  rollbackMilestone(projectId: string, input: {
+    rollbackId: string;
+    requestId: string;
+    expectedRevision: number;
+    targetMilestoneId: string;
+    basePackageRevisionOid: string;
+    restoredPackageRevisionOid: string;
+    actor: string;
+    reason: string;
+    impact: AiConstructionMilestoneRollbackPreview;
+  }): { graph: AiConstructionTaskGraphSnapshot; rollback: AiConstructionMilestoneRollbackSnapshot } {
+    const actor = String(input.actor ?? '').trim();
+    const reason = String(input.reason ?? '').trim();
+    if (!actor || actor.length > 100 || !reason || reason.length > 500) {
+      throw new AiConstructionTaskGraphError('INVALID_TASK_PLAN', '阶段回退必须填写有效的操作人和原因');
+    }
+    const ownsTransaction = !this.db.isTransaction;
+    if (ownsTransaction) this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const before = this.snapshot(projectId);
+      if (!before) throw new AiConstructionTaskGraphError('GRAPH_NOT_FOUND', '项目尚未初始化 AI 辅助构建');
+      if (before.revision !== input.expectedRevision) {
+        throw new AiConstructionTaskGraphError('REVISION_CONFLICT', `任务图已更新，请基于 revision ${before.revision} 重试`);
+      }
+      const preview = this.previewMilestoneRollback(projectId, input.targetMilestoneId);
+      if (!preview.allowed) {
+        throw new AiConstructionTaskGraphError('INVALID_TRANSITION', preview.reason ?? '当前不能回退到这个阶段');
+      }
+      if (preview.restoreRevisionOid !== input.basePackageRevisionOid) {
+        throw new AiConstructionTaskGraphError('REVISION_CONFLICT', '回退基线已经变化，请刷新后重新预览');
+      }
+      const now = nowIso();
+      const targetOrdinal = preview.targetMilestone.ordinal;
+      this.db.prepare(`UPDATE ai_construction_graphs
+        SET status = 'active', revision = revision + 1, updated_at = ? WHERE project_id = ?`)
+        .run(now, projectId);
+      this.db.prepare(`UPDATE ai_construction_milestones SET
+        status = CASE WHEN ordinal = ? THEN 'active' ELSE 'stale' END,
+        confirmed_revision_oid = NULL, updated_at = ?
+        WHERE project_id = ? AND ordinal >= ?`)
+        .run(targetOrdinal, now, projectId, targetOrdinal);
+      const affectedTasks = input.impact.affectedTasks;
+      for (const task of affectedTasks) {
+        this.db.prepare(`UPDATE ai_construction_tasks SET status = ?,
+          output_revision_oid = NULL, updated_at = ?
+          WHERE project_id = ? AND id = ?`)
+          .run(task.milestoneId === input.targetMilestoneId ? 'pending' : 'stale', now, projectId, task.id);
+      }
+      this.db.prepare(`UPDATE ai_construction_confirmations
+        SET invalidated_at = ?, invalidated_by_rollback_id = ?
+        WHERE project_id = ? AND milestone_id IN (
+          SELECT milestone_id FROM ai_construction_milestones
+          WHERE project_id = ? AND ordinal >= ?
+        ) AND invalidated_at IS NULL`)
+        .run(now, input.rollbackId, projectId, projectId, targetOrdinal);
+      const graphRevisionAfter = before.revision + 1;
+      this.db.prepare(`UPDATE ai_construction_milestone_rollbacks SET
+        graph_revision_after = ?, restored_package_revision_oid = ?, status = 'completed',
+        completed_at = ?, response_json = ? WHERE id = ? AND project_id = ?`)
+        .run(
+          graphRevisionAfter, input.restoredPackageRevisionOid, now,
+          JSON.stringify({ graphRevision: graphRevisionAfter }), input.rollbackId, projectId,
+        );
+      if (ownsTransaction) this.db.exec('COMMIT');
+      const graph = this.snapshot(projectId)!;
+      return {
+        graph,
+        rollback: {
+          id: input.rollbackId,
+          projectId,
+          requestId: input.requestId,
+          targetMilestoneId: input.targetMilestoneId,
+          graphRevisionBefore: before.revision,
+          graphRevisionAfter,
+          basePackageRevisionOid: input.basePackageRevisionOid,
+          restoredPackageRevisionOid: input.restoredPackageRevisionOid,
+          actor,
+          reason,
+          impact: input.impact,
+          createdAt: now,
+        },
+      };
+    } catch (error) {
+      if (ownsTransaction) {
+        try { this.db.exec('ROLLBACK'); } catch { /* ignore */ }
+      }
+      throw error;
+    }
+  }
+
   snapshot(projectId: string): AiConstructionTaskGraphSnapshot | null {
     const graph = this.db.prepare(`SELECT project_id, revision, status, source,
       created_at, updated_at FROM ai_construction_graphs WHERE project_id = ?`).get(projectId) as any;
@@ -1042,7 +1290,8 @@ export class AiConstructionTaskGraph {
       dependencies.set(item.task_id, list);
     });
     const confirmationRows = this.db.prepare(`SELECT id, milestone_id, graph_revision,
-      package_revision_oid, actor_username, actor_role, note, created_at
+      package_revision_oid, actor_username, actor_role, note, invalidated_at,
+      invalidated_by_rollback_id, created_at
       FROM ai_construction_confirmations WHERE project_id = ? ORDER BY created_at, rowid`)
       .all(projectId) as any[];
 
@@ -1077,6 +1326,8 @@ export class AiConstructionTaskGraph {
       packageRevisionOid: item.package_revision_oid,
       actor: { username: item.actor_username, role: item.actor_role },
       note: item.note ?? undefined,
+      invalidatedAt: item.invalidated_at ?? undefined,
+      invalidatedByRollbackId: item.invalidated_by_rollback_id ?? undefined,
       createdAt: item.created_at,
     }));
 

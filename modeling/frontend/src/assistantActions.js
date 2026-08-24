@@ -42,6 +42,8 @@ export const ASSISTANT_ACTION_KINDS = {
   open_flowchart_editor: 'navigate',
   refresh_flowchart_draft: 'navigate',
   acknowledge_flowchart_warnings: 'navigate',
+  adjust_repair_plan: 'navigate',
+  open_model_settings: 'navigate',
 };
 
 /**
@@ -66,10 +68,20 @@ export const NAVIGATION_TARGETS = {
   open_flowchart_editor: { step: 'ai_construction' },
   refresh_flowchart_draft: { reload: true },
   acknowledge_flowchart_warnings: { focus: '[data-flowchart-warning-ack]' },
+  adjust_repair_plan: { focus: '.ac-message-interaction' },
+  open_model_settings: { openSettings: 'llm' },
 };
 
 export function assistantActionKind(action) {
   return action?.kind ?? ASSISTANT_ACTION_KINDS[action?.id] ?? null;
+}
+
+/** 升级前的额度卡把“重试”错误存成了纯刷新；读取历史消息时就地纠正。 */
+export function canonicalAssistantAction(action) {
+  if (action?.id === 'refresh_task_graph' && action?.label === '额度恢复后重试') {
+    return { ...action, id: 'generate_knowledge_structure', kind: 'command' };
+  }
+  return action;
 }
 
 /** 导航类动作不改数据，流程图有未保存修改时也可以直接执行 */

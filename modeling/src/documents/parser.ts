@@ -27,6 +27,11 @@ export interface ParseResult {
   error?: string;
 }
 
+export interface FullTableReadResult {
+  textContent: string;
+  tables: DataDictTable[];
+}
+
 // 统一解析入口：Excel / CSV → 数据字典；其余 → 正文文本。
 export async function parseDocument(kind: DocKind, buffer: Buffer, filename = ''): Promise<ParseResult> {
   try {
@@ -232,10 +237,12 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
       const distinct = new Set(values);
       return {
         name,
+        sourceColumn: XLSX.utils.encode_col(range.s.c + col),
         note: noteRow?.[col] || undefined,
         inferredType: inferType(values),
         sampleValues: [...distinct].slice(0, 5),
         distinctRatio: values.length ? distinct.size / values.length : 0,
+        nonEmptyRatio: dataRows.length ? values.length / dataRows.length : 0,
       };
     });
 
@@ -267,6 +274,36 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
     });
   }
   return tables;
+}
+
+export function parseFullTableDocument(
+  kind: Extract<DocKind, 'excel' | 'csv'>,
+  buffer: Buffer,
+  filename: string,
+): FullTableReadResult {
+  const tables = parseExcel(buffer, {
+    maxRows: null,
+    singleTableName: kind === 'csv' ? basename(filename, extname(filename)).trim() || 'data' : undefined,
+  });
+  if (!tables.length || tables.some((table) => table.rows?.length !== table.rowCount)) {
+    throw new Error('表格内容没有完整展开，请检查工作表首行字段名');
+  }
+  const textContent = tables.map((table) => [
+    `# Sheet: ${JSON.stringify(table.name)}`,
+    '## Fields',
+    ...table.fields.map((field, index) => JSON.stringify({
+      column: index + 1,
+      name: field.name,
+      note: field.note ?? null,
+      inferredType: field.inferredType,
+    })),
+    `## Rows: ${table.rowCount}`,
+    ...(table.rows ?? []).map((row, index) => JSON.stringify({ row: index + 1, values: row })),
+  ].join('\n')).join('\n\n');
+  return {
+    textContent,
+    tables: tables.map(({ rows: _rows, cellRows: _cellRows, ...table }) => table),
+  };
 }
 
 function cellMetadata(

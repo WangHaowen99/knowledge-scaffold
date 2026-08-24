@@ -86,6 +86,12 @@ fi
     "${SCRIPT_DIR}"
 docker save -o "${IMAGES_DIR}/mw-modeling-${VERSION}.tar" "mw-modeling:${VERSION}"
 
+"${BUILD_CMD[@]}" \
+    --target runtime \
+    -t "mw-modeling-agent:${VERSION}" \
+    "${SCRIPT_DIR}/modeling-agent"
+docker save -o "${IMAGES_DIR}/mw-modeling-agent-${VERSION}.tar" "mw-modeling-agent:${VERSION}"
+
 cp -r "${SCRIPT_DIR}/deploy/"* "${DEPLOY_DIR}/"
 
 if [ "${STANDALONE}" = "1" ]; then
@@ -94,7 +100,9 @@ if [ "${STANDALONE}" = "1" ]; then
   "app_version": "${VERSION}",
   "release_arch": "${RELEASE_ARCH}",
   "modeling_image": "mw-modeling:${VERSION}",
-  "modeling_image_tar": "images/mw-modeling-${VERSION}.tar"
+  "modeling_image_tar": "images/mw-modeling-${VERSION}.tar",
+  "modeling_agent_image": "mw-modeling-agent:${VERSION}",
+  "modeling_agent_image_tar": "images/mw-modeling-agent-${VERSION}.tar"
 }
 EOF
     printf '%s\n' "${VERSION}" > "${BUNDLE_DIR}/VERSION"

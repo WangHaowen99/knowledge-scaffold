@@ -904,7 +904,7 @@ test('编辑默认快照的端点/模型做连接测试时不会把快照 Key �
   }
 });
 
-test('知识包工作区：导入 ZIP 后建立仅编辑项目、版本索引和原始文件快照', async () => {
+test('知识包工作区：导入 ZIP 后建立 Agent 增量基线和原始文件快照', async () => {
   const token = await signToken();
   const authorization = `Bearer ${token}`;
   const spec: PackageSpec = {
@@ -925,17 +925,99 @@ test('知识包工作区：导入 ZIP 后建立仅编辑项目、版本索引和
 
   assert.equal(imported.statusCode, 201, imported.body);
   assert.equal(imported.json().project.kind, 'package');
+  assert.equal(imported.json().project.runtime, 'agent');
   assert.equal(imported.json().project.stage, 'review');
   assert.equal(imported.json().version, '1.0.0');
   assert.ok(imported.json().revision);
+  assert.equal(imported.json().aiConstruction, undefined);
 
   const projectId = imported.json().project.id;
+  const { getDb } = await import('../src/db/index.js');
+  const baselineEvent = getDb().prepare(`SELECT event_type, payload_json, delivered_at
+    FROM agent_project_event_outbox WHERE project_id = ?`).get(projectId) as any;
+  assert.equal(baselineEvent.event_type, 'package_import');
+  assert.equal(baselineEvent.delivered_at, null);
+  assert.equal(JSON.parse(baselineEvent.payload_json).baselineRevision, imported.json().revision);
+  const legacyGraphCount = getDb().prepare(`SELECT COUNT(*) AS count
+    FROM ai_construction_graphs WHERE project_id = ?`).get(projectId) as { count: number };
+  assert.equal(legacyGraphCount.count, 0);
+
   const pkg = await app.inject({
     method: 'GET', url: `/api/projects/${projectId}/package`, headers: { authorization },
   });
   assert.equal(pkg.statusCode, 200, pkg.body);
   assert.equal(pkg.json().version, '1.0.0');
   assert.ok(pkg.json().files.includes('operations/answer_demo.md'));
+
+  const snapshot = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/agent/snapshot`,
+    headers: { authorization },
+  });
+  assert.equal(snapshot.statusCode, 200, snapshot.body);
+  assert.equal(snapshot.json().project.runtime, 'agent');
+  assert.equal(snapshot.json().revision, imported.json().revision);
+
+  const [legacyChat, legacyIncrement] = await Promise.all([
+    app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/package/chat`, headers: { authorization },
+      payload: { message: '请生成增量修改方案' },
+    }),
+    app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/ai-construction/increment/start`,
+      headers: { authorization }, payload: {},
+    }),
+  ]);
+  assert.equal(legacyChat.statusCode, 410, legacyChat.body);
+  assert.equal(legacyChat.json().code, 'UNIFIED_AGENT_RUNTIME_REQUIRED');
+  assert.equal(legacyIncrement.statusCode, 410, legacyIncrement.body);
+  assert.equal(legacyIncrement.json().code, 'UNIFIED_AGENT_RUNTIME_REQUIRED');
+  const graphAfterLegacyRequests = getDb().prepare(`SELECT COUNT(*) AS count
+    FROM ai_construction_graphs WHERE project_id = ?`).get(projectId) as { count: number };
+  assert.equal(graphAfterLegacyRequests.count, 0);
+});
+
+test('知识包工作区：导入旧式包装脚本后仍可读取文件树和原始脚本', async () => {
+  const token = await signToken();
+  const authorization = `Bearer ${token}`;
+  const spec: PackageSpec = {
+    id: 'legacy-script-import', name: '旧式脚本导入', description: '验证导入基线只读兼容',
+    version: '1.1.8', language: 'zh-CN', status: 'draft', defaultProviderAlias: 'default',
+    objects: [],
+    operations: [{
+      key: 'energy_cost', title: '计算能耗', description: '计算装置能源成本',
+      inputs: [], outputs: [], flow: ['调用公共阶段函数。'], relatedObjects: [],
+      script: { key: 'energy_cost_script', required: true },
+    }],
+    scripts: [{
+      key: 'energy_cost_script', title: '能耗核算脚本', description: '沿用公共阶段入口。',
+      boundOperation: 'energy_cost', runtime: 'python', entrypoint: 'energy_cost.py',
+      timeoutSeconds: 300, parameters: [], outputs: [], boundaries: [],
+      sourceCode: 'from operation_stage_common import main\n\nmain("energy_cost")\n',
+    }],
+  };
+  const files = renderPackage(spec, { validateScripts: false });
+  const upload = multipartZip('legacy-script.zip', Buffer.from(zipPackage(files, spec.id)));
+  const imported = await app.inject({
+    method: 'POST', url: '/api/package-workspaces/import',
+    headers: { authorization, ...upload.headers }, payload: upload.payload,
+  });
+  assert.equal(imported.statusCode, 201, imported.body);
+
+  const projectId = imported.json().project.id;
+  const pkg = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package`, headers: { authorization },
+  });
+  assert.equal(pkg.statusCode, 200, pkg.body);
+  assert.ok(pkg.json().files.includes('scripts/energy_cost.py'));
+
+  const script = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/package/file?path=${encodeURIComponent('scripts/energy_cost.py')}`,
+    headers: { authorization },
+  });
+  assert.equal(script.statusCode, 200, script.body);
+  assert.match(script.json().content, /operation_stage_common/);
 });
 
 test('项目删除 API：要求明确确认、校验 owner、阻止运行任务并完成删除', async () => {
@@ -1056,6 +1138,42 @@ async function waitForMaterialTask(
     if (Date.now() > deadline) {
       throw new Error(`资料分析任务未在 ${timeoutMs}ms 内进入 ${statuses.join('/')}，当前=${task?.status}`);
     }
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+}
+
+async function waitForUploadedDocument(
+  projectId: string,
+  documentId: string,
+  headers: Record<string, string>,
+  timeoutMs = 5_000,
+): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+    assert.equal(response.statusCode, 200, response.body);
+    const document = response.json().documents.find((item: any) => item.id === documentId);
+    if (document && document.parseStatus !== 'pending') return document;
+    if (Date.now() > deadline) throw new Error(`资料 ${documentId} 未在 ${timeoutMs}ms 内完成解析`);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+}
+
+async function waitForMaterialImpact(
+  projectId: string,
+  documentId: string,
+  headers: Record<string, string>,
+  timeoutMs = 5_000,
+): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await app.inject({
+      method: 'GET', url: `/api/projects/${projectId}/documents/revisions`, headers,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const impact = response.json().impacts.find((item: any) => item.currentDocumentId === documentId);
+    if (impact) return impact;
+    if (Date.now() > deadline) throw new Error(`资料 ${documentId} 的影响分析未在 ${timeoutMs}ms 内完成`);
     await new Promise((resolve) => { setTimeout(resolve, 20); });
   }
 }
@@ -1275,6 +1393,116 @@ test('版本汇总 API：按工件修订关联评测并单列未版本化的当�
   )), false);
 });
 
+test('手动复检通过后续接知识校验任务并关闭旧修复步骤', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '手动复检续接项目' },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const projectId = created.json().project.id;
+  const [
+    { getPackageArtifactStore },
+    { getDb },
+    { AiConstructionTaskGraph },
+    { AiConstructionOrchestrator },
+  ] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/db/index.js'),
+    import('../src/ai-construction/task-graph.js'),
+    import('../src/ai-construction/orchestrator.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'manual-recheck-package',
+      name: '手动复检知识包',
+      description: '验证手动复检通过后续接 AI 构建任务图',
+      version: '1.0.0-rc.1',
+      language: 'zh-CN', status: 'review', defaultProviderAlias: 'data',
+      objects: [], operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '生成待复检知识包',
+    action: {
+      cause: 'generation', summary: '生成待复检知识包',
+      actorKind: 'agent', actorName: '助手',
+    },
+  });
+
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE ai_construction_milestones SET
+    status = CASE
+      WHEN milestone_id IN ('goal_confirmed', 'materials_ready', 'process_confirmed') THEN 'confirmed'
+      WHEN milestone_id = 'knowledge_confirmed' THEN 'active'
+      ELSE 'pending'
+    END,
+    updated_at = ? WHERE project_id = ?`).run(now, projectId);
+  db.prepare(`UPDATE ai_construction_graphs SET revision = revision + 1, updated_at = ?
+    WHERE project_id = ?`).run(now, projectId);
+
+  const graph = new AiConstructionTaskGraph(db);
+  const orchestrator = new AiConstructionOrchestrator({ db });
+  let snapshot = graph.snapshot(projectId)!;
+  for (const task of [
+    { kind: 'operation_extraction' as const, title: '生成业务操作' },
+    { kind: 'knowledge_extraction' as const, title: '生成知识结构' },
+    { kind: 'package_validation' as const, title: '校验知识结构草案' },
+  ]) {
+    snapshot = graph.apply(projectId, {
+      type: 'plan_task', expectedRevision: snapshot.revision,
+      task: {
+        kind: task.kind, milestoneId: 'knowledge_confirmed', title: task.title,
+        goal: task.title, required: true, dependsOn: [],
+      },
+    });
+  }
+  const failed = orchestrator.completeKnowledgeStructure(projectId, {
+    packageRevisionOid: generated.revision.oid,
+    messageKey: `knowledge.failed.${projectId}`,
+    version: generated.packageVersion,
+    counts: { operations: 0, objects: 0, relations: 0, rules: 0, metrics: 0 },
+    validation: { errors: 1, warnings: 0, hints: 0 },
+  });
+  snapshot = graph.apply(projectId, {
+    type: 'plan_task', expectedRevision: failed.aiConstruction.revision,
+    task: {
+      kind: 'package_repair', milestoneId: 'knowledge_confirmed',
+      title: '逐项修复知识包校验问题', goal: '修复当前错误',
+      required: false, dependsOn: [],
+    },
+  });
+  const repairTask = snapshot.tasks.find((item) => item.kind === 'package_repair')!;
+  snapshot = graph.apply(projectId, {
+    type: 'start_task', expectedRevision: snapshot.revision, taskId: repairTask.id,
+  });
+  graph.apply(projectId, {
+    type: 'fail_task', expectedRevision: snapshot.revision, taskId: repairTask.id,
+    reason: '旧修复尝试失败',
+  });
+
+  const checked = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/check`, headers, payload: {},
+  });
+  assert.equal(checked.statusCode, 200, checked.body);
+  assert.equal(checked.json().counts['错误'], 0);
+  assert.deepEqual(
+    checked.json().aiConstructionMessages[0].blocks.at(-1).actions.map((item: any) => item.id),
+    ['confirm_knowledge', 'review_knowledge_files'],
+  );
+  const reconciled = graph.snapshot(projectId)!;
+  assert.equal(reconciled.tasks.find((item) => item.kind === 'package_validation')?.status, 'completed');
+  assert.equal(
+    reconciled.tasks.find((item) => item.kind === 'package_validation')?.outputRevisionOid,
+    generated.revision.oid,
+  );
+  assert.equal(reconciled.tasks.find((item) => item.kind === 'package_repair')?.status, 'skipped');
+});
+
 test('知识包检查查询隐藏旧修订发现并声明当前修订需要重检', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
@@ -1313,6 +1541,18 @@ test('知识包检查查询隐藏旧修订发现并声明当前修订需要重�
     id: 'old-finding', source: 'rule', severity: '错误', category: '旧问题',
     target: 'package/index.md', message: '只属于旧修订的问题',
   }], checkedRevision.revision.oid);
+
+  const actionable = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/check`, headers,
+  });
+  assert.equal(actionable.statusCode, 200, actionable.body);
+  assert.equal(actionable.json().packageRepair.blockingCount, 1);
+  assert.equal(actionable.json().currentStep.status, 'ready');
+  assert.equal(actionable.json().currentStep.revision, checkedRevision.revision.oid);
+  assert.deepEqual(actionable.json().pendingQueue, []);
+  assert.equal(actionable.json().nextActions[0].id, 'repair_knowledge_structure');
+  assert.equal(actionable.json().repair.available, true);
+  assert.doesNotMatch(String(actionable.json().repair.reason ?? ''), /人工编辑草稿/);
 
   const indexFile = await store.readFile(projectId, 'package/index.md');
   const current = await store.saveFile(projectId, {
@@ -1778,18 +2018,26 @@ test('资料上传 API 保留不可变修订，仅格式变化不传播失效', 
     method: 'POST', url: `/api/projects/${projectId}/documents`,
     headers: { ...headers, ...firstForm.headers }, payload: firstForm.payload,
   });
-  const nextForm = multipartFile('policy.md', Buffer.from('  规则 A  \r\n\r\n 阈值   10  '));
+
+  assert.equal(first.statusCode, 202, first.body);
+  assert.equal(first.json().document.parseStatus, 'pending');
+  await waitForUploadedDocument(projectId, first.json().document.id, headers);
+
+  const nextForm = multipartFile('policy-v2.md', Buffer.from('  规则 A  \r\n\r\n 阈值   10  '));
   const next = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/documents`,
+    method: 'POST',
+    url: `/api/projects/${projectId}/documents?replacementOf=${encodeURIComponent(first.json().document.id)}`,
     headers: { ...headers, ...nextForm.headers }, payload: nextForm.payload,
   });
 
-  assert.equal(first.statusCode, 201, first.body);
-  assert.equal(next.statusCode, 201, next.body);
+  assert.equal(next.statusCode, 202, next.body);
+  assert.equal(next.json().document.parseStatus, 'pending');
   assert.equal(next.json().document.revisionNo, 2);
-  assert.equal(next.json().materialRevision.changeKind, 'format_only');
-  assert.equal(next.json().materialRevision.semanticChanged, false);
-  assert.deepEqual(next.json().materialImpact.affectedResources, []);
+  assert.equal(next.json().document.sourceKey, first.json().document.sourceKey);
+  assert.equal(next.json().document.filename, 'policy-v2.md');
+  const parsedNext = await waitForUploadedDocument(projectId, next.json().document.id, headers);
+  assert.equal(parsedNext.parseStatus, 'parsed');
+  const impact = await waitForMaterialImpact(projectId, next.json().document.id, headers);
 
   const history = await app.inject({
     method: 'GET',
@@ -1800,6 +2048,34 @@ test('资料上传 API 保留不可变修订，仅格式变化不传播失效', 
   assert.deepEqual(history.json().revisions.map((item: any) => [item.revisionNo, item.lifecycleStatus]), [
     [2, 'active'], [1, 'superseded'],
   ]);
+  assert.equal(history.json().revisions[0].semanticHash, history.json().revisions[1].semanticHash);
+  assert.notEqual(history.json().revisions[0].contentHash, history.json().revisions[1].contentHash);
+  assert.equal(impact.changeKind, 'format_only');
+  assert.equal(impact.semanticChanged, false);
+  assert.deepEqual(impact.affectedResources, []);
+
+  const downloaded = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/documents/${next.json().document.id}/download`,
+    headers,
+  });
+  assert.equal(downloaded.statusCode, 200, downloaded.body);
+  assert.equal(downloaded.headers['x-material-export-mode'], 'original');
+  assert.equal(downloaded.rawPayload.toString('utf8'), '  规则 A  \r\n\r\n 阈值   10  ');
+  const staleReplacementForm = multipartFile('policy-v3.md', Buffer.from('规则 A\n阈值 12'));
+  const staleReplacement = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/documents?replacementOf=${encodeURIComponent(first.json().document.id)}`,
+    headers: { ...headers, ...staleReplacementForm.headers }, payload: staleReplacementForm.payload,
+  });
+  assert.equal(staleReplacement.statusCode, 409, staleReplacement.body);
+  const foreignToken = await signToken({}, 'bob');
+  const forbidden = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/documents/${next.json().document.id}/download`,
+    headers: { authorization: `Bearer ${foreignToken}` },
+  });
+  assert.equal(forbidden.statusCode, 404, forbidden.body);
 
   const removed = await app.inject({
     method: 'DELETE', url: `/api/projects/${projectId}/documents/${next.json().document.id}`, headers,
@@ -1810,6 +2086,42 @@ test('资料上传 API 保留不可变修订，仅格式变化不传播失效', 
     method: 'GET', url: `/api/projects/${projectId}/documents/revisions`, headers,
   });
   assert.equal(retiredHistory.json().revisions[0].lifecycleStatus, 'deleted');
+});
+
+test('同一项目可以并发接收多份新增资料', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers, payload: { name: '并发资料上传项目', runtime: 'agent' },
+  });
+  const projectId = created.json().project.id;
+  const files = Array.from({ length: 6 }, (_, index) => ({
+    filename: `material-${index + 1}.md`,
+    content: Buffer.from(`# 资料 ${index + 1}\n业务内容 ${index + 1}`),
+  }));
+
+  const responses = await Promise.all(files.map(({ filename, content }) => {
+    const form = multipartFile(filename, content);
+    return app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/documents`,
+      headers: { ...headers, ...form.headers }, payload: form.payload,
+    });
+  }));
+
+  assert.deepEqual(responses.map((response) => response.statusCode), Array(6).fill(202));
+  assert.deepEqual(
+    responses.map((response) => response.json().document.filename).sort(),
+    files.map((file) => file.filename).sort(),
+  );
+  const revisions = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/documents/revisions`, headers,
+  });
+  assert.equal(revisions.statusCode, 200, revisions.body);
+  assert.deepEqual(
+    revisions.json().revisions.filter((item: any) => item.lifecycleStatus === 'active')
+      .map((item: any) => item.filename).sort(),
+    files.map((file) => file.filename).sort(),
+  );
 });
 
 test('包修缮运行期间人工草稿只读，所有写接口统一返回 409', async () => {
@@ -1945,11 +2257,12 @@ test('主建模聊天把全部资料清单与当前文本材料分别交给 pack
       [
         {
           id: spreadsheet.id, filename: 'dataset.xlsx', kind: 'excel', parseStatus: 'parsed',
-          textLength: 0, tableCount: 1,
+          textLength: 0, tableCount: 1, purpose: 'auto', readingMode: 'on_demand',
         },
         {
           id: document.id, filename: '营销产品手册.docx', kind: 'word', parseStatus: 'parsed',
           textLength: '第一章 产品准入条件'.length, tableCount: 0,
+          purpose: 'auto', readingMode: 'on_demand',
         },
       ].sort((left, right) => left.filename.localeCompare(right.filename)),
     );
@@ -2238,6 +2551,39 @@ test('评测用例 API：手工新增和修改均推进项目阶段', async () =
   assert.equal(updated.statusCode, 200, updated.body);
   project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
   assert.equal(project.json().project.stage, 'testcases');
+});
+
+test('Agent 工作台只写评测事实，不推进 legacy 项目阶段', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: 'Agent 评测事实隔离项目' },
+  });
+  const projectId = created.json().project.id;
+  const { setStage } = await import('../src/projects/repo.js');
+  setStage(projectId, 'review');
+
+  const source = await app.inject({
+    method: 'PUT', url: `/api/projects/${projectId}/data-source?workflow=agent`, headers,
+    payload: { mode: 'none' },
+  });
+  assert.equal(source.statusCode, 200, source.body);
+  const added = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/testcases?workflow=agent`, headers,
+    payload: { question: '真实业务问题', groundTruth: '真实答案' },
+  });
+  assert.equal(added.statusCode, 200, added.body);
+  const updated = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${projectId}/testcases/${added.json().testcase.id}?workflow=agent`,
+    headers,
+    payload: { groundTruth: '复核后的真实答案' },
+  });
+  assert.equal(updated.statusCode, 200, updated.body);
+
+  const project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'review');
 });
 
 test('评测用例批量导入 API 去重并一次推进项目阶段', async () => {

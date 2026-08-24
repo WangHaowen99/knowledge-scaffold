@@ -190,39 +190,38 @@ test('普通聊天明确区分证据锚点和后端全文覆盖账本', async ()
   assert.match(systemPrompt, /营销产品手册\.docx.*12500.*完整/u);
 });
 
-test('packageChatPlan 明确要求全文时实际连续翻页后才生成答复', async () => {
-  const project = createProject({ owner: 'tester', name: '全文聊天门禁' });
+test('packageChatPlan 全文诉求使用并发分段事实且不再串行调用 read_document', async () => {
+  const project = createProject({ owner: 'tester', name: '合成全文聊天' });
   await getPackageArtifactStore().initializeDraftPackage(project.id, {
     id: `project-${project.id}`,
     name: project.name,
-    description: '验证显式全文聊天的连续翻页门禁',
+    description: '验证显式全文聊天复用统一事实源',
   });
 
-  const readOffsets: number[] = [];
+  const tools: string[] = [];
   const result = await packageChatPlan(project, [], '请完整阅读这份文档后回答', {
     documents: [{ filename: '营销产品手册.docx', textContent: 'x'.repeat(12_500) }],
     documentAccess: 'full-read-only',
     llmOverride: buildFauxModeler(),
     observe: (event: any) => {
-      if (event?.type === 'tool_execution_start' && event.toolName === 'read_document') {
-        readOffsets.push(Number(event.args?.offset ?? 0));
-      }
+      if (event?.type === 'tool_execution_start') tools.push(String(event.toolName));
     },
   });
 
   assert.match(result.reply ?? '', /演示模式/);
-  assert.deepEqual(readOffsets, [0, 6_000, 12_000]);
+  assert.equal(tools.includes('submit_document_chunk_analysis'), true);
+  assert.equal(tools.includes('read_document'), false);
 });
 
-test('packageChatPlan 对“每个章节全量提取”强制连续读完正文', async () => {
-  const project = createProject({ owner: 'tester', name: '逐章全量提取门禁' });
+test('packageChatPlan 对逐章全量提取复用已有全文事实', async () => {
+  const project = createProject({ owner: 'tester', name: '合成逐章全量提取' });
   await getPackageArtifactStore().initializeDraftPackage(project.id, {
     id: `project-${project.id}`,
     name: project.name,
-    description: '验证穷举式提取诉求也进入全文读取模式',
+    description: '验证穷举式提取诉求进入统一事实源',
   });
 
-  const readOffsets: number[] = [];
+  const first = buildFauxModeler();
   await packageChatPlan(
     project,
     [],
@@ -230,50 +229,35 @@ test('packageChatPlan 对“每个章节全量提取”强制连续读完正文'
     {
       documents: [{ filename: '营销产品手册.docx', textContent: 'x'.repeat(12_500) }],
       documentAccess: 'full-read-only',
-      llmOverride: buildFauxModeler(),
-      observe: (event: any) => {
-        if (event?.type === 'tool_execution_start' && event.toolName === 'read_document') {
-          readOffsets.push(Number(event.args?.offset ?? 0));
-        }
-      },
+      llmOverride: first,
     },
   );
 
-  assert.deepEqual(readOffsets, [0, 6_000, 12_000]);
-});
-
-test('基于文档生成产物时即使未写“全文”也强制连续读完正文', async () => {
-  const project = createProject({ owner: 'tester', name: '文档生成默认全文' });
-  await getPackageArtifactStore().initializeDraftPackage(project.id, {
-    id: `project-${project.id}`,
-    name: project.name,
-    description: '验证源文档驱动的生成请求默认完成全文覆盖',
-  });
-
-  const readOffsets: number[] = [];
+  let mapCalls = 0;
+  const base = buildFauxModeler();
+  const reusedLlm = {
+    ...base,
+    streamFn: ((model: unknown, context: any, options: unknown) => {
+      if (String(context.systemPrompt ?? '').includes('submit_document_chunk_analysis')) mapCalls += 1;
+      return base.streamFn(model, context, options);
+    }) as any,
+  };
   await packageChatPlan(project, [], '请基于营销产品手册生成产品匹配规则', {
     documents: [{ filename: '营销产品手册.docx', textContent: 'x'.repeat(12_500) }],
     documentAccess: 'full-read-only',
-    llmOverride: buildFauxModeler(),
-    observe: (event: any) => {
-      if (event?.type === 'tool_execution_start' && event.toolName === 'read_document') {
-        readOffsets.push(Number(event.args?.offset ?? 0));
-      }
-    },
+    llmOverride: reusedLlm,
   });
-
-  assert.deepEqual(readOffsets, [0, 6_000, 12_000]);
+  assert.equal(mapCalls, 0, '同一项目、模型和文档修订应直接复用全文事实');
 });
 
-test('packageChatPlan 强制全文模式无需显式措辞也会连续读完全部资料', async () => {
-  const project = createProject({ owner: 'tester', name: '增量全文门禁' });
+test('packageChatPlan 强制全文模式覆盖全部资料并写入持久化事实', async () => {
+  const project = createProject({ owner: 'tester', name: '合成增量全文事实' });
   await getPackageArtifactStore().initializeDraftPackage(project.id, {
     id: `project-${project.id}`,
     name: project.name,
-    description: '验证增量方案强制连续读取本轮全部文本资料',
+    description: '验证增量方案覆盖本轮全部文本资料',
   });
 
-  const reads: string[] = [];
   const result = await packageChatPlan(project, [], '生成本轮增量修改方案', {
     documents: [
       { filename: '新增规则.docx', textContent: 'x'.repeat(6_500) },
@@ -281,17 +265,12 @@ test('packageChatPlan 强制全文模式无需显式措辞也会连续读完全�
     ],
     documentAccess: 'full',
     llmOverride: buildFauxModeler(),
-    observe: (event: any) => {
-      if (event?.type === 'tool_execution_start' && event.toolName === 'read_document') {
-        reads.push(`${String(event.args?.filename)}:${Number(event.args?.offset ?? 0)}`);
-      }
-    },
   });
 
   assert.match(result.reply ?? '', /演示模式/);
-  assert.deepEqual(reads, [
-    '新增规则.docx:0',
-    '新增规则.docx:6000',
-    '补充说明.md:0',
-  ]);
+  const rows = (await import('../src/db/index.js')).getDb().prepare(`SELECT COUNT(DISTINCT document_key) AS count
+    FROM material_analysis_chunks WHERE run_id IN (
+      SELECT id FROM material_analysis_runs WHERE project_id = ? AND status = 'completed'
+    )`).get(project.id) as { count: number };
+  assert.equal(rows.count, 2);
 });

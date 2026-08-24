@@ -14,8 +14,9 @@ const TOOL_LABELS: Record<string, string> = {
   list_documents: '列出文档',
   read_document: '读取文档',
   search_documents: '检索文档',
-  submit_analysis: '提交领域分析',
-  submit_artifact_analysis: '提交材料知识类型分析',
+  submit_document_chunk_analysis: '提交文档分段分析',
+  submit_document_analysis: '提交文档汇总分析',
+  submit_material_analysis_result: '提交领域资料分析',
   submit_objects: '提交业务对象',
   submit_rules_metrics: '提交规则和指标',
   submit_operations: '提交业务操作',
@@ -41,13 +42,16 @@ function toolDetails(toolName: string, args: Record<string, unknown>): Record<st
   for (const key of ['filename', 'offset', 'table', 'query']) {
     if (args[key] !== undefined) details[key] = args[key];
   }
-  if (toolName === 'submit_analysis') {
+  if (toolName === 'submit_document_chunk_analysis') {
+    details.evidenceCount = Array.isArray(args.evidence) ? args.evidence.length : 0;
+    details.candidateCount = Array.isArray(args.candidates) ? args.candidates.length : 0;
+  }
+  if (toolName === 'submit_document_analysis') {
+    details.candidateCount = Array.isArray(args.candidates) ? args.candidates.length : 0;
+  }
+  if (toolName === 'submit_material_analysis_result') {
     details.candidateCount = Array.isArray(args.candidateObjects) ? args.candidateObjects.length : 0;
     details.questionCount = Array.isArray(args.openQuestions) ? args.openQuestions.length : 0;
-  }
-  if (toolName === 'submit_artifact_analysis') {
-    details.materialCount = Array.isArray(args.materialAssessments) ? args.materialAssessments.length : 0;
-    details.artifactCount = Array.isArray(args.candidateArtifacts) ? args.candidateArtifacts.length : 0;
   }
   if (toolName === 'submit_objects') {
     details.objectCount = Array.isArray(args.objects) ? args.objects.length : 0;
@@ -66,8 +70,9 @@ function toolSummary(toolName: string, details: Record<string, unknown>): string
   if (toolName === 'read_document') return `${details.filename ?? '文档'} · offset ${details.offset ?? 0}`;
   if (toolName === 'search_documents') return String(details.query ?? '').slice(0, 200) || undefined;
   if (toolName === 'describe_table') return String(details.table ?? '').slice(0, 200) || undefined;
-  if (toolName === 'submit_analysis') return `候选对象 ${details.candidateCount ?? 0} · 开放问题 ${details.questionCount ?? 0}`;
-  if (toolName === 'submit_artifact_analysis') return `材料 ${details.materialCount ?? 0} · 候选 ${details.artifactCount ?? 0}`;
+  if (toolName === 'submit_document_chunk_analysis') return `证据 ${details.evidenceCount ?? 0} · 候选 ${details.candidateCount ?? 0}`;
+  if (toolName === 'submit_document_analysis') return `文档候选 ${details.candidateCount ?? 0}`;
+  if (toolName === 'submit_material_analysis_result') return `候选对象 ${details.candidateCount ?? 0} · 开放问题 ${details.questionCount ?? 0}`;
   if (toolName === 'submit_objects') return `业务对象 ${details.objectCount ?? 0}`;
   if (toolName === 'submit_rules_metrics') return `规则 ${details.ruleCount ?? 0} · 指标 ${details.metricCount ?? 0}`;
   if (toolName === 'submit_operations') return `业务操作 ${details.operationCount ?? 0}`;

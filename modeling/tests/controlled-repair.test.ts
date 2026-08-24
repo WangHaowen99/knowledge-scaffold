@@ -20,10 +20,12 @@ import { AiConstructionOrchestrator } from '../src/ai-construction/orchestrator.
 import { AiConstructionTaskGraph } from '../src/ai-construction/task-graph.js';
 import { PiAuthoringAdapter } from '../src/authoring/pi-adapter.js';
 import { ControlledRepairController } from '../src/authoring/controlled-repair-controller.js';
+import { reconcilePackageRepairState } from '../src/authoring/package-repair-reconciliation.js';
 import { AuthoringState } from '../src/authoring/state.js';
 import type { PackageSpec, Project } from '../src/types.js';
 import { runFormatChecks, type CheckFinding } from '../src/workflow/package-check.js';
 import { renderPackage } from '../src/workflow/package-render.js';
+import { PackageCandidateRejectedError } from '../src/workflow/package-chat.js';
 
 const schema = await readFile(new URL('../src/db/schema.sql', import.meta.url), 'utf8');
 
@@ -191,6 +193,15 @@ test('校验问题按安全结构、语义修改和专家业务决策三级分�
   assert.equal(classifyRepairFinding(finding({
     category: '口径冲突', message: '两个操作采用了不同计算口径',
   })).authority, 'expert_decision');
+  assert.equal(classifyRepairFinding(finding({
+    category: '来源字段缺失', message: 'sourceColumn customer_no 在来源表中不存在',
+  })).disposition, 'external_data_required');
+  assert.equal(classifyRepairFinding(finding({
+    category: '语义校验执行失败', message: '模型服务 HTTP 429 限流',
+  })).disposition, 'retryable_infrastructure');
+  assert.equal(classifyRepairFinding(finding({
+    category: '任意旧文案', message: '文案不参与分类', disposition: 'external_data_required',
+  })).disposition, 'external_data_required');
 });
 
 test('自动修复 frontmatter 时采用规格中的结构化头部但保留人工正文', () => {
@@ -282,7 +293,7 @@ test('安全结构问题形成独立修订并重跑原知识包校验任务', as
   assert.equal(history[0].cause, 'automatic_repair');
 });
 
-test('自动修复达到两次上限后停止并保留尝试动作', async (t) => {
+test('自动修复候选未通过质量门禁时立即停止并保留质量审计', async (t) => {
   const { project, store, state, attempts, orchestrator, adapter } = await fixture(t);
   let current = await store.current(project.id);
   for (const [path, content] of [
@@ -327,13 +338,16 @@ test('自动修复达到两次上限后停止并保留尝试动作', async (t) =
 
   assert.equal(result.status, 'stopped');
   assert.equal(result.validation.errors, 1);
-  assert.equal(result.attempts.length, 2);
-  assert.ok(result.attempts.every((attempt) => attempt.status === 'completed'));
-  assert.match((result.message.blocks[1] as any).text, /连续尝试 2 次/);
-  assert.match((result.message.blocks[1] as any).text, /已尝试动作/);
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].status, 'failed');
+  assert.equal(result.attempts[0].executionStatus, 'failed');
+  assert.equal(result.attempts[0].qualityOutcome, 'regressed');
+  assert.ok(result.attempts[0].candidateRevision);
+  assert.match(result.attempts[0].error ?? '', /引入了 \d+ 项新的必须修复问题/);
+  assert.match((result.message.blocks[1] as any).text, /候选未改变当前知识包/);
 });
 
-test('知识语义问题只生成变更方案，修订变化后旧待办会失效并重新规划', async (t) => {
+ test('知识语义问题只生成变更方案，修订变化后旧待办会失效并重新规划', async (t) => {
   const { project, store, graph, state, attempts, orchestrator, adapter } = await fixture(t);
   const current = await store.current(project.id);
   const saved = await store.savePackageVersion(project.id, {
@@ -425,9 +439,12 @@ test('语义方案应用临时失败后保留原待办和 attempt，后续仍可
   const findings = [finding({
     category: '描述过简', target: 'Approve', message: '审批适用范围不完整',
   })];
+  let repaired = false;
   const runner = new ControlledRepairRunner({
     orchestrator, packages: store, state, adapter, attempts,
-    validator: async () => ({ errors: 1, warnings: 0, hints: 0, findings }),
+    validator: async () => repaired
+      ? { errors: 0, warnings: 0, hints: 0, findings: [] }
+      : { errors: 1, warnings: 0, hints: 0, findings },
     checkReader: () => null,
   });
   const planned = await runner.run(project, { tables: [], documents: [] });
@@ -454,11 +471,88 @@ test('语义方案应用临时失败后保留原待办和 attempt，后续仍可
     inputRevisionOid: beforeApply!.revision.oid,
     messageKey: 'test.repair.retry.resume',
   });
+  repaired = true;
   await runner.completeApprovedPlan(project, { tables: [], documents: [] }, attemptId);
   assert.equal(attempts.get(attemptId).status, 'completed');
+  assert.equal(attempts.get(attemptId).qualityOutcome, 'resolved');
 });
 
-test('语义方案已提交新修订后发生故障会终止待办并链接输出修订', async (t) => {
+test('语义方案复检仍有目标错误时不得标记完成', async (t) => {
+  const { project, store, state, attempts, orchestrator, adapter } = await fixture(t);
+  const current = await store.current(project.id);
+  await store.savePackageVersion(project.id, {
+    expectedRevision: current!.revision.oid,
+    spec: {
+      ...current!.spec,
+      operations: [{
+        key: 'Approve', title: '审批', description: '完成审批',
+        inputs: [], outputs: [], flow: ['受理申请'], relatedObjects: [],
+      }],
+    },
+    coverage: current!.coverage,
+    action: {
+      cause: 'test_setup', summary: '准备质量门禁失败方案', actorKind: 'system', actorName: '测试',
+    },
+  });
+  const findings = [finding({
+    category: '描述过简', target: 'Approve', message: '审批适用范围不完整',
+  })];
+  const runner = new ControlledRepairRunner({
+    orchestrator, packages: store, state, adapter, attempts,
+    validator: async () => ({ errors: 1, warnings: 0, hints: 0, findings }),
+    checkReader: () => null,
+  });
+  const planned = await runner.run(project, { tables: [], documents: [] });
+  const attemptId = planned.attempts[0].id;
+
+  await assert.rejects(
+    runner.completeApprovedPlan(project, { tables: [], documents: [] }, attemptId),
+    /目标问题仍有 1 项未解决/,
+  );
+  assert.equal(attempts.get(attemptId).status, 'failed');
+  assert.equal(attempts.get(attemptId).qualityOutcome, 'unresolved');
+  assert.equal(planned.interaction?.status, 'pending');
+  assert.equal(state.snapshot(project.id).pendingInteractions.some(
+    (interaction) => interaction.id === planned.interaction?.id,
+  ), true);
+});
+
+test('同一修订复检后目标错误消失会关闭旧待办并回算质量', async (t) => {
+  const { project, store, state, attempts, orchestrator, adapter } = await fixture(t);
+  const current = await store.current(project.id);
+  const findings = [finding({
+    category: '描述过简', target: 'object:Application', message: '对象说明不完整',
+  })];
+  const runner = new ControlledRepairRunner({
+    orchestrator, packages: store, state, adapter, attempts,
+    validator: async () => ({ errors: 1, warnings: 0, hints: 0, findings }),
+    checkReader: () => null,
+  });
+  const planned = await runner.run(project, { tables: [], documents: [] });
+  assert.ok(['waiting_approval', 'waiting_expert'].includes(planned.status));
+  assert.equal(state.snapshot(project.id).pendingInteractions.length, 1);
+
+  const reconciled = reconcilePackageRepairState({
+    projectId: project.id,
+    revision: current!.revision.oid,
+    check: {
+      version: current!.packageVersion,
+      revision: current!.revision.oid,
+      findings: [],
+      createdAt: '2026-08-21T00:00:00.000Z',
+    },
+    state,
+    attempts,
+  });
+
+  assert.equal(reconciled.blockingCount, 0);
+  assert.deepEqual(reconciled.pendingQueue, []);
+  assert.equal(state.snapshot(project.id).pendingInteractions.length, 0);
+  assert.equal(attempts.get(planned.attempts[0].id).status, 'completed');
+  assert.equal(attempts.get(planned.attempts[0].id).qualityOutcome, 'resolved');
+});
+
+ test('语义方案已提交新修订后发生故障会终止待办并链接输出修订', async (t) => {
   const { project, store, graph, state, attempts, orchestrator, adapter } = await fixture(t);
   const current = await store.current(project.id);
   await store.savePackageVersion(project.id, {
@@ -568,7 +662,7 @@ test('无法定位资源的专家回答不会关闭待办，补充资源 key 后
   assert.equal((planned.interaction.payload.changes as any[])[0].targetKey, 'Approve');
 });
 
-test('自动修订提交后校验崩溃仍记录输出修订并沿用原重试链', async (t) => {
+test('自动候选校验中断时不提升修订并可沿原链恢复', async (t) => {
   const { project, store, state, attempts, orchestrator, adapter } = await fixture(t);
   const before = await store.current(project.id);
   await store.saveFile(project.id, {
@@ -580,16 +674,14 @@ test('自动修订提交后校验崩溃仍记录输出修订并沿用原重试�
     },
   });
   const corrupted = await store.current(project.id);
-  let validationCalls = 0;
   const runner = new ControlledRepairRunner({
     orchestrator, packages: store, state, adapter, attempts,
     checkReader: () => null,
     validator: async (_project, generated) => {
-      validationCalls += 1;
-      if (validationCalls > 1) throw new Error('校验服务中断');
       const findings = runFormatChecks(generated.spec, generated.files);
       return { errors: findings.length, warnings: 0, hints: 0, findings };
     },
+    candidateValidator: async () => { throw new Error('校验服务中断'); },
   });
 
   await assert.rejects(
@@ -600,16 +692,22 @@ test('自动修订提交后校验崩溃仍记录输出修订并沿用原重试�
   const failedAttempts = attempts.listChain(project.id, corrupted!.revision.oid);
   assert.equal(failedAttempts.length, 1);
   assert.equal(failedAttempts[0].status, 'failed');
-  assert.equal(failedAttempts[0].outputRevision, repaired!.revision.oid);
+  assert.equal(failedAttempts[0].outputRevision, undefined);
+  assert.equal(repaired!.revision.oid, corrupted!.revision.oid);
   assert.equal(attempts.rootRevision(project.id, repaired!.revision.oid), corrupted!.revision.oid);
 
   const resumed = new ControlledRepairRunner({
     orchestrator, packages: store, state, adapter, attempts,
     checkReader: () => null,
-    validator: async () => ({ errors: 0, warnings: 0, hints: 0, findings: [] }),
+    validator: async (_project, generated) => {
+      const findings = runFormatChecks(generated.spec, generated.files);
+      return { errors: findings.length, warnings: 0, hints: 0, findings };
+    },
+    candidateValidator: async () => ({ errors: 0, warnings: 0, hints: 0, findings: [] }),
   });
   const result = await resumed.run(project, { tables: [], documents: [] });
-  assert.equal(result.status, 'valid');
+  assert.equal(result.status, 'automatic_repaired');
+  assert.equal(result.attempts.length, 2);
   assert.equal(result.attempts[0].id, failedAttempts[0].id);
 });
 
@@ -714,6 +812,7 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
   });
   const planned = await runner.run(project, { tables: [], documents: [] });
   assert.equal(planned.status, 'waiting_approval');
+  const beforeEventSeq = state.snapshot(project.id).lastEventSeq;
   let applyCalls = 0;
   const controller = new ControlledRepairController({
     state,
@@ -723,8 +822,18 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
     adapter,
     runner,
     contextForProject: () => ({ tables: [], documents: [] }),
-    applyPlan: async () => {
+    applyPlan: async (_project, _history, _message, _plan, _tables, options) => {
       applyCalls += 1;
+      assert.equal(options.maxCandidateAttempts, 3);
+      assert.equal(options.emitRevisionEvent, false);
+      const repairJob = state.snapshot(project.id).activeRuns.find((run) => (
+        run.state.purpose === 'controlled_repair_apply'
+      ));
+      assert.equal(repairJob?.status, 'running');
+      assert.equal(repairJob?.state.phase, '方案应用');
+      assert.equal(repairJob?.state.currentStep, '按确认方案修改知识文件');
+      assert.equal(repairJob?.state.recoveryAction, 'repair_knowledge_structure');
+      assert.ok(repairJob?.state.lastHeartbeatAt);
       const before = await store.current(project.id);
       const saved = await store.savePackageVersion(project.id, {
         expectedRevision: before!.revision.oid,
@@ -758,6 +867,15 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
   assert.equal(graph.snapshot(project.id)!.tasks.find(
     (task) => task.kind === 'package_repair',
   )?.status, 'completed');
+  assert.equal(state.snapshot(project.id).activeRuns.some((run) => (
+    run.state.purpose === 'controlled_repair_apply'
+  )), false);
+  const revisionEvents = state.replay(project.id, beforeEventSeq).events.filter((event) => (
+    event.type === 'package.revision.created'
+  ));
+  assert.equal(revisionEvents.length, 1);
+  assert.equal(revisionEvents[0].payload.revisionId, approved.revision);
+  assert.equal(revisionEvents[0].payload.packageVersion, '1.0.0');
 
   const replayed = await controller.respond(
     project,
@@ -768,6 +886,64 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
   );
   assert.equal(replayed.replayed, true);
   assert.equal(applyCalls, 1);
+});
+
+test('受控修复候选三次映射失败后返回可重试错误且保留原待办', async (t) => {
+  const { project, store, graph, state, attempts, orchestrator, adapter } = await fixture(t);
+  const current = await store.current(project.id);
+  await store.savePackageVersion(project.id, {
+    expectedRevision: current!.revision.oid,
+    spec: {
+      ...current!.spec,
+      operations: [{
+        key: 'Approve', title: '审批', description: '完成审批',
+        inputs: [], outputs: [], flow: ['受理申请'], relatedObjects: [],
+      }],
+    },
+    coverage: current!.coverage,
+    action: {
+      cause: 'test_setup', summary: '准备候选失败', actorKind: 'system', actorName: '测试',
+    },
+  });
+  const semanticFinding = finding({
+    id: 'controller-mapping',
+    category: '映射错误',
+    target: 'Approve',
+    message: '审批操作需要修复来源映射',
+    suggestion: '修复来源映射',
+  });
+  const runner = new ControlledRepairRunner({
+    orchestrator, packages: store, state, adapter, attempts,
+    validator: async () => ({ errors: 1, warnings: 0, hints: 0, findings: [semanticFinding] }),
+    checkReader: () => null,
+  });
+  const planned = await runner.run(project, { tables: [], documents: [] });
+  assert.equal(planned.status, 'waiting_approval');
+  const controller = new ControlledRepairController({
+    state, graph, orchestrator, packages: store, adapter, runner,
+    contextForProject: () => ({ tables: [], documents: [] }),
+    applyPlan: async (_project, _history, _message, _plan, _tables, options) => {
+      assert.equal(options.maxCandidateAttempts, 3);
+      throw new PackageCandidateRejectedError(
+        '候选修订连续 3 次生成失败',
+        'evt_src_table 在来源表中不存在',
+      );
+    },
+  });
+
+  await assert.rejects(
+    () => controller.respond(
+      project,
+      planned.interaction!,
+      'approve-invalid-mapping',
+      { action: 'approve' },
+      'alice',
+    ),
+    (error: unknown) => error instanceof PackageCandidateRejectedError
+      && /evt_src_table/u.test(error.feedback),
+  );
+  assert.equal(state.interaction(project.id, planned.interaction!.id)?.status, 'pending');
+  assert.equal(attempts.get(planned.attempts[0].id).status, 'waiting_user');
 });
 
 // ---- 多资源冲突：让专家指定修改目标 ----
@@ -833,6 +1009,32 @@ test('专家选定目标后可以生成修复方案', async () => {
   assert.equal(plan.changes[0].targetKind, 'object');
 });
 
+test('语义修复把多个明确修改目标拆成独立变更', async () => {
+  const { buildSemanticRepairPlan } = await import('../src/ai-construction/controlled-repair.js');
+  const spec = {
+    objects: [], scripts: [], metrics: [],
+    rules: [{ key: 'load_limit' }],
+    operations: [{ key: 'check_load' }],
+  } as any;
+  const finding = {
+    id: 'f-multi', source: 'semantic', severity: '错误', category: '口径冲突',
+    target: 'load_limit', message: '规则与操作使用了不同的负荷下限。',
+    suggestion: '同步修正规则与操作。',
+    repairTargets: [
+      { targetKind: 'rule', targetKey: 'load_limit', instruction: '限定规则的适用装置。' },
+      { targetKind: 'operation', targetKey: 'check_load', instruction: '按装置分别执行负荷判断。' },
+    ],
+  } as any;
+
+  const plan = buildSemanticRepairPlan(spec, finding, '未提供下限的装置不做低限判定');
+  assert.deepEqual(plan.changes.map((change) => (
+    `${change.targetKind}:${change.targetKey}`
+  )), ['rule:load_limit', 'operation:check_load']);
+  assert.match(plan.changes[0].description, /限定规则的适用装置/);
+  assert.match(plan.changes[1].description, /按装置分别执行负荷判断/);
+  assert.match(plan.message, /2 个资源/);
+});
+
 test('业务决策解析忽略目标选择那道题', async () => {
   const { parseExpertRepairDecision } = await import('../src/ai-construction/controlled-repair.js');
   const decision = parseExpertRepairDecision({
@@ -842,4 +1044,79 @@ test('业务决策解析忽略目标选择那道题', async () => {
     ],
   } as any);
   assert.equal(decision, '按业务口径分别编号');
+});
+
+test('资源目标只接受合法类型，业务决策中的冒号不能被当成目标', async () => {
+  const { parseExpertRepairTarget } = await import('../src/ai-construction/controlled-repair.js');
+  assert.equal(parseExpertRepairTarget({
+    answers: [{
+      questionId: 'repair_target',
+      selected: ['step_8_field_fix:replace missing_field with actual_field'],
+    }],
+  } as any), undefined);
+  assert.equal(parseExpertRepairTarget({
+    answers: [{
+      questionId: 'repair_target',
+      selected: ['required:true'],
+    }],
+  } as any), undefined);
+});
+
+test('伪造修复目标在写入回答前被拒绝且原待办保持可重试', async (t) => {
+  const { project, store, state, attempts, orchestrator, adapter } = await fixture(t);
+  const before = await store.current(project.id);
+  await store.savePackageVersion(project.id, {
+    expectedRevision: before!.revision.oid,
+    spec: {
+      ...before!.spec,
+      objects: [
+        { key: 'lead', title: '营销线索', description: '营销线索', fields: [] },
+        { key: 'bid', title: '招投标线索', description: '招投标线索', fields: [] },
+      ],
+      operations: [{
+        key: 'recommend', title: '产品推荐', description: '根据线索推荐产品',
+        inputs: [], outputs: [], flow: ['读取 object:bid'], relatedObjects: ['bid'],
+      }],
+    },
+    coverage: before!.coverage,
+    action: {
+      cause: 'test_setup', summary: '准备多目标发现', actorKind: 'system', actorName: '测试',
+    },
+  });
+  const findings = [finding({
+    id: 'field-reference', category: '字段引用错误',
+    target: 'recommend、bid',
+    message: 'operation recommend 引用了 object bid 中不存在的字段',
+    suggestion: '将操作中的错误字段改为招投标对象真实字段',
+  })];
+  const runner = new ControlledRepairRunner({
+    orchestrator, packages: store, state, adapter, attempts,
+    validator: async () => ({ errors: 1, warnings: 0, hints: 0, findings }),
+    checkReader: () => null,
+  });
+  const waiting = await runner.run(project, { tables: [], documents: [] });
+  assert.equal(waiting.interaction?.type, 'question_batch');
+
+  await assert.rejects(runner.answerExpertDecision(
+    project,
+    waiting.interaction!,
+    'forged-target',
+    {
+      answers: [
+        {
+          questionId: 'expert_decision',
+          selected: ['step_8_field_fix:replace missing_field with actual_field'],
+        },
+        {
+          questionId: 'repair_target',
+          selected: ['step_8_field_fix:replace missing_field with actual_field'],
+        },
+      ],
+    },
+  ), /需要先确定要修改哪一个/);
+
+  const snapshot = state.snapshot(project.id);
+  assert.equal(state.interaction(project.id, waiting.interaction!.id)?.status, 'pending');
+  assert.equal(snapshot.pendingInteractions.filter((item) => item.type === 'change_plan').length, 0);
+  assert.equal(snapshot.activeRuns.length, 1);
 });

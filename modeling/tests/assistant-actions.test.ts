@@ -6,6 +6,7 @@ import { ASSISTANT_ACTION_KINDS, assistantActionKind } from '../src/ai-construct
 import {
   ASSISTANT_ACTION_KINDS as FRONTEND_KINDS,
   NAVIGATION_TARGETS,
+  canonicalAssistantAction,
   isReadOnlyAction,
 } from '../frontend/src/assistantActions.js';
 import { packageRepairAvailability } from '../src/ai-construction/repair-availability.js';
@@ -62,6 +63,18 @@ test('只读判定跟随 kind，流程图有未保存修改时导航仍可执行
   assert.equal(isReadOnlyAction({ id: 'defer_validation_errors' }), false);
   // 后端下发的 kind 优先于本地表，便于后端先行发布新动作
   assert.equal(isReadOnlyAction({ id: 'unknown_future', kind: 'navigate' }), true);
+});
+
+test('历史额度卡的刷新动作恢复为真正的知识生成重试', () => {
+  assert.deepEqual(canonicalAssistantAction({
+    id: 'refresh_task_graph', label: '额度恢复后重试', style: 'secondary',
+  }), {
+    id: 'generate_knowledge_structure', label: '额度恢复后重试',
+    style: 'secondary', kind: 'command',
+  });
+  assert.equal(canonicalAssistantAction({
+    id: 'refresh_task_graph', label: '刷新查看当前进度',
+  }).id, 'refresh_task_graph');
 });
 
 // ---- 修复按钮可用性 ----

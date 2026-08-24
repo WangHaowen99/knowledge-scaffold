@@ -15,6 +15,10 @@ export interface AffectedKnowledgeResource {
 
 export interface MaterialImpactAnalysis {
   semanticChanged: boolean;
+  /** false 表示新增资料尚未绑定到旧来源，不能据此宣称任何现有内容保持有效。 */
+  scopeResolved?: boolean;
+  /** 新增资料经语义核对后确认的直接改动起点；其余 affectedResources 由显式引用传播得到。 */
+  directResources?: AffectedKnowledgeResource[];
   affectedResources: AffectedKnowledgeResource[];
   earliestMilestone?: 'knowledge_confirmed' | 'deterministic_confirmed';
   staleWorkflowSteps: string[];
@@ -45,8 +49,16 @@ export function analyzeMaterialImpact(
   change: MaterialRevisionChange,
   spec?: PackageSpec | null,
 ): MaterialImpactAnalysis {
-  if (!change.semanticChanged || !change.previous || !spec) {
+  if (!change.semanticChanged || !spec) {
     return { semanticChanged: change.semanticChanged, affectedResources: [], staleWorkflowSteps: [] };
+  }
+  if (!change.previous) {
+    return {
+      semanticChanged: true,
+      scopeResolved: false,
+      affectedResources: [],
+      staleWorkflowSteps: [],
+    };
   }
   const affectedResources: AffectedKnowledgeResource[] = [];
   for (const object of spec.objects) {
@@ -77,17 +89,50 @@ export function analyzeMaterialImpact(
   // 直接引用了这份资料的只是起点。改一条规则，引用它的业务操作和绑定的脚本同样要复核——
   // 沿 spec 里的显式引用关系把影响面算全，用户才知道这次改动到底牵动了什么。
   const unique = propagateImpact(spec, direct);
-  const earliestMilestone = unique.some((item) => item.kind !== 'script')
-    ? 'knowledge_confirmed' as const
-    : unique.some((item) => item.kind === 'script')
-      ? 'deterministic_confirmed' as const
-      : undefined;
+  const earliestMilestone = impactMilestone(unique);
   return {
     semanticChanged: true,
+    scopeResolved: true,
+    directResources: direct,
     affectedResources: unique,
     ...(earliestMilestone ? { earliestMilestone } : {}),
     staleWorkflowSteps: earliestMilestone ? [...VALIDATION_STEPS] : [],
   };
+}
+
+export function resolveMaterialImpactScope(
+  db: DatabaseSync,
+  projectId: string,
+  impactId: string,
+  spec: PackageSpec,
+  directResources: AffectedKnowledgeResource[],
+): MaterialImpactAnalysis {
+  const row = db.prepare(`SELECT semantic_changed FROM material_revision_impacts
+    WHERE id = ? AND project_id = ?`).get(impactId, projectId) as { semantic_changed: number } | undefined;
+  if (!row) throw new Error('资料影响记录不存在');
+
+  const direct = [...new Map(directResources.map((item) => [`${item.kind}:${item.key}`, item])).values()];
+  const affectedResources = propagateImpact(spec, direct);
+  const earliestMilestone = impactMilestone(affectedResources);
+  const analysis: MaterialImpactAnalysis = {
+    semanticChanged: Boolean(row.semantic_changed),
+    scopeResolved: true,
+    directResources: direct,
+    affectedResources,
+    ...(earliestMilestone ? { earliestMilestone } : {}),
+    staleWorkflowSteps: earliestMilestone ? [...VALIDATION_STEPS] : [],
+  };
+  db.prepare(`UPDATE material_revision_impacts SET affected_json = ?
+    WHERE id = ? AND project_id = ?`).run(JSON.stringify(analysis), impactId, projectId);
+  return analysis;
+}
+
+function impactMilestone(resources: AffectedKnowledgeResource[]) {
+  return resources.some((item) => item.kind !== 'script')
+    ? 'knowledge_confirmed' as const
+    : resources.some((item) => item.kind === 'script')
+      ? 'deterministic_confirmed' as const
+      : undefined;
 }
 
 export function storeMaterialImpact(
@@ -138,6 +183,7 @@ export function applyMaterialInvalidation(
   reviewTaskId?: string;
   affectedResources?: AffectedKnowledgeResource[];
 } {
+  if (analysis.scopeResolved === false) return { staleTaskIds: [] };
   if (!analysis.earliestMilestone) return { staleTaskIds: [] };
   const graph = db.prepare(`SELECT revision FROM ai_construction_graphs WHERE project_id = ?`)
     .get(projectId) as { revision: number } | undefined;

@@ -1,11 +1,20 @@
 import React, { useRef, useState } from 'react';
+import { Download } from 'lucide-react';
 
 import {
   deleteDocument,
+  downloadDocument,
   listMaterialRevisions,
   updateProject,
   uploadDocument,
 } from './api.js';
+
+function responseFilename(response, fallback) {
+  const header = response.headers.get('Content-Disposition') ?? '';
+  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (!encoded) return fallback;
+  try { return decodeURIComponent(encoded); } catch { return fallback; }
+}
 
 function projectEditForm(project) {
   return {
@@ -148,6 +157,26 @@ export function IngestView({ project, documents, onChanged }) {
     }
   };
 
+  const download = async (document) => {
+    setBusy(true); setMsg('');
+    try {
+      const response = await downloadDocument(project.id, document.id);
+      const url = URL.createObjectURL(await response.blob());
+      const link = window.document.createElement('a');
+      link.href = url;
+      link.download = responseFilename(response, document.filename);
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      setMsg(response.headers.get('X-Material-Export-Mode') === 'normalized'
+        ? `已下载 ${document.filename} 的可复用副本；历史环境未保留原始字节`
+        : `已下载原始资料 ${document.filename}`);
+    } catch (error) {
+      setMsg(`下载失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div>
       <div className={`dropzone ${drag ? 'drag' : ''}`}
@@ -171,6 +200,10 @@ export function IngestView({ project, documents, onChanged }) {
               <span className="tag tag-lang">修订 {document.revisionNo ?? 1}</span>
               {document.parseStatus === 'parsed' && <span className="tag tag-ok">已解析{document.tables ? ` · ${document.tables.length} 表` : ''}</span>}
               {document.parseStatus === 'failed' && <span className="tag tag-err" title={document.parseError}>解析失败</span>}
+              <button className="btn doc-download" title={`下载 ${document.filename}`} disabled={busy}
+                onClick={() => { void download(document); }}>
+                <Download size={13} aria-hidden="true" />下载
+              </button>
               <button className="btn" style={{ padding: '2px 8px', fontSize: 11.5 }} disabled={busy}
                 onClick={async () => {
                   try {

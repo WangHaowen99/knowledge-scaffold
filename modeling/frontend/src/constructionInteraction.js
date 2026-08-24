@@ -23,6 +23,10 @@ export function isConstructionInteraction(interaction) {
   return CONSTRUCTION_PURPOSES.has(interaction.payload?.purpose);
 }
 
+export function isPendingQueueInteraction(interaction) {
+  return isConstructionInteraction(interaction) || interaction?.type === 'scenario_review';
+}
+
 export function isCurrentConstructionInteraction(interaction, currentRevision) {
   if (!isConstructionInteraction(interaction)) return false;
   const purpose = interaction.payload?.purpose;
@@ -37,17 +41,37 @@ function interactionPriority(interaction) {
   return 1;
 }
 
+function interactionQueueOrder(interaction) {
+  const order = Number(interaction?.payload?.queue?.order);
+  return Number.isFinite(order) ? Math.max(0, Math.trunc(order)) : Number.MAX_SAFE_INTEGER;
+}
+
+function interactionCreatedAt(interaction) {
+  const timestamp = Date.parse(interaction?.createdAt ?? interaction?.created_at ?? '');
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 /**
- * 助手栏只展示一个待办。受控修复确认必须优先于同修订的「先不改」理由表单，
- * 同一优先级仍保持后端创建顺序，避免其他流程的交互顺序被意外改变。
+ * 所有当前待办都进入同一条可见队列。后端给出显式 order 时优先使用；旧数据没有
+ * queue 元数据时沿用修复优先级和创建顺序，保证升级后不会改变既有处理语义。
  */
+export function constructionInteractionQueue(interactions = [], currentRevision) {
+  return interactions
+    .filter((interaction) => isPendingQueueInteraction(interaction))
+    .filter((interaction) => interaction?.type === 'scenario_review'
+      || isCurrentConstructionInteraction(interaction, currentRevision))
+    .map((interaction, sourceIndex) => ({ interaction, sourceIndex }))
+    .sort((left, right) => (
+      interactionQueueOrder(left.interaction) - interactionQueueOrder(right.interaction)
+      || interactionPriority(right.interaction) - interactionPriority(left.interaction)
+      || interactionCreatedAt(left.interaction) - interactionCreatedAt(right.interaction)
+      || left.sourceIndex - right.sourceIndex
+    ))
+    .map(({ interaction }) => interaction);
+}
+
+/** 返回队列中当前可在助手栏处理的题卡；完整队列由 constructionInteractionQueue 展示。 */
 export function selectCurrentConstructionInteraction(interactions = [], currentRevision) {
-  let selected = null;
-  for (const interaction of interactions) {
-    if (!isCurrentConstructionInteraction(interaction, currentRevision)) continue;
-    if (!selected || interactionPriority(interaction) > interactionPriority(selected)) {
-      selected = interaction;
-    }
-  }
-  return selected;
+  return constructionInteractionQueue(interactions, currentRevision)
+    .find(isConstructionInteraction) ?? null;
 }

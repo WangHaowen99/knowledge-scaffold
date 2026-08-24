@@ -1,9 +1,9 @@
 import { Type } from '@earendil-works/pi-ai';
-import type { AnalysisResult, DataDictTable } from '../types.js';
+import type { DataDictTable, KnowledgeArtifactKind } from '../types.js';
 import { KEY_SCHEMA_PATTERN, KEY_SCHEMA_DESCRIPTION } from './keys.js';
 import { createSourceCatalog } from './source-catalog.js';
 import {
-  DocumentReadSession,
+  readDocumentPage,
   type ReadableDocument,
 } from './document-read-session.js';
 import {
@@ -21,9 +21,7 @@ export interface ToolContext {
   documents: ReadableDocument[];
   /** 全部上传资料；documents 仅包含可读取正文的资料。 */
   materials?: MaterialInventoryItem[];
-  // 收集节点产物：analyze 工具把结构化结果写这里
   captured: Record<string, unknown>;
-  documentReadSession?: DocumentReadSession;
 }
 
 export function buildTools(ctx: ToolContext) {
@@ -152,54 +150,31 @@ export function buildTools(ctx: ToolContext) {
     name: 'read_document',
     label: '读取文档',
     description: [
-      '分页读取文档正文，每次返回最多 6000 字符和结构化 offset/EOF 信息。',
-      '全文模式必须从 offset=0 开始，并严格使用上次返回的 nextOffset；继续翻页时，',
-      '用 previousPageSummary 保留上一页滚动摘要，可用 previousPageEvidence 记录重要证据及原文 offset。',
+      '按需分页读取文档正文，每次返回最多 6000 字符和结构化 offset/EOF 信息。',
+      '适合在关键词检索后核对具体章节或条款；完整文档分析由独立的并发分段事实管道完成。',
     ].join(''),
     parameters: Type.Object({
       filename: Type.String(),
       offset: Type.Optional(Type.Number({ minimum: 0 })),
-      previousPageSummary: Type.Optional(Type.String({ maxLength: 2_000 })),
-      previousPageEvidence: Type.Optional(Type.Array(Type.Object({
-        offset: Type.Number({ minimum: 0 }),
-        note: Type.String({ maxLength: 500 }),
-      }), { maxItems: 20 })),
     }),
     async execute(_id: string, params: {
       filename: string;
       offset?: number;
-      previousPageSummary?: string;
-      previousPageEvidence?: Array<{ offset: number; note: string }>;
     }) {
       const d = ctx.documents.find((x) => x.filename === params.filename);
       if (!d?.textContent) return text(`未找到文档或无正文：${params.filename}`);
-      try {
-        const page = ctx.documentReadSession
-          ? ctx.documentReadSession.read(params.filename, params.offset, {
-            previousPageSummary: params.previousPageSummary,
-            previousPageEvidence: params.previousPageEvidence,
-          })
-          : new DocumentReadSession([d]).read(params.filename, params.offset);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(page) }],
-          details: {
-            filename: page.filename,
-            offset: page.offset,
-            endOffset: page.endOffset,
-            totalChars: page.totalChars,
-            nextOffset: page.nextOffset,
-            eof: page.eof,
-          },
-        };
-      } catch (error) {
-        const payload = {
-          error: error instanceof Error ? error.message : String(error),
-          ...(error && typeof error === 'object' && 'expectedOffset' in error
-            ? { expectedOffset: (error as { expectedOffset: number }).expectedOffset }
-            : {}),
-        };
-        return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }], details: payload };
-      }
+      const page = readDocumentPage(d, params.offset);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(page) }],
+        details: {
+          filename: page.filename,
+          offset: page.offset,
+          endOffset: page.endOffset,
+          totalChars: page.totalChars,
+          nextOffset: page.nextOffset,
+          eof: page.eof,
+        },
+      };
     },
   };
 
@@ -232,62 +207,7 @@ export function buildTools(ctx: ToolContext) {
     },
   };
 
-  // 节点 3 的产出工具：agent 分析完调用它提交结构化结果，并 terminate。
-  const submitAnalysis = {
-    name: 'submit_analysis',
-    label: '提交初步分析',
-    description: '提交领域概览、候选业务对象、以及需要向专家澄清的开放问题',
-    parameters: Type.Object({
-      domainOverview: Type.String(),
-      candidateObjects: Type.Array(Type.Object({
-        name: Type.String(),
-        rationale: Type.String(),
-        sourceTables: Type.Array(Type.String({ description: '必须引用 list_tables 返回的已有表名，不得自行创建表名' })),
-      })),
-      candidateGoals: Type.Optional(Type.Array(Type.Object({
-        title: Type.String(),
-        problem: Type.String(),
-        targetUsers: Type.Array(Type.String()),
-        scenarios: Type.Array(Type.String()),
-        successCriteria: Type.Array(Type.String()),
-        rationale: Type.String(),
-      }), { maxItems: 3 })),
-      candidateProcesses: Type.Optional(Type.Array(Type.Object({
-        title: Type.String(),
-        trigger: Type.String(),
-        actors: Type.Array(Type.String()),
-        inputs: Type.Array(Type.String()),
-        steps: Type.Array(Type.String()),
-        exceptions: Type.Array(Type.String()),
-        outputs: Type.Array(Type.String()),
-        handoffs: Type.Array(Type.String()),
-        rationale: Type.String(),
-      }), { maxItems: 3 })),
-      openQuestions: Type.Array(Type.Object({ topic: Type.String(), why: Type.String() })),
-    }),
-    async execute(_id: string, params: unknown) {
-      if (ctx.documentReadSession && !ctx.documentReadSession.complete) {
-        return text(ctx.documentReadSession.continuationPrompt());
-      }
-      const canonical = sourceCatalog.canonicalizeAnalysis(params as AnalysisResult);
-      if (canonical.problems.length) {
-        return text([
-          '初步分析未提交，来源表校验失败：',
-          ...canonical.problems.map((problem) => `- ${problem.message}`),
-          availableTables.length ? `可用表：${availableTables.join('、')}` : '当前没有可用表',
-          '请修正 candidateObjects.sourceTables 后重新调用 submit_analysis。',
-        ].join('\n'));
-      }
-      ctx.captured.analysis = canonical.value;
-      return {
-        content: [{ type: 'text' as const, text: '初步分析已提交。' }],
-        details: {},
-        terminate: true,
-      };
-    },
-  };
-
-  return [listTables, describeTable, readTableRows, listDocuments, readDocument, searchDocuments, submitAnalysis];
+  return [listTables, describeTable, readTableRows, listDocuments, readDocument, searchDocuments];
 }
 
 /**
@@ -299,10 +219,9 @@ export function buildTools(ctx: ToolContext) {
  */
 export function buildDocumentReadingTools(
   documents: ToolContext['documents'],
-  documentReadSession?: DocumentReadSession,
   materials?: MaterialInventoryItem[],
 ) {
-  const all = buildTools({ tables: [], documents, materials, captured: {}, documentReadSession });
+  const all = buildTools({ tables: [], documents, materials, captured: {} });
   return all.filter((tool) => (
     tool.name === 'list_documents'
       || (documents.length > 0 && ['read_document', 'search_documents'].includes(tool.name))
@@ -310,47 +229,7 @@ export function buildDocumentReadingTools(
 }
 
 // 初步对象分析完成后，单独判断每份材料适合沉淀为何种知识资源。
-// 与 submit_analysis 分开，避免大项目把对象和知识候选塞进一个超大 tool call 后被截断。
-export function buildArtifactAnalysisTools(ctx: ToolContext) {
-  const base = buildTools(ctx).filter((tool) => tool.name !== 'submit_analysis');
-  const artifactKind = Type.Union([
-    Type.Literal('object'), Type.Literal('rule'), Type.Literal('operation'), Type.Literal('metric'),
-  ]);
-  const submit = {
-    name: 'submit_artifact_analysis',
-    label: '提交材料知识类型分析',
-    description: '逐份材料说明适合生成对象、规则、操作或指标，并列出有材料依据的知识候选。',
-    parameters: Type.Object({
-      materialAssessments: Type.Array(Type.Object({
-        source: Type.String({ description: 'list_tables/list_documents 返回的精确表名或文件名' }),
-        sourceType: Type.Union([Type.Literal('table'), Type.Literal('document')]),
-        suitableFor: Type.Array(artifactKind),
-        rationale: Type.String(),
-      })),
-      candidateArtifacts: Type.Array(Type.Object({
-        kind: artifactKind,
-        name: Type.String(),
-        rationale: Type.String(),
-        sources: Type.Array(Type.String({ description: '精确表名或文件名' })),
-        evidence: Type.Optional(Type.String({ description: '材料中的短证据或章节定位，不要大段复制原文' })),
-        readiness: Type.Union([Type.Literal('extractable'), Type.Literal('needs_clarification')]),
-      })),
-    }),
-    async execute(_id: string, params: unknown) {
-      if (ctx.documentReadSession && !ctx.documentReadSession.complete) {
-        return text(ctx.documentReadSession.continuationPrompt());
-      }
-      ctx.captured.artifactAnalysis = params;
-      return {
-        content: [{ type: 'text' as const, text: '材料知识类型分析已提交。' }],
-        details: {},
-        terminate: true,
-      };
-    },
-  };
-  return [...base, submit];
-}
-
+// 知识生成阶段按资源类型拆开提交，避免大项目把对象、规则和操作塞进同一个超大 tool call。
 // ---- M2 包生成工具 ----
 // key 一律带 pattern/描述引导（keys.ts 统一规则）；渲染入包前 renderPackage 还会强制校验。
 const KeyString = () => Type.String({ pattern: KEY_SCHEMA_PATTERN, maxLength: 80, description: KEY_SCHEMA_DESCRIPTION });
@@ -411,16 +290,30 @@ function literalString(values: string[]) {
   return Type.Union(values.map((value) => Type.Literal(value)));
 }
 
-export const specOperationSchema = (competencyQuestionIds: string[] = []) => Type.Object({
+export interface OperationSchemaOptions {
+  /** 初始操作提取阶段不允许模型提前绑定尚未生成的脚本。 */
+  allowScript?: boolean;
+}
+
+export const specOperationSchema = (
+  competencyQuestionIds: string[] = [],
+  options: OperationSchemaOptions = {},
+) => Type.Object({
   key: KeyString(), title: Type.String(), description: Type.String(),
   inputs: Type.Array(Type.Object({ param: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), required: Type.Boolean(), note: Type.Optional(Type.String()) })),
   outputs: Type.Array(Type.Object({ field: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), note: Type.Optional(Type.String()) })),
-  flow: Type.Array(Type.String({ description: '按顺序提交步骤正文，不要在正文中添加 1.、2. 等序号；引用对象写 object:<key>，引用脚本写 script:<key>' })),
+  flow: Type.Array(Type.String({
+    description: options.allowScript === false
+      ? '按顺序提交步骤正文，不要在正文中添加 1.、2. 等序号；本阶段只允许引用 object:<key>，不得引用脚本'
+      : '按顺序提交步骤正文，不要在正文中添加 1.、2. 等序号；引用对象写 object:<key>，引用脚本写 script:<key>',
+  })),
   relatedObjects: Type.Array(Type.String()),
   usesRules: Type.Optional(Type.Array(Type.String({ description: '引用的规则 key（须在 rules 中声明）' }))),
   usesMetrics: Type.Optional(Type.Array(Type.String({ description: '引用的指标 key（须在 metrics 中声明）' }))),
   notes: Type.Optional(Type.Array(Type.String({ description: '注意事项（兜底、追问、不得推断等）' }))),
-  script: Type.Optional(Type.Object({ key: KeyString(), required: Type.Optional(Type.Boolean()) })),
+  ...(options.allowScript === false ? {} : {
+    script: Type.Optional(Type.Object({ key: KeyString(), required: Type.Optional(Type.Boolean()) })),
+  }),
   competencyQuestionId: competencyQuestionIds.length
     ? literalString(competencyQuestionIds)
     : Type.Optional(Type.String()),
@@ -478,13 +371,13 @@ export function buildObjectGenerateTools(
   cap: ObjectSpecCapture,
   candidates: { id: string }[],
 ) {
-  const base = buildTools(ctx).filter((tool) => tool.name !== 'submit_analysis');
+  const base = buildTools(ctx);
   const submit = {
     name: 'submit_objects',
     label: '提交业务对象',
     description: '提交当前批次的完整业务对象规格；每个对象必须用 candidateId 认领一个给定候选，只提交对象，不提交规则或操作。',
     parameters: Type.Object({
-      objects: Type.Array(specObjectSchema(candidates.map((candidate) => candidate.id)), { minItems: 1, maxItems: 4 }),
+      objects: Type.Array(specObjectSchema(candidates.map((candidate) => candidate.id)), { minItems: 1, maxItems: 12 }),
     }),
     async execute(_id: string, params: { objects: unknown[] }) {
       cap.objects = params.objects;
@@ -494,20 +387,37 @@ export function buildObjectGenerateTools(
   return [...base, submit];
 }
 
-export interface KnowledgeSpecCapture { rules?: unknown[]; metrics?: unknown[]; }
+export interface KnowledgeSpecCapture { rules?: unknown[]; metrics?: unknown[]; dispositions?: unknown[]; }
 export function buildKnowledgeGenerateTools(ctx: ToolContext, cap: KnowledgeSpecCapture) {
-  const base = buildTools(ctx).filter((tool) => tool.name !== 'submit_analysis');
+  const base = buildTools(ctx);
   const submit = {
     name: 'submit_rules_metrics',
     label: '提交规则和指标',
     description: '提交当前批次从材料中提取的规则和指标。没有可靠依据时返回空数组，不得编造阈值或公式。',
     parameters: Type.Object({
-      rules: Type.Array(specRuleSchema(), { maxItems: 5 }),
-      metrics: Type.Array(specMetricSchema(), { maxItems: 5 }),
+      rules: Type.Array(specRuleSchema(), { maxItems: 12 }),
+      metrics: Type.Array(specMetricSchema(), { maxItems: 12 }),
+      dispositions: Type.Optional(Type.Array(Type.Object({
+        candidateId: Type.String(), kind: Type.Union([
+          Type.Literal('object'), Type.Literal('rule'), Type.Literal('operation'), Type.Literal('metric'),
+        ]), name: Type.String(),
+        status: Type.Union([
+          Type.Literal('generated'), Type.Literal('merged'), Type.Literal('deferred'),
+          Type.Literal('needs_clarification'), Type.Literal('excluded'),
+        ]),
+        resourceKeys: Type.Optional(Type.Array(Type.String())),
+        mergedIntoCandidateId: Type.Optional(Type.String()),
+        reason: Type.String(),
+      }))),
     }),
-    async execute(_id: string, params: { rules: unknown[]; metrics: unknown[] }) {
+    async execute(_id: string, params: {
+      rules: unknown[];
+      metrics: unknown[];
+      dispositions?: Array<{ candidateId: string; kind: KnowledgeArtifactKind; name: string }>;
+    }) {
       cap.rules = params.rules;
       cap.metrics = params.metrics;
+      cap.dispositions = params.dispositions;
       return {
         content: [{ type: 'text' as const, text: `已提交 ${params.rules.length} 条规则和 ${params.metrics.length} 个指标。` }],
         details: {}, terminate: true,
@@ -523,13 +433,13 @@ export function buildOperationGenerateTools(
   cap: OperationSpecCapture,
   questions: { id: string; question: string }[],
 ) {
-  const base = buildTools(ctx).filter((tool) => tool.name !== 'submit_analysis');
+  const base = buildTools(ctx);
   const submit = {
     name: 'submit_operations',
     label: '提交操作',
     description: '提交当前批次领域问题对应的完整操作规格；每个 operation 必须用 competencyQuestionId 认领一个给定问题，问题原文由服务端回填。',
     parameters: Type.Object({
-      operations: Type.Array(specOperationSchema(questions.map((question) => question.id)), { minItems: 1, maxItems: 4 }),
+      operations: Type.Array(specOperationSchema(questions.map((question) => question.id), { allowScript: false }), { minItems: 1, maxItems: 3 }),
     }),
     async execute(_id: string, params: { operations: unknown[] }) {
       cap.operations = params.operations;

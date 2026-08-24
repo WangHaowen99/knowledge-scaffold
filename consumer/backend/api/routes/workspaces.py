@@ -6,9 +6,13 @@ import re
 
 from flask import Blueprint, jsonify, request
 
-from config.system_config import SystemConfigValidationError
+from config.system_config import (
+    SystemConfigValidationError,
+    resolve_effective_llm_profile_config,
+)
 from config.workspace_llm_profiles import (
     get_public_workspace_llm_profiles,
+    load_workspace_llm_profiles,
     test_workspace_llm_profile_connection,
     update_workspace_llm_profiles,
 )
@@ -55,6 +59,7 @@ from api.routes.errors import not_found_response
 workspaces_bp = Blueprint("workspaces", __name__, url_prefix="/agentic")
 
 _MODELING_PROJECT_ID_PATTERN = re.compile(r"^pj_[A-Za-z0-9_-]{1,48}$")
+_MODELING_EVALUATION_PROFILE_ID = "modeling-evaluation-runtime"
 _WORKSPACE_IDENTITY_ERRORS = (
     WorkspaceIdentityNotFoundError,
     WorkspaceIdentityDirectoryUnavailableError,
@@ -130,6 +135,35 @@ def _shadow_workspace_id(project_id: str) -> str:
     return "mw-shadow-{}".format(normalized)[:60]
 
 
+def _upsert_modeling_evaluation_profile(workspace_id: str, payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise SystemConfigValidationError("managed_model_profile 必须是对象")
+    base_url = str(payload.get("base_url") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    if not base_url or not model:
+        raise SystemConfigValidationError("managed_model_profile 必须配置 base_url 和 model")
+    current = load_workspace_llm_profiles(workspace_id).get("profiles") or []
+    retained = [profile for profile in current if profile.get("id") != _MODELING_EVALUATION_PROFILE_ID]
+    managed = {
+        "id": _MODELING_EVALUATION_PROFILE_ID,
+        "name": "建模评测运行时",
+        "provider": payload.get("provider") or "openai_compatible",
+        "base_url": base_url,
+        "model": model,
+        "api_key": str(payload.get("api_key") or ""),
+        "timeout": payload.get("timeout", 600),
+        "max_tokens": payload.get("max_tokens", 8192),
+        "temperature": payload.get("temperature", 0.2),
+        "enabled": True,
+    }
+    update_workspace_llm_profiles(workspace_id, {"profiles": [*retained, managed]})
+    return resolve_effective_llm_profile_config(
+        "workspace:{}".format(_MODELING_EVALUATION_PROFILE_ID),
+        workspace_id=workspace_id,
+        allow_default_fallback=False,
+    )["model_profile_ref"]
+
+
 @workspaces_bp.route("/internal/modeling/shadow-workspaces/ensure", methods=["POST"])
 def ensure_modeling_shadow_workspace_api():
     if not modeling_service_authorized(request):
@@ -146,11 +180,17 @@ def ensure_modeling_shadow_workspace_api():
         return jsonify({"detail": "owner 不能为空"}), 400
 
     workspace_id = _shadow_workspace_id(project_id)
+    model_profile_ref = payload.get("model_profile_ref")
+    managed_model_profile = payload.get("managed_model_profile")
+    if model_profile_ref not in (None, "") and managed_model_profile is not None:
+        return jsonify({"detail": "model_profile_ref 和 managed_model_profile 不能同时配置"}), 400
+    resolved_model_ref = None
+    created = False
     try:
         current = get_workspace(workspace_id)
     except KeyError:
         try:
-            created = create_workspace_with_validated_owner(
+            created_workspace = create_workspace_with_validated_owner(
                 get_auth_manager(),
                 name="建模影子·{}".format(project_id),
                 description="知识包建模工具评测专用，自动管理",
@@ -158,11 +198,12 @@ def ensure_modeling_shadow_workspace_api():
                 owner=owner,
                 enforce_workspace_limit=False,
             )
+            current = created_workspace
+            created = True
         except _WORKSPACE_IDENTITY_ERRORS as exc:
             return _workspace_identity_error(exc)
         except ValueError as exc:
             return jsonify({"detail": str(exc)}), 400
-        return jsonify({"created": True, "workspace": created}), 201
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
 
@@ -180,7 +221,29 @@ def ensure_modeling_shadow_workspace_api():
             return _workspace_identity_error(exc)
         except ValueError as exc:
             return jsonify({"detail": str(exc)}), 400
-    return jsonify({"created": False, "workspace": current})
+    try:
+        if managed_model_profile is not None:
+            resolved_model_ref = _upsert_modeling_evaluation_profile(workspace_id, managed_model_profile)
+        elif model_profile_ref not in (None, ""):
+            resolved_model_ref = resolve_effective_llm_profile_config(
+                model_profile_ref,
+                workspace_id=workspace_id,
+                allow_default_fallback=False,
+            )["model_profile_ref"]
+    except SystemConfigValidationError as exc:
+        return jsonify({"detail": str(exc)}), 400
+    if resolved_model_ref is not None:
+        update_workspace_runtime_config(workspace_id, {
+            "llm": {
+                "default_main_profile_ref": resolved_model_ref,
+                "default_task_profile_ref": resolved_model_ref,
+            }
+        })
+    return jsonify({
+        "created": created,
+        "workspace": current,
+        **({"model_profile_ref": resolved_model_ref} if resolved_model_ref is not None else {}),
+    }), 201 if created else 200
 
 
 @workspaces_bp.route("/workspaces", methods=["GET"])

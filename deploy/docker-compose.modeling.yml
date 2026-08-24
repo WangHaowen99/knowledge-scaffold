@@ -19,9 +19,9 @@ services:
     environment:
       - PORT=5100
       - DATA_DIR=/data
-      # LLM：默认 faux 演示模式（无需 Key 全流程可跑）；生产请显式传入三项 MODELING_LLM_*
-      - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-faux}
-      - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-faux}
+      # 新 Workbench Agent 使用真实 OpenAI-compatible 模型；部署脚本从 backend/.env 注入。
+      - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-}
+      - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-}
       - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
       - MODELING_LLM_MAX_TOKENS=${MODELING_LLM_MAX_TOKENS:-128000}
       - MODELING_LLM_CONTEXT_WINDOW=${MODELING_LLM_CONTEXT_WINDOW:-1000000}
@@ -36,18 +36,82 @@ services:
       - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-http://auth-server:5056}
       - AUTH_JWT_AUDIENCE=${AUTH_JWT_AUDIENCE:-meta-wise}
       - CONSUMER_API_URL=${CONSUMER_API_URL:-http://backend:5055}
+      - MODELING_AGENT_BASE_URL=http://modeling-agent:5110
+      - JIUWENBOX_SOCKET_PATH=/run/jiuwenbox/jiuwenbox.sock
       # NL2SQL 查询与 modeling 建库/Excel 导入共用；启用 eval profile 时指向 eval-mysql
       - EVAL_DB_URL=${EVAL_DB_URL:-}
+      - MODELING_EVAL_BINDING_URL=${MODELING_EVAL_BINDING_URL:-}
     volumes:
       - modeling-data:/data
+      - jiuwenbox-sock:/run/jiuwenbox:ro
     networks:
       - consumer-net
+    depends_on:
+      modeling-agent:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  modeling-nl2sql:
+    profiles: ["eval"]
+    build:
+      context: ../modeling
+      dockerfile: Dockerfile
+    image: mw-modeling:${MODELING_TAG:-latest}
+    container_name: mw-modeling-nl2sql
+    restart: unless-stopped
+    command: ["node", "dist/nl2sql/server.js"]
+    expose:
+      - "5600"
+    environment:
+      - NL2SQL_HOST=0.0.0.0
+      - NL2SQL_PORT=5600
+      - NL2SQL_TOKEN=${NL2SQL_TOKEN:-}
+      - EVAL_DB_URL=${EVAL_DB_URL:-}
+      - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-}
+      - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-}
+      - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
+      - MODELING_LLM_MAX_TOKENS=${MODELING_LLM_MAX_TOKENS:-128000}
+      - MODELING_LLM_CONTEXT_WINDOW=${MODELING_LLM_CONTEXT_WINDOW:-1000000}
+    networks:
+      - consumer-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5600/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+
+  modeling-agent:
+    build:
+      context: ../modeling/modeling-agent
+      dockerfile: Dockerfile
+      target: runtime
+    image: mw-modeling-agent:${MODELING_TAG:-latest}
+    container_name: mw-modeling-agent
+    restart: unless-stopped
+    environment:
+      - MODELING_AGENT_DATA_DIR=/data
+      - MODELING_CORE_BASE_URL=http://modeling:5100
+      - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-}
+      - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-}
+      - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
+      - MODELING_LLM_MAX_TOKENS=${MODELING_AGENT_LLM_MAX_TOKENS:-32768}
+      - MODELING_AGENT_MAX_ITERATIONS=${MODELING_AGENT_MAX_ITERATIONS:-200}
+    volumes:
+      - modeling-agent-data:/data
+    networks:
+      - consumer-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5110/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   eval-mysql:
     profiles: ["eval"]
@@ -80,4 +144,8 @@ networks:
 
 volumes:
   modeling-data:
+  modeling-agent-data:
   eval-mysql-data:
+  jiuwenbox-sock:
+    external: true
+    name: ${JIUWENBOX_SOCKET_VOLUME:?JIUWENBOX_SOCKET_VOLUME is required}

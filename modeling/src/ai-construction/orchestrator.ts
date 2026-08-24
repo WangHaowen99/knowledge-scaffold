@@ -7,6 +7,8 @@ import { AuthoringState, getAuthoringState } from '../authoring/state.js';
 import type { AuthoringInteraction, JsonObject } from '../authoring/types.js';
 import { buildFlowchart } from '../authoring/workflow-extras.js';
 import type { GenerationGateFailure } from '../workflow/generation-gate.js';
+import { classifyGenerationError } from '../workflow/generation-error-policy.js';
+import { errorNextActions } from '../error-next-actions.js';
 import {
   buildMaterialAnalysisFailureBlocks,
   buildMaterialAnalysisProgressBlocks,
@@ -42,7 +44,7 @@ function latestConfirmedPackageRevision(
     .map((milestone) => milestone.id));
   let latest: AiConstructionTaskGraphSnapshot['confirmations'][number] | undefined;
   for (const confirmation of snapshot.confirmations) {
-    if (!activeMilestones.has(confirmation.milestoneId)) continue;
+    if (!activeMilestones.has(confirmation.milestoneId) || confirmation.invalidatedAt) continue;
     if (!latest || confirmation.graphRevision > latest.graphRevision) latest = confirmation;
   }
   return latest?.packageRevisionOid;
@@ -56,7 +58,7 @@ function confirmedMilestonePackageRevision(
     milestone.id === milestoneId
   ))?.confirmedRevisionOid
     ?? [...(snapshot.confirmations ?? [])].reverse().find(
-      (confirmation) => confirmation.milestoneId === milestoneId,
+      (confirmation) => confirmation.milestoneId === milestoneId && !confirmation.invalidatedAt,
     )?.packageRevisionOid;
 }
 
@@ -157,6 +159,13 @@ export interface CompleteKnowledgeRepairInput {
   messageKey: string;
   version: string;
   summary: string;
+  quality?: {
+    outcome: 'resolved' | 'improved';
+    beforeBlockingCount: number;
+    afterBlockingCount: number;
+    resolvedCount: number;
+    introducedCount: number;
+  };
   validation: {
     errors: number;
     warnings: number;
@@ -223,6 +232,11 @@ export interface CheckFindingIgnoreInput extends CheckFindingCardInput {
 
 export interface AiConstructionAdvanceContext {
   scriptCandidates?: ScriptCandidate[];
+  /**
+   * 回退或恢复操作完成后实际生效的知识包修订。恢复会创建内容等价的新提交，
+   * 新待办必须绑定该提交，不能继续绑定历史确认修订。
+   */
+  packageRevisionOid?: string;
 }
 
 export interface CompleteScriptDecisionInput {
@@ -326,7 +340,7 @@ export class AiConstructionOrchestrator {
 
   latestMaterialAnalysis(projectId: string): AnalysisResult | null {
     const rows = this.db.prepare(`SELECT output_json FROM wf_nodes
-      WHERE project_id = ? AND type = 'analyze' AND output_json IS NOT NULL
+      WHERE project_id = ? AND type = 'analyze' AND status = 'done' AND output_json IS NOT NULL
       ORDER BY ordinal DESC, rowid DESC LIMIT 20`).all(projectId) as Array<{ output_json: string }>;
     for (const row of rows) {
       try {
@@ -912,7 +926,13 @@ export class AiConstructionOrchestrator {
       }
       if (existing) return { aiConstruction: current, message: existing };
 
-      const validationSummary = `错误 ${input.validation.errors} · 警告 ${input.validation.warnings} · 提示 ${input.validation.hints}`;
+      const validationSummary = [
+        `错误 ${input.validation.errors}`,
+        `警告 ${input.validation.warnings}`,
+        `提示 ${input.validation.hints}`,
+      ].join(' · ');
+      const blockingFindings = (input.validation.findings ?? [])
+        .filter((finding) => finding.severity === 'error');
       const message = this.messages.ensure(projectId, {
         key: input.messageKey, role: 'assistant', taskId: validationTask.id,
         blocks: [
@@ -939,10 +959,14 @@ export class AiConstructionOrchestrator {
             ].join('\n'),
           },
           { type: 'validation', title: '知识结构阶段校验', scope: 'milestone',
-            counts: { errors: input.validation.errors, warnings: input.validation.warnings, hints: input.validation.hints },
-            ...(input.validation.findings?.length ? {
-              findings: input.validation.findings.slice(0, 8).map((finding) => ({
-                severity: finding.severity,
+            counts: {
+              errors: input.validation.errors,
+              warnings: input.validation.warnings,
+              hints: input.validation.hints,
+            },
+            ...(blockingFindings.length ? {
+              findings: blockingFindings.slice(0, 8).map((finding) => ({
+                severity: 'error' as const,
                 title: displayText(finding.title, 120, '校验发现'),
                 summary: displayText(finding.summary, 1_000, '详细说明见完整校验记录'),
                 ...(displayTarget(finding.target) ? { target: displayTarget(finding.target) } : {}),
@@ -976,6 +1000,72 @@ export class AiConstructionOrchestrator {
       });
       return { aiConstruction: current, message };
     });
+  }
+
+  /**
+   * 手动复检与知识生成后的校验必须回写同一份任务图。过去手动复检只更新
+   * package_check_revisions，导致内容已经通过、校验任务却仍停在 failed。
+   */
+  reconcileKnowledgeStructureValidation(
+    projectId: string,
+    input: CompleteKnowledgeStructureInput,
+  ): AiConstructionMaterialUpdate | null {
+    let current = this.graph.snapshot(projectId);
+    if (!current) return null;
+    const milestone = current.milestones.find((item) => item.id === 'knowledge_confirmed');
+    if (milestone?.status !== 'active') return null;
+
+    const extractionTasks = current.tasks.filter((item) => (
+      item.milestoneId === 'knowledge_confirmed'
+        && ['operation_extraction', 'knowledge_extraction'].includes(item.kind)
+        && !['cancelled', 'stale'].includes(item.status)
+    ));
+    if (extractionTasks.length !== 2
+      || extractionTasks.some((item) => item.status !== 'completed')) return null;
+
+    const activeRepair = current.tasks.find((item) => (
+      item.milestoneId === 'knowledge_confirmed'
+        && item.kind === 'package_repair'
+        && ['running', 'waiting_confirmation'].includes(item.status)
+    ));
+    if (activeRepair) return null;
+
+    // 新复检已经证明当前修订没有必须修复的错误时，旧失败/待处理修复不应继续占用进度。
+    if (input.validation.errors === 0) {
+      for (const repairTask of current.tasks.filter((item) => (
+        item.milestoneId === 'knowledge_confirmed'
+          && item.kind === 'package_repair'
+          && !item.required
+          && ['pending', 'ready', 'failed', 'waiting_user'].includes(item.status)
+      ))) {
+        current = this.graph.adjust(projectId, {
+          expectedRevision: current.revision,
+          taskId: repairTask.id,
+          action: 'skip',
+          actor: 'system',
+          reason: '当前知识包复检已没有必须修复的问题，旧修复任务不再需要执行',
+        }).graph;
+      }
+    }
+
+    const validationTask = current.tasks.find((item) => (
+      item.milestoneId === 'knowledge_confirmed'
+        && item.kind === 'package_validation'
+        && !['cancelled', 'stale'].includes(item.status)
+    ));
+    if (!validationTask) return null;
+    if (validationTask.status === 'completed'
+      && validationTask.outputRevisionOid !== input.packageRevisionOid) {
+      current = this.graph.adjust(projectId, {
+        expectedRevision: current.revision,
+        taskId: validationTask.id,
+        action: 'redo',
+        actor: 'system',
+        reason: '知识包修订已经变化，需要以当前修订重新完成校验',
+      }).graph;
+    }
+
+    return this.completeKnowledgeStructure(projectId, input);
   }
 
   startKnowledgeStructure(
@@ -1050,7 +1140,7 @@ export class AiConstructionOrchestrator {
         blocks: [
           {
             type: 'status', title: '正在校验知识结构',
-            summary: `v${input.version} 草案已写入，正在检查结构、映射和语义完整性`,
+            summary: `v${input.version} 草案已写入，正在检查格式、引用和数据映射`,
             milestoneId: 'knowledge_confirmed', taskId: validationTask.id,
             progress: current.progress.percent,
             eta: {
@@ -1061,7 +1151,7 @@ export class AiConstructionOrchestrator {
           },
           {
             type: 'text',
-            text: '知识文件已经生成。当前正在执行确定性检查和语义体检；复杂知识包的语义体检可能持续一到数分钟，完成后会给出可审阅的校验结果。',
+            text: '知识文件已经生成。当前正在执行确定性的格式、引用、来源映射和规则检查，完成后会给出可审阅的校验结果。',
           },
         ],
       });
@@ -1109,6 +1199,8 @@ export class AiConstructionOrchestrator {
 
   failKnowledgeStructure(projectId: string, reason: string): AiConstructionMaterialUpdate {
     return this.transaction(() => {
+      const errorPolicy = classifyGenerationError(reason);
+      const quotaExhausted = errorPolicy.kind === 'quota_exhausted';
       let current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
       const task = current.tasks.find((item) => item.milestoneId === 'knowledge_confirmed'
@@ -1121,7 +1213,7 @@ export class AiConstructionOrchestrator {
         role: 'assistant', taskId: task.id,
         blocks: [
           {
-            type: 'status', title: '知识结构生成未完成',
+            type: 'status', title: quotaExhausted ? '模型额度不足' : '知识结构生成未完成',
             summary: `任务“${task.title}”已保留为可重试状态`,
             milestoneId: 'knowledge_confirmed', taskId: task.id,
             progress: current.progress.percent,
@@ -1133,10 +1225,12 @@ export class AiConstructionOrchestrator {
           },
           { type: 'text', text: reason.trim().slice(0, 3000) || '生成过程意外中断，请重新执行当前任务。' },
           {
-            type: 'next_actions', title: '可以这样继续', actions: [
-              { id: 'generate_knowledge_structure', label: '重试知识结构生成', style: 'primary' },
-              { id: 'review_process_files', label: '先检查流程文件', style: 'secondary' },
-            ],
+            type: 'next_actions', title: '可以这样继续', actions: quotaExhausted
+              ? (errorNextActions('MODEL_QUOTA_EXHAUSTED') ?? [])
+              : [
+                { id: 'generate_knowledge_structure', label: '重试知识结构生成', style: 'primary' },
+                { id: 'review_process_files', label: '先检查流程文件', style: 'secondary' },
+              ],
           },
         ],
       });
@@ -1230,9 +1324,9 @@ export class AiConstructionOrchestrator {
           milestoneId: 'knowledge_confirmed', taskId: activeTask.id,
           progress: current.progress.percent,
           eta: {
-            minMinutes: current.progress.eta.minMinutes,
-            maxMinutes: current.progress.eta.maxMinutes,
-            confidence: current.progress.eta.confidence,
+            minMinutes: 5,
+            maxMinutes: 30,
+            confidence: 'low' as const,
           },
         },
         {
@@ -1361,13 +1455,19 @@ export class AiConstructionOrchestrator {
         });
       }
 
-      const validationSummary = `错误 ${input.validation.errors} · 警告 ${input.validation.warnings} · 提示 ${input.validation.hints}`;
+      const validationSummary = input.quality
+        ? `必须修复 ${input.quality.beforeBlockingCount} → ${input.quality.afterBlockingCount}`
+        : `错误 ${input.validation.errors}`;
+      const blockingFindings = (input.validation.findings ?? [])
+        .filter((finding) => finding.severity === '错误');
       const message = this.messages.ensure(projectId, {
         key: input.messageKey, role: 'assistant', taskId: repairTask.id,
         blocks: [
           {
             type: 'status',
-            title: input.validation.errors === 0 ? '知识包修复已通过校验' : '本轮修复已完成，仍需继续处理',
+            title: input.quality
+              ? input.quality.outcome === 'resolved' ? '本项已解决，知识包已通过校验' : '本项已解决，继续处理其他错误'
+              : input.validation.errors === 0 ? '知识包修复已通过校验' : '本轮修复已完成，仍需继续处理',
             summary: `v${input.version} · ${validationSummary}`,
             milestoneId: repairMilestoneId, taskId: repairTask.id,
             progress: current.progress.percent,
@@ -1377,18 +1477,28 @@ export class AiConstructionOrchestrator {
               confidence: current.progress.eta.confidence,
             },
           },
-          { type: 'text', text: input.summary },
+          {
+            type: 'text',
+            text: input.quality
+              ? [
+                input.summary,
+                `本轮解决 ${input.quality.resolvedCount} 项，新增必须修复问题 ${input.quality.introducedCount} 项。`,
+                input.quality.afterBlockingCount > 0
+                  ? `知识包仍有 ${input.quality.afterBlockingCount} 项必须修复的问题，需要继续处理。`
+                  : '当前知识包没有剩余必须修复的问题。',
+              ].join('\n')
+              : input.summary,
+          },
           {
             type: 'validation', title: '修复后阶段校验', scope: 'milestone',
             counts: {
               errors: input.validation.errors,
-              warnings: input.validation.warnings,
-              hints: input.validation.hints,
+              warnings: 0,
+              hints: 0,
             },
-            ...(input.validation.findings?.length ? {
-              findings: input.validation.findings.slice(0, 8).map((finding) => ({
-                severity: finding.severity === '错误' ? 'error' as const
-                  : finding.severity === '警告' ? 'warning' as const : 'hint' as const,
+            ...(blockingFindings.length ? {
+              findings: blockingFindings.slice(0, 8).map((finding) => ({
+                severity: 'error' as const,
                 title: displayText(finding.category, 120, '校验发现'),
                 summary: displayText(finding.message, 1_000, '详细说明见完整校验记录'),
                 ...(displayTarget(finding.target) ? { target: displayTarget(finding.target) } : {}),
@@ -1612,6 +1722,9 @@ export class AiConstructionOrchestrator {
     input: CheckFindingCardInput,
   ): AiConstructionMaterialUpdate {
     return this.transaction(() => {
+      if (input.severity !== '错误') {
+        throw new Error('警告和提示不需要展示或处理，可以直接继续 AI 辅助建模');
+      }
       const current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
       const taskId = current.progress.currentTaskId ?? undefined;
@@ -1684,8 +1797,8 @@ export class AiConstructionOrchestrator {
     return this.transaction(() => {
       const current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      if (input.scope === 'warning' && !input.fingerprint) {
-        throw new Error('忽略警告需要提供该条提醒的标识');
+      if (input.scope !== 'errors') {
+        throw new Error('警告和提示不需要处理，可以直接继续 AI 辅助建模');
       }
       const taskId = current.progress.currentTaskId ?? undefined;
       const existing = this.state.snapshot(projectId).pendingInteractions.find(
@@ -1695,7 +1808,7 @@ export class AiConstructionOrchestrator {
       );
       // 同一条发现重复点「忽略」不再开第二个待办，否则助手栏会堆出一串一样的表单
       if (existing) return { aiConstruction: current, interaction: existing };
-      const batched = input.scope === 'errors';
+      const batched = true;
       const started = this.state.apply({
         kind: 'start_run',
         projectId,
@@ -1961,11 +2074,15 @@ export class AiConstructionOrchestrator {
       case 'knowledge_confirmed':
         return this.prepareKnowledgeStructure(projectId, current, confirmedSnapshot);
       case 'process_confirmed':
-        return this.prepareProcessInterview(projectId, current, confirmedSnapshot);
+        return this.prepareProcessInterview(
+          projectId, current, confirmedSnapshot, context.packageRevisionOid,
+        );
       case 'materials_ready':
         return this.prepareGoalDirectedMaterialAnalysis(projectId, current);
       case 'goal_confirmed':
-        return this.prepareModelingBrief(projectId, current, confirmedSnapshot);
+        return this.prepareModelingBrief(
+          projectId, current, confirmedSnapshot, context.packageRevisionOid,
+        );
       default:
         return null;
     }
@@ -1975,6 +2092,7 @@ export class AiConstructionOrchestrator {
     projectId: string,
     snapshot: AiConstructionTaskGraphSnapshot,
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    packageRevisionOid?: string,
   ): AiConstructionAdvanceResult {
     let current = snapshot;
     let task = current.tasks.find((item) => item.kind === 'modeling_brief'
@@ -2014,7 +2132,7 @@ export class AiConstructionOrchestrator {
         if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
         task = refreshedTask;
       }
-      const packageRevision = confirmedMilestonePackageRevision(
+      const packageRevision = packageRevisionOid ?? confirmedMilestonePackageRevision(
         confirmedSnapshot, 'materials_ready',
       );
       const started = this.state.apply({
@@ -2424,7 +2542,7 @@ export class AiConstructionOrchestrator {
           taskId: task.id, outputRevisionOid: input.packageRevisionOid,
         });
       }
-      const summary = `脚本 ${input.scriptCount} 个 · 错误 ${input.validation.errors} · 警告 ${input.validation.warnings} · 提示 ${input.validation.hints}`;
+      const summary = `脚本 ${input.scriptCount} 个 · 错误 ${input.validation.errors}`;
       const message = existing ?? this.messages.ensure(projectId, {
         key: input.messageKey, role: 'assistant', taskId: task.id,
         blocks: [
@@ -2778,7 +2896,8 @@ export class AiConstructionOrchestrator {
         },
       });
       operationTask = current.tasks.find((item) => item.kind === 'operation_extraction'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!operationTask) throw new Error('业务操作提取任务创建失败');
 
@@ -2798,7 +2917,8 @@ export class AiConstructionOrchestrator {
         },
       });
       knowledgeTask = current.tasks.find((item) => item.kind === 'knowledge_extraction'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!knowledgeTask) throw new Error('知识提取任务创建失败');
 
@@ -2818,12 +2938,16 @@ export class AiConstructionOrchestrator {
         },
       });
       validationTask = current.tasks.find((item) => item.kind === 'package_validation'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!validationTask) throw new Error('知识包校验任务创建失败');
 
+    // 回退会创建新一轮知识生成任务。固定消息 key 会返回历史入口卡，让本轮任务没有
+    // 可操作的“生成知识结构”卡；任务 ID 在单轮重试中稳定、在不同回退轮次间唯一。
     const message = this.messages.ensure(projectId, {
-      key: 'knowledge_confirmed.started', role: 'assistant', taskId: operationTask.id,
+      key: `knowledge_confirmed.started.${operationTask.id}`,
+      role: 'assistant', taskId: operationTask.id,
       blocks: [
         {
           type: 'status', title: '进入知识结构构建',
@@ -2856,6 +2980,7 @@ export class AiConstructionOrchestrator {
     projectId: string,
     initial: AiConstructionTaskGraphSnapshot,
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    packageRevisionOid?: string,
   ): AiConstructionAdvanceResult {
     let current = initial;
     const goalTask = current.tasks.find((item) => item.kind === 'modeling_brief');
@@ -2927,7 +3052,7 @@ export class AiConstructionOrchestrator {
           type: 'wait_for_user', expectedRevision: current.revision, taskId,
         });
       }
-      const packageRevision = latestConfirmedPackageRevision(confirmedSnapshot);
+      const packageRevision = packageRevisionOid ?? latestConfirmedPackageRevision(confirmedSnapshot);
       const started = this.state.apply({
         kind: 'start_run', projectId, intent: '业务流程访谈', baseRevision: packageRevision,
         state: { purpose: 'process_interview', stage: 'core', taskId },

@@ -1,97 +1,66 @@
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { runAnalyze } from '../src/workflow/engine.js';
+import test from 'node:test';
+import { buildFauxModeler, type LlmDeps } from '../src/llm/provider.js';
 import { createProject } from '../src/projects/repo.js';
-import { nextRequiredDocumentRead, type LlmDeps } from '../src/llm/provider.js';
-
-/** 按批次提示词里声明的来源，生成一份刚好通过校验的应答 */
-function artifactReplyFor(systemPrompt: string) {
-  const match = systemPrompt.match(/当前批次来源：(\[.*?\])\n/s);
-  const refs: Array<{ source: string; sourceType: string }> = match ? JSON.parse(match[1]) : [];
-  return {
-    materialAssessments: refs.map((ref) => ({
-      source: ref.source, sourceType: ref.sourceType,
-      suitableFor: ['rule'], rationale: '材料给出了判定条件',
-    })),
-    candidateArtifacts: refs.map((ref) => ({
-      kind: 'rule', name: `规则-${ref.source}`, rationale: '来自该材料',
-      sources: [ref.source], readiness: 'extractable',
-    })),
-  };
-}
+import { runAnalyze } from '../src/workflow/engine.js';
 
 function countingLlm() {
-  const calls = { domain: 0, artifact: 0 };
-  const core = createFauxCore({ provider: 'incremental', models: [{ id: 'incremental' }] });
+  const base = buildFauxModeler();
+  const calls = { chunks: 0, documents: 0, domain: 0 };
   const llm: LlmDeps = {
-    model: core.getModel(),
-    getApiKey: () => 'faux',
+    ...base,
     streamFn: ((model: unknown, context: any, options: unknown) => {
       const system = String(context.systemPrompt ?? '');
-      if (system.includes('所有文本材料必须')) {
-        const nextRead = nextRequiredDocumentRead(context.messages ?? [], fauxToolCall);
-        if (nextRead) {
-          core.setResponses([fauxAssistantMessage([nextRead as any])]);
-          return core.streamSimple(model as any, context, options as any);
-        }
-      }
-      if (system.includes('submit_artifact_analysis')) {
-        calls.artifact += 1;
-        core.setResponses([fauxAssistantMessage([
-          fauxToolCall('submit_artifact_analysis', artifactReplyFor(system)),
-        ])]);
-      } else if (system.includes('submit_analysis')) {
-        calls.domain += 1;
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
-          domainOverview: '增量分析验证', candidateObjects: [], openQuestions: [],
-        })])]);
-      } else {
-        throw new Error(`未处理的 prompt: ${system.slice(0, 60)}`);
-      }
-      return core.streamSimple(model as any, context, options as any);
+      if (system.includes('submit_document_chunk_analysis')) calls.chunks += 1;
+      if (system.includes('submit_document_analysis')) calls.documents += 1;
+      if (system.includes('submit_material_analysis_result')) calls.domain += 1;
+      return base.streamFn(model, context, options);
     }) as LlmDeps['streamFn'],
   };
   return { llm, calls };
 }
 
-const doc = (name: string) => ({ filename: name, textContent: `${name} 的内容：满足条件时执行。` });
-
-test('补传资料只重跑变化的批次，已分析过的批次直接复用', async () => {
-  const project = createProject({ owner: 'tester', name: '增量分析' });
-  // 批大小是 4，先用 4 份填满第一批
-  const first = [doc('a.md'), doc('b.md'), doc('c.md'), doc('d.md')];
-
-  const run1 = countingLlm();
-  await runAnalyze(project.id, [], first, run1.llm);
-  assert.equal(run1.calls.artifact, 1, '首轮应分析 1 批');
-
-  // 补传第 5 份：第一批内容没变，只有新起的第二批需要跑
-  const run2 = countingLlm();
-  const progress: string[] = [];
-  const result = await runAnalyze(
-    project.id, [], [...first, doc('e.md')], run2.llm, (update) => progress.push(update.title ?? ''),
-  );
-
-  assert.equal(run2.calls.artifact, 1, '第一批应复用，只跑新增的第二批');
-  assert.equal(run2.calls.domain, 1, '领域分析覆盖全部资料，必须重跑');
-  assert.ok(progress.some((title) => title.includes('复用已有分析')), '复用应当在进度里说明');
-
-  // 复用不能丢材料：5 份都要有评估结论
-  const sources = (result.analysis.materialAssessments ?? []).map((item) => item.source).sort();
-  assert.deepEqual(sources, ['a.md', 'b.md', 'c.md', 'd.md', 'e.md']);
+const doc = (name: string, content = `${name} 的合成内容：满足条件时执行。`) => ({
+  id: `doc_${name}`,
+  filename: name,
+  textContent: content,
+  revisionFingerprint: `${name}:${content.length}`,
 });
 
-test('资料内容被改动后不复用旧结论', async () => {
-  const project = createProject({ owner: 'tester', name: '改动后重分析' });
-  const before = [doc('x.md'), doc('y.md')];
-  const run1 = countingLlm();
-  await runAnalyze(project.id, [], before, run1.llm);
-  assert.equal(run1.calls.artifact, 1);
+test('补传资料只分析新增分段，未变文档的分段和汇总均复用', async () => {
+  const project = createProject({ owner: 'tester', name: '合成增量分析' });
+  const first = [doc('a.md'), doc('b.md'), doc('c.md'), doc('d.md')];
+  const initial = countingLlm();
+  await runAnalyze(project.id, [], first, initial.llm);
+  assert.equal(initial.calls.chunks, 4);
+  assert.equal(initial.calls.documents, 4);
 
-  const run2 = countingLlm();
+  const next = countingLlm();
+  const progress: string[] = [];
+  const result = await runAnalyze(
+    project.id, [], [...first, doc('e.md')], next.llm, (update) => progress.push(update.title),
+  );
+  assert.equal(next.calls.chunks, 1);
+  assert.equal(next.calls.documents, 1);
+  assert.equal(next.calls.domain, 1);
+  assert.ok(progress.some((title) => title.includes('复用 4/5 个已完成分段')));
+  assert.deepEqual(
+    result.analysis.materialAssessments?.map((item) => item.source).sort(),
+    ['a.md', 'b.md', 'c.md', 'd.md', 'e.md'],
+  );
+});
+
+test('资料内容变化后只重跑变化文档，其他文档继续复用', async () => {
+  const project = createProject({ owner: 'tester', name: '合成内容变更分析' });
+  const before = [doc('x.md'), doc('y.md')];
+  await runAnalyze(project.id, [], before, countingLlm().llm);
+
+  const changed = countingLlm();
   await runAnalyze(project.id, [], [
-    { filename: 'x.md', textContent: '改过的内容：门槛提高到 500 万。' }, before[1],
-  ], run2.llm);
-  assert.equal(run2.calls.artifact, 1, '批次内容变了必须重跑，不能复用');
+    doc('x.md', '修改后的合成内容：阈值需要专家确认。'),
+    before[1],
+  ], changed.llm);
+  assert.equal(changed.calls.chunks, 1);
+  assert.equal(changed.calls.documents, 1);
+  assert.equal(changed.calls.domain, 1);
 });

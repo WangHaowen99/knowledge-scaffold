@@ -11,6 +11,18 @@ test('新建草稿完成 AI 辅助构建后从 1.0.0-rc.1 开始验证', () => {
   assert.equal(nextValidationCandidateVersion({
     currentVersion: '0.1.0', currentStatus: 'draft',
   }), '1.0.0-rc.1');
+  assert.equal(nextValidationCandidateVersion({
+    currentVersion: '1.0.0', currentStatus: 'draft',
+  }), '1.0.0-rc.1');
+});
+
+test('导入的稳定草稿基线从原版本向上生成增量候选', () => {
+  assert.equal(nextValidationCandidateVersion({
+    currentVersion: '1.1.8', currentStatus: 'draft', changeLevel: 'minor',
+  }), '1.2.0-rc.1');
+  assert.equal(nextValidationCandidateVersion({
+    currentVersion: '2.4.3', currentStatus: 'draft', changeLevel: 'patch',
+  }), '2.4.4-rc.1');
 });
 
 test('同一稳定目标的优化修订递增 RC 序号', () => {

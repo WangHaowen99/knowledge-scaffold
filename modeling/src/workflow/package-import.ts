@@ -436,6 +436,14 @@ function parseRenderedSpec(files: Record<string, string>): PackageSpec {
   };
 }
 
+/**
+ * 从标准知识包目录重建结构化规格。Studio 与 ZIP 导入共用这一解析入口，
+ * 避免两套 Markdown 解释规则逐渐分叉。
+ */
+export function parseRenderedPackageFiles(files: Record<string, string>): PackageSpec {
+  return parseRenderedSpec(files);
+}
+
 function inferredCoverage(spec: PackageSpec): CoverageResult {
   return {
     covered: spec.operations

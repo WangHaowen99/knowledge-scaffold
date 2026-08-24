@@ -175,7 +175,7 @@ test('数据映射校验拒绝未知表，但允许外部输入对象暂不绑�
   assert.doesNotThrow(() => assertObjectDataMappings(spec([missingSource]), [table()]));
 });
 
-test('多表对象字段按全部来源表并集校验', () => {
+test('多表对象不能把不同物理表的字段并集伪装成可直接绑定的对象', () => {
   const multiTable = object({
     sourceRefs: [
       { kind: 'table', table: 'CUSTOMERS' },
@@ -193,7 +193,10 @@ test('多表对象字段按全部来源表并集校验', () => {
   };
 
   assert.deepEqual(tableSourcesFor(multiTable).map((source) => source.table), ['CUSTOMERS', 'PRODUCTS']);
-  assert.deepEqual(findObjectDataMappingProblems(spec([multiTable]), [table(), productTable]), []);
+  const problems = findObjectDataMappingProblems(spec([multiTable]), [table(), productTable]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].message, /当前数据绑定一次只能执行一张物理表/);
+  assert.match(problems[0].message, /汇总对象.*不声明表格 sourceRefs/);
 });
 
 test('文档来源会显示第一个有名称的中文章节', () => {

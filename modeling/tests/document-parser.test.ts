@@ -26,8 +26,8 @@ test('上传 CSV 后会解析为可落库的项目数据表', async () => {
   assert.deepEqual(parsed.tables?.[0], {
     name: 'warehouse_location',
     fields: [
-      { name: 'yard_id', note: undefined, inferredType: 'string', sampleValues: ['Y01', 'Y02'], distinctRatio: 1 },
-      { name: 'capacity', note: undefined, inferredType: 'number', sampleValues: ['100', '200'], distinctRatio: 1 },
+      { name: 'yard_id', sourceColumn: 'A', note: undefined, inferredType: 'string', sampleValues: ['Y01', 'Y02'], distinctRatio: 1, nonEmptyRatio: 1 },
+      { name: 'capacity', sourceColumn: 'B', note: undefined, inferredType: 'number', sampleValues: ['100', '200'], distinctRatio: 1, nonEmptyRatio: 1 },
     ],
     rowCount: 2,
     rows: [['Y01', '100'], ['Y02', '200']],

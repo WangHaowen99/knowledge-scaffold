@@ -602,6 +602,7 @@ export class AiConstructionMessageStore {
     const task = graph.tasks.find((item) => item.id === graph.progress.currentTaskId) ?? graph.tasks[0];
     const milestoneTasks = milestone ? graph.tasks.filter((item) => item.milestoneId === milestone.id) : graph.tasks.slice(0, 1);
     const imported = graph.source === 'package_import';
+    const importedBaseline = imported && graph.status === 'completed';
     return this.append(projectId, {
       key: 'welcome',
       role: 'assistant',
@@ -609,8 +610,10 @@ export class AiConstructionMessageStore {
       blocks: [
         {
           type: 'status',
-          title: 'AI 辅助构建已就绪',
-          summary: `当前处于「${milestone?.title ?? '待规划'}」，正在准备「${task?.title ?? '下一项建模任务'}」`,
+          title: importedBaseline ? '已有知识包基线已就绪' : 'AI 辅助构建已就绪',
+          summary: importedBaseline
+            ? '已从导入版本建立基线，可以直接补充或替换资料'
+            : `当前处于「${milestone?.title ?? '待规划'}」，正在准备「${task?.title ?? '下一项建模任务'}」`,
           milestoneId: milestone?.id,
           taskId: task?.id,
           progress: graph.progress.percent,
@@ -622,7 +625,9 @@ export class AiConstructionMessageStore {
         },
         {
           type: 'text',
-          text: imported
+          text: importedBaseline
+            ? '现有知识包已原样保留。补充或替换资料后，我会只核对受影响内容，未受影响部分继续有效。'
+            : imported
             ? '我会先检查现有知识包的结构、证据和校验结果，再与您确认需要补充或改进的内容。'
             : '知识包草稿目录已经创建。请先说明建模目标；目标确认后，我会围绕它分析资料并逐步形成流程、业务操作、对象、规则和确定性脚本。',
         },
@@ -631,9 +636,13 @@ export class AiConstructionMessageStore {
             required: item.required, ...(item.reason ? { reason: item.reason } : {}) })) },
         ...(imported ? [{
           type: 'next_actions' as const,
-          title: '可以从这里开始',
+          title: importedBaseline ? '继续增量建模' : '可以从这里开始',
           actions: [
-            { id: 'review_package', label: '检查现有知识包', style: 'primary' as const },
+            ...(importedBaseline ? [{
+              id: 'start_increment_round', label: '补充或替换资料', style: 'primary' as const,
+            }] : [{
+              id: 'review_package', label: '检查现有知识包', style: 'primary' as const,
+            }]),
             { id: 'view_validation', label: '查看校验情况', style: 'secondary' as const },
           ],
         }] : []),

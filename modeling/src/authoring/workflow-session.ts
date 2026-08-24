@@ -159,10 +159,13 @@ export function buildProjectWorkflow(input: ProjectWorkflowStateInput) {
   }
 
   const latestRound = input.rounds[0];
+  const evaluationProgress = recordedStatus('evaluate');
   const validationPrerequisitesReady = constructionDone
     && TERMINAL_STATUSES.has(steps.scenario.status ?? 'not_started')
     && TERMINAL_STATUSES.has(steps.data_source.status ?? 'not_started');
-  if (construction.evaluationRepair) {
+  if (evaluationProgress === 'stale' || evaluationProgress === 'failed') {
+    steps.evaluate = { status: evaluationProgress };
+  } else if (construction.evaluationRepair) {
     steps.evaluate = statusFact(construction.evaluationRepair);
   } else if (latestRound) {
     steps.evaluate = {
@@ -184,7 +187,10 @@ export function buildProjectWorkflow(input: ProjectWorkflowStateInput) {
   const diagnosesAreCurrent = !input.currentPackage || input.diagnoses.every((diagnosis) => (
     diagnosis.basedRevisionOid === input.currentPackage?.revision.oid
   ));
-  if (input.diagnoses.length) {
+  const diagnosisProgress = recordedStatus('diagnose');
+  if (diagnosisProgress === 'stale' || diagnosisProgress === 'failed') {
+    steps.diagnose = { status: diagnosisProgress };
+  } else if (input.diagnoses.length) {
     steps.diagnose = { status: diagnosesAreCurrent ? 'completed' : 'stale' };
   } else if (evaluationNeedsDiagnosis) {
     steps.diagnose = { available: true };
@@ -199,7 +205,10 @@ export function buildProjectWorkflow(input: ProjectWorkflowStateInput) {
     interaction.type === 'change_plan'
       && interaction.payload.purpose === 'package_chat'
   ));
-  if (pendingPackageChange || pendingSuggestions.length || candidateSuggestions.length) {
+  const optimizationProgress = recordedStatus('optimize');
+  if (optimizationProgress === 'stale' || optimizationProgress === 'failed') {
+    steps.optimize = { status: optimizationProgress };
+  } else if (pendingPackageChange || pendingSuggestions.length || candidateSuggestions.length) {
     steps.optimize = { status: 'waiting_review' };
   } else if (input.suggestions.some((suggestion) => suggestion.status === 'applied')) {
     steps.optimize = { status: 'completed' };

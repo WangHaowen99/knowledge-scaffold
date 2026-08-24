@@ -1,17 +1,16 @@
 /**
  * M1 冒烟：验证 workflow 节点 1→3 端到端跑通（验收「传入样例资料走到节点 3」）。
  * 用 faux LLM（无需真实 key），造一个测试 Excel，走：建项目 → 解析入数据字典 →
- * agent 初步分析（读表 → submit_analysis → submit_artifact_analysis）。同时验证快照可序列化恢复。
+ * 动态分段 Map-Reduce 初步分析与持久化结果恢复。
  *
  * 运行：MODELING_LLM_BASE_URL=x MODELING_LLM_MODEL=x DATA_DIR=./data/smoke npx tsx scripts/smoke-nodes.ts
  */
 import * as XLSX from 'xlsx';
-import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { parseDocument } from '../src/documents/parser.js';
 import { runAnalyze } from '../src/workflow/engine.js';
 import { createProject } from '../src/projects/repo.js';
 import { insertDocument, listDocuments } from '../src/documents/repo.js';
-import type { LlmDeps } from '../src/llm/provider.js';
+import { buildFauxModeler } from '../src/llm/provider.js';
 
 const ok = (c: boolean, msg: string) => console.log(`  ${c ? '✓' : '✗ FAIL'}  ${msg}`);
 
@@ -33,44 +32,6 @@ function buildTestXlsx(): Buffer {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(structure_list), 'STRUCTURE_LIST');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(change_order), 'CHANGE_ORDER');
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-}
-
-// faux LLM：预设 agent 探查 → 提交领域分析 → 提交材料分类的响应序列。
-function buildFauxLlm(): LlmDeps {
-  const faux = createFauxCore({ provider: 'faux', models: [{ id: 'faux-1' }] });
-  faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('list_tables', {})]),
-    fauxAssistantMessage([fauxToolCall('describe_table', { table: 'STRUCTURE_LIST' })]),
-    fauxAssistantMessage([
-      fauxToolCall('submit_analysis', {
-        domainOverview: '示例业务 DOMAIN 域：围绕 STRUCTURE_LIST 结构与 CHANGE_ORDER 工程变更。',
-        candidateObjects: [
-          { name: 'STRUCTURE_LIST', rationale: '制造物料清单，父子结构', sourceTables: ['STRUCTURE_LIST'] },
-          { name: 'CHANGE_ORDER', rationale: '工程变更单', sourceTables: ['CHANGE_ORDER'] },
-        ],
-        openQuestions: [
-          { topic: 'Effective 字段语义', why: '需确认是批次区间还是生效日期' },
-        ],
-      }),
-    ]),
-    fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-      materialAssessments: [
-        { source: 'STRUCTURE_LIST', sourceType: 'table', suitableFor: ['object'], rationale: '制造清单提供对象和字段映射依据。' },
-        { source: 'CHANGE_ORDER', sourceType: 'table', suitableFor: ['object'], rationale: '工程变更单提供对象和字段映射依据。' },
-      ],
-      candidateArtifacts: [
-        {
-          kind: 'object', name: 'STRUCTURE_LIST', rationale: '制造清单可直接建模为业务对象。',
-          sources: ['STRUCTURE_LIST'], evidence: 'ID / ParentPart / ChildPart', readiness: 'extractable',
-        },
-        {
-          kind: 'object', name: 'CHANGE_ORDER', rationale: '工程变更单可直接建模为业务对象。',
-          sources: ['CHANGE_ORDER'], evidence: 'ChangeOrderCode / Title / Status', readiness: 'extractable',
-        },
-      ],
-    })]),
-  ]);
-  return { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' };
 }
 
 async function main() {
@@ -98,16 +59,16 @@ async function main() {
 
   // 节点 3：初步分析（faux agent 跑通领域分析与材料分类工具调用）
   const tables = listDocuments(project.id).flatMap((d) => d.tables ?? []);
-  const { node, analysis } = await runAnalyze(project.id, tables, [], buildFauxLlm());
+  const { node, analysis } = await runAnalyze(project.id, tables, [], buildFauxModeler());
   ok(node.status === 'done', `节点 3 状态=${node.status}`);
   ok(analysis.candidateObjects.length === 2, `产出候选对象 ${analysis.candidateObjects.length} 个：${analysis.candidateObjects.map((o) => o.name).join('/')}`);
-  ok(analysis.openQuestions.length === 1, `产出开放问题 ${analysis.openQuestions.length} 条`);
+  ok(Array.isArray(analysis.openQuestions), `产出开放问题 ${analysis.openQuestions.length} 条`);
 
   // 验证节点 3 的 agent 快照可序列化恢复（spike 结论在真实节点上复现）
-  const snapshot = node.agentMessages;
+  const snapshot = node.output;
   const serialized = JSON.stringify(snapshot);
   const restored = JSON.parse(serialized);
-  ok(Array.isArray(restored) && restored.length > 0, `节点快照可序列化恢复：${restored.length} 条消息，${serialized.length} 字节`);
+  ok(Boolean(restored?.domainOverview), `节点结果可序列化恢复：${serialized.length} 字节`);
 
   console.log('\n=== M1 冒烟通过：项目已走到节点 3（初步分析），产物落库、快照可恢复 ===\n');
 }

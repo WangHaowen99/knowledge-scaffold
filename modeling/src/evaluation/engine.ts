@@ -109,6 +109,8 @@ interface RunOptions {
   owner?: string;
   token: string; // 专家 token 透传
   refreshToken?: string; // 仅保留在评测任务内存中，用于长任务续期
+  caseIds?: string[]; // 为空时全量；有值时只运行受影响的真实用例
+  evaluationScope?: repo.EvaluationScope;
   packageSnapshot: {
     version: string;
     spec: any;
@@ -167,6 +169,14 @@ export function isEvaluationActive(projectId: string): boolean {
   return activeProjects.has(projectId);
 }
 
+export async function waitForEvaluation(projectId: string, roundId: string): Promise<repo.EvalRound> {
+  const active = activeEvaluations.get(projectId);
+  if (active?.roundId === roundId) await active.completion;
+  const round = repo.getRound(roundId);
+  if (!round || round.projectId !== projectId) throw new Error('评测轮次不存在');
+  return round;
+}
+
 export function evaluationWorkspaceForRun(
   projectId: string,
   dataSource: ProjectDataSource,
@@ -198,7 +208,16 @@ export function startEvaluation(
   // 评测必须能够记录存量脚本的执行契约失败，而不是在轮次创建前整体拦截。
   // 安全检查仍然强制执行；候选接受、导出和发布继续使用严格契约。
   validateSpecIntegrity(latest.spec, [], undefined, { validateScriptExecutionContract: false });
-  const testcases = selectOfficialEvaluationTestcases(repo.listTestcases(projectId));
+  const officialTestcases = selectOfficialEvaluationTestcases(repo.listTestcases(projectId));
+  const requestedCaseIds = new Set((opts.caseIds ?? []).map((item) => String(item).trim()).filter(Boolean));
+  const testcases = requestedCaseIds.size
+    ? officialTestcases.filter((item) => requestedCaseIds.has(item.id))
+    : officialTestcases;
+  if (requestedCaseIds.size && testcases.length !== requestedCaseIds.size) {
+    const found = new Set(testcases.map((item) => item.id));
+    const missing = [...requestedCaseIds].filter((id) => !found.has(id));
+    throw new Error(`定向评测用例不存在或不是人工真实用例：${missing.join('、')}`);
+  }
   const dataSource = getProjectDataSource(projectId);
   if (!dataSource) throw new Error('尚未配置数据源，请先完成“数据源配置”步骤');
   const runningDatabaseImport = getRunningEvaluationDatabaseImportRun(projectId);
@@ -215,6 +234,7 @@ export function startEvaluation(
     latest.version,
     testcases.length,
     latest.revisionOid,
+    opts.evaluationScope,
   );
   activeProjects.add(projectId);
   activeWorkspaces.add(workspaceId);

@@ -71,18 +71,18 @@ export const AI_CONSTRUCTION_WORKBENCH_STEPS = [
   ...CONFIG_STEPS,
 ];
 
-export default function Tour({ scene, steps }) {
+export default function Tour({ scene, steps, autoStart = true }) {
   const doneKey = `mw_tour_done_${scene}`;
   const [idx, setIdx] = useState(-1); // -1 = 关闭
   const [rect, setRect] = useState(null);
 
   // 首次自动播放 + 顶栏按钮重看（按场景过滤）
   useEffect(() => {
-    if (!localStorage.getItem(doneKey)) setIdx(0);
+    if (autoStart && !localStorage.getItem(doneKey)) setIdx(0);
     const h = (e) => { if (!e.detail?.scene || e.detail.scene === scene) setIdx(0); };
     window.addEventListener('mw-tour-start', h);
     return () => window.removeEventListener('mw-tour-start', h);
-  }, []);
+  }, [autoStart, doneKey, scene]);
 
   const close = () => {
     localStorage.setItem(doneKey, '1');

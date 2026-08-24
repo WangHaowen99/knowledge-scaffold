@@ -575,6 +575,7 @@ export function ReviewPanel({
       warningReview={packageCheck?.warningReview ?? null}
       errorDeferral={packageCheck?.errorDeferral ?? null}
       repair={packageCheck?.repair ?? null}
+      packageRepair={packageCheck?.packageRepair ?? null}
       rechecking={packageCheck?.rechecking ?? false}
       error={packageCheck?.error ?? ''}
       pendingInteractions={packageCheck?.pendingInteractions ?? []}

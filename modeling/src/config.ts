@@ -14,6 +14,8 @@ function positiveIntegerEnv(key: string, fallback: number): number {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+const evaluationLlmModel = env('MODELING_EVALUATION_LLM_MODEL');
+
 export const config = {
   port: Number(env('PORT', '5100')),
   dataDir: resolve(env('DATA_DIR', './data')),
@@ -44,9 +46,27 @@ export const config = {
   },
 
   consumerApiUrl: env('CONSUMER_API_URL', 'http://localhost:5055'),
+  evaluationModelProfileRef: env('MODELING_EVALUATION_MODEL_PROFILE_REF'),
+  evaluationManagedModelProfile: evaluationLlmModel ? {
+    provider: env('MODELING_EVALUATION_LLM_PROVIDER', 'openai_compatible'),
+    baseUrl: env('MODELING_EVALUATION_LLM_BASE_URL') || env('MODELING_LLM_BASE_URL'),
+    model: evaluationLlmModel,
+    apiKey: env('MODELING_EVALUATION_LLM_API_KEY') || env('MODELING_LLM_API_KEY'),
+    timeout: positiveIntegerEnv('MODELING_EVALUATION_LLM_TIMEOUT', 600),
+    maxTokens: positiveIntegerEnv('MODELING_EVALUATION_LLM_MAX_TOKENS', 8192),
+    temperature: 0.2,
+  } : undefined,
+  agentBaseUrl: env('MODELING_AGENT_BASE_URL', 'http://localhost:5110').replace(/\/+$/, ''),
+  jiuwenboxSocketPath: env('JIUWENBOX_SOCKET_PATH', '/run/jiuwenbox/jiuwenbox.sock'),
   modelingServiceToken: env('MODELING_SERVICE_TOKEN'),
   evalDbUrl: env('EVAL_DB_URL'),
   evalDbAdminUrl: env('EVAL_DB_ADMIN_URL'),
+  evalBinding: {
+    provider: env('MODELING_EVAL_BINDING_PROVIDER', 'nl2sql_template'),
+    url: env('MODELING_EVAL_BINDING_URL'),
+    token: env('MODELING_EVAL_BINDING_TOKEN'),
+    scene: env('MODELING_EVAL_BINDING_SCENE'),
+  },
 };
 
 export type AppConfig = typeof config;

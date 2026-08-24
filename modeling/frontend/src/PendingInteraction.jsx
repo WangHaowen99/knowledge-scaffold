@@ -128,6 +128,9 @@ function friendlyRepairOption(option, index) {
 
 function friendlyRepairQuestion(question, payload) {
   if (!isControlledRepair(payload)) return question;
+  // 资源目标和业务决策是两道独立的问题。业务建议只能替换 expert_decision 的选项，
+  // 否则 repair_target 会被同一段决策文本覆盖，提交后被误解析成 kind:key。
+  if (String(question?.id ?? question?.key ?? '') === 'repair_target') return question;
   const generatedOptions = asArray(payload.finding?.expertOptions).map((option) => ({
     label: asText(option?.label),
     description: asText(option?.description),
@@ -394,6 +397,7 @@ function ChangePlan({ interaction, draft, setDraft, busy, submit }) {
   const payload = interaction.payload || {};
   const changes = asArray(payload.changes);
   const selected = new Set(draft.selected || []);
+  const canRevise = ['package_chat', 'script_generation'].includes(payload.purpose);
   const toggle = (id) => setDraft((current) => ({
     ...current,
     selected: selected.has(id) ? current.selected.filter((item) => item !== id) : [...current.selected, id],
@@ -434,12 +438,12 @@ function ChangePlan({ interaction, draft, setDraft, busy, submit }) {
         </div>
       )}
       <div style={styles.section}><NoteField value={draft.note} onChange={(note) => setDraft((current) => ({ ...current, note }))}
-        placeholder={payload.purpose === 'package_chat' ? '补充说明；调整方案时请填写修改意见' : undefined} /></div>
+        placeholder={canRevise ? '补充说明；调整方案时请填写修改意见' : undefined} /></div>
       <div style={styles.footer}>
         <ActionButton primary disabled={busy || !selected.size} onClick={() => submit({ action: 'approve', selectedChangeIds: [...selected], note: draft.note.trim() || undefined })}>
           {busy ? '提交中...' : `确认修改${selected.size ? `（${selected.size} 项）` : ''}`}
         </ActionButton>
-        {payload.purpose === 'package_chat' && (
+        {canRevise && (
           <ActionButton disabled={busy || !draft.note.trim()} onClick={() => submit({ action: 'revise', note: draft.note.trim() })}>调整方案</ActionButton>
         )}
         <ActionButton disabled={busy} onClick={() => submit({ action: 'reject', note: draft.note.trim() || undefined })}>不修改</ActionButton>
@@ -451,11 +455,23 @@ function ChangePlan({ interaction, draft, setDraft, busy, submit }) {
 function Decision({ interaction, draft, setDraft, busy, submit }) {
   const payload = interaction.payload || {};
   const options = asArray(payload.options);
+  const issues = asArray(payload.issues);
   const allowCustom = payload.allowCustom ?? payload.allow_custom ?? !options.length;
   const selected = draft.value;
   return (
     <>
       {payload.prompt && <div style={styles.sectionTitle}>{asText(payload.prompt)}</div>}
+      {issues.length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>未通过原因（{issues.length}）</div>
+          <div style={styles.rows}>{issues.map((issue, index) => (
+            <div key={index} style={styles.row}>
+              <span style={styles.tag}>{index + 1}</span>
+              <div style={styles.rowText}>{asText(issue)}</div>
+            </div>
+          ))}</div>
+        </div>
+      )}
       <div style={styles.section}>
         {options.map((option, index) => {
           const value = optionValue(option, index);
@@ -498,7 +514,7 @@ function ReviewContent({ payload, onOpenFile }) {
 function ThreeWayReview({ interaction, draft, setDraft, busy, submit, mode, onOpenFile }) {
   const payload = interaction.payload || {};
   const labels = mode === 'finding'
-    ? { accept: '采用建议', revise: '请调整', reject: '忽略' }
+    ? { accept: '采用建议', revise: '请调整', reject: '暂缓并记录理由' }
     : mode === 'scenario' || mode === 'flowchart'
       ? { accept: '通过', revise: '需调整', reject: '不通过' }
       : { accept: '通过', revise: '请修改', reject: '不采用' };
@@ -518,6 +534,7 @@ function ThreeWayReview({ interaction, draft, setDraft, busy, submit, mode, onOp
           </div>
           {payload.suggestion && <div style={styles.section}><div style={styles.sectionTitle}>建议</div><div style={styles.rowText}>{asText(payload.suggestion)}</div></div>}
           {payload.diff && <div style={styles.section}><ArtifactDiff diff={payload.diff} onOpenFile={onOpenFile} /></div>}
+          <div style={styles.hint}>暂缓只记录当前决定；正式发布仍要求必须修复的问题清零。</div>
         </>
       )}
       {mode === 'scenario' && <ScenarioDetails payload={payload} />}
