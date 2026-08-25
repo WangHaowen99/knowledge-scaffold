@@ -1019,7 +1019,10 @@ class ActivityRail(AgentRail):
         else:
             outcome = "empty_content"
         started_at = float(state["startedAt"])
-        elapsed = lambda value: round((float(value) - started_at) * 1000) if value else None
+
+        def elapsed(value: Any) -> int | None:
+            return round((float(value) - started_at) * 1000) if value else None
+
         self._emit("model_call", {
             "callId": state["callId"],
             "actor": self._actor,

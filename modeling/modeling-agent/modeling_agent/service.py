@@ -1804,7 +1804,10 @@ class AgentService:
             return ""
         finally:
             reasoning.finish()
-            elapsed = lambda value: round((value - started_at) * 1000) if value else None
+
+            def elapsed(value: float | None) -> int | None:
+                return round((value - started_at) * 1000) if value else None
+
             self.events.publish(run.project_id, run.id, "model_call", {
                 "callId": f"compact_{uuid.uuid4().hex[:12]}",
                 "actor": "compact_summary",

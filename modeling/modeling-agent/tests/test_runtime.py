@@ -308,7 +308,7 @@ async def test_tool_context_applies_repair_policy_from_package_contract() -> Non
         package_contract={
             "confirmation": {
                 "maxAutomaticRepairRounds": 4,
-                "stopOnRepeatedFindingFingerprint": False,
+                "stopOnRepeatedFindingFingerprint": False,  # NOSONAR - public option name
             },
         },
     )
@@ -1418,12 +1418,14 @@ async def test_legacy_confirmation_without_receipt_is_retired_and_revalidated_be
             "validatorVersion": "package-contract-v2",
         }
         assert preflight_count == 2
-        system_text = "\n".join(
-            block.get("text", "")
-            for event in runtime.store.events_after("project_legacy_confirmation", 0)
-            if event.kind == "message" and event.payload.get("role") == "system"
-            for block in event.payload.get("blocks", [])
-        )
+        system_blocks = []
+        for event in runtime.store.events_after("project_legacy_confirmation", 0):
+            if event.kind != "message" or event.payload.get("role") != "system":
+                continue
+            system_blocks.extend(
+                block.get("text", "") for block in event.payload.get("blocks", [])
+            )
+        system_text = "\n".join(system_blocks)
         assert "接受操作未生效" in system_text
         assert "需要再次确认" in system_text
     finally:

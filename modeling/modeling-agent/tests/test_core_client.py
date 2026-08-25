@@ -53,7 +53,7 @@ async def test_claimed_run_credential_replaces_expired_user_token_for_tools() ->
         assert request.headers["x-modeling-agent-credential"] == "arc_project_run_secret"
         return httpx.Response(200, json={"ok": True})
 
-    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
     await gateway._client.aclose()  # noqa: SLF001
     gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
     try:
@@ -85,7 +85,7 @@ async def test_persisted_run_credential_can_be_restored_before_user_reauthentica
         requests.append(request)
         return httpx.Response(200, json={"runCredential": "arc_refreshed"})
 
-    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
     await gateway._client.aclose()  # noqa: SLF001
     gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
     gateway.restore_run_credential("run_demo", "arc_persisted")
@@ -109,7 +109,7 @@ async def test_non_object_success_is_reported_as_core_protocol_error() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[{"id": "fusion-plan-1"}])
 
-    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
     await gateway._client.aclose()  # noqa: SLF001
     gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
     try:
@@ -148,7 +148,7 @@ async def test_core_validation_error_preserves_every_detail_for_agent() -> None:
             "display": {"text": "候选格式校验未通过"},
         })
 
-    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
     await gateway._client.aclose()  # noqa: SLF001
     gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
     try:

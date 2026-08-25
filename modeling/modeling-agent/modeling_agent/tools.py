@@ -109,7 +109,8 @@ class ToolContext:
         except (TypeError, ValueError):
             configured = 3
         self.validation_repair.max_attempts = max(1, configured)
-        stop_on_repeated = confirmation.get("stopOnRepeatedFindingFingerprint")
+        # Public package-contract option name, not a credential or secret.
+        stop_on_repeated = confirmation.get("stopOnRepeatedFindingFingerprint")  # NOSONAR
         if isinstance(stop_on_repeated, bool):
             self.validation_repair.stop_on_repeated_fingerprint = stop_on_repeated
 
@@ -797,12 +798,7 @@ class CoreTool(Tool):
         except BaseException:
             call.cancel()
             raise
-        if (
-            self.spec.name in VALIDATION_REPAIR_ERROR_TOOLS
-            and result.get("error")
-            and result.get("retryable") is True
-            and isinstance(result.get("findings"), list)
-        ):
+        if _is_retryable_validation_failure(self.spec.name, result):
             result = self.context.validation_repair.decorate(result)
         elif not result.get("error"):
             self.context.validation_repair.record_success(self.spec.name)
@@ -825,6 +821,13 @@ def _bounded_source_arguments(name: str, arguments: dict[str, Any]) -> dict[str,
             bounded.get("limit"), LEADER_TABLE_SAMPLE_ROWS,
         )
     return bounded
+
+
+def _is_retryable_validation_failure(name: str, result: Mapping[str, Any]) -> bool:
+    if name not in VALIDATION_REPAIR_ERROR_TOOLS:
+        return False
+    has_retryable_error = bool(result.get("error")) and result.get("retryable") is True
+    return has_retryable_error and isinstance(result.get("findings"), list)
 
 
 def _bounded_positive_integer(value: Any, maximum: int) -> int:
@@ -858,15 +861,15 @@ def _compact_source_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compact_table_field(field: Mapping[str, Any]) -> dict[str, Any]:
-    compact = {
-        key: field[key]
-        for key in (
-            "name", "inferredType", "type", "nullable", "required",
-            "unique", "isPrimaryKey", "primaryKeyCandidate", "distinctRatio",
-            "description", "comment",
-        )
-        if key in field
-    }
+    compact: dict[str, Any] = {}
+    field_keys = (
+        "name", "inferredType", "type", "nullable", "required",
+        "unique", "isPrimaryKey", "primaryKeyCandidate", "distinctRatio",
+        "description", "comment",
+    )
+    for key in field_keys:
+        if key in field:
+            compact[key] = field[key]
     for sample_key in ("sampleValues", "samples", "examples"):
         samples = field.get(sample_key)
         if not isinstance(samples, list):
