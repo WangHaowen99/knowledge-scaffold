@@ -155,7 +155,7 @@ export default function LoginPage() {
         <button className="lbtn" type="submit" disabled={busy}>
           {busy && <LoaderCircle className="spin" size={16} />}{busy ? '登录中…' : '登录'}
         </button>
-        <div className="lnote">首次登录将要求修改初始密码 · 登录即代表同意平台使用规范</div>
+        <div className="lnote">登录即代表同意平台使用规范</div>
       </form>
       {registrationEnabled && (
         <div className="lswitch">

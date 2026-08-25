@@ -130,11 +130,10 @@ class UserStore:
         except (TypeError, ValueError):
             return 1
 
-    @classmethod
-    def _password_change_required(cls, record: Dict[str, Any]) -> bool:
-        if "must_change_password" in record:
-            return bool(record.get("must_change_password"))
-        return not bool(str(record.get("password_changed_at") or "").strip())
+    @staticmethod
+    def _password_change_required(_record: Dict[str, Any]) -> bool:
+        # 保留响应字段以兼容既有客户端，但不再要求任何账号首次登录后改密。
+        return False
 
     def _user_view_from_record(self, username: str, record: Dict[str, Any]) -> UserView:
         return UserView(
@@ -162,8 +161,8 @@ class UserStore:
                 "username": "admin",
                 "password_hash": self.hash_password(bootstrap_password),
                 "role": "admin",
-                "must_change_password": True,
-                "password_changed_at": "",
+                "must_change_password": False,
+                "password_changed_at": self._now_iso(),
                 "password_version": 1,
                 "token_version": 1,
             },
@@ -215,7 +214,9 @@ class UserStore:
                 entry["password_hash"] = self.hash_password(record["password"])
             entry["role"] = record.get("role", "user")
             entry["must_change_password"] = self._password_change_required(record)
-            entry["password_changed_at"] = str(record.get("password_changed_at") or "")
+            entry["password_changed_at"] = str(
+                record.get("password_changed_at") or self._now_iso()
+            )
             entry["password_version"] = self._password_version(record)
             entry["token_version"] = self._token_version(record)
             if normalize_email(record.get("email")):
@@ -292,20 +293,19 @@ class UserStore:
                 record["password_hash"] = self.hash_password(password)
                 changed = True
         else:
-            # 遗留明文 password 字段：首登迁移为哈希并强制改密
+            # 遗留明文 password 字段：登录时迁移为哈希。
             if record.get("password") != password:
                 return None
             record["password_hash"] = self.hash_password(password)
             record.pop("password", None)
-            record["must_change_password"] = True
+            record["must_change_password"] = False
+            record["password_changed_at"] = self._now_iso()
             changed = True
         if "must_change_password" not in record:
-            record["must_change_password"] = not bool(
-                str(record.get("password_changed_at") or "").strip()
-            )
+            record["must_change_password"] = False
             changed = True
         if "password_changed_at" not in record:
-            record["password_changed_at"] = ""
+            record["password_changed_at"] = self._now_iso()
             changed = True
         if "password_version" not in record:
             record["password_version"] = 1
@@ -334,8 +334,8 @@ class UserStore:
             "username": username,
             "password_hash": self.hash_password(password),
             "role": role,
-            "must_change_password": True,
-            "password_changed_at": "",
+            "must_change_password": False,
+            "password_changed_at": self._now_iso(),
             "password_version": 1,
             "token_version": 1,
         }
@@ -387,8 +387,8 @@ class UserStore:
             validate_password_policy(username, password)
             record["password_hash"] = self.hash_password(password)
             record.pop("password", None)
-            record["must_change_password"] = True
-            record["password_changed_at"] = ""
+            record["must_change_password"] = False
+            record["password_changed_at"] = self._now_iso()
             record["password_version"] = self._password_version(record) + 1
             record["token_version"] = self._token_version(record) + 1
         if role is not None:

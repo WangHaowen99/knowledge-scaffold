@@ -8,7 +8,6 @@ import useChatSessions from '../features/chat/hooks/useChatSessions';
 import useAgenticStream from '../features/chat/hooks/useAgenticStream';
 import ChatWorkspace from '../features/chat/ChatWorkspace';
 import ChatHistorySidebar from '../features/chat/ChatHistorySidebar';
-import { ForceChangePassword } from '../features/auth';
 import LoginPage from '../features/auth/LoginPage';
 import { requiresWorkspaceData } from '../features/auth/accessState';
 import { useAuthContext } from '../features/auth/useAuthContext';
@@ -32,7 +31,7 @@ const EMPTY_TRACE_METADATA = Object.freeze({});
 
 export default function AppShell() {
   const auth = useAuthContext();
-  const { status, user, workspacesLoaded, workspacesLoading, workspaceDataReady, logout, changePassword, isAdmin, workspaces, workspaceId, defaultWorkspaceId, workspacesError, reloadWorkspaces, switchWorkspace, can } = auth;
+  const { status, user, workspacesLoaded, workspacesLoading, workspaceDataReady, logout, isAdmin, workspaces, workspaceId, defaultWorkspaceId, workspacesError, reloadWorkspaces, switchWorkspace, can } = auth;
   const [surface, setSurface] = useState('chat');
   const [cfgScope, setCfgScope] = useState('global');
   const [cfgSec, setCfgSec] = useState('llm');
@@ -80,7 +79,6 @@ export default function AppShell() {
   useEffect(() => {
     if (
       status !== 'authenticated'
-      || user?.password_change_required
       || !workspacesLoaded
       || workspacesLoading
       || workspacesError
@@ -88,7 +86,7 @@ export default function AppShell() {
     ) return undefined;
     const timer = setTimeout(() => setWizardOpen(true), 0);
     return () => clearTimeout(timer);
-  }, [status, user?.password_change_required, workspacesLoaded, workspacesLoading, workspacesError]);
+  }, [status, workspacesLoaded, workspacesLoading, workspacesError]);
 
   useEffect(() => {
     const media = window.matchMedia?.('(max-width: 900px)');
@@ -182,10 +180,6 @@ export default function AppShell() {
     return <div className="mwr" style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#898781' }}>加载中…</div>;
   }
   if (status !== 'authenticated') return <LoginPage />;
-  if (user?.password_change_required) {
-    return <ForceChangePassword user={user} onChangePassword={changePassword} onLogout={logout} />;
-  }
-
   const navigate = ({ surface: sf, scope, sec, tab, ontologyId }) => {
     if (sf) setSurface(sf);
     if (scope) setCfgScope(scope);
