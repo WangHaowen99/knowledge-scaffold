@@ -976,9 +976,68 @@ def test_import_ontology_zip_rejects_field_alias_conflict(tmp_path, monkeypatch)
 
     assert response.status_code == 400
     assert response.get_json() == {
-        "error": "对象“对象甲”的字段名称“编号”同时指向 [FieldA, FieldB]"
+        "error": "对象文件“objects/object_a.md”中的对象“对象甲”的字段名称“编号”同时指向 "
+        "[FieldA, FieldB]；原始声明：[字段“FieldA”的别名原值“编号”，字段“FieldB”的别名原值“编号”]"
     }
     assert not (workspace_paths.ontologies_dir / "field-alias-error").exists()
+
+
+def test_import_ontology_zip_ignores_empty_field_alias_markers(tmp_path, monkeypatch):
+    from ontology.ontology_catalog import find_field_alias_matches
+
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "empty-field-aliases/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: empty-field-aliases\n"
+            "name: Empty Field Aliases\n"
+            "description: Synthetic empty alias markers\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "empty-field-aliases/index.md": "# Empty Field Aliases\n",
+        "empty-field-aliases/objects/index.md": (
+            "| object key | title |\n"
+            "| --- | --- |\n"
+            "| Synthetic | Synthetic Object |\n"
+        ),
+        "empty-field-aliases/objects/synthetic.md": (
+            "---\nresource: object\nkey: Synthetic\ntitle: Synthetic Object\n---\n\n"
+            "# 字段\n\n"
+            "| 字段 key | 中文名 | 别名 |\n"
+            "| --- | --- | --- |\n"
+            "| FieldEmpty | Empty | |\n"
+            "| FieldAscii | ASCII | - |\n"
+            "| FieldEm | Em | — |\n"
+            "| FieldEn | En | – |\n"
+            "| FieldNone | None | 无 |\n"
+            "| FieldNA | NA | N/A |\n"
+        ),
+        "empty-field-aliases/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "empty-field-aliases.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["warnings"]["field_aliases"] == []
+    object_path = (
+        workspace_paths.ontologies_dir
+        / "empty-field-aliases"
+        / "versions"
+        / "1.0.0"
+        / "objects"
+        / "synthetic.md"
+    )
+    assert find_field_alias_matches(object_path, "- — – 无 N/A") == ()
 
 
 def test_import_ontology_zip_returns_field_alias_warnings(tmp_path, monkeypatch):

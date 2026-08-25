@@ -16,6 +16,7 @@ from ontology.ontology_catalog import (
     load_script_catalog,
     resolve_field_reference,
     resolve_object_reference,
+    split_field_aliases,
 )
 from ontology.package_import import (
     inspect_importable_package,
@@ -779,7 +780,8 @@ def test_field_alias_validation_uses_explicit_field_table_after_generic_table(tm
     validation = validate_imported_field_aliases(tmp_path)
 
     assert validation.errors == (
-        "对象“object”的字段名称“编号”同时指向 [FieldA, FieldB]",
+        "对象文件“objects/object.md”中的对象“object”的字段名称“编号”同时指向 "
+        "[FieldA, FieldB]；原始声明：[字段“FieldA”的别名原值“编号”，字段“FieldB”的别名原值“编号”]",
     )
 
 
@@ -1137,11 +1139,42 @@ def test_field_alias_validation_reports_conflicts_and_duplicate_warnings(tmp_pat
     validation = validate_imported_field_aliases(tmp_path)
 
     assert validation.errors == (
-        "对象“冲突对象”的字段名称“编号”同时指向 [FieldA, FieldB]",
+        "对象文件“objects/conflict.md”中的对象“冲突对象”的字段名称“编号”同时指向 "
+        "[FieldA, FieldB]；原始声明：[字段“FieldA”的别名原值“编号”，字段“FieldB”的别名原值“编号”]",
     )
     assert validation.warnings == (
         "对象“冲突对象”的字段“FieldA”存在重复别名“重复”",
     )
+
+
+@pytest.mark.parametrize("marker", [None, "", "-", "—", "–", "无", "N/A", " n/a "])
+def test_field_alias_parser_ignores_empty_alias_markers(marker):
+    assert split_field_aliases(marker) == []
+
+
+def test_field_alias_validation_ignores_multiple_empty_markers_in_one_object(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "synthetic.md"
+    object_path.write_text(
+        "---\nresource: object\nkey: Synthetic\ntitle: Synthetic Object\n---\n\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| FieldEmpty | Empty | |\n"
+        "| FieldAscii | ASCII | - |\n"
+        "| FieldEm | Em | — |\n"
+        "| FieldEn | En | – |\n"
+        "| FieldNone | None | 无 |\n"
+        "| FieldNA | NA | N/A |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "- — – 无 N/A") == ()
 
 
 def test_field_alias_validation_allows_object_without_alias_column(tmp_path):
