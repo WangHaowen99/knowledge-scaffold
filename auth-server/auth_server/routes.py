@@ -87,8 +87,6 @@ def token():
     if grant_type == "password":
         username = str(data.get("username", "")).strip()
         password = str(data.get("password", ""))
-        # must_change_password 的用户照常发 token（拦截是 consumer 的事），
-        # access token 带 pwd_cr=true 供 consumer 判断。
         user = _store().authenticate(username, password)
         if not user:
             return _invalid_grant("invalid username or password")

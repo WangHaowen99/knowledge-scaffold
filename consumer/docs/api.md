@@ -86,15 +86,6 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
 { "error": "Forbidden" }
 ```
 
-如果用户必须先修改密码，除 `/auth/me` 和 `/auth/change-password` 外的认证接口会返回：
-
-```json
-{
-  "error": "Password change required",
-  "code": "PASSWORD_CHANGE_REQUIRED"
-}
-```
-
 > 备注：错误返回字段在不同历史路由中并不完全统一，既有 `error`，也有 `detail`。
 
 ### 1.2 工作空间头 `X-Workspace-Id`
@@ -171,7 +162,7 @@ X-Accel-Buffering: no
   "user": {
     "username": "admin",
     "role": "admin",
-    "password_change_required": true
+    "password_change_required": false
   }
 }
 ```
@@ -187,7 +178,7 @@ X-Accel-Buffering: no
 - `token` 是短期 access token，用于 `Authorization: Bearer`。
 - `refresh_token` 仅提交给 `/auth/refresh` 或 `/auth/logout`。浏览器应在受保护存储中保存并在 401 时做单次刷新，禁止写入日志或 URL。
 - 通用 Python/TypeScript SDK 只接收 access token，不持有 refresh token。
-- 首次空用户库使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号 `admin`；未配置或不符合密码策略时 auth-server 拒绝启动。该账号首次登录必须立即改密。
+- 首次空用户库使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号 `admin`；未配置或不符合密码策略时 auth-server 拒绝启动。该账号可直接使用引导密码登录。
 
 ### 2.1.1 `POST /auth/refresh`
 
@@ -226,7 +217,7 @@ X-Accel-Buffering: no
   "user": {
     "username": "admin",
     "role": "admin",
-    "password_change_required": true
+    "password_change_required": false
   }
 }
 ```
@@ -240,7 +231,7 @@ X-Accel-Buffering: no
 ```json
 {
   "users": [
-    { "username": "admin", "role": "admin", "password_change_required": true },
+    { "username": "admin", "role": "admin", "password_change_required": false },
     { "username": "user1", "role": "user", "password_change_required": false }
   ]
 }
@@ -264,12 +255,12 @@ X-Accel-Buffering: no
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `username` | string | 是 | 用户名，不能为空 |
-| `password` | string | 是 | 临时密码，必须满足复杂度要求 |
+| `password` | string | 是 | 登录密码，必须满足复杂度要求 |
 
 说明：
 
 - 新创建的用户角色固定为 `user`，不支持通过接口创建管理员
-- 新用户首次登录后必须修改密码
+- 新用户可直接使用管理员设置的密码登录
 
 响应 `201`：
 
@@ -278,7 +269,7 @@ X-Accel-Buffering: no
   "user": {
     "username": "newuser",
     "role": "user",
-    "password_change_required": true
+    "password_change_required": false
   }
 }
 ```
@@ -310,7 +301,7 @@ X-Accel-Buffering: no
 说明：
 
 - 不支持通过接口修改用户角色
-- 被重置密码的用户下次登录后必须修改密码
+- 被重置密码的用户可直接使用新密码登录
 - 不能通过该接口重置当前登录用户自己的密码；当前用户修改密码必须使用 `/auth/change-password`
 
 响应 `200`：
@@ -320,7 +311,7 @@ X-Accel-Buffering: no
   "user": {
     "username": "newuser",
     "role": "admin",
-    "password_change_required": true
+    "password_change_required": false
   }
 }
 ```

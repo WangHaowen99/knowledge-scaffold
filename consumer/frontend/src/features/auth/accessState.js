@@ -1,5 +1,5 @@
 export function canLoadProtectedData(status, user) {
-  return status === 'authenticated' && Boolean(user) && !user.password_change_required;
+  return status === 'authenticated' && Boolean(user);
 }
 
 export function canLoadWorkspaceData(

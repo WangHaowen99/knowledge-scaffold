@@ -67,7 +67,7 @@ function PasswordAdminDialog({ type, targetUser, busy, onClose, onSubmit }) {
   return (
     <Modal
       title={type === 'create' ? '新增用户' : `重置 ${targetUser?.username} 的密码`}
-      description={type === 'create' ? '新用户首次登录时必须修改初始密码。' : '重置后该用户下次登录必须修改密码。'}
+      description={type === 'create' ? '为新用户设置登录密码。' : '重置后用户可直接使用新密码登录。'}
       onClose={busy ? undefined : onClose}
       actions={<>
         <button className="btn" type="button" disabled={busy} onClick={onClose}>取消</button>
@@ -86,7 +86,7 @@ function PasswordAdminDialog({ type, targetUser, busy, onClose, onSubmit }) {
           </label>
         )}
         <label>
-          {type === 'create' ? '初始密码' : '新密码'}
+          {type === 'create' ? '登录密码' : '新密码'}
           <input autoFocus={type !== 'create'} type="password" autoComplete="new-password" value={password} disabled={busy}
             onChange={(event) => { setPassword(event.target.value); clearServerFeedback(); }} />
         </label>
@@ -263,7 +263,7 @@ export default function UserAdminPanel({ currentUser, canManage = true, request 
                   <tr key={user.username}>
                     <td><strong>{user.username}</strong>{policy.isSelf && <small>当前账号</small>}</td>
                     <td><span className={`tag ${user.role === 'admin' ? 'tag-lang' : 'tag-off'}`}>{user.role === 'admin' ? '管理员' : '用户'}</span></td>
-                    <td>{user.password_change_required ? <span className="tag tag-draft">首次登录须改密</span> : <span className="tag tag-ok">已更新</span>}</td>
+                    <td>{user.password_change_required ? <span className="tag tag-draft">历史状态已忽略</span> : <span className="tag tag-ok">可直接登录</span>}</td>
                     <td>
                       <div className="settings-admin-row-actions">
                         <button className="btn btn-sm" type="button" disabled={busy || !policy.canResetPassword}

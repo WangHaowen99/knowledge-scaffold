@@ -6,11 +6,11 @@ import {
   requiresWorkspaceData,
 } from './accessState.js';
 
-test('protected data stays blocked until authentication and required password change complete', () => {
+test('protected data loads for every authenticated user', () => {
   assert.equal(canLoadProtectedData('checking', null), false);
   assert.equal(canLoadProtectedData('anonymous', null), false);
   assert.equal(canLoadProtectedData('authenticated', null), false);
-  assert.equal(canLoadProtectedData('authenticated', { password_change_required: true }), false);
+  assert.equal(canLoadProtectedData('authenticated', { password_change_required: true }), true);
   assert.equal(canLoadProtectedData('authenticated', { password_change_required: false }), true);
 });
 
