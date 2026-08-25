@@ -151,6 +151,30 @@ def test_draft_has_no_public_identity_but_public_event_requires_it():
     assert public.seq == 1
 
 
+def test_public_adapter_preserves_optional_trace_identity():
+    event = RuntimeEvent(
+        event_type="token.delta",
+        status="running",
+        run_id="run-trace",
+        source={"node": "agent", "component": "model"},
+        payload={"text": "hello"},
+        span_key="llm:main:1:1",
+        parent_key="iteration:main:1",
+        trace_id="a" * 32,
+        span_id="b" * 16,
+        parent_span_id="c" * 16,
+    )
+
+    draft = PublicEventAdapter().adapt(event)
+
+    assert draft is not None
+    assert draft.span_key == "llm:main:1:1"
+    assert draft.parent_key == "iteration:main:1"
+    assert draft.trace_id == "a" * 32
+    assert draft.span_id == "b" * 16
+    assert draft.parent_span_id == "c" * 16
+
+
 def test_turn_finished_requires_one_consistent_terminal_status():
     event = RuntimeEvent(
         event_type="turn.finished",

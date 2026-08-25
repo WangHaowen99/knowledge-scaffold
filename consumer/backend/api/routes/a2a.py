@@ -57,6 +57,7 @@ async def _service(
         execution_store=execution_store,
         username=user.username,
         workspace_id=workspace_id,
+        traceparent=str(request.headers.get("traceparent") or "").strip(),
     )
 
 

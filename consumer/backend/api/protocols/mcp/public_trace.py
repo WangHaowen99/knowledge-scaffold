@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from utils.security.redaction import redact_sensitive_text
+from integration.observability.events import RuntimeEvent, RuntimeEventType
 
 _TIMING_FIELDS = (
     "total_elapsed_ms",
@@ -59,6 +60,7 @@ class MCPPublicTraceCollector:
         self._pending_tools: dict[str, dict[str, Any]] = {}
         self._pending_order: list[str] = []
         self._attempt_counts: dict[str, int] = {}
+        self._event_sources: dict[tuple[str, str], str] = {}
         self._omitted: dict[str, int] = {}
         self._text_truncations = 0
         self._totals = {
@@ -70,7 +72,7 @@ class MCPPublicTraceCollector:
             "tool_execution_elapsed_ms": 0,
         }
 
-    def consume(self, envelope: Mapping[str, Any]) -> None:
+    def consume(self, envelope: Mapping[str, Any], *, source: str = "protocol") -> None:
         """Consume one envelope without retaining raw reasoning or tool payloads."""
         event_type = str(envelope.get("type") or "").strip()
         if event_type not in {
@@ -87,6 +89,13 @@ class MCPPublicTraceCollector:
             payload = {}
 
         with self._lock:
+            if self._is_cross_source_duplicate(
+                event_type,
+                envelope,
+                payload,
+                source=source,
+            ):
+                return
             self._order += 1
             order = self._order
             if event_type == "token.delta":
@@ -101,6 +110,76 @@ class MCPPublicTraceCollector:
                 self._consume_tool_finished(payload, order)
             elif event_type == "turn.finished":
                 self._consume_turn_finished(payload, order)
+
+    def consume_runtime_event(self, event: RuntimeEvent) -> None:
+        """Build the public MCP summary from OTel-derived runtime events."""
+        payload = dict(event.payload or {})
+        if event.type == RuntimeEventType.AGENT_ITERATION_FINISHED:
+            self.consume({
+                "type": "iteration.completed",
+                "span_id": event.span_id,
+                "payload": {
+                    **payload,
+                    "total_elapsed_ms": payload.get("total_ms"),
+                    "model_elapsed_ms": payload.get("llm_wall_ms"),
+                    "tools_elapsed_ms": payload.get("tools_window_ms"),
+                    "setup_elapsed_ms": payload.get("prompt_build_ms"),
+                },
+            }, source="otel")
+        elif event.type in {
+            RuntimeEventType.TOOL_STARTED,
+            RuntimeEventType.TOOL_PROGRESS,
+            RuntimeEventType.TOOL_FINISHED,
+        }:
+            self.consume({
+                "type": event.type,
+                "span_id": event.span_id,
+                "payload": payload,
+            }, source="otel")
+        elif event.type in {
+            RuntimeEventType.RUN_FINISHED,
+            RuntimeEventType.RUN_FAILED,
+            RuntimeEventType.RUN_CANCELLED,
+        }:
+            self.consume({
+                "type": "turn.finished",
+                "span_id": event.span_id,
+                "payload": {
+                    "status": payload.get("status"),
+                    "final_output": payload.get("final_answer"),
+                    "error": payload.get("error_message"),
+                    "cancel_reason": payload.get("cancel_reason"),
+                },
+            }, source="otel")
+
+    def _is_cross_source_duplicate(
+        self,
+        event_type: str,
+        envelope: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        *,
+        source: str,
+    ) -> bool:
+        if event_type not in {
+            "iteration.completed",
+            "tool.started",
+            "tool.progress",
+            "tool.finished",
+            "turn.finished",
+        }:
+            return False
+        span_id = str(envelope.get("span_id") or "").strip()
+        if not span_id:
+            return False
+        discriminator = span_id
+        if event_type.startswith("tool."):
+            discriminator = "{}:{}".format(
+                span_id,
+                str(payload.get("tool_call_id") or ""),
+            )
+        key = (event_type, discriminator)
+        first_source = self._event_sources.setdefault(key, source)
+        return source != first_source
 
     def snapshot(self) -> dict[str, Any]:
         """Return a thread-safe JSON-ready trace within the configured byte cap."""

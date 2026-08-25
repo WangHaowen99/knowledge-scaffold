@@ -1857,6 +1857,38 @@ def create_default_jiuwen_agent(
     return agent
 
 
+def _terminal_tool_call_id(batch_result: Any) -> str:
+    explicit_tool_call_id = str(
+        getattr(batch_result, "terminal_tool_call_id", None) or ""
+    ).strip()
+    if explicit_tool_call_id:
+        return explicit_tool_call_id
+    for message in reversed(list(getattr(batch_result, "messages", None) or [])):
+        if not isinstance(message, Mapping):
+            continue
+        tool_call_id = str(message.get("tool_call_id") or "").strip()
+        if tool_call_id:
+            return tool_call_id
+    return ""
+
+
+def _remember_jiuwen_terminal_tool_batch(
+    terminal_result: Dict[str, Any],
+    batch_result: Any,
+) -> None:
+    """Correlate a Consumer terminal result with the active model call."""
+
+    terminal_result["batch_result"] = batch_result
+    terminal_result["tool_call_id"] = _terminal_tool_call_id(batch_result)
+    identity = _current_jiuwen_tool_call_identity()
+    if identity is None:
+        terminal_result.pop("model_tool_call_id", None)
+        terminal_result.pop("correlation_token", None)
+        return
+    terminal_result["model_tool_call_id"] = identity.model_tool_call_id
+    terminal_result["correlation_token"] = identity.correlation_token
+
+
 def warm_up_jiuwen_runtime(
     *,
     agent_config: Any = None,

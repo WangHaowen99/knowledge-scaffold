@@ -234,6 +234,9 @@ const normalizeSubagentGroup = (group, parentKey) => {
             : stringValue(event?.text || publicErrorMessage(event?.error)),
           toolName: stringValue(event?.toolName),
           toolCallId: stringValue(event?.toolCallId),
+          traceId: stringValue(event?.traceId || event?.trace_id),
+          spanId: stringValue(event?.spanId || event?.span_id),
+          parentSpanId: stringValue(event?.parentSpanId || event?.parent_span_id),
           input: event?.input ?? null,
           output: stringValue(event?.output),
           outputRef: stringValue(event?.outputRef ?? event?.output_ref),
@@ -286,6 +289,9 @@ const normalizeSubagentGroup = (group, parentKey) => {
         terminal: Boolean(child?.endTs) || ['completed', 'error', 'cancelled'].includes(stringValue(child?.status)),
         result: child?.result ?? null,
         error: publicErrorMessage(child?.error),
+        traceId: stringValue(child?.traceId),
+        spanId: stringValue(child?.spanId),
+        parentSpanId: stringValue(child?.parentSpanId),
         startedAt: childStartedAt,
         endedAt: childEndedAt,
         durationMs: elapsedValue(childStartedAt, childEndedAt),
@@ -302,6 +308,9 @@ const normalizeSubagentGroup = (group, parentKey) => {
     kind: 'subagent',
     subtype: 'group',
     groupId,
+    traceId: stringValue(group?.traceId || group?.meta?.trace_id),
+    spanId: stringValue(group?.spanId || group?.meta?.span_id),
+    parentSpanId: stringValue(group?.parentSpanId || group?.meta?.parent_span_id),
     status: normalizeConversationStatus(group?.status, !group?.finished),
     terminal: Boolean(group?.finished),
     startedAt,
@@ -315,7 +324,9 @@ const normalizeSubagentGroup = (group, parentKey) => {
 const segmentIdentity = (segment, kind, index) => {
   const meta = segment?.meta || {};
   return stringValue(
-    segment?.spanKey
+    segment?.spanId
+    || meta.span_id
+    || segment?.spanKey
     || meta.tool_call_id
     || segment?.groupId
     || meta.subagent_id
@@ -357,6 +368,9 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     node: stringValue(segment?.node),
     spanKey: stringValue(segment?.spanKey),
     parentKey: stringValue(segment?.parentKey),
+    traceId: stringValue(segment?.traceId || meta.trace_id),
+    spanId: stringValue(segment?.spanId || meta.span_id),
+    parentSpanId: stringValue(segment?.parentSpanId || meta.parent_span_id),
     iteration: numberValue(meta?.iteration),
     startedAt,
     endedAt,
@@ -457,6 +471,9 @@ const normalizeMessage = (message, index, occurrences) => {
       node: '',
       spanKey: '',
       parentKey: '',
+      traceId: '',
+      spanId: '',
+      parentSpanId: '',
       startedAt: timestampValue(message?.ts),
       endedAt: timestampValue(message?.endTs),
       durationMs: null,

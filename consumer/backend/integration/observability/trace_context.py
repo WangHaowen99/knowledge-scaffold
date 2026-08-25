@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 
 _TRACEPARENT_RE = re.compile(
@@ -70,3 +72,82 @@ def normalize_traceparent(value: str | None) -> str:
 
     parsed = parse_traceparent(value)
     return parsed.value if parsed is not None else ""
+
+
+def capture_otel_context() -> Any:
+    """Capture only the current OTel context for a later background task."""
+    try:
+        from opentelemetry import context as otel_context
+
+        return otel_context.get_current()
+    except ImportError:
+        return None
+
+
+@contextmanager
+def bind_otel_context(context: Any) -> Iterator[None]:
+    if context is None:
+        yield
+        return
+    try:
+        from opentelemetry import context as otel_context
+    except ImportError:
+        yield
+        return
+    token = otel_context.attach(context)
+    try:
+        yield
+    finally:
+        otel_context.detach(token)
+
+
+@contextmanager
+def bind_otel_traceparent(value: str | None, *, strict: bool = True) -> Iterator[None]:
+    """Bind an incoming W3C parent to the OpenTelemetry context when available."""
+    try:
+        parsed = parse_traceparent(value)
+    except TraceParentValidationError:
+        if strict:
+            raise
+        yield
+        return
+    if parsed is None:
+        yield
+        return
+
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry import trace
+        from opentelemetry.trace import (
+            NonRecordingSpan,
+            SpanContext,
+            TraceFlags,
+            TraceState,
+            set_span_in_context,
+        )
+    except ImportError:
+        yield
+        return
+
+    # Flask instrumentation already creates a server span from the incoming
+    # traceparent. Keep that span as the parent when it is available; this
+    # fallback is for background workers that do not inherit request context.
+    current_span_context = trace.get_current_span().get_span_context()
+    if current_span_context.is_valid:
+        yield
+        return
+
+    span_context = SpanContext(
+        trace_id=int(parsed.trace_id, 16),
+        span_id=int(parsed.parent_id, 16),
+        is_remote=True,
+        trace_flags=TraceFlags(int(parsed.trace_flags, 16)),
+        trace_state=TraceState(),
+    )
+    token = otel_context.attach(
+        set_span_in_context(NonRecordingSpan(span_context))
+    )
+    try:
+        yield
+    finally:
+        otel_context.detach(token)

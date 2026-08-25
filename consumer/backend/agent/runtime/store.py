@@ -209,6 +209,11 @@ class InMemoryRunRepository:
                 source=draft.source,
                 payload=draft.payload,
                 created_at=draft.created_at,
+                span_key=draft.span_key,
+                parent_key=draft.parent_key,
+                trace_id=draft.trace_id,
+                span_id=draft.span_id,
+                parent_span_id=draft.parent_span_id,
                 event_id="{}:{}".format(draft.run_id, seq),
                 seq=seq,
             )

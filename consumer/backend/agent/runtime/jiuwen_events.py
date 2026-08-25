@@ -7,6 +7,8 @@ import threading
 from collections.abc import Mapping
 from typing import Any, Optional
 
+from integration.observability.identity import resolve_runtime_identity
+
 from .contracts import RuntimeInvocationContext
 from .events import RuntimeEvent
 
@@ -116,6 +118,13 @@ class JiuwenRuntimeEventBridge:
                 "running",
                 model_payload,
                 component="model",
+                span_key=span_key or None,
+                parent_key=str(getattr(event, "parent_key", "") or "") or None,
+                trace_id=str(getattr(event, "trace_id", "") or "") or None,
+                span_id=str(getattr(event, "span_id", "") or "") or None,
+                parent_span_id=(
+                    str(getattr(event, "parent_span_id", "") or "") or None
+                ),
             )
         )
         return True
@@ -135,12 +144,21 @@ class JiuwenRuntimeEventBridge:
             value = (meta or {}).get(key)
             if value not in (None, ""):
                 payload[key] = value
+        iteration = max(1, int(payload.get("iteration") or 1))
+        call_index = max(1, int((meta or {}).get("call_index") or 1))
+        caller_suffix = str((meta or {}).get("caller_suffix") or "main").strip() or "main"
         self._publish(
             self._event(
                 "reasoning.delta" if normalized_channel == "reasoning" else "token.delta",
                 "running",
                 payload,
                 component="model",
+                span_key="llm:{}:{}:{}".format(
+                    caller_suffix,
+                    iteration,
+                    call_index,
+                ),
+                parent_key="iteration:{}:{}".format(caller_suffix, iteration),
             )
         )
 
@@ -155,12 +173,28 @@ class JiuwenRuntimeEventBridge:
         else:
             status = "running"
             component = "tool"
+        caller = str(normalized_payload.get("caller") or "main").strip() or "main"
+        if caller == "subagent":
+            subagent_id = str(normalized_payload.get("subagent_id") or "").strip()
+            caller = "subagent:{}".format(subagent_id) if subagent_id else "subagent"
+        iteration = max(1, int(normalized_payload.get("iteration") or 1))
+        tool_name = str(
+            normalized_payload.get("tool_name") or normalized_payload.get("name") or "unknown_tool"
+        ).strip() or "unknown_tool"
+        tool_call_id = str(normalized_payload.get("tool_call_id") or "no_id").strip() or "no_id"
         self._publish(
             self._event(
                 normalized_type,
                 status,
                 normalized_payload,
                 component=component,
+                span_key="tool:{}:{}:{}:{}".format(
+                    caller,
+                    iteration,
+                    tool_name,
+                    tool_call_id,
+                ),
+                parent_key="iteration:{}:{}".format(caller, iteration),
             )
         )
 
@@ -194,6 +228,11 @@ class JiuwenRuntimeEventBridge:
                 normalized_payload,
                 component=component,
                 source_node=source_node,
+                span_key=str(data.get("span_key") or "") or None,
+                parent_key=str(data.get("parent_key") or "") or None,
+                trace_id=str(data.get("trace_id") or "") or None,
+                span_id=str(data.get("span_id") or "") or None,
+                parent_span_id=str(data.get("parent_span_id") or "") or None,
             )
         )
 
@@ -370,7 +409,24 @@ class JiuwenRuntimeEventBridge:
         *,
         component: str,
         source_node: str | None = None,
+        span_key: str | None = None,
+        parent_key: str | None = None,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
     ) -> RuntimeEvent:
+        resolved_span_key = span_key
+        if resolved_span_key is None and event_type in {"turn.started", "turn.finished"}:
+            resolved_span_key = "run:{}".format(self.context.run_id)
+        resolved_trace_id, resolved_span_id, resolved_parent_span_id = resolve_runtime_identity(
+            self.context.run_id,
+            span_key=resolved_span_key,
+            parent_key=parent_key,
+            trace_id=trace_id,
+            parent_span_id=parent_span_id,
+            event_type=event_type,
+            materialize_span=False,
+        )
         return RuntimeEvent(
             event_type=event_type,
             status=self.normalize_status(status),
@@ -382,6 +438,11 @@ class JiuwenRuntimeEventBridge:
                 "component": component,
             },
             payload=dict(payload or {}),
+            span_key=resolved_span_key,
+            parent_key=parent_key,
+            trace_id=resolved_trace_id,
+            span_id=span_id or resolved_span_id,
+            parent_span_id=parent_span_id or resolved_parent_span_id,
         )
 
     @staticmethod

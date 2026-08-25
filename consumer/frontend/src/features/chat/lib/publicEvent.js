@@ -50,6 +50,9 @@ export const isPublicEvent = (value) => {
   if (!PUBLIC_EVENT_STATUSES.has(value.status)) return false;
   if (!isPlainObject(value.payload)) return false;
   if (value.source != null && !isPlainObject(value.source)) return false;
+  for (const key of ['span_key', 'parent_key', 'trace_id', 'span_id', 'parent_span_id']) {
+    if (value[key] != null && typeof value[key] !== 'string') return false;
+  }
   if (value.session_id != null && typeof value.session_id !== 'string') return false;
   if (value.turn_id != null && !isPositiveInteger(value.turn_id)) return false;
   if (typeof value.created_at !== 'string' || !Number.isFinite(Date.parse(value.created_at))) {

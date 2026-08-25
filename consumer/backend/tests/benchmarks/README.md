@@ -313,7 +313,7 @@ RUNS_MAX_CONCURRENCY=5
 
 ## 性能数据采集
 
-本项目后端**不发射 `dag_performance` SSE 事件**，性能数据写入日期分片的日志文件 `backend/logs/agent_perf-YYYY-MM-DD.log`。
+本项目后端**不发射 `dag_performance` SSE 事件**，性能数据写入 workspace runtime 下日期分片的 `otel_trace-YYYY-MM-DD.log`。
 
 测试脚本在每次执行完成后，会自动按 `run_id` 从 perf log 中提取：
 
@@ -346,6 +346,6 @@ RUNS_MAX_CONCURRENCY=5
 | 默认端口 | `8000` | `5055` |
 | 认证 | 无需认证 | Bearer Token (`POST /auth/login`) |
 | SSE 脚本名称 | 文件名如 `knowledge_graph_tool.py` | operation_key 如 `故障知识更新`，需映射 |
-| 性能数据 | SSE `dag_performance` 事件 | perf log 文件 (`agent_perf-YYYY-MM-DD.log`) |
+| 性能数据 | SSE `dag_performance` 事件 | OTel 本地文件 (`otel_trace-YYYY-MM-DD.log`) |
 | Agent 架构 | Planner + Worker + Finalizer | 仅 Worker |
 | 日志文件 | 单一 `app.log` | 日期分片 `agent-YYYY-MM-DD.log` |

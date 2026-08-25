@@ -57,7 +57,7 @@ def check_session_availability(
         start_ms=start_ms,
         end_ms=end_ms,
         session_id=session_id,
-        kinds={"run_summary"},
+        kinds={"run_summary", "metric"},
     )
     return {
         "session_id": session_id,
@@ -97,7 +97,7 @@ def analyze_global_overview(
     read_result = _reader(workspace_id=workspace_id).read_records(
         start_ms=start_ms,
         end_ms=end_ms,
-        kinds={"run_summary"},
+        kinds={"run_summary", "metric"},
     )
     body = build_global_overview(
         read_result.records,

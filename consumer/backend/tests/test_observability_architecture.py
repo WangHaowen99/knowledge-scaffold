@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -105,6 +106,66 @@ def test_observability_bus_closes_exporter_after_worker_stops():
     assert exporter.closed is True
 
 
+def test_runtime_metrics_use_only_bounded_aggregation_dimensions(monkeypatch):
+    from integration.observability import otel as otel_mod
+
+    recorded_attributes = []
+
+    class Instrument:
+        def _record(self, value, attributes):
+            del value
+            recorded_attributes.append(dict(attributes))
+
+        add = _record
+        record = _record
+
+    monkeypatch.setattr(
+        otel_mod,
+        "_get_metric_instruments",
+        lambda router_id="": {name: Instrument() for name in (
+            "run.count", "run.failure", "run.duration",
+            "llm.count", "llm.failure", "llm.duration", "llm.tokens",
+            "tool.count", "tool.failure", "tool.duration",
+        )},
+    )
+
+    otel_mod.record_runtime_metrics(
+        event_type="llm.finished",
+        payload={
+            "status": "completed",
+            "wall_duration_ms": 20,
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14,
+            },
+        },
+        workspace_id="demo",
+        metric_labels={
+            "model": "glm-5",
+            "model_provider": "glm",
+            "agent_mode": "thinking",
+        },
+    )
+
+    allowed = {
+        "agent.workspace_id",
+        "agent.model",
+        "agent.model_provider",
+        "agent.agent_mode",
+        "agent.status",
+        "agent.tool.name",
+        "agent.token.type",
+    }
+    assert recorded_attributes
+    assert all(set(attributes) <= allowed for attributes in recorded_attributes)
+    assert all(
+        not {"agent.run_id", "agent.session_id", "agent.turn_id", "agent.observability.router_id"}
+        & set(attributes)
+        for attributes in recorded_attributes
+    )
+
+
 def test_local_perf_exporter_writes_metrics_without_rich_llm_content(tmp_path, monkeypatch):
     import json
 
@@ -146,12 +207,13 @@ def test_local_perf_exporter_writes_metrics_without_rich_llm_content(tmp_path, m
 
     records = [
         json.loads(line)
-        for path in tmp_path.glob("agent_perf-*.log")
+        for path in tmp_path.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert records == [
         {
-            "schema_version": 1,
+            "schema_version": 2,
+            "record_type": "opentelemetry",
             "kind": "llm_call",
             "event": "llm.finished",
             "ts_ms": records[0]["ts_ms"],
@@ -159,6 +221,8 @@ def test_local_perf_exporter_writes_metrics_without_rich_llm_content(tmp_path, m
             "session_id": "session-local",
             "turn_id": 2,
             "span_key": "llm:main:1",
+            "trace_id": records[0]["trace_id"],
+            "span_id": records[0]["span_id"],
             "status": "success",
             "caller": "main",
             "iteration": 1,
@@ -214,7 +278,7 @@ def test_local_perf_exporter_projects_glm_cache_usage(tmp_path, monkeypatch):
 
     records = [
         json.loads(line)
-        for path in tmp_path.glob("agent_perf-*.log")
+        for path in tmp_path.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
 
@@ -253,7 +317,7 @@ def test_local_perf_exporter_does_not_parse_provider_specific_cache_fields(tmp_p
 
     records = [
         json.loads(line)
-        for path in tmp_path.glob("agent_perf-*.log")
+        for path in tmp_path.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
 
@@ -371,7 +435,7 @@ def test_local_perf_exporter_projects_runtime_perf_families(tmp_path, monkeypatc
 
     records = [
         json.loads(line)
-        for path in tmp_path.glob("agent_perf-*.log")
+        for path in tmp_path.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert [record["kind"] for record in records] == [
@@ -460,7 +524,7 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
 
     records = [
         json.loads(line)
-        for path in tmp_path.glob("agent_perf-*.log")
+        for path in tmp_path.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
     direct_tool = next(
@@ -1034,6 +1098,61 @@ def test_observer_provider_reuses_process_scoped_observer(monkeypatch):
         provider_mod.shutdown_observer(timeout=1)
 
 
+def test_observer_provider_reserves_run_before_reset_can_retire(monkeypatch):
+    import integration.observability.provider as provider_mod
+
+    reserve_started = threading.Event()
+    allow_reserve = threading.Event()
+    reset_started = threading.Event()
+
+    class BlockingRouter:
+        available = True
+
+        def __init__(self):
+            self.retired = False
+
+        def reserve_run(self, run_id, workspace_id):
+            assert (run_id, workspace_id) == ("run-race", "demo")
+            reserve_started.set()
+            allow_reserve.wait(timeout=1)
+
+        def retire(self, timeout=1):
+            del timeout
+            self.retired = True
+
+        def close(self, timeout=1):
+            del timeout
+
+    router = BlockingRouter()
+    monkeypatch.setattr(provider_mod, "create_workspace_observability_router", lambda: router)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
+
+    acquired = []
+    acquire_thread = threading.Thread(target=lambda: acquired.append(
+        provider_mod.get_observer_for_run("run-race", "demo")
+    ))
+
+    def reset():
+        reset_started.set()
+        provider_mod.reset_observer(timeout=1)
+
+    reset_thread = threading.Thread(target=reset)
+    acquire_thread.start()
+    assert reserve_started.wait(timeout=1)
+    reset_thread.start()
+    assert reset_started.wait(timeout=1)
+    assert router.retired is False
+
+    allow_reserve.set()
+    acquire_thread.join(timeout=1)
+    reset_thread.join(timeout=1)
+
+    assert not acquire_thread.is_alive()
+    assert not reset_thread.is_alive()
+    assert acquired == [router]
+    assert router.retired is True
+
+
 def test_observer_provider_reset_retires_current_observer_and_rebuilds(monkeypatch):
     import integration.observability.provider as provider_mod
 
@@ -1122,6 +1241,319 @@ def test_observer_provider_reset_keeps_retired_observer_usable_for_existing_run(
         assert created_routers[0].closed is False
     finally:
         provider_mod.shutdown_observer(timeout=1)
+
+
+def test_retired_run_metrics_stay_on_the_original_workspace_router():
+    from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.otel import (
+        force_flush_runtime_metrics,
+        initialize_open_telemetry,
+    )
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+
+    initialize_open_telemetry()
+    old_metrics = []
+    old_exporter = Mock()
+    old_exporter.export.side_effect = lambda event: old_metrics.append(event)
+    new_exporter = Mock()
+    old_router = WorkspaceObservabilityRouter()
+    old_router._build_exporter = lambda workspace_id: old_exporter
+    new_router = None
+    try:
+        assert old_router.reserve_run("run-before-refresh", "demo") is True
+        assert "demo" in old_router._observers_by_workspace
+        assert old_router.emit(RuntimeEvent(
+            type=RuntimeEventType.RUN_STARTED,
+            run_id="run-before-refresh",
+            span_key="run:run-before-refresh",
+            payload={"workspace_id": "demo"},
+        )) is True
+
+        old_router.retire()
+        new_router = WorkspaceObservabilityRouter()
+        new_router._build_exporter = lambda workspace_id: new_exporter
+        assert new_router.reserve_run("run-after-refresh", "demo") is True
+
+        assert old_router.emit(RuntimeEvent(
+            type=RuntimeEventType.RUN_FINISHED,
+            run_id="run-before-refresh",
+            span_key="run:run-before-refresh",
+            payload={
+                "workspace_id": "demo",
+                "status": "success",
+                "duration_ms": 25,
+            },
+        )) is True
+        assert force_flush_runtime_metrics(old_router.router_id)
+
+        old_metric_names = {
+            event.payload["otel_record"]["name"]
+            for event in old_metrics
+            if event.type == "otel.metric.exported"
+        }
+        assert "agent.run.count" in old_metric_names
+        assert "agent.run.duration" in old_metric_names
+        assert all(
+            call.args[0].type != "otel.metric.exported"
+            for call in new_exporter.export.call_args_list
+        )
+    finally:
+        old_router.release_run("run-before-refresh")
+        if new_router is not None:
+            new_router.release_run("run-after-refresh")
+            new_router.close()
+
+
+def test_workspace_router_pending_span_buffer_is_bounded():
+    from integration.observability.otel_data import OTelSpanSnapshot
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+
+    def span(run_id, index, *, name="tool.call"):
+        return OTelSpanSnapshot(
+            name=name,
+            trace_id="1" * 32,
+            span_id=format(index + 1, "016x"),
+            parent_span_id=None,
+            start_ms=100,
+            end_ms=200,
+            status="unset",
+            attributes={"agent.run_id": run_id},
+            events=(),
+            scope_name="test",
+        )
+
+    router = WorkspaceObservabilityRouter(
+        max_pending_spans_per_run=3,
+        max_pending_spans_total=4,
+    )
+    try:
+        for index in range(5):
+            router.export_otel_span(span("run-a", index))
+        router.export_otel_span(span("run-a", 100, name="agent.run"))
+        for index in range(3):
+            router.export_otel_span(span("run-b", index + 200))
+        router.export_otel_span(span("run-b", 300, name="agent.run"))
+
+        assert router._pending_span_count == 4
+        assert sum(len(items) for items in router._pending_spans_by_run.values()) == 4
+        assert len(router._pending_spans_by_run["run-a"]) == 3
+        assert len(router._pending_spans_by_run["run-b"]) == 1
+        assert router._pending_spans_by_run["run-b"][0].name == "agent.run"
+        assert router._pending_span_drop_count == 6
+
+        router._flush_run("run-a")
+        assert router._pending_span_count == 1
+    finally:
+        router.close(timeout=1)
+
+
+def test_workspace_router_exports_large_run_as_one_queue_batch(monkeypatch):
+    from integration.observability import ObservabilityBus, RuntimeEventType
+    from integration.observability.otel_data import OTelEventSnapshot, OTelSpanSnapshot
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+
+    exported = []
+    exporter = Mock(
+        export=lambda event: exported.append(event),
+        flush=lambda: None,
+        close=lambda: None,
+    )
+    bus = ObservabilityBus(exporter, queue_size=1, flush_interval_seconds=10)
+    router = WorkspaceObservabilityRouter(max_pending_spans_per_run=600)
+    monkeypatch.setattr(router, "_get_observer", lambda *args, **kwargs: bus)
+    router._run_workspaces["run-large"] = "workspace_demo"
+
+    try:
+        root_span_id = "1" * 16
+        for index in range(600):
+            terminal = index == 599
+            event_type = RuntimeEventType.RUN_FINISHED if terminal else RuntimeEventType.TOOL_FINISHED
+            router.export_otel_span(
+                OTelSpanSnapshot(
+                    name="agent.run" if terminal else "tool.call",
+                    trace_id="2" * 32,
+                    span_id=root_span_id if terminal else format(index + 2, "016x"),
+                    parent_span_id=None if terminal else root_span_id,
+                    start_ms=1000,
+                    end_ms=3000 if terminal else 2000,
+                    status="ok",
+                    attributes={
+                        "agent.run_id": "run-large",
+                        "agent.session_id": "session-large",
+                        "agent.workspace_id": "workspace_demo",
+                    },
+                    events=(
+                        OTelEventSnapshot(
+                            name="agent.runtime_event",
+                            timestamp_ms=3000 if terminal else 2000,
+                            attributes={
+                                "agent.event.type": event_type,
+                                "agent.event.payload_json": '{"status":"success"}',
+                            },
+                        ),
+                    ),
+                    scope_name="test",
+                )
+            )
+
+        router.release_run("run-large")
+        bus.close(timeout=2)
+
+        assert len(exported) == 1200
+        assert sum(event.type == RuntimeEventType.RUN_FINISHED for event in exported) == 1
+        assert router._pending_span_count == 0
+    finally:
+        bus.close(timeout=2)
+        router.close(timeout=1)
+
+
+def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_fields():
+    import json
+
+    from integration.observability.otel_data import (
+        OTelEventSnapshot,
+        OTelSpanSnapshot,
+        metric_record,
+        span_record,
+    )
+
+    class HistogramPoint:
+        attributes = {
+            "agent.workspace_id": "demo",
+            "agent.status": "success",
+        }
+        time_unix_nano = 2_000_000_000
+        count = 2
+        sum = 450
+        min = 200
+        max = 250
+        bucket_counts = (0, 1, 1)
+        explicit_bounds = (100, 200)
+
+    metric = metric_record(
+        name="agent.run.duration",
+        point=HistogramPoint(),
+        scope_name="onto.consumer.runtime",
+    )
+
+    assert metric["value"]["bucket_counts"] == [0, 1, 1]
+    assert metric["value"]["explicit_bounds"] == [100, 200]
+    assert "run_id" not in metric
+    assert "session_id" not in metric
+    assert "turn_id" not in metric
+
+    progress_payload = {
+        "status": "running",
+        "caller": "main",
+        "iteration": 1,
+        "tool_name": "business_data_search",
+        "tool_call_id": "call-1",
+        "database_provider": "hugegraph",
+        "message": "业务数据查询: private-preview",
+        "query": "serial_no=private-query",
+        "progress": {"content": "private-result"},
+    }
+    span = OTelSpanSnapshot(
+        name="tool.call",
+        trace_id="1" * 32,
+        span_id="2" * 16,
+        parent_span_id="3" * 16,
+        start_ms=1000,
+        end_ms=2000,
+        status="error",
+        attributes={
+            "agent.run_id": "run-safe",
+            "agent.session_id": "session-safe",
+            "agent.turn_id": 3,
+            "agent.workspace_id": "demo",
+            "agent.tool_name": "business_data_search",
+            "agent.message": "private-message",
+            "agent.error_message": "private-error",
+            "http.url": "http://hugegraph.test/vertices?properties=private-property",
+            "url.full": "http://service.test/search?q=private-query#fragment",
+            "http.request.method": "GET",
+        },
+        events=(
+            OTelEventSnapshot(
+                name="agent.runtime_event",
+                timestamp_ms=1500,
+                attributes={
+                    "agent.event.type": "tool.progress",
+                    "agent.event.payload_json": json.dumps(progress_payload),
+                },
+            ),
+        ),
+        scope_name="onto.consumer.runtime",
+    )
+
+    record = span_record(span)
+    serialized = json.dumps(record)
+
+    assert record["labels"]["http.url"] == "http://hugegraph.test/vertices"
+    assert record["labels"]["url.full"] == "http://service.test/search"
+    assert record["labels"]["agent.tool_name"] == "business_data_search"
+    assert record["events"][0]["event"] == "tool.progress"
+    assert record["events"][0]["labels"] == {
+        "status": "running",
+        "caller": "main",
+        "tool_name": "business_data_search",
+        "tool_call_id": "call-1",
+        "database_provider": "hugegraph",
+    }
+    assert record["events"][0]["metrics"] == {"iteration": 1}
+    assert all(
+        value not in serialized
+        for value in (
+            "private-message",
+            "private-error",
+            "private-preview",
+            "private-query",
+            "private-result",
+        )
+    )
+
+
+def test_mcp_false_result_marks_request_span_as_error(monkeypatch):
+    from contextlib import contextmanager
+
+    from integration.mcp.scope import MCPRequestScope
+    from opentelemetry.trace import StatusCode
+    from api.protocols.mcp import server as server_mod
+
+    span = Mock(status=None, attributes={}, events=[])
+    span.set_attributes.side_effect = span.attributes.update
+    span.add_event.side_effect = lambda name, attributes=None: span.events.append(
+        (name, dict(attributes or {}))
+    )
+    span.set_status.side_effect = lambda status: setattr(span, "status", status)
+
+    @contextmanager
+    def fake_observation(scope, *, required_scope):
+        assert scope.workspace_id == "workspace-a"
+        assert required_scope == "mcp:search"
+        yield span
+
+    monkeypatch.setattr(server_mod, "_mcp_request_observation", fake_observation)
+    result = server_mod._invoke_mcp_with_observation(
+        MCPRequestScope("alice", "workspace-a", ["mcp:search"]),
+        required_scope="mcp:search",
+        caller=lambda _scope: {
+            "ok": False,
+            "error": {
+                "type": "provider_error",
+                "error_code": "SEARCH_FAILED",
+                "detail": "request failed, token=secret-value",
+            },
+        },
+    )
+
+    assert result["ok"] is False
+    assert span.status.status_code is StatusCode.ERROR
+    assert span.attributes["mcp.response.ok"] is False
+    assert span.attributes["error.type"] == "provider_error"
+    assert span.attributes["mcp.error_code"] == "SEARCH_FAILED"
+    assert "secret-value" not in span.attributes["error.message"]
+    assert span.events[0][0] == "mcp.request.failed"
 
 
 def test_runtime_refresh_resets_observability_provider(monkeypatch):
@@ -1263,12 +1695,14 @@ def test_observer_dispatches_to_platform_when_workspace_observability_disabled(t
 
 def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monkeypatch):
     from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.otel import initialize_open_telemetry
     from integration.observability.workspace_config import update_workspace_observability_config
     from integration.observability.workspace_router import WorkspaceObservabilityRouter
     from workspace.workspaces import create_workspace
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    initialize_open_telemetry()
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     create_workspace("Beta", workspace_id="beta")
     update_workspace_observability_config(
@@ -1326,28 +1760,44 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
             RuntimeEvent(
                 type=RuntimeEventType.RUN_STARTED,
                 run_id="run-alpha",
+                span_key="run:run-alpha",
                 payload={"workspace_id": "alpha"},
             )
         )
-        router.export(RuntimeEvent(type=RuntimeEventType.LLM_FINISHED, run_id="run-alpha"))
+        router.export(RuntimeEvent(
+            type=RuntimeEventType.LLM_FINISHED,
+            run_id="run-alpha",
+            span_key="llm:run-alpha:1",
+            parent_key="run:run-alpha",
+        ))
         router.export(
             RuntimeEvent(
                 type=RuntimeEventType.RUN_STARTED,
                 run_id="run-beta",
+                span_key="run:run-beta",
                 payload={"workspace_id": "beta"},
             )
         )
     finally:
         router.close()
 
-    assert [event.run_id for event in created["pk-alpha"].events] == ["run-alpha", "run-alpha"]
-    assert [event.run_id for event in created["pk-beta"].events] == ["run-beta"]
+    assert [
+        event.run_id
+        for event in created["pk-alpha"].events
+        if not event.type.startswith("otel.")
+    ] == ["run-alpha", "run-alpha"]
+    assert [
+        event.run_id
+        for event in created["pk-beta"].events
+        if not event.type.startswith("otel.")
+    ] == ["run-beta"]
 
 
 def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path, monkeypatch):
     import json
 
     from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.otel import initialize_open_telemetry
     from integration.observability.workspace_config import (
         get_workspace_observability_log_dir,
         update_workspace_observability_config,
@@ -1357,6 +1807,7 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    initialize_open_telemetry()
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     update_workspace_observability_config(
         "alpha",
@@ -1369,7 +1820,14 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
             type=RuntimeEventType.RUN_STARTED,
             run_id="run-local-workspace",
             session_id="session-1",
-            payload={"workspace_id": "alpha"},
+            span_key="run:run-local-workspace",
+            timestamp_ms=1000,
+            payload={
+                "workspace_id": "alpha",
+                "model": "glm-5",
+                "model_provider": "glm",
+                "agent_mode": "thinking",
+            },
         )
     )
     router.export(
@@ -1377,7 +1835,9 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
             type=RuntimeEventType.RUN_FINISHED,
             run_id="run-local-workspace",
             session_id="session-1",
-            payload={"status": RuntimeStatus.SUCCESS, "duration_ms": 10},
+            span_key="run:run-local-workspace",
+            timestamp_ms=1234,
+            payload={"status": RuntimeStatus.SUCCESS, "duration_ms": 234},
         )
     )
     router.close()
@@ -1385,14 +1845,41 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
     log_dir = get_workspace_observability_log_dir("alpha")
     records = [
         json.loads(line)
-        for path in log_dir.glob("agent_perf-*.log")
+        for path in log_dir.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
-    assert [record["run_id"] for record in records] == [
-        "run-local-workspace",
-        "run-local-workspace",
-        "run-local-workspace",
+    non_metric_kinds = [
+        record["kind"]
+        for record in records
+        if record["kind"] != "metric"
     ]
+    assert non_metric_kinds == [
+        "span",
+        "run",
+        "run",
+        "run_summary",
+    ]
+    run_span = next(record for record in records if record.get("name") == "agent.run")
+    assert run_span["start_ms"] == 1000
+    assert run_span["duration_ms"] == 234
+    metrics = {
+        record["name"]: record
+        for record in records
+        if record["kind"] == "metric"
+    }
+    assert metrics["agent.run.count"]["value"] == 1
+    assert metrics["agent.run.count"]["labels"]["agent.model"] == "glm-5"
+    assert metrics["agent.run.count"]["labels"]["agent.model_provider"] == "glm"
+    assert metrics["agent.run.count"]["labels"]["agent.agent_mode"] == "thinking"
+    assert metrics["agent.run.duration"]["value"]["count"] == 1
+    assert metrics["agent.run.duration"]["value"]["sum"] == 234
+    assert metrics["agent.run.duration"]["value"]["bucket_counts"]
+    assert {
+        record["run_id"]
+        for record in records
+        if record["kind"] != "metric"
+    } == {"run-local-workspace"}
+    assert all("run_id" not in record for record in records if record["kind"] == "metric")
     assert not (tmp_path / "logs").exists()
 
 
@@ -1522,12 +2009,6 @@ def test_observer_provider_returns_noop_when_router_creation_fails(monkeypatch):
     monkeypatch.setattr(provider_mod, "create_workspace_observability_router", fail_router)
     monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
     assert provider_mod.get_observer() is NOOP_OBSERVER
-
-
-def test_exporter_registry_uses_provider_factories():
-    from integration.observability.exporters import EXPORTER_REGISTRY
-
-    assert EXPORTER_REGISTRY["langfuse"].__name__ == "create_langfuse_exporter"
 
 
 def test_langfuse_exporter_accepts_adapter_not_config():
@@ -2115,3 +2596,71 @@ def test_langfuse_trace_id_is_stable_for_the_same_run_identity():
 
     assert len(trace_ids) == 2
     assert trace_ids[0] == trace_ids[1]
+
+
+def test_otel_exporter_preserves_request_parent_in_background_run(tmp_path, monkeypatch):
+    import json
+
+    from opentelemetry import trace
+
+    from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.identity import bind_runtime_trace_identity
+    from integration.observability.otel import initialize_open_telemetry
+    from integration.observability.trace_context import bind_otel_context, capture_otel_context
+    from integration.observability.workspace_config import (
+        get_workspace_observability_log_dir,
+        update_workspace_observability_config,
+    )
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+    from workspace.workspaces import create_workspace
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    create_workspace("OTel Context", workspace_id="otel-context", set_as_default=True)
+    update_workspace_observability_config("otel-context", {"enabled": True})
+    initialize_open_telemetry()
+    router = WorkspaceObservabilityRouter()
+    tracer = trace.get_tracer("test.request.context")
+
+    with tracer.start_as_current_span(
+        "flask.request",
+        attributes={
+            "agent.observability.router_id": router.router_id,
+            "agent.workspace_id": "otel-context",
+        },
+    ) as request_span:
+        request_context = request_span.get_span_context()
+        captured = capture_otel_context()
+
+        def run_in_background():
+            with bind_otel_context(captured):
+                bind_runtime_trace_identity("run-background")
+                router.emit(RuntimeEvent(
+                    type=RuntimeEventType.RUN_STARTED,
+                    run_id="run-background",
+                    session_id="session-background",
+                    span_key="run:run-background",
+                    payload={"workspace_id": "otel-context"},
+                ))
+                router.emit(RuntimeEvent(
+                    type=RuntimeEventType.RUN_FINISHED,
+                    run_id="run-background",
+                    session_id="session-background",
+                    span_key="run:run-background",
+                    payload={"status": "success"},
+                ))
+                router.release_run("run-background")
+
+        worker = threading.Thread(target=run_in_background)
+        worker.start()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+
+    router.close()
+    records = [
+        json.loads(line)
+        for path in get_workspace_observability_log_dir("otel-context").glob("otel_trace-*.log")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    run_span = next(record for record in records if record.get("name") == "agent.run")
+    assert run_span["trace_id"] == format(request_context.trace_id, "032x")
+    assert run_span["parent_span_id"] == format(request_context.span_id, "016x")

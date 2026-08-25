@@ -26,6 +26,21 @@ def get_observer():
         return _observer
 
 
+def get_observer_for_run(run_id: str, workspace_id: str):
+    """Return and reserve the process observer before config refresh can retire it."""
+    global _observer
+    with _observer_lock:
+        if _observer is None:
+            _observer = _build_observer()
+        reserve_run = getattr(_observer, "reserve_run", None)
+        if callable(reserve_run):
+            try:
+                reserve_run(run_id, workspace_id)
+            except Exception:
+                logger.warning("Failed to reserve observability observer for run %s", run_id, exc_info=True)
+        return _observer
+
+
 def reset_observer(timeout: float = 5.0) -> None:
     """Drop the current observer so the next run uses the latest config."""
     global _observer

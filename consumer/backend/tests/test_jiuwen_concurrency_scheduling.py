@@ -388,7 +388,7 @@ def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interact
                 },
             }
 
-        def execute(
+        async def aexecute(
             self,
             *,
             args,
@@ -402,7 +402,7 @@ def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interact
                 active_tools += 1
                 max_active_tools = max(max_active_tools, active_tools)
                 execution_events.append((self.name, "start", tool_call_id))
-            time.sleep(0.02)
+            await asyncio.sleep(0.02)
             with execution_lock:
                 execution_events.append((self.name, "end", tool_call_id))
                 active_tools -= 1

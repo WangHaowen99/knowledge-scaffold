@@ -36,6 +36,7 @@ class A2ATaskService:
         execution_store: Any,
         username: str,
         workspace_id: str,
+        traceparent: str = "",
     ) -> None:
         manager = getattr(runtime, "manager", None)
         short_io = getattr(runtime, "short_io", None)
@@ -45,6 +46,7 @@ class A2ATaskService:
         self.execution_store = execution_store
         self.username = str(username)
         self.workspace_id = str(workspace_id)
+        self.traceparent = str(traceparent or "").strip()
         self.manager = manager
 
     @property
@@ -105,6 +107,7 @@ class A2ATaskService:
                 arguments=(dict(raw_arguments) if raw_arguments is not None else None),
                 include_trace=False,
                 supports_user_interaction=False,
+                traceparent=self.traceparent,
             )
             try:
                 snapshot, manager_created = await self.manager.create_run(

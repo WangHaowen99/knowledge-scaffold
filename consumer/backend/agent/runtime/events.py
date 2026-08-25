@@ -106,6 +106,11 @@ class RuntimeEvent(BaseModel):
     source: dict[str, Any] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)
+    span_key: str | None = None
+    parent_key: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
 
     _validate_run_id = field_validator("run_id")(_non_empty)
     _validate_created_at = field_validator("created_at")(_non_empty)
@@ -130,6 +135,11 @@ class PublicEventDraft(BaseModel):
     source: dict[str, Any] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)
+    span_key: str | None = None
+    parent_key: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
     event_id: None = None
     seq: None = None
 
@@ -158,6 +168,11 @@ class PublicEvent(BaseModel):
     source: dict[str, Any] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)
+    span_key: str | None = None
+    parent_key: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
 
     _validate_event_id = field_validator("event_id")(_non_empty)
     _validate_run_id = field_validator("run_id")(_non_empty)

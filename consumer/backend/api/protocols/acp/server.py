@@ -317,6 +317,7 @@ async def _admit_run(
             arguments=dict(raw_arguments) if raw_arguments is not None else None,
             include_trace=False,
             supports_user_interaction=True,
+            traceparent=str(request.headers.get("traceparent") or "").strip(),
             interaction_response=(
                 dict(interaction_response) if interaction_response is not None else None
             ),

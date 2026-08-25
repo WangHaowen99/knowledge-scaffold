@@ -10,7 +10,6 @@ const DATA_SEARCH_TOOL_NAMES = new Set(['business_data_search']);
 
 export const publicErrorMessage = (value, fallback = '') => {
   const visited = new Set();
-
   const extract = (candidate, depth = 0) => {
     if (candidate == null || depth > 4) return '';
     if (typeof candidate === 'string') return candidate.trim();
@@ -24,14 +23,12 @@ export const publicErrorMessage = (value, fallback = '') => {
     }
     if (typeof candidate !== 'object' || visited.has(candidate)) return '';
     visited.add(candidate);
-
     for (const key of ['message', 'detail', 'error', 'reason', 'description']) {
       const message = extract(candidate[key], depth + 1);
       if (message) return message;
     }
     return extract(candidate.error_code ?? candidate.code, depth + 1);
   };
-
   return extract(value) || (typeof fallback === 'string' ? fallback : '');
 };
 
@@ -68,6 +65,10 @@ const normalizeToolName = (value) => (
   typeof value === 'string' ? value.trim() : ''
 );
 
+const normalizeSpanId = (value) => (
+  typeof value === 'string' ? value.trim() : ''
+);
+
 const toolNameFromPayload = (payload = {}) => (
   normalizeToolName(payload?.tool_name) || normalizeToolName(payload?.name)
 );
@@ -88,11 +89,13 @@ const withPublicToolInput = (payload = {}) => (
 );
 
 const resolveToolLocator = (payload = {}) => {
+  const spanId = normalizeSpanId(payload?.span_id);
   const toolCallId = normalizeToolCallId(payload?.tool_call_id);
   const toolName = toolNameFromPayload(payload);
   const query = extractToolQuery(payload);
 
   return {
+    spanId,
     toolCallId,
     toolName,
     query,
@@ -101,6 +104,7 @@ const resolveToolLocator = (payload = {}) => {
 };
 
 const hasToolLocator = (locator = {}) => {
+  if (locator?.spanId) return true;
   if (locator?.toolCallId) return true;
   if (locator?.isOntology) return Boolean(locator?.query);
   return Boolean(locator?.toolName);
@@ -110,6 +114,11 @@ const segmentMatchesToolLocator = (segment, locator = {}) => {
   if (!segment || segment.type !== 'tool') return false;
 
   const segmentMeta = segment?.meta || {};
+  const segmentSpanId = normalizeSpanId(segment?.spanId || segmentMeta?.span_id);
+  if (locator.spanId) {
+    return segmentSpanId === locator.spanId;
+  }
+
   const segmentToolCallId = normalizeToolCallId(segmentMeta?.tool_call_id);
   if (locator.toolCallId) {
     return segmentToolCallId === locator.toolCallId;
@@ -267,6 +276,9 @@ const appendInlineTextSegment = (segments, {
   meta,
   mergeKey = null,
   ts,
+  traceId = '',
+  spanId = '',
+  parentSpanId = '',
   spanKey = '',
   parentKey = '',
 }) => {
@@ -274,14 +286,21 @@ const appendInlineTextSegment = (segments, {
 
   const next = Array.isArray(segments) ? segments.slice() : [];
   const last = next[next.length - 1];
+  const usesSpanIdentity = Boolean(spanId || last?.spanId);
   const canMerge = Boolean(
     last
     && !last.finished
     && last.type === type
     && last.state === state
     && (last.node || '') === (node || '')
-    && (last.spanKey || '') === spanKey
-    && (last.parentKey || '') === parentKey
+    && (
+      usesSpanIdentity
+        ? Boolean(spanId && last?.spanId === spanId)
+        : (
+          (last.spanKey || '') === spanKey
+          && (last.parentKey || '') === parentKey
+        )
+    )
     && (
       !mergeKey
       || (
@@ -301,6 +320,9 @@ const appendInlineTextSegment = (segments, {
       ...last,
       text: `${last.text || ''}${text}`,
       meta: meta || last.meta,
+      traceId: traceId || last.traceId,
+      spanId: spanId || last.spanId,
+      parentSpanId: parentSpanId || last.parentSpanId,
       endTs: ts || Date.now(),
     };
     return next;
@@ -314,6 +336,9 @@ const appendInlineTextSegment = (segments, {
       text,
       node,
       meta,
+      traceId: traceId || undefined,
+      spanId: spanId || undefined,
+      parentSpanId: parentSpanId || undefined,
       spanKey: spanKey || undefined,
       parentKey: parentKey || undefined,
       finished: false,
@@ -587,6 +612,9 @@ const upsertIterationMetric = (metrics = [], payload = {}, ts = Date.now()) => {
     totalElapsedMs: normalizeNonNegativeNumber(payload?.total_elapsed_ms),
     toolCallsCount: normalizeNonNegativeNumber(payload?.tool_calls_count),
     toolNames: Array.isArray(payload?.tool_names) ? payload.tool_names.map((item) => String(item)) : [],
+    traceId: normalizeSpanId(payload?.trace_id),
+    spanId: normalizeSpanId(payload?.span_id),
+    parentSpanId: normalizeSpanId(payload?.parent_span_id),
     ts: normalizeNonNegativeNumber(ts) ?? Date.now(),
   };
 
@@ -797,7 +825,17 @@ const appendChildEvent = (child, event) => {
     const groupInterruptedToken = Number.isFinite(latestGroupSourceOrder) && lastSourceOrder != null
       ? latestGroupSourceOrder > lastSourceOrder
       : Number.isFinite(lastStartedAt) && latestGroupStartedAt > lastStartedAt;
-    if (last && last.kind === 'token' && last.channel === event.channel && !groupInterruptedToken) {
+    const usesSpanIdentity = Boolean(event.spanId || last?.spanId);
+    const sameSpan = usesSpanIdentity
+      ? Boolean(event.spanId && last?.spanId === event.spanId)
+      : true;
+    if (
+      last
+      && last.kind === 'token'
+      && last.channel === event.channel
+      && sameSpan
+      && !groupInterruptedToken
+    ) {
       next.events[next.events.length - 1] = {
         ...last,
         text: `${last.text || ''}${event.text || ''}`,
@@ -818,9 +856,17 @@ const appendChildEvent = (child, event) => {
   }
 
   if (event.kind === 'tool') {
+    const spanId = event.spanId || '';
     const tcid = event.toolCallId || '';
     let idx = -1;
-    if (tcid) {
+    if (spanId) {
+      for (let i = next.events.length - 1; i >= 0; i -= 1) {
+        if (next.events[i]?.kind === 'tool' && next.events[i]?.spanId === spanId) {
+          idx = i;
+          break;
+        }
+      }
+    } else if (tcid) {
       for (let i = next.events.length - 1; i >= 0; i -= 1) {
         if (next.events[i]?.kind === 'tool' && next.events[i]?.toolCallId === tcid) {
           idx = i;
@@ -844,6 +890,9 @@ const appendChildEvent = (child, event) => {
         outputProjection: event.outputProjection || null,
         elapsedMs: event.elapsedMs ?? null,
         error: event.error || '',
+        traceId: event.traceId || '',
+        spanId: event.spanId || '',
+        parentSpanId: event.parentSpanId || '',
         sourceOrder: event.sourceOrder ?? null,
         endSourceOrder: event.sourceOrder ?? null,
         startTs: event.ts,
@@ -867,6 +916,9 @@ const appendChildEvent = (child, event) => {
         outputProjection: event.outputProjection || prev.outputProjection,
         elapsedMs: event.elapsedMs ?? prev.elapsedMs,
         error: event.error || prev.error,
+        traceId: event.traceId || prev.traceId,
+        spanId: event.spanId || prev.spanId,
+        parentSpanId: event.parentSpanId || prev.parentSpanId,
         endSourceOrder: event.sourceOrder ?? prev.endSourceOrder ?? prev.sourceOrder,
         endTs: event.finishedStatus ? event.ts : prev.endTs,
       };
@@ -880,12 +932,15 @@ const appendChildEvent = (child, event) => {
 
 const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
   const toolCallId = typeof payload?.tool_call_id === 'string' ? payload.tool_call_id : '';
-  const toolName = toolNameFromPayload(payload);
+  const toolName = typeof payload?.tool_name === 'string' ? payload.tool_name : '';
   if (type === 'tool.started') {
     return {
       kind: 'tool',
       toolCallId,
       toolName,
+      traceId: payload?.trace_id || '',
+      spanId: payload?.span_id || '',
+      parentSpanId: payload?.parent_span_id || '',
       input: payload?.input || null,
       sourceOrder,
       ts,
@@ -901,6 +956,9 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
       kind: 'tool',
       toolCallId,
       toolName,
+      traceId: payload?.trace_id || '',
+      spanId: payload?.span_id || '',
+      parentSpanId: payload?.parent_span_id || '',
       progressEntry: {
         text,
         ontology: ontologyEvent,
@@ -916,6 +974,9 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
       kind: 'tool',
       toolCallId,
       toolName,
+      traceId: payload?.trace_id || '',
+      spanId: payload?.span_id || '',
+      parentSpanId: payload?.parent_span_id || '',
       finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
       output: payload?.output_preview || '',
       outputRef: payload?.output_ref || '',
@@ -951,7 +1012,12 @@ export const applyPublicEvent = (current, publicEvent) => {
   };
 
   const type = publicEvent.event_type;
-  const payload = publicEvent.payload || {};
+  const payload = {
+    ...(publicEvent.payload || {}),
+    ...(publicEvent.trace_id ? { trace_id: publicEvent.trace_id } : {}),
+    ...(publicEvent.span_id ? { span_id: publicEvent.span_id } : {}),
+    ...(publicEvent.parent_span_id ? { parent_span_id: publicEvent.parent_span_id } : {}),
+  };
   const eventTs = publicEventTimestamp(publicEvent);
   const sourceNode = publicEvent?.source?.node || 'agent';
   // Trace linkage is optional compatibility metadata on historical events.
@@ -997,6 +1063,9 @@ export const applyPublicEvent = (current, publicEvent) => {
       kind: 'token',
       channel: payload.channel === 'reasoning' ? 'reasoning' : 'content',
       text: payload.text == null ? '' : String(payload.text),
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       sourceOrder: eventSourceOrder,
       ts: eventTs,
     };
@@ -1050,6 +1119,9 @@ export const applyPublicEvent = (current, publicEvent) => {
       finished: false,
       sourceOrder: eventSourceOrder,
       startTs: eventTs,
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       meta: payload,
     };
     if (parentSubagentId) {
@@ -1127,6 +1199,9 @@ export const applyPublicEvent = (current, publicEvent) => {
           task: taskText || child?.task || '',
           status: payload.status || 'running',
           startTs: child?.startTs || eventTs,
+          traceId: payload.trace_id || child?.traceId || '',
+          spanId: payload.span_id || child?.spanId || '',
+          parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
         };
         return nextGroup;
       },
@@ -1146,6 +1221,9 @@ export const applyPublicEvent = (current, publicEvent) => {
       eventType: type,
       channel: payload.channel || 'content',
       text: payload.text == null ? '' : String(payload.text),
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       meta: payload,
       sourceOrder: eventSourceOrder,
       ts: eventTs,
@@ -1185,6 +1263,9 @@ export const applyPublicEvent = (current, publicEvent) => {
       (child) => ({
         ...cloneChild(child),
         status: payload.status || child.status,
+        traceId: payload.trace_id || child?.traceId || '',
+        spanId: payload.span_id || child?.spanId || '',
+        parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
       }),
     );
     if (updatedSegments) {
@@ -1215,6 +1296,9 @@ export const applyPublicEvent = (current, publicEvent) => {
         events: closeSubagentEventsForTerminal(child?.events, finalStatus, eventTs),
         result: payload.result || null,
         error: subagentError,
+        traceId: payload.trace_id || child?.traceId || '',
+        spanId: payload.span_id || child?.spanId || '',
+        parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
       }),
     );
     if (updatedSegments) {
@@ -1253,6 +1337,9 @@ export const applyPublicEvent = (current, publicEvent) => {
       node: sourceNode,
       meta: payload,
       ts: eventTs,
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       spanKey: eventSpanKey,
       parentKey: eventParentKey || iterationParentKeyFromPayload(payload),
     });
@@ -1382,6 +1469,9 @@ export const applyPublicEvent = (current, publicEvent) => {
         text: publicPayload.message || target.text || `调用工具: ${toolName}`,
         node: sourceNode || target.node,
         meta: mergeToolMeta(target.meta, publicPayload),
+        traceId: payload.trace_id || target.traceId,
+        spanId: payload.span_id || target.spanId,
+        parentSpanId: payload.parent_span_id || target.parentSpanId,
         finished: false,
         startTs: target.startTs || eventTs,
         endTs: null,
@@ -1396,6 +1486,9 @@ export const applyPublicEvent = (current, publicEvent) => {
         text: publicPayload.message || `调用工具: ${toolName}`,
         node: sourceNode,
         meta: publicPayload,
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         finished: false,
         toolStatus: null,
         startTs: eventTs,
@@ -1444,6 +1537,9 @@ export const applyPublicEvent = (current, publicEvent) => {
           appendBusinessDataSearchEventToMeta(mergedMeta, dbSearchEvent),
           webSearchEvent,
         ),
+        traceId: payload.trace_id || target.traceId,
+        spanId: payload.span_id || target.spanId,
+        parentSpanId: payload.parent_span_id || target.parentSpanId,
         finished: targetOpenIdx !== -1 ? false : Boolean(target.finished),
         startTs: target.startTs || eventTs,
         spanKey: target.spanKey || eventSpanKey || undefined,
@@ -1463,6 +1559,9 @@ export const applyPublicEvent = (current, publicEvent) => {
           appendBusinessDataSearchEventToMeta(mergeToolMeta({}, payload), dbSearchEvent),
           webSearchEvent,
         ),
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         finished: false,
         toolStatus: null,
         startTs: eventTs,
@@ -1479,6 +1578,9 @@ export const applyPublicEvent = (current, publicEvent) => {
         meta: payload,
         mergeKey: 'tool_call_id',
         ts: eventTs,
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         spanKey: eventSpanKey || undefined,
         parentKey: eventParentKey || undefined,
       });
@@ -1514,6 +1616,9 @@ export const applyPublicEvent = (current, publicEvent) => {
       next.streamSegments[targetIdx] = {
         ...target,
         meta: mergeToolMeta(target.meta, publicPayload),
+        traceId: payload.trace_id || target.traceId,
+        spanId: payload.span_id || target.spanId,
+        parentSpanId: payload.parent_span_id || target.parentSpanId,
         state: toolStatus || 'completed',
         text: target.text || payload.output_preview || toolError,
         finished: true,
@@ -1534,6 +1639,9 @@ export const applyPublicEvent = (current, publicEvent) => {
         text: payload.output_preview || toolError || `工具完成: ${toolName}`,
         node: sourceNode,
         meta: publicPayload,
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         finished: true,
         toolStatus,
         startTs: Number.isFinite(Number(payload.elapsed_ms))
@@ -1562,6 +1670,9 @@ export const applyPublicEvent = (current, publicEvent) => {
       meta: payload,
       mergeKey: 'subagent_id',
       ts: eventTs,
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
     });
     next.status = 'running';
     next.isLoading = true;

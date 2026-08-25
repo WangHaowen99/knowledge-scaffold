@@ -137,6 +137,11 @@ def _runtime_event_from_legacy(
         turn_id=context.turn_id,
         source={"node": "direct_execution", "component": "service"},
         payload=payload,
+        span_key=str(data.get("span_key") or "") or None,
+        parent_key=str(data.get("parent_key") or "") or None,
+        trace_id=str(data.get("trace_id") or "") or None,
+        span_id=str(data.get("span_id") or "") or None,
+        parent_span_id=str(data.get("parent_span_id") or "") or None,
     )
 
 
@@ -148,20 +153,31 @@ def _chat_event_envelope(event: PublicEvent) -> dict[str, Any]:
         timestamp_ms = int(created_at.timestamp() * 1000)
     except (TypeError, ValueError):
         timestamp_ms = int(time.time() * 1000)
+    data = {
+        "protocol": "agent-stream.v2",
+        "event_id": event.event_id,
+        "seq": event.seq,
+        "ts": timestamp_ms,
+        "session_id": event.session_id,
+        "run_id": event.run_id,
+        "turn_id": event.turn_id,
+        "type": event.event_type,
+        "source": dict(event.source or {}),
+        "payload": dict(event.payload),
+    }
+    for key in (
+        "span_key",
+        "parent_key",
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+    ):
+        value = getattr(event, key, None)
+        if value:
+            data[key] = value
     return {
         "event": "agent.v2",
-        "data": {
-            "protocol": "agent-stream.v2",
-            "event_id": event.event_id,
-            "seq": event.seq,
-            "ts": timestamp_ms,
-            "session_id": event.session_id,
-            "run_id": event.run_id,
-            "turn_id": event.turn_id,
-            "type": event.event_type,
-            "source": dict(event.source or {}),
-            "payload": dict(event.payload),
-        },
+        "data": data,
     }
 
 

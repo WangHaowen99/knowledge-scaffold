@@ -53,6 +53,10 @@ def test_build_agent_event_uses_monotonic_seq_per_run():
     assert second["data"]["seq"] == 2
     assert first["data"]["event_id"] == "{}:1".format(run_id)
     assert second["data"]["event_id"] == "{}:2".format(run_id)
+    assert len(first["data"]["trace_id"]) == 32
+    assert len(first["data"]["span_id"]) == 16
+    assert first["data"]["trace_id"] == second["data"]["trace_id"]
+    assert first["data"]["span_id"] == second["data"]["span_id"]
     assert "span_key" not in first["data"]
     assert "parent_key" not in first["data"]
 

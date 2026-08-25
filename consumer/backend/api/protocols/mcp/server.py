@@ -13,7 +13,7 @@ import threading
 import time
 import warnings
 from collections import OrderedDict
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Annotated, Any, Callable, Mapping
 from urllib.parse import parse_qs
@@ -32,6 +32,8 @@ from integration.mcp.scope import (
 )
 from .search_adapter import execute_search_tool
 from integration.mcp.service_catalog import load_mcp_service_catalog
+from integration.observability.trace_context import bind_otel_traceparent
+from utils.security.redaction import redact_sensitive_text
 from workspace.workspaces import validate_mcp_endpoint_id
 
 StringListInput = list[str] | str | None
@@ -420,13 +422,130 @@ def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = 
                     "retriable": False,
                 },
             }
-        return caller(scope)
+        return _invoke_mcp_with_observation(
+            scope,
+            required_scope=required_scope,
+            caller=caller,
+        )
 
     if normalized_toolset in {"search", "all"}:
         _register_search_tools(mcp, call_with_scope=_with_scope)
     if normalized_toolset in {"chat", "all"}:
         _register_chat_tool(mcp, call_with_scope=_with_scope)
     return mcp
+
+
+def _invoke_mcp_with_observation(
+    scope: MCPRequestScope,
+    *,
+    required_scope: str,
+    caller: Callable[[MCPRequestScope], dict[str, Any]],
+) -> dict[str, Any]:
+    with bind_otel_traceparent(scope.traceparent, strict=False):
+        with _mcp_request_observation(scope, required_scope=required_scope) as span:
+            result = caller(scope)
+            _mark_mcp_result_error(span, result)
+            return result
+
+
+@contextmanager
+def _mcp_request_observation(
+    scope: MCPRequestScope,
+    *,
+    required_scope: str,
+):
+    span = None
+    token = None
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry import trace
+        from opentelemetry.trace import SpanKind, set_span_in_context
+        from integration.observability.provider import get_observer
+        from integration.observability.workspace_router import get_default_workspace_router
+
+        get_observer()
+        router = get_default_workspace_router()
+        attributes = {
+            "agent.workspace_id": scope.workspace_id,
+            "mcp.required_scope": required_scope,
+        }
+        if router is not None:
+            attributes["agent.observability.router_id"] = router.router_id
+        span = trace.get_tracer("onto.consumer.mcp").start_span(
+            "mcp.request",
+            kind=SpanKind.SERVER,
+            attributes=attributes,
+        )
+        token = otel_context.attach(set_span_in_context(span))
+    except Exception:
+        logger.warning("Failed to start MCP OpenTelemetry span", exc_info=True)
+
+    try:
+        yield span
+    except Exception as exc:
+        _mark_mcp_span_error(
+            span,
+            error_type=type(exc).__name__,
+            detail=str(exc),
+        )
+        raise
+    finally:
+        if token is not None:
+            try:
+                otel_context.detach(token)
+            except Exception:
+                logger.warning("Failed to detach MCP OpenTelemetry context", exc_info=True)
+        if span is not None:
+            try:
+                span.end()
+            except Exception:
+                logger.warning("Failed to end MCP OpenTelemetry span", exc_info=True)
+
+
+def _mark_mcp_result_error(span: Any, result: Any) -> None:
+    if span is None or not isinstance(result, Mapping) or result.get("ok") is not False:
+        return
+    error = result.get("error")
+    error_payload = error if isinstance(error, Mapping) else {}
+    _mark_mcp_span_error(
+        span,
+        error_type=str(error_payload.get("type") or "mcp_error"),
+        error_code=str(error_payload.get("error_code") or ""),
+        detail=str(error_payload.get("detail") or error or "MCP request failed"),
+    )
+
+
+def _mark_mcp_span_error(
+    span: Any,
+    *,
+    error_type: str,
+    detail: str,
+    error_code: str = "",
+) -> None:
+    if span is None:
+        return
+    try:
+        from opentelemetry.trace import Status, StatusCode
+
+        safe_detail = redact_sensitive_text(detail).strip()[:1000]
+        attributes: dict[str, Any] = {
+            "mcp.response.ok": False,
+            "error.type": error_type or "mcp_error",
+        }
+        if error_code:
+            attributes["mcp.error_code"] = error_code
+        if safe_detail:
+            attributes["error.message"] = safe_detail
+        span.set_attributes(attributes)
+        span.add_event("mcp.request.failed", attributes=attributes)
+        span.set_status(
+            Status(
+                StatusCode.ERROR,
+                safe_detail or error_code or error_type or "MCP request failed",
+            )
+        )
+    except Exception:
+        logger.warning("Failed to mark MCP OpenTelemetry span as error", exc_info=True)
 
 
 def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable[[MCPRequestScope], dict[str, Any]]], dict[str, Any]]) -> None:
@@ -791,9 +910,11 @@ def _normalize_http_transports(value: str | None) -> tuple[str, ...]:
 def run_server(config: MCPRuntimeConfig | None = None) -> None:
     import uvicorn
     from migrations.runner import run_startup_migrations
+    from integration.observability.otel import initialize_open_telemetry
 
     cfg = config or load_mcp_runtime_config()
     run_startup_migrations()
+    initialize_open_telemetry()
     app = create_mcp_http_root_app(cfg, transport=cfg.transport)
     uvicorn.run(app, host=cfg.server_host, port=cfg.server_port)
 
@@ -866,6 +987,9 @@ def main() -> None:
             }
         )
     if cfg.transport == "stdio":
+        from integration.observability.otel import initialize_open_telemetry
+
+        initialize_open_telemetry()
         server = create_mcp_server(cfg, toolset=args.toolset)
         run_fn = server.run
         params = inspect.signature(run_fn).parameters

@@ -2,8 +2,16 @@ import React, { useEffect, useState } from 'react';
 import { CircleHelp, RefreshCw, RotateCcw } from 'lucide-react';
 import { getSettings, saveSettings, syncDefaultLlm, testLlm, testConsumer } from './api.js';
 import AdminLlmDefaults from './AdminLlmDefaults.jsx';
+import LlmPurposeTabs from './LlmPurposeTabs.jsx';
 
 const SYNC_DEFAULT_HELP = '只有 admin 账号设置了默认 LLM 配置后，才可使用。';
+const LLM_FIELD_SUFFIXES = [
+  'BaseUrl', 'Model', 'ApiKey', 'ApiKeyClear', 'ProviderClear', 'MaxTokens', 'ContextWindow',
+];
+
+function llmFormKey(purpose, suffix) {
+  return `${purpose === 'main' ? 'llm' : 'taskLlm'}${suffix}`;
+}
 
 export function SettingsModalOverlay({ children }) {
   return <div className="modal-ov">{children}</div>;
@@ -15,6 +23,7 @@ export function SettingsModalOverlay({ children }) {
 export default function SettingsModal({ onClose, user, tab: tabProp = 'llm' }) {
   const [tab, setTab] = useState(tabProp);
   const [llmScope, setLlmScope] = useState(user?.role === 'admin' ? 'platform' : 'personal');
+  const [llmPurpose, setLlmPurpose] = useState('main');
   // 操作引导逐 tab 讲解时经 props 切换
   useEffect(() => { setTab(tabProp); }, [tabProp]);
   const [s, setS] = useState(null);       // GET /api/settings 原始数据
@@ -31,6 +40,10 @@ export default function SettingsModal({ onClose, user, tab: tabProp = 'llm' }) {
       llmBaseUrl: d.llm.baseUrl, llmModel: d.llm.model, llmMaxTokens: String(d.llm.maxTokens),
       llmContextWindow: String(d.llm.contextWindow ?? ''), llmApiKey: '',
       llmApiKeyClear: false, llmProviderClear: false,
+      taskLlmBaseUrl: d.taskLlm.baseUrl, taskLlmModel: d.taskLlm.model,
+      taskLlmMaxTokens: String(d.taskLlm.maxTokens),
+      taskLlmContextWindow: String(d.taskLlm.contextWindow ?? ''), taskLlmApiKey: '',
+      taskLlmApiKeyClear: false, taskLlmProviderClear: false,
       consumerApiUrl: d.consumerApiUrl,
       evalDbUrl: d.evalDbUrl,
       evalBindingProvider: d.evalBinding.provider, evalBindingUrl: d.evalBinding.url,
@@ -55,20 +68,38 @@ export default function SettingsModal({ onClose, user, tab: tabProp = 'llm' }) {
   const save = async () => {
     setSaving(true); setMsg('');
     try {
-      const patch = Object.fromEntries(Object.keys(dirty).map((key) => [key, form[key]]));
-      const providerChanged = ['llmBaseUrl', 'llmModel', 'llmApiKey', 'llmApiKeyClear', 'llmProviderClear']
-        .some((key) => dirty[key]);
-      // 个人 provider 是一个完整作用域；修改其中任一项时同时提交当前端点与模型。
-      if (form.llmProviderClear) {
-        delete patch.llmBaseUrl;
-        delete patch.llmModel;
-        delete patch.llmApiKey;
-        delete patch.llmApiKeyClear;
-      } else if (providerChanged) {
-        patch.llmBaseUrl = form.llmBaseUrl;
-        patch.llmModel = form.llmModel;
+      const llmKeys = new Set(['main', 'task'].flatMap((purpose) => (
+        LLM_FIELD_SUFFIXES.map((suffix) => llmFormKey(purpose, suffix))
+      )));
+      const patches = [];
+      const generalPatch = Object.fromEntries(Object.keys(dirty)
+        .filter((key) => !llmKeys.has(key))
+        .map((key) => [key, form[key]]));
+      if (Object.keys(generalPatch).length) patches.push(generalPatch);
+
+      for (const purpose of ['main', 'task']) {
+        const changedSuffixes = LLM_FIELD_SUFFIXES.filter((suffix) => dirty[llmFormKey(purpose, suffix)]);
+        if (!changedSuffixes.length) continue;
+        const patch = { llmPurpose: purpose };
+        for (const suffix of changedSuffixes) {
+          patch[`llm${suffix}`] = form[llmFormKey(purpose, suffix)];
+        }
+        const providerChanged = ['BaseUrl', 'Model', 'ApiKey', 'ApiKeyClear', 'ProviderClear']
+          .some((suffix) => dirty[llmFormKey(purpose, suffix)]);
+        // 每个用途的个人 provider 都是完整作用域；修改其中任一项时同时提交当前端点与模型。
+        if (form[llmFormKey(purpose, 'ProviderClear')]) {
+          delete patch.llmBaseUrl;
+          delete patch.llmModel;
+          delete patch.llmApiKey;
+          delete patch.llmApiKeyClear;
+        } else if (providerChanged) {
+          patch.llmBaseUrl = form[llmFormKey(purpose, 'BaseUrl')];
+          patch.llmModel = form[llmFormKey(purpose, 'Model')];
+        }
+        patches.push(patch);
       }
-      await saveSettings(patch);
+
+      for (const patch of patches) await saveSettings(patch);
       setMsg('✓ 已保存');
       await load();
     }
@@ -99,9 +130,9 @@ export default function SettingsModal({ onClose, user, tab: tabProp = 'llm' }) {
         </div>
 
         {tab === 'llm' && <div data-tour="cfg-llm"><LlmTab
-          form={form} set={set} apiKeySet={s.llm.apiKeySet}
-          setValue={setValue} personalApiKeySet={s.llm.personalApiKeySet} source={s.llm.source}
-          platformDefaultAvailable={s.llm.platformDefaultAvailable} onDefaultSynced={load}
+          form={form} set={set} setValue={setValue}
+          config={llmPurpose === 'main' ? s.llm : s.taskLlm}
+          purpose={llmPurpose} onPurposeChange={setLlmPurpose} onDefaultSynced={load}
           isAdmin={user?.role === 'admin'} onPlatformChanged={load}
           scope={llmScope} onScopeChange={setLlmScope}
         /></div>}
@@ -123,19 +154,31 @@ export default function SettingsModal({ onClose, user, tab: tabProp = 'llm' }) {
 }
 
 function LlmTab({
-  form, set, setValue, apiKeySet, personalApiKeySet, source,
-  platformDefaultAvailable, onDefaultSynced,
+  form, set, setValue, config, purpose, onPurposeChange, onDefaultSynced,
   isAdmin, onPlatformChanged, scope, onScopeChange,
 }) {
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [result, setResult] = useState(null);
   const [syncResult, setSyncResult] = useState(null);
+  const field = (suffix) => form[llmFormKey(purpose, suffix)];
+  const setField = (suffix) => set(llmFormKey(purpose, suffix));
+  const setFieldValue = (suffix, value) => setValue(llmFormKey(purpose, suffix), value);
+
+  useEffect(() => {
+    setResult(null);
+    setSyncResult(null);
+  }, [purpose]);
 
   const test = async () => {
     setTesting(true); setResult(null);
     try {
-      setResult(await testLlm({ baseUrl: form.llmBaseUrl, apiKey: form.llmApiKey || undefined, model: form.llmModel }));
+      setResult(await testLlm({
+        purpose,
+        baseUrl: field('BaseUrl'),
+        apiKey: field('ApiKey') || undefined,
+        model: field('Model'),
+      }));
     } catch (e) { setResult({ ok: false, error: e.message }); }
     finally { setTesting(false); }
   };
@@ -143,9 +186,9 @@ function LlmTab({
   const syncDefault = async () => {
     setSyncing(true); setSyncResult(null); setResult(null);
     try {
-      await syncDefaultLlm();
+      await syncDefaultLlm(purpose);
       await onDefaultSynced();
-      setSyncResult({ ok: true, message: '已同步平台默认 LLM 配置' });
+      setSyncResult({ ok: true, message: `已同步平台默认${purpose === 'main' ? '主模型' : '后台任务模型'}配置` });
     } catch (e) {
       setSyncResult({ ok: false, message: `同步失败：${e.message}` });
     } finally { setSyncing(false); }
@@ -162,53 +205,54 @@ function LlmTab({
       {isAdmin && scope === 'platform'
         ? <AdminLlmDefaults onChanged={onPlatformChanged} />
         : <>
+      <LlmPurposeTabs purpose={purpose} onChange={onPurposeChange} ariaLabel="个人 LLM 用途" />
       <div className="field">
-        <label>Base URL <span className="lbl-src">{{ user: '个人配置', default_snapshot: '默认配置快照', settings: '兼容设置', env: '部署配置' }[source]}</span></label>
-        <input value={form.llmBaseUrl ?? ''} onChange={(event) => {
-          set('llmBaseUrl')(event);
-          setValue('llmProviderClear', false);
+        <label>Base URL <span className="lbl-src">{{ user: '个人配置', default_snapshot: '默认配置快照', main: '使用主模型', settings: '兼容设置', env: '部署配置' }[config.source]}</span></label>
+        <input value={field('BaseUrl') ?? ''} onChange={(event) => {
+          setField('BaseUrl')(event);
+          setFieldValue('ProviderClear', false);
         }} placeholder="https://api.example.com/v1（填 faux 进入演示模式）" />
       </div>
       <div className="field">
         <label>模型名</label>
-        <input value={form.llmModel ?? ''} onChange={(event) => {
-          set('llmModel')(event);
-          setValue('llmProviderClear', false);
+        <input value={field('Model') ?? ''} onChange={(event) => {
+          setField('Model')(event);
+          setFieldValue('ProviderClear', false);
         }} placeholder="例如 deepseek-chat" />
       </div>
       <div className="field">
-        <label>API Key {apiKeySet ? <span className="tag tag-ok" style={{ marginLeft: 6 }}>已配置</span> : <span className="tag tag-draft" style={{ marginLeft: 6 }}>未配置</span>}</label>
-        <input type="password" value={form.llmApiKey ?? ''} onChange={(event) => {
-          set('llmApiKey')(event);
-          setValue('llmApiKeyClear', false);
-          setValue('llmProviderClear', false);
+        <label>API Key {config.apiKeySet ? <span className="tag tag-ok" style={{ marginLeft: 6 }}>已配置</span> : <span className="tag tag-draft" style={{ marginLeft: 6 }}>未配置</span>}</label>
+        <input type="password" value={field('ApiKey') ?? ''} onChange={(event) => {
+          setField('ApiKey')(event);
+          setFieldValue('ApiKeyClear', false);
+          setFieldValue('ProviderClear', false);
         }}
-          placeholder={personalApiKeySet
+          placeholder={config.personalApiKeySet
             ? '留空 = 保持个人 Key 不变'
-            : (apiKeySet ? '平台 Key 不会复制到个人覆盖' : '可选 API Key')} autoComplete="new-password" />
-        {personalApiKeySet && (
+            : (config.apiKeySet ? '已有 Key 不会复制到个人覆盖' : '可选 API Key')} autoComplete="new-password" />
+        {config.personalApiKeySet && (
           <button type="button" className="btn cfg-key-clear"
-            disabled={form.llmApiKeyClear === true}
-            onClick={() => { setValue('llmApiKey', ''); setValue('llmApiKeyClear', true); }}>
-            {form.llmApiKeyClear ? '保存后清除个人 Key' : '清除个人 Key'}
+            disabled={field('ApiKeyClear') === true}
+            onClick={() => { setFieldValue('ApiKey', ''); setFieldValue('ApiKeyClear', true); }}>
+            {field('ApiKeyClear') ? '保存后清除个人 Key' : '清除个人 Key'}
           </button>
         )}
       </div>
       <div className="field">
         <label>单次输出上限</label>
-        <input value={form.llmMaxTokens ?? ''} onChange={set('llmMaxTokens')} placeholder="1000000" style={{ width: 220 }} />
+        <input value={field('MaxTokens') ?? ''} onChange={setField('MaxTokens')} placeholder="128000" style={{ width: 220 }} />
       </div>
       <div className="field">
         <label>上下文窗口（输入 + 输出总 token）</label>
-        <input inputMode="numeric" value={form.llmContextWindow ?? ''} onChange={set('llmContextWindow')} placeholder="按模型 API 实际上限填写，例如 1000000" style={{ width: 300 }} />
+        <input inputMode="numeric" value={field('ContextWindow') ?? ''} onChange={setField('ContextWindow')} placeholder="按模型 API 实际上限填写，例如 1000000" style={{ width: 300 }} />
       </div>
       <div className="cfg-llm-actions">
         <button className="btn" disabled={testing || syncing} onClick={test}>{testing ? '测试中…' : '测试有效性'}</button>
         <span className="cfg-sync-default-group">
           <button type="button" className="btn cfg-sync-default"
-            disabled={!platformDefaultAvailable || syncing || testing}
+            disabled={!config.platformDefaultAvailable || syncing || testing}
             onClick={syncDefault}
-            title={platformDefaultAvailable ? '使用平台默认并清除当前用户的个人 LLM 覆盖' : undefined}>
+            title={config.platformDefaultAvailable ? '使用对应的平台默认并清除当前用途的个人 LLM 覆盖' : undefined}>
             <RefreshCw size={14} aria-hidden="true" />
             {syncing ? '同步中…' : '同步默认 LLM 配置'}
           </button>
@@ -216,17 +260,19 @@ function LlmTab({
             <CircleHelp size={16} aria-hidden="true" />
           </span>
         </span>
-        {source === 'user' && (
-          <button type="button" className="btn cfg-reset-personal" disabled={form.llmProviderClear === true}
+        {(config.source === 'user' || (purpose === 'task' && config.source === 'default_snapshot')) && (
+          <button type="button" className="btn cfg-reset-personal" disabled={field('ProviderClear') === true}
             onClick={() => {
-              setValue('llmProviderClear', true);
-              setValue('llmApiKey', '');
-              setValue('llmApiKeyClear', true);
-              setValue('llmMaxTokens', '');
-              setValue('llmContextWindow', '');
+              setFieldValue('ProviderClear', true);
+              setFieldValue('ApiKey', '');
+              setFieldValue('ApiKeyClear', true);
+              setFieldValue('MaxTokens', '');
+              setFieldValue('ContextWindow', '');
             }}>
             <RotateCcw size={14} aria-hidden="true" />
-            {form.llmProviderClear ? '保存后清除个人覆盖' : '清除个人覆盖'}
+            {field('ProviderClear')
+              ? `保存后${purpose === 'task' ? '使用主模型' : '清除个人覆盖'}`
+              : (purpose === 'task' ? '清除并使用主模型' : '清除个人覆盖')}
           </button>
         )}
       </div>

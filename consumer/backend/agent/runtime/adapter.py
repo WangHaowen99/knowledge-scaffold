@@ -170,6 +170,11 @@ class PublicEventAdapter:
             source=self._sanitize_source(event.source),
             payload=payload,
             created_at=event.created_at,
+            span_key=event.span_key,
+            parent_key=event.parent_key,
+            trace_id=event.trace_id,
+            span_id=event.span_id,
+            parent_span_id=event.parent_span_id,
         )
 
     def adapt_runtime_result_payload(self, event: RuntimeEvent) -> dict[str, Any]:

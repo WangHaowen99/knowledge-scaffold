@@ -82,6 +82,39 @@ test('replayed tool events keep one node and preserve the original parent', () =
   assert.equal(state.streamSegments[0].endTs, 1002);
 });
 
+test('tool progress uses span id when legacy locators conflict', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+
+  state = applyPublicEvent(state, publicEvent('tool.started', {
+    tool_name: 'web_search', tool_call_id: 'shared-call', message: 'first',
+  }, 1, {
+    span_id: '1111111111111111', parent_span_id: 'aaaaaaaaaaaaaaaa',
+  }));
+  state = applyPublicEvent(state, publicEvent('tool.started', {
+    tool_name: 'web_search', tool_call_id: 'shared-call', message: 'second',
+  }, 2, {
+    span_id: '2222222222222222', parent_span_id: 'bbbbbbbbbbbbbbbb',
+  }));
+  state = applyPublicEvent(state, publicEvent('tool.progress', {
+    tool_name: 'different_name', tool_call_id: 'different-call', message: 'first-progress',
+  }, 3, {
+    span_id: '1111111111111111', parent_span_id: 'aaaaaaaaaaaaaaaa',
+  }));
+  state = applyPublicEvent(state, publicEvent('tool.finished', {
+    tool_name: 'different_name', tool_call_id: 'different-call', status: 'completed',
+  }, 4, {
+    span_id: '1111111111111111', parent_span_id: 'aaaaaaaaaaaaaaaa',
+  }));
+
+  assert.equal(state.streamSegments.length, 2);
+  assert.equal(state.streamSegments[0].spanId, '1111111111111111');
+  assert.equal(state.streamSegments[0].text, 'first-progress');
+  assert.equal(state.streamSegments[0].finished, true);
+  assert.equal(state.streamSegments[1].spanId, '2222222222222222');
+  assert.equal(state.streamSegments[1].text, 'second');
+  assert.equal(state.streamSegments[1].finished, false);
+});
+
 test('token deltas inherit their iteration parent and do not merge across iterations', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 
@@ -184,7 +217,11 @@ test('nested subagent groups attach under parent subagent child', () => {
       task_id: 'child-task',
       channel: 'content',
       text: 'nested output',
-    }, 5),
+    }, 5, {
+      trace_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      span_id: 'bbbbbbbbbbbbbbbb',
+      parent_span_id: 'cccccccccccccccc',
+    }),
     publicEvent('subagent.finished', {
       group_id: 'group-child',
       subagent_id: 'sub-child',
@@ -225,6 +262,9 @@ test('nested subagent groups attach under parent subagent child', () => {
   assert.equal(nestedChild.events[0].text, 'nested output');
   assert.equal(nestedChild.events[0].finished, true);
   assert.equal(nestedChild.events[0].status, 'completed');
+  assert.equal(nestedChild.events[0].traceId, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(nestedChild.events[0].spanId, 'bbbbbbbbbbbbbbbb');
+  assert.equal(nestedChild.events[0].parentSpanId, 'cccccccccccccccc');
 });
 
 test('cancelled subagent tool event remains a distinct cancelled terminal event', () => {

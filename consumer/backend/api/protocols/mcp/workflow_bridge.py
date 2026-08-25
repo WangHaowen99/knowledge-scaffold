@@ -115,7 +115,8 @@ async def execute_mcp_chat_workflow_async(
                 token_ontology_id=selected_ontology_id,
             ) or {}
         if scope.ontology_id and selected_ontology_id:
-            validate_runtime_ontology_availability(
+            await short_io.run(
+                validate_runtime_ontology_availability,
                 workspace_id=scope.workspace_id,
                 ontology_id=selected_ontology_id,
             )
@@ -184,7 +185,7 @@ async def execute_mcp_chat_workflow_async(
                     context_values.get("llm_request_mode")
                 ),
                 model_profile_id=model_profile_id or None,
-                arguments=dict(arguments) if arguments is not None else None,
+                arguments=arguments,
                 include_trace=include_trace,
                 supports_user_interaction=False,
                 traceparent=scope.traceparent,

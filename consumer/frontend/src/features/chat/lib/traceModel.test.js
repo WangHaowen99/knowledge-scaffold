@@ -274,6 +274,40 @@ test('trace attaches tools to their declared iterations', () => {
   assert.deepEqual(turn.nodes.map((node) => node.type), ['status']);
 });
 
+test('trace parent span id overrides conflicting legacy iteration keys', () => {
+  const trace = buildTraceViewModel([{
+    id: 'otel-parent-tree', role: 'assistant', runId: 'otel-parent-run', status: 'finished',
+    streamSegments: [
+      {
+        type: 'tool', state: 'completed', finished: true,
+        spanId: '1111111111111111', parentSpanId: 'bbbbbbbbbbbbbbbb',
+        parentKey: 'iteration:main:1',
+        meta: { tool_name: 'belongs_to_second', tool_call_id: 'first' },
+      },
+      {
+        type: 'tool', state: 'completed', finished: true,
+        spanId: '2222222222222222', parentSpanId: 'aaaaaaaaaaaaaaaa',
+        parentKey: 'iteration:main:2',
+        meta: { tool_name: 'belongs_to_first', tool_call_id: 'second' },
+      },
+    ],
+    iterationMetrics: [
+      { iteration: 1, spanId: 'aaaaaaaaaaaaaaaa', status: 'completed', totalElapsedMs: 100, ts: 100 },
+      { iteration: 2, spanId: 'bbbbbbbbbbbbbbbb', status: 'completed', totalElapsedMs: 200, ts: 200 },
+    ],
+  }]);
+  const turn = trace.turns[0];
+
+  assert.deepEqual(
+    turn.iterations.map((iteration) => iteration.children[0].toolName),
+    ['belongs_to_first', 'belongs_to_second'],
+  );
+  assert.deepEqual(
+    turn.iterations.map((iteration) => iteration.children[0].parentKey),
+    turn.iterations.map((iteration) => iteration.key),
+  );
+});
+
 test('trace attaches narrative output to iterations from persisted segment metadata', () => {
   const trace = buildTraceViewModel([{
     id: 'iteration-output', role: 'assistant', runId: 'iteration-output-run', status: 'finished',

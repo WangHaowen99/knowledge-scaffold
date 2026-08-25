@@ -19,6 +19,29 @@ def event_source_node(caller: str, source_node: Optional[str] = None) -> str:
     return normalized or "agent_loop"
 
 
+def _stream_llm_span_key(
+    caller: str,
+    iteration: int,
+    meta: Optional[Mapping[str, Any]],
+) -> str:
+    suffix = str((meta or {}).get("caller_suffix") or caller or "main").strip() or "main"
+    call_index = max(1, int((meta or {}).get("call_index") or 1))
+    return "llm:{}:{}:{}".format(
+        suffix,
+        max(1, int(iteration or 1)),
+        call_index,
+    )
+
+
+def _stream_iteration_span_key(
+    caller: str,
+    iteration: int,
+    meta: Optional[Mapping[str, Any]],
+) -> str:
+    suffix = str((meta or {}).get("caller_suffix") or caller or "main").strip() or "main"
+    return "iteration:{}:{}".format(suffix, max(1, int(iteration or 1)))
+
+
 def emit_token_delta_event(
     state: Mapping[str, Any],
     *,
@@ -55,6 +78,8 @@ def emit_token_delta_event(
         source={"node": event_source_node(caller, source_node), "component": "llm"},
         payload=payload,
         writer=event_writer,
+        span_key=_stream_llm_span_key(caller, iteration, meta),
+        parent_key=_stream_iteration_span_key(caller, iteration, meta),
     )
 
 
@@ -68,6 +93,7 @@ def emit_reasoning_summary_event(
     summary: str,
     reasoning_summary_callback: Optional[Callable[[str, str], None]] = None,
     source_node: Optional[str] = None,
+    call_index: Optional[int] = None,
 ) -> None:
     if callable(reasoning_summary_callback):
         reasoning_summary_callback(reasoning_block_id, summary)
@@ -87,6 +113,12 @@ def emit_reasoning_summary_event(
             "iteration": max(1, int(iteration or 1)),
         },
         writer=event_writer,
+        span_key=_stream_llm_span_key(
+            caller,
+            iteration,
+            {"call_index": max(1, int(call_index or 1))},
+        ),
+        parent_key=_stream_iteration_span_key(caller, iteration, None),
     )
 
 

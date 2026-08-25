@@ -29,6 +29,7 @@ from api.routes import (
 from api.routes.auth import auth_router
 from config import AgentConfig, AppConfig
 from integration.observability import reset_observer, shutdown_observer
+from integration.observability.otel import initialize_open_telemetry
 from integration.platform.manager import (
     reset_platform_observer,
     shutdown_platform_observer,
@@ -249,6 +250,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(APIError, api_error_handler)
     app.include_router(auth_router)
     register_routers(app)
+    initialize_open_telemetry(app)
 
     @app.get("/health")
     async def health():
