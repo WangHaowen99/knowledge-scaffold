@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from collections.abc import Awaitable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -21,6 +22,39 @@ ConfirmationGuard = Callable[[], bool]
 ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
+LEADER_DOCUMENT_PAGE_CHARS = 6_000
+LEADER_TABLE_SAMPLE_ROWS = 5
+TABLE_FIELD_SAMPLE_VALUES = 3
+TABLE_SAMPLE_VALUE_CHARS = 120
+
+VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
+    "write_file",
+    "import_zip",
+    "stage_package_merge",
+    "compile_package_fusion_plan",
+})
+VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
+    "write_file",
+    "import_zip",
+    "stage_package_merge",
+    "compile_package_fusion_plan",
+})
+VALIDATION_REPAIR_RESET_TOOLS = frozenset({
+    "delete_file",
+    "discard_rejected_candidate_changes",
+})
+
+TOOL_WORK_DETAILS = {
+    "list_documents": "先盘点可用资料，再确定需要精读的范围",
+    "read_document": "正在从原文提取与当前任务相关的事实和依据",
+    "read_documents_fully": "正在核对全文覆盖范围，并整理可引用的事实",
+    "search_documents": "正在定位相关原文，再与当前建模内容交叉核对",
+    "list_tables": "先盘点可用数据表，再选择需要核对的字段范围",
+    "describe_table": "正在核对字段含义、类型和样例，避免只按名称推断",
+    "read_table_rows": "正在用真实样例值复核字段口径和数据关系",
+    "read_file": "正在比对现有建模内容与资料依据是否一致",
+    "grep_package": "正在定位相关知识条目，再核对上下游引用关系",
+}
 
 
 @dataclass(frozen=True)
@@ -60,8 +94,224 @@ class ToolContext:
     interjection_reply_required: bool = False
     release_declined: bool = False
     decision_request_in_text: bool = False
+    user_input_request_in_text: bool = False
     confirmation_claimed_in_text: bool = False
     decision_card_requested: bool = False
+    validation_repair: CandidateValidationRepairState = field(default_factory=lambda: CandidateValidationRepairState())
+    package_contract: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        confirmation = self.package_contract.get("confirmation")
+        if not isinstance(confirmation, Mapping):
+            return
+        try:
+            configured = int(confirmation.get("maxAutomaticRepairRounds") or 3)
+        except (TypeError, ValueError):
+            configured = 3
+        self.validation_repair.max_attempts = max(1, configured)
+        # Public package-contract option name, not a credential or secret.
+        stop_on_repeated = confirmation.get("stopOnRepeatedFindingFingerprint")  # NOSONAR
+        if isinstance(stop_on_repeated, bool):
+            self.validation_repair.stop_on_repeated_fingerprint = stop_on_repeated
+
+
+@dataclass
+class CandidateValidationRepairState:
+    attempts: int = 0
+    last_fingerprint: str = ""
+    repeated_findings: bool = False
+    stopped: bool = False
+    last_report: dict[str, Any] = field(default_factory=dict)
+    current_round_id: str = ""
+    current_reports: list[dict[str, Any]] = field(default_factory=list)
+    current_round_progress: bool = False
+    stop_notice_emitted: bool = False
+    max_attempts: int = 3
+    stop_on_repeated_fingerprint: bool = True
+
+    def begin_round(self, round_id: str) -> None:
+        normalized = str(round_id or "").strip() or "unscoped"
+        if normalized == self.current_round_id:
+            return
+        self._finalize_round()
+        self.current_round_id = normalized
+
+    def _finalize_round(self) -> None:
+        if self.current_reports:
+            report = _aggregate_validation_reports(self.current_reports)
+            fingerprint = _validation_report_fingerprint(report)
+            self.attempts += 1
+            self.repeated_findings = bool(
+                self.last_fingerprint and fingerprint == self.last_fingerprint
+            )
+            self.last_fingerprint = fingerprint
+            self.stopped = (
+                self.stop_on_repeated_fingerprint and self.repeated_findings
+            ) or self.attempts >= self.max_attempts
+            self.last_report = {
+                **report,
+                "retryable": not self.stopped,
+                "repairAttempt": self.attempts,
+                "repairRoundId": self.current_round_id,
+                "findingFingerprint": fingerprint,
+                "repeatedFinding": self.repeated_findings,
+                "repairStopped": self.stopped,
+            }
+            if self.stopped:
+                self.last_report["instruction"] = (
+                    "自动修正已停止：相同 findings 再次出现，或已达到契约规定的 "
+                    f"{self.max_attempts} 轮上限。"
+                    "保留完整 findings，并等待用户决定是调整范围还是撤销候选。"
+                )
+        elif self.current_round_progress and self.attempts:
+            self._reset_episode(preserve_round=True)
+        self.current_reports = []
+        self.current_round_progress = False
+
+    def record(self, report: Mapping[str, Any]) -> dict[str, Any]:
+        if not self.current_round_id:
+            self.begin_round("unscoped")
+        if self.stopped:
+            blocked = self.blocked_result()
+            return {
+                "repairAttempt": blocked["repairAttempt"],
+                "repairRoundId": blocked["repairRoundId"],
+                "findingFingerprint": blocked["findingFingerprint"],
+                "repeatedFinding": blocked["repeatedFinding"],
+                "repairStopped": True,
+            }
+        normalized = dict(report)
+        self.current_reports.append(normalized)
+        fingerprint = _validation_report_fingerprint(normalized)
+        return {
+            "repairAttempt": self.attempts + 1,
+            "repairRoundId": self.current_round_id,
+            "findingFingerprint": fingerprint,
+            "repeatedFinding": False,
+            "repairStopped": False,
+        }
+
+    def reset(self) -> None:
+        self._reset_episode(preserve_round=False)
+
+    def _reset_episode(self, *, preserve_round: bool) -> None:
+        round_id = self.current_round_id if preserve_round else ""
+        self.attempts = 0
+        self.last_fingerprint = ""
+        self.repeated_findings = False
+        self.stopped = False
+        self.last_report = {}
+        self.current_round_id = round_id
+        self.current_reports = []
+        self.current_round_progress = False
+        self.stop_notice_emitted = False
+
+    def record_success(self, tool_name: str) -> None:
+        if tool_name in VALIDATION_REPAIR_RESET_TOOLS:
+            self._reset_episode(preserve_round=True)
+        elif tool_name in VALIDATION_REPAIR_PROGRESS_TOOLS:
+            self.current_round_progress = True
+
+    def blocked_result(self) -> dict[str, Any]:
+        report = dict(self.last_report)
+        return {
+            **report,
+            "error": "CANDIDATE_REPAIR_STOPPED",
+            "retryable": False,
+            "repairAttempt": self.attempts,
+            "repairRoundId": str(report.get("repairRoundId") or self.current_round_id),
+            "findingFingerprint": self.last_fingerprint,
+            "repeatedFinding": self.repeated_findings,
+            "repairStopped": True,
+            "tracePhase": "blocked",
+            "instruction": (
+                "自动修正已停止。保留完整 findings；可以读取、删除或撤销候选，"
+                "但不要继续生成新的候选文件，直到用户决定下一步。"
+            ),
+            "display": {"text": "候选自动修正已停止，需要检查校验明细"},
+        }
+
+    def claim_stop_notice(self) -> bool:
+        if self.stop_notice_emitted:
+            return False
+        self.stop_notice_emitted = True
+        return True
+
+    def decorate(self, report: Mapping[str, Any]) -> dict[str, Any]:
+        if self.stopped:
+            return self.blocked_result()
+        repair = self.record(report)
+        decorated = {**report, **repair}
+        existing_instruction = str(report.get("instruction") or "").strip()
+        repair_instruction = (
+            "这是可自动修正的确定性校验失败。完整处理 findings 中每一项；"
+            "同一 repairRoundId 下多个文件只算一轮，修正后重新校验。"
+        )
+        decorated["instruction"] = " ".join(
+            item for item in (existing_instruction, repair_instruction) if item
+        )
+        decorated["tracePhase"] = "repairing"
+        return decorated
+
+
+def _validation_report_fingerprint(report: Mapping[str, Any]) -> str:
+    findings = report.get("findings")
+    fingerprint_source: Any = {
+        "validatorVersion": report.get("validatorVersion"),
+        "findings": findings,
+    } if isinstance(findings, list) and findings else {
+        "error": report.get("error"),
+        "reason": report.get("reason"),
+        "validatorVersion": report.get("validatorVersion"),
+    }
+    encoded = json.dumps(fingerprint_source, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _aggregate_validation_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
+    errors: list[str] = []
+    reasons: list[str] = []
+    versions: list[str] = []
+    next_steps: list[str] = []
+    findings_by_key: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        error = str(report.get("error") or "CANDIDATE_VALIDATION_FAILED")
+        reason = str(report.get("reason") or "").strip()
+        version = str(report.get("validatorVersion") or "").strip()
+        if error not in errors:
+            errors.append(error)
+        if reason and reason not in reasons:
+            reasons.append(reason)
+        if version and version not in versions:
+            versions.append(version)
+        for step in report.get("next") or []:
+            normalized_step = str(step).strip()
+            if normalized_step and normalized_step not in next_steps:
+                next_steps.append(normalized_step)
+        for finding in report.get("findings") or []:
+            if not isinstance(finding, Mapping):
+                continue
+            normalized = dict(finding)
+            key = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            findings_by_key[key] = normalized
+    findings = sorted(
+        findings_by_key.values(),
+        key=lambda item: (
+            str(item.get("path") or ""),
+            str(item.get("ruleId") or ""),
+            str(item.get("message") or ""),
+        ),
+    )
+    return {
+        "error": errors[0] if len(errors) == 1 else "CANDIDATE_VALIDATION_FAILED",
+        "errors": errors,
+        "reason": "；".join(reasons) or "候选确定性校验未通过",
+        "retryable": True,
+        "validatorVersion": versions[0] if len(versions) == 1 else "+".join(sorted(versions)),
+        "findingCount": len(findings),
+        "findings": findings,
+        "next": next_steps,
+    }
 
 
 STRING = {"type": "string"}
@@ -78,7 +328,7 @@ CORE_TOOL_SPECS = (
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
         "read_document",
-        "分页精读资料正文。必须从 offset=0 开始并沿 nextOffset 读到 eof。",
+        "按需分页读取资料正文。局部核对先检索再读取命中范围；需要全文覆盖时必须改用 read_documents_fully，禁止串行翻页替代。",
         {"filename": STRING, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 20000}},
         ("filename",),
         display="正在读取资料",
@@ -480,6 +730,7 @@ class CoreTool(Tool):
 
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
         arguments = input_dict(inputs)
+        arguments = _bounded_source_arguments(self.spec.name, arguments)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         activity_id = f"{self.spec.name}:{started_after}"
         if self.spec.name == "read_documents_fully":
@@ -540,19 +791,104 @@ class CoreTool(Tool):
                     self.context.emit("progress", {
                         "activityId": activity_id,
                         "text": self.spec.display,
-                        "detail": _generic_long_task_detail(elapsed),
+                        "detail": tool_work_detail(self.spec.name, elapsed),
                         "phase": "tool",
                         "counters": {"elapsedSeconds": elapsed},
                     })
         except BaseException:
             call.cancel()
             raise
+        if _is_retryable_validation_failure(self.spec.name, result):
+            result = self.context.validation_repair.decorate(result)
+        elif not result.get("error"):
+            self.context.validation_repair.record_success(self.spec.name)
         if not result.get("error") and self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(_compact_source_result(self.spec.name, result), ensure_ascii=False)
 
     async def stream(self, inputs: Any, **kwargs: Any):
         yield await self.invoke(inputs, **kwargs)
+
+
+def _bounded_source_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    bounded = dict(arguments)
+    if name == "read_document":
+        bounded["limit"] = _bounded_positive_integer(
+            bounded.get("limit"), LEADER_DOCUMENT_PAGE_CHARS,
+        )
+    elif name == "read_table_rows":
+        bounded["limit"] = _bounded_positive_integer(
+            bounded.get("limit"), LEADER_TABLE_SAMPLE_ROWS,
+        )
+    return bounded
+
+
+def _is_retryable_validation_failure(name: str, result: Mapping[str, Any]) -> bool:
+    if name not in VALIDATION_REPAIR_ERROR_TOOLS:
+        return False
+    has_retryable_error = bool(result.get("error")) and result.get("retryable") is True
+    return has_retryable_error and isinstance(result.get("findings"), list)
+
+
+def _bounded_positive_integer(value: Any, maximum: int) -> int:
+    try:
+        parsed = int(value or maximum)
+    except (TypeError, ValueError):
+        parsed = maximum
+    return min(max(1, parsed), maximum)
+
+
+def _compact_source_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("error") or name != "describe_table":
+        return result
+    table = result.get("table")
+    if not isinstance(table, Mapping):
+        return result
+    raw_fields = table.get("fields")
+    if not isinstance(raw_fields, list):
+        return result
+    fields = [_compact_table_field(field) for field in raw_fields if isinstance(field, Mapping)]
+    return {
+        **result,
+        "table": {
+            "name": table.get("name"),
+            "documentId": table.get("documentId"),
+            "rowCount": table.get("rowCount"),
+            "fieldCount": len(fields),
+            "fields": fields,
+        },
+    }
+
+
+def _compact_table_field(field: Mapping[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    field_keys = (
+        "name", "inferredType", "type", "nullable", "required",
+        "unique", "isPrimaryKey", "primaryKeyCandidate", "distinctRatio",
+        "description", "comment",
+    )
+    for key in field_keys:
+        if key in field:
+            compact[key] = field[key]
+    for sample_key in ("sampleValues", "samples", "examples"):
+        samples = field.get(sample_key)
+        if not isinstance(samples, list):
+            continue
+        compact[sample_key] = [
+            _compact_sample_value(value)
+            for value in samples[:TABLE_FIELD_SAMPLE_VALUES]
+        ]
+        break
+    return compact
+
+
+def _compact_sample_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    text = str(value)
+    if len(text) <= TABLE_SAMPLE_VALUE_CHARS:
+        return text
+    return f"{text[:TABLE_SAMPLE_VALUE_CHARS]}..."
 
 
 def _full_read_heading(filenames: Any) -> str:
@@ -572,12 +908,12 @@ def _long_task_detail(elapsed: int) -> str:
     return "正在读取和整理原始资料"
 
 
-def _generic_long_task_detail(elapsed: int) -> str:
+def tool_work_detail(name: str, elapsed: int = 0) -> str:
     if elapsed >= 120:
         return "这一步等待时间较长，你可以继续输入或停止任务"
     if elapsed >= 30:
         return "仍在等待下一项进度，你可以继续输入或离开页面"
-    return "正在处理当前步骤"
+    return TOOL_WORK_DETAILS.get(name, "正在处理当前步骤")
 
 
 class ProjectStateTool(Tool):
@@ -611,6 +947,8 @@ class ProjectStateTool(Tool):
                 "instruction": instruction,
                 "display": {"text": "项目状态已变化，正在重新对齐"},
             }
+        if not result.get("error"):
+            self.context.validation_repair.record_success(self.spec.name)
         return json.dumps(result, ensure_ascii=False)
 
     async def stream(self, inputs: Any, **kwargs: Any):
@@ -723,7 +1061,13 @@ class AskTool(Tool):
                             "type": "array",
                             "items": {
                                 "type": "object",
-                                "properties": {"label": STRING, "description": STRING, "value": STRING},
+                                "properties": {
+                                    "label": STRING,
+                                    "description": STRING,
+                                    "value": STRING,
+                                    "requiresText": {"type": "boolean"},
+                                    "textPrompt": {"type": "string", "minLength": 1, "maxLength": 500},
+                                },
                                 "required": ["label", "description", "value"],
                                 "additionalProperties": False,
                             },

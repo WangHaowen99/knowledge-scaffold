@@ -293,11 +293,12 @@ export const actions = {
       store.set({ activity: progressActivity(event, store.get().activity) });
     }
     if (eventType === 'tool') {
-      const line = `${timeOf(event.createdAt)} · ${event.summary || '处理完成'}`;
+      const createdAt = event.createdAt || new Date().toISOString();
+      const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
       const activity = replaying ? null : store.get().activity;
       store.set((state) => ({
         activity: activity ? { ...activity, sub: [line, ...(activity.sub || [])].slice(0, 8) } : activity,
-        trace: [...state.trace, { id: seq || `${Date.now()}-${event.name}`, at: timeOf(event.createdAt), name: event.name, phase: event.phase, summary: event.summary }].slice(-300),
+        trace: mergeToolTrace(state.trace, event, seq),
       }));
       if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation'].includes(event.name)) {
         void actions.refreshSnapshot();
@@ -350,6 +351,58 @@ export const actions = {
       store.set((state) => ({
         messages: state.messages.map((message) => message.id === event.messageId
           ? { ...message, streaming: false }
+          : message),
+      }));
+    }
+    if (eventType === 'reasoning_delta' && event.messageId && event.delta) {
+      store.set((state) => {
+        const index = state.messages.findIndex((message) => message.id === event.messageId);
+        if (index < 0) {
+          return { messages: [...state.messages, {
+            id: event.messageId,
+            role: event.role || 'assistant',
+            createdAt: event.createdAt,
+            blocks: [{
+              type: 'reasoning',
+              text: String(event.delta),
+              streaming: true,
+              truncated: Boolean(event.truncated),
+            }],
+          }] };
+        }
+        const messages = [...state.messages];
+        const message = messages[index];
+        const blocks = [...(message.blocks || [])];
+        const reasoningIndex = blocks.findIndex((block) => block.type === 'reasoning');
+        if (reasoningIndex < 0) {
+          blocks.push({
+            type: 'reasoning',
+            text: String(event.delta),
+            streaming: true,
+            truncated: Boolean(event.truncated),
+          });
+        } else {
+          const block = blocks[reasoningIndex];
+          blocks[reasoningIndex] = {
+            ...block,
+            text: `${block.text || ''}${event.delta}`,
+            streaming: true,
+            truncated: Boolean(block.truncated || event.truncated),
+          };
+        }
+        messages[index] = { ...message, blocks };
+        return { messages };
+      });
+    }
+    if (eventType === 'reasoning_done' && event.messageId) {
+      store.set((state) => ({
+        messages: state.messages.map((message) => message.id === event.messageId
+          ? {
+            ...message,
+            blocks: (message.blocks || []).map((block) => block.type === 'reasoning'
+              ? { ...block, streaming: false }
+              : block),
+          }
           : message),
       }));
     }
@@ -792,6 +845,88 @@ export const actions = {
   toggleDrawer: () => store.set((s) => ({ drawerOpen: !s.drawerOpen })),
   pushMessage(msg) { store.set((s) => ({ userMessages: [...s.userMessages, { id: `u${s.userMessages.length + 1}`, ...msg }] })); },
 };
+
+export function mergeToolTrace(trace, event, seq) {
+  const toolCallId = String(event.toolCallId || '');
+  const createdAt = event.createdAt || new Date().toISOString();
+  const legacySubject = event.name === 'read_document'
+    ? String(event.summary || '').match(/《([^》]+)》/u)?.[1] || ''
+    : '';
+  const traceGroupId = String(event.traceGroupId || (
+    legacySubject ? `legacy:${event.name}:${legacySubject}` : ''
+  ));
+  const id = traceGroupId
+    ? `tool-group:${event.runId || ''}:${traceGroupId}`
+    : toolCallId
+    ? `tool:${event.runId || ''}:${toolCallId}`
+    : seq || `${Date.now()}-${event.name}`;
+  const entry = {
+    id,
+    seq,
+    runId: event.runId || '',
+    toolCallId,
+    createdAt,
+    at: timeOf(createdAt),
+    name: event.name,
+    phase: event.phase,
+    summary: event.summary,
+    code: event.code || '',
+    retryable: Boolean(event.retryable),
+    repairStopped: Boolean(event.repairStopped),
+    repairAttempt: event.repairAttempt ?? null,
+    repairRoundId: event.repairRoundId || '',
+    findingCount: Number(event.findingCount) || 0,
+    segmentCount: 1,
+    toolCallIds: toolCallId ? [toolCallId] : [],
+  };
+  if (!toolCallId && !traceGroupId) return [...trace, entry].slice(-300);
+  const index = trace.findIndex((item) => item.id === id);
+  if (index < 0) {
+    const legacyIndex = legacyRejectedTraceIndex(trace, event, seq, createdAt);
+    if (legacyIndex < 0) return [...trace, entry].slice(-300);
+    const merged = [...trace];
+    merged[legacyIndex] = {
+      ...merged[legacyIndex],
+      ...entry,
+      phase: 'rejected',
+      seq: merged[legacyIndex].seq || entry.seq,
+      createdAt: merged[legacyIndex].createdAt || entry.createdAt,
+      at: merged[legacyIndex].at || entry.at,
+    };
+    return merged.slice(-300);
+  }
+  const merged = [...trace];
+  const previousCallIds = merged[index].toolCallIds || [];
+  const nextCallIds = toolCallId && !previousCallIds.includes(toolCallId)
+    ? [...previousCallIds, toolCallId]
+    : previousCallIds;
+  merged[index] = {
+    ...merged[index],
+    ...entry,
+    seq: merged[index].seq || entry.seq,
+    createdAt: merged[index].createdAt || entry.createdAt,
+    at: merged[index].at || entry.at,
+    segmentCount: Math.max(1, nextCallIds.length || merged[index].segmentCount || 1),
+    toolCallIds: nextCallIds,
+  };
+  return merged.slice(-300);
+}
+
+function legacyRejectedTraceIndex(trace, event, seq, createdAt) {
+  if (event.phase !== 'failed' || !event.toolCallId || !event.runId || !seq) return -1;
+  const eventTime = Date.parse(createdAt);
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const item = trace[index];
+    if (item.phase !== 'rejected' || item.toolCallId) continue;
+    if (item.runId !== event.runId || item.name !== event.name || item.summary !== event.summary) continue;
+    if (Number(seq) - Number(item.seq) !== 1) continue;
+    const itemTime = Date.parse(String(item.createdAt || ''));
+    const elapsed = eventTime - itemTime;
+    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 2_000) continue;
+    return index;
+  }
+  return -1;
+}
 
 function projectFromUrl() {
   if (typeof window === 'undefined') return null;

@@ -19,7 +19,7 @@ services:
     environment:
       - PORT=5100
       - DATA_DIR=/data
-      # 新 Workbench Agent 使用真实 OpenAI-compatible 模型；部署脚本从 backend/.env 注入。
+      # 可选部署兜底；推荐由 admin 登录 Workbench 后统一配置平台默认模型。
       - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-}
       - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-}
       - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
@@ -31,6 +31,7 @@ services:
       - MODELING_TASK_LLM_API_KEY=${MODELING_TASK_LLM_API_KEY:-}
       # 可选显式主密钥；为空时在 DATA_DIR 自动生成，生产仍建议由 secret manager 注入
       - MODELING_LLM_CONFIG_ENCRYPTION_KEY=${MODELING_LLM_CONFIG_ENCRYPTION_KEY:-}
+      - MODELING_SERVICE_TOKEN=${MODELING_SERVICE_TOKEN:-}
       # 登录/评测都走 consumer；backend 是 consumer compose 里的服务名
       - AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://auth-server:5056}
       - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-http://auth-server:5056}
@@ -91,6 +92,10 @@ services:
       context: ../modeling/modeling-agent
       dockerfile: Dockerfile
       target: runtime
+      args:
+        PIP_INDEX_URL: ${MODELING_AGENT_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_DEFAULT_TIMEOUT: ${MODELING_AGENT_PIP_TIMEOUT:-120}
+        PIP_RETRIES: ${MODELING_AGENT_PIP_RETRIES:-10}
     image: mw-modeling-agent:${MODELING_TAG:-latest}
     container_name: mw-modeling-agent
     restart: unless-stopped
@@ -102,6 +107,7 @@ services:
       - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
       - MODELING_LLM_MAX_TOKENS=${MODELING_AGENT_LLM_MAX_TOKENS:-32768}
       - MODELING_AGENT_MAX_ITERATIONS=${MODELING_AGENT_MAX_ITERATIONS:-200}
+      - MODELING_SERVICE_TOKEN=${MODELING_SERVICE_TOKEN:-}
     volumes:
       - modeling-agent-data:/data
     networks:

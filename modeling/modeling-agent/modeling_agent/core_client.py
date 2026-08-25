@@ -11,6 +11,14 @@ logger = logging.getLogger("modeling_agent.core_client")
 
 
 class CoreGateway(Protocol):
+    async def model_config(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+    ) -> dict[str, object]: ...
+
     async def call(
         self,
         *,
@@ -29,8 +37,14 @@ class CoreGateway(Protocol):
 
 
 class HttpCoreGateway:
-    def __init__(self, base_url: str, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float = 120.0,
+        service_token: str = "",
+    ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._service_token = service_token
         self._client = httpx.AsyncClient(timeout=timeout_seconds, trust_env=False)
         self._run_credentials: dict[str, str] = {}
 
@@ -40,6 +54,51 @@ class HttpCoreGateway:
     def restore_run_credential(self, run_id: str, credential: str) -> None:
         if credential:
             self._run_credentials[run_id] = credential
+
+    async def model_config(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+    ) -> dict[str, object]:
+        headers = {
+            "X-Modeling-Project": project_id,
+            "X-Modeling-Run": run_id,
+            "X-Modeling-Service-Token": self._service_token,
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        credential = self._run_credentials.get(run_id)
+        if credential:
+            headers["X-Modeling-Agent-Credential"] = credential
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/internal/agent/llm-config",
+                headers=headers,
+            )
+        except httpx.HTTPError as error:
+            raise AgentRuntimeError(
+                "CORE_UNAVAILABLE",
+                "建模模型配置暂时不可用",
+                status=503,
+            ) from error
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.is_error:
+            code = str(payload.get("code") or "LLM_CONFIG_UNAVAILABLE")
+            message = str(payload.get("error") or "建模模型配置不可用")
+            raise AgentRuntimeError(code, message, status=response.status_code)
+        llm = payload.get("llm")
+        if not isinstance(llm, dict) or not str(llm.get("baseUrl") or "") or not str(llm.get("model") or ""):
+            raise AgentRuntimeError(
+                "LLM_CONFIG_INVALID",
+                "建模模型配置格式异常",
+                status=502,
+            )
+        return llm
 
     async def call(
         self,
@@ -109,6 +168,7 @@ class HttpCoreGateway:
             code = str(payload.get("code") or payload.get("error") or "CORE_TOOL_FAILED")
             reason = str(payload.get("reason") or payload.get("error") or "工具执行失败")
             return {
+                **payload,
                 "error": code,
                 "reason": reason,
                 "next": payload.get("next") or [],

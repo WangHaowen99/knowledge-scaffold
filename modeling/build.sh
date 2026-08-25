@@ -81,6 +81,10 @@ else
     BUILD_CMD=(docker build)
 fi
 
+AGENT_PIP_INDEX_URL="${MODELING_AGENT_PIP_INDEX_URL:-${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}}"
+AGENT_PIP_TIMEOUT="${MODELING_AGENT_PIP_TIMEOUT:-${PIP_DEFAULT_TIMEOUT:-120}}"
+AGENT_PIP_RETRIES="${MODELING_AGENT_PIP_RETRIES:-${PIP_RETRIES:-10}}"
+
 "${BUILD_CMD[@]}" \
     -t "mw-modeling:${VERSION}" \
     "${SCRIPT_DIR}"
@@ -88,6 +92,9 @@ docker save -o "${IMAGES_DIR}/mw-modeling-${VERSION}.tar" "mw-modeling:${VERSION
 
 "${BUILD_CMD[@]}" \
     --target runtime \
+    --build-arg "PIP_INDEX_URL=${AGENT_PIP_INDEX_URL}" \
+    --build-arg "PIP_DEFAULT_TIMEOUT=${AGENT_PIP_TIMEOUT}" \
+    --build-arg "PIP_RETRIES=${AGENT_PIP_RETRIES}" \
     -t "mw-modeling-agent:${VERSION}" \
     "${SCRIPT_DIR}/modeling-agent"
 docker save -o "${IMAGES_DIR}/mw-modeling-agent-${VERSION}.tar" "mw-modeling-agent:${VERSION}"

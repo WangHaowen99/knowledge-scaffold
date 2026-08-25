@@ -1,25 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 import json
 
 import modeling_agent.tools as tools_module
+from modeling_agent.agent import _system_prompt, build_model
 from modeling_agent.rails import (
     AskRail,
     ConfirmationRail,
     ReleaseConfirmationRail,
     claims_confirmation_card,
+    requests_user_input,
+    tool_trace_group_id,
 )
 from modeling_agent.errors import AgentRuntimeError
+from modeling_agent.schemas import RUN_RUNNING, RunRecord
+from modeling_agent.service import LiveRun
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
     CoreTool,
     ProjectStateTool,
     RequestConfirmationTool,
+    CandidateValidationRepairState,
     ToolContext,
 )
 
@@ -37,6 +44,421 @@ async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: flo
             return run
         await asyncio.sleep(0.02)
     raise AssertionError(f"run {run_id} did not reach {statuses}")
+
+
+async def test_model_uses_stream_specific_timeouts(settings) -> None:
+    model = build_model(settings)
+
+    assert model.model_client_config.stream_first_chunk_timeout == 120.0
+    assert model.model_client_config.stream_idle_timeout == 60.0
+
+
+async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() -> None:
+    first = tool_trace_group_id("read_document", {"filename": "a.docx", "offset": 0, "limit": 20_000})
+    second = tool_trace_group_id("read_document", {"filename": "a.docx", "offset": 20_000, "limit": 20_000})
+    other = tool_trace_group_id("read_document", {"filename": "b.docx", "offset": 0, "limit": 20_000})
+
+    assert first == second
+    assert first != other
+    assert tool_trace_group_id("read_file", {"path": "rules/example.md"}) == ""
+
+
+async def test_held_text_is_flushed_when_required_tool_finishes_at_stream_boundary(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    run = runtime.store.create_run(RunRecord(
+        id="run_boundary",
+        project_id="project_boundary",
+        session_id="session_boundary",
+        status=RUN_RUNNING,
+        prompt="核对资料",
+        token_fingerprint="fingerprint",
+    ))
+    live = LiveRun(
+        run_id=run.id,
+        project_id=run.project_id,
+        token="token_1",
+        required_tools={"read_document"},
+    )
+    live.bundle = SimpleNamespace(agent=object())
+
+    class BoundaryRunner:
+        @staticmethod
+        async def run_agent_streaming(*_args, **_kwargs):
+            yield SimpleNamespace(type="llm_output", payload="已找到相关原文依据。")
+            live.observed_tools.add("read_document")
+
+    result = await runtime._run_streaming(live, run, BoundaryRunner, "核对资料")  # noqa: SLF001
+
+    assert result["streamed"] is True
+    events = runtime.store.events_after(run.project_id, 0)
+    assert "".join(
+        event.payload.get("delta", "") for event in events if event.kind == "message_delta"
+    ) == "已找到相关原文依据。"
+    assert len([event for event in events if event.kind == "message_done"]) == 1
+
+
+async def test_completed_run_never_ends_without_visible_assistant_output(settings) -> None:
+    model = ScriptedModel(
+        [[], []],
+        final="",
+        content_by_call={1: "已核对当前进展，现有处理记录均已保留。下一步可以从当前阶段继续。"},
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_empty_response",
+            token="token_1",
+            message="告诉我当前情况",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        events = runtime.store.events_after("project_empty_response", 0)
+        visible = "".join(
+            event.payload.get("delta", "") for event in events if event.kind == "message_delta"
+        )
+        assert visible == "已核对当前进展，现有处理记录均已保留。下一步可以从当前阶段继续。"
+        assert len([event for event in events if event.kind == "message_done"]) == 1
+        compact_calls = [
+            event for event in events
+            if event.kind == "model_call" and event.payload.get("actor") == "compact_summary"
+        ]
+        assert compact_calls[-1].payload["outcome"] == "content"
+        assert compact_calls[-1].payload["toolDefinitions"] == 0
+        assert model.calls == 2
+    finally:
+        await runtime.shutdown()
+
+
+async def test_empty_compact_summary_marks_run_failed_with_visible_retry_path(settings) -> None:
+    model = ScriptedModel([[], []], final="")
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_empty_summary",
+            token="token_1",
+            message="告诉我当前情况",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "failed"
+        events = runtime.store.events_after("project_empty_summary", 0)
+        visible = "".join(
+            event.payload.get("delta", "") for event in events if event.kind == "message_delta"
+        )
+        assert "模型没有返回可读摘要" in visible
+        assert not any(
+            event.kind == "status" and event.payload.get("status") == "completed"
+            for event in events
+        )
+        compact_calls = [
+            event for event in events
+            if event.kind == "model_call" and event.payload.get("actor") == "compact_summary"
+        ]
+        assert compact_calls[-1].payload["outcome"] == "empty_content"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_reasoning_is_streamed_separately_and_private_segments_are_removed(settings) -> None:
+    model = ScriptedModel(
+        [[]],
+        final="已读完资料，正在核对字段映射。",
+        reasoning_by_call={
+            0: "先梳理文档结构。\nsystem prompt 与 api_key=top-secret 不应展示。\n再比对字段含义。",
+        },
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_reasoning",
+            token="token_1",
+            message="核对资料",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        events = runtime.store.events_after("project_reasoning", 0)
+        reasoning = "".join(
+            event.payload.get("delta", "") for event in events if event.kind == "reasoning_delta"
+        )
+        assert "先梳理文档结构" in reasoning
+        assert "再比对字段含义" in reasoning
+        assert "内部配置已隐藏" in reasoning
+        assert "top-secret" not in reasoning
+        assert "system prompt" not in reasoning
+        assert len([event for event in events if event.kind == "reasoning_done"]) == 1
+        telemetry = [
+            event.payload for event in events
+            if event.kind == "model_call" and event.payload.get("actor") == "modeling_leader"
+        ]
+        assert telemetry[-1]["outcome"] == "content"
+        assert any(item.get("reasoningChars", 0) > 0 for item in telemetry)
+        assert "content" not in telemetry[-1]
+        assert "reasoning" not in telemetry[-1]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_package_contract_is_injected_into_initial_agent_context() -> None:
+    prompt = _system_prompt("建模方法", {
+        "validatorVersion": "package-format-v1",
+        "manifest": {
+            "requiredFields": ["kind", "status"],
+            "platformManagedFields": ["kind", "status"],
+        },
+        "markdown": {
+            "details": {
+                "operation": {
+                    "requiredSections": ["业务目标", "输入", "输出"],
+                },
+            },
+        },
+    })
+
+    assert "本轮知识包生成契约（来自核心确定性校验器）" in prompt
+    assert '"validatorVersion": "package-format-v1"' in prompt
+    assert '"requiredFields"' in prompt
+    assert '"platformManagedFields"' in prompt
+    assert '"requiredSections"' in prompt
+    assert '"业务目标"' in prompt
+    assert "生成、修正和确认候选都必须以这份" in prompt
+    assert "diagrams/*.mmd 时只提交裸 Mermaid 源码" in prompt
+    assert "绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏" in prompt
+
+
+async def test_candidate_validation_repair_aggregates_parallel_files_as_one_round() -> None:
+    state = CandidateValidationRepairState()
+    state.begin_round("model-1")
+
+    for index in range(1, 5):
+        result = state.record({
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "validatorVersion": "package-v1",
+            "findings": [{"ruleId": "required-section", "path": f"file-{index}.md"}],
+        })
+        assert result["repairAttempt"] == 1
+        assert result["repairRoundId"] == "model-1"
+        assert result["repairStopped"] is False
+
+    state.begin_round("model-2")
+    assert state.attempts == 1
+    assert state.stopped is False
+    assert state.last_report["findingCount"] == 4
+    assert [item["path"] for item in state.last_report["findings"]] == [
+        "file-1.md", "file-2.md", "file-3.md", "file-4.md",
+    ]
+
+
+async def test_candidate_validation_repair_stops_after_three_distinct_model_rounds() -> None:
+    state = CandidateValidationRepairState()
+
+    for attempt in range(1, 4):
+        state.begin_round(f"model-{attempt}")
+        result = state.record({
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "validatorVersion": "package-v1",
+            "findings": [{"ruleId": f"rule-{attempt}", "path": f"file-{attempt}.md"}],
+        })
+        assert result["repairAttempt"] == attempt
+        assert result["repairStopped"] is False
+
+    state.begin_round("model-4")
+    assert state.attempts == 3
+    assert state.repeated_findings is False
+    assert state.stopped is True
+    assert state.blocked_result()["repairStopped"] is True
+
+
+async def test_candidate_validation_repair_stops_on_repeated_round_and_recovery_resets() -> None:
+    state = CandidateValidationRepairState()
+    report = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "same-rule", "path": "objects/customer.md"}],
+    }
+
+    state.begin_round("model-1")
+    state.record(report)
+    state.begin_round("model-2")
+    state.record(report)
+    state.begin_round("model-3")
+
+    assert state.attempts == 2
+    assert state.repeated_findings is True
+    assert state.stopped is True
+
+    state.record_success("discard_rejected_candidate_changes")
+
+    assert state.attempts == 0
+    assert state.stopped is False
+    assert state.current_round_id == "model-3"
+
+
+async def test_tool_context_applies_repair_policy_from_package_contract() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        package_contract={
+            "confirmation": {
+                "maxAutomaticRepairRounds": 4,
+                "stopOnRepeatedFindingFingerprint": False,  # NOSONAR - public option name
+            },
+        },
+    )
+    report = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "same-rule", "path": "objects/customer.md"}],
+    }
+
+    context.validation_repair.begin_round("model-1")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-2")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-3")
+
+    assert context.validation_repair.max_attempts == 4
+    assert context.validation_repair.stop_on_repeated_fingerprint is False
+    assert context.validation_repair.repeated_findings is True
+    assert context.validation_repair.stopped is False
+
+
+async def test_quick_file_validation_error_reaches_agent_with_full_findings_and_repair_state() -> None:
+    finding = {
+        "ruleId": "knowledge-markdown.frontmatter",
+        "path": "objects/inventory.md",
+        "message": "objects/inventory.md 缺少 YAML frontmatter",
+        "suggestion": "补齐本文件 frontmatter",
+    }
+    gateway = FakeGateway({
+        "write_file": {
+            "error": "KNOWLEDGE_FILE_INVALID",
+            "reason": "候选文件快速校验未通过",
+            "retryable": True,
+            "validatorVersion": "knowledge-markdown-v1",
+            "findingCount": 1,
+            "findings": [finding],
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+    tool = CoreTool(spec, context)
+
+    result = json.loads(await tool.invoke({
+        "path": "objects/inventory.md",
+        "content": "# 库存对象",
+        "change_group": "inventory",
+    }))
+
+    assert result["error"] == "KNOWLEDGE_FILE_INVALID"
+    assert result["findings"] == [finding]
+    assert result["repairAttempt"] == 1
+    assert result["repairRoundId"] == "unscoped"
+    assert result["repairStopped"] is False
+    assert "完整处理 findings" in result["instruction"]
+
+
+async def test_parallel_quick_validation_failures_share_one_repair_round() -> None:
+    class PathValidationGateway(FakeGateway):
+        async def call(self, **kwargs):
+            path = str(kwargs["arguments"].get("path") or "")
+            return {
+                "error": "KNOWLEDGE_FILE_INVALID",
+                "reason": f"{path} 缺少必需章节",
+                "retryable": True,
+                "validatorVersion": "knowledge-markdown-v1",
+                "findingCount": 1,
+                "findings": [{
+                    "ruleId": "object.required_section",
+                    "path": path,
+                    "message": f"{path} 缺少必需章节",
+                    "suggestion": "补齐必需章节",
+                }],
+            }
+
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=PathValidationGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    context.validation_repair.begin_round("model-parallel")
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+    tool = CoreTool(spec, context)
+    paths = [
+        "objects/customer.md",
+        "objects/product.md",
+        "objects/ipo.md",
+        "objects/company.md",
+    ]
+
+    results = await asyncio.gather(*(
+        tool.invoke({
+            "path": path,
+            "content": "# 对象",
+            "change_group": "objects",
+            "evidence": ["user-decision:test"],
+        })
+        for path in paths
+    ))
+
+    delivered = [json.loads(item) for item in results]
+    assert {item["repairAttempt"] for item in delivered} == {1}
+    assert {item["repairRoundId"] for item in delivered} == {"model-parallel"}
+    assert all(item["repairStopped"] is False for item in delivered)
+    context.validation_repair.begin_round("model-repair")
+    assert context.validation_repair.attempts == 1
+    assert context.validation_repair.stopped is False
+    assert context.validation_repair.last_report["findingCount"] == 4
+    assert {item["path"] for item in context.validation_repair.last_report["findings"]} == set(paths)
+
+
+async def test_successful_candidate_discard_resets_stopped_repair_episode() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway({
+            "discard_rejected_candidate_changes": {
+                "ok": True,
+                "display": {"text": "已放弃退回的候选"},
+            },
+        }),
+        emit=lambda _kind, _payload: None,
+    )
+    report = {
+        "error": "KNOWLEDGE_FILE_INVALID",
+        "retryable": True,
+        "validatorVersion": "knowledge-markdown-v1",
+        "findings": [{"ruleId": "same", "path": "objects/customer.md"}],
+    }
+    context.validation_repair.begin_round("model-1")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-2")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-3")
+    assert context.validation_repair.stopped is True
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "discard_rejected_candidate_changes")
+
+    result = json.loads(await CoreTool(spec, context).invoke({}))
+
+    assert result["ok"] is True
+    assert context.validation_repair.stopped is False
+    assert context.validation_repair.attempts == 0
 
 
 async def test_real_openjiuwen_runner_focus_interrupt_and_resume(settings, caplog) -> None:
@@ -122,6 +544,33 @@ async def test_material_request_adds_oral_later_and_skip_options() -> None:
     decision = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
     assert [item["value"] for item in decision.request.ui_options] == ["oral", "later", "skip"]
     assert [item["label"] for item in decision.request.ui_options] == ["我口述", "让我先找找", "跳过"]
+    assert decision.request.ui_options[0]["requiresText"] is True
+    assert decision.request.ui_options[0]["textPrompt"] == "请口述需要补充的业务背景或做法"
+
+
+async def test_ask_option_can_require_follow_up_text() -> None:
+    rail = AskRail()
+    tool_call = type("Call", (), {
+        "arguments": json.dumps({
+            "question": "知识内容是否需要调整？",
+            "kind": "clarification",
+            "options": [{
+                "label": "内容需要修改",
+                "description": "说明需要修改的位置和内容",
+                "value": "content_fix",
+                "requiresText": True,
+                "textPrompt": "请描述具体需要修改的地方",
+            }],
+        }, ensure_ascii=False),
+    })()
+
+    decision = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+
+    option = decision.request.ui_options[0]
+    assert option["value"] == "content_fix"
+    assert option["requiresText"] is True
+    assert option["textPrompt"] == "请描述具体需要修改的地方"
+    assert decision.request.payload_schema["properties"]["text"]["minLength"] == 1
 
 
 async def test_material_parse_event_is_durable_idempotent_and_continues_without_fake_user(settings) -> None:
@@ -622,6 +1071,74 @@ async def test_full_read_tool_emits_real_checkpoint_progress(monkeypatch) -> Non
     assert any(call["tool"] == "get_material_analysis_progress" for call in gateway.calls)
 
 
+async def test_source_tools_bound_leader_context_without_losing_schema_fields() -> None:
+    long_sample = "样" * 500
+    gateway = FakeGateway({
+        "read_document": {
+            "filename": "产品手册.docx",
+            "content": "正文" * 3_000,
+            "offset": 0,
+            "endOffset": 6_000,
+            "nextOffset": 6_000,
+            "totalChars": 90_000,
+            "eof": False,
+        },
+        "describe_table": {
+            "table": {
+                "name": "客户表",
+                "documentId": "doc-schema",
+                "rowCount": 100,
+                "fields": [{
+                    "name": "customer_id",
+                    "inferredType": "string",
+                    "distinctRatio": 1,
+                    "sampleValues": [long_sample, "C002", "C003", "C004"],
+                    "largeUnusedProfile": "x" * 20_000,
+                }],
+            },
+        },
+        "read_table_rows": {
+            "table": "客户表",
+            "rows": [[f"C{index:03d}"] for index in range(5)],
+            "nextOffset": 5,
+            "totalRows": 100,
+        },
+    })
+    context = ToolContext(
+        project_id="project_context_budget",
+        run_id="run_context_budget",
+        token="token_context_budget",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+
+    read_document = CoreTool(next(spec for spec in CORE_TOOL_SPECS if spec.name == "read_document"), context)
+    describe_table = CoreTool(next(spec for spec in CORE_TOOL_SPECS if spec.name == "describe_table"), context)
+    read_rows = CoreTool(next(spec for spec in CORE_TOOL_SPECS if spec.name == "read_table_rows"), context)
+
+    document = json.loads(await read_document.invoke({"filename": "产品手册.docx", "limit": 20_000}))
+    described = json.loads(await describe_table.invoke({"document_id": "doc-schema", "table": "客户表"}))
+    rows = json.loads(await read_rows.invoke({
+        "document_id": "doc-schema", "table": "客户表", "offset": 0, "limit": 50,
+    }))
+
+    assert document["nextOffset"] == 6_000
+    assert described["table"]["fieldCount"] == 1
+    assert described["table"]["fields"][0]["name"] == "customer_id"
+    assert described["table"]["fields"][0]["distinctRatio"] == 1
+    assert len(described["table"]["fields"][0]["sampleValues"]) == 3
+    assert len(described["table"]["fields"][0]["sampleValues"][0]) <= 123
+    assert "largeUnusedProfile" not in described["table"]["fields"][0]
+    assert len(json.dumps(described, ensure_ascii=False)) < 2_000
+    assert len(rows["rows"]) == 5
+    calls = {call["tool"]: call["arguments"] for call in gateway.calls}
+    assert calls["read_document"]["limit"] == 6_000
+    assert calls["read_table_rows"]["limit"] == 5
+
+    await read_document.invoke({"filename": "产品手册.docx", "limit": "invalid"})
+    assert gateway.calls[-1]["arguments"]["limit"] == 6_000
+
+
 async def test_free_input_while_waiting_resumes_as_interjection(settings) -> None:
     original_question = {
         "question": "请选择业务范围",
@@ -776,6 +1293,10 @@ async def test_restored_confirmation_accepts_the_same_frozen_candidate(settings)
         "prepare_confirmation_groups": {"change_groups": groups},
         "request_confirmation_preflight": {
             "candidate_revision": "candidate_goal",
+            "validation_receipt": {
+                "candidateHash": "sha256:goal",
+                "validatorVersion": "package-contract-v2",
+            },
             "auto_approved": False,
             "change_groups": groups,
             "focus": {"kind": "diff", "target": ".modeling/goal.md"},
@@ -815,9 +1336,98 @@ async def test_restored_confirmation_accepts_the_same_frozen_candidate(settings)
         confirmations = [call for call in gateway.calls if call["tool"] == "request_confirmation"]
         assert len(confirmations) == 1
         assert confirmations[0]["arguments"]["expected_candidate_revision"] == "candidate_goal"
+        assert confirmations[0]["arguments"]["expected_candidate_hash"] == "sha256:goal"
+        assert confirmations[0]["arguments"]["expected_validator_version"] == "package-contract-v2"
         assert confirmations[0]["arguments"]["review"]["approved"] is True
         assert [call["tool"] for call in gateway.calls].count("prepare_confirmation_groups") == 1
         assert [call["tool"] for call in gateway.calls].count("request_confirmation_preflight") == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_legacy_confirmation_without_receipt_is_retired_and_revalidated_before_new_card(settings) -> None:
+    groups = [{"id": "knowledge", "tier": "structural", "title": "确认知识修改", "impact": []}]
+    model = ScriptedModel([
+        [ToolTurn("request_confirmation", {"summary": "确认旧候选"})],
+        [ToolTurn("request_confirmation", {"summary": "重新确认已校验候选"})],
+    ])
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {"change_groups": groups},
+        "request_confirmation": {
+            "error": "CANDIDATE_REVALIDATION_REQUIRED",
+            "reason": "待确认候选或校验规则已经变化，原确认不能继续提交",
+            "retryable": False,
+            "next": ["重新执行完整候选预检，并基于新的确认卡再次决定"],
+        },
+    })
+    original_call = gateway.call
+    preflight_count = 0
+
+    async def changing_preflight(**kwargs):
+        nonlocal preflight_count
+        if kwargs["tool"] == "request_confirmation_preflight":
+            gateway.calls.append({
+                "projectId": kwargs["project_id"],
+                "runId": kwargs["run_id"],
+                "token": kwargs["token"],
+                "tool": kwargs["tool"],
+                "arguments": kwargs["arguments"],
+            })
+            preflight_count += 1
+            return {
+                "candidate_revision": "candidate-legacy",
+                "auto_approved": False,
+                "change_groups": groups,
+                **({
+                    "validation_receipt": {
+                        "candidateHash": "sha256:revalidated",
+                        "validatorVersion": "package-contract-v2",
+                    },
+                } if preflight_count > 1 else {}),
+            }
+        return await original_call(**kwargs)
+
+    gateway.call = changing_preflight  # type: ignore[method-assign]
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_legacy_confirmation",
+            token="token_1",
+            message="继续处理旧候选",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        old_interaction = runtime.store.pending_interaction("project_legacy_confirmation")
+        assert old_interaction is not None
+        assert old_interaction.payload.get("validationReceipt") is None
+
+        await runtime.answer_interaction(
+            project_id="project_legacy_confirmation",
+            interaction_id=old_interaction.id,
+            token="token_2",
+            answer={"approved": True, "review_mode": "full", "selected_groups": ["knowledge"]},
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+
+        assert waiting["status"] == "waiting", waiting["error"]
+        assert runtime.store.get_interaction(old_interaction.id).status == "answered"
+        new_interaction = runtime.store.pending_interaction("project_legacy_confirmation")
+        assert new_interaction is not None and new_interaction.id != old_interaction.id
+        assert new_interaction.payload["validationReceipt"] == {
+            "candidateHash": "sha256:revalidated",
+            "validatorVersion": "package-contract-v2",
+        }
+        assert preflight_count == 2
+        system_blocks = []
+        for event in runtime.store.events_after("project_legacy_confirmation", 0):
+            if event.kind != "message" or event.payload.get("role") != "system":
+                continue
+            system_blocks.extend(
+                block.get("text", "") for block in event.payload.get("blocks", [])
+            )
+        system_text = "\n".join(system_blocks)
+        assert "接受操作未生效" in system_text
+        assert "需要再次确认" in system_text
     finally:
         await runtime.shutdown()
 
@@ -843,6 +1453,10 @@ async def test_normal_confirmation_applies_candidate_and_autonomously_reaches_ne
         "prepare_confirmation_groups": {"change_groups": groups},
         "request_confirmation_preflight": {
             "candidate_revision": "candidate-knowledge",
+            "validation_receipt": {
+                "candidateHash": "sha256:knowledge",
+                "validatorVersion": "package-contract-v2",
+            },
             "auto_approved": False,
             "change_groups": groups,
         },
@@ -895,6 +1509,8 @@ async def test_normal_confirmation_applies_candidate_and_autonomously_reaches_ne
         confirmations = [call for call in gateway.calls if call["tool"] == "request_confirmation"]
         assert len(confirmations) == 1
         assert confirmations[0]["arguments"]["expected_candidate_revision"] == "candidate-knowledge"
+        assert confirmations[0]["arguments"]["expected_candidate_hash"] == "sha256:knowledge"
+        assert confirmations[0]["arguments"]["expected_validator_version"] == "package-contract-v2"
         assert confirmations[0]["arguments"]["review"]["approved"] is True
         next_interaction = runtime.store.pending_interaction("project_normal_confirmation")
         assert next_interaction is not None and next_interaction.kind == "business_decision"
@@ -1535,6 +2151,10 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         },
         "request_confirmation_preflight": {
             "candidate_revision": "candidate_goal",
+            "validation_receipt": {
+                "candidateHash": "sha256:goal",
+                "validatorVersion": "package-contract-v2",
+            },
             "auto_approved": False,
             "change_groups": [{"id": "regroup_caliber_1", "tier": "caliber", "title": "建模目标确认"}],
             "focus": {"kind": "diff", "target": ".modeling/goal.md"},
@@ -1557,9 +2177,76 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
     assert [call["tool"] for call in gateway.calls] == ["prepare_confirmation_groups", "request_confirmation_preflight"]
     assert gateway.calls[1]["arguments"]["change_groups"][0]["id"] == "regroup_caliber_1"
     assert decision.request.metadata["candidateRevision"] == "candidate_goal"
+    assert decision.request.metadata["validationReceipt"] == {
+        "candidateHash": "sha256:goal",
+        "validatorVersion": "package-contract-v2",
+    }
     assert events == [
         ("focus", {"target": {"kind": "diff", "target": ".modeling/goal.md"}}),
     ]
+
+
+async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_result() -> None:
+    finding = {
+        "ruleId": "manifest.required.status",
+        "path": "manifest.yaml",
+        "message": "manifest 缺少必选字段 status",
+        "suggestion": "以当前正式 manifest.yaml 为基线补回 status",
+    }
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {
+            "change_groups": [{"id": "indexes", "tier": "index", "title": "知识索引同步"}],
+        },
+        "request_confirmation_preflight": {
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-format-v1",
+            "findingCount": 1,
+            "findings": [finding],
+            "next": ["逐项修正后重新预检"],
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    rail = ConfirmationRail(context)
+    tool_call = type("Call", (), {"arguments": '{"summary":"确认知识索引"}'})()
+
+    decision = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+
+    delivered = json.loads(decision.tool_result)
+    assert delivered["error"] == "CANDIDATE_FORMAT_INVALID"
+    assert delivered["retryable"] is True
+    assert delivered["validatorVersion"] == "package-format-v1"
+    assert delivered["findingCount"] == 1
+    assert delivered["findings"] == [finding]
+    assert delivered["next"] == ["逐项修正后重新预检"]
+    assert delivered["repairAttempt"] == 1
+    assert delivered["repairStopped"] is False
+    assert delivered["findingFingerprint"].startswith("sha256:")
+    assert "完整处理 findings" in delivered["instruction"]
+
+    context.validation_repair.begin_round("model-2")
+    repeated = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    repeated_result = json.loads(repeated.tool_result)
+    assert repeated_result["findings"] == [finding]
+    assert repeated_result["repairAttempt"] == 2
+    assert repeated_result["repairRoundId"] == "model-2"
+    assert repeated_result["repairStopped"] is False
+
+    context.validation_repair.begin_round("model-3")
+    blocked = context.validation_repair.blocked_result()
+    assert blocked["findings"] == [finding]
+    assert blocked["repairAttempt"] == 2
+    assert blocked["repeatedFinding"] is True
+    assert blocked["repairStopped"] is True
+    assert blocked["retryable"] is False
+    assert "自动修正已停止" in blocked["instruction"]
 
 
 async def test_text_choice_request_rejects_confirmation_and_opens_ask_card(settings) -> None:
@@ -1663,6 +2350,100 @@ async def test_text_only_choice_request_is_retried_until_ask_card(settings) -> N
         interaction = runtime.store.pending_interaction("project_text_only_decision")
         assert interaction is not None and interaction.kind == "business_decision"
         assert model.calls == 2
+    finally:
+        await runtime.shutdown()
+
+
+async def test_text_only_description_request_is_retried_until_input_card(settings) -> None:
+    prompt = (
+        "您选择了‘内容需要修改’。请告诉我具体哪些地方需要调整，"
+        "我会据此修改后重新提交。您可以直接描述需要改的地方，我来修改。"
+    )
+    assert requests_user_input(prompt)
+    assert not requests_user_input("内容完成后，可以在这里查看修改说明。")
+    model = ScriptedModel(
+        [
+            [],
+            [ToolTurn("ask", {
+                "question": "请描述具体需要修改的地方",
+                "kind": "clarification",
+            })],
+        ],
+        final=prompt,
+    )
+    gateway = FakeGateway()
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_text_only_description",
+            token="token_1",
+            message="继续核对知识内容",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_text_only_description")
+        assert interaction is not None and interaction.kind == "clarification"
+        assert interaction.payload["question"] == "请描述具体需要修改的地方"
+        assert model.calls == 2
+        assert not any(call["tool"] == "transition_project_state" for call in gateway.calls)
+    finally:
+        await runtime.shutdown()
+
+
+async def test_required_option_text_must_be_present_before_resume(settings) -> None:
+    model = ScriptedModel(
+        [[ToolTurn("ask", {
+            "question": "知识内容是否需要调整？",
+            "kind": "clarification",
+            "options": [{
+                "label": "内容需要修改",
+                "description": "说明需要修改的位置和内容",
+                "value": "content_fix",
+                "requiresText": True,
+                "textPrompt": "请描述具体需要修改的地方",
+            }],
+        })]],
+        final="修改说明已收到。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_required_option_text",
+            token="token_1",
+            message="核对知识内容",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        interaction = runtime.store.pending_interaction("project_required_option_text")
+        assert interaction is not None
+
+        with pytest.raises(AgentRuntimeError) as captured:
+            await runtime.answer_interaction(
+                project_id="project_required_option_text",
+                interaction_id=interaction.id,
+                token="token_2",
+                answer={"value": "content_fix", "selected": ["content_fix"]},
+            )
+        assert captured.value.code == "INTERACTION_TEXT_REQUIRED"
+        assert runtime.store.pending_interaction("project_required_option_text").id == interaction.id
+        assert runtime.store.require_run(started["id"]).status == "waiting"
+        assert model.calls == 1
+
+        await runtime.answer_interaction(
+            project_id="project_required_option_text",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "value": "content_fix",
+                "selected": ["content_fix"],
+                "text": "将客户分类从三级调整为四级。",
+            },
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        assert completed["status"] == "completed", completed["error"]
+        assert runtime.store.pending_interaction("project_required_option_text") is None
     finally:
         await runtime.shutdown()
 
@@ -1782,6 +2563,64 @@ async def test_confirmation_tool_only_exposes_business_summary_to_model() -> Non
     schema = RequestConfirmationTool.SPEC.input_schema
     assert schema["required"] == ["summary"]
     assert set(schema["properties"]) == {"summary"}
+
+
+async def test_interrupt_rail_validation_errors_always_include_structured_findings() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        confirmation_required=True,
+    )
+    ask_call = type("Call", (), {"arguments": '{"question":"还要补充吗"}'})()
+    ask_result = json.loads((
+        await AskRail(context).resolve_interrupt(None, ask_call, None)  # type: ignore[arg-type]
+    ).tool_result)
+
+    assert ask_result["error"] == "OVERALL_CONFIRMATION_REQUIRED"
+    assert ask_result["validatorVersion"] == "interaction-boundary-v1"
+    assert ask_result["repairScope"] == "interaction"
+    assert ask_result["findingCount"] == 1
+    assert ask_result["findings"][0]["ruleId"] == "interaction.overall_confirmation.required"
+
+    context.confirmation_required = False
+    confirmation_call = type("Call", (), {"arguments": '{"summary":"确认候选"}'})()
+    confirmation_result = json.loads((
+        await ConfirmationRail(context).resolve_interrupt(None, confirmation_call, None)  # type: ignore[arg-type]
+    ).tool_result)
+
+    assert confirmation_result["error"] == "CONFIRMATION_GROUPS_UNAVAILABLE"
+    assert confirmation_result["validatorVersion"] == "confirmation-groups-v1"
+    assert confirmation_result["findingCount"] == 1
+    assert confirmation_result["findings"][0]["path"] == "candidate"
+
+
+async def test_release_preflight_blocker_is_structured_and_not_auto_retried() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway({
+            "release_preflight": {
+                "ready": False,
+                "reason": "真实用例尚未覆盖发布范围",
+            },
+        }),
+        emit=lambda _kind, _payload: None,
+    )
+    tool_call = type("Call", (), {"arguments": '{"summary":"确认正式发布"}'})()
+
+    result = json.loads((
+        await ReleaseConfirmationRail(context).resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    ).tool_result)
+
+    assert result["error"] == "RELEASE_PREFLIGHT_BLOCKED"
+    assert result["retryable"] is False
+    assert result["tracePhase"] == "blocked"
+    assert result["repairScope"] == "release"
+    assert result["findings"][0]["ruleId"] == "release.preflight.blocked"
 
 
 async def test_release_confirmation_uses_core_preflight_and_focuses_evaluation() -> None:

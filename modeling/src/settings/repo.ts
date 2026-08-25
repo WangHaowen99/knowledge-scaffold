@@ -19,6 +19,7 @@ import {
   getUserLlmDefaultSnapshotMaxTokens,
 } from './llm-default-snapshots-repo.js';
 import type { LlmPurpose } from './llm-defaults-repo.js';
+import { getLlmDefaultSettings } from './llm-defaults-repo.js';
 
 export type { LlmSettingSource, LlmSettings } from './llm-resolver.js';
 
@@ -308,6 +309,10 @@ function resolverInput(username: string | undefined) {
     assignedDefaults: username ? {
       main: getUserLlmDefaultSnapshot(username, 'main'),
       task: getUserLlmDefaultSnapshot(username, 'task'),
+    } : undefined,
+    platformDefaults: username ? {
+      main: getLlmDefaultSettings('main'),
+      task: getLlmDefaultSettings('task'),
     } : undefined,
     legacy: username ? undefined : legacyLlmSnapshot(),
   };

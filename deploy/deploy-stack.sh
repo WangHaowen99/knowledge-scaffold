@@ -155,6 +155,41 @@ ensure_mcp_token_secret() {
   ok "已生成独立 MCP_TOKEN_SECRET 并安全写入 backend/.env"
 }
 
+ensure_modeling_service_token() {
+  local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
+  secret="${MODELING_SERVICE_TOKEN:-$(env_get "$env_file" MODELING_SERVICE_TOKEN)}"
+  if [ -z "$secret" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+      secret="$(openssl rand -hex 32)"
+    elif command -v python3 >/dev/null 2>&1; then
+      secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+    else
+      fail "无法生成 MODELING_SERVICE_TOKEN：需要 openssl 或 Python 3" 2
+    fi
+  fi
+  [ "${#secret}" -ge 32 ] || fail \
+    "MODELING_SERVICE_TOKEN 少于 32 个字符；请改为独立强随机值" 2
+  temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || fail "无法更新 $env_file" 2
+  chmod 600 "$temp_file"
+  if ! awk -v secret="$secret" '
+    BEGIN { updated = 0 }
+    /^MODELING_SERVICE_TOKEN=/ {
+      if (!updated) { print "MODELING_SERVICE_TOKEN=" secret; updated = 1 }
+      next
+    }
+    { print }
+    END { if (!updated) print "MODELING_SERVICE_TOKEN=" secret }
+  ' "$env_file" > "$temp_file"; then
+    command rm -f -- "$temp_file"
+    fail "无法更新 $env_file" 2
+  fi
+  mv "$temp_file" "$env_file"
+  chmod 600 "$env_file"
+  MODELING_SERVICE_TOKEN="$secret"
+  export MODELING_SERVICE_TOKEN
+  ok "Modeling 服务令牌已配置（值不写入日志）"
+}
+
 ensure_jiuwenbox_image() {
   local image="onto-agent-jiuwenbox:${TAG}"
   if docker image inspect "$image" >/dev/null 2>&1; then
@@ -224,8 +259,7 @@ cmd_preflight() {
        [ -n "$modeling_model" ]; then
       ok "Modeling Workbench Agent 模型已配置"
     else
-      echo "[deploy-stack] [FAIL] backend/.env 缺少 MODELING_LLM_BASE_URL 或 MODELING_LLM_MODEL"
-      rc=2
+      warn "Modeling LLM 尚未配置；部署后请使用 admin 登录 Workbench，在配置中心设置平台默认模型"
     fi
   else
     warn "consumer/backend/.env 不存在（up 时会从 .env.example 自动创建）"
@@ -255,6 +289,9 @@ cmd_up() {
     chmod 600 "$CONSUMER_DIR/backend/.env"
     ok "已从 .env.example 创建 consumer/backend/.env，请按报错提示补齐必填配置后重跑"
   fi
+  if [ "$consumer_only" -eq 0 ]; then
+    ensure_modeling_service_token
+  fi
   local url="" token="" bootstrap_password="" config_errors=0
   if [ "$modeling_only" -eq 0 ]; then
     url="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_URL)"
@@ -269,20 +306,11 @@ cmd_up() {
   if [ "$consumer_only" -eq 0 ]; then
     for key in MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY \
                MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
-               MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS; do
+               MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS \
+               MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
+               MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN; do
       load_env_if_unset "$CONSUMER_DIR/backend/.env" "$key"
     done
-    case "${MODELING_LLM_BASE_URL:-}" in
-      http://*|https://*) ;;
-      *)
-        echo "[deploy-stack] [FAIL] Workbench Agent 配置不完整：MODELING_LLM_BASE_URL 必须是真实的 http(s) OpenAI-compatible 地址，且 MODELING_LLM_MODEL 不能为空" >&2
-        config_errors=1
-        ;;
-    esac
-    if [ -z "${MODELING_LLM_MODEL:-}" ]; then
-      echo "[deploy-stack] [FAIL] Workbench Agent 配置不完整：MODELING_LLM_MODEL 不能为空" >&2
-      config_errors=1
-    fi
   fi
   [ "$config_errors" -eq 0 ] || fail "请补齐 consumer/backend/.env 后重新执行 ./deploy/deploy.sh" 2
 
@@ -402,8 +430,7 @@ cmd_help() {
 
 环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=5100
   EVAL_MYSQL_PORT=3306 EVAL_MYSQL_ROOT_PASSWORD=<启用评测库时必填的强随机值>
-  MODELING_LLM_BASE_URL/MODEL（Workbench Agent 必填；优先读取 shell，其次 backend/.env）
-  MODELING_LLM_API_KEY（端点需要鉴权时必填）
+  MODELING_LLM_BASE_URL/MODEL/API_KEY（可选部署兜底；推荐由 admin 登录后统一配置）
 完整手册：deploy/README.md
 EOF
 }

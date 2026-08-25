@@ -414,7 +414,9 @@ test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认�
     workspace.run_id,
     'request_confirmation',
     {
-      candidate_revision: preflight.json().candidate_revision,
+      expected_candidate_revision: preflight.json().candidate_revision,
+      expected_candidate_hash: preflight.json().validation_receipt.candidateHash,
+      expected_validator_version: preflight.json().validation_receipt.validatorVersion,
       review: {
         approved: true,
         review_mode: 'full',

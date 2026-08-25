@@ -26,7 +26,7 @@ import {
   SCENES,
   studioFocusFromLocation,
 } from './lib/appStore.js';
-import { humanizeTraceSummary, restoredVersionMessage } from './shell/ProcessDrawer.jsx';
+import { humanizeTraceSummary, newestTraceFirst, restoredVersionMessage } from './shell/ProcessDrawer.jsx';
 import { userFacingText } from './lib/userFacingText.js';
 import {
   evidenceLabel,
@@ -610,6 +610,27 @@ try {
 
 try {
   const html = renderToString(<Block block={{
+    type: 'ask',
+    interaction: {
+      id: 'content-fix-smoke', kind: 'clarification', status: 'pending',
+      payload: {
+        question: '知识内容是否需要调整？',
+        options: [{
+          label: '内容需要修改', description: '说明需要修改的位置和内容', value: 'content_fix',
+          requiresText: true, textPrompt: '请描述具体需要修改的地方',
+        }],
+      },
+    },
+  }} />);
+  if (!html.includes('内容需要修改') || !html.includes('aria-expanded="false"')
+    || !html.includes('wb-ask-manual')) {
+    throw new Error('需要补充文字的选项没有保留待展开状态');
+  }
+  console.log('✓ 问题卡支持选项后继续补充文字');
+} catch (e) { console.log('✗ 问题卡补充文字:', e.message); bad++; }
+
+try {
+  const html = renderToString(<Block block={{
     type: 'confirm',
     interaction: {
       id: 'impact-confirm-smoke', kind: 'confirmation', status: 'pending',
@@ -631,7 +652,7 @@ try {
 } catch (e) { console.log('✗ 确认卡变更范围:', e.message); bad++; }
 
 store.set({
-  activity: { text: '助手正在整理下一步', startedAt: Date.now(), sub: [] },
+  activity: { text: '正在读取资料《示例资料》', startedAt: Date.now(), sub: [] },
   run: { id: 'run-smoke', status: 'running' },
 });
 actions.handleEvent({
@@ -640,7 +661,7 @@ actions.handleEvent({
 });
 try {
   const html = renderToString(<App />);
-  if (html.includes('助手运行中') || html.includes('助手正在整理下一步') || store.get().activity) {
+  if (html.includes('助手运行中') || html.includes('正在读取资料《示例资料》') || store.get().activity) {
     throw new Error('等待确认时仍显示助手运行活动');
   }
   if (!html.includes('退回调整')) throw new Error('确认卡缺少退回调整入口');
@@ -804,6 +825,24 @@ try {
   console.log('✓ Agent 增量消息实时合并');
 } catch (e) { console.log('✗ Agent 增量消息:', e.message); bad++; }
 
+store.set({ messages: [], lastSeq: 0 });
+actions.handleEvent({
+  eventType: 'reasoning_delta', seq: 1, messageId: 'reasoning-smoke', role: 'assistant',
+  delta: '先核对资料结构。',
+});
+try {
+  const streaming = renderToString(<App />);
+  if (!streaming.includes('正在思考') || !streaming.includes('先核对资料结构')) {
+    throw new Error('思考过程没有在输出时展开');
+  }
+  actions.handleEvent({ eventType: 'reasoning_done', seq: 2, messageId: 'reasoning-smoke', role: 'assistant' });
+  const completed = renderToString(<App />);
+  if (!completed.includes('思考过程') || !completed.includes('先核对资料结构') || completed.includes('正在思考')) {
+    throw new Error('思考过程完成状态不正确');
+  }
+  console.log('✓ LLM 思考过程独立折叠展示');
+} catch (e) { console.log('✗ LLM 思考过程:', e.message); bad++; }
+
 store.set({
   messages: [{
     id: 'accepted-smoke', role: 'user',
@@ -919,10 +958,15 @@ store.set({
   focus: { kind: 'empty', target: '' },
   messages: [],
   drawerOpen: true,
-  trace: [{ at: '08:10', name: 'get_project_state', phase: 'completed', summary: '当前项目状态：评测 / running' }],
+  trace: [
+    { id: 21, seq: 21, createdAt: '2026-08-24T08:10:00Z', at: '16:10:00', name: 'get_project_state', phase: 'completed', summary: '当前项目状态：评测 / running' },
+    { id: 23, seq: 23, createdAt: '2026-08-24T08:11:00Z', at: '16:11:00', name: 'transition_project_state', phase: 'completed', summary: '最新轨迹记录' },
+    { id: 22, seq: 22, createdAt: '2026-08-24T08:11:00Z', at: '16:11:00', name: 'update_plan', phase: 'completed', summary: '同秒较早记录' },
+  ],
 });
 try {
   const html = renderToString(<App />);
+  const orderedTrace = newestTraceFirst(store.get().trace);
   const message = restoredVersionMessage('1.0.0', {});
   const leakedText = "评测轮次 rd_64bea577-467，基于修订 588743e；request_release；evaluation:running；评测库查询失败：Unknown database 'mv_shadow_pj_796c0f3e_156'；结果 5/5，版本 v1.0.0。";
   const agentText = userFacingText(leakedText);
@@ -939,8 +983,16 @@ try {
     throw new Error('版本恢复没有形成自然业务消息');
   }
   if (humanizeTraceSummary('当前项目状态：评测 / running') !== '当前阶段：评测'
+    || humanizeTraceSummary('处理完成', 'task_tool') !== '一项子任务已完成，主任务继续处理中'
+    || humanizeTraceSummary('处理完成', 'read_document') !== '当前步骤已完成'
     || !html.includes('当前阶段：评测')) {
     throw new Error('历史过程摘要没有翻译成业务语言');
+  }
+  if (orderedTrace.map((item) => item.seq).join(',') !== '23,22,21'
+    || !html.includes('最新轨迹记录') || !html.includes('同秒较早记录')
+    || html.indexOf('最新轨迹记录') > html.indexOf('同秒较早记录')
+    || html.indexOf('同秒较早记录') > html.indexOf('当前阶段：评测')) {
+    throw new Error('运行轨迹没有按生成时间和事件序号倒序展示');
   }
   if (/rd_64bea577|588743e|request_release|evaluation:running|mv_shadow_pj|Unknown database/.test(agentText + agentHtml)
     || !agentText.includes('本次评测') || !agentText.includes('当前版本') || !agentHtml.includes('本次评测')
@@ -960,6 +1012,56 @@ try {
   }
   console.log('✓ 主流程不暴露运行时实现');
 } catch (e) { console.log('✗ 主流程实现隔离:', e.message); bad++; }
+
+store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null, drawerOpen: true });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-trace', toolCallId: 'call-read',
+  traceGroupId: 'paged:read_document:fixture',
+  name: 'read_document', phase: 'started', summary: '正在读取资料', createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-trace', toolCallId: 'call-read',
+  traceGroupId: 'paged:read_document:fixture',
+  name: 'read_document', phase: 'completed', summary: '资料读取完成', createdAt: '2026-01-01T00:00:01Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 3, runId: 'run-trace', toolCallId: 'call-read-next',
+  traceGroupId: 'paged:read_document:fixture',
+  name: 'read_document', phase: 'started', summary: '正在读取资料', createdAt: '2026-01-01T00:00:02Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 4, runId: 'run-trace', toolCallId: 'call-read-next',
+  traceGroupId: 'paged:read_document:fixture',
+  name: 'read_document', phase: 'completed', summary: '资料读取完成', createdAt: '2026-01-01T00:00:03Z',
+});
+try {
+  const [entry] = store.get().trace;
+  if (store.get().trace.length !== 1 || entry?.phase !== 'completed'
+    || entry?.summary !== '资料读取完成' || !entry?.at.endsWith(':00')
+    || entry?.createdAt !== '2026-01-01T00:00:00Z' || entry?.seq !== 1
+    || entry?.segmentCount !== 2
+    || !renderToString(<App />).includes('2 个连续分段')) {
+    throw new Error('同一分页动作没有合并为一条处理记录');
+  }
+  console.log('✓ 连续分页读取合并为单条处理记录');
+} catch (e) { console.log('✗ 工具处理记录合并:', e.message); bad++; }
+
+store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0 });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-legacy-trace', toolCallId: 'legacy-page-1',
+  name: 'read_document', phase: 'completed', summary: '正在读取资料《历史资料》', createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-legacy-trace', toolCallId: 'legacy-page-2',
+  name: 'read_document', phase: 'completed', summary: '正在读取资料《历史资料》', createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const [entry] = store.get().trace;
+  if (store.get().trace.length !== 1 || entry?.segmentCount !== 2) {
+    throw new Error('旧分页轨迹回放后仍逐页重复展示');
+  }
+  console.log('✓ 历史分页轨迹按资料聚合');
+} catch (e) { console.log('✗ 历史分页轨迹聚合:', e.message); bad++; }
 
 try {
   const awaiting = {

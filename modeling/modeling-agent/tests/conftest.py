@@ -16,6 +16,15 @@ from modeling_agent.service import AgentService
 from modeling_agent.settings import Settings
 
 
+TEST_PACKAGE_CONTRACT = {
+    "validatorVersion": "package-format-test-v1",
+    "manifest": {
+        "requiredFields": ["kind", "schema_version", "id", "name", "description", "version", "status"],
+        "platformManagedFields": ["kind", "schema_version", "id", "version", "status"],
+    },
+}
+
+
 @dataclass(frozen=True)
 class ToolTurn:
     name: str
@@ -28,6 +37,8 @@ class ScriptedModel(Model):
         script: Sequence[Sequence[ToolTurn]],
         final: str = "本轮已完成，下一步请确认流程范围。",
         tool_content_by_call: dict[int, str] | None = None,
+        content_by_call: dict[int, str] | None = None,
+        reasoning_by_call: dict[int, str] | None = None,
     ) -> None:
         template = init_model(
             provider="OpenAI",
@@ -42,16 +53,21 @@ class ScriptedModel(Model):
         self.script = [list(turns) for turns in script]
         self.final = final
         self.tool_content_by_call = tool_content_by_call or {}
+        self.content_by_call = content_by_call or {}
+        self.reasoning_by_call = reasoning_by_call or {}
         self.calls = 0
 
     def _next(self) -> AssistantMessage:
         index = self.calls
         self.calls += 1
         turns = self.script[index] if index < len(self.script) else []
+        content = self.content_by_call.get(index, self.final)
+        reasoning = self.reasoning_by_call.get(index, "")
         if not turns:
-            return AssistantMessage(content=self.final)
+            return AssistantMessage(content=content, reasoning_content=reasoning)
         return AssistantMessage(
             content=self.tool_content_by_call.get(index, ""),
+            reasoning_content=reasoning,
             tool_calls=[
                 ToolCall(
                     id=f"call_{index}_{position}",
@@ -68,6 +84,12 @@ class ScriptedModel(Model):
 
     async def stream(self, *_args: Any, **_kwargs: Any):  # type: ignore[override]
         response = self._next()
+        reasoning = str(response.reasoning_content or "")
+        for index in range(0, len(reasoning), 4):
+            yield AssistantMessageChunk(
+                reasoning_content=reasoning[index:index + 4],
+                finish_reason="null",
+            )
         if response.tool_calls:
             content = str(response.content or "")
             for index in range(0, len(content), 4):
@@ -115,7 +137,10 @@ class FakeGateway:
                 or self.credentials.get(run_id)
                 or f"arc_{run_id}_secret"
             )
-        return dict(self.responses.get(tool, {"ok": True, "display": {"text": f"{tool} 完成"}}))
+        result = dict(self.responses.get(tool, {"ok": True, "display": {"text": f"{tool} 完成"}}))
+        if tool == "claim_candidate_workspace":
+            result.setdefault("packageContract", TEST_PACKAGE_CONTRACT)
+        return result
 
     async def aclose(self) -> None:
         return None
@@ -127,6 +152,7 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         data_dir=tmp_path / "agent-data",
         core_base_url="http://127.0.0.1:5100",
+        service_token="s" * 32,
         llm_base_url="http://127.0.0.1:9/unused",
         llm_api_key="unused",
         llm_model="scripted",

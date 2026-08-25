@@ -190,6 +190,11 @@ export const importEvaluationDatabase = (id, file, replaceConfirmed, selection) 
   form.append('file', file);
   return api(`${P(id)}/evaluation-database/import`, { method: 'POST', body: form });
 };
+export const quickImportEvaluationDatabase = (id, file) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api(`${P(id)}/evaluation-database/quick-import`, { method: 'POST', body: form });
+};
 export const listEvaluationDatabaseImports = (id) => api(`${P(id)}/evaluation-database/imports`);
 export const uploadGraphImport = (id, file) => {
   const form = new FormData();

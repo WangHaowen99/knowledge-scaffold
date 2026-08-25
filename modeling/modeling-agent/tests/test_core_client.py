@@ -7,6 +7,41 @@ from modeling_agent.core_client import HttpCoreGateway
 
 
 @pytest.mark.asyncio
+async def test_runtime_model_config_requires_service_token_and_uses_run_identity() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"llm": {
+            "baseUrl": "https://llm.example/v1",
+            "model": "runtime-model",
+            "apiKey": "runtime-secret",
+            "maxTokens": 64000,
+            "contextWindow": 128000,
+        }})
+
+    gateway = HttpCoreGateway(
+        "http://modeling-core.invalid",
+        service_token="s" * 32,
+    )
+    await gateway._client.aclose()  # noqa: SLF001
+    gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
+    gateway.restore_run_credential("run_demo", "arc_persisted")
+    try:
+        config = await gateway.model_config(
+            project_id="project_demo",
+            run_id="run_demo",
+            token="user-token",
+        )
+        assert config["model"] == "runtime-model"
+        assert requests[0].headers["authorization"] == "Bearer user-token"
+        assert requests[0].headers["x-modeling-service-token"] == "s" * 32
+        assert requests[0].headers["x-modeling-agent-credential"] == "arc_persisted"
+    finally:
+        await gateway.aclose()
+
+
+@pytest.mark.asyncio
 async def test_claimed_run_credential_replaces_expired_user_token_for_tools() -> None:
     requests: list[httpx.Request] = []
 
@@ -18,7 +53,7 @@ async def test_claimed_run_credential_replaces_expired_user_token_for_tools() ->
         assert request.headers["x-modeling-agent-credential"] == "arc_project_run_secret"
         return httpx.Response(200, json={"ok": True})
 
-    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
     await gateway._client.aclose()  # noqa: SLF001
     gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
     try:
@@ -50,7 +85,7 @@ async def test_persisted_run_credential_can_be_restored_before_user_reauthentica
         requests.append(request)
         return httpx.Response(200, json={"runCredential": "arc_refreshed"})
 
-    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
     await gateway._client.aclose()  # noqa: SLF001
     gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
     gateway.restore_run_credential("run_demo", "arc_persisted")
@@ -74,7 +109,7 @@ async def test_non_object_success_is_reported_as_core_protocol_error() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[{"id": "fusion-plan-1"}])
 
-    gateway = HttpCoreGateway("http://modeling-core.invalid")
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
     await gateway._client.aclose()  # noqa: SLF001
     gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
     try:
@@ -88,5 +123,53 @@ async def test_non_object_success_is_reported_as_core_protocol_error() -> None:
         assert result["error"] == "CORE_PROTOCOL_INVALID"
         assert result["reason"] == "建模核心返回格式异常"
         assert "空" not in result["display"]["text"]
+    finally:
+        await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_core_validation_error_preserves_every_detail_for_agent() -> None:
+    finding = {
+        "ruleId": "manifest.required.status",
+        "path": "manifest.yaml",
+        "message": "manifest 缺少必选字段 status",
+        "suggestion": "以当前正式 manifest.yaml 为基线补回 status",
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={
+            "code": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-format-v1",
+            "findingCount": 1,
+            "findings": [finding],
+            "next": ["逐项修正后重新预检"],
+            "display": {"text": "候选格式校验未通过"},
+        })
+
+    gateway = HttpCoreGateway("https://modeling-core.invalid")
+    await gateway._client.aclose()  # noqa: SLF001
+    gateway._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
+    try:
+        result = await gateway.call(
+            project_id="project_demo",
+            run_id="run_demo",
+            token="token_demo",
+            tool="request_confirmation_preflight",
+            arguments={},
+        )
+
+        assert result == {
+            "code": "CANDIDATE_FORMAT_INVALID",
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-format-v1",
+            "findingCount": 1,
+            "findings": [finding],
+            "next": ["逐项修正后重新预检"],
+            "display": {"text": "候选格式校验未通过"},
+        }
     finally:
         await gateway.aclose()

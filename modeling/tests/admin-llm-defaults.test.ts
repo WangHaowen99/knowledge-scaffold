@@ -99,10 +99,10 @@ test('admin 保存的平台 Key 仅以密文落库且接口不回显', async () 
   assert.equal(settingsRepo.getUserLlmSetting('platform-admin', 'base_url'), null);
 });
 
-test('admin 保存模板不干扰老用户，新用户初始化后固化加密快照', () => {
-  const untouched = runWithLlmUser('existing-user', () => settingsRepo.getLlmSettings());
-  assert.equal(untouched.model, 'deployment-model');
-  assert.equal(runWithLlmUser('existing-user', () => settingsRepo.getLlmSource()), 'env');
+test('admin 保存平台默认后对现有账号即时生效，新用户仍固化加密快照', () => {
+  const unified = runWithLlmUser('existing-user', () => settingsRepo.getLlmSettings());
+  assert.equal(unified.model, 'platform-model');
+  assert.equal(runWithLlmUser('existing-user', () => settingsRepo.getLlmSource()), 'platform_default');
 
   assert.equal(initializeNewUserLlmDefaults('new-user'), true);
   const initialized = runWithLlmUser('new-user', () => settingsRepo.getLlmSettings());
@@ -113,7 +113,7 @@ test('admin 保存模板不干扰老用户，新用户初始化后固化加密�
     maxTokens: 12000,
     contextWindow: 1000000,
   });
-  assert.equal(runWithLlmUser('new-user', () => settingsRepo.getLlmSource()), 'default_snapshot');
+  assert.equal(runWithLlmUser('new-user', () => settingsRepo.getLlmSource()), 'platform_default');
   assert.equal(runWithLlmUser('new-user', () => buildLlm().model.id), 'platform-model');
   const snapshot = getDb().prepare(`SELECT api_key_ciphertext
     FROM user_llm_default_snapshots WHERE username = ? AND purpose = 'main'`)
@@ -132,9 +132,9 @@ test('admin 保存模板不干扰老用户，新用户初始化后固化加密�
   assert.equal(runWithLlmUser('snapshot-editor', () => settingsRepo.getLlmSource()), 'user');
 });
 
-test('任务模型读取用户固化的 task 快照，未配置时使用该用户主模型', async () => {
+test('任务模型即时读取平台 task 默认，未配置时使用平台主模型', async () => {
   const mainFallback = runWithLlmUser('task-user', () => buildTaskLlm());
-  assert.equal(mainFallback.model.id, 'deployment-model');
+  assert.equal(mainFallback.model.id, 'platform-model');
 
   assert.equal(initializeNewUserLlmDefaults('task-user'), true);
   const initializedBeforeTaskDefault = runWithLlmUser('task-user', () => buildTaskLlm());
@@ -150,8 +150,8 @@ test('任务模型读取用户固化的 task 快照，未配置时使用该用�
     },
   });
   assert.equal(saved.statusCode, 200);
-  const unchanged = runWithLlmUser('task-user', () => buildTaskLlm());
-  assert.equal(unchanged.model.id, 'platform-model');
+  const unified = runWithLlmUser('task-user', () => buildTaskLlm());
+  assert.equal(unified.model.id, 'platform-task-model');
 
   assert.equal(initializeNewUserLlmDefaults('new-task-user'), true);
   const initializedAfterTaskDefault = runWithLlmUser('new-task-user', () => buildTaskLlm());
@@ -185,7 +185,7 @@ test('revision 防止覆盖其他管理员的新修改，非法草稿不产生�
   assert.equal(defaultsRepo.getPublicLlmDefaultSettings('main')?.revision, 1);
 });
 
-test('admin 更新模板不追写已有用户，主动同步才替换该用户快照', async () => {
+test('admin 更新平台默认后现有账号即时采用新配置', async () => {
   const updated = await app.inject({
     method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
     payload: {
@@ -196,9 +196,9 @@ test('admin 更新模板不追写已有用户，主动同步才替换该用户�
   assert.equal(updated.statusCode, 200);
 
   const beforeSync = runWithLlmUser('new-user', () => settingsRepo.getLlmSettings());
-  assert.equal(beforeSync.model, 'platform-model');
-  assert.equal(beforeSync.maxTokens, 12000);
-  assert.equal(runWithLlmUser('existing-user', () => settingsRepo.getLlmSettings()).model, 'deployment-model');
+  assert.equal(beforeSync.model, 'platform-model-v2');
+  assert.equal(beforeSync.maxTokens, 16000);
+  assert.equal(runWithLlmUser('existing-user', () => settingsRepo.getLlmSettings()).model, 'platform-model-v2');
 
   syncUserLlmToPlatformDefault('new-user');
   const afterSync = runWithLlmUser('new-user', () => settingsRepo.getLlmSettings());

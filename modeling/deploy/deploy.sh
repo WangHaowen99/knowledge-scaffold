@@ -52,22 +52,53 @@ load_env_if_unset() {
     [ -z "${value}" ] || { printf -v "${key}" '%s' "${value}"; export "${key}"; }
 }
 
+ensure_modeling_service_token() {
+    local env_file="$1"
+    local secret="${MODELING_SERVICE_TOKEN:-$(env_get "${env_file}" MODELING_SERVICE_TOKEN)}"
+    local temp_file
+    [ -f "${env_file}" ] || die "Modeling service token env file not found: ${env_file}"
+    if [ -z "${secret}" ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            secret="$(openssl rand -hex 32)"
+        elif command -v python3 >/dev/null 2>&1; then
+            secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+        else
+            die "Cannot generate MODELING_SERVICE_TOKEN: openssl or Python 3 is required"
+        fi
+    fi
+    [ "${#secret}" -ge 32 ] || die "MODELING_SERVICE_TOKEN must contain at least 32 characters"
+    temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || die "Cannot update ${env_file}"
+    chmod 600 "${temp_file}"
+    if ! awk -v secret="${secret}" '
+        BEGIN { updated = 0 }
+        /^MODELING_SERVICE_TOKEN=/ {
+            if (!updated) { print "MODELING_SERVICE_TOKEN=" secret; updated = 1 }
+            next
+        }
+        { print }
+        END { if (!updated) print "MODELING_SERVICE_TOKEN=" secret }
+    ' "${env_file}" > "${temp_file}"; then
+        command rm -f -- "${temp_file}"
+        die "Cannot update ${env_file}"
+    fi
+    mv "${temp_file}" "${env_file}"
+    chmod 600 "${env_file}"
+    MODELING_SERVICE_TOKEN="${secret}"
+    export MODELING_SERVICE_TOKEN
+}
+
 load_modeling_env() {
     local file
     local key
     for file in "$@"; do
         for key in MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY \
                    MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
-                   MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS; do
+                   MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS \
+                   MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
+                   MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN; do
             load_env_if_unset "${file}" "${key}"
         done
     done
-    case "${MODELING_LLM_BASE_URL:-}" in
-        http://*|https://*) ;;
-        *) die "Modeling Workbench requires a real http(s) MODELING_LLM_BASE_URL; faux mode is not supported by modeling-agent" ;;
-    esac
-    [ -n "${MODELING_LLM_MODEL:-}" ] || die \
-        "Modeling Workbench requires MODELING_LLM_MODEL; set it in backend/.env, the package .env, or the shell"
 }
 
 detect_host_arch() {
@@ -202,6 +233,7 @@ deploy_release() {
     [ -f "${bundle_root}/${image_tar}" ] || die "Modeling image tar not found: ${bundle_root}/${image_tar}"
     [ -f "${bundle_root}/${agent_image_tar}" ] || die "Agent image tar not found: ${bundle_root}/${agent_image_tar}"
 
+    ensure_modeling_service_token "${bundle_root}/backend/.env"
     load_modeling_env "${bundle_root}/backend/.env" "${bundle_root}/.env"
 
     network="$(detect_consumer_network)"
@@ -239,6 +271,7 @@ deploy_source() {
     compose_file="${repo_root}/deploy/docker-compose.modeling.yml"
     [ -f "${compose_file}" ] || die "Source compose file not found: ${compose_file}"
 
+    ensure_modeling_service_token "${repo_root}/consumer/backend/.env"
     load_modeling_env "${repo_root}/consumer/backend/.env" "${repo_root}/deploy/.env"
 
     network="$(detect_consumer_network)"

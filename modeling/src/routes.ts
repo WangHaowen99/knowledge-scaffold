@@ -117,6 +117,8 @@ import {
   evaluationDatabaseUrlSummary,
   selectEvaluationDatabaseUrlOverride,
 } from './evaluation/evaluation-database-target.js';
+import { validateEvaluationDatabaseExcelContents } from './evaluation/eval-db.js';
+import { shadowWorkspaceId } from './evaluation/shadow-workspace.js';
 import {
   cancelGraphImportUpload,
   cancelGraphImportRun,
@@ -192,6 +194,7 @@ import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
 import { registerAgentCoreRoutes } from './agent/core-routes.js';
+import { registerAgentLlmConfigRoutes } from './agent/llm-config-routes.js';
 import { registerPackageFusionRoutes } from './agent/package-fusion-routes.js';
 import { registerAgentProxyRoutes } from './agent/proxy-routes.js';
 import {
@@ -355,6 +358,21 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
     replaceConfirmed,
     databaseUrl: selectEvaluationDatabaseUrlOverride(databaseUrlMode, customDatabaseUrl),
   };
+}
+
+async function readQuickEvaluationDatabaseUpload(req: any): Promise<{
+  filename: string;
+  buffer: Buffer;
+}> {
+  let upload: { filename: string; buffer: Buffer } | undefined;
+  for await (const part of req.parts()) {
+    if (part.type !== 'file') continue;
+    if (upload) throw new Error('一次只能上传一个 Excel 文件');
+    upload = { filename: part.filename, buffer: await part.toBuffer() };
+  }
+  if (!upload) throw new Error('缺少 Excel 文件');
+  validateEvaluationDatabaseExcelContents(upload.filename, upload.buffer);
+  return upload;
 }
 
 function isAgentWorkflowFactRequest(req: FastifyRequest): boolean {
@@ -553,6 +571,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.addHook('onRequest', (_req, _reply, done) => runWithLlmRequest(done));
     r.addHook('preHandler', requireAuth);
 
+    registerAgentLlmConfigRoutes(r);
+
     r.get('/api/me', async (req) => ({ user: req.user }));
 
     // ---- 服务设置（consumer 评测端点页面可配置） ----
@@ -685,21 +705,39 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     // ---- 项目（节点 1）----
     r.get('/api/projects', async (req) => ({
-      projects: listProjects(req.user!.username).map((project) => {
+      projects: await Promise.all(listProjects(req.user!.username).map(async (project) => {
         const construction = aiConstruction.snapshot(project.id);
         const currentTask = construction?.tasks.find(
           (task) => task.id === construction.progress.currentTaskId,
         );
+        let agentState: Record<string, unknown> | null = null;
+        if (project.runtime === 'agent') {
+          try {
+            const response = await fetch(
+              `${config.agentBaseUrl}/v1/projects/${encodeURIComponent(project.id)}/state`,
+              {
+                headers: { authorization: String(req.headers.authorization ?? '') },
+                signal: AbortSignal.timeout(3_000),
+              },
+            );
+            if (!response.ok) throw new Error(`Agent state returned ${response.status}`);
+            const payload = await response.json() as { state?: Record<string, unknown> };
+            agentState = payload.state ?? null;
+          } catch (error) {
+            req.log.warn({ err: error, projectId: project.id }, '项目列表暂时无法读取 Agent 状态');
+          }
+        }
         return {
           ...project,
           accessRole: projectMemberRole(project.id, req.user!.username),
+          agentState,
           construction: construction ? {
             status: construction.status,
             progress: construction.progress,
             currentTask: currentTask ? { id: currentTask.id, title: currentTask.title } : null,
           } : null,
         };
-      }),
+      })),
     }));
 
     r.get('/api/projects/:id/members', async (req, reply) => {
@@ -1961,6 +1999,58 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       });
     });
 
+    r.post('/api/projects/:id/evaluation-database/quick-import', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:evaluation-database-import`, reply, async () => {
+        try {
+          assertProjectEvaluationDatabaseImportAvailable(c.p.id);
+          const upload = await readQuickEvaluationDatabaseUpload(req);
+          const defaults = getEvalBindingDefaults();
+          if (!['nl2sql_template', 'nl2sql_http'].includes(defaults.provider)) {
+            throw new Error('平台默认数据源不是 NL2SQL，无法一键导入 Excel');
+          }
+          if (!defaults.url) throw new Error('平台尚未配置 NL2SQL 数据服务 URL');
+          const database = await createProjectEvaluationDatabase(
+            { projectId: c.p.id },
+            options.evaluationDatabaseDependencies,
+          );
+          const token = (req.headers.authorization ?? '').slice(7);
+          const dataSource = await configureProjectDataSource({
+            projectId: c.p.id,
+            owner: req.user!.username,
+            token,
+            input: {
+              mode: 'connection',
+              provider: defaults.provider as 'nl2sql_template' | 'nl2sql_http',
+              config: {
+                url: defaults.url,
+                token: defaults.token,
+                scene: database.database,
+                evaluation_workspace_id: shadowWorkspaceId(c.p.id),
+              },
+            },
+            testConnection: options.dataSourceConnectionTester,
+            syncConnection: options.dataSourceConsumerSync,
+          });
+          const result = startProjectEvaluationDatabaseImport({
+            projectId: c.p.id,
+            ...upload,
+            replaceConfirmed: true,
+          }, options.evaluationDatabaseDependencies);
+          return reply.code(202).send({ ...result, dataSource, database });
+        } catch (error) {
+          if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
+            return reply.code(409).send({ error: error.message, run: error.run });
+          }
+          if (error instanceof EvaluationDatabaseImportCapacityError) {
+            return reply.code(429).send({ error: error.message });
+          }
+          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+    });
+
     r.get('/api/projects/:id/evaluation-database/imports', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
@@ -2483,6 +2573,76 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         runningOperation: inFlight.current(`${c.p.id}:optimize`),
         runningTask: inFlight.status(`${c.p.id}:optimize`),
       };
+    });
+    const editableSuggestionInput = (body: any) => {
+      const title = String(body?.title ?? '').trim();
+      const detail = String(body?.detail ?? '').trim();
+      const kind = String(body?.kind ?? '') as m4repo.SuggestionKind;
+      const diagnosisIds: string[] = Array.isArray(body?.diagnosisIds)
+        ? [...new Set<string>(body.diagnosisIds.map((id: unknown) => String(id)).filter(Boolean))]
+        : [];
+      if (!title || !detail) throw new Error('建议标题和修改要求不能为空');
+      if (!m4repo.SUGGESTION_KINDS.includes(kind)) throw new Error('建议类型不正确');
+      if (!diagnosisIds.length) throw new Error('建议必须关联至少一项已确认的失败根因');
+      return {
+        title, detail, kind, diagnosisIds,
+        target: String(body?.target ?? '').trim() || undefined,
+        relatedQuestion: String(body?.relatedQuestion ?? '').trim() || undefined,
+        evidence: Array.isArray(body?.evidence)
+          ? body.evidence.map((item: unknown) => String(item).trim()).filter(Boolean).slice(0, 20)
+          : [],
+        generalizationPlan: String(body?.generalizationPlan ?? '').trim(),
+        validationPlan: String(body?.validationPlan ?? '').trim(),
+      };
+    };
+    const validateSuggestionDiagnoses = async (projectId: string, roundId: string, basedRevisionOid: string, ids: string[]) => {
+      const current = await packageArtifacts.current(projectId);
+      if (!current || current.revision.oid !== basedRevisionOid) {
+        throw new Error('知识包已变化，请重新评测并分析失败原因');
+      }
+      const diagnoses = diagnosisRepo.listFailureDiagnoses(projectId, roundId);
+      const byId = new Map(diagnoses.map((item) => [item.id, item]));
+      if (ids.some((id) => {
+        const diagnosis = byId.get(id);
+        return !diagnosis || diagnosis.basedRevisionOid !== basedRevisionOid
+          || diagnosis.resolutionStatus !== 'confirmed' || !diagnosis.packageOptimizable || diagnosis.blocking;
+      })) throw new Error('建议只能关联当前版本中已确认且可由知识包修复的失败根因');
+    };
+    r.patch('/api/projects/:id/optimize/suggestions/:suggestionId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const existing = m4repo.getSuggestions([String((req.params as any).suggestionId)])
+        .find((item) => item.projectId === c.p.id);
+      if (!existing) return reply.code(404).send({ error: '优化建议不存在' });
+      if (existing.status !== 'pending') return reply.code(409).send({ error: '该建议已进入候选或已关闭，不能再编辑' });
+      try {
+        const input = editableSuggestionInput(req.body);
+        await validateSuggestionDiagnoses(c.p.id, existing.roundId, existing.basedRevisionOid, input.diagnosisIds);
+        return { suggestion: m4repo.updatePendingSuggestion({
+          projectId: c.p.id, suggestionId: existing.id, ...input,
+        }) };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+    r.post('/api/projects/:id/optimize/suggestions/manual', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const roundId = String((req.body as any)?.roundId ?? '');
+      const round = m3repo.getRound(roundId);
+      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+      const current = await packageArtifacts.current(c.p.id);
+      if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+      try {
+        const input = editableSuggestionInput(req.body);
+        await validateSuggestionDiagnoses(c.p.id, round.id, current.revision.oid, input.diagnosisIds);
+        const suggestions = m4repo.insertSuggestions(
+          c.p.id, round.id, round.packageVersion, current.revision.oid, [input],
+        );
+        return { suggestion: suggestions.at(-1), suggestions };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
     });
     r.get('/api/projects/:id/optimize/apply-status', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);

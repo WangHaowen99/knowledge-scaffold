@@ -56,7 +56,7 @@ export default function CenterPane() {
     : {
     flow: '渲染 / 源码', diff: '待确认的修改前后对照', doc: '资料原文与引用',
     impact: '保持有效 / 需要处理', conflict: '范围 / 冲突处置', gates: '确定性实时结果',
-    evaluation: '准备 / 真实用例 / 运行结果',
+    evaluation: '准备 / 真实用例 / 运行结果 / 失败诊断 / 优化建议',
     file: '渲染 / 源码',
     studio: '图 / 表 / 条目',
   }[focus.kind];

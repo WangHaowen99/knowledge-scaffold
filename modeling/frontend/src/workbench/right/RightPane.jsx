@@ -43,7 +43,12 @@ export default function RightPane() {
   const draggingScroll = useRef(false);
   const previousInteractionId = useRef('');
   const base = demo ? CONVERSATIONS[scene] || [] : messages;
-  const streamTail = messages.map((message) => `${message.id}:${message.streaming ? 1 : 0}:${message.blocks?.[0]?.text?.length || 0}`).join('|');
+  const streamTail = messages.map((message) => {
+    const blocks = (message.blocks || []).map((block) => (
+      `${block.type}:${block.streaming ? 1 : 0}:${block.text?.length || 0}`
+    )).join(',');
+    return `${message.id}:${message.streaming ? 1 : 0}:${blocks}`;
+  }).join('|');
   const activityTail = activity
     ? `${activity.id || activity.text}:${activity.detail || ''}:${activity.progress?.current || 0}`
     : '';

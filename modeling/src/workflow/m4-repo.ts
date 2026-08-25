@@ -11,6 +11,15 @@ export type SuggestionKind =
   | 'clarify_description';
 export type SuggestionStatus = 'pending' | 'candidate' | 'applied' | 'rejected';
 
+export const SUGGESTION_KINDS: readonly SuggestionKind[] = [
+  'add_operation', 'modify_operation',
+  'add_object', 'modify_object',
+  'add_rule', 'modify_rule',
+  'add_metric', 'modify_metric',
+  'add_script', 'modify_script',
+  'clarify_description',
+];
+
 export interface OptSuggestion {
   id: string; projectId: string; roundId: string; basedVersion: string; basedRevisionOid: string;
   title: string; detail: string; kind: SuggestionKind;
@@ -53,13 +62,16 @@ export function insertSuggestions(
     (id, project_id, round_id, based_version, based_revision_oid, title, detail, kind, target, related_question,
      diagnosis_ids_json, evidence_json, generalization_plan, validation_plan, status, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)`);
+  const insertedIds: string[] = [];
   for (const it of items) {
-    stmt.run(`sg_${randomUUID().slice(0, 12)}`, projectId, roundId, basedVersion, basedRevisionOid,
+    const id = `sg_${randomUUID().slice(0, 12)}`;
+    insertedIds.push(id);
+    stmt.run(id, projectId, roundId, basedVersion, basedRevisionOid,
       it.title, it.detail, it.kind, it.target ?? null, it.relatedQuestion ?? null,
       JSON.stringify(it.diagnosisIds ?? []), JSON.stringify(it.evidence ?? []),
       it.generalizationPlan ?? '', it.validationPlan ?? '', nowIso());
   }
-  return listSuggestions(projectId, roundId);
+  return getSuggestions(insertedIds);
 }
 
 export function listSuggestions(projectId: string, roundId?: string): OptSuggestion[] {
@@ -74,6 +86,32 @@ export function getSuggestions(ids: string[]): OptSuggestion[] {
   const db = getDb();
   return ids.map((id) => db.prepare('SELECT * FROM opt_suggestions WHERE id = ?').get(id))
     .filter(Boolean).map((r) => rowToSug(r as any));
+}
+
+export function updatePendingSuggestion(input: {
+  projectId: string;
+  suggestionId: string;
+  title: string;
+  detail: string;
+  kind: SuggestionKind;
+  target?: string;
+  relatedQuestion?: string;
+  diagnosisIds: string[];
+  evidence?: string[];
+  generalizationPlan?: string;
+  validationPlan?: string;
+}): OptSuggestion {
+  const result = getDb().prepare(`UPDATE opt_suggestions SET
+      title = ?, detail = ?, kind = ?, target = ?, related_question = ?, diagnosis_ids_json = ?,
+      evidence_json = ?, generalization_plan = ?, validation_plan = ?
+    WHERE id = ? AND project_id = ? AND status = 'pending'`).run(
+    input.title, input.detail, input.kind, input.target || null, input.relatedQuestion || null,
+    JSON.stringify(input.diagnosisIds), JSON.stringify(input.evidence ?? []),
+    input.generalizationPlan ?? '', input.validationPlan ?? '',
+    input.suggestionId, input.projectId,
+  );
+  if (Number(result.changes) !== 1) throw new Error('优化建议不存在或已不再允许编辑');
+  return getSuggestions([input.suggestionId])[0];
 }
 
 export function listCandidateSuggestions(

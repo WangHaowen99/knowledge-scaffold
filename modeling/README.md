@@ -60,22 +60,19 @@ npx tsx --env-file=.env src/server.ts
 NODE_OPTIONS=--experimental-sqlite npx tsx --env-file=.env src/server.ts
 ```
 
-`MODELING_LLM_*` 和 `MODELING_TASK_LLM_*` 是部署配置。admin 可以在配置中心维护独立的
-Modeling 平台主模型与后台任务模型默认模板；模板不会在运行时覆盖或兜底任何已有用户。通过
-Modeling 注册入口成功创建账号时，服务会把当时的模板复制到该用户名下的独立快照；注册时
-没有主模型模板则不写快照。admin 后续保存、修改或清除模板都不会追写既有快照，也不会修改
-任一用户的个人配置。
+`MODELING_LLM_*` 和 `MODELING_TASK_LLM_*` 仅作为可选部署兜底。admin 可以在配置中心维护
+Modeling 平台主模型与后台任务模型统一默认；保存后立即成为所有没有个人覆盖账号的运行时
+默认，core 与独立 modeling-agent 在新任务开始时读取同一份配置，无需重启容器。
 
-每个用户都可在配置中心分别维护主模型和后台任务模型，并在当前模型页点击“同步默认 LLM 配置”
-单独采用对应的平台模板。该操作只影响当前认证用户及当前模型用途；后台任务模板未设置时，
-同步后台任务模型会使用平台主模型模板。运行时不直接读取当前平台模板，因此老用户只有主动
-同步才会采用 admin 的新默认值。配置接口不会回显 API Key。
+每个用户仍可在配置中心分别维护主模型和后台任务模型，个人端点覆盖优先于平台默认。点击
+“使用平台默认配置”会清除当前用途的个人覆盖；后台任务默认未设置时跟随平台主模型。
+配置接口不会向浏览器回显 API Key。
 
 平台模板及用户快照中的 API Key 加密后存入 `modeling.db`。显式设置 `MODELING_LLM_CONFIG_ENCRYPTION_KEY`
 时要求至少 32 字节；该变量为空时，Modeling 会在 `DATA_DIR/.llm-config-encryption-key`
 首次生成并复用持久化随机密钥。生产环境建议通过 secret manager 注入显式密钥；自动密钥文件
-必须与数据库一同持久化和备份/恢复。平台后台任务模型未设置时，新建或同步的任务快照跟随
-当时的平台主模型；用户未配置或同步后台任务模型时，后台任务直接使用该用户当前主模型。
+必须与数据库一同持久化和备份/恢复。平台后台任务模型未设置时直接跟随平台主模型；用户
+设置个人后台任务模型时仍优先使用个人配置。
 平台默认和个人配置都将
 `maxTokens`（单次输出上限）与 `contextWindow`（输入+输出总上下文窗口）分开保存；
 上下文窗口应按所选模型 API 的实际上限填写。
@@ -110,7 +107,7 @@ access token 过期后前端对 401 自动静默续期（单飞 `/auth/refresh`�
 
 评测闭环访问的 consumer 业务 API（`CONSUMER_API_URL`）是另一个服务；consumer 须信任同一 auth-server（remote 模式），本工具透传的专家 token 才能被其接受。
 
-普通用户运行评测时，Modeling 需要先创建项目专属的 `mw-shadow-*` 影子工作区。为避免把用户提升为全局管理员，Modeling 与 consumer 的服务端环境须配置相同的 `MODELING_SERVICE_TOKEN`（至少 32 个随机字符）。该凭据只用于影子空间 provisioning 和读取本轮评测 Trace；知识包导入、数据连接绑定和用例运行仍使用当前用户 Token。Modeling 只会把服务凭据发送到部署期固定的 `CONSUMER_API_URL`，不会发送到页面覆盖的数据服务地址。
+`MODELING_SERVICE_TOKEN` 是 Modeling、modeling-agent 与 consumer 共用的服务端令牌，至少 32 个随机字符，一键部署时自动生成。它保护 Agent 运行时模型配置读取、评测影子空间 provisioning 和 Trace 读取，不等同于全局管理员 Token。知识包导入、数据连接绑定和用例运行仍使用当前用户 Token；服务令牌只发送到部署期固定的内部服务地址，不会发送到页面覆盖的数据服务地址。
 
 已知限制：
 

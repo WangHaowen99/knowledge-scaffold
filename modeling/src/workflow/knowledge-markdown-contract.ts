@@ -1,5 +1,7 @@
 import { parse as parseYaml } from 'yaml';
 
+export const KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION = 'knowledge-markdown-v1';
+
 type KnowledgeKind = 'object' | 'operation' | 'rule' | 'metric';
 
 interface ParsedMarkdown {
@@ -51,6 +53,76 @@ const INDEX_CONFIG = {
   metric: { path: 'metrics/index.md', key: 'metrics', title: '指标目录', header: ['metric key', '标题', '说明'] },
 } satisfies Record<KnowledgeKind, { path: string; key: string; title: string; header: string[] }>;
 
+/** 给 Agent 的规则描述直接由校验器配置生成，避免提示词与实际 consumer 契约漂移。 */
+export function knowledgeMarkdownGenerationContract() {
+  return {
+    validatorVersion: KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
+    syntax: {
+      frontmatter: '每个 Markdown 文件必须以合法 YAML frontmatter 开头',
+      detailKeyMatchesFilename: true,
+      onlyDeclaredFrontmatterAndSections: true,
+    },
+    details: Object.fromEntries(
+      (Object.entries(DETAIL_CONFIG) as Array<[KnowledgeKind, typeof DETAIL_CONFIG[KnowledgeKind]]>)
+        .map(([kind, config]) => [kind, {
+          directory: config.directory,
+          resource: kind,
+          allowedFrontmatter: [...config.allowedKeys],
+          requiredFrontmatter: [...config.requiredKeys],
+          allowedSections: [...config.allowedSections],
+          requiredSections: [...config.requiredSections],
+          ...detailShapeContract(kind),
+        }]),
+    ),
+    indexes: Object.fromEntries(
+      (Object.entries(INDEX_CONFIG) as Array<[KnowledgeKind, typeof INDEX_CONFIG[KnowledgeKind]]>)
+        .map(([kind, config]) => [kind, {
+          path: config.path,
+          resource: `${kind}_index`,
+          key: config.key,
+          section: config.title,
+          tableHeader: [...config.header],
+          mustExactlyReferenceExistingDetails: true,
+        }]),
+    ),
+    references: {
+      operation: { uses: ['objects', 'rules', 'metrics'], nestedObjectRequired: true },
+      rule: { applies_to: ['objects'], nestedObjectRequired: true },
+      metric: { uses: ['objects'], nestedObjectRequired: true },
+      referencedKeysMustExist: true,
+      operationBodyMustMatchFrontmatter: ['uses.rules', 'uses.metrics'],
+    },
+  };
+}
+
+function detailShapeContract(kind: KnowledgeKind) {
+  if (kind === 'object') return {
+    tables: {
+      字段: ['字段 key', '中文名', '类型', '必填', '业务说明', '别名'],
+      关系: ['关系', '目标对象', '说明', '证据'],
+    },
+    sourcesFormats: ['文档：文件名 / 章节', '表格：表名'],
+  };
+  if (kind === 'operation') return {
+    tables: {
+      输入: ['参数 key', '中文名', '类型', '必填', '说明'],
+      输出: ['输出 key', '中文名', '类型', '说明'],
+    },
+    numberedFlowRequired: true,
+    bodyReferenceFormats: ['- 相关规则：rule:<key>', '- 相关指标：metric:<key>'],
+  };
+  if (kind === 'rule') return {
+    tables: { 判断条件: ['条件', '结论'] },
+  };
+  return {
+    tables: {
+      空值策略: ['字段', '处理'],
+      维度: ['维度 key', '说明'],
+    },
+    calculationBoundaryListRequired: true,
+  };
+}
+
 export function validateKnowledgeMarkdownContract(files: Record<string, string>): string[] {
   const issues: string[] = [];
   const parsedByPath = new Map<string, ParsedMarkdown>();
@@ -77,6 +149,41 @@ export function validateKnowledgeMarkdownContract(files: Record<string, string>)
     validateIndex(kind, files, keys.get(kind)!, issues);
   }
   validateReferences(parsedByPath, keys, issues);
+  return issues;
+}
+
+/** 写入边界只校验当前文件；跨文件引用完整性由候选整体预检负责。 */
+export function validateKnowledgeMarkdownFile(
+  path: string,
+  content: string,
+  files: Record<string, string>,
+): string[] {
+  const issues: string[] = [];
+  for (const kind of Object.keys(DETAIL_CONFIG) as KnowledgeKind[]) {
+    const config = DETAIL_CONFIG[kind];
+    if (!path.startsWith(`${config.directory}/`) || !path.endsWith('.md') || path === `${config.directory}/index.md`) {
+      continue;
+    }
+    const parsed = parseMarkdown(path, content, issues);
+    if (parsed) {
+      const expectedKey = path.slice(config.directory.length + 1, -3);
+      validateDetail(path, kind, expectedKey, parsed, issues);
+    }
+    return issues;
+  }
+  for (const kind of Object.keys(INDEX_CONFIG) as KnowledgeKind[]) {
+    const config = INDEX_CONFIG[kind];
+    if (path !== config.path) continue;
+    const detailKeys = new Set(Object.keys(files)
+      .filter((candidate) => (
+        candidate.startsWith(`${DETAIL_CONFIG[kind].directory}/`)
+        && candidate.endsWith('.md')
+        && candidate !== config.path
+      ))
+      .map((candidate) => candidate.slice(DETAIL_CONFIG[kind].directory.length + 1, -3)));
+    validateIndex(kind, { ...files, [path]: content }, detailKeys, issues);
+    return issues;
+  }
   return issues;
 }
 

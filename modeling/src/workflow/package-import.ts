@@ -13,6 +13,11 @@ import type {
   SpecRule,
   SpecScript,
 } from '../types.js';
+import {
+  PACKAGE_STATUSES,
+  packageManifestIssues,
+  parsePackageManifest,
+} from './package-contract.js';
 
 const MAX_ZIP_BYTES = 50 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
@@ -400,13 +405,9 @@ function parseParameterDefault(value: string): string | number | boolean {
 }
 
 function parseRenderedSpec(files: Record<string, string>): PackageSpec {
-  let manifest: any;
-  try {
-    manifest = parseYaml(files['manifest.yaml']);
-  } catch {
-    throw new Error('manifest.yaml 不是合法 YAML');
-  }
-  if (!manifest || manifest.kind !== 'ontology-package') throw new Error('manifest.yaml 不是知识包');
+  const manifest = parsePackageManifest(files['manifest.yaml']);
+  const manifestIssues = packageManifestIssues(manifest);
+  if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
   const mapping = parseJson<any>(files['mappings/object-data-mappings.json'], '数据映射') ?? {};
   const detailPaths = (folder: string) => Object.keys(files)
     .filter((path) => path.startsWith(`${folder}/`) && path.endsWith('.md') && path !== `${folder}/index.md`)
@@ -423,8 +424,8 @@ function parseRenderedSpec(files: Record<string, string>): PackageSpec {
     description: String(manifest.description ?? '').trim(),
     version: String(manifest.version ?? '').trim(),
     language: String(manifest.language ?? 'zh-CN').trim(),
-    status: ['draft', 'review', 'released', 'deprecated'].includes(String(manifest.status))
-      ? manifest.status
+    status: PACKAGE_STATUSES.includes(String(manifest.status) as typeof PACKAGE_STATUSES[number])
+      ? manifest.status as PackageSpec['status']
       : 'draft',
     defaultProviderAlias: String(mapping.default_provider_alias ?? 'default'),
     objects,
@@ -460,6 +461,8 @@ export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
   const embeddedCoverage = parseJson<CoverageResult>(allFiles[MODEL_COVERAGE_PATH], '知识包覆盖结果');
   const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => !path.startsWith('model/')));
   const rawFiles = Object.fromEntries(Object.entries(archive.rawFiles).filter(([path]) => !path.startsWith('model/')));
+  const manifestIssues = packageManifestIssues(parsePackageManifest(files['manifest.yaml']));
+  if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
   const spec = embeddedSpec ?? parseRenderedSpec(files);
   if (!spec.id || !spec.name || !spec.version || !spec.objects || !spec.operations) {
     throw new Error('知识包缺少 id、name、version、objects 或 operations');

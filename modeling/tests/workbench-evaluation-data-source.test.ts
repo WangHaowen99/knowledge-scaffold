@@ -34,6 +34,12 @@ test('新工作台评测准备页复用完整数据源组件并保持 Agent 状�
   assert.match(workbenchEntry, /import ['"]\.\.\/styles\.css['"]/);
 });
 
+test('新工作台评测区只保留准备、真实用例和运行结果', () => {
+  assert.match(evaluationView, /const TABS = \[\['setup', '准备'\], \['cases', '真实用例'\], \['runs', '运行结果'\]\]/);
+  assert.doesNotMatch(evaluationView, /\['diagnose', '失败诊断'\]|\['optimize', '优化建议'\]/);
+  assert.doesNotMatch(evaluationView, /tab === 'diagnose'|tab === 'optimize'/);
+});
+
 test('新工作台保存数据源只更新 Agent 评测事实', async () => {
   let requestPath = '';
   globalThis.fetch = (async (path: string | URL | Request) => {

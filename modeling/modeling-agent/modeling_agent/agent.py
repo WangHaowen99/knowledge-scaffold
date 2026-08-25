@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import copytree
 from typing import Any
 
-from openjiuwen.core.foundation.llm import init_model
+from openjiuwen.core.foundation.llm.model import Model
+from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.rails.skills.skill_use_rail import SkillUseRail
@@ -29,6 +31,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 
 运行约束：
 - 只通过已提供的工具读取资料、读取知识包和写候选修订。你没有文件系统和 shell 权限。
+- 写入 diagrams/*.mmd 时只提交裸 Mermaid 源码，首个非空、非 %% 注释行必须是 flowchart TD 或 flowchart LR；绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏。若校验返回 findings，逐项修正同一文件后再写入。
 - 先使用工具获得事实再下结论；不编造资料、业务口径、证据、评测结果或门禁结果。
 - 每轮先调用 get_project_state。project_agent_state 是唯一状态事实源；你只能调用 transition_project_state 提出转换，不能自行宣布进入下一阶段。
 - 项目摘要和开放问题只用 update_project_context 写入同一状态行；不要创建或读取 .modeling/state.md。
@@ -46,15 +49,19 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 用户可见回复只说业务阶段、语义版本、事实、影响和下一步，不出现工具函数名、API 路径、数据库表名、编码状态（如 evaluation:running）、运行编号、检查点编号或模型实现。技术失败也先说业务影响和可执行出口。
 - 用户可见回复只写标准 Markdown，不输出 HTML 标签或用 `<details>/<summary>` 自制交互控件；需要确认时必须调用 ask 或 request_confirmation 生成内联卡片，不能在普通文字结尾让用户自行回复“确认”。
 - 互斥业务口径、范围或处理方式必须调用 ask 生成选项卡；正文可以先解释判断依据，但不能用“请选择”“供您选择”或罗列若干选项来承载待用户决定。request_confirmation 只接受或退回已经冻结的整体候选，绝不能把多个业务方案塞进正文后再发候选确认。
+- ask 的某个选项若还需要用户继续描述，必须设置 requiresText=true 和明确的 textPrompt；该选项收到非空 text 后才算完整回答。不得先结束问题卡，再用普通正文索要下一次输入。
 - 用户从版本历史恢复内容后，自行核对当前包与项目阶段；若恢复的是已正式发布内容，禁止重新运行评测，直接按已有发布事实把项目对齐到发布交付，不要求用户再次确认同一版本，也不要求用户输入额外指令。
 - 需要人决定时只用 ask 或 request_confirmation。即便等待决定，用户也可以自由插话；若收到反问，先回答，再重新提出仍未解决的原问题。
 - 收到插话或反问后，直接用最终自然语言回答并结束这次小回合；服务端会自动恢复仍未解决的原问题。不要在同一小回合再次调用 ask 或 request_confirmation。
 - 候选写完后直接调用 request_confirmation 并只提供面向用户的业务摘要；确认分组由系统按实际路径自动整理，不要猜测或填写变更组 ID，也不要先用 ask 重复询问同一项确认。
+- 知识包生成契约由核心校验器在本轮开始时注入。写候选前必须遵守其中的 requiredFields、platformManagedFields 和目录契约；平台管理字段只能从当前正式文件保留，不能自行重建或猜测。
+- 任一确定性校验失败时，完整读取返回的 validatorVersion、retryable 和 findings；逐项按 ruleId、path、message、actual、suggestion 修正后重新校验，不得只处理摘要中的第一条错误，也不得把可自动修复的格式问题交给用户。同一 repairRoundId 或同一次 model_call 下多个文件的 findings 属于同一修正轮次，必须合并处理，不能按文件重复试错。修正轮数和重复 fingerprint 停止策略以本轮 packageContract.confirmation 为准；repairStopped=true 时停止生成新候选，但仍可读取、删除或调用 discard_rejected_candidate_changes 撤销候选。
 - 用户在确认卡退回候选，并在反馈中明确表示“撤销修改”“不需要修改”或“保持已确认版本”时，调用 discard_rejected_candidate_changes 放弃退回后残留的业务候选；不要为了清空待处理内容伪造无意义 diff。工具成功后留在原业务阶段，继续处理仍然有效的下一步。
 - 资料不足时主动 ask(kind='material_request')。允许口述、稍后补资料或跳过，不把文件当唯一出口。
 - 资料默认由你判断用途并按需读取。用户在上传卡或自然语言中明确指定“建模目标依据”“数据 Schema”“通用业务依据”或“全文精读”时，先调用 set_material_directive 忠实保存；不得再次询问用户分类。
 - 用户要求全文精读一份或多份资料时，调用 read_documents_fully。只有工具返回每份资料完整度 100% 才能声称全文已读；该工具会对多文档和超长文档确定性切块、并发读取并保留检查点，不得改成串行 read_document 翻页或抽样阅读。
 - 指定为数据 Schema 的表格必须使用资料 ID 和 Sheet 名读取结构，直接采用 set_material_directive 返回的 objects 作为对象与属性事实；字段只能来自真实 Sheet 和原始列，类型和主键候选必须说明是推断。遇到空表头、重名列、主键或合并单元格歧义再用业务选项询问。
+- 两份以上资料的批量阅读、三个以上数据表的结构盘点或跨资料归纳必须交给 material_analyst；Leader 只接收其结构化结论和证据引用。Leader 仅为核对当前决策直接读取少量相关分页或至多两个表，不把整份长文档和成批表结构累积在主会话。
 - 新资料影响建模目标时主动回到目标确认，影响对象属性时主动回到知识建模；状态仍只写 project_agent_state，不创建阅读状态机或第二套业务状态。
 - 现有知识包导入后从唯一的 increment 阶段直接接增量工作，不重新补跑目标、流程或知识全量阶段，也不把导入基线说成已发布版本。
 - 导入基线可能使用历史知识格式；只修改真实受影响的文件，不得为了迁移格式重写无关对象、操作或脚本。门禁只阻断本次候选新增的问题，基线历史问题另行治理。
@@ -75,17 +82,25 @@ class AgentBundle:
 def build_model(settings: Settings) -> Any:
     if not settings.llm_base_url or not settings.llm_model:
         raise RuntimeError("未配置建模模型，请设置 MODELING_LLM_BASE_URL 和 MODELING_LLM_MODEL")
-    return init_model(
-        provider="OpenAI",
-        model_name=settings.llm_model,
-        # 部分内网 OpenAI 兼容端点不校验密钥，但 SDK 构造器仍要求非空。
-        # 该占位值不授予任何权限；真实密钥存在时始终使用真实值。
-        api_key=settings.llm_api_key or "not-required",
-        api_base=settings.llm_base_url,
-        temperature=0.2,
-        max_tokens=settings.llm_max_tokens,
-        timeout=settings.llm_timeout_seconds,
-        max_retries=3,
+    return Model(
+        model_client_config=ModelClientConfig(
+            client_provider="OpenAI",
+            # 部分内网 OpenAI 兼容端点不校验密钥，但 SDK 构造器仍要求非空。
+            # 该占位值不授予任何权限；真实密钥存在时始终使用真实值。
+            api_key=settings.llm_api_key or "not-required",
+            api_base=settings.llm_base_url,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=3,
+            verify_ssl=False,
+            stream_first_chunk_timeout=settings.llm_first_chunk_timeout_seconds,
+            stream_idle_timeout=settings.llm_idle_timeout_seconds,
+        ),
+        model_config=ModelRequestConfig(
+            model=settings.llm_model,
+            temperature=0.2,
+            top_p=0.1,
+            max_tokens=settings.llm_max_tokens,
+        ),
     )
 
 
@@ -94,6 +109,7 @@ def build_agent(
     context: ToolContext,
     *,
     model: Any | None = None,
+    package_contract: dict[str, Any] | None = None,
 ) -> AgentBundle:
     resolved_model = model or build_model(settings)
     workspace = settings.data_dir / "runtime-workspaces" / context.run_id
@@ -115,7 +131,11 @@ def build_agent(
             enable_cache=False,
             include_tools=False,
         ),
-        ActivityRail(context.emit),
+        ActivityRail(
+            context.emit,
+            actor="modeling_leader",
+            validation_repair=context.validation_repair,
+        ),
     ]
     agent = create_deep_agent(
         resolved_model,
@@ -125,7 +145,7 @@ def build_agent(
             description="主动推进知识包建模、协调专家决定并控制工作台焦点",
         ),
         tool_owner_id=context.run_id,
-        system_prompt=f"{SYSTEM_PROMPT}\n\n# 建模方法 Skill\n\n{leader_skill}",
+        system_prompt=_system_prompt(leader_skill, package_contract or {}),
         tools=build_tools(context),
         subagents=_subagents(settings, context, resolved_model),
         rails=rails,
@@ -145,9 +165,20 @@ def build_agent(
     return AgentBundle(agent=agent, model=resolved_model)
 
 
+def _system_prompt(leader_skill: str, package_contract: dict[str, Any]) -> str:
+    contract = json.dumps(package_contract, ensure_ascii=False, sort_keys=True, indent=2)
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        "# 本轮知识包生成契约（来自核心确定性校验器）\n\n"
+        f"```json\n{contract}\n```\n\n"
+        "生成、修正和确认候选都必须以这份带 validatorVersion 的契约为准。\n\n"
+        f"# 建模方法 Skill\n\n{leader_skill}"
+    )
+
+
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:
     material_tools = build_core_tools(context, {
-        "list_documents", "read_document", "search_documents",
+        "list_documents", "read_document", "read_documents_fully", "search_documents",
         "list_tables", "describe_table", "read_table_rows",
     })
     package_read_names = {
@@ -168,7 +199,7 @@ def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[Sub
             ),
             tools=tools,
             model=model,
-            rails=[ToolBoundaryRail(context), ActivityRail(context.emit)],
+            rails=[ToolBoundaryRail(context), ActivityRail(context.emit, actor=agent_id)],
             max_iterations=min(60, settings.max_iterations),
             parallel_tool_calls=True,
             restrict_to_work_dir=True,

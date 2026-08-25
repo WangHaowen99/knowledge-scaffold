@@ -99,6 +99,15 @@ async function usePassingScriptSandbox(t: test.TestContext) {
   });
 }
 
+function confirmationReceipt(preflight: { json(): any }) {
+  const payload = preflight.json();
+  return {
+    expected_candidate_revision: payload.candidate_revision,
+    expected_candidate_hash: payload.validation_receipt.candidateHash,
+    expected_validator_version: payload.validation_receipt.validatorVersion,
+  };
+}
+
 async function confirmGoal(app: ReturnType<typeof Fastify>, projectId: string, runId: string) {
   const group = { id: 'prerequisite-goal', tier: 'caliber', title: '确认建模目标' };
   const written = await tool(app, projectId, 'write_file', {
@@ -112,6 +121,7 @@ async function confirmGoal(app: ReturnType<typeof Fastify>, projectId: string, r
   assert.equal(preflight.statusCode, 200, preflight.body);
   const confirmed = await tool(app, projectId, 'request_confirmation', {
     summary: group.title, change_groups: [group],
+    ...confirmationReceipt(preflight),
     review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
@@ -130,6 +140,7 @@ async function confirmProcess(app: ReturnType<typeof Fastify>, projectId: string
   assert.equal(preflight.statusCode, 200, preflight.body);
   const confirmed = await tool(app, projectId, 'request_confirmation', {
     summary: group.title, change_groups: [group],
+    ...confirmationReceipt(preflight),
     review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
@@ -187,6 +198,7 @@ title: 对象目录
   assert.equal(preflight.statusCode, 200, preflight.body);
   const confirmed = await tool(app, projectId, 'request_confirmation', {
     summary: group.title, change_groups: [group, indexGroup],
+    ...confirmationReceipt(preflight),
     review: { approved: true, review_mode: 'full', selected_groups: [group.id, indexGroup.id] },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
@@ -209,6 +221,53 @@ test('新 Agent 项目不初始化旧任务图', () => {
   const project = createProject({ owner: 'alice', name: '原生 Agent 项目', runtime: 'agent' });
   assert.equal(project.runtime, 'agent');
   assert.equal(getDb().prepare('SELECT project_id FROM ai_construction_graphs WHERE project_id = ?').get(project.id), undefined);
+});
+
+test('接管候选工作区时返回与核心校验器同源的生成契约', async (t) => {
+  const project = createProject({ owner: 'alice', name: '生成契约注入', runtime: 'agent' });
+  const app = appFor(t);
+
+  const claimed = await tool(
+    app,
+    project.id,
+    'claim_candidate_workspace',
+    {},
+    `run-contract-${project.id}`,
+  );
+
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const contract = claimed.json().packageContract;
+  assert.equal(contract.validatorVersion, 'package-contract-v4');
+  assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
+  assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
+  assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
+  assert.equal(contract.confirmation.aggregateParallelFindings, true);
+  assert.deepEqual(contract.confirmation.recoveryToolsRemainAvailable, [
+    'delete_file', 'discard_rejected_candidate_changes',
+  ]);
+  assert.match(contract.authoring.goalEvidence.invariants.join('\n'), /正文中的每个 material token/u);
+  assert.match(contract.validators.packageFormat, /^package-format-/u);
+  assert.equal(contract.validators.mermaidSource, 'mermaid-source-v1');
+  assert.deepEqual(contract.packageFormat.diagrams, {
+    pathPattern: 'diagrams/*.mmd',
+    rawMermaidSourceOnly: true,
+    allowedDeclarations: ['flowchart TD', 'flowchart LR'],
+    markdownCodeFencesAllowed: false,
+  });
+  assert.ok(contract.manifest.requiredFields.includes('status'));
+  assert.deepEqual(
+    contract.manifest.platformManagedFields,
+    ['kind', 'schema_version', 'id', 'version', 'status'],
+  );
+  assert.deepEqual(
+    contract.markdown.details.operation.requiredSections,
+    ['业务目标', '输入', '输出', '流程', '规则、指标和注意事项', '知识证据'],
+  );
+  assert.deepEqual(
+    contract.markdown.details.object.tables.字段,
+    ['字段 key', '中文名', '类型', '必填', '业务说明', '别名'],
+  );
+  assert.equal(contract.markdown.references.referencedKeysMustExist, true);
 });
 
 test('Agent 全文精读进度来自分块检查点且不重复计算重叠字符', async (t) => {
@@ -304,17 +363,37 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
   assert.equal(beforeProcessConfirmation.json().gate, 'process_confirmed');
 
   const processGroup = { id: 'approved-process', tier: 'caliber', title: '确认业务流程' };
-  await tool(app, project.id, 'request_confirmation_preflight', {
+  const processPreflight = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: processGroup.title, change_groups: [processGroup],
   }, runId);
+  assert.equal(processPreflight.statusCode, 200, processPreflight.body);
   const processConfirmed = await tool(app, project.id, 'request_confirmation', {
     summary: processGroup.title, change_groups: [processGroup],
+    ...confirmationReceipt(processPreflight),
     review: { approved: true, review_mode: 'full', selected_groups: [processGroup.id] },
   }, runId);
   assert.equal(processConfirmed.statusCode, 200, processConfirmed.body);
 
   const knowledge = await tool(app, project.id, 'write_file', {
-    path: 'objects/after-process.md', content: '# 流程确认后的对象\n',
+    path: 'objects/after-process.md', content: `---
+resource: object
+key: after-process
+title: 流程确认后的对象
+description: 用于验证流程确认后的知识写入。
+---
+# 业务定义
+
+流程确认后才允许建立该对象。
+
+# 字段
+
+| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 |
+| --- | --- | --- | --- | --- | --- |
+
+# 查询边界
+
+只验证阶段门禁。
+`,
     change_group: 'knowledge-after-process', evidence: [],
   }, runId);
   assert.equal(knowledge.statusCode, 200, knowledge.body);
@@ -340,6 +419,65 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
   }, runId);
   assert.equal(staleGoalCannotAuthorizeProcess.statusCode, 409, staleGoalCannotAuthorizeProcess.body);
   assert.equal(staleGoalCannotAuthorizeProcess.json().gate, 'goal_confirmed');
+});
+
+test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Mermaid 源码契约', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  const group = { id: 'mermaid-contract', tier: 'caliber', title: '确认流程图源码' };
+
+  const fenced = await tool(app, project.id, 'write_file', {
+    path: 'diagrams/process.mmd',
+    content: '```mermaid\nflowchart TD\nA --> B\n```\n',
+    change_group: group.id,
+    evidence: ['user-decision:confirmed-process'],
+  }, runId);
+  assert.equal(fenced.statusCode, 400, fenced.body);
+  assert.equal(fenced.json().code, 'MERMAID_CONTENT_INVALID');
+  assert.equal(fenced.json().retryable, true);
+  assert.equal(fenced.json().validatorVersion, 'mermaid-source-v1');
+  assert.deepEqual(fenced.json().findings.map((finding: any) => finding.ruleId), [
+    'mermaid.no-markdown-fence',
+    'mermaid.flowchart-declaration',
+  ]);
+
+  const corrected = await tool(app, project.id, 'write_file', {
+    path: 'diagrams/process.mmd',
+    content: 'flowchart TD\nA --> B\n',
+    change_group: group.id,
+    evidence: ['user-decision:confirmed-process'],
+  }, runId);
+  assert.equal(corrected.statusCode, 200, corrected.body);
+
+  getDb().prepare(`UPDATE agent_candidate_changes SET content = ?
+    WHERE project_id = ? AND run_id = ? AND path = 'diagrams/process.mmd'`)
+    .run('```mermaid\nflowchart TD\nA --> B\n```\n', project.id, runId);
+  const blocked = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'CANDIDATE_FORMAT_INVALID');
+  assert.equal(blocked.json().retryable, true);
+  assert.deepEqual(blocked.json().findings.map((finding: any) => finding.ruleId), [
+    'mermaid.no-markdown-fence',
+    'mermaid.flowchart-declaration',
+  ]);
+
+  const repaired = await tool(app, project.id, 'write_file', {
+    path: 'diagrams/process.mmd',
+    content: '%% evidence: user-decision:confirmed-process\nflowchart TD\nA --> B\n',
+    change_group: group.id,
+    evidence: ['user-decision:confirmed-process'],
+  }, runId);
+  assert.equal(repaired.statusCode, 200, repaired.body);
+  const accepted = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(accepted.statusCode, 200, accepted.body);
 });
 
 test('Agent 候选写入只在确认后形成 Git 修订，并留下复核方式', async (t) => {
@@ -384,6 +522,7 @@ test('Agent 候选写入只在确认后形成 Git 修订，并留下复核方式
   const confirmed = await tool(app, project.id, 'request_confirmation', {
     summary: '确认建模目标',
     change_groups: [{ id: 'goal', tier: 'caliber', title: '确认建模目标' }],
+    ...confirmationReceipt(preflight),
     review: {
       approved: true,
       review_mode: 'full',
@@ -771,7 +910,21 @@ test('有可读资料时扫描件解析失败只告警，不永久阻塞建模�
 
   const written = await tool(app, project.id, 'write_file', {
     path: 'rules/procurement.md',
-    content: '# 采购规则\n\n> 证据：material:流程说明.md#采购流程\n',
+    content: `---
+resource: rule
+key: procurement
+title: 采购规则
+evidence:
+  - material:流程说明.md#采购流程
+---
+# 规则内容
+
+提交后由负责人审核。
+
+# 知识证据
+
+- material:流程说明.md#采购流程
+`,
     change_group: 'procurement-rule',
     evidence: ['material:流程说明.md#采购流程'],
   }, runId);
@@ -1116,6 +1269,7 @@ canonical_key: legacy-warehouse
   const confirmed = await tool(app, project.id, 'request_confirmation', {
     summary: '确认仓库容量口径更新',
     change_groups: [{ id: 'increment_object', tier: 'structural', title: '仓库对象更新' }],
+    ...confirmationReceipt(preflight),
     review: { approved: true, review_mode: 'full', selected_groups: ['increment_object'] },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
@@ -1278,20 +1432,55 @@ test('业务操作只能建立在已确认流程上', async (t) => {
     evidence: ['user-decision:procurement-flow'],
   }, runId);
   assert.equal(diagram.statusCode, 200, diagram.body);
-  await tool(app, project.id, 'request_confirmation_preflight', {
+  const processPreflight = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '确认采购流程',
     change_groups: [{ id: 'process', tier: 'caliber', title: '采购流程' }],
   }, runId);
+  assert.equal(processPreflight.statusCode, 200, processPreflight.body);
   const confirmed = await tool(app, project.id, 'request_confirmation', {
     summary: '确认采购流程',
     change_groups: [{ id: 'process', tier: 'caliber', title: '采购流程' }],
+    ...confirmationReceipt(processPreflight),
     review: { approved: true, review_mode: 'full', selected_groups: ['process'] },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
 
   const allowed = await tool(app, project.id, 'write_file', {
     path: 'operations/create-order.md',
-    content: '# 创建采购单\n',
+    content: `---
+resource: operation
+key: create-order
+title: 创建采购单
+description: 根据已确认流程创建采购单。
+evidence:
+  - user-decision:procurement-flow
+---
+# 业务目标
+
+创建采购单。
+
+# 输入
+
+| 参数 key | 中文名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+
+# 输出
+
+| 输出 key | 中文名 | 类型 | 说明 |
+| --- | --- | --- | --- |
+
+# 流程
+
+1. 创建采购单。
+
+# 规则、指标和注意事项
+
+- 仅验证流程门禁。
+
+# 知识证据
+
+- user-decision:procurement-flow
+`,
     change_group: 'operation',
     evidence: ['diagrams/procurement.mmd'],
   }, runId);
@@ -1454,7 +1643,7 @@ title: 规则目录
   assert.equal(preflight.statusCode, 200, preflight.body);
 });
 
-test('知识确认前拒绝扁平引用键并接受嵌套引用结构', async (t) => {
+test('知识文件快速校验拒绝扁平引用键并接受嵌套引用结构', async (t) => {
   const project = createProject({ owner: 'alice', name: '知识 Markdown 门禁' });
   const app = appFor(t);
   const runId = `run-${project.id}`;
@@ -1464,7 +1653,7 @@ test('知识确认前拒绝扁平引用键并接受嵌套引用结构', async (t
   const metricGroup = 'quality-metric';
   const indexGroup = 'knowledge-index';
 
-  await tool(app, project.id, 'write_file', {
+  const objectWritten = await tool(app, project.id, 'write_file', {
     path: 'objects/feedstock.md',
     content: `---
 resource: object
@@ -1491,7 +1680,8 @@ sources:
     change_group: objectGroup,
     evidence: ['user-decision:feedstock'],
   }, runId);
-  await tool(app, project.id, 'write_file', {
+  assert.equal(objectWritten.statusCode, 200, objectWritten.body);
+  const invalidMetric = await tool(app, project.id, 'write_file', {
     path: 'metrics/quality.md',
     content: `---
 resource: metric
@@ -1518,6 +1708,46 @@ evidence:
     change_group: metricGroup,
     evidence: ['user-decision:quality'],
   }, runId);
+  assert.equal(invalidMetric.statusCode, 400, invalidMetric.body);
+  const failure = invalidMetric.json();
+  assert.equal(failure.code, 'KNOWLEDGE_FILE_INVALID');
+  assert.equal(failure.retryable, true);
+  assert.match(failure.validatorVersion, /^knowledge-markdown-/u);
+  assert.ok(failure.findings.length >= 1);
+  assert.ok(failure.findings.every((finding: any) => (
+    finding.ruleId && finding.path && finding.message && finding.suggestion
+  )));
+  assert.match(invalidMetric.body, /uses\.objects/u);
+
+  const correctedMetric = await tool(app, project.id, 'write_file', {
+    path: 'metrics/quality.md',
+    content: `---
+resource: metric
+key: quality
+title: 原料质量指标
+description: 按批次记录原料质量。
+uses:
+  objects:
+    - feedstock
+evidence:
+  - user-decision:quality
+---
+# 业务口径
+
+按原料批次记录质量检验结果。
+
+# 计算边界
+
+- 每个原料批次独立记录，不跨批次汇总。
+
+# 知识证据
+
+- user-decision:quality
+`,
+    change_group: metricGroup,
+    evidence: ['user-decision:quality'],
+  }, runId);
+  assert.equal(correctedMetric.statusCode, 200, correctedMetric.body);
   await tool(app, project.id, 'write_file', {
     path: 'objects/index.md',
     content: `---
@@ -1551,46 +1781,6 @@ title: 指标目录
     evidence: [],
   }, runId);
 
-  const blocked = await tool(app, project.id, 'request_confirmation_preflight', {
-    summary: '确认知识结构',
-    change_groups: [
-      { id: objectGroup, tier: 'structural', title: '原料对象' },
-      { id: metricGroup, tier: 'structural', title: '质量指标' },
-      { id: indexGroup, tier: 'index', title: '知识索引' },
-    ],
-  }, runId);
-  assert.equal(blocked.statusCode, 409, blocked.body);
-  assert.equal(blocked.json().code, 'KNOWLEDGE_CONTRACT_INVALID');
-  assert.match(blocked.body, /uses\.objects/u);
-
-  await tool(app, project.id, 'write_file', {
-    path: 'metrics/quality.md',
-    content: `---
-resource: metric
-key: quality
-title: 原料质量指标
-description: 按批次记录原料质量。
-uses:
-  objects:
-    - feedstock
-evidence:
-  - user-decision:quality
----
-# 业务口径
-
-按原料批次记录质量检验结果。
-
-# 计算边界
-
-- 每个原料批次独立记录，不跨批次汇总。
-
-# 知识证据
-
-- user-decision:quality
-`,
-    change_group: metricGroup,
-    evidence: ['user-decision:quality'],
-  }, runId);
   const accepted = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '确认知识结构',
     change_groups: [
@@ -1600,6 +1790,141 @@ evidence:
     ],
   }, runId);
   assert.equal(accepted.statusCode, 200, accepted.body);
+});
+
+test('平台保留 manifest 管理字段，底层预检仍把详细错误返回给 Agent', async (t) => {
+  const project = createProject({ owner: 'alice', name: '候选格式闭环', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+
+  const current = await getPackageArtifactStore().readPackageFiles(project.id);
+  const manifest = current.files['manifest.yaml'];
+  assert.match(manifest, /^status:/mu);
+  const proposedManifest = manifest
+    .replace(/^kind:.*$/mu, 'kind: agent-invented-kind')
+    .replace(/^status:.*$/mu, 'status: deprecated')
+    .replace(/^description:.*$/mu, 'description: Agent 只修改业务描述');
+  const group = { id: 'manifest-index', tier: 'index', title: '同步知识索引' };
+  const written = await tool(app, project.id, 'write_file', {
+    path: 'manifest.yaml',
+    content: proposedManifest,
+    change_group: group.id,
+    evidence: [],
+  }, runId);
+  assert.equal(written.statusCode, 200, written.body);
+  assert.deepEqual(written.json().manifestNormalization.ignoredFields, ['kind', 'status']);
+  const normalized = getDb().prepare(`SELECT content FROM agent_candidate_changes
+    WHERE project_id = ? AND run_id = ? AND path = 'manifest.yaml'`).get(project.id, runId) as { content: string };
+  assert.match(normalized.content, /^kind: ontology-package$/mu);
+  assert.match(normalized.content, /^status: review$/mu);
+  assert.match(normalized.content, /^description: Agent 只修改业务描述$/mu);
+
+  // 模拟旧版本或旁路写入留下的坏候选，验证最终预检仍是独立防线。
+  getDb().prepare(`UPDATE agent_candidate_changes SET content = ?
+    WHERE project_id = ? AND run_id = ? AND path = 'manifest.yaml'`)
+    .run(manifest.replace(/^status:.*\n?/mu, ''), project.id, runId);
+
+  const blocked = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  const failure = blocked.json();
+  assert.equal(failure.code, 'CANDIDATE_FORMAT_INVALID');
+  assert.equal(failure.retryable, true);
+  assert.match(failure.validatorVersion, /^package-format-/u);
+  assert.equal(failure.findingCount, 1);
+  assert.deepEqual(failure.findings.map((finding: any) => ({
+    ruleId: finding.ruleId,
+    path: finding.path,
+    message: finding.message,
+  })), [{
+    ruleId: 'manifest.required.status',
+    path: 'manifest.yaml',
+    message: 'manifest 缺少必选字段 status',
+  }]);
+  assert.match(failure.findings[0].suggestion, /补回并保留 status/u);
+
+  const correctedManifest = manifest.replace(
+    /^description:.*$/mu,
+    'description: 候选格式闭环修正后的知识包描述',
+  );
+  const corrected = await tool(app, project.id, 'write_file', {
+    path: 'manifest.yaml',
+    content: correctedManifest,
+    change_group: group.id,
+    evidence: [],
+  }, runId);
+  assert.equal(corrected.statusCode, 200, corrected.body);
+  const accepted = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  const receipt = accepted.json().validation_receipt;
+  assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
+  assert.equal(receipt.baseRevision, current.revision.oid);
+  assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(receipt.validatorVersion, 'package-contract-v4');
+});
+
+test('接受候选前必须匹配预检回执中的内容哈希和校验器版本', async (t) => {
+  const project = createProject({ owner: 'alice', name: '候选确认回执', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+  const group = { id: 'receipt-check', tier: 'index', title: '确认候选回执' };
+  const current = await getPackageArtifactStore().readPackageFiles(project.id);
+  const written = await tool(app, project.id, 'write_file', {
+    path: 'manifest.yaml',
+    content: current.files['manifest.yaml'].replace(
+      /^description:.*$/mu,
+      'description: 用于验证候选确认回执',
+    ),
+    change_group: group.id,
+    evidence: [],
+  }, runId);
+  assert.equal(written.statusCode, 200, written.body);
+  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(preflight.statusCode, 200, preflight.body);
+  const payload = preflight.json();
+
+  const missingReceipt = await tool(app, project.id, 'request_confirmation', {
+    summary: group.title,
+    change_groups: [group],
+    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
+  }, runId);
+  assert.equal(missingReceipt.statusCode, 409, missingReceipt.body);
+  assert.equal(missingReceipt.json().code, 'CANDIDATE_REVALIDATION_REQUIRED');
+
+  const stale = await tool(app, project.id, 'request_confirmation', {
+    summary: group.title,
+    change_groups: [group],
+    expected_candidate_revision: payload.candidate_revision,
+    expected_candidate_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    expected_validator_version: payload.validation_receipt.validatorVersion,
+    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
+  }, runId);
+  assert.equal(stale.statusCode, 409, stale.body);
+  assert.equal(stale.json().code, 'CANDIDATE_REVALIDATION_REQUIRED');
+  assert.equal(stale.json().retryable, false);
+
+  const confirmed = await tool(app, project.id, 'request_confirmation', {
+    summary: group.title,
+    change_groups: [group],
+    expected_candidate_revision: payload.candidate_revision,
+    expected_candidate_hash: payload.validation_receipt.candidateHash,
+    expected_validator_version: payload.validation_receipt.validatorVersion,
+    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
+  }, runId);
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
 });
 
 test('脚本沙箱测试要求明确输入输出契约', async (t) => {
@@ -1687,6 +2012,7 @@ if __name__ == "__main__":
   const blockedConfirmation = await tool(app, project.id, 'request_confirmation', {
     summary: group.title,
     change_groups: [group],
+    ...confirmationReceipt(ready),
     review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
   }, runId);
   assert.equal(blockedConfirmation.statusCode, 409, blockedConfirmation.body);
@@ -1696,6 +2022,7 @@ if __name__ == "__main__":
   const confirmed = await tool(app, project.id, 'request_confirmation', {
     summary: group.title,
     change_groups: [group],
+    ...confirmationReceipt(ready),
     review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);

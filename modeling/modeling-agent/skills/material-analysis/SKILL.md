@@ -5,7 +5,7 @@ description: 完整阅读资料、识别解析问题并形成有来源的目标�
 
 # 资料分析
 
-- 先列清单，逐份从 offset 0 读到 eof，不用摘要冒充全文。
+- 先列清单。局部核对先检索再读取命中片段；需要全文覆盖时调用 `read_documents_fully`，不得串行调用 `read_document` 翻页或用摘要冒充全文。
 - 表格先看数据字典，再按需读取样例；不要从少量样例推断稳定业务规则。
 - 明确区分资料原文、你的推断和待专家确认的假设。
 - 文档事实的 `write_file.evidence` 使用 `material:<document id>#<原文锚点或表名/字段>`；document id 必须从 `list_documents` 原样复制。不要把文件名放进 token，文件名可能含 `#`，会和锚点分隔符冲突。

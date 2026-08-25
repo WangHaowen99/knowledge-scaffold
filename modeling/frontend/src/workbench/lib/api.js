@@ -40,6 +40,9 @@ export const listEvaluationTestcases = (id) => api(`${P(id)}/testcases`);
 export const addEvaluationTestcase = (id, question, groundTruth) => api(`${P(id)}/testcases?workflow=agent`, {
   method: 'POST', body: JSON.stringify({ question, groundTruth }),
 });
+export const addEvaluationTestcases = (id, cases) => api(`${P(id)}/testcases/batch?workflow=agent`, {
+  method: 'POST', body: JSON.stringify({ cases }),
+});
 export const updateEvaluationTestcase = (id, testcaseId, patch) => api(
   `${P(id)}/testcases/${encodeURIComponent(testcaseId)}?workflow=agent`,
   { method: 'PATCH', body: JSON.stringify(patch) },
@@ -52,6 +55,37 @@ export const listEvaluationRounds = (id) => api(`${P(id)}/rounds`);
 export const getEvaluationRound = (id, roundId) => api(
   `${P(id)}/rounds/${encodeURIComponent(roundId)}`,
 );
+export const diagnoseEvaluation = (id, roundId) => api(`${P(id)}/optimize/diagnose`, {
+  method: 'POST', body: JSON.stringify({ roundId }),
+});
+export const listEvaluationDiagnoses = (id, roundId) => api(
+  `${P(id)}/optimize/diagnoses?roundId=${encodeURIComponent(roundId)}`,
+);
+export const confirmEvaluationDiagnoses = (id, roundId, diagnosisIds) => api(
+  `${P(id)}/optimize/diagnoses/plan-repair`,
+  { method: 'POST', body: JSON.stringify({ roundId, diagnosisIds }) },
+);
+export const proposeEvaluationOptimizations = (id, roundId) => api(`${P(id)}/optimize/propose`, {
+  method: 'POST', body: JSON.stringify({ roundId }),
+});
+export const listEvaluationSuggestions = (id, roundId) => api(
+  `${P(id)}/optimize/suggestions?roundId=${encodeURIComponent(roundId)}`,
+);
+export const updateEvaluationSuggestion = (id, suggestionId, input) => api(
+  `${P(id)}/optimize/suggestions/${encodeURIComponent(suggestionId)}`,
+  { method: 'PATCH', body: JSON.stringify(input) },
+);
+export const addManualEvaluationSuggestion = (id, input) => api(
+  `${P(id)}/optimize/suggestions/manual`,
+  { method: 'POST', body: JSON.stringify(input) },
+);
+export const applyEvaluationSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/apply`, {
+  method: 'POST', body: JSON.stringify({ suggestionIds }),
+});
+export const getEvaluationOptimizationStatus = (id) => api(`${P(id)}/optimize/apply-status`);
+export const reviewEvaluationOptimization = (id, taskId, action, note) => api(`${P(id)}/optimize/apply-review`, {
+  method: 'POST', body: JSON.stringify({ taskId, action, note }),
+});
 export const updateConfirmPolicy = (id, tier, mode) => api(`${P(id)}/agent/confirm-policy`, {
   method: 'PUT', body: JSON.stringify({ tier, mode }),
 });
@@ -82,7 +116,7 @@ export const downloadMaterial = downloadDocument;
 export const downloadPackage = async (id) => requireOkResponse(await authFetch(exportPackageUrl(id)));
 export const createModelingProject = (input) => createProject({ ...input, runtime: 'agent' });
 
-export function subscribeAgent(id, { after = 0, onEvent, onError } = {}) {
+export function subscribeAgent(id, { after = 0, onEvent } = {}) {
   let stopped = false;
   let cursor = Math.max(0, Number(after) || 0);
   let controller = null;
@@ -114,9 +148,9 @@ export function subscribeAgent(id, { after = 0, onEvent, onError } = {}) {
         }
       }
       if (!stopped) throw new Error('助手事件流已断开');
-    } catch (error) {
+    } catch {
       if (stopped || active.signal.aborted) return;
-      onError?.(error);
+      // 事件日志可按 cursor 续传，短暂断线只需在这里重试，不能冒充内容读取失败。
       const delay = Math.min(15_000, 1_000 * (2 ** Math.min(failures++, 4)));
       reconnect = setTimeout(connect, delay);
     } finally {

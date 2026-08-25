@@ -17,6 +17,11 @@ import { validateGeneratedScriptSafety } from './script-safety.js';
 import { sourceLabelsFor, tableSourceFor } from './source-references.js';
 import { packageMappingResource } from './package-data-source.js';
 import { canonicalizePackageSpec } from './package-spec.js';
+import {
+  PACKAGE_MANIFEST_KIND,
+  PACKAGE_MANIFEST_SCHEMA_VERSION,
+  PACKAGE_STATUSES,
+} from './package-contract.js';
 
 // PackageSpec → 标准知识包文件集（遵循 consumer 当前知识包导入格式）。
 // 返回 { path: content } 映射，供落盘或打 zip。
@@ -330,17 +335,15 @@ function diagramsIndex(): string {
   ].join('\n');
 }
 
-const MANIFEST_STATUSES = ['draft', 'review', 'released', 'deprecated'] as const;
-
 function manifest(spec: PackageSpec): string {
   const status = spec.status ?? 'draft';
-  if (!(MANIFEST_STATUSES as readonly string[]).includes(status)) {
-    throw new Error(`知识包 status 非法：「${status}」，允许值为 ${MANIFEST_STATUSES.join(' / ')}`);
+  if (!(PACKAGE_STATUSES as readonly string[]).includes(status)) {
+    throw new Error(`知识包 status 非法：「${status}」，允许值为 ${PACKAGE_STATUSES.join(' / ')}`);
   }
   // 全部取值字段过 yamlEscape：项目名/描述等含冒号、引号、# 时不得产出坏 YAML
   return [
-    'kind: ontology-package',
-    'schema_version: 0.1',
+    `kind: ${PACKAGE_MANIFEST_KIND}`,
+    `schema_version: ${PACKAGE_MANIFEST_SCHEMA_VERSION}`,
     `id: ${yamlEscape(spec.id)}`,
     `name: ${yamlEscape(spec.name)}`,
     `description: ${yamlEscape(spec.description)}`,
