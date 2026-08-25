@@ -102,6 +102,8 @@ class A2ATaskService:
             updated_at=iso_or_none(getattr(run, "updated_at", None)),
             completed_at=iso_or_none(getattr(run, "completed_at", None)),
             error=getattr(run, "error", None),
+            error_code=str((getattr(run, "metadata", {}) or {}).get("error_code") or "")
+            or None,
             result=getattr(run, "result", None),
             metadata=dict(getattr(run, "metadata", {}) or {}),
         )

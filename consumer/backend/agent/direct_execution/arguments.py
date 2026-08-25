@@ -21,9 +21,11 @@ from agent.direct_execution.models import RuntimeContext
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
     is_runtime_parameter,
+    runtime_reserved_parameter_field,
     runtime_parameter_field,
     script_parameter_argument_keys,
 )
+from ontology.operation_execution import canonical_json_bytes
 
 logger = get_logger("direct_execution.arguments")
 
@@ -131,6 +133,84 @@ def extract_runtime_requirements(
     return requirements
 
 
+def extract_runtime_argument_keys(
+    script_args: Sequence[str] = (),
+    script_parameters: Sequence[Mapping[str, Any]] = (),
+) -> Set[str]:
+    """Return every request-facing key reserved for runtime injection.
+
+    The deterministic service uses this before Parser, Schema and checkpoint
+    processing.  Keeping the key derivation beside CLI construction prevents a
+    user-facing alias from being accepted at one boundary and silently ignored
+    when the final runtime-owned CLI value is injected.
+    """
+    if script_parameters:
+        keys: Set[str] = set()
+        for parameter in script_parameters:
+            if is_runtime_parameter(parameter):
+                keys.update(script_parameter_argument_keys(parameter))
+                runtime_field = runtime_parameter_field(parameter)
+                if runtime_field:
+                    keys.update(
+                        _runtime_placeholder_argument_keys(
+                            "<runtime.{}>".format(runtime_field)
+                        )
+                    )
+        return keys
+
+    keys: Set[str] = set()
+    args_list = list(script_args)
+    for index, item in enumerate(args_list):
+        placeholder = str(item).strip()
+        if not is_runtime_placeholder(placeholder):
+            continue
+        flag = ""
+        if index > 0 and str(args_list[index - 1]).strip().startswith("--"):
+            flag = str(args_list[index - 1]).strip()
+        keys.update(_runtime_placeholder_argument_keys(placeholder, flag=flag))
+    return keys
+
+
+def protect_deterministic_runtime_parameters(
+    script_parameters: Sequence[Mapping[str, Any]],
+) -> List[Mapping[str, Any]]:
+    """Force identity-bearing catalog aliases to use trusted runtime values."""
+    protected_parameters: List[Mapping[str, Any]] = []
+    for parameter in script_parameters:
+        reserved_field = runtime_reserved_parameter_field(parameter)
+        if reserved_field is None:
+            protected_parameters.append(parameter)
+            continue
+        protected = dict(parameter)
+        protected["runtime"] = reserved_field
+        protected["source"] = "runtime"
+        protected_parameters.append(protected)
+    return protected_parameters
+
+
+def protect_deterministic_script_args(script_args: Sequence[str]) -> List[str]:
+    """Convert reserved legacy flags/placeholders to runtime placeholders."""
+    protected: List[str] = []
+    args = [str(item) for item in script_args]
+    index = 0
+    while index < len(args):
+        item = args[index]
+        flag_field = runtime_reserved_parameter_field({"flag": item})
+        if item.startswith("--") and flag_field is not None:
+            protected.extend([item, "<runtime.{}>".format(flag_field)])
+            index += 1
+            if index < len(args) and not args[index].startswith("--"):
+                index += 1
+            continue
+        placeholder_field = runtime_reserved_parameter_field({"placeholder": item})
+        if placeholder_field is not None:
+            protected.append("<runtime.{}>".format(placeholder_field))
+        else:
+            protected.append(item)
+        index += 1
+    return protected
+
+
 def _runtime_key_from_flag(flag: str) -> Optional[str]:
     """Extract a runtime key from a CLI flag, e.g. ``--session-id`` → ``session-id``."""
     key = flag.lstrip("-").strip()
@@ -170,6 +250,7 @@ def build_direct_cli_args(
     script_parameters: Sequence[Mapping[str, Any]] = (),
     business_arguments: Optional[Dict[str, Any]] = None,
     runtime_context: Optional[RuntimeContext] = None,
+    canonicalize_structured: bool = False,
 ) -> Tuple[List[str], List[str], Optional[str]]:
     """Build the complete CLI argument list for direct script execution.
 
@@ -179,6 +260,9 @@ def build_direct_cli_args(
     script_parameters : Structured parameter definitions.
     business_arguments : Business argument values keyed by name.
     runtime_context : Runtime context for injecting ``<runtime.xxx>`` values.
+    canonicalize_structured : Encode structured values with the deterministic
+        canonical JSON contract. Legacy Direct callers keep their existing
+        serialization unless they explicitly opt in.
 
     Returns
     -------
@@ -195,6 +279,7 @@ def build_direct_cli_args(
             script_parameters=script_parameters,
             business_arguments=business_arguments,
             runtime_context=runtime_context,
+            canonicalize_structured=canonicalize_structured,
         )
 
     # Legacy flat format path
@@ -202,6 +287,7 @@ def build_direct_cli_args(
         script_args=script_args,
         business_arguments=business_arguments,
         runtime_context=runtime_context,
+        canonicalize_structured=canonicalize_structured,
     )
 
 
@@ -215,6 +301,7 @@ def _build_direct_cli_args_from_parameters(
     script_parameters: Sequence[Mapping[str, Any]],
     business_arguments: Dict[str, Any],
     runtime_context: Optional[RuntimeContext] = None,
+    canonicalize_structured: bool = False,
 ) -> Tuple[List[str], List[str], Optional[str]]:
     """Build CLI arguments from structured parameter definitions.
 
@@ -273,7 +360,11 @@ def _build_direct_cli_args_from_parameters(
                     missing.append(_parameter_label(parameter))
                 continue
             for item in values:
-                converted, error = _convert_parameter_value(item, parameter)
+                converted, error = _convert_parameter_value(
+                    item,
+                    parameter,
+                    canonicalize_structured=canonicalize_structured,
+                )
                 if error:
                     system_error = "{}: {}".format(name, error)
                     break
@@ -290,7 +381,11 @@ def _build_direct_cli_args_from_parameters(
         if isinstance(value, (list, tuple, set, dict)) and not _accepts_structured_value(parameter):
             system_error = "{} does not accept multiple values".format(name)
             break
-        converted, error = _convert_parameter_value(value, parameter)
+        converted, error = _convert_parameter_value(
+            value,
+            parameter,
+            canonicalize_structured=canonicalize_structured,
+        )
         if error:
             system_error = "{}: {}".format(name, error)
             break
@@ -327,6 +422,7 @@ def _build_direct_cli_args_legacy(
     script_args: Sequence[str],
     business_arguments: Dict[str, Any],
     runtime_context: Optional[RuntimeContext] = None,
+    canonicalize_structured: bool = False,
 ) -> Tuple[List[str], List[str], Optional[str]]:
     """Build CLI args from legacy flat script_args format."""
     result: List[str] = []
@@ -360,7 +456,15 @@ def _build_direct_cli_args_legacy(
             if error:
                 system_error = error
             elif value is not None:
-                result.append(str(value))
+                converted, conversion_error = _convert_legacy_value(
+                    value,
+                    canonicalize_structured=canonicalize_structured,
+                )
+                if conversion_error:
+                    system_error = conversion_error
+                    i += 2
+                    continue
+                result.append(converted)
                 if matched_key:
                     consumed.add(matched_key)
             elif is_optional_placeholder(placeholder):
@@ -385,7 +489,13 @@ def _build_direct_cli_args_legacy(
             continue
         flag = str(key)
         result.append(flag if flag.startswith("--") else "--{}".format(flag.replace("_", "-")))
-        result.append(str(value))
+        converted, conversion_error = _convert_legacy_value(
+            value,
+            canonicalize_structured=canonicalize_structured,
+        )
+        if conversion_error:
+            return [], [], conversion_error
+        result.append(converted)
 
     return result, missing_business, None
 
@@ -499,6 +609,8 @@ def _coerce_multiple_values(value: Any) -> List[Any]:
 def _convert_parameter_value(
     value: Any,
     parameter: Mapping[str, Any],
+    *,
+    canonicalize_structured: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Convert a resolved parameter value to its CLI string representation.
 
@@ -508,7 +620,10 @@ def _convert_parameter_value(
     if param_type == "string" and isinstance(value, (list, tuple, set, dict)):
         serializable = list(value) if isinstance(value, (tuple, set)) else value
         try:
-            return json.dumps(serializable, ensure_ascii=False, separators=(",", ":")), None
+            return _serialize_json_cli_value(
+                serializable,
+                canonicalize=canonicalize_structured,
+            ), None
         except (TypeError, ValueError):
             return None, "expected string or JSON-serializable structured value"
     if param_type in {"array", "list"} or param_type.endswith("[]"):
@@ -522,7 +637,13 @@ def _convert_parameter_value(
             parsed = list(parsed)
         if not isinstance(parsed, list):
             return None, "expected array"
-        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+        try:
+            return _serialize_json_cli_value(
+                parsed,
+                canonicalize=canonicalize_structured,
+            ), None
+        except (TypeError, ValueError):
+            return None, "expected array"
     if param_type in {"object", "dict"}:
         parsed = value
         if isinstance(value, str):
@@ -532,7 +653,13 @@ def _convert_parameter_value(
                 return None, "expected object"
         if not isinstance(parsed, dict):
             return None, "expected object"
-        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+        try:
+            return _serialize_json_cli_value(
+                parsed,
+                canonicalize=canonicalize_structured,
+            ), None
+        except (TypeError, ValueError):
+            return None, "expected object"
     if param_type == "json":
         parsed = value
         if isinstance(value, str):
@@ -541,7 +668,10 @@ def _convert_parameter_value(
             except json.JSONDecodeError:
                 return None, "expected JSON"
         try:
-            return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+            return _serialize_json_cli_value(
+                parsed,
+                canonicalize=canonicalize_structured,
+            ), None
         except (TypeError, ValueError):
             return None, "expected JSON"
     if param_type in ("int", "integer"):
@@ -563,6 +693,26 @@ def _convert_parameter_value(
         if normalized in {"false", "0", "no", "n"}:
             return "false", None
         return None, "expected boolean"
+    return str(value), None
+
+
+def _serialize_json_cli_value(value: Any, *, canonicalize: bool) -> str:
+    if canonicalize:
+        return canonical_json_bytes(value).decode("utf-8")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _convert_legacy_value(
+    value: Any,
+    *,
+    canonicalize_structured: bool,
+) -> Tuple[str, Optional[str]]:
+    if canonicalize_structured and isinstance(value, (list, tuple, set, dict)):
+        serializable = list(value) if isinstance(value, (tuple, set)) else value
+        try:
+            return _serialize_json_cli_value(serializable, canonicalize=True), None
+        except (TypeError, ValueError):
+            return "", "legacy argument is not canonical JSON"
     return str(value), None
 
 

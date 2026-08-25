@@ -34,6 +34,62 @@ def test_acp_stream_does_not_emit_answer_for_token_delta():
     ]
 
 
+def test_acp_failed_event_preserves_deterministic_error_code():
+    event = {
+        "event": "agent.v2",
+        "data": {
+            "type": "turn.finished",
+            "payload": {
+                "status": "error",
+                "error": "Required arguments are missing",
+                "error_code": "missing_arguments",
+            },
+        },
+    }
+
+    mapped = list(_map_orch_event_to_acp_sse(event, "run_1", {}, []))
+
+    assert mapped == [
+        (
+            "run.failed",
+            {
+                "type": "run.failed",
+                "run_id": "run_1",
+                "error": "Required arguments are missing",
+                "error_code": "missing_arguments",
+            },
+        )
+    ]
+
+
+def test_acp_cancelled_event_preserves_terminal_status():
+    event = {
+        "event": "agent.v2",
+        "data": {
+            "type": "turn.finished",
+            "payload": {
+                "status": "cancelled",
+                "error": "Run cancelled",
+                "cancel_reason": "user_request",
+            },
+        },
+    }
+
+    mapped = list(_map_orch_event_to_acp_sse(event, "run_1", {}, []))
+
+    assert mapped == [
+        (
+            "run.cancelled",
+            {
+                "type": "run.cancelled",
+                "run_id": "run_1",
+                "error": "Run cancelled",
+                "cancel_reason": "user_request",
+            },
+        )
+    ]
+
+
 def test_acp_suppressed_execute_script_does_not_emit_started_or_finished_events():
     tool_map = {}
     started = {
@@ -119,7 +175,7 @@ def test_acp_persist_new_pending_run_keeps_store_status_pending(monkeypatch):
             "user_query": "hello",
             "user_context": {},
             "lang": None,
-            "user_id": None,
+            "user_id": "operator_a",
             "messages": [],
             "error": None,
         },
@@ -130,6 +186,29 @@ def test_acp_persist_new_pending_run_keeps_store_status_pending(monkeypatch):
     assert stored.status == StoreRunStatus.PENDING
     assert stored.metadata["source"] == "acp"
     assert stored.metadata["acp_status"] == "pending"
+    assert run_store.get_active_run_count("operator_a") == 0
+
+
+def test_run_store_status_updates_preserve_counts_and_terminal_status():
+    run_store = RunStore()
+    run_store.create_run(
+        run_id="run_1",
+        user_request="hello",
+        metadata={"user_id": "operator_a"},
+    )
+    assert run_store.get_active_run_count("operator_a") == 1
+
+    run_store.update_status("run_1", StoreRunStatus.AWAITING)
+    assert run_store.get_active_run_count("operator_a") == 0
+
+    run_store.update_status("run_1", StoreRunStatus.RUNNING)
+    assert run_store.get_active_run_count("operator_a") == 1
+
+    run_store.cancel_run("run_1")
+    run_store.update_status("run_1", StoreRunStatus.COMPLETED)
+
+    assert run_store.get_active_run_count("operator_a") == 0
+    assert run_store.get_run("run_1").status == StoreRunStatus.CANCELLED
 
 
 def test_run_store_preserves_existing_acp_metadata_when_orchestrator_reuses_run_id():

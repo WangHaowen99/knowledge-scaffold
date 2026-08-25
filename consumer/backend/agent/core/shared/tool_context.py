@@ -10,7 +10,7 @@ from agent.tools.base import ToolContext
 from .interaction_policy import user_interaction_supported_from_context
 from .modes import resolve_agent_mode
 from .ontology_context import (
-    selected_ontology_id_from_state,
+    active_ontology_id_from_state,
     selected_ontology_version_from_state,
 )
 
@@ -51,7 +51,7 @@ def build_tool_context(
         subagent_lineage=subagent_lineage,
         protocol_event_observer=protocol_event_observer,
         read_documents=state.get("read_documents"),
-        selected_ontology_id=selected_ontology_id_from_state(state),
+        selected_ontology_id=active_ontology_id_from_state(state),
         selected_ontology_version=selected_ontology_version_from_state(state),
         model_profile_id=str(user_context.get("model_profile_id") or "").strip() or None,
         observer=observer or NOOP_OBSERVER,

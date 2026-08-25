@@ -1622,6 +1622,97 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
     assert len(called) == 1
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "Error: Script exited with code 1. [SCRIPT_RUNTIME_ERROR] Python KeyError.",
+        "Error: Script execution cancelled.",
+        "Error: Sandbox unavailable.",
+        (
+            "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] "
+            "Required business data connection is unavailable."
+        ),
+        "Error: deterministic_operation_protected",
+    ),
+)
+def test_execute_script_runtime_and_nonrecoverable_failures_are_terminal(
+    monkeypatch,
+    content,
+):
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: content,
+    )
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {},
+        },
+        context=_make_context(),
+        tool_call_id="call-runtime-failure",
+    )
+
+    assert outcome.terminal is True
+    assert outcome.state_updates["terminal_error"] == {
+        "error_code": "EXECUTE_SCRIPT_FAILED",
+        "message": (
+            "The deterministic operation failed, so no calculated conclusion was produced."
+        ),
+        "tool_name": "execute_script",
+    }
+
+
+def test_execute_script_operation_selection_failure_remains_correctable(monkeypatch):
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: (
+            "Error: Operation 'leaf' in ontology 'demo' has no registered "
+            "script implementation or is not a bound operation."
+        ),
+    )
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "leaf",
+            "arguments": {},
+        },
+        context=_make_context(),
+        tool_call_id="call-selection-failure",
+    )
+
+    assert outcome.terminal is False
+    assert outcome.state_updates == {}
+    assert "has no registered script implementation" in outcome.content
+
+
+def test_execute_script_argument_consistency_failure_remains_correctable(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "unexpected",
+    )
+    context = _make_context(
+        messages=[{"role": "user", "content": "Use unit-01 for this run."}]
+    )
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {"payload": {"unit_no": "unit-02"}},
+        },
+        context=context,
+        tool_call_id="call-identity-drift",
+    )
+
+    assert outcome.terminal is False
+    assert "argument consistency check failed" in outcome.content
+    assert called == []
+
+
 def test_execute_script_still_rejects_mixed_user_rows_with_business_query_evidence(monkeypatch):
     called = []
     monkeypatch.setattr(
@@ -2346,6 +2437,58 @@ def test_memory_tool_routes_user_memory_to_memory_manager():
     ]
     router_payload = json.loads(llm.calls[0]["messages"][1]["content"])
     assert router_payload == {"content": "用户偏好：默认使用中文回答。"}
+
+
+def test_memory_tool_rejects_model_initiated_capture_without_explicit_user_request():
+    memory_manager = _FakeMemoryManager()
+
+    result = execute_tool_batch(
+        [_build_tool_call("memory", {"content": "Store this generated execution plan."})],
+        _make_context(
+            memory_manager=memory_manager,
+            messages=[{"role": "user", "content": "Calculate the current plan."}],
+        ),
+    )
+
+    payload = json.loads(result.messages[0]["content"])
+    assert payload == {
+        "stored": False,
+        "status": "rejected",
+        "error": "explicit_current_user_memory_request_required",
+    }
+    assert memory_manager.stored == []
+
+
+def test_memory_tool_accepts_explicit_current_user_request():
+    memory_manager = _FakeMemoryManager()
+    llm = _FakeRouterLLM(
+        [
+            {"destination": "ordinary_memory", "reason": "durable preference"},
+            {
+                "content": "Use concise answers in future sessions.",
+                "memory_type": "preference",
+                "reason": "durable preference",
+            },
+        ]
+    )
+
+    result = execute_tool_batch(
+        [_build_tool_call("memory", {"content": "Use concise answers in future sessions."})],
+        _make_context(
+            llm=llm,
+            memory_manager=memory_manager,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Remember that I want concise answers in future sessions.",
+                }
+            ],
+        ),
+    )
+
+    assert json.loads(result.messages[0]["content"])["queued"] is True
+    wait_for_memory_tasks(timeout=5)
+    assert memory_manager.stored
 
 
 def test_memory_tool_replaces_conflicting_ordinary_preference(tmp_path):

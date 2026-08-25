@@ -22,6 +22,12 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r re
 # Copy application code
 COPY . .
 
+# Bind authoritative results/checkpoints to the exact shipped source,
+# installed Python distributions and interpreter runtime.
+RUN python agent/direct_execution/build_revision.py \
+    --root /app \
+    --output /app/.app-runtime-revision
+
 # .onto-runtime directory is volume-mounted at runtime; no local data/logs dirs needed
 
 # Expose Flask and standalone MCP ports

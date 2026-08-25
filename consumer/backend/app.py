@@ -16,6 +16,8 @@ from llm import LLMRouter, configure_llm_router
 from workspace.user_store_manager import UserStoreManager
 from persistence.chat_store import ToolOutputLimits
 from server_config import MAX_CONTENT_LENGTH
+from ontology.directory_replacement import recover_workspace_ontology_replacements
+from workspace.workspaces import get_workspaces_root
 
 
 def build_runtime_services(previous_llm_router=None):
@@ -75,6 +77,7 @@ def refresh_platform_connector() -> None:
 def create_app() -> Flask:
     """Create and configure the Flask app."""
     run_startup_migrations()
+    recover_workspace_ontology_replacements(get_workspaces_root())
 
     app = Flask(__name__)
     initialize_open_telemetry(app)

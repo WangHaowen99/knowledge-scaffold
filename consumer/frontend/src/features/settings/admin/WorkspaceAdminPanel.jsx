@@ -205,7 +205,7 @@ export default function WorkspaceAdminPanel({
     if (!result) return;
     setDialog(null);
     setDraft({ ...EMPTY_DRAFT });
-    const refreshed = await loadWorkspaces({ quiet: true });
+    await loadWorkspaces({ quiet: true });
     if (isCreate) {
       const newId = result.payload?.id || id;
       await onWorkspaceChange?.(newId);

@@ -1,6 +1,8 @@
 from pathlib import Path
 import threading
 
+import pytest
+
 from api.protocols.mcp.chat_adapter import execute_chat_tool
 from api.protocols.mcp.workflow_bridge import execute_mcp_chat_workflow
 from integration.mcp.config import MCPRuntimeConfig
@@ -34,13 +36,18 @@ class _PermitAllLimiter:
 
 
 class _FakeOrchestrator:
-    def __init__(self, *, terminal_status="success"):
+    def __init__(self, *, terminal_status="success", deterministic_applicable=False):
         self.slot_manager = RunSlotManager()
         self.run_admission_queue = RunAdmissionQueue(self.slot_manager)
         self.run_rate_limiter = _PermitAllLimiter()
         self.run_store = RunStore()
         self.terminal_status = terminal_status
+        self.deterministic_applicable = deterministic_applicable
         self.last_run_kwargs = None
+
+    def is_deterministic_request_potentially_applicable(self, **kwargs):
+        del kwargs
+        return self.deterministic_applicable
 
     def run(self, **kwargs):
         self.last_run_kwargs = dict(kwargs)
@@ -177,7 +184,75 @@ class _StructuredSuccessOrchestrator(_FakeOrchestrator):
         }
 
 
-def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp_path):
+class _DeterministicFailureOrchestrator(_FakeOrchestrator):
+    def run(self, **kwargs):
+        self.last_run_kwargs = dict(kwargs)
+        run_id = kwargs["requested_run_id"]
+        yield {
+            "protocol": "agent-stream.v2",
+            "type": "turn.finished",
+            "run_id": run_id,
+            "session_id": kwargs["session_id"],
+            "turn_id": 1,
+            "seq": 1,
+            "payload": {
+                "status": "error",
+                "error": "Required deterministic arguments are missing.",
+                "error_code": "missing_arguments",
+                "final_output": {
+                    "status": "failed",
+                    "text": "Required deterministic arguments are missing.",
+                    "error": {
+                        "code": "missing_arguments",
+                        "message": "Required deterministic arguments are missing.",
+                        "retryable": False,
+                    },
+                },
+            },
+        }
+
+
+def test_mcp_preserves_deterministic_workflow_error_code(tmp_path):
+    scope = MCPRequestScope(
+        username="operator_a",
+        workspace_id="workspace-a",
+        scopes=["mcp:chat"],
+        token="token",
+        traceparent="",
+    )
+
+    body, status = execute_mcp_chat_workflow(
+        orchestrator=_DeterministicFailureOrchestrator(deterministic_applicable=True),
+        scope=scope,
+        payload={
+            "request": "query_score",
+            "session_id": "session-det-failure",
+            "requested_operation_key": "query_score",
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+        trace_config=_config(tmp_path / "tokens.json"),
+    )
+
+    assert status == 500
+    assert body["error"]["error_code"] == "missing_arguments"
+    assert body["error"]["retriable"] is False
+    assert body["result"]["final_output"] == {
+        "status": "failed",
+        "text": "Required deterministic arguments are missing.",
+        "error": {
+            "code": "missing_arguments",
+            "message": "Required deterministic arguments are missing.",
+            "retryable": False,
+        },
+    }
+
+
+def test_chat_adapter_forwards_token_and_explicit_operation_to_backend_bridge(
+    monkeypatch,
+    tmp_path,
+):
     captured = {}
 
     class _Response:
@@ -201,7 +276,12 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
     )
 
     result = execute_chat_tool(
-        {"query": "分析问题", "session_id": "session-1", "include_trace": True},
+        {
+            "query": "分析问题",
+            "session_id": "session-1",
+            "requested_operation_key": " query_exact ",
+            "include_trace": True,
+        },
         scope=scope,
         config=_config(tmp_path / "tokens.json"),
     )
@@ -212,6 +292,7 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
     assert captured["headers"]["X-Workspace-Id"] == "workspace-a"
     assert captured["headers"]["traceparent"] == scope.traceparent
     assert captured["json"]["session_id"] == "session-1"
+    assert captured["json"]["requested_operation_key"] == "query_exact"
     assert captured["json"]["include_trace"] is True
 
 
@@ -230,7 +311,10 @@ def test_chat_adapter_injects_bound_ontology(monkeypatch, tmp_path):
         lambda _url, **kwargs: captured.update(kwargs) or _Response(),
     )
     result = execute_chat_tool(
-        {"query": "合成示例问题"},
+        {
+            "query": "合成示例问题",
+            "requested_operation_key": "query_exact",
+        },
         scope=MCPRequestScope(
             username="operator_a",
             workspace_id="workspace_demo",
@@ -243,6 +327,7 @@ def test_chat_adapter_injects_bound_ontology(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert captured["json"]["arguments"]["selected_ontology_id"] == "knowledge_package_demo"
+    assert captured["json"]["requested_operation_key"] == "query_exact"
 
 
 def test_chat_adapter_rejects_conflicting_bound_ontology(monkeypatch, tmp_path):
@@ -303,7 +388,7 @@ def test_workflow_bridge_rebinds_and_revalidates_token_ontology(monkeypatch):
     assert status_code == 200
     assert body["ok"] is True
     assert captured["ontology_id"] == "knowledge_package_demo"
-    assert orchestrator.last_run_kwargs["arguments"]["selected_ontology_id"] == "knowledge_package_demo"
+    assert orchestrator.last_run_kwargs["arguments"] is None
     assert orchestrator.last_run_kwargs["user_context"]["selected_ontology_id"] == "knowledge_package_demo"
 
 
@@ -358,6 +443,7 @@ def test_workflow_bridge_syncs_legacy_argument_ontology_to_context(monkeypatch):
 
     assert status_code == 200
     assert body["ok"] is True
+    assert orchestrator.last_run_kwargs["arguments"] is None
     assert orchestrator.last_run_kwargs["user_context"]["selected_ontology_id"] == "knowledge_package_demo"
 
 
@@ -415,6 +501,144 @@ def test_workflow_bridge_times_out_in_queue_without_bypassing_admission(monkeypa
     assert orchestrator.run_admission_queue.position(run_id) is None
     assert orchestrator.run_store.get_run(run_id).status == RunStatus.CANCELLED
     orchestrator.run_admission_queue.release("alice")
+
+
+def test_workflow_bridge_forwards_explicit_deterministic_operation_without_llm_validation(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: pytest.fail("deterministic request must not validate LLM"),
+    )
+    orchestrator = _FakeOrchestrator(deterministic_applicable=True)
+    scope = MCPRequestScope(
+        "operator_a",
+        "workspace-a",
+        ["mcp:chat"],
+        token="mcp_token",
+    )
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=orchestrator,
+        scope=scope,
+        payload={
+            "request": "Query Exact",
+            "session_id": "session-deterministic",
+            "requested_operation_key": "query",
+            "arguments": {"code": "A"},
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert orchestrator.last_run_kwargs["user_context"]["requested_operation_key"] == "query"
+    assert orchestrator.last_run_kwargs["arguments"] == {"code": "A"}
+    assert orchestrator.last_run_kwargs["deterministic_preflight_result"] is True
+
+
+def test_workflow_bridge_preflights_bound_ontology_for_deterministic_operation(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.validate_runtime_ontology_availability",
+        lambda **_kwargs: "1.0.0",
+    )
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: pytest.fail("deterministic request must not validate LLM"),
+    )
+    orchestrator = _FakeOrchestrator(deterministic_applicable=True)
+    captured_preflight = {}
+
+    def capture_preflight(**kwargs):
+        captured_preflight.update(kwargs)
+        return True
+
+    orchestrator.is_deterministic_request_potentially_applicable = capture_preflight
+    scope = MCPRequestScope(
+        "operator_a",
+        "workspace_demo",
+        ["mcp:chat"],
+        token="mcp_token",
+        ontology_id="knowledge_package_demo",
+    )
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=orchestrator,
+        scope=scope,
+        payload={
+            "request": "Query Exact",
+            "session_id": "session-bound-deterministic",
+            "requested_operation_key": "query",
+            "arguments": {"code": "A"},
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    expected_arguments = {"code": "A"}
+    assert status_code == 200
+    assert body["ok"] is True
+    assert captured_preflight["arguments"] == expected_arguments
+    assert captured_preflight["user_context"]["requested_operation_key"] == "query"
+    assert captured_preflight["user_context"]["selected_ontology_id"] == "knowledge_package_demo"
+    assert orchestrator.last_run_kwargs["arguments"] == expected_arguments
+    assert orchestrator.last_run_kwargs["deterministic_preflight_result"] is True
+
+
+def test_workflow_bridge_accepts_context_deterministic_key_without_llm_validation(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: pytest.fail("context key must not validate LLM"),
+    )
+    orchestrator = _FakeOrchestrator(deterministic_applicable=True)
+    scope = MCPRequestScope("operator_a", "workspace-a", ["mcp:chat"], token="mcp_token")
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=orchestrator,
+        scope=scope,
+        payload={
+            "request": "Query Exact",
+            "session_id": "session-context-deterministic",
+            "context": {"requested_operation_key": "query"},
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert orchestrator.last_run_kwargs["user_context"]["requested_operation_key"] == "query"
+    assert orchestrator.last_run_kwargs["deterministic_preflight_result"] is True
+
+
+def test_workflow_bridge_rejects_non_object_arguments(monkeypatch):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    orchestrator = _FakeOrchestrator()
+    scope = MCPRequestScope("operator_a", "workspace-a", ["mcp:chat"], token="mcp_token")
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=orchestrator,
+        scope=scope,
+        payload={"request": "query", "arguments": ["bad"]},
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 400
+    assert body["error"]["error_code"] == "INVALID_TOOL_ARGUMENTS"
+    assert orchestrator.last_run_kwargs is None
 
 
 def test_workflow_bridge_preserves_awaiting_input_and_run_owner(monkeypatch):
@@ -507,6 +731,7 @@ def test_workflow_bridge_adds_trace_without_changing_result(monkeypatch, tmp_pat
     assert body["ok"] is True
     assert body["result"] == {
         "content": "完成",
+        "final_output": "完成",
         "session_id": "session-trace-on",
         "run_id": body["result"]["run_id"],
         "status": "success",
@@ -552,6 +777,10 @@ def test_workflow_bridge_coerces_structured_success_output_to_text(monkeypatch):
     assert status_code == 200
     assert body["ok"] is True
     assert body["result"]["content"] == "Structured final answer"
+    assert body["result"]["final_output"] == {
+        "type": "report",
+        "text": "Structured final answer",
+    }
 
 
 def test_workflow_bridge_adds_trace_to_awaiting_input_and_failure(monkeypatch, tmp_path):

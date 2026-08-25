@@ -37,6 +37,7 @@ from agent.evolution import (
     staged_paths_for,
 )
 from api.auth.auth import get_current_user, require_auth
+from ontology.mutation_lock import ontology_mutation_lock
 from utils.logging import get_logger
 from workspace.workspaces import resolve_workspace_id
 
@@ -411,53 +412,79 @@ def _archive_original(op_path: Path) -> Path:
     return target
 
 
+def _ontology_root_for_operation(op_path: Path) -> Path:
+    version_dir = Path(op_path).parent.parent
+    if version_dir.parent.name == "versions":
+        return version_dir.parent.parent
+    return version_dir
+
+
 @operations_bp.route("/<ontology_id>/<operation_key>/staged/apply", methods=["POST"])
 @require_auth(roles=["admin"])
 def apply_staged(ontology_id: str, operation_key: str):
     """Promote staged → live `.md`. Admin only. Archives previous `.md` and
     transitions the merged proposals to status=applied."""
     workspace_id = _request_workspace_id()
-    paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
-    if paths is None:
+    initial_op_path = resolve_operation_md(
+        ontology_id,
+        operation_key,
+        workspace_id=workspace_id,
+    )
+    if initial_op_path is None:
         return jsonify({"error": "Operation .md not found"}), 404
-    staged_path, meta_path = paths
-    if not staged_path.exists():
-        return jsonify({"error": "No staged patch"}), 404
-    op_path = resolve_operation_md(ontology_id, operation_key, workspace_id=workspace_id)
-    if op_path is None:
-        return jsonify({"error": "Operation .md missing"}), 404
+    ontology_dir = _ontology_root_for_operation(initial_op_path)
+    with ontology_mutation_lock(ontology_dir):
+        paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
+        if paths is None:
+            return jsonify({"error": "Operation .md not found"}), 404
+        staged_path, meta_path = paths
+        if not staged_path.exists():
+            return jsonify({"error": "No staged patch"}), 404
+        op_path = resolve_operation_md(ontology_id, operation_key, workspace_id=workspace_id)
+        if op_path is None:
+            return jsonify({"error": "Operation .md missing"}), 404
+        from ontology.operation_execution import is_deterministic_package_locked
 
-    meta = _read_meta(meta_path)
-    fingerprints: List[str] = list(meta.get("fingerprints") or [])
-    expected_sha = str(meta.get("original_sha") or "").strip()
-
-    archived_to: Optional[Path] = None
-    try:
-        current_content = op_path.read_text(encoding="utf-8")
-        if expected_sha and _sha256_text(current_content) != expected_sha:
+        ontology_version_dir = op_path.parent.parent
+        if is_deterministic_package_locked(ontology_version_dir):
             return jsonify({
-                "error": "Operation .md changed since staged patch was created",
-                "expected_original_sha": expected_sha,
-                "current_sha": _sha256_text(current_content),
+                "error": "deterministic_operation_immutable",
+                "error_code": "deterministic_operation_immutable",
+                "message": "确定性 Operation 必须通过新 ontology version 发布",
             }), 409
-        new_content = staged_path.read_text(encoding="utf-8")
-        max_chars = LimitsConfig.from_env().operation_max_chars
-        if len(new_content) > max_chars:
-            return jsonify({
-                "error": "单个逻辑长度超过上限: {} / {} 字符".format(len(new_content), max_chars)
-            }), 400
-        archived_to = _archive_original(op_path)
-        op_path.write_text(new_content, encoding="utf-8")
-    except Exception as exc:
-        logger.exception("apply_staged failed for %s/%s", ontology_id, operation_key)
-        return jsonify({"error": "Apply failed: {}".format(exc)}), 500
 
-    # Drop staged + meta only after successful write.
-    try:
-        staged_path.unlink(missing_ok=True)
-        meta_path.unlink(missing_ok=True)
-    except Exception:
-        logger.warning("apply_staged: failed to clean staged files", exc_info=True)
+        meta = _read_meta(meta_path)
+        fingerprints: List[str] = list(meta.get("fingerprints") or [])
+        expected_sha = str(meta.get("original_sha") or "").strip()
+
+        archived_to: Optional[Path] = None
+        try:
+            current_content = op_path.read_text(encoding="utf-8")
+            if expected_sha and _sha256_text(current_content) != expected_sha:
+                return jsonify({
+                    "error": "Operation .md changed since staged patch was created",
+                    "expected_original_sha": expected_sha,
+                    "current_sha": _sha256_text(current_content),
+                }), 409
+            new_content = staged_path.read_text(encoding="utf-8")
+            max_chars = LimitsConfig.from_env().operation_max_chars
+            if len(new_content) > max_chars:
+                return jsonify({
+                    "error": "单个逻辑长度超过上限: {} / {} 字符".format(len(new_content), max_chars)
+                }), 400
+            archived_to = _archive_original(op_path)
+            op_path.write_text(new_content, encoding="utf-8")
+        except Exception as exc:
+            logger.exception("apply_staged failed for %s/%s", ontology_id, operation_key)
+            return jsonify({"error": "Apply failed: {}".format(exc)}), 500
+
+        # Staged files live inside the ontology version, so cleanup belongs to
+        # the same mutation transaction as the live write.
+        try:
+            staged_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("apply_staged: failed to clean staged files", exc_info=True)
 
     # Transition proposals to applied + archive.
     if fingerprints:
@@ -490,24 +517,32 @@ def reject_staged(ontology_id: str, operation_key: str):
     - false → revert to pending so the buffer can keep accumulating evidence.
     """
     workspace_id = _request_workspace_id()
-    paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
-    if paths is None:
-        return jsonify({"error": "Operation .md not found"}), 404
-    staged_path, meta_path = paths
-    if not staged_path.exists():
-        return jsonify({"error": "No staged patch"}), 404
-
     body = request.get_json(silent=True) or {}
     reject_proposals = bool(body.get("reject_proposals", True))
+    initial_op_path = resolve_operation_md(
+        ontology_id,
+        operation_key,
+        workspace_id=workspace_id,
+    )
+    if initial_op_path is None:
+        return jsonify({"error": "Operation .md not found"}), 404
+    ontology_dir = _ontology_root_for_operation(initial_op_path)
+    with ontology_mutation_lock(ontology_dir):
+        paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
+        if paths is None:
+            return jsonify({"error": "Operation .md not found"}), 404
+        staged_path, meta_path = paths
+        if not staged_path.exists():
+            return jsonify({"error": "No staged patch"}), 404
 
-    meta = _read_meta(meta_path)
-    fingerprints: List[str] = list(meta.get("fingerprints") or [])
+        meta = _read_meta(meta_path)
+        fingerprints: List[str] = list(meta.get("fingerprints") or [])
 
-    try:
-        staged_path.unlink(missing_ok=True)
-        meta_path.unlink(missing_ok=True)
-    except Exception:
-        logger.warning("reject_staged: failed to clean staged files", exc_info=True)
+        try:
+            staged_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("reject_staged: failed to clean staged files", exc_info=True)
 
     buf = get_proposal_buffer()
     if fingerprints:

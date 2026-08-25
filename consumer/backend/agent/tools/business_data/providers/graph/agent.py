@@ -480,7 +480,7 @@ def _path_intent_missing_pattern(
         return False
     if _explicit_field_request_satisfied(context=context, executions=executions):
         return False
-    return _query_requires_associated_object_detail(context)
+    return True
 
 
 def _path_missing_pattern_warnings(
@@ -522,7 +522,6 @@ def _explicit_field_request_satisfied(
         records = list(result.records or [])
         if records:
             has_records = True
-        returned_properties.update(_returned_properties_from_tool_args(execution.tool_args))
         returned_properties.update(_returned_properties_from_records(records))
     return has_records and requested_properties.issubset(returned_properties)
 
@@ -541,17 +540,6 @@ def _requested_properties_from_query(context: GraphSearchRuntimeContext) -> set[
         if (business_key and business_key in query) or physical_key in query:
             requested.add(physical_key)
     return requested
-
-
-def _returned_properties_from_tool_args(tool_args: Mapping[str, Any]) -> set[str]:
-    returned: set[str] = set()
-    raw_queries = tool_args.get("queries")
-    if isinstance(raw_queries, list):
-        for item in raw_queries:
-            if isinstance(item, Mapping):
-                returned.update(str(prop).strip() for prop in (item.get("return_properties") or []) if str(prop).strip())
-    returned.update(str(prop).strip() for prop in (tool_args.get("return_properties") or []) if str(prop).strip())
-    return returned
 
 
 def _returned_properties_from_records(records: list[dict[str, Any]]) -> set[str]:
@@ -578,29 +566,6 @@ def _returned_properties_from_nested_record(value: Any) -> set[str]:
         for item in value:
             returned.update(_returned_properties_from_nested_record(item))
     return returned
-
-
-def _query_requires_associated_object_detail(context: GraphSearchRuntimeContext) -> bool:
-    query = str(context.query or "")
-    entity = str(context.entity or "")
-    text = "{} {}".format(query, entity)
-    relation_cues = ("对应", "关联", "连接", "映射", "追溯", "展开", "上下游", "上游", "下游")
-    object_detail_cues = (
-        "对象",
-        "实体",
-        "节点",
-        "物料",
-        "零件",
-        "版本",
-        "父项",
-        "子项",
-        "供应商",
-    )
-    if any(cue in text for cue in relation_cues) and any(cue in text for cue in object_detail_cues):
-        return True
-    if "编码" in query and any(cue in text for cue in relation_cues):
-        return True
-    return False
 
 
 def _graph_tool_schemas_for_context(context: GraphSearchRuntimeContext) -> list[dict[str, Any]]:

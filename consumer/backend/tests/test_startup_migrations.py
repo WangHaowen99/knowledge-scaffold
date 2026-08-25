@@ -233,6 +233,12 @@ def test_create_app_runs_critical_startup_migrations_before_other_startup_work(m
         }
 
     monkeypatch.setattr(app_module, "run_startup_migrations", lambda: order.append("startup"))
+    monkeypatch.setattr(
+        app_module,
+        "recover_workspace_ontology_replacements",
+        lambda _root: order.append("recover"),
+    )
+    monkeypatch.setattr(app_module, "get_workspaces_root", lambda: object())
     monkeypatch.setattr(app_module, "build_runtime_services", fake_runtime)
     monkeypatch.setattr(app_module, "register_routes", lambda *args, **kwargs: order.append("routes"))
     monkeypatch.setattr(app_module, "start_runtime_warmup", lambda **kwargs: order.append("warmup"))
@@ -244,7 +250,7 @@ def test_create_app_runs_critical_startup_migrations_before_other_startup_work(m
 
     app_module.create_app()
 
-    assert order == ["startup", "build", "routes", "warmup", "platform"]
+    assert order == ["startup", "recover", "build", "routes", "warmup", "platform"]
 
 
 def test_create_app_does_not_build_runtime_when_critical_migration_fails(monkeypatch):

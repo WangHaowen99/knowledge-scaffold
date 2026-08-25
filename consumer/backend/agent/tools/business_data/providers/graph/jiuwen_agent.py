@@ -308,7 +308,8 @@ class JiuwenGraphQueryAgent:
                 )
             adapter.raise_last_backend_error()
             if _is_error_result(raw_result):
-                raise GraphAgentError(_extract_output(raw_result) or "Jiuwen graph agent returned an error.")
+                error_output = _extract_output(raw_result)
+                raise GraphAgentError(error_output or "Jiuwen graph agent returned an error.")
             return _extract_output(raw_result)
         except (GraphAgentError, GraphBackendError, WorkflowCancelledError):
             raise

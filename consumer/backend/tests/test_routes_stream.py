@@ -5,7 +5,7 @@ from flask import Flask
 import pytest
 
 from config.workspace_llm_profiles import update_workspace_llm_profiles
-from api.routes.workflows import _encode_agent_sse, workflows_bp
+from api.routes.workflows import _encode_agent_sse, get_run_registry, workflows_bp
 from api.auth.auth import AuthManager
 from persistence.run_queue import RunAdmissionQueue, RunSlotManager
 from persistence.run_store import RunStatus, RunStore
@@ -214,6 +214,47 @@ def test_agent_sse_replaces_non_finite_numbers_with_json_null():
     assert "Infinity" not in encoded
 
 
+def test_cancel_endpoint_reports_conflict_for_awaiting_run(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+
+    class _FakeOrchestrator:
+        run_store = RunStore()
+        slot_manager = RunSlotManager()
+
+        def cancel_run(self, run_id, reason=None):
+            del reason
+            run = self.run_store.cancel_run(run_id)
+            return run is not None and run.status == RunStatus.CANCELLED
+
+    orchestrator = _FakeOrchestrator()
+    orchestrator.run_store.create_run(
+        "run-awaiting",
+        "hello",
+        metadata={"user_id": "admin", "workspace_id": "demo"},
+    )
+    orchestrator.run_store.await_run(
+        "run-awaiting",
+        {"status": "awaiting_input"},
+    )
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: orchestrator)
+
+    response = client.post(
+        "/agentic/runs/run-awaiting/cancel",
+        headers={**headers, "X-Workspace-Id": "demo"},
+        json={"reason": "user_stop"},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "success": False,
+        "cancelled": False,
+        "was_queued": False,
+        "status": "awaiting",
+        "error": "Run is not cancellable in its current state",
+    }
+    assert orchestrator.run_store.get_run("run-awaiting").status == RunStatus.AWAITING
+
+
 def test_queued_run_returns_json_until_slot_is_admitted(monkeypatch, tmp_path):
     client, headers = _build_test_client(tmp_path)
 
@@ -262,6 +303,54 @@ def test_queued_run_returns_json_until_slot_is_admitted(monkeypatch, tmp_path):
     events_response = client.get("/agentic/runs/queued-run-123/events", headers=headers)
     assert events_response.status_code == 409
     assert events_response.content_type.startswith("application/json")
+
+
+def test_queued_run_rechecks_negative_preflight_when_admitted(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+    captured = {}
+
+    class _FakeOrchestrator:
+        def __init__(self):
+            self.run_store = RunStore()
+            self.slot_manager = RunSlotManager()
+            self.run_admission_queue = RunAdmissionQueue(self.slot_manager)
+            for _index in range(100):
+                assert self.slot_manager.acquire("admin", 100, timeout=0) is True
+
+        @staticmethod
+        def is_deterministic_request_potentially_applicable(**_kwargs):
+            return False
+
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            yield {
+                "event": "agent.v2",
+                "data": {
+                    "run_id": "queued-negative-preflight",
+                    "type": "turn.finished",
+                    "payload": {"status": "success", "final_output": "ok"},
+                },
+            }
+
+    orchestrator = _FakeOrchestrator()
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: orchestrator)
+
+    response = client.post(
+        "/agentic/runs/stream",
+        json={
+            "request": "hello",
+            "session_id": "queued-negative-preflight",
+            "run_id": "queued-negative-preflight",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 202
+    orchestrator.run_admission_queue.release("admin")
+    handle = get_run_registry().get("queued-negative-preflight")
+    assert handle is not None
+    assert handle.done.wait(timeout=5)
+    assert captured["deterministic_preflight_result"] is None
 
 
 def test_token_bucket_allows_burst_then_refills_by_rate():
@@ -386,6 +475,170 @@ def test_run_sync_returns_final_answer(monkeypatch, tmp_path):
         "run_id": "run-sync-1",
     }
     assert captured["user_context"]["supports_user_interaction"] is False
+
+
+def test_run_sync_preserves_deterministic_error_code(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        def run(self, **kwargs):
+            assert kwargs["user_context"]["requested_operation_key"] == "query_score"
+            assert kwargs["arguments"] == {"value": "bad"}
+            yield {
+                "event": "agent.v2",
+                "data": {
+                    "run_id": "run-sync-error",
+                    "type": "turn.finished",
+                    "payload": {
+                        "status": "error",
+                        "error": "Operation arguments do not satisfy the input schema.",
+                        "error_code": "input_schema_violation",
+                        "final_output": {
+                            "status": "failed",
+                            "text": "Operation arguments do not satisfy the input schema.",
+                        },
+                    },
+                },
+            }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+
+    response = client.post(
+        "/agentic/runs/sync",
+        json={
+            "request": "query_score",
+            "session_id": "sync-session",
+            "requested_operation_key": "query_score",
+            "arguments": {"value": "bad"},
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "error"
+    assert response.get_json()["error_code"] == "input_schema_violation"
+
+
+def test_run_sync_accepts_deterministic_context_operation_key_without_llm_validation(
+    monkeypatch,
+    tmp_path,
+):
+    client, headers = _build_test_client(tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        "api.routes.workflows.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: pytest.fail(
+            "context deterministic key must bypass LLM validation"
+        ),
+    )
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        @staticmethod
+        def is_deterministic_request_potentially_applicable(**kwargs):
+            assert kwargs["user_context"]["requested_operation_key"] == "query"
+            return True
+
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            yield {
+                "event": "agent.v2",
+                "data": {
+                    "run_id": "run-context-key",
+                    "type": "turn.finished",
+                    "payload": {"status": "success", "final_output": "ok"},
+                },
+            }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+    response = client.post(
+        "/agentic/runs/sync",
+        json={
+            "request": "query",
+            "session_id": "sync-context-key",
+            "context": {"requested_operation_key": "query"},
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert captured["user_context"]["requested_operation_key"] == "query"
+    assert captured["deterministic_preflight_result"] is True
+
+
+def test_run_sync_does_not_forward_negative_deterministic_preflight(
+    monkeypatch,
+    tmp_path,
+):
+    client, headers = _build_test_client(tmp_path)
+    captured = {}
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        @staticmethod
+        def is_deterministic_request_potentially_applicable(**_kwargs):
+            return False
+
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            yield {
+                "event": "agent.v2",
+                "data": {
+                    "run_id": "run-negative-preflight",
+                    "type": "turn.finished",
+                    "payload": {"status": "success", "final_output": "ok"},
+                },
+            }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+
+    response = client.post(
+        "/agentic/runs/sync",
+        json={"request": "query", "session_id": "sync-negative-preflight"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert captured["deterministic_preflight_result"] is None
+
+
+@pytest.mark.parametrize("endpoint", ["/agentic/runs/stream", "/agentic/runs/sync"])
+def test_run_endpoints_reject_non_object_arguments(tmp_path, endpoint):
+    client, headers = _build_test_client(tmp_path)
+
+    response = client.post(
+        endpoint,
+        json={"request": "query", "session_id": "invalid-arguments", "arguments": ["x"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "arguments must be an object"}
 
 
 def test_run_sync_coerces_structured_final_output_to_text(monkeypatch, tmp_path):

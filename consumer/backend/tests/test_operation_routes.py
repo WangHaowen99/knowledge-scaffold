@@ -122,6 +122,73 @@ def test_apply_staged_rejects_operation_over_char_limit(monkeypatch, tmp_path):
     assert op_path.read_text(encoding="utf-8") == original
 
 
+def test_apply_staged_rejects_in_place_deterministic_operation(monkeypatch, tmp_path):
+    reset_operation_patcher()
+    reset_proposal_buffer()
+    client, headers = _build_test_client(tmp_path)
+    original = (
+        "---\n"
+        "resource: operation\n"
+        "key: OP_A\n"
+        "execution:\n"
+        "  type: deterministic\n"
+        "  input_schema: schemas/input.json\n"
+        "  output_schema: schemas/output.json\n"
+        "---\n\n# OP_A\n"
+    )
+    op_path = _create_workspace_with_operation(
+        tmp_path,
+        monkeypatch,
+        workspace_id="demo",
+        operation_content=original,
+    )
+    (op_path.parent.parent / ".deterministic-lock.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    _write_staged(op_path, original_content=original, staged_content=original + "staged")
+
+    response = client.post(
+        "/agentic/operations/example/OP_A/staged/apply",
+        headers=_headers_for_workspace(headers, "demo"),
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "deterministic_operation_immutable"
+    assert response.get_json()["error_code"] == "deterministic_operation_immutable"
+    assert op_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_staged_rejects_legacy_operation_in_mixed_locked_version(
+    monkeypatch,
+    tmp_path,
+):
+    reset_operation_patcher()
+    reset_proposal_buffer()
+    client, headers = _build_test_client(tmp_path)
+    original = "# OP_A\n\n旧 Operation，与确定性 Operation 同版本"
+    op_path = _create_workspace_with_operation(
+        tmp_path,
+        monkeypatch,
+        workspace_id="demo",
+        operation_content=original,
+    )
+    (op_path.parent.parent / ".deterministic-lock.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    _write_staged(op_path, original_content=original, staged_content=original + "\nstaged")
+
+    response = client.post(
+        "/agentic/operations/example/OP_A/staged/apply",
+        headers=_headers_for_workspace(headers, "demo"),
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error_code"] == "deterministic_operation_immutable"
+    assert op_path.read_text(encoding="utf-8") == original
+
+
 def test_staged_routes_resolve_operation_inside_request_workspace(monkeypatch, tmp_path):
     reset_operation_patcher()
     reset_proposal_buffer()

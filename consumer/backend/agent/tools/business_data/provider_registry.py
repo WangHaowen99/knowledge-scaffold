@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type
-
 from agent.tools.business_data.adapters.dataagent_search import DataAgentSearchAdapter
 from agent.tools.business_data.adapters.mindsdb_search import MindsDBSearchAdapter
 from agent.tools.business_data.adapters.nl2sql_http_search import NL2SQLHttpSearchAdapter
@@ -15,6 +14,10 @@ from agent.tools.business_data.providers.graph.timeouts import (
     resolve_graph_agent_timeout_seconds,
     resolve_graph_connect_timeout_seconds,
     resolve_graph_query_timeout_seconds,
+)
+from agent.tools.business_data.endpoint_security import (
+    endpoint_has_forbidden_auth_material,
+    publicize_endpoint,
 )
 
 
@@ -112,6 +115,12 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("max_iterations", "图检索 Agent 最大轮次", type="int", default=4),
             ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
             ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
+            ProviderField("data_revision", "确定性数据快照版本"),
+            ProviderField("snapshot_selector", "不可变快照数据库名"),
+            ProviderField("access_scope_revision", "只读凭证权限范围版本"),
+            ProviderField("deterministic_read_only", "确定性只读快照", type="bool", default=False),
+            ProviderField("deterministic_snapshot_immutable", "快照物理不可变", type="bool", default=False),
+            ProviderField("deterministic_scope_isolated", "Workspace/Ontology 物理隔离", type="bool", default=False),
         ],
     ),
     "hugegraph": BusinessDataProviderSpec(
@@ -135,6 +144,12 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("max_iterations", "图检索 Agent 最大轮次", type="int", default=4),
             ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
             ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
+            ProviderField("data_revision", "确定性数据快照版本"),
+            ProviderField("snapshot_selector", "不可变快照 Graph/Graph Space"),
+            ProviderField("access_scope_revision", "只读凭证权限范围版本"),
+            ProviderField("deterministic_read_only", "确定性只读快照", type="bool", default=False),
+            ProviderField("deterministic_snapshot_immutable", "快照物理不可变", type="bool", default=False),
+            ProviderField("deterministic_scope_isolated", "Workspace/Ontology 物理隔离", type="bool", default=False),
         ],
     ),
 }
@@ -223,6 +238,12 @@ def normalize_provider_config(
             raise BusinessDataProviderError("{} 必须大于 0".format(field.name))
         if field.name == "url":
             value = str(value or "").rstrip("/")
+        if field.name in {"url", "uri"} and endpoint_has_forbidden_auth_material(value):
+            raise BusinessDataProviderError(
+                "{} 不能内嵌认证信息或 fragment，请使用独立认证字段".format(
+                    field.name
+                )
+            )
         if field.required and not str(value or "").strip():
             raise BusinessDataProviderError("{} 不能为空".format(field.label))
         normalized[field.name] = value
@@ -252,7 +273,11 @@ def publicize_provider_config(provider: Any, config: Dict[str, Any] | None) -> D
         if field.secret:
             payload["has_{}".format(field.name)] = bool(value)
         else:
-            payload[field.name] = value
+            payload[field.name] = (
+                publicize_endpoint(value)
+                if field.name in {"url", "uri"}
+                else value
+            )
     return payload
 
 

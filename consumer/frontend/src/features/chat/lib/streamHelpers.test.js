@@ -330,6 +330,31 @@ test('turn finished awaiting input keeps interaction state without error', () =>
   assert.equal(state.interaction.id, 'interaction_call_user');
 });
 
+test('deterministic terminal artifacts remain available as dedicated segments', () => {
+  const state = applyAgentV2Event(
+    { streamSegments: [], status: 'running', isLoading: true },
+    envelope('turn.finished', {
+      status: 'success',
+      final_output: {
+        text: 'done',
+        structured_result: { value: 'ok' },
+        artifacts: [{
+          name: 'result.json',
+          media_type: 'application/json',
+          size: 14,
+          sha256: 'sha256:abc',
+          output_ref: 'artifact-ref',
+        }],
+      },
+    }, 1),
+  );
+
+  const artifactSegment = state.streamSegments.find((segment) => segment.type === 'artifacts');
+  assert.ok(artifactSegment);
+  assert.equal(artifactSegment.meta.artifacts[0].name, 'result.json');
+  assert.equal(artifactSegment.meta.artifacts[0].output_ref, 'artifact-ref');
+});
+
 test('standalone whitespace token deltas do not create empty stream segments', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
@@ -597,4 +622,48 @@ test('turn finished appends final output after tool-only stream segments', () =>
   assert.equal(state.streamSegments[0].meta.output_preview, '查询完成');
   assert.equal(state.streamSegments[1].text, '最终处理成本为 3000 元。');
   assert.equal(state.streamSegments[1].parentKey, 'iteration:main:1');
+});
+
+test('deterministic envelope renders business result and bounded tool preview', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+  state = applyAgentV2Event(state, envelope('tool.started', {
+    tool_name: 'execute_script',
+    tool_call_id: 'deterministic',
+    message: '确定性执行：query',
+  }, 1));
+  state = applyAgentV2Event(state, envelope('tool.finished', {
+    tool_name: 'execute_script',
+    tool_call_id: 'deterministic',
+    output_preview: '{"value":"CODE-42"}',
+    output_size: 19,
+    output_truncated: false,
+    status: 'completed',
+  }, 2));
+  state = applyAgentV2Event(state, envelope('turn.finished', {
+    status: 'success',
+    final_output: {
+      status: 'success',
+      text: 'CODE-42',
+      structured_result: { value: 'CODE-42' },
+      execution: { type: 'deterministic', authoritative: true },
+    },
+  }, 3));
+
+  assert.equal(state.status, 'finished');
+  assert.equal(state.streamSegments[0].meta.output_preview, '{"value":"CODE-42"}');
+  assert.equal(state.streamSegments.at(-1).text, 'CODE-42');
+});
+
+test('legacy deterministic envelope without text remains readable', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+  state = applyAgentV2Event(state, envelope('turn.finished', {
+    status: 'success',
+    final_output: {
+      status: 'success',
+      structured_result: { value: 'legacy' },
+      execution: { type: 'deterministic' },
+    },
+  }, 1));
+
+  assert.match(state.streamSegments.at(-1).text, /"value": "legacy"/);
 });

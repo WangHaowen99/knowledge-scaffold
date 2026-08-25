@@ -1,6 +1,6 @@
 """Chat session endpoints: CRUD, messages, title generation."""
 
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, Response, request, jsonify, send_file
 from flask_cors import cross_origin
 
 from api.auth.auth import require_auth, get_current_user
@@ -16,6 +16,7 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     InteractionCheckpointError,
 )
+from persistence.deterministic_terminal import recover_pending_deterministic_terminal
 from integration.observability.speedscope_files import remove_speedscope_session_files
 from workspace.workspaces import workspace_scope
 
@@ -54,6 +55,27 @@ def _get_request_workspace_id():
 def _get_run_registry():
     from api.routes.workflows import get_run_registry
     return get_run_registry()
+
+
+def _get_session_after_terminal_recovery(chat_store, execution_store, session_id: str):
+    """Load a session after completing any interrupted deterministic terminal."""
+    session = chat_store.get_session(session_id)
+    if session is None:
+        return None
+    # Some route tests and third-party store adapters intentionally expose only
+    # the operations used by their endpoint. Production ExecutionStore always
+    # provides this recovery contract.
+    if not callable(
+        getattr(execution_store, "deterministic_terminal_transaction", None)
+    ):
+        return session
+    if recover_pending_deterministic_terminal(
+        execution_store,
+        chat_store,
+        session_id,
+    ):
+        session = chat_store.get_session(session_id)
+    return session
 
 
 def _resolve_selected_ontology_selection(value, *, workspace_id: str):
@@ -322,8 +344,12 @@ def get_session(session_id: str):
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
     user_id = current_user.username if current_user else ""
-    chat_store, _execution_store = _get_user_stores()
-    session = chat_store.get_session(session_id)
+    chat_store, execution_store = _get_user_stores()
+    session = _get_session_after_terminal_recovery(
+        chat_store,
+        execution_store,
+        session_id,
+    )
 
     if not session:
         return jsonify({"error": "Session not found"}), 404
@@ -365,18 +391,35 @@ def get_tool_output(session_id: str, run_id: str, output_ref: str):
     if not artifact:
         return jsonify({"error": "Tool output not found"}), 404
 
-    response = send_file(
-        artifact["artifact_path"],
-        mimetype=artifact["response_content_type"],
-        as_attachment=False,
-        conditional=False,
-        etag=False,
-        max_age=0,
-    )
+    artifact_bytes = artifact.get("artifact_bytes")
+    if isinstance(artifact_bytes, bytes):
+        response = Response(
+            artifact_bytes,
+            content_type=artifact["response_content_type"],
+        )
+    else:
+        response = send_file(
+            artifact["artifact_path"],
+            mimetype=artifact["response_content_type"],
+            as_attachment=False,
+            conditional=False,
+            etag=False,
+            max_age=0,
+        )
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Tool-Output-Ref"] = artifact["output_ref"]
     response.headers["X-Tool-Call-Id"] = artifact.get("tool_call_id") or ""
     response.headers["X-Tool-Output-Size"] = str(artifact["output_size"])
+    if artifact.get("sha256"):
+        response.headers["X-Tool-Output-SHA256"] = artifact["sha256"]
+    response.headers["Access-Control-Expose-Headers"] = (
+        "X-Tool-Output-Ref, X-Tool-Call-Id, X-Tool-Output-Size, "
+        "X-Tool-Output-SHA256"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Text artifacts may use active MIME types such as HTML or SVG. A sandboxed
+    # document response keeps direct navigation from becoming same-origin code.
+    response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
     return response
 
 
@@ -428,11 +471,15 @@ def get_session_messages(session_id: str):
     """Get messages for a session."""
     limit = request.args.get("limit", type=int)
 
-    chat_store, _execution_store = _get_user_stores()
-    messages = chat_store.get_history(session_id, limit=limit)
-
-    if not messages and not chat_store.get_session(session_id):
+    chat_store, execution_store = _get_user_stores()
+    session = _get_session_after_terminal_recovery(
+        chat_store,
+        execution_store,
+        session_id,
+    )
+    if session is None:
         return jsonify({"error": "Session not found"}), 404
+    messages = chat_store.get_history(session_id, limit=limit)
 
     return jsonify({
         "messages": [m.to_dict() for m in messages]
@@ -447,7 +494,11 @@ def get_session_messages(session_id: str):
 def cancel_session_interaction(session_id: str, interaction_id: str):
     """Cancel one pending interaction while preserving the conversation context."""
     chat_store, execution_store = _get_user_stores()
-    if not chat_store.get_session(session_id):
+    if _get_session_after_terminal_recovery(
+        chat_store,
+        execution_store,
+        session_id,
+    ) is None:
         return jsonify({"error": "Session not found"}), 404
 
     try:
@@ -484,7 +535,11 @@ def list_session_turns(session_id: str):
     """List durable turn records with optional status and feedback filters."""
 
     chat_store, execution_store = _get_user_stores()
-    if not chat_store.get_session(session_id):
+    if _get_session_after_terminal_recovery(
+        chat_store,
+        execution_store,
+        session_id,
+    ) is None:
         return jsonify({"error": "Session not found"}), 404
 
     status = str(request.args.get("status") or "").strip() or None

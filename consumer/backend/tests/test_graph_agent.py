@@ -14,6 +14,7 @@ from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
 from agent.tools.business_data.providers.graph.agent import (
+    GraphAgentError,
     GraphAgentTimeoutError,
     _GRAPH_TOOL_SCHEMAS,
     _build_agent_input,
@@ -1088,3 +1089,52 @@ def test_graph_agent_trace_bridge_sliding_window_applied_is_false():
     # Verify the graph agent _invoke_once passes sliding_window_applied=False
     agent_source = inspect.getsource(JiuwenGraphQueryAgent._invoke_once)
     assert 'sliding_window_applied=False' in agent_source
+
+
+def test_graph_agent_iteration_limit_does_not_return_partial_tool_results():
+    class _FakeAgent:
+        def __init__(self):
+            self.adapter = None
+
+        def invoke(self, inputs):
+            del inputs
+            self.adapter._invoke_sync(
+                "property_filter",
+                {
+                    "queries": [
+                        {
+                            "element_class": "CHANGE_ORDER_affected_obj",
+                            "element_type": "NODE",
+                            "filter_dict": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"},
+                            "return_properties": ["CHANGE_ORDER_ID"],
+                            "limit": 20,
+                        }
+                    ]
+                },
+            )
+            return SimpleNamespace(
+                result_type="error",
+                output="Max iterations reached without completion",
+            )
+
+    def fake_tool_registrar(agent, **kwargs):
+        agent.adapter = kwargs["adapter"]
+        return []
+
+    context = _context()
+    mapping = GraphEntityMapping(
+        entity="CHANGE_ORDER受影响对象",
+        kind="node",
+        source="test",
+        label="CHANGE_ORDER_affected_obj",
+    )
+
+    with pytest.raises(GraphAgentError, match="Max iterations reached"):
+        JiuwenGraphQueryAgent(
+            agent_factory=_FakeAgent,
+            tool_registrar=fake_tool_registrar,
+        ).run(
+            context=context,
+            mapping=mapping,
+            tool_executor=_executor(_Backend(), context, mapping),
+        )

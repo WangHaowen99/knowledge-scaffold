@@ -138,6 +138,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "evolution_patch_cooldown_sec": {"env": "EVO_PATCH_COOLDOWN_SEC", "type": "int", "default": 3600},
         "evolution_sweep_interval_sec": {"env": "EVO_SWEEP_INTERVAL_SEC", "type": "int", "default": 1800},
         "execute_script_timeout": {"env": "EXECUTE_SCRIPT_TIMEOUT", "type": "int", "default": 300},
+        "deterministic_execution_enabled": {"env": "DETERMINISTIC_EXECUTION_ENABLED", "type": "bool", "default": False},
     },
     "memory": {
         "recall_topk": {"env": "AGENT_MEMORY_RECALL_TOPK", "type": "int", "default": 3},

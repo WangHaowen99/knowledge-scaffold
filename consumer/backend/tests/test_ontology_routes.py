@@ -2,6 +2,7 @@
 
 import io
 import json
+import threading
 import zipfile
 from pathlib import Path
 
@@ -189,44 +190,6 @@ def _build_source_ontology_zip(
             ),
             "source-demo/action/.env": "API_TOKEN=demo-token\n",
         })
-    return _build_zip_file(entries)
-
-
-def _build_v01_ontology_zip(
-    *,
-    ontology_id: str = "source-demo",
-    version: str = "",
-) -> io.BytesIO:
-    version_line = f"version: {version}\n" if version else "version: 1.0.0\n"
-    entries = {
-        f"{ontology_id}/manifest.yaml": (
-            "kind: ontology-package\n"
-            "schema_version: 0.1\n"
-            f"id: {ontology_id}\n"
-            f"name: {ontology_id}\n"
-            "description: standard test package\n"
-            + version_line
-            + "language: zh-CN\n"
-        ),
-        f"{ontology_id}/index.md": (
-            "---\nresource: root\nkey: root\ntitle: Test\n---\n\n# Test\n"
-        ),
-        f"{ontology_id}/objects/index.md": (
-            "---\nresource: object_index\nkey: objects\ntitle: Objects\n---\n\n# Objects\n"
-        ),
-        f"{ontology_id}/objects/实体A.md": (
-            "---\nresource: object\nkey: 实体A\ntitle: 实体A\n---\n\n# 实体A\n"
-        ),
-        f"{ontology_id}/operations/index.md": (
-            "---\nresource: operation_index\nkey: operations\ntitle: Operations\n---\n\n# Operations\n"
-        ),
-        f"{ontology_id}/operations/流程A.md": (
-            "---\nresource: operation\nkey: 流程A\ntitle: 流程A\nuses:\n  objects: []\n---\n\n# 流程A\n"
-        ),
-        f"{ontology_id}/scripts/index.md": (
-            "---\nresource: script_index\nkey: scripts\ntitle: Scripts\n---\n\n# Scripts\n"
-        ),
-    }
     return _build_zip_file(entries)
 
 
@@ -624,6 +587,77 @@ def test_update_operation_file_rejects_content_over_char_limit(tmp_path, monkeyp
     assert "字符" in response.get_json()["error"]
 
 
+def test_file_editors_reject_deterministic_declarations_without_a_lock(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
+    operation_dir = ontology_dir / "operations"
+    operation_dir.mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: demo-ontology\n"
+            "name: Demo Ontology\n"
+            "description: Legacy ontology for deterministic edit rejection\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+    (operation_dir / "query.md").write_text("legacy operation\n", encoding="utf-8")
+    deterministic_content = (
+        "---\n"
+        "resource: operation\n"
+        "key: query\n"
+        "execution:\n"
+        "  type: deterministic\n"
+        "  input_schema: schemas/query.input.json\n"
+        "  output_schema: schemas/query.output.json\n"
+        "---\n"
+    )
+    client, headers = _build_test_client(tmp_path)
+
+    update_response = client.put(
+        "/agentic/ontologies/demo-ontology/file",
+        headers=headers,
+        json={
+            "folder": "operations",
+            "name": "query.md",
+            "content": deterministic_content,
+        },
+    )
+    upload_response = client.post(
+        "/agentic/ontologies/demo-ontology/upload",
+        headers=headers,
+        data={
+            "folder": "operations",
+            "file": (
+                io.BytesIO(
+                    deterministic_content.replace("key: query", "key: new").encode(
+                        "utf-8"
+                    )
+                ),
+                "new.md",
+            ),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert update_response.status_code == 409
+    assert update_response.get_json()["error_code"] == "deterministic_operation_immutable"
+    assert upload_response.status_code == 409
+    assert upload_response.get_json()["error_code"] == "deterministic_operation_immutable"
+    version_dir = ontology_dir / "versions" / "1.0.0"
+    assert (version_dir / "operations" / "query.md").read_text(encoding="utf-8") == (
+        "legacy operation\n"
+    )
+    assert not (version_dir / "operations" / "new.md").exists()
+    assert not (version_dir / ".deterministic-lock.json").exists()
+
+
 def test_update_object_file_rejects_attribute_count_over_limit(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     monkeypatch.setenv("ENTITY_ATTRIBUTE_MAX_COUNT", "1")
@@ -817,9 +851,10 @@ def test_download_ontology_zip_returns_full_package_for_regular_user(tmp_path, m
         assert zf.read("demo-ontology/scripts/nested/demo.py").decode("utf-8") == "print('demo')\n"
 
 
-def test_import_ontology_zip_rejects_legacy_package(tmp_path, monkeypatch):
+def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, owner="modeler")
     client, headers = _build_test_client(tmp_path, username="modeler", role="user")
+    operation_content = "x" * 15000
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
@@ -835,7 +870,7 @@ def test_import_ontology_zip_rejects_legacy_package(tmp_path, monkeypatch):
         "converted-demo/objects-list.md": "- 实体A\n",
         "converted-demo/operations-list.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
-        "converted-demo/operations/流程A.md": "流程说明\n",
+        "converted-demo/operations/流程A.md": operation_content,
         "converted-demo/scripts/demo.py": "print('demo')\n",
     })
 
@@ -846,12 +881,46 @@ def test_import_ontology_zip_rejects_legacy_package(tmp_path, monkeypatch):
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 400
-    assert "v0.1" in response.get_json()["error"]
-    assert not (workspace_paths.ontologies_dir / "converted-demo").exists()
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["success"] is True
+    assert payload["created"] is True
+    assert payload["overwritten"] is False
+    assert payload["import_mode"] == "converted"
+    assert payload["ontology_id"] == "converted-demo"
+    assert payload["ontology_name"] == "Converted Demo"
+    assert payload["objects_count"] == 1
+    assert payload["operations_count"] == 1
+    assert payload["warnings"] == {
+        "objects": [],
+        "objects_index": [],
+        "operations": [],
+        "object_aliases": [],
+        "field_aliases": [],
+    }
+    assert payload["preview"]["source"]["total_files"] == 7
+    assert payload["preview"]["result"]["total_files"] >= 10
+    source_paths = {item["path"] for item in payload["preview"]["source"]["files"]}
+    result_paths = {item["path"] for item in payload["preview"]["result"]["files"]}
+    assert "manifest.yaml" in source_paths
+    assert "objects/实体A.md" in result_paths
+    assert "objects/index.md" in result_paths
+    assert "operations/index.md" in result_paths
+    assert not any(path.endswith("-list.md") for path in result_paths)
+    assert "ONTOLOGY.md" not in result_paths
+
+    ontology_dir = workspace_paths.ontologies_dir / "converted-demo"
+    assert (ontology_dir / "manifest.yaml").read_text(encoding="utf-8").startswith(
+        "kind: ontology-package\nschema_version: 0.1\n"
+    )
+    version_dir = ontology_dir / "versions" / "1.0.0"
+    assert (version_dir / "objects" / "实体A.md").read_text(encoding="utf-8") == "#### 对象描述\n实体A说明\n"
+    assert (version_dir / "operations" / "流程A.md").read_text(encoding="utf-8") == operation_content
+    assert (version_dir / "scripts" / "demo.py").read_text(encoding="utf-8") == "print('demo')\n"
 
 
-def test_import_ontology_zip_rejects_legacy_package_with_invalid_structure(
+def test_import_converted_ontology_zip_reports_invalid_frontmatter_as_bad_request(
     tmp_path,
     monkeypatch,
 ):
@@ -889,7 +958,9 @@ def test_import_ontology_zip_rejects_legacy_package_with_invalid_structure(
     )
 
     assert response.status_code == 400
-    assert "v0.1" in response.get_json()["error"]
+    assert response.get_json() == {
+        "error": "Invalid frontmatter in objects/Part.md: invalid YAML."
+    }
     assert not (workspace_paths.ontologies_dir / "invalid-frontmatter").exists()
 
 
@@ -1073,6 +1144,7 @@ def test_import_converted_zip_supports_outerless_catalog_and_short_field_row(
     assert response.status_code == 201
     payload = response.get_json()
     assert payload is not None
+    assert payload["import_mode"] == "converted"
     version_dir = (
         workspace_paths.ontologies_dir
         / "outerless-demo"
@@ -1229,6 +1301,7 @@ def test_import_converted_ontology_zip_accepts_aligned_object_alias_table_and_re
     assert response.status_code == 201
     payload = response.get_json()
     assert payload is not None
+    assert payload["import_mode"] == "converted"
     assert payload["warnings"]["object_aliases"] == [
         "Object 'ObjectA' catalog aliases contain an empty value."
     ]
@@ -1301,9 +1374,7 @@ def test_regular_user_ontology_writes_still_enforce_workspace_access(tmp_path, m
         assert response.get_json() == {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
 
 
-def test_shadow_workspace_owner_import_rejects_legacy_evaluation_package(
-    tmp_path, monkeypatch
-):
+def test_shadow_workspace_owner_can_import_evaluation_package(tmp_path, monkeypatch):
     from api.routes.workspaces import workspaces_bp
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
@@ -1352,8 +1423,19 @@ def test_shadow_workspace_owner_import_rejects_legacy_evaluation_package(
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 400
-    assert "v0.1" in response.get_json()["error"]
+    assert response.status_code == 201
+    assert response.get_json()["ontology_id"] == "evaluation-demo"
+
+    activated = client.put(
+        "/agentic/ontologies/evaluation-demo/active-version",
+        headers={
+            "Authorization": "Bearer {}".format(auth_manager.issue_token(alice)),
+            "X-Workspace-Id": "mw-shadow-pj-demo-123",
+        },
+        json={"version": "1.0.0"},
+    )
+    assert activated.status_code == 200
+    assert activated.get_json()["active_version"] == "1.0.0"
 
 
 def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_path, monkeypatch):
@@ -1370,7 +1452,6 @@ def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_pat
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/index.md": "# Converted Demo\n",
         "converted-demo/objects/index.md": "- 实体A\n",
         "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
@@ -1417,7 +1498,6 @@ def test_import_new_ontology_rejects_when_workspace_ontology_count_reaches_limit
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/index.md": "# Converted Demo\n",
         "converted-demo/objects/index.md": "- 实体A\n",
         "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
@@ -1451,7 +1531,6 @@ def test_import_converted_ontology_zip_rejects_object_count_over_limit(tmp_path,
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/index.md": "# Converted Demo\n",
         "converted-demo/objects/index.md": "- 实体A\n- 实体B\n",
         "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
@@ -1485,7 +1564,6 @@ def test_import_converted_ontology_zip_rejects_operation_count_over_limit(tmp_pa
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/index.md": "# Converted Demo\n",
         "converted-demo/objects/index.md": "- 实体A\n",
         "converted-demo/operations/index.md": "- 流程A\n- 流程B\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
@@ -1519,7 +1597,6 @@ def test_import_converted_ontology_zip_rejects_entity_attribute_count_over_limit
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/index.md": "# Converted Demo\n",
         "converted-demo/objects/index.md": "- 实体A\n",
         "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "\n".join([
@@ -1547,8 +1624,9 @@ def test_import_converted_ontology_zip_rejects_entity_attribute_count_over_limit
     assert "单实体属性数量超过上限" in response.get_json()["error"]
 
 
-def test_import_source_ontology_zip_rejected_as_non_v01(tmp_path, monkeypatch):
+def test_import_source_ontology_zip_rejects_generated_object_count_over_limit(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("ONTOLOGY_OBJECT_MAX_COUNT", "1")
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     object_content = "\n".join([
@@ -1616,7 +1694,7 @@ def test_import_source_ontology_zip_rejected_as_non_v01(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 400
-    assert "v0.1" in response.get_json()["error"]
+    assert "单本体实体数量已达上限" in response.get_json()["error"]
 
 
 def test_import_ontology_zip_does_not_inherit_default_legacy_connection(tmp_path, monkeypatch):
@@ -1646,7 +1724,6 @@ def test_import_ontology_zip_does_not_inherit_default_legacy_connection(tmp_path
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "bound-demo/index.md": "# Bound Demo\n",
         "bound-demo/objects/index.md": "- 实体A\n",
         "bound-demo/operations/index.md": "- 流程A\n",
     })
@@ -1696,7 +1773,6 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
             "language: zh-CN\n"
             "scope: []\n"
         ),
-        "converted-demo/index.md": "# Converted Demo\n",
         "converted-demo/objects/index.md": "- 新实体\n",
         "converted-demo/operations/index.md": "- 新流程\n",
         "converted-demo/objects/新实体.md": "新内容\n",
@@ -1731,6 +1807,7 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
     assert overwrite_payload is not None
     assert overwrite_payload["created"] is False
     assert overwrite_payload["overwritten"] is True
+    assert overwrite_payload["import_mode"] == "converted"
 
     version_dir = ontology_dir / "versions" / "1.0.0"
     assert not (version_dir / "objects" / "旧实体.md").exists()
@@ -1749,8 +1826,39 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 400
-    assert "v0.1" in response.get_json()["error"]
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["import_mode"] == "source"
+    assert payload["ontology_id"] == "source-demo"
+    assert payload["preview"]["source"]["total_files"] == 5
+    assert payload["preview"]["result"]["total_files"] >= 9
+    source_paths = {item["path"] for item in payload["preview"]["source"]["files"]}
+    result_paths = {item["path"] for item in payload["preview"]["result"]["files"]}
+    assert "object/实体A.md" in source_paths
+    assert "action/process_a.py" in source_paths
+    assert "objects/index.md" in result_paths
+    assert "objects/实体A.md" in result_paths
+    assert not any(path.startswith("assets/") for path in result_paths)
+    result_object = next(item for item in payload["preview"]["result"]["files"] if item["path"] == "objects/实体A.md")
+    assert "| 实体A编号 | EntityACode | 实体A编号描述 | A编号 |" in result_object["content"]
+
+    ontology_dir = workspace_paths.ontologies_dir / "source-demo"
+    version_dir = ontology_dir / "versions" / "1.0.0"
+    scripts_index_content = (version_dir / "scripts" / "index.md").read_text(encoding="utf-8")
+    script_descriptor = (version_dir / "scripts" / "process_a.md").read_text(encoding="utf-8")
+    assert "| process_a | process_a | 流程A | process_a.py |" in scripts_index_content
+    assert "bound_operation: 流程A" in script_descriptor
+    assert "| 实体A编号 | --entity-a-code | string | 是 | 否 | 实体A编号 | entity_a_code |" in script_descriptor
+    assert (version_dir / "scripts" / "process_a.py").read_text(encoding="utf-8") == (
+        "# 工具流程: 流程A\n"
+        "# parameters: [{\"name\":\"实体A编号\",\"flag\":\"--entity-a-code\",\"description\":\"实体A编号\",\"required\":true,\"type\":\"string\"}]\n"
+        "#查数脚本 （涉及mindsdb查数的脚本会加这个标签）\n"
+        "print('process_a')\n"
+    )
+    assert (version_dir / "scripts" / ".env").read_text(encoding="utf-8") == "API_TOKEN=demo-token\n"
+    assert ".env" not in scripts_index_content
+    assert not (version_dir / "assets").exists()
 
 
 def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, monkeypatch):
@@ -1764,8 +1872,16 @@ def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, mo
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 400
-    assert "v0.1" in response.get_json()["error"]
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["import_mode"] == "source"
+
+    ontology_dir = workspace_paths.ontologies_dir / "source-demo"
+    version_dir = ontology_dir / "versions" / "1.0.0"
+    assert not list(version_dir.glob("*-list.md"))
+    assert (version_dir / "scripts" / "index.md").is_file()
+    assert list((version_dir / "scripts").glob("*.md")) == [version_dir / "scripts" / "index.md"]
 
 
 def test_import_source_ontology_zip_splits_slash_aliases_and_reports_empty_warning(tmp_path, monkeypatch):
@@ -1787,8 +1903,18 @@ def test_import_source_ontology_zip_splits_slash_aliases_and_reports_empty_warni
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 400
-    assert "v0.1" in response.get_json()["error"]
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["import_mode"] == "source"
+    assert payload["warnings"]["object_aliases"] == [
+        "Object '实体A' catalog aliases contain an empty value."
+    ]
+
+    version_dir = workspace_paths.ontologies_dir / "source-demo" / "versions" / "1.0.0"
+    object_text = (version_dir / "objects" / "实体A.md").read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(object_text.split("---", 2)[1])
+    assert frontmatter["aliases"] == ["实体甲", "实体乙"]
 
 
 def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monkeypatch):
@@ -1828,7 +1954,7 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
-            "file": (_build_v01_ontology_zip(), "source-demo.zip"),
+            "file": (_build_source_ontology_zip(include_scripts=False), "source-demo.zip"),
             "overwrite": "true",
         },
         content_type="multipart/form-data",
@@ -1837,6 +1963,7 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
     assert response.status_code == 201
     payload = response.get_json()
     assert payload is not None
+    assert payload["import_mode"] == "source"
     assert payload["overwritten"] is True
 
     version_dir = ontology_dir / "versions" / "1.0.0"
@@ -1848,6 +1975,48 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
     assert (version_dir / "scripts" / "index.md").is_file()
     assert (version_dir / "objects" / "实体A.md").exists()
     assert (version_dir / "operations" / "流程A.md").exists()
+
+
+def test_import_zip_cannot_overwrite_locked_deterministic_version(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = workspace_paths.ontologies_dir / "source-demo"
+    version_dir = ontology_dir / "versions" / "1.0.0"
+    version_dir.mkdir(parents=True)
+    (version_dir / ".deterministic-lock.json").write_text("{}", encoding="utf-8")
+    (version_dir / "original.md").write_text("original\n", encoding="utf-8")
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: source-demo\n"
+            "name: Source Demo\n"
+            "description: Locked ontology\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions:\n"
+            "  - 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+    client, headers = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={
+            "file": (
+                _build_source_ontology_zip(include_scripts=False, version="1.0.0"),
+                "source-demo.zip",
+            ),
+            "overwrite": "true",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error_code"] == "deterministic_operation_immutable"
+    assert (version_dir / "original.md").read_text(encoding="utf-8") == "original\n"
 
 
 def test_import_source_zip_missing_version_conflict_can_create_new_version(tmp_path, monkeypatch):
@@ -1873,20 +2042,20 @@ def test_import_source_zip_missing_version_conflict_can_create_new_version(tmp_p
     conflict_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (_build_v01_ontology_zip(), "source-demo.zip")},
+        data={"file": (_build_source_ontology_zip(include_scripts=False), "source-demo.zip")},
         content_type="multipart/form-data",
     )
 
     assert conflict_response.status_code == 409
     conflict_payload = conflict_response.get_json()
-    assert conflict_payload["conflict_type"] == "version_exists"
+    assert conflict_payload["conflict_type"] == "missing_version_existing"
     assert conflict_payload["active_version"] == "1.0.0"
 
     create_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
-            "file": (_build_v01_ontology_zip(), "source-demo.zip"),
+            "file": (_build_source_ontology_zip(include_scripts=False), "source-demo.zip"),
             "action": "create_version",
             "new_version": "2.0.0",
         },
@@ -1911,7 +2080,7 @@ def test_import_duplicate_version_conflict_can_overwrite_or_create_new_version(t
     first_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (_build_v01_ontology_zip(version="1.0.0"), "source-demo.zip")},
+        data={"file": (_build_source_ontology_zip(include_scripts=False, version="1.0.0"), "source-demo.zip")},
         content_type="multipart/form-data",
     )
     assert first_response.status_code == 201
@@ -1919,7 +2088,7 @@ def test_import_duplicate_version_conflict_can_overwrite_or_create_new_version(t
     conflict_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (_build_v01_ontology_zip(version="1.0.0"), "source-demo.zip")},
+        data={"file": (_build_source_ontology_zip(include_scripts=False, version="1.0.0"), "source-demo.zip")},
         content_type="multipart/form-data",
     )
     assert conflict_response.status_code == 409
@@ -1929,7 +2098,7 @@ def test_import_duplicate_version_conflict_can_overwrite_or_create_new_version(t
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
-            "file": (_build_v01_ontology_zip(version="1.0.0"), "source-demo.zip"),
+            "file": (_build_source_ontology_zip(include_scripts=False, version="1.0.0"), "source-demo.zip"),
             "action": "create_version",
             "new_version": "1.0.1",
         },
@@ -1942,7 +2111,7 @@ def test_import_duplicate_version_conflict_can_overwrite_or_create_new_version(t
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
-            "file": (_build_v01_ontology_zip(version="1.0.1"), "source-demo.zip"),
+            "file": (_build_source_ontology_zip(include_scripts=False, version="1.0.1"), "source-demo.zip"),
             "action": "overwrite_matching",
         },
         content_type="multipart/form-data",
@@ -2146,3 +2315,268 @@ def test_delete_active_ontology_version_returns_409(tmp_path, monkeypatch):
     manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
     assert manifest["active_version"] == "1.0.0"
     assert manifest["versions"] == ["1.0.0", "2.0.0"]
+
+
+def test_replace_ontology_dir_keeps_existing_dir_when_atomic_exchange_fails(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = tmp_path / "source-demo"
+    staged_dir = tmp_path / "staged-source-demo"
+    ontology_dir.mkdir(parents=True)
+    staged_dir.mkdir(parents=True)
+    (ontology_dir / "old.md").write_text("old\n", encoding="utf-8")
+    (staged_dir / "new.md").write_text("new\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "_atomic_exchange_paths",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError("staged dir is busy")
+        ),
+    )
+
+    try:
+        ontologies_module._replace_ontology_dir(staged_dir=staged_dir, ontology_dir=ontology_dir)
+    except PermissionError as exc:
+        assert str(exc) == "staged dir is busy"
+    else:
+        raise AssertionError("expected replace failure")
+
+    assert (ontology_dir / "old.md").read_text(encoding="utf-8") == "old\n"
+    assert not (ontology_dir / "new.md").exists()
+    assert (staged_dir / "new.md").read_text(encoding="utf-8") == "new\n"
+
+
+def test_replace_ontology_dir_atomically_exchanges_existing_tree(tmp_path):
+    ontology_dir = tmp_path / "source-demo"
+    staged_dir = tmp_path / "staged-source-demo"
+    ontology_dir.mkdir(parents=True)
+    staged_dir.mkdir(parents=True)
+    (ontology_dir / "old.md").write_text("old\n", encoding="utf-8")
+    (staged_dir / "new.md").write_text("new\n", encoding="utf-8")
+
+    ontologies_module._replace_ontology_dir(
+        staged_dir=staged_dir,
+        ontology_dir=ontology_dir,
+    )
+
+    assert (ontology_dir / "new.md").read_text(encoding="utf-8") == "new\n"
+    assert not (ontology_dir / "old.md").exists()
+    assert not staged_dir.exists()
+
+
+def test_replace_ontology_dir_uses_portable_backup_when_exchange_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = tmp_path / "knowledge-package-demo"
+    staged_dir = tmp_path / "staged-knowledge-package-demo"
+    ontology_dir.mkdir()
+    staged_dir.mkdir()
+    (ontology_dir / "old.md").write_text("old\n", encoding="utf-8")
+    (staged_dir / "new.md").write_text("new\n", encoding="utf-8")
+    monkeypatch.setattr(
+        ontologies_module,
+        "_atomic_exchange_paths",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(ontologies_module.errno.ENOTSUP, "unsupported")
+        ),
+    )
+
+    ontologies_module._replace_ontology_dir(
+        staged_dir=staged_dir,
+        ontology_dir=ontology_dir,
+    )
+
+    assert (ontology_dir / "new.md").read_text(encoding="utf-8") == "new\n"
+    assert not staged_dir.exists()
+    assert not list(tmp_path.glob(".knowledge-package-demo.replace-backup-*"))
+
+
+def test_ontology_id_keeps_legacy_dot_compatibility():
+    assert ontologies_module._is_valid_ontology_id("factory.v2") is True
+
+
+def test_copy_versioned_package_keeps_existing_dir_when_copy_fails(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    version_dir = tmp_path / "ontology" / "versions" / "1.0.0"
+    source_dir.mkdir()
+    version_dir.mkdir(parents=True)
+    (source_dir / "first.md").write_text("first\n", encoding="utf-8")
+    (source_dir / "second.md").write_text("second\n", encoding="utf-8")
+    (version_dir / "old.md").write_text("old\n", encoding="utf-8")
+    original_copy2 = ontologies_module.shutil.copy2
+
+    def fail_second_copy(source, target, *args, **kwargs):
+        if Path(source).name == "second.md":
+            raise OSError("disk full")
+        return original_copy2(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(ontologies_module.shutil, "copy2", fail_second_copy)
+
+    try:
+        ontologies_module._copy_versioned_package_contents(source_dir, version_dir)
+    except OSError as exc:
+        assert str(exc) == "disk full"
+    else:
+        raise AssertionError("expected copy failure")
+
+    assert (version_dir / "old.md").read_text(encoding="utf-8") == "old\n"
+    assert not (version_dir / "first.md").exists()
+    assert not (version_dir / "second.md").exists()
+
+
+def test_concurrent_version_installs_are_serialized_without_lost_updates(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = tmp_path / "ontologies" / "demo"
+    version1 = ontology_dir / "versions" / "1.0.0"
+    version1.mkdir(parents=True)
+    (version1 / "base.txt").write_text("base", encoding="utf-8")
+    (ontology_dir / "manifest.yaml").write_text(
+        "kind: ontology-package\nschema_version: 0.1\nid: demo\n"
+        "version: 1.0.0\nactive_version: 1.0.0\nversions:\n  - 1.0.0\n",
+        encoding="utf-8",
+    )
+    sources = []
+    for version in ("2.0.0", "3.0.0"):
+        source = tmp_path / "sources" / version
+        source.mkdir(parents=True)
+        (source / "value.txt").write_text(version, encoding="utf-8")
+        sources.append((version, source))
+
+    original_copytree = ontologies_module.shutil.copytree
+    first_copy_entered = threading.Event()
+    allow_first_copy = threading.Event()
+    active_copies = 0
+    maximum_active_copies = 0
+    counter_lock = threading.Lock()
+
+    def guarded_copytree(source, target, *args, **kwargs):
+        nonlocal active_copies, maximum_active_copies
+        is_ontology_snapshot = Path(source).resolve() == ontology_dir.resolve()
+        if is_ontology_snapshot:
+            with counter_lock:
+                active_copies += 1
+                maximum_active_copies = max(maximum_active_copies, active_copies)
+                first = not first_copy_entered.is_set()
+                first_copy_entered.set()
+            if first:
+                assert allow_first_copy.wait(5)
+        try:
+            return original_copytree(source, target, *args, **kwargs)
+        finally:
+            if is_ontology_snapshot:
+                with counter_lock:
+                    active_copies -= 1
+
+    monkeypatch.setattr(ontologies_module.shutil, "copytree", guarded_copytree)
+    errors = []
+
+    def install(version, source):
+        try:
+            ontologies_module._install_ontology_version_package(
+                source_root=source,
+                ontology_dir=ontology_dir,
+                ontology_id="demo",
+                ontology_name="Demo",
+                ontology_description="",
+                target_version=version,
+                existed=True,
+            )
+        except Exception as exc:  # surfaced in the assertion below
+            errors.append(exc)
+
+    first = threading.Thread(target=install, args=sources[0])
+    second = threading.Thread(target=install, args=sources[1])
+    first.start()
+    assert first_copy_entered.wait(5)
+    second.start()
+    allow_first_copy.set()
+    first.join(5)
+    second.join(5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert maximum_active_copies == 1
+    manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
+    assert manifest["versions"] == ["1.0.0", "2.0.0", "3.0.0"]
+    assert (ontology_dir / "versions" / "2.0.0" / "value.txt").read_text() == "2.0.0"
+    assert (ontology_dir / "versions" / "3.0.0" / "value.txt").read_text() == "3.0.0"
+
+
+def test_install_and_status_mutation_share_one_ontology_lock(tmp_path, monkeypatch):
+    ontology_dir = tmp_path / "ontologies" / "demo"
+    version1 = ontology_dir / "versions" / "1.0.0"
+    version1.mkdir(parents=True)
+    (version1 / "base.txt").write_text("base", encoding="utf-8")
+    (ontology_dir / "manifest.yaml").write_text(
+        "kind: ontology-package\nschema_version: 0.1\nid: demo\n"
+        "name: Demo\ndescription: Demo ontology\nlanguage: zh-CN\n"
+        "enabled: true\nversion: 1.0.0\nactive_version: 1.0.0\n"
+        "versions:\n  - 1.0.0\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "value.txt").write_text("2.0.0", encoding="utf-8")
+
+    original_copytree = ontologies_module.shutil.copytree
+    snapshot_started = threading.Event()
+    allow_snapshot = threading.Event()
+    mutation_started = threading.Event()
+    mutation_finished = threading.Event()
+    errors = []
+
+    def guarded_copytree(source_path, target, *args, **kwargs):
+        if Path(source_path).resolve() == ontology_dir.resolve():
+            snapshot_started.set()
+            assert allow_snapshot.wait(5)
+        return original_copytree(source_path, target, *args, **kwargs)
+
+    monkeypatch.setattr(ontologies_module.shutil, "copytree", guarded_copytree)
+
+    def install():
+        try:
+            ontologies_module._install_ontology_version_package(
+                source_root=source,
+                ontology_dir=ontology_dir,
+                ontology_id="demo",
+                ontology_name="Demo",
+                ontology_description="",
+                target_version="2.0.0",
+                existed=True,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    def disable():
+        mutation_started.set()
+        try:
+            ontologies_module._set_ontology_enabled(ontology_dir, False)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            mutation_finished.set()
+
+    install_thread = threading.Thread(target=install)
+    mutation_thread = threading.Thread(target=disable)
+    install_thread.start()
+    assert snapshot_started.wait(5)
+    mutation_thread.start()
+    assert mutation_started.wait(5)
+    assert not mutation_finished.wait(0.1)
+    allow_snapshot.set()
+    install_thread.join(5)
+    mutation_thread.join(5)
+
+    assert not install_thread.is_alive()
+    assert not mutation_thread.is_alive()
+    assert errors == []
+    manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
+    assert manifest["enabled"] is False
+    assert manifest["versions"] == ["1.0.0", "2.0.0"]
+    assert (ontology_dir / "versions" / "2.0.0" / "value.txt").read_text() == "2.0.0"

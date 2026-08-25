@@ -333,14 +333,29 @@ const extractTurnFinishedOutput = (payload = {}) => {
   let options = null;
   let messageType = 'text';
   let interaction = null;
+  let artifacts = [];
 
   if (typeof result === 'string') {
     content = result;
   } else if (result && typeof result === 'object') {
     content = result.text || result.formatted_result || '';
+    if (!content && result.structured_result && typeof result.structured_result === 'object') {
+      const structured = result.structured_result;
+      content = structured.text || structured.formatted_result || structured.message || '';
+      if (!content) {
+        try {
+          content = JSON.stringify(structured, null, 2);
+        } catch {
+          content = '';
+        }
+      }
+    }
     options = Array.isArray(result.options) ? result.options : null;
     messageType = typeof result.type === 'string' ? result.type : 'text';
     interaction = result.interaction && typeof result.interaction === 'object' ? result.interaction : null;
+    artifacts = Array.isArray(result.artifacts)
+      ? result.artifacts.filter((item) => item && typeof item === 'object' && item.output_ref)
+      : [];
   }
 
   return {
@@ -349,6 +364,7 @@ const extractTurnFinishedOutput = (payload = {}) => {
     options,
     messageType,
     interaction,
+    artifacts,
     error: payload.error || null,
     cancelReason: payload.cancel_reason || null,
   };
@@ -857,6 +873,16 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
     };
   }
   if (type === 'tool.finished') {
+    let legacyOutput = '';
+    if (!payload?.output_preview && payload?.output != null) {
+      try {
+        legacyOutput = typeof payload.output === 'string'
+          ? payload.output
+          : JSON.stringify(payload.output);
+      } catch {
+        legacyOutput = '';
+      }
+    }
     return {
       kind: 'tool',
       toolCallId,
@@ -865,7 +891,7 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
       spanId: payload?.span_id || '',
       parentSpanId: payload?.parent_span_id || '',
       finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
-      output: payload?.output_preview || '',
+      output: payload?.output_preview || legacyOutput,
       outputRef: payload?.output_ref || '',
       outputSize: payload?.output_size ?? null,
       outputTruncated: Boolean(payload?.output_truncated),
@@ -1570,6 +1596,16 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: {},
         finished: true,
         parentKey: iterationParentKeyFromPayload(finalIteration) || undefined,
+      });
+    }
+    if (terminal.artifacts.length > 0) {
+      next.streamSegments.push({
+        type: 'artifacts',
+        state: 'final',
+        text: '',
+        node: 'final',
+        meta: { artifacts: terminal.artifacts },
+        finished: true,
       });
     }
 

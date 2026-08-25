@@ -59,6 +59,7 @@ def _get_script_catalog(
         entry
         for entry in load_script_catalog(ontology_dir)
         if entry.get("_is_bound_operation")
+        and not entry.get("_is_deterministic_handler")
         and str(entry.get("operation_key") or entry.get("script_key") or "").strip()
     ]
     if not catalog:

@@ -97,12 +97,56 @@ _SCRIPT_EXECUTION_INTERNAL_ERROR = (
 )
 _PUBLIC_SCRIPT_ERROR_PREFIX = "ONTO_PUBLIC_ERROR:"
 _PUBLIC_SCRIPT_ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_PUBLIC_SCRIPT_STDOUT_ERROR_CODE_PATTERN = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]{0,63}$"
+)
+_PUBLIC_SCRIPT_STDOUT_ERROR_KEYS = frozenset(
+    {"error_code", "message", "details"}
+)
 _PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH = 240
+_PUBLIC_PYTHON_EXCEPTION_TYPES = frozenset(
+    {
+        "AssertionError",
+        "AttributeError",
+        "ConnectionError",
+        "FileNotFoundError",
+        "ImportError",
+        "KeyError",
+        "LookupError",
+        "MemoryError",
+        "ModuleNotFoundError",
+        "OSError",
+        "PermissionError",
+        "RecursionError",
+        "RuntimeError",
+        "TimeoutError",
+        "TypeError",
+        "ValueError",
+        "ZeroDivisionError",
+    }
+)
+_WORKSPACE_PROVIDER_DATA_ACCESS = "workspace_provider"
+_BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE = (
+    "BUSINESS_DATA_CONNECTION_UNAVAILABLE"
+)
+_BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR = (
+    "Error: [{}] Required business data connection is unavailable."
+).format(_BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE)
 
 SCRIPT_LIVE_LOG_ENABLED = (
     os.getenv("SCRIPT_LIVE_LOG_ENABLED", "false").strip().lower()
     in {"1", "true", "yes", "y", "on"}
 )
+
+
+class _ScriptOutputLimitExceeded(RuntimeError):
+    def __init__(self, stream_name: str) -> None:
+        super().__init__("{} output exceeds limit".format(stream_name))
+        self.stream_name = stream_name
+
+
+class _ScriptExecutionCancelled(RuntimeError):
+    pass
 
 EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
@@ -113,6 +157,8 @@ EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
             "Use this only when the operation appears in the ontology root `script_catalog`. "
             "A successful result is authoritative: reuse it instead of rerunning the same "
             "operation to change rounding, display precision, or informational fields. "
+            "A runtime failure is terminal for the requested deterministic calculation: "
+            "do not retry with guessed values or provide a calculated conclusion. "
             "If required script arguments are unknown, stop and report the missing "
             "parameters instead of reading object definitions or manually replaying a "
             "script-backed operation."
@@ -186,6 +232,7 @@ def build_execute_script_tool_schema(
                 entry
                 for entry in load_script_catalog(Path(ontology.ontology_dir).resolve())
                 if bool(entry.get("_is_bound_operation", True))
+                and not entry.get("_is_deterministic_handler")
                 and str(entry.get("operation_key") or "").strip()
             ]
             if not ontology_catalog:
@@ -377,6 +424,15 @@ def _parse_tool_call_arguments(raw: Any) -> Optional[Dict[str, Any]]:
 def _is_successful_script_output(content: Any) -> bool:
     text = str(content or "").strip()
     if not text or text.lower().startswith("error:"):
+        return False
+    normalized = " ".join(text.casefold().split())
+    non_execution_markers = (
+        "operation selection blocked:",
+        "the script did not run",
+        "this deterministic operation already succeeded",
+        "this deterministic operation has already returned successful results",
+    )
+    if any(marker in normalized for marker in non_execution_markers):
         return False
     try:
         payload = json.loads(text)
@@ -643,11 +699,151 @@ def _run_with_live_logging(
     )
 
 
+def _validated_python_argv(command: Sequence[str]) -> list[str]:
+    """Return a shell-free argv restricted to the current Python executable."""
+    argv = list(command)
+    if not argv:
+        raise ValueError("script command is required")
+    for argument in argv:
+        if not isinstance(argument, str):
+            raise ValueError("script command contains an invalid argument")
+        if "\x00" in argument:
+            raise ValueError("script command contains an invalid argument")
+    requested_executable = os.path.normcase(os.path.realpath(argv[0]))
+    trusted_executable = os.path.normcase(os.path.realpath(sys.executable))
+    if requested_executable != trusted_executable:
+        raise ValueError("script command must use the trusted Python interpreter")
+    return argv
+
+
+def _run_with_bounded_output(
+    cmd: List[str],
+    *,
+    cwd: str,
+    env: Dict[str, str],
+    timeout_seconds: int,
+    stdout_limit_bytes: int,
+    stderr_limit_bytes: int,
+    cancel_event: Optional[threading.Event] = None,
+) -> subprocess.CompletedProcess[str]:
+    """Capture deterministic script output without unbounded allocation."""
+    argv = _validated_python_argv(cmd)
+    # Security review: argv is restricted to this process's Python interpreter,
+    # is passed as a sequence, and is never parsed by a shell.
+    proc = subprocess.Popen(  # NOSONAR(S4721)
+        argv,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        shell=False,
+        close_fds=True,
+    )
+    outputs = {"stdout": bytearray(), "stderr": bytearray()}
+    limits = {
+        "stdout": max(1, int(stdout_limit_bytes)),
+        "stderr": max(1, int(stderr_limit_bytes)),
+    }
+    overflow: list[str] = []
+    overflow_event = threading.Event()
+
+    def read_stream(stream_name: str, pipe: Any) -> None:
+        limit = limits.get(stream_name)
+        output = outputs.get(stream_name)
+        if limit is None or output is None:
+            raise RuntimeError("script output stream is invalid")
+        try:
+            while True:
+                chunk = pipe.read(8192)
+                if not chunk:
+                    return
+                remaining = limit + 1 - len(output)
+                if remaining > 0:
+                    output.extend(chunk[:remaining])
+                if len(output) > limit:
+                    if not overflow:
+                        overflow.append(stream_name)
+                    overflow_event.set()
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
+                    return
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    stdout_pipe = proc.stdout
+    stderr_pipe = proc.stderr
+    if stdout_pipe is None or stderr_pipe is None:
+        proc.terminate()
+        raise RuntimeError("script output pipes are unavailable")
+    threads = [
+        threading.Thread(target=read_stream, args=("stdout", stdout_pipe), daemon=True),
+        threading.Thread(target=read_stream, args=("stderr", stderr_pipe), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + max(1, int(timeout_seconds))
+    cancelled = False
+    timed_out = False
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            proc.terminate()
+            break
+        if overflow_event.is_set():
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            proc.terminate()
+            break
+        time.sleep(0.02)
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+    for thread in threads:
+        thread.join(timeout=2)
+
+    stdout = bytes(outputs["stdout"]).decode("utf-8", errors="replace")
+    stderr = bytes(outputs["stderr"]).decode("utf-8", errors="replace")
+    if cancelled:
+        raise _ScriptExecutionCancelled("script execution cancelled")
+    if timed_out:
+        raise subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=timeout_seconds,
+            output=stdout,
+            stderr=stderr,
+        )
+    if overflow:
+        raise _ScriptOutputLimitExceeded(overflow[0])
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=int(proc.returncode or 0),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def _spawn_with_args_file(
     resolved_path: Path,
     cli_args: List[str],
     env: Dict[str, str],
     cwd: str,
+    bounded_output: Optional[Mapping[str, Any]] = None,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess:
     """Write oversize CLI args to a temp file and run a loader script.
@@ -693,6 +889,16 @@ def _spawn_with_args_file(
         )
 
         try:
+            if bounded_output is not None:
+                return _run_with_bounded_output(
+                    [sys.executable, "-u", loader_path],
+                    cwd=cwd,
+                    env=child_env,
+                    timeout_seconds=int(kwargs.get("timeout", 300)),
+                    stdout_limit_bytes=int(bounded_output["stdout_limit_bytes"]),
+                    stderr_limit_bytes=int(bounded_output["stderr_limit_bytes"]),
+                    cancel_event=bounded_output.get("cancel_event"),
+                )
             if SCRIPT_LIVE_LOG_ENABLED:
                 timeout_seconds = int(kwargs.get("timeout", 300))
                 return _run_with_live_logging(
@@ -724,33 +930,48 @@ def _build_script_env_overrides(
     *,
     workspace_id: Optional[str],
     ontology_id: str,
+    required: bool = False,
 ) -> Dict[str, str]:
     if not workspace_id:
+        if required:
+            raise BusinessDataConnectionError(
+                "Required business data connection is unavailable."
+            )
         return {}
     try:
         connection = resolve_business_data_source(
             workspace_id=workspace_id,
             ontology_id=ontology_id,
         )
-    except BusinessDataConnectionError:
-        return {}
-    connection_config = dict(connection.config)
-    connection_config["workspace_id"] = str(workspace_id or "").strip()
-    connection_config["ontology_id"] = str(ontology_id or "").strip()
-    effective_connection = build_effective_connection(connection)
-    effective_connection = replace(
-        effective_connection,
-        options={
-            **effective_connection.options,
-            "workspace_id": connection_config["workspace_id"],
-            "ontology_id": connection_config["ontology_id"],
-        },
-    )
-    return {
-        SCRIPT_BUSINESS_DATA_CONNECTION_ENV: serialize_script_business_data_connection(
-            connection=effective_connection,
+        connection_config = dict(connection.config)
+        connection_config["workspace_id"] = str(workspace_id or "").strip()
+        connection_config["ontology_id"] = str(ontology_id or "").strip()
+        effective_connection = build_effective_connection(connection)
+        effective_connection = replace(
+            effective_connection,
+            options={
+                **effective_connection.options,
+                "workspace_id": connection_config["workspace_id"],
+                "ontology_id": connection_config["ontology_id"],
+            },
         )
-    }
+        return {
+            SCRIPT_BUSINESS_DATA_CONNECTION_ENV: serialize_script_business_data_connection(
+                connection=effective_connection,
+            )
+        }
+    except Exception as exc:
+        if not required and isinstance(exc, BusinessDataConnectionError):
+            return {}
+        if required:
+            logger.warning(
+                "Required script business data connection is unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            raise BusinessDataConnectionError(
+                "Required business data connection is unavailable."
+            ) from exc
+        raise
 
 
 def handle_execute_script_path(
@@ -768,6 +989,20 @@ def handle_execute_script_path(
     workspace_id: Optional[str] = None,
     ontology_id: Optional[str] = None,
     ontology_dir: Optional[Path] = None,
+    clean_env: bool = False,
+    include_stderr_on_success: bool = True,
+    stdout_limit_bytes: Optional[int] = None,
+    stderr_limit_bytes: Optional[int] = None,
+    file_size_limit_bytes: Optional[int] = None,
+    cancel_event: Optional[threading.Event] = None,
+    sandbox_prepare_data_connection: bool = True,
+    sandbox_include_data_connection_env: bool = True,
+    sandbox_network_endpoint: Optional[str] = None,
+    sandbox_read_only_paths: Sequence[Path] = (),
+    sandbox_writable_paths: Sequence[Path] = (),
+    sandbox_run_id: Optional[str] = None,
+    sandbox_required: bool = False,
+    sandbox_restrict_filesystem_to_ontology: bool = False,
 ) -> str:
     """Run a Python script relative to project root and return its output.
 
@@ -862,6 +1097,26 @@ def handle_execute_script_path(
                 return (
                     "Error: Access denied - script must be within current ontology scripts directory"
                 )
+            if caller != "deterministic_service":
+                try:
+                    from ontology.operation_execution import (
+                        protected_handler_paths,
+                    )
+
+                    protected_paths = protected_handler_paths(ontology_root)
+                except Exception:
+                    logger.exception(
+                        "Failed to classify deterministic handler protection (%s)",
+                        call_context,
+                    )
+                    return "Error: deterministic_operation_protection_unavailable"
+                if resolved_path in protected_paths:
+                    logger.warning(
+                        "Blocked deterministic handler bypass (%s): script_path=%s",
+                        call_context,
+                        script_path,
+                    )
+                    return "Error: deterministic_operation_protected"
 
         if resolved_path.suffix.lower() != ".py":
             logger.warning(
@@ -890,7 +1145,24 @@ def handle_execute_script_path(
             )
             return "Error: '{}' is not a file".format(script_path)
 
-        child_env = os.environ.copy()
+        if clean_env:
+            allowed_host_names = {
+                "PATH",
+                "SYSTEMROOT",
+                "WINDIR",
+                "TEMP",
+                "TMP",
+                "TMPDIR",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+            }
+            child_env = {
+                key: value
+                for key, value in os.environ.items()
+                if key in allowed_host_names
+            }
+        else:
+            child_env = os.environ.copy()
         pythonpath_parts: List[str] = [str(BACKEND_DIR)]
         if extra_pythonpath_dirs:
             for d in extra_pythonpath_dirs:
@@ -903,6 +1175,10 @@ def handle_execute_script_path(
         child_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         child_env.setdefault("PYTHONIOENCODING", "utf-8")
         child_env.setdefault("PYTHONUTF8", "1")
+        # Ontology packages are runtime inputs, not Python cache directories.
+        # A generic/legacy script may later coexist with a locked deterministic
+        # operation, so never let imports mutate the installed package tree.
+        child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         if env_overrides:
             child_env.update({str(key): str(value) for key, value in env_overrides.items()})
 
@@ -939,6 +1215,14 @@ def handle_execute_script_path(
         fallback_error: Any = None
         fallback_blocked_message = ""
 
+        if sandbox_required and not sandbox_config.enabled:
+            logger.error(
+                "Sandbox is required for this script execution (%s): script_path=%s",
+                call_context,
+                script_path,
+            )
+            return "Error: Sandbox required for deterministic execution."
+
         if sandbox_config.enabled:
             if sys.platform != "linux":
                 fallback_reason = "unsupported_platform"
@@ -964,10 +1248,23 @@ def handle_execute_script_path(
                         cli_args=cli_args,
                         project_root=base_resolved,
                         ontology_dir=ontology_dir,
-                        run_id=str(run_id),
+                        run_id=str(sandbox_run_id or run_id),
                         workspace_id=workspace_id,
                         ontology_id=ontology_id,
                         timeout_seconds=max(1, int(timeout_seconds)),
+                        env_overrides=env_overrides,
+                        prepare_data_connection=sandbox_prepare_data_connection,
+                        include_data_connection_env=sandbox_include_data_connection_env,
+                        network_endpoint=sandbox_network_endpoint,
+                        read_only_paths=sandbox_read_only_paths,
+                        writable_paths=sandbox_writable_paths,
+                        stdout_limit_bytes=stdout_limit_bytes,
+                        stderr_limit_bytes=stderr_limit_bytes,
+                        file_size_limit_bytes=file_size_limit_bytes,
+                        cancel_event=cancel_event,
+                        restrict_filesystem_to_ontology=(
+                            sandbox_restrict_filesystem_to_ontology
+                        ),
                     )
                 except SandboxUnsupportedProviderError as exc:
                     fallback_reason = "unsupported_provider"
@@ -1017,6 +1314,8 @@ def handle_execute_script_path(
                     completed = None
 
             if completed is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Error: Script execution cancelled."
                 if fallback_reason is None:
                     logger.error(
                         "Sandbox executor returned no process result (%s): script_path=%s",
@@ -1025,7 +1324,9 @@ def handle_execute_script_path(
                     )
                     return _SCRIPT_EXECUTION_INTERNAL_ERROR
                 blocked = _fallback_or_error(
-                    fallback_local=sandbox_config.fallback_local,
+                    fallback_local=(
+                        sandbox_config.fallback_local and not sandbox_required
+                    ),
                     mode=execution_mode,
                     reason=fallback_reason,
                     blocked_message=fallback_blocked_message,
@@ -1042,18 +1343,36 @@ def handle_execute_script_path(
                 run_locally = True
 
         if completed is None and run_locally:
+            bounded_output = None
+            if stdout_limit_bytes is not None or stderr_limit_bytes is not None:
+                bounded_output = {
+                    "stdout_limit_bytes": max(1, int(stdout_limit_bytes or 1)),
+                    "stderr_limit_bytes": max(1, int(stderr_limit_bytes or 1)),
+                    "cancel_event": cancel_event,
+                }
             if oversize_args:
                 completed = _spawn_with_args_file(
                     resolved_path=resolved_path,
                     cli_args=cli_args,
                     env=child_env,
                     cwd=str(base_resolved),
+                    bounded_output=bounded_output,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=max(1, int(timeout_seconds)),
                     check=False,
+                )
+            elif bounded_output is not None:
+                completed = _run_with_bounded_output(
+                    [sys.executable, "-u", str(resolved_path), *cli_args],
+                    cwd=str(base_resolved),
+                    env=child_env,
+                    timeout_seconds=max(1, int(timeout_seconds)),
+                    stdout_limit_bytes=bounded_output["stdout_limit_bytes"],
+                    stderr_limit_bytes=bounded_output["stderr_limit_bytes"],
+                    cancel_event=cancel_event,
                 )
             elif SCRIPT_LIVE_LOG_ENABLED:
                 completed = _run_with_live_logging(
@@ -1085,6 +1404,16 @@ def handle_execute_script_path(
 
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: Script execution cancelled."
+        if stdout_limit_bytes is not None and len(stdout.encode("utf-8")) > int(
+            stdout_limit_bytes
+        ):
+            return "Error: Script stdout output exceeds the configured limit."
+        if stderr_limit_bytes is not None and len(stderr.encode("utf-8")) > int(
+            stderr_limit_bytes
+        ):
+            return "Error: Script stderr output exceeds the configured limit."
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info(
             (
@@ -1115,13 +1444,40 @@ def handle_execute_script_path(
             )
             error = "Error: Script exited with code {}.".format(completed.returncode)
             public_error = _extract_public_script_error(stderr)
+            if public_error is None:
+                public_error = _extract_public_script_stdout_error(stdout)
+            if public_error is None:
+                public_error = _extract_public_python_exception_type(stderr)
             return "{} {}".format(error, public_error) if public_error else error
 
-        result = _combine_process_output(stdout=stdout, stderr=stderr)
+        if stderr and not include_stderr_on_success:
+            logger.info(
+                "Successful script wrote diagnostic stderr (%s): stderr_chars=%s",
+                call_context,
+                len(stderr),
+            )
+        result = (
+            _combine_process_output(stdout=stdout, stderr=stderr)
+            if include_stderr_on_success
+            else stdout
+        )
         if result:
             return result
         return "Script executed successfully with no output."
 
+    except _ScriptOutputLimitExceeded as exc:
+        logger.warning(
+            "Python script %s output exceeded limit (%s): script_path=%s",
+            exc.stream_name,
+            call_context,
+            script_path,
+        )
+        return "Error: Script {} output exceeds the configured limit.".format(
+            exc.stream_name
+        )
+    except _ScriptExecutionCancelled:
+        logger.info("Python script cancelled (%s): script_path=%s", call_context, script_path)
+        return "Error: Script execution cancelled."
     except subprocess.TimeoutExpired as exc:
         timeout_stdout = (exc.stdout or "")
         timeout_stderr = (exc.stderr or "")
@@ -1159,6 +1515,30 @@ def _combine_process_output(*, stdout: str, stderr: str) -> str:
 
 _REQUEST_ITEM_SPLIT_PATTERN = re.compile(r"[\r\n;；]+")
 _EVIDENCE_NOISE_PATTERN = re.compile(r"[\W_]+", re.UNICODE)
+_IDENTITY_FIELD_SUFFIXES = ("_id", "_no", "_code", "_name")
+_IDENTITY_FIELD_NAMES = frozenset(
+    {
+        "code",
+        "crude_name",
+        "device",
+        "device_name",
+        "equipment",
+        "equipment_name",
+        "id",
+        "identifier",
+        "unit",
+        "unit_name",
+        "unit_no",
+    }
+)
+_IDENTITY_FIELD_EXCLUSIONS = frozenset(
+    {
+        "batch_id",
+        "batch_no",
+        "record_id",
+        "row_id",
+    }
+)
 
 
 def _normalize_argument_evidence(value: Any) -> str:
@@ -1201,6 +1581,53 @@ def _flatten_item_field_evidence(
     return list(dict.fromkeys(fields))
 
 
+def _parse_embedded_json_container(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    serialized = value.lstrip()
+    if not serialized.startswith(("{", "[")):
+        return value
+    try:
+        parsed = json.loads(serialized)
+    except (json.JSONDecodeError, TypeError):
+        return value
+    return parsed if isinstance(parsed, (Mapping, list)) else value
+
+
+def _is_identity_field(field_name: str) -> bool:
+    normalized = str(field_name or "").strip().casefold()
+    if not normalized or normalized in _IDENTITY_FIELD_EXCLUSIONS:
+        return False
+    return (
+        normalized in _IDENTITY_FIELD_NAMES
+        or normalized.endswith(_IDENTITY_FIELD_SUFFIXES)
+        or any(marker in normalized for marker in ("编号", "名称", "设备号", "装置号"))
+    )
+
+
+def _identity_field_evidence(
+    value: Any,
+    path: str = "arguments",
+) -> List[tuple[str, str]]:
+    parsed = _parse_embedded_json_container(value)
+    fields: List[tuple[str, str]] = []
+    if isinstance(parsed, Mapping):
+        for key, nested in parsed.items():
+            child_path = "{}.{}".format(path, key)
+            nested_parsed = _parse_embedded_json_container(nested)
+            if _is_identity_field(str(key)) and not isinstance(
+                nested_parsed, (Mapping, list, tuple)
+            ):
+                normalized = _normalize_argument_evidence(nested_parsed)
+                if normalized:
+                    fields.append((child_path, normalized))
+            fields.extend(_identity_field_evidence(nested_parsed, child_path))
+    elif isinstance(parsed, (list, tuple)):
+        for index, nested in enumerate(parsed):
+            fields.extend(_identity_field_evidence(nested, "{}[{}]".format(path, index)))
+    return list(dict.fromkeys(fields))
+
+
 def _structured_collections(
     value: Any,
     path: str = "arguments",
@@ -1209,12 +1636,7 @@ def _structured_collections(
     if isinstance(value, Mapping):
         for key, nested in value.items():
             child_path = "{}.{}".format(path, key)
-            parsed = nested
-            if isinstance(nested, str) and nested.lstrip().startswith("["):
-                try:
-                    parsed = json.loads(nested)
-                except (json.JSONDecodeError, TypeError):
-                    parsed = nested
+            parsed = _parse_embedded_json_container(nested)
             if (
                 isinstance(parsed, list)
                 and len(parsed) >= 2
@@ -1241,6 +1663,18 @@ def _validate_structured_arguments_against_request(
     full_request = _normalize_argument_evidence(request_text)
     if not full_request:
         return []
+    normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
+    errors: List[str] = []
+    for path, value in _identity_field_evidence(arguments):
+        if value in full_request:
+            continue
+        if normalized_tool_evidence and value in normalized_tool_evidence:
+            continue
+        errors.append(
+            "{} identity value is not grounded in the current request or current tool evidence".format(
+                path
+            )
+        )
     raw_segments = [
         part.strip()
         for part in _REQUEST_ITEM_SPLIT_PATTERN.split(request_text)
@@ -1248,10 +1682,7 @@ def _validate_structured_arguments_against_request(
     ]
     segments = [_normalize_argument_evidence(part) for part in raw_segments]
     if len(segments) < 2:
-        return []
-
-    normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
-    errors: List[str] = []
+        return errors
     for path, items in _structured_collections(arguments):
         if normalized_tool_evidence and all(
             _item_is_grounded_in_tool_evidence(item, normalized_tool_evidence)
@@ -1505,6 +1936,68 @@ def _extract_public_script_error(stderr: str) -> Optional[str]:
     return None
 
 
+def _extract_public_script_stdout_error(stdout: str) -> Optional[str]:
+    """Read the deterministic runtime's strict JSON error envelope.
+
+    Arbitrary failed-process stdout remains private.  The compatibility path
+    accepts only one complete document with the generated runtime's bounded
+    JSON shape and deliberately ignores ``details`` so exception diagnostics
+    cannot become public output.
+    """
+    serialized = str(stdout or "").strip()
+    if not serialized:
+        return None
+    try:
+        payload = json.loads(serialized)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if not {"error_code", "message"}.issubset(payload):
+        return None
+    if not set(payload).issubset(_PUBLIC_SCRIPT_STDOUT_ERROR_KEYS):
+        return None
+    raw_code = payload.get("error_code")
+    message = payload.get("message")
+    if not isinstance(raw_code, str) or not isinstance(message, str):
+        return None
+    code = raw_code.strip()
+    if not _PUBLIC_SCRIPT_STDOUT_ERROR_CODE_PATTERN.fullmatch(code):
+        return None
+    normalized_code = code.upper()
+    if not _PUBLIC_SCRIPT_ERROR_CODE_PATTERN.fullmatch(normalized_code):
+        return None
+    normalized_message = " ".join(message.split())[
+        :_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH
+    ].strip()
+    return "[{}]{}".format(
+        normalized_code,
+        " {}".format(normalized_message) if normalized_message else "",
+    )
+
+
+def _extract_public_python_exception_type(stderr: str) -> Optional[str]:
+    """Expose only a safe exception class from a standard Python traceback.
+
+    Exception messages can contain business values, paths, or credentials, so the
+    failed process' final message remains private.  A bounded allow-list still gives
+    the agent an actionable failure category without disclosing those details.
+    """
+    lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    if not lines or not any(line.startswith("Traceback (") for line in lines):
+        return None
+    match = re.match(
+        r"^(?:[A-Za-z_][A-Za-z0-9_]*\.)*(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::|$)",
+        lines[-1],
+    )
+    if match is None:
+        return None
+    exception_name = match.group("name")
+    if exception_name not in _PUBLIC_PYTHON_EXCEPTION_TYPES:
+        return None
+    return "[SCRIPT_RUNTIME_ERROR] Python {}.".format(exception_name)
+
+
 def handle_execute_script(
     *,
     ontology_id: str,
@@ -1530,6 +2023,18 @@ def handle_execute_script(
     assert ontology is not None
 
     ontology_dir = Path(ontology.ontology_dir).resolve()
+    try:
+        from ontology.operation_execution import is_deterministic_operation
+
+        if is_deterministic_operation(ontology_dir, operation_key):
+            return "Error: deterministic_operation_protected"
+    except Exception:
+        logger.exception(
+            "Failed to classify deterministic operation protection: ontology_id=%s operation_key=%s",
+            ontology.id,
+            operation_key,
+        )
+        return "Error: deterministic_operation_protection_unavailable"
     script_catalog = load_script_catalog(ontology_dir)
     script_entry = find_script_entry(script_catalog, operation_key, bound_only=True)
     if script_entry is None:
@@ -1573,6 +2078,18 @@ def handle_execute_script(
             operation_key,
             ", ".join(missing_args),
         )
+    requires_business_data = (
+        str(script_entry.get("data_access") or "none").strip().casefold()
+        == _WORKSPACE_PROVIDER_DATA_ACCESS
+    )
+    try:
+        env_overrides = _build_script_env_overrides(
+            workspace_id=workspace_id,
+            ontology_id=ontology_id,
+            required=requires_business_data,
+        )
+    except BusinessDataConnectionError:
+        return _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR
     return handle_execute_script_path(
         script_path=script_path,
         args=cli_args,
@@ -1584,13 +2101,11 @@ def handle_execute_script(
         session_id=session_id,
         turn_id=turn_id,
         extra_pythonpath_dirs=[ontology_dir],
-        env_overrides=_build_script_env_overrides(
-            workspace_id=workspace_id,
-            ontology_id=ontology_id,
-        ),
+        env_overrides=env_overrides,
         workspace_id=workspace_id,
         ontology_id=ontology_id,
         ontology_dir=ontology_dir,
+        include_stderr_on_success=False,
     )
 
 
@@ -2010,9 +2525,10 @@ class ExecuteScriptTool:
         del event_emitter
         ontology_id = str(args.get("ontology_id") or "").strip()
         operation_key = str(args.get("operation_key") or "").strip()
+        context_messages = getattr(context, "messages", ()) or ()
         if ontology_id and operation_key:
             successful_calls = _prior_successful_operation_calls(
-                context.messages,
+                context_messages,
                 ontology_id=ontology_id,
                 operation_key=operation_key,
                 current_tool_call_id=tool_call_id,
@@ -2050,8 +2566,8 @@ class ExecuteScriptTool:
         if isinstance(argument_values, Mapping):
             consistency_errors = _validate_structured_arguments_against_request(
                 argument_values,
-                _latest_user_request(context.messages),
-                _current_turn_business_data_evidence(context.messages),
+                _latest_user_request(context_messages),
+                _current_turn_business_data_evidence(context_messages),
             )
             if consistency_errors:
                 return ToolOutcome(content=(
@@ -2107,4 +2623,35 @@ class ExecuteScriptTool:
             call_args.get("ontology_version") or "n/a",
             call_args.get("operation_key"),
         )
-        return ToolOutcome(content=handle_execute_script(**call_args))
+        content = handle_execute_script(**call_args)
+        terminal_error = _terminal_execute_script_error(content)
+        return ToolOutcome(
+            content=content,
+            state_updates={"terminal_error": terminal_error} if terminal_error else {},
+            terminal=terminal_error is not None,
+        )
+
+
+def _terminal_execute_script_error(content: str) -> Optional[Dict[str, str]]:
+    normalized = " ".join(str(content or "").split())
+    if not normalized.lower().startswith("error:"):
+        return None
+    terminal_prefixes = (
+        _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
+        "Error: deterministic_operation_protected",
+        "Error: deterministic_operation_protection_unavailable",
+        "Error: Sandbox ",
+        "Error: Script execution ",
+        "Error: Script stdout ",
+        "Error: Script stderr ",
+        "Error: Script exited with code ",
+    )
+    if not normalized.startswith(terminal_prefixes):
+        return None
+    return {
+        "error_code": "EXECUTE_SCRIPT_FAILED",
+        "message": (
+            "The deterministic operation failed, so no calculated conclusion was produced."
+        ),
+        "tool_name": "execute_script",
+    }

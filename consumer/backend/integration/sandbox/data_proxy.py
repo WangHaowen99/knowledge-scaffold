@@ -163,7 +163,7 @@ class DataConnectionSecretManager:
 
         route_prefix = _route_prefix(run_id, connection.id)
         route_name = _route_name_for_path_prefix(route_prefix)
-        proxy_url = _sandbox_reachable_url(
+        proxy_url = sandbox_reachable_url(
             urljoin(
                 self._config.data_proxy_base_url.rstrip("/") + "/",
                 route_prefix.lstrip("/"),
@@ -244,12 +244,19 @@ def _route_name_for_path_prefix(path_prefix: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "-", name)
 
 
-def _sandbox_reachable_url(url: str) -> str:
-    """Resolve docker service hostnames to IPs for isolated sandbox egress."""
+def sandbox_reachable_url(url: str) -> str:
+    """Resolve and pin a sandbox endpoint to one concrete IP address.
+
+    Resolution is deliberately fail-closed: returning the hostname would let
+    the sandbox policy resolve it again after the trusted-host check.  When a
+    name has both address families, the stable ordering prefers IPv4 and then
+    the numerically lowest address; IPv6-only names remain fully supported.
+    """
     normalized = str(url or "").strip()
     if not normalized:
         return normalized
-    parsed = urlparse(normalized if "://" in normalized else f"http://{normalized}")
+    has_explicit_scheme = "://" in normalized
+    parsed = urlparse(normalized if has_explicit_scheme else f"//{normalized}")
     host = (parsed.hostname or "").strip()
     if not host:
         return normalized
@@ -258,13 +265,36 @@ def _sandbox_reachable_url(url: str) -> str:
         return normalized
     except ValueError:
         pass
-    try:
-        resolved = socket.gethostbyname(host)
-    except OSError:
-        return normalized
     port = parsed.port
-    netloc = f"{resolved}:{port}" if port else resolved
-    return parsed._replace(netloc=netloc).geturl()
+    try:
+        address_info = socket.getaddrinfo(
+            host,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as exc:
+        raise SandboxUnavailableError(
+            "sandbox network endpoint host could not be resolved"
+        ) from exc
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for family, _type, _protocol, _canonical_name, socket_address in address_info:
+        if family not in {socket.AF_INET, socket.AF_INET6} or not socket_address:
+            continue
+        try:
+            addresses.add(ipaddress.ip_address(socket_address[0]))
+        except ValueError:
+            continue
+    if not addresses:
+        raise SandboxUnavailableError(
+            "sandbox network endpoint host did not resolve to an IP address"
+        )
+    address = sorted(addresses, key=lambda item: (item.version, item.packed))[0]
+    resolved = address.compressed
+    address_netloc = "[{}]".format(resolved) if address.version == 6 else resolved
+    netloc = f"{address_netloc}:{port}" if port else address_netloc
+    resolved_url = parsed._replace(netloc=netloc).geturl()
+    return resolved_url if has_explicit_scheme else resolved_url.removeprefix("//")
 
 
 def _normalize_endpoint(url: Any) -> str:

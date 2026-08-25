@@ -28,8 +28,9 @@ export function importEvaluationDatabaseExcelInWorker(input: {
     {
       name: 'evaluation-database-import',
       resourceLimits: { maxOldGenerationSizeMb: 512 },
-      // `node --input-type=module` 仅适用于 stdin/eval，继承到文件型 Worker 会启动失败。
-      execArgv: process.execArgv.filter((argument) => !argument.startsWith('--input-type')),
+      // The data-URL bootstrap imports TS explicitly, so inheriting parent-only
+      // runtime flags is unnecessary and can make Worker startup fail.
+      execArgv: [],
     },
   );
   const transferable = Uint8Array.from(input.buffer).buffer;

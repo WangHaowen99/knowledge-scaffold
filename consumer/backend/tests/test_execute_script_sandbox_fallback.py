@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from types import SimpleNamespace
@@ -51,6 +52,13 @@ def _completed(
     )
 
 
+def test_bounded_runner_rejects_non_python_executable():
+    with pytest.raises(ValueError, match="trusted Python interpreter"):
+        execute_script_module._validated_python_argv(
+            [execute_script_module.sys.executable + ".untrusted", "--version"]
+        )
+
+
 def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
     script = _write_script(tmp_path)
     extra_package_dir = tmp_path / "extra-package"
@@ -79,12 +87,14 @@ def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
         base_path=tmp_path,
         run_id="run-live",
         extra_pythonpath_dirs=[extra_package_dir],
-        env_overrides={"ONTO_X": "must-not-be-forwarded-to-sandbox-executor"},
+        env_overrides={"ONTO_X": "executor-allowlist-must-drop-this"},
     )
 
     assert result == "sandbox-output"
     assert len(sandbox_calls) == 1
-    assert "env_overrides" not in sandbox_calls[0]
+    assert sandbox_calls[0]["env_overrides"] == {
+        "ONTO_X": "executor-allowlist-must-drop-this"
+    }
     assert sandbox_calls[0]["ontology_dir"] is None
 
 
@@ -158,6 +168,119 @@ def test_disabled_sandbox_uses_normal_local_execution(tmp_path, monkeypatch):
     )
 
     assert result == "normal-local-output"
+
+
+def test_required_sandbox_never_runs_locally_when_disabled(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("required sandbox must not fall back locally")
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-required",
+        sandbox_required=True,
+    )
+
+    assert result == "Error: Sandbox required for deterministic execution."
+
+
+def test_required_sandbox_blocks_configured_fallback_after_failure(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True, enabled=True)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+
+    class FailingSandboxExecutor:
+        def run_script(self, **_kwargs):
+            raise SandboxUnavailableError("offline")
+
+    monkeypatch.setattr(
+        execute_script_module,
+        "SandboxScriptExecutor",
+        FailingSandboxExecutor,
+    )
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("required sandbox must not fall back locally")
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-required-failure",
+        sandbox_required=True,
+    )
+
+    assert result == "Error: Sandbox unavailable."
+
+
+def test_clean_local_environment_does_not_inherit_host_secrets(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-parser")
+    captured = {}
+
+    def run(*_args, **kwargs):
+        captured.update(kwargs)
+        return _completed("{}")
+
+    monkeypatch.setattr(execute_script_module.subprocess, "run", run)
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        clean_env=True,
+        include_stderr_on_success=False,
+        env_overrides={"DETERMINISTIC_EXECUTION": "1"},
+    )
+
+    assert result == "{}"
+    assert "OPENAI_API_KEY" not in captured["env"]
+    assert captured["env"]["DETERMINISTIC_EXECUTION"] == "1"
+
+
+def test_successful_deterministic_output_ignores_diagnostic_stderr(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed('{"value":"ok"}', stderr="diagnostic"),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        include_stderr_on_success=False,
+    )
+
+    assert result == '{"value":"ok"}'
+
+
+def test_bounded_local_execution_stops_oversized_stdout(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    script.write_text("print('x' * 100000)\n", encoding="utf-8")
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        clean_env=True,
+        include_stderr_on_success=False,
+        stdout_limit_bytes=64,
+        stderr_limit_bytes=64,
+    )
+
+    assert result == "Error: Script stdout output exceeds the configured limit."
 
 
 def test_legacy_mode_routes_directly_to_original_local_path(tmp_path, monkeypatch):
@@ -818,6 +941,210 @@ def test_nonzero_exit_returns_explicit_public_business_error(
     assert "stderr-secret" not in result
     assert "stdout-secret" not in caplog.text
     assert "stderr-secret" not in caplog.text
+
+
+def test_nonzero_exit_returns_strict_deterministic_stdout_error(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=4,
+            stdout=(
+                "{\n"
+                '  "error_code": "runtime_error",\n'
+                '  "message": "Synthetic operation failed.",\n'
+                '  "details": "synthetic internal diagnostic"\n'
+                "}\n"
+            ),
+            stderr="",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert result == (
+        "Error: Script exited with code 4. "
+        "[RUNTIME_ERROR] Synthetic operation failed."
+    )
+    assert "synthetic internal diagnostic" not in result
+    assert "synthetic internal diagnostic" not in caplog.text
+
+
+def test_nonzero_exit_returns_only_safe_python_exception_type(
+    tmp_path,
+    monkeypatch,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Traceback (most recent call last):\n"
+                '  File "operation.py", line 1, in <module>\n'
+                "KeyError: 'synthetic-private-value'\n"
+            ),
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+    )
+
+    assert result == (
+        "Error: Script exited with code 1. "
+        "[SCRIPT_RUNTIME_ERROR] Python KeyError."
+    )
+    assert "synthetic-private-value" not in result
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"diagnostic": "synthetic internal diagnostic"},
+        ["synthetic internal diagnostic"],
+    ],
+)
+def test_nonzero_exit_ignores_structured_deterministic_error_details(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    details,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=4,
+            stdout=json.dumps(
+                {
+                    "error_code": "runtime_error",
+                    "message": "Synthetic operation failed.",
+                    "details": details,
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert result == (
+        "Error: Script exited with code 4. "
+        "[RUNTIME_ERROR] Synthetic operation failed."
+    )
+    assert "synthetic internal diagnostic" not in result
+    assert "synthetic internal diagnostic" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        (
+            '{"error_code":"runtime_error",'
+            '"message":"Synthetic operation failed."}\n'
+            "additional diagnostic"
+        ),
+        (
+            '{"error_code":"runtime_error",'
+            '"message":"Synthetic operation failed.",'
+            '"unexpected":"synthetic extra field"}'
+        ),
+        (
+            '{"error_code":"runtime-error",'
+            '"message":"Synthetic operation failed."}'
+        ),
+    ],
+)
+def test_nonzero_exit_rejects_ambiguous_deterministic_stdout_error(
+    tmp_path,
+    monkeypatch,
+    stdout,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=4,
+            stdout=stdout,
+            stderr="",
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+    )
+
+    assert result == "Error: Script exited with code 4."
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("OUTPUT_LIMIT", "stdout output exceeds limit"),
+        ("ARTIFACT_LIMIT", "artifact file exceeds limit"),
+    ],
+)
+def test_nonzero_exit_preserves_bounded_runner_public_error(
+    tmp_path,
+    monkeypatch,
+    code,
+    message,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=125,
+            stdout="",
+            stderr=(
+                'ONTO_PUBLIC_ERROR: {{"code":"{}","message":"{}"}}'.format(
+                    code,
+                    message,
+                )
+            ),
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+    )
+
+    assert result == "Error: Script exited with code 125. [{}] {}".format(
+        code,
+        message,
+    )
 
 
 def test_nonzero_exit_rejects_malformed_public_error_marker(tmp_path, monkeypatch):

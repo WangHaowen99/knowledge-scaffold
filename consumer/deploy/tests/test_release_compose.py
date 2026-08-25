@@ -51,6 +51,18 @@ def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
     assert "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions" in compose_text
 
 
+def test_release_compose_shares_deterministic_artifact_staging_with_jiuwenbox():
+    compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
+    mount = "onto-deterministic-artifacts:/run/onto-deterministic-artifacts"
+
+    assert compose_text.count(mount) == 2
+    assert (
+        "DETERMINISTIC_ARTIFACT_STAGING_ROOT=/run/onto-deterministic-artifacts"
+        in compose_text
+    )
+    assert "volumes:\n  onto-deterministic-artifacts:" in compose_text
+
+
 def test_release_lifecycle_supports_legacy_docker_compose_and_uses_compatible_env_files():
     common_text = (DEPLOY_ROOT / "common.sh").read_text(encoding="utf-8")
     preflight_text = (DEPLOY_ROOT / "preflight.sh").read_text(encoding="utf-8")

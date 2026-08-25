@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import threading
 
 from utils.logging import get_logger
@@ -51,6 +51,18 @@ class RunStore:
         self._lock = threading.Lock()
         self._active_run_counts: Dict[str, int] = {}
         self._active_run_counts_lock = threading.Lock()
+
+    _FINAL_STATUSES = {
+        RunStatus.AWAITING,
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    }
+    _IMMUTABLE_FINAL_STATUSES = {
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    }
 
     def create_run(
         self,
@@ -169,10 +181,43 @@ class RunStore:
                 logger.warning("Run %s not found for status update", run_id)
                 return None
 
-            run.status = status
-            run.updated_at = datetime.utcnow()
+            previous_status = run.status
+            previous_user_id = run.metadata.get("user_id")
+            if (
+                previous_status in self._IMMUTABLE_FINAL_STATUSES
+                and status != previous_status
+            ):
+                logger.info(
+                    "Ignored status rewrite for terminal run %s status=%s requested=%s",
+                    run_id,
+                    previous_status.value,
+                    status.value,
+                )
+                return run
+
             if metadata:
                 run.metadata.update(metadata)
+            user_id = run.metadata.get("user_id")
+            if previous_status == RunStatus.RUNNING and (
+                status != RunStatus.RUNNING or previous_user_id != user_id
+            ):
+                if previous_user_id:
+                    with self._active_run_counts_lock:
+                        self._active_run_counts[previous_user_id] = max(
+                            0,
+                            self._active_run_counts.get(previous_user_id, 0) - 1,
+                        )
+            if status == RunStatus.RUNNING and (
+                previous_status != RunStatus.RUNNING or previous_user_id != user_id
+            ):
+                if user_id:
+                    with self._active_run_counts_lock:
+                        self._active_run_counts[user_id] = (
+                            self._active_run_counts.get(user_id, 0) + 1
+                        )
+
+            run.status = status
+            run.updated_at = datetime.utcnow()
 
             logger.info("Updated run %s status to %s", run_id, status)
             return run
@@ -233,6 +278,13 @@ class RunStore:
             if not run:
                 logger.warning("Run %s not found for completion", run_id)
                 return None
+            if run.status in self._FINAL_STATUSES:
+                logger.info(
+                    "Ignored completion for terminal run %s status=%s",
+                    run_id,
+                    run.status.value,
+                )
+                return run
 
             self._decrement_active_count(run)
             run.status = RunStatus.COMPLETED
@@ -242,6 +294,41 @@ class RunStore:
 
             logger.info("Completed run %s", run_id)
         return run
+
+    def complete_run_transaction(
+        self,
+        run_id: str,
+        result: Dict[str, Any],
+        commit: Callable[[], None],
+    ) -> Optional[Run]:
+        """Persist dependent success state before atomically completing a run.
+
+        Cancellation and completion share ``_lock``.  If cancellation wins,
+        ``commit`` is not called.  If persistence raises, the run remains
+        running so the orchestrator can transition it to failed.
+        """
+        with self._lock:
+            run = self._runs.get(run_id)
+            if not run:
+                logger.warning("Run %s not found for transactional completion", run_id)
+                return None
+            if run.status in self._FINAL_STATUSES:
+                logger.info(
+                    "Ignored transactional completion for terminal run %s status=%s",
+                    run_id,
+                    run.status.value,
+                )
+                return run
+
+            commit()
+            self._decrement_active_count(run)
+            run.status = RunStatus.COMPLETED
+            run.result = result
+            run.error = None
+            run.completed_at = datetime.utcnow()
+            run.updated_at = run.completed_at
+            logger.info("Transactionally completed run %s", run_id)
+            return run
 
     def await_run(
         self,
@@ -255,6 +342,13 @@ class RunStore:
             if not run:
                 logger.warning("Run %s not found for awaiting state", run_id)
                 return None
+            if run.status in self._FINAL_STATUSES:
+                logger.info(
+                    "Ignored awaiting transition for terminal run %s status=%s",
+                    run_id,
+                    run.status.value,
+                )
+                return run
 
             self._decrement_active_count(run)
             run.status = RunStatus.AWAITING
@@ -265,6 +359,38 @@ class RunStore:
 
             logger.info("Run %s is awaiting user input", run_id)
         return run
+
+    def await_run_transaction(
+        self,
+        run_id: str,
+        result: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+        commit: Callable[[], None],
+    ) -> Optional[Run]:
+        """Persist dependent state before atomically marking a run awaiting."""
+        with self._lock:
+            run = self._runs.get(run_id)
+            if not run:
+                logger.warning("Run %s not found for transactional awaiting state", run_id)
+                return None
+            if run.status in self._FINAL_STATUSES:
+                logger.info(
+                    "Ignored transactional awaiting transition for final run %s status=%s",
+                    run_id,
+                    run.status.value,
+                )
+                return run
+
+            commit()
+            self._decrement_active_count(run)
+            run.status = RunStatus.AWAITING
+            run.result = result
+            run.error = None
+            run.updated_at = datetime.utcnow()
+            if metadata:
+                run.metadata.update(metadata)
+            logger.info("Run %s is transactionally awaiting user input", run_id)
+            return run
 
     def fail_run(
         self,
@@ -286,6 +412,13 @@ class RunStore:
             if not run:
                 logger.warning("Run %s not found for failure", run_id)
                 return None
+            if run.status in self._FINAL_STATUSES:
+                logger.info(
+                    "Ignored failure for terminal run %s status=%s",
+                    run_id,
+                    run.status.value,
+                )
+                return run
 
             self._decrement_active_count(run)
             run.status = RunStatus.FAILED
@@ -295,6 +428,40 @@ class RunStore:
 
             logger.error("Failed run %s: %s", run_id, error)
         return run
+
+    def fail_run_transaction(
+        self,
+        run_id: str,
+        error: str,
+        metadata: Optional[Dict[str, Any]],
+        commit: Callable[[], None],
+        result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Run]:
+        """Persist dependent failure state before atomically failing a run."""
+        with self._lock:
+            run = self._runs.get(run_id)
+            if not run:
+                logger.warning("Run %s not found for transactional failure", run_id)
+                return None
+            if run.status in self._FINAL_STATUSES:
+                logger.info(
+                    "Ignored transactional failure for final run %s status=%s",
+                    run_id,
+                    run.status.value,
+                )
+                return run
+
+            commit()
+            self._decrement_active_count(run)
+            run.status = RunStatus.FAILED
+            run.result = result
+            run.error = error
+            run.completed_at = datetime.utcnow()
+            run.updated_at = run.completed_at
+            if metadata:
+                run.metadata.update(metadata)
+            logger.error("Transactionally failed run %s: %s", run_id, error)
+            return run
 
     def cancel_run(
         self,
@@ -314,6 +481,8 @@ class RunStore:
             run = self._runs.get(run_id)
             if not run:
                 return None
+            if run.status in self._FINAL_STATUSES:
+                return run
 
             self._decrement_active_count(run)
             run.status = RunStatus.CANCELLED

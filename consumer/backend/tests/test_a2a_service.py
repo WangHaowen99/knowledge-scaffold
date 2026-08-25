@@ -104,6 +104,35 @@ def test_get_task_ignores_stale_matching_awaiting_input_run():
     assert snapshot.state == A2ATaskState.COMPLETED
 
 
+def test_get_failed_deterministic_task_preserves_structured_result():
+    run_store = RunStore()
+    run_store.create_run("task-failed", "query", metadata={"session_id": "session-1"})
+    public_result = {
+        "status": "failed",
+        "error": {"code": "handler_failed", "message": "failed safely"},
+    }
+    run_store.fail_run_transaction(
+        "task-failed",
+        "handler_failed: failed safely",
+        {"execution_type": "deterministic", "error_code": "handler_failed"},
+        lambda: None,
+        result=public_result,
+    )
+    service = A2ATaskService(
+        orchestrator=SimpleNamespace(run_store=run_store),
+        chat_store=_FakeChatStore(),
+        execution_store=_FakeExecutionStore(),
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+
+    snapshot = service.get_task("task-failed")
+
+    assert snapshot.state == A2ATaskState.FAILED
+    assert snapshot.error_code == "handler_failed"
+    assert snapshot.result == public_result
+
+
 def test_background_task_enters_workspace_and_app_context(monkeypatch):
     entered = {"workspace": None, "app_name": None}
 

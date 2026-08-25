@@ -104,7 +104,37 @@ class _ScenarioOrchestrator:
         }
 
     def cancel_run(self, run_id, reason=None):
-        return self.run_store.cancel_run(run_id, metadata={"cancel_reason": reason}) is not None
+        run = self.run_store.cancel_run(run_id, metadata={"cancel_reason": reason})
+        return run is not None and run.status.value == "cancelled"
+
+
+class _StructuredScenarioOrchestrator(_ScenarioOrchestrator):
+    def run(self, **kwargs):
+        self.last_calls.append(dict(kwargs))
+        run_id = str(kwargs.get("requested_run_id") or "structured-run")
+        session_id = str(kwargs.get("session_id") or "structured-session")
+        envelope = {
+            "status": "success",
+            "structured_result": {"value": "exact"},
+            "artifacts": [],
+            "execution": {
+                "type": "deterministic",
+                "authoritative": True,
+                "complete": True,
+                "operation_key": "query_exact",
+            },
+            "text": "exact",
+        }
+        self.run_store.complete_run(run_id, envelope)
+        yield {
+            "event": "agent.v2",
+            "data": {
+                "session_id": session_id,
+                "run_id": run_id,
+                "type": "turn.finished",
+                "payload": {"status": "success", "final_output": envelope},
+            },
+        }
 
 
 def _create_auth_app(tmp_path, monkeypatch, *blueprints):
@@ -272,3 +302,71 @@ def test_acp_execute_route_keeps_interaction_for_interactive_finance_scenario(mo
     assert body["awaiting"]["await_id"] == "interaction_finance_recommend"
     assert body["awaiting"]["message"]["parts"][0]["content"] == AWAITING_PROMPT
     assert fake.last_calls[-1]["user_context"]["supports_user_interaction"] is True
+
+    cancel_response = client.delete(f"/acp/runs/{run_id}", headers=headers)
+
+    assert cancel_response.status_code == 409
+    assert cancel_response.get_json()["status"] == "awaiting"
+    assert cancel_response.get_json()["cancelled"] is False
+    assert fake.run_store.get_run(run_id).status.value == "awaiting"
+
+
+def test_acp_sync_and_status_preserve_structured_terminal_result(monkeypatch, tmp_path):
+    fake = _StructuredScenarioOrchestrator()
+    client, headers = _create_auth_app(tmp_path, monkeypatch, acp_server.acp_bp)
+    with acp_server._ACP_REGISTRY_LOCK:
+        acp_server._ACP_RUN_REGISTRY.clear()
+    monkeypatch.setattr(acp_server, "_orchestrator", fake)
+
+    create_response = client.post(
+        "/acp/runs",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "parts": [{"type": "text", "content": "Query Exact"}],
+                }
+            ],
+            "context": {"session_id": "acp-structured-result"},
+            "requested_operation_key": "query_exact",
+            "arguments": {"code": "A"},
+        },
+        headers=headers,
+    )
+    run_id = create_response.get_json()["run_id"]
+
+    execute_response = client.post(f"/acp/runs/{run_id}/execute", headers=headers)
+    status_response = client.get(f"/acp/runs/{run_id}", headers=headers)
+
+    assert execute_response.status_code == 200
+    assert execute_response.get_json()["result"]["structured_result"] == {
+        "value": "exact"
+    }
+    assert status_response.status_code == 200
+    assert status_response.get_json()["result"]["execution"]["authoritative"] is True
+
+
+def test_acp_entrypoints_reject_non_object_structured_fields(monkeypatch, tmp_path):
+    client, headers = _create_auth_app(tmp_path, monkeypatch, acp_server.acp_bp)
+    with acp_server._ACP_REGISTRY_LOCK:
+        acp_server._ACP_RUN_REGISTRY.clear()
+    base_payload = {
+        "messages": [
+            {
+                "role": "user",
+                "parts": [{"type": "text", "content": "Query Exact"}],
+            }
+        ]
+    }
+
+    for endpoint in ("/acp/runs", "/acp/runs/execute_stream"):
+        for field in ("context", "arguments"):
+            response = client.post(
+                endpoint,
+                json={**base_payload, field: ["invalid"]},
+                headers=headers,
+            )
+            assert response.status_code == 400
+            assert response.get_json() == {
+                "detail": "{} must be an object".format(field)
+            }

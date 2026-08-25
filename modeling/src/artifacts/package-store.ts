@@ -1514,15 +1514,27 @@ export class PackageArtifactStore {
   }
 
   private transaction<T>(task: () => T): T {
-    const savepoint = `package_artifact_${randomUUID().replaceAll('-', '')}`;
-    this.db.exec(`SAVEPOINT ${savepoint}`);
+    if (this.db.isTransaction) {
+      const savepoint = `package_artifact_${randomUUID().replaceAll('-', '')}`;
+      this.db.exec(`SAVEPOINT ${savepoint}`);
+      try {
+        const result = task();
+        this.db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+        return result;
+      } catch (error) {
+        this.db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        this.db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+        throw error;
+      }
+    }
+
+    this.db.exec('BEGIN IMMEDIATE');
     try {
       const result = task();
-      this.db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      this.db.exec('COMMIT');
       return result;
     } catch (error) {
-      this.db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
-      this.db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
   }
