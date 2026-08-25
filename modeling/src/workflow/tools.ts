@@ -280,7 +280,9 @@ export const specObjectSchema = (candidateIds: string[] = []) => Type.Object({
     type: Type.Optional(Type.String()),
     required: Type.Optional(Type.Boolean()),
     note: Type.Optional(Type.String()),
-    alias: Type.Optional(Type.String({ description: '字段的业务别名' })),
+    alias: Type.Optional(Type.String({
+      description: '字段的真实业务别名；没有别名时省略该属性，不得填写横线、无或 N/A 等占位符',
+    })),
     sourceColumn: Type.Optional(Type.String({ description: '来源 Sheet 中的真实列名（与字段 key 不同时必填）' })),
   })),
 });

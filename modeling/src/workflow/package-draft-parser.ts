@@ -6,6 +6,7 @@ import type {
   SpecRule,
 } from '../types.js';
 import { renderPackage } from './package-render.js';
+import { normalizeFieldAlias } from './field-alias.js';
 
 type FrontmatterScalar = string;
 type FrontmatterValue = FrontmatterScalar | FrontmatterValue[] | FrontmatterMap;
@@ -337,7 +338,7 @@ function parseObject(path: string, content: string, base: SpecObject, baseConten
       type: optionalCell(row[2]),
       required: requiredFlag(path, row[3], true),
       note: optionalCell(row[4]),
-      alias: optionalCell(row[5]),
+      alias: normalizeFieldAlias(row[5]),
       sourceColumn: original?.sourceColumn,
       valueBindingRef: original?.valueBindingRef,
     };
