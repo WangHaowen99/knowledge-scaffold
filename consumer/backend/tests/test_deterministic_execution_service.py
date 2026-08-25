@@ -26,9 +26,14 @@ from agent.direct_execution.arguments import (
     protect_deterministic_runtime_parameters,
 )
 from agent.direct_execution.models import RuntimeContext
+from agent.direct_execution.provider_broker import DeterministicProviderBrokerError
 from agent.direct_execution.service import DeterministicExecutionService
 from ontology.operation_execution import validate_and_lock_deterministic_operations
+from shared_capabilities.ontology_script_sdk.deterministic_provider import (
+    DETERMINISTIC_PROVIDER_SOCKET_ENV,
+)
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 
 
 def _write_package(root: Path, *, parser=False, data_access="none") -> Path:
@@ -1489,7 +1494,7 @@ def test_required_sandbox_failure_is_a_stable_deterministic_error(tmp_path, monk
     assert outcome.code == "deterministic_isolation_unavailable"
 
 
-def test_workspace_provider_binding_is_forwarded_to_sandbox_without_reresolution(
+def test_workspace_provider_binding_exposes_only_run_scoped_capability_socket(
     tmp_path,
     monkeypatch,
 ):
@@ -1502,7 +1507,7 @@ def test_workspace_provider_binding_is_forwarded_to_sandbox_without_reresolution
         auth=AuthSpec(
             type="mindsdb_password",
             username="reader",
-            password="provider-secret",
+            password="synthetic-provider-secret",
         ),
         options={"database": "snapshot", "data_revision": "rev-1"},
     )
@@ -1518,11 +1523,18 @@ def test_workspace_provider_binding_is_forwarded_to_sandbox_without_reresolution
         ),
     )
     calls = []
-    monkeypatch.setattr(
-        service_module,
-        "handle_execute_script_path",
-        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "ok"}),
-    )
+
+    def execute(**kwargs):
+        calls.append(kwargs)
+        socket_path = Path(
+            kwargs["env_overrides"][DETERMINISTIC_PROVIDER_SOCKET_ENV]
+        )
+        assert socket_path.exists()
+        if os.name == "posix":
+            assert socket_path.is_socket()
+        return json.dumps({"value": "ok"})
+
+    monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
 
     outcome = DeterministicExecutionService().execute(
         _request(arguments={"code": "A"}),
@@ -1534,47 +1546,30 @@ def test_workspace_provider_binding_is_forwarded_to_sandbox_without_reresolution
     assert isinstance(outcome, Completed)
     handler_call = calls[0]
     assert handler_call["sandbox_prepare_data_connection"] is False
-    assert handler_call["sandbox_network_endpoint"] == effective_connection.endpoint
-    connection_payload = json.loads(
-        handler_call["env_overrides"]["ONTO_SCRIPT_BUSINESS_DATA_CONNECTION_JSON"]
+    assert handler_call["sandbox_include_data_connection_env"] is False
+    assert "sandbox_network_endpoint" not in handler_call
+    assert "sandbox_network_domain_endpoint" not in handler_call
+    assert SCRIPT_BUSINESS_DATA_CONNECTION_ENV not in handler_call["env_overrides"]
+    assert "synthetic-provider-secret" not in json.dumps(
+        handler_call["env_overrides"],
+        sort_keys=True,
     )
-    assert connection_payload["endpoint"] == effective_connection.endpoint
+    assert handler_call["sandbox_read_only_paths"] == (
+        Path(handler_call["env_overrides"][DETERMINISTIC_PROVIDER_SOCKET_ENV]).parent,
+    )
     assert outcome.envelope["execution"]["dependencies"][0]["revision"] == "rev-1"
 
 
-@pytest.mark.parametrize(
-    ("endpoint", "pinned_endpoint", "expected_connection_endpoint"),
-    (
-        (
-            "bolt://snapshot.example.com:7687",
-            "bolt://192.0.2.24:7687",
-            "bolt://192.0.2.24:7687",
-        ),
-        (
-            "neo4j+s://snapshot.example.com:7687",
-            "neo4j+s://192.0.2.24:7687",
-            "neo4j+s://snapshot.example.com:7687",
-        ),
-        (
-            "https://snapshot.example.com/query",
-            "https://192.0.2.24/query",
-            "https://snapshot.example.com/query",
-        ),
-    ),
-)
-def test_workspace_provider_uses_pinned_egress_without_losing_tls_server_name(
+def test_workspace_provider_does_not_grant_provider_network_egress_to_handler(
     tmp_path,
     monkeypatch,
-    endpoint,
-    pinned_endpoint,
-    expected_connection_endpoint,
 ):
     ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
     service_module = _patch_manifest(monkeypatch, ontology_dir)
     effective_connection = EffectiveConnection(
         version=1,
         provider="neo4j",
-        endpoint=endpoint,
+        endpoint="neo4j+s://snapshot.example.com:7687",
         auth=AuthSpec(
             type="mindsdb_password",
             username="reader",
@@ -1593,16 +1588,6 @@ def test_workspace_provider_uses_pinned_egress_without_losing_tls_server_name(
             network_endpoint=effective_connection.endpoint,
         ),
     )
-    monkeypatch.setattr(
-        service_module,
-        "load_sandbox_config",
-        lambda: SimpleNamespace(enabled=True),
-    )
-    monkeypatch.setattr(
-        service_module,
-        "sandbox_reachable_url",
-        lambda _endpoint: pinned_endpoint,
-    )
     calls = []
     monkeypatch.setattr(
         service_module,
@@ -1619,23 +1604,16 @@ def test_workspace_provider_uses_pinned_egress_without_losing_tls_server_name(
 
     assert isinstance(outcome, Completed)
     handler_call = calls[0]
-    assert handler_call["sandbox_network_endpoint"] == pinned_endpoint
-    expected_domain_endpoint = (
-        endpoint
-        if endpoint.startswith(("neo4j+s://", "https://"))
-        else None
-    )
-    assert handler_call["sandbox_network_domain_endpoint"] == expected_domain_endpoint
-    connection_payload = json.loads(
-        handler_call["env_overrides"]["ONTO_SCRIPT_BUSINESS_DATA_CONNECTION_JSON"]
-    )
-    assert connection_payload["endpoint"] == expected_connection_endpoint
+    assert "sandbox_network_endpoint" not in handler_call
+    assert "sandbox_network_domain_endpoint" not in handler_call
+    assert SCRIPT_BUSINESS_DATA_CONNECTION_ENV not in handler_call["env_overrides"]
+    assert DETERMINISTIC_PROVIDER_SOCKET_ENV in handler_call["env_overrides"]
     assert outcome.envelope["execution"]["dependencies"][0]["scope_digest"] == (
         "sha256:scope"
     )
 
 
-def test_workspace_provider_dns_failure_stops_before_handler(tmp_path, monkeypatch):
+def test_workspace_provider_broker_failure_stops_before_handler(tmp_path, monkeypatch):
     ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
     service_module = _patch_manifest(monkeypatch, ontology_dir)
     effective_connection = EffectiveConnection(
@@ -1658,13 +1636,10 @@ def test_workspace_provider_dns_failure_stops_before_handler(tmp_path, monkeypat
     )
     monkeypatch.setattr(
         service_module,
-        "load_sandbox_config",
-        lambda: SimpleNamespace(enabled=True),
-    )
-    monkeypatch.setattr(
-        service_module,
-        "sandbox_reachable_url",
-        lambda _endpoint: (_ for _ in ()).throw(OSError("synthetic DNS failure")),
+        "DeterministicProviderBroker",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            DeterministicProviderBrokerError("synthetic broker failure")
+        ),
     )
     calls = []
     monkeypatch.setattr(
@@ -1681,7 +1656,7 @@ def test_workspace_provider_dns_failure_stops_before_handler(tmp_path, monkeypat
     )
 
     assert isinstance(outcome, Failed)
-    assert outcome.code == "provider_endpoint_unresolved"
+    assert outcome.code == "deterministic_isolation_unavailable"
     assert calls == []
 
 
@@ -1822,12 +1797,10 @@ def test_provider_secret_in_artifact_is_rejected_before_persistence(tmp_path, mo
 
 
 @pytest.mark.parametrize("channel", ["result", "failure", "artifact"])
-@pytest.mark.parametrize("protected_value", ["reader", "synthetic-provider-secret"])
 def test_encoded_provider_credentials_are_blocked_on_every_output_channel(
     tmp_path,
     monkeypatch,
     channel,
-    protected_value,
 ):
     ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
     service_module = _patch_manifest(monkeypatch, ontology_dir)
@@ -1853,7 +1826,9 @@ def test_encoded_provider_credentials_are_blocked_on_every_output_channel(
             network_endpoint=effective_connection.endpoint,
         ),
     )
-    encoded_value = base64.b64encode(protected_value.encode("utf-8")).decode("ascii")
+    encoded_value = base64.b64encode(
+        b"synthetic-provider-secret"
+    ).decode("ascii")
 
     def execute(**kwargs):
         if channel == "artifact":
@@ -1881,6 +1856,48 @@ def test_encoded_provider_credentials_are_blocked_on_every_output_channel(
     )
     assert encoded_value not in str(outcome.internal_detail)
     assert persisted == []
+
+
+def test_provider_username_is_not_treated_as_secret_substring(tmp_path, monkeypatch):
+    ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    effective_connection = EffectiveConnection(
+        version=1,
+        provider="neo4j",
+        endpoint="neo4j+s://snapshot.example.com:7687",
+        auth=AuthSpec(
+            type="mindsdb_password",
+            username="a",
+            password="synthetic-provider-secret",
+        ),
+        options={"database": "snapshot", "data_revision": "rev-synthetic"},
+    )
+    monkeypatch.setattr(
+        service_module,
+        "resolve_deterministic_provider_binding",
+        lambda **_kwargs: SimpleNamespace(
+            effective_connection=effective_connection,
+            source_ref="business_data",
+            data_revision="rev-synthetic",
+            scope_digest="sha256:synthetic-scope",
+            network_endpoint="neo4j+s://192.0.2.24:7687",
+        ),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **_kwargs: json.dumps({"value": "ok"}),
+    )
+
+    outcome = DeterministicExecutionService().execute(
+        _request(arguments={"code": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Completed)
+    assert outcome.envelope["structured_result"] == {"value": "ok"}
 
 
 @pytest.mark.parametrize("channel", ["result", "failure", "artifact"])
@@ -2113,6 +2130,7 @@ def test_artifact_monitor_fails_closed_when_staging_lease_cannot_refresh(
     assert observed == {"cancelled": True}
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory modes")
 def test_artifact_staging_is_hidden_then_frozen_before_persistence(
     tmp_path,
     monkeypatch,

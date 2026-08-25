@@ -13,10 +13,9 @@ import tempfile
 import threading
 import time
 import unicodedata
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
-from urllib.parse import quote, quote_plus, urlparse
+from urllib.parse import quote, quote_plus
 
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry
@@ -38,6 +37,10 @@ from agent.direct_execution.contracts import (
     LockedDependency,
     NotApplicable,
 )
+from agent.direct_execution.provider_broker import (
+    DeterministicProviderBroker,
+    DeterministicProviderBrokerError,
+)
 from agent.tools.business_data.deterministic import (
     DeterministicProviderBinding,
     DeterministicProviderError,
@@ -45,18 +48,12 @@ from agent.tools.business_data.deterministic import (
     resolve_deterministic_provider_binding,
 )
 from agent.tools.business_data.endpoint_security import endpoint_secret_values
-from agent.tools.business_data.script_env import (
-    SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
-    serialize_script_business_data_connection,
-)
 from agent.tools.execute_script import handle_execute_script_path
 from agent.core.shared.interaction_policy import user_interaction_supported_from_context
 from integration.sandbox.registry import (
     register_run_sandbox_companion,
     release_run_sandbox,
 )
-from integration.sandbox.config import load_sandbox_config
-from integration.sandbox.data_proxy import sandbox_reachable_url
 from ontology.ontology_catalog import (
     find_markdown_file,
     get_ontology_manifest,
@@ -69,6 +66,9 @@ from ontology.operation_execution import (
     load_deterministic_operation_specs,
     normalize_operation_token,
     verify_deterministic_package_lock,
+)
+from shared_capabilities.ontology_script_sdk.deterministic_provider import (
+    DETERMINISTIC_PROVIDER_SOCKET_ENV,
 )
 
 
@@ -125,30 +125,7 @@ _NON_EXECUTION_MARKER = re.compile(
 )
 _OPEN_QUOTES = frozenset("\"'`“‘「『《〈")
 _CLOSE_QUOTES = frozenset("\"'`”’」』》〉")
-_TLS_ENDPOINT_SCHEMES = frozenset(
-    {
-        "https",
-        "wss",
-        "bolt+s",
-        "bolt+ssc",
-        "neo4j+s",
-        "neo4j+ssc",
-    }
-)
-
 ArtifactWriter = Callable[[str, str, str], Optional[Mapping[str, Any]]]
-
-
-def _sandbox_provider_connection_endpoint(
-    original_endpoint: str,
-    reachable_endpoint: str,
-) -> str:
-    """Preserve the TLS server name while separately pinning sandbox egress."""
-    original = str(original_endpoint or "").strip()
-    scheme = urlparse(original).scheme.strip().casefold()
-    if scheme in _TLS_ENDPOINT_SCHEMES:
-        return original
-    return str(reachable_endpoint or "").strip() or original
 
 
 def _runtime_owned_argument_names(
@@ -672,55 +649,11 @@ class DeterministicExecutionService:
                 operation_key=spec.operation_key,
             )
         provider_protected_values = self._provider_protected_values(provider_binding)
-        provider_network_endpoint = None
-        provider_network_domain_endpoint = None
-        sandbox_provider_connection = None
-        if provider_binding is not None:
-            provider_network_endpoint = provider_binding.network_endpoint
-            sandbox_provider_connection = provider_binding.effective_connection
-            if load_sandbox_config().enabled:
-                # Resolve once on the trusted host for the run-scoped egress
-                # policy. Clear-text protocols may connect to that pinned IP;
-                # TLS protocols keep the original hostname for SNI and
-                # certificate verification.
-                try:
-                    provider_network_endpoint = sandbox_reachable_url(
-                        provider_binding.network_endpoint
-                    )
-                except Exception as exc:
-                    return Failed(
-                        "provider_endpoint_unresolved",
-                        "Deterministic provider endpoint could not be pinned to an IP address.",
-                        operation_key=spec.operation_key,
-                        internal_detail=type(exc).__name__,
-                    )
-                sandbox_provider_connection = replace(
-                    provider_binding.effective_connection,
-                    endpoint=_sandbox_provider_connection_endpoint(
-                        provider_binding.effective_connection.endpoint,
-                        provider_network_endpoint,
-                    ),
-                )
-                if (
-                    urlparse(provider_binding.effective_connection.endpoint)
-                    .scheme.strip()
-                    .casefold()
-                    in _TLS_ENDPOINT_SCHEMES
-                ):
-                    provider_network_domain_endpoint = (
-                        provider_binding.effective_connection.endpoint
-                    )
         env_overrides = self._fixed_environment(
             ontology_id=ontology.id,
             ontology_version=ontology.version,
             package_revision=spec.package_revision,
         )
-        if sandbox_provider_connection is not None:
-            env_overrides[SCRIPT_BUSINESS_DATA_CONNECTION_ENV] = (
-                serialize_script_business_data_connection(
-                    connection=sandbox_provider_connection,
-                )
-            )
 
         try:
             artifact_staging_parent = self._artifact_staging_parent()
@@ -766,8 +699,28 @@ class DeterministicExecutionService:
                 MAX_ARTIFACT_TOTAL_BYTES
             )
             env_overrides["RUN_ARTIFACT_MAX_COUNT"] = str(MAX_ARTIFACT_COUNT)
+            provider_broker: Optional[DeterministicProviderBroker] = None
+            if provider_binding is not None:
+                try:
+                    provider_broker = DeterministicProviderBroker(
+                        binding=provider_binding,
+                        socket_dir=Path(artifact_staging_dir),
+                    ).start()
+                except (OSError, ValueError, DeterministicProviderBrokerError) as exc:
+                    if provider_broker is not None:
+                        provider_broker.close()
+                    return Failed(
+                        "deterministic_isolation_unavailable",
+                        "Deterministic provider capability is unavailable.",
+                        operation_key=spec.operation_key,
+                        internal_detail=type(exc).__name__,
+                    )
+                env_overrides[DETERMINISTIC_PROVIDER_SOCKET_ENV] = str(
+                    provider_broker.socket_path
+                )
             sandbox_release_error: Optional[Exception] = None
             artifact_freeze_error: Optional[Exception] = None
+            provider_broker_error: Optional[Exception] = None
             artifact_monitor_stop = threading.Event()
             artifact_limit_cancel = threading.Event()
             artifact_monitor_failures: list[Failed] = []
@@ -824,9 +777,11 @@ class DeterministicExecutionService:
                         artifact_limit_cancel,
                     ),
                     sandbox_prepare_data_connection=False,
-                    sandbox_network_endpoint=provider_network_endpoint,
-                    sandbox_network_domain_endpoint=(
-                        provider_network_domain_endpoint
+                    sandbox_include_data_connection_env=False,
+                    sandbox_read_only_paths=(
+                        [Path(artifact_staging_dir)]
+                        if provider_broker is not None
+                        else []
                     ),
                     sandbox_writable_paths=[artifact_root],
                     file_size_limit_bytes=MAX_ARTIFACT_BYTES,
@@ -834,6 +789,11 @@ class DeterministicExecutionService:
             finally:
                 artifact_monitor_stop.set()
                 artifact_monitor.join()
+                if provider_broker is not None:
+                    try:
+                        provider_broker.close()
+                    except Exception as exc:
+                        provider_broker_error = exc
                 # Destroy the run cgroup before inspecting authoritative output or
                 # artifacts. This also terminates descendants that escaped the
                 # bounded runner's process group by creating a new session.
@@ -848,8 +808,16 @@ class DeterministicExecutionService:
                     os.chmod(artifact_root, 0o700)
                 except Exception as exc:
                     artifact_freeze_error = exc
-            if sandbox_release_error is not None or artifact_freeze_error is not None:
-                isolation_error = sandbox_release_error or artifact_freeze_error
+            if (
+                sandbox_release_error is not None
+                or artifact_freeze_error is not None
+                or provider_broker_error is not None
+            ):
+                isolation_error = (
+                    sandbox_release_error
+                    or artifact_freeze_error
+                    or provider_broker_error
+                )
                 return Failed(
                     "deterministic_isolation_unavailable",
                     "Deterministic sandbox output could not be isolated safely.",
@@ -1424,8 +1392,7 @@ class DeterministicExecutionService:
         cancel_event: Any = None,
         sandbox_prepare_data_connection: bool = False,
         sandbox_include_data_connection_env: bool = True,
-        sandbox_network_endpoint: Optional[str] = None,
-        sandbox_network_domain_endpoint: Optional[str] = None,
+        sandbox_read_only_paths: list[Path] | None = None,
         sandbox_writable_paths: list[Path] | None = None,
         sandbox_run_id: Optional[str] = None,
         file_size_limit_bytes: Optional[int] = None,
@@ -1457,8 +1424,7 @@ class DeterministicExecutionService:
             cancel_event=cancel_event,
             sandbox_prepare_data_connection=sandbox_prepare_data_connection,
             sandbox_include_data_connection_env=sandbox_include_data_connection_env,
-            sandbox_network_endpoint=sandbox_network_endpoint,
-            sandbox_network_domain_endpoint=sandbox_network_domain_endpoint,
+            sandbox_read_only_paths=tuple(sandbox_read_only_paths or ()),
             sandbox_writable_paths=tuple(sandbox_writable_paths or ()),
             sandbox_run_id=sandbox_run_id,
             file_size_limit_bytes=file_size_limit_bytes,
@@ -2232,9 +2198,6 @@ class DeterministicExecutionService:
         if binding is None:
             return ()
         raw_values = set(cls._provider_secret_values(binding))
-        username = str(binding.effective_connection.auth.username or "")
-        if username:
-            raw_values.add(username)
         protected_values: set[str] = set()
         for raw_value in raw_values:
             protected_values.update(cls._protected_value_encodings(raw_value))

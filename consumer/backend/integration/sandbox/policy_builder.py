@@ -69,7 +69,6 @@ class PolicyContext:
     memory_max: str
     cpu_max: float
     pids_max: int
-    egress_domain_url: str | None = None
     writable_paths: tuple[Path, ...] = ()
     read_only_paths: tuple[Path, ...] = ()
 
@@ -118,7 +117,6 @@ def build_egress_allowed_ports(data_proxy_url: str | None) -> list[int]:
 
 def build_egress_target_rules(
     data_proxy_url: str | None,
-    egress_domain_url: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return (allowed_domains, allowed_ips) for run-scoped data proxy egress."""
     host = extract_host_from_url(data_proxy_url)
@@ -128,17 +126,7 @@ def build_egress_target_rules(
         address = ipaddress.ip_address(host)
     except ValueError as exc:
         raise ValueError("sandbox egress target must be pinned to an IP address") from exc
-    domain = extract_host_from_url(egress_domain_url)
-    if domain:
-        try:
-            ipaddress.ip_address(domain)
-        except ValueError:
-            allowed_domains = [domain]
-        else:
-            allowed_domains = []
-    else:
-        allowed_domains = []
-    return allowed_domains, ["{}/{}".format(address.compressed, address.max_prefixlen)]
+    return [], ["{}/{}".format(address.compressed, address.max_prefixlen)]
 
 
 def _as_container_path(path: Path) -> str:
@@ -184,15 +172,12 @@ class OntoSandboxPolicyBuilder:
         bind_mounts.extend(_read_write_bind(path) for path in writable_paths)
         bind_mounts.extend(_SYSTEM_BIND_MOUNTS)
 
-        allowed_domains, allowed_ips = build_egress_target_rules(
-            ctx.data_proxy_url,
-            ctx.egress_domain_url,
-        )
+        allowed_domains, allowed_ips = build_egress_target_rules(ctx.data_proxy_url)
         egress: dict = {
             "default": "deny",
             "allowed_ports": build_egress_allowed_ports(ctx.data_proxy_url),
             "blocked_ips": list(_BLOCKED_METADATA_IPS),
-            "blocked_ports": [] if allowed_domains else [53],
+            "blocked_ports": [53],
             "allowed_domains": allowed_domains,
             "allowed_ips": allowed_ips,
         }

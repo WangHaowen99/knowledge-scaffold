@@ -11,6 +11,8 @@ from agent.tools.business_data.resolver import (
 from agent.tools.business_data.endpoint_security import (
     endpoint_has_forbidden_auth_material,
 )
+from integration.sandbox.data_proxy import sandbox_reachable_url
+from integration.sandbox.errors import SandboxUnavailableError
 from ontology.operation_execution import canonical_json_bytes, sha256_bytes
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 
@@ -129,6 +131,13 @@ def resolve_deterministic_provider_binding(
         config=config,
         scope=scope,
     )
+    try:
+        network_endpoint = sandbox_reachable_url(connection.endpoint)
+    except (OSError, SandboxUnavailableError, ValueError) as exc:
+        raise DeterministicProviderError(
+            "provider_endpoint_unresolved",
+            "Deterministic provider endpoint could not be resolved safely.",
+        ) from exc
     for candidate in (connection.auth.token, connection.auth.password):
         if candidate and len(candidate) < MIN_DETERMINISTIC_PROVIDER_SECRET_LENGTH:
             raise DeterministicProviderError(
@@ -142,6 +151,7 @@ def resolve_deterministic_provider_binding(
         "version": connection.version,
         "provider": connection.provider,
         "endpoint": connection.endpoint,
+        "network_endpoint": network_endpoint,
         "auth_type": connection.auth.type,
         # The principal name is not a credential and must be bound directly.
         # ``access_scope_revision`` remains the operator-owned permission
@@ -155,7 +165,7 @@ def resolve_deterministic_provider_binding(
         source_ref="business_data",
         data_revision=revision,
         scope_digest=sha256_bytes(canonical_json_bytes(connection_identity)),
-        network_endpoint=connection.endpoint,
+        network_endpoint=network_endpoint,
         effective_connection=connection,
     )
 

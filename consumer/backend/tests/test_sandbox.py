@@ -445,6 +445,8 @@ def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkey
     script = ontology_dir / "scripts" / "check.py"
     script.parent.mkdir(parents=True)
     script.write_text("print('ok')", encoding="utf-8")
+    provider_socket_dir = tmp_path / "provider-capability"
+    provider_socket_dir.mkdir()
 
     monkeypatch.setattr(
         sandbox_executor_module,
@@ -493,14 +495,15 @@ def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkey
         ontology_id="demo",
         timeout_seconds=30,
         network_endpoint="neo4j+s://192.0.2.24:7687",
-        network_domain_endpoint="neo4j+s://snapshot.example.com:7687",
+        read_only_paths=[provider_socket_dir],
     )
 
     assert result.returncode == 0
     assert captured["ctx"].workspace_root == workspace_root.resolve()
     assert captured["ctx"].data_proxy_url == "neo4j+s://192.0.2.24:7687"
-    assert captured["ctx"].egress_domain_url == (
-        "neo4j+s://snapshot.example.com:7687"
+    assert captured["ctx"].read_only_paths == (
+        workspace_root.resolve(),
+        provider_socket_dir.resolve(),
     )
     assert captured["workdir"] == str(workspace_root.resolve()).replace("\\", "/")
     assert captured["command"][2] == str(script.resolve()).replace("\\", "/")
@@ -509,6 +512,7 @@ def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkey
         item["sandbox_path"] for item in policy["filesystem_policy"]["bind_mounts"]
     }
     assert str(workspace_root.resolve()).replace("\\", "/") in mounted_paths
+    assert str(provider_socket_dir.resolve()).replace("\\", "/") in mounted_paths
     assert str(runtime_root.resolve()).replace("\\", "/") not in mounted_paths
 
 
@@ -605,8 +609,9 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
         def ensure(self, _ctx):
             return "onto-bounded"
 
-        def exec_in_sandbox(self, _sandbox_id, command, **_kwargs):
+        def exec_in_sandbox(self, _sandbox_id, command, **kwargs):
             captured["command"] = command
+            captured["env"] = kwargs["env"]
             return SimpleNamespace(exit_code=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(
@@ -625,7 +630,10 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
         ontology_id="demo",
         timeout_seconds=30,
         prepare_data_connection=False,
-        env_overrides={"DETERMINISTIC_EXECUTION": "1"},
+        env_overrides={
+            "DETERMINISTIC_EXECUTION": "1",
+            SCRIPT_BUSINESS_DATA_CONNECTION_ENV: '{"password":"synthetic-secret"}',
+        },
         stdout_limit_bytes=16,
         stderr_limit_bytes=8,
     )
@@ -657,6 +665,7 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
     ]
     assert len(attestations) == 1
     assert attestations[0][1] == "onto-bounded"
+    assert SCRIPT_BUSINESS_DATA_CONNECTION_ENV not in captured["env"]
 
 
 def test_deterministic_runtime_attestation_rejects_mismatched_image(monkeypatch):
@@ -1077,7 +1086,7 @@ def test_egress_target_rules_use_exact_host_prefixes_for_ipv4_and_ipv6():
     )
 
 
-def test_policy_builder_keeps_tls_domain_resolution_pinned_to_allowed_ip(tmp_path):
+def test_policy_builder_never_combines_domain_resolution_with_pinned_ip(tmp_path):
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     ctx = PolicyContext(
@@ -1090,16 +1099,20 @@ def test_policy_builder_keeps_tls_domain_resolution_pinned_to_allowed_ip(tmp_pat
         memory_max="256M",
         cpu_max=0.5,
         pids_max=32,
-        egress_domain_url="neo4j+s://snapshot.example.com:7687",
     )
 
     policy = OntoSandboxPolicyBuilder.build(ctx)
     egress = policy["network"]["egress"]
 
-    assert egress["allowed_domains"] == ["snapshot.example.com"]
+    assert egress["allowed_domains"] == []
     assert egress["allowed_ips"] == ["192.0.2.24/32"]
     assert egress["allowed_ports"] == [7687]
-    assert egress["blocked_ports"] == []
+    assert egress["blocked_ports"] == [53]
+
+
+def test_policy_builder_rejects_unpinned_domain_target():
+    with pytest.raises(ValueError, match="pinned to an IP"):
+        build_egress_target_rules("neo4j+s://snapshot.example.com:7687")
 
 
 def test_extract_port_from_url_defaults_by_scheme():

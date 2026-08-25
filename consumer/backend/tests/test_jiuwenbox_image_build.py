@@ -45,15 +45,14 @@ def test_jiuwenbox_overlay_contains_shared_capabilities_and_runtime_dependencies
     assert "requests==" in requirements
     assert "neo4j==" in requirements
     assert "pytz==" in requirements
-    assert set(contract["allowed_external_import_roots"]) >= {
-        "neo4j",
-        "requests",
-        "urllib3",
-    }
-    assert "shared_capabilities" not in contract["allowed_external_import_roots"]
-    assert "load_effective_connection" in contract["allowed_runtime_imports"][
+    assert contract["allowed_external_import_roots"] == []
+    assert set(contract["allowed_runtime_imports"][
         "shared_capabilities.ontology_script_sdk"
-    ]
+    ]) == {
+        "DeterministicProviderCallError",
+        "DeterministicProviderClient",
+        "write_artifact",
+    }
     assert "COPY runtime/ /app/sandbox-runtime/python/" in dockerfile
     assert "COPY runtime-contract.json /app/sandbox-runtime/runtime-contract.json" in dockerfile
     assert 'backend/shared_capabilities' in script
@@ -75,6 +74,7 @@ def test_jiuwenbox_overlay_contains_shared_capabilities_and_runtime_dependencies
     assert 'sdk/sandbox-python-sdk' not in script
     assert "from shared_capabilities.business_data import ProviderResult" in dockerfile
     assert "from shared_capabilities.ontology_script_sdk import DataProviderClient" in dockerfile
+    assert "DataProviderClient, DeterministicProviderClient" in dockerfile
     assert "import onto_sandbox_runtime.bounded_runner" in dockerfile
 
 

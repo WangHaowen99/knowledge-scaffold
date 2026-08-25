@@ -120,7 +120,7 @@ class SandboxScriptExecutor:
         prepare_data_connection: bool = True,
         include_data_connection_env: bool = True,
         network_endpoint: str | None = None,
-        network_domain_endpoint: str | None = None,
+        read_only_paths: Sequence[Path] = (),
         writable_paths: Sequence[Path] = (),
         stdout_limit_bytes: int | None = None,
         stderr_limit_bytes: int | None = None,
@@ -175,6 +175,18 @@ class SandboxScriptExecutor:
             if path.is_symlink() or not path.is_dir():
                 raise SandboxUnavailableError("sandbox writable path must be a regular directory")
             resolved_writable_paths.append(path.resolve())
+        resolved_read_only_paths: list[Path] = []
+        for raw_path in read_only_paths:
+            path = Path(raw_path)
+            if path.is_symlink() or not path.is_dir():
+                raise SandboxUnavailableError(
+                    "sandbox read-only path must be a regular directory"
+                )
+            resolved_read_only_paths.append(path.resolve())
+        if restrict_filesystem_to_ontology and resolved_ontology_dir is not None:
+            resolved_read_only_paths.insert(0, resolved_ontology_dir)
+        else:
+            resolved_read_only_paths.insert(0, workspace_root)
         runtime_python_dir = Path(self._config.sandbox_runtime_root) / "python"
         ctx = PolicyContext(
             run_id=run_id,
@@ -189,9 +201,8 @@ class SandboxScriptExecutor:
             memory_max=self._config.memory_max,
             cpu_max=self._config.cpu_max,
             pids_max=self._config.pids_max,
-            egress_domain_url=str(network_domain_endpoint or "").strip() or None,
             writable_paths=tuple(resolved_writable_paths),
-            read_only_paths=(resolved_ontology_dir,) if restrict_filesystem_to_ontology else (),
+            read_only_paths=tuple(dict.fromkeys(resolved_read_only_paths)),
         )
         registry = get_run_sandbox_registry()
         sandbox_id = registry.ensure(ctx)
@@ -251,6 +262,12 @@ class SandboxScriptExecutor:
             # The run-scoped proxy payload is authoritative for generic
             # sandbox calls and must replace any host-side secret envelope.
             effective_env_overrides.update(prepared_connection.env)
+        if effective_env_overrides.get("DETERMINISTIC_EXECUTION") == "1":
+            from agent.tools.business_data.script_env import (
+                SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
+            )
+
+            effective_env_overrides.pop(SCRIPT_BUSINESS_DATA_CONNECTION_ENV, None)
         env = build_script_env(
             env_overrides=effective_env_overrides,
             ontology_dir=ontology_pythonpath,

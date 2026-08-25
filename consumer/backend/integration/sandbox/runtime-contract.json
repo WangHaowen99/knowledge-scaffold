@@ -11,14 +11,7 @@
   "revision_file": "/app/sandbox-runtime/python/.runtime-revision",
   "shared_revision_file": "/run/onto-runtime-attestation/revision",
   "requirements_file": "runtime-requirements.txt",
-  "allowed_external_import_roots": [
-    "certifi",
-    "charset_normalizer",
-    "idna",
-    "neo4j",
-    "requests",
-    "urllib3"
-  ],
+  "allowed_external_import_roots": [],
   "allowed_standard_library_imports": [
     "__future__",
     "argparse",
@@ -53,15 +46,8 @@
   ],
   "allowed_runtime_imports": {
     "shared_capabilities.ontology_script_sdk": [
-      "BusinessDataProviderError",
-      "ConnectionEnvelopeError",
-      "DataProviderClient",
-      "ProviderInternalError",
-      "ProviderProtocolError",
-      "ProviderTransportError",
-      "UnsupportedCapabilityError",
-      "UnsupportedProviderError",
-      "load_effective_connection",
+      "DeterministicProviderCallError",
+      "DeterministicProviderClient",
       "write_artifact"
     ]
   }

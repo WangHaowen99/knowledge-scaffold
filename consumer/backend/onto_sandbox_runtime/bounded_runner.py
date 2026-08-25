@@ -11,13 +11,17 @@ import argparse
 import json
 import logging
 import os
-import resource
 import signal
 import subprocess
 import sys
 import threading
 import time
 from typing import BinaryIO, Sequence
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - exercised by Windows CI
+    resource = None  # type: ignore[assignment]
 
 
 _OUTPUT_LIMIT_EXIT_CODE = 125
@@ -50,6 +54,8 @@ def _log_public_error(payload: dict[str, str]) -> None:
 
 
 def _process_group_exists(process_group_id: int) -> bool:
+    if not hasattr(os, "killpg"):
+        return False
     try:
         os.killpg(process_group_id, 0)
     except ProcessLookupError:
@@ -61,6 +67,14 @@ def _process_group_exists(process_group_id: int) -> bool:
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     """Terminate the complete session even when its leader already exited."""
+    if not hasattr(os, "killpg"):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        return
     process_group_id = process.pid
     try:
         os.killpg(process_group_id, signal.SIGTERM)
@@ -110,7 +124,7 @@ def run_bounded(
     file_size_limit = max(0, int(file_size_limit_bytes))
 
     def apply_child_limits() -> None:
-        if file_size_limit > 0:
+        if file_size_limit > 0 and resource is not None:
             resource.setrlimit(
                 resource.RLIMIT_FSIZE,
                 (file_size_limit, file_size_limit),
@@ -118,15 +132,19 @@ def run_bounded(
 
     # Security review: execution is confined to the sandbox Python runtime;
     # argv is validated, passed as a sequence, and never parsed by a shell.
-    process = subprocess.Popen(  # NOSONAR(S4721)
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        preexec_fn=apply_child_limits if file_size_limit > 0 else None,
-        shell=False,
-        close_fds=True,
-    )
+    process_options = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "shell": False,
+        "close_fds": True,
+    }
+    if os.name == "posix":
+        process_options["start_new_session"] = True
+        if file_size_limit > 0 and resource is not None:
+            process_options["preexec_fn"] = apply_child_limits
+    elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    process = subprocess.Popen(argv, **process_options)  # type: ignore[arg-type]  # NOSONAR(S4721)
 
     def read_stream(name: str, stream: BinaryIO) -> None:
         try:
@@ -180,11 +198,11 @@ def run_bounded(
         return _OUTPUT_LIMIT_EXIT_CODE
 
     file_limit_error = (
-        return_code == -signal.SIGXFSZ
+        return_code == -getattr(signal, "SIGXFSZ", 10**9)
         or b"Errno 27" in outputs["stderr"]
         or b"File too large" in outputs["stderr"]
     )
-    if file_size_limit > 0 and file_limit_error:
+    if file_size_limit > 0 and resource is not None and file_limit_error:
         payload = {
             "code": "ARTIFACT_LIMIT",
             "message": "artifact file exceeds limit",

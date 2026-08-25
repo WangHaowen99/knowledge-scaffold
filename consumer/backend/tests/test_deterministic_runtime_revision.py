@@ -2,7 +2,6 @@ import pytest
 
 from agent.direct_execution import audit
 from agent.direct_execution.build_revision import calculate_application_build_revision
-from shared_capabilities import ontology_script_sdk
 from integration.sandbox.runtime_contract import (
     allowed_external_import_roots,
     allowed_runtime_imports,
@@ -22,17 +21,18 @@ def test_sandbox_runtime_contract_is_pinned_and_architecture_specific():
     assert len(contract["upstream"]["commit"]) == 40
     assert contract["python"]["executable"] == "/usr/bin/python3"
     assert sandbox_runner_protocol_version() == "v2"
-    assert "requests" in allowed_external_import_roots()
-    assert "neo4j" in allowed_external_import_roots()
-    assert "shared_capabilities" not in allowed_external_import_roots()
+    assert allowed_external_import_roots() == frozenset()
     assert "json" in allowed_standard_library_imports()
     assert "io" not in allowed_standard_library_imports()
     assert "os" not in allowed_standard_library_imports()
-    assert "load_effective_connection" in allowed_runtime_imports()[
-        "shared_capabilities.ontology_script_sdk"
-    ]
     assert allowed_runtime_imports()["shared_capabilities.ontology_script_sdk"] == (
-        frozenset(ontology_script_sdk.__all__)
+        frozenset(
+            {
+                "DeterministicProviderCallError",
+                "DeterministicProviderClient",
+                "write_artifact",
+            }
+        )
     )
     assert sandbox_runtime_revision_file() == (
         "/app/sandbox-runtime/python/.runtime-revision"

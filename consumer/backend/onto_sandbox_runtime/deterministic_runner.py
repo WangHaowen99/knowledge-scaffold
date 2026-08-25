@@ -257,7 +257,18 @@ def _install_runtime_guards(
         original = getattr(os, name, None)
         if callable(original):
             setattr(os, name, guard_callable(original, "os.{}".format(name)))
-    for name in ("breakpoint", "compile", "eval", "exec", "id", "input"):
+    for name in (
+        "breakpoint",
+        "compile",
+        "delattr",
+        "eval",
+        "exec",
+        "getattr",
+        "id",
+        "input",
+        "setattr",
+        "vars",
+    ):
         original = getattr(builtins, name, None)
         if callable(original):
             setattr(builtins, name, guard_callable(original, name))

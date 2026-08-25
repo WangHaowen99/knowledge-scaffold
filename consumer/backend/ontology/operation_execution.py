@@ -79,6 +79,7 @@ _NONDETERMINISTIC_CALLS = frozenset(
         "os.spawnvp",
         "os.spawnvpe",
         "os.system",
+        "operator.attrgetter",
         "time.monotonic",
         "time.monotonic_ns",
         "time.perf_counter",
@@ -122,11 +123,36 @@ _FORBIDDEN_DETERMINISTIC_BUILTIN_CALLS = frozenset(
         "__import__",
         "breakpoint",
         "compile",
+        "delattr",
+        "dir",
         "eval",
         "exec",
+        "getattr",
+        "globals",
         "id",
         "input",
+        "locals",
         "open",
+        "setattr",
+        "vars",
+    }
+)
+_FORBIDDEN_DETERMINISTIC_ATTRIBUTES = frozenset(
+    {
+        "__base__",
+        "__bases__",
+        "__builtins__",
+        "__class__",
+        "__closure__",
+        "__code__",
+        "__dict__",
+        "__getattr__",
+        "__getattribute__",
+        "__globals__",
+        "__mro__",
+        "__reduce__",
+        "__reduce_ex__",
+        "__subclasses__",
     }
 )
 
@@ -1000,6 +1026,24 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
                     "Deterministic Python file '{}' imports unsupported module '{}'.".format(
                         _relative_path(root, path),
                         imported_module,
+                    ),
+                )
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in _FORBIDDEN_DETERMINISTIC_ATTRIBUTES
+            ):
+                raise DeterministicPackageError(
+                    "determinism_contract_violation",
+                    "Deterministic Python file '{}' uses unsupported attribute '{}'.".format(
+                        _relative_path(root, path),
+                        node.attr,
+                    ),
+                )
+            if isinstance(node, ast.Name) and node.id == "__builtins__":
+                raise DeterministicPackageError(
+                    "determinism_contract_violation",
+                    "Deterministic Python file '{}' uses unsupported runtime introspection.".format(
+                        _relative_path(root, path),
                     ),
                 )
             if not isinstance(node, ast.Call):

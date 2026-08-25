@@ -62,6 +62,7 @@ from ontology.operation_execution import (
     validate_and_lock_deterministic_operations,
 )
 from ontology.mutation_lock import ontology_mutation_lock
+from ontology.directory_replacement import portable_replace_directory
 from agent.tools.business_data.ontology_sources_store import (
     build_ontology_business_data_summary,
     clear_ontology_data_source_on_delete,
@@ -1873,23 +1874,7 @@ def _replace_ontology_dir(*, staged_dir: Path, ontology_dir: Path) -> None:
 
 def _replace_ontology_dir_with_backup(*, staged_dir: Path, ontology_dir: Path) -> None:
     """Portable replace with rollback when atomic directory exchange is absent."""
-    backup_root = Path(
-        tempfile.mkdtemp(
-            prefix=".{}.replace-backup-".format(ontology_dir.name),
-            dir=str(ontology_dir.parent),
-        )
-    )
-    backup_dir = backup_root / "previous"
-    ontology_dir.replace(backup_dir)
-    try:
-        staged_dir.replace(ontology_dir)
-    except BaseException:
-        # The old package remains recoverable at backup_dir until restoration
-        # succeeds.  Never clean it up on the exceptional path.
-        backup_dir.replace(ontology_dir)
-        _remove_path_if_exists(backup_root)
-        raise
-    _remove_path_if_exists(backup_root)
+    portable_replace_directory(staged_dir=staged_dir, target_dir=ontology_dir)
 
 
 def _prepare_shared_manifest(

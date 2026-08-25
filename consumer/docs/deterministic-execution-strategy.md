@@ -4,7 +4,7 @@ module: consumer
 feature_type: functional
 feature_id: FEAT-DET-001
 status: active
-updated: 2026-08-17
+updated: 2026-08-25
 ---
 
 # Consumer 确定性执行策略
@@ -28,7 +28,7 @@ Front Matter 中的 `scope` 表示本文约束的确定性执行 v2 契约范围
 | `consumer/backend` | 主要所有者；负责包导入校验、路由、Parser/Handler 执行、Provider 绑定、终态事务、协议投影和权限复用。 |
 | `consumer/frontend` | 消费统一终态事件和权威结果信封，展示结构化结果与产物，不重新计算业务结果。 |
 | `consumer/deploy` 与 JiuwenBox 镜像 | 构建固定沙箱运行时、发布镜像修订证明、装配共享卷和产物暂存目录。 |
-| `consumer/sdk` | 当前版本不新增专用 SDK 方法；未来若暴露确定性结果类型，必须复用同一结果信封。 |
+| `consumer/sdk` | 当前版本不新增 northbound SDK 方法；沙箱内仅公开无凭据的确定性 Provider 能力客户端和产物写入能力。 |
 | `modeling` | 不属于本特性的当前实现范围；不自动生成或升级确定性声明。 |
 | `auth-server` | 不拥有确定性执行状态；Consumer Backend 复用既有身份、工作空间权限和认证边界。 |
 
@@ -64,11 +64,11 @@ Front Matter 中的 `scope` 表示本文约束的确定性执行 v2 契约范围
 | 单次 Handler 执行 | MUST | 一个成功结果的 Handler 必须执行一次，权威信封中的 `handler_execution_count` 固定为 `1`。Parser 与 Handler 使用独立执行身份。 |
 | 沙箱强制隔离 | MUST | Parser 和 Handler 必须在受支持沙箱中执行。确定性分支不得使用本地进程回退。沙箱不可用、释放失败或证明不匹配都必须失败关闭。 |
 | 运行时修订证明 | MUST | 应用运行时修订必须绑定行为相关源码、解释器与安装发行包；沙箱修订必须绑定运行契约、架构、依赖和 Runner 代码。执行前后必须验证修订未变化。 |
-| 固定执行环境 | MUST | Consumer Backend 必须注入固定环境、只读知识包、受限网络端点、超时、输出上限和独立产物目录；Handler 不得获得未声明的环境能力。 |
-| 受限 Python 闭包 | MUST | 构建期必须拒绝随机数、当前时间、动态导入、子进程、进程派生和其他不允许的非确定性 API；外部依赖和沙箱运行时 SDK 导入必须位于部署契约允许列表。 |
+| 固定执行环境 | MUST | Consumer Backend 必须注入固定环境、只读知识包、无 Provider 网络权限的能力套接字、超时、输出上限和独立产物目录；Handler 不得获得未声明的环境能力。 |
+| 受限 Python 闭包 | MUST | 构建期必须拒绝随机数、当前时间、动态导入、运行时反射、子进程、进程派生和其他不允许的非确定性 API；确定性代码不得直接导入第三方包，只能导入部署契约明确列出的标准库和公开运行时 SDK 导出。 |
 | Provider 修订绑定 | MUST | `data_access: workspace_provider` 只允许当前支持的只读图数据 Provider，并要求数据修订、访问范围修订、不可变快照声明、隔离声明和完整物理选择器。 |
-| Provider 凭据保护 | MUST | 凭据必须位于独立认证字段，禁止嵌入 endpoint、query 或 fragment。凭据不得进入作用域摘要、结果、产物、公开错误或日志。 |
-| Provider 网络收敛 | MUST | Handler 只能访问本次已绑定 Provider 的有效网络端点。模型型 Provider、未固定数据修订或可变快照不得用于确定性执行。 |
+| Provider 凭据保护 | MUST | 凭据必须位于独立认证字段，禁止嵌入 endpoint、query 或 fragment。凭据只由 Consumer Backend 的运行级 Broker 持有，不得进入 Handler 进程的参数、环境、作用域摘要、结果、产物、公开错误或日志。 |
+| Provider 网络收敛 | MUST | Handler 不获得 Provider 网络出口，只能通过运行级 Unix socket 调用允许的只读能力。Broker 必须连接首次校验得到的固定 IP，并以原域名完成 TLS SNI 与证书校验；模型型 Provider、未固定数据修订或可变快照不得用于确定性执行。 |
 | 严格 Handler 输出 | MUST | Handler 标准输出必须是单个标准 JSON 对象，不得包含重复 key、NaN 或 Infinity，并且必须满足输出 Schema。 |
 | 有界标准输出 | MUST | Parser stdout 上限为 64 KiB，Handler stdout 上限为 5 MiB，脚本 stderr 上限为 64 KiB。超限必须终止或拒绝执行。 |
 | 有界产物 | MUST | 当前版本最多接受 32 个产物；单文件不超过 10 MiB，总大小不超过 20 MiB，产物树不超过 128 个条目。路径、媒体类型、NFKC 名称唯一性、摘要和敏感值必须全部通过检查。 |
@@ -91,7 +91,7 @@ Front Matter 中的 `scope` 表示本文约束的确定性执行 v2 契约范围
 | `.deterministic-lock.json` | 安装产物 | 是运行时读取的包完整性索引。当前实现写入锁版本 2，并兼容读取版本 1；缺失、损坏或与声明不一致时必须失败关闭。 |
 | `DETERMINISTIC_EXECUTION_ENABLED` | Consumer Backend 配置 | 控制确定性 Handler 是否允许执行，默认关闭。该开关不改变包保护、路由识别或失败关闭语义。 |
 | `DETERMINISTIC_ARTIFACT_STAGING_ROOT` | Consumer Backend 与 Deploy 配置 | 可选的共享绝对目录，用于 Consumer Backend 与沙箱之间的产物暂存。相对路径、不可创建目录或租约刷新失败必须拒绝执行。 |
-| 沙箱运行契约 | JSON + requirements | 固定 Runner 协议、Python 入口、允许的外部依赖和公开沙箱运行时 SDK 导出，并参与沙箱运行时修订计算。 |
+| 沙箱运行契约 | JSON + requirements | 固定 Runner 协议、Python 入口、允许的标准库和公开沙箱运行时 SDK 导出；确定性包的第三方导入列表为空，并参与沙箱运行时修订计算。 |
 | 共享沙箱证明 | Consumer Deploy 只读文件 | 发布部署中由 JiuwenBox 镜像启动脚本写入共享卷，Consumer Backend 必须只读挂载并与期望修订比较；缺失、格式错误或不匹配时不得执行。 |
 | 显式 Operation 请求 | Consumer Backend context / arguments | 调用方可以通过上下文中的 Operation key 和结构化 arguments 请求执行。显式确定性 key 的预检不得依赖 LLM 校验。 |
 | 用户交互响应 | Consumer Backend interaction | 必须携带与待处理检查点一致的 interaction id 和结构化值；过期、Operation 改变或修订改变时返回 `stale_checkpoint`。 |
@@ -127,7 +127,7 @@ execution:
 | 输入不足且支持交互 | Schema 缺少必填字段 | Consumer Backend 请求用户补充 | Run 进入等待状态，持久化检查点；恢复时重新验证包、运行时和 Provider 修订，Handler 只执行一次。 |
 | 输入不足且不支持交互 | 当前协议不支持继续交互 | Consumer Backend 校验输入 | 返回稳定缺参失败，不调用 Parser 以外的补全机制，不进入 Agent Loop。 |
 | Parser 解析 | Operation 声明独立 Parser | Consumer Backend 将请求和显式参数传入 Parser | Parser 在独立沙箱中返回结构化参数或待确认问题；显式参数优先，运行时字段不可覆盖。 |
-| 只读快照查询 | Handler 声明 `workspace_provider` 且数据源满足确定性约束 | Consumer Backend 绑定当前 workspace、知识包版本、物理选择器和数据修订 | Handler 只能访问已绑定端点；结果信封记录无凭据的依赖修订和作用域摘要。 |
+| 只读快照查询 | Handler 声明 `workspace_provider` 且数据源满足确定性约束 | Consumer Backend 绑定当前 workspace、知识包版本、物理选择器和数据修订，启动运行级 Broker | Handler 只获得不透明能力套接字；Broker 对操作与参数做允许列表校验并连接固定 IP，结果信封只记录无凭据的依赖修订和作用域摘要。 |
 | 包执行前被修改 | 锁文件或任一包文件与安装时不一致 | Consumer Backend 验证完整包 | 在 Parser/Handler 启动前返回完整性失败。 |
 | Handler 执行中包或运行时变化 | Handler 已启动，随后包或运行时证明变化 | Consumer Backend 执行后复检 | 当前输出和产物全部失效，返回失败且不形成权威成功。 |
 | 产物超限或含受保护值 | Handler 写入不合规产物 | 产物监控检测到策略违反 | 取消 Handler、释放沙箱、冻结目录并回滚同批产物，返回稳定策略失败。 |
@@ -168,7 +168,8 @@ execution:
 - `snapshot_selector` 必须等于实际数据库或完整图目标，不能只使用审计标签代替物理选择器。
 - `scope_digest` 绑定 Provider、endpoint、认证类型、非秘密主体标识、选项、数据修订和访问范围修订，但不包含 password 或 token；单纯凭据轮换不应改变业务作用域摘要。
 - Provider endpoint 禁止 user-info、敏感 query 参数和 fragment。发现旧格式凭据时必须拒绝并在所有公开输出中脱敏。
-- Handler 只获得本次有效连接信封和单一网络端点；连接秘密不得进入结果摘要或产物。
+- Consumer Backend 在 Handler 启动前解析并固定 Provider IP。运行级 Broker 保留原域名作为 TLS 身份，只把固定 IP 作为实际连接地址；DNS 失败或两者不一致必须失败关闭。
+- Handler 只获得运行级 Unix socket 路径，不获得连接信封、认证字段或 Provider 网络出口。Broker 只接受已列入契约的只读图操作、参数和结果上限。
 
 #### 5.1.5 沙箱与运行时修订语义
 
@@ -220,7 +221,7 @@ execution:
 | 旧知识包自动升级 | 不从脚本、文档或历史行为推断确定性语义；必须显式声明并重新发布。 |
 | 模型参与确定性计算 | 不使用 LLM 选择已锁 Operation、补全必填参数、解释输出或校验业务结果。 |
 | 任意 Python 能力 | 不允许随机数、当前时间、动态导入、子进程、进程派生或未在运行契约中声明的第三方依赖。 |
-| 任意网络访问 | 不允许 Handler 自由访问网络；只有已绑定、通过校验的 Provider endpoint 可以进入沙箱策略。 |
+| 任意网络访问 | 不允许 Handler 自由访问网络；Provider endpoint 不进入沙箱策略，只有宿主 Broker 可以连接已固定 IP。 |
 | 任意 Provider | 不为模型 Provider、可变数据源、无 revision 数据源或未隔离的共享数据面提供确定性保证。 |
 | 写数据事务 | 当前 Provider 契约只面向只读快照，不承诺外部数据库写入的确定性、幂等或回滚。 |
 | 包锁即签名 | `.deterministic-lock.json` 不证明作者身份、代码来源、审批状态或供应链可信度。 |
@@ -231,7 +232,7 @@ execution:
 | 无界产物与二进制输出 | 不接受任意数量、任意大小、任意路径或未允许媒体类型的产物。 |
 | Modeling 自动生成 | 当前版本不要求 `modeling` 自动创建、升级或验证确定性声明；Consumer 导入边界仍是安装前的权威校验点。 |
 | Auth 独立执行语义 | 当前版本不在 `auth-server` 中新增执行状态、结果或沙箱能力；认证模块只提供既有身份与授权事实。 |
-| 专用 SDK 接口 | 当前版本不新增只服务于确定性执行的 SDK 方法或协议；已有调用入口继续返回统一终态结果。 |
+| 专用 SDK 接口 | 不新增 northbound 调用协议；沙箱运行时只新增 `DeterministicProviderClient` 这一无凭据能力接口，已有外部调用入口继续返回统一终态结果。 |
 
 ## 6. 对下游设计与实现的约束
 
@@ -255,6 +256,7 @@ execution:
 
 - `consumer/backend/ontology/operation_execution.py`：确定性包声明、静态校验、锁生成与完整性验证。
 - `consumer/backend/agent/direct_execution/service.py`：路由、Parser、输入校验、Handler、Provider、产物和结果信封执行主链。
+- `consumer/backend/agent/direct_execution/provider_broker.py`：运行级、持有凭据的只读 Provider 能力 Broker、操作允许列表和固定 IP 连接配置。
 - `consumer/backend/agent/direct_execution/contracts.py`：`NotApplicable`、`AwaitingInput`、`Completed` 和 `Failed` 结果契约。
 - `consumer/backend/agent/direct_execution/audit.py`：应用/沙箱运行时修订与权威结果信封。
 - `consumer/backend/agent/direct_execution/build_revision.py`：Consumer Backend 行为文件与已安装依赖的构建修订计算。
@@ -262,6 +264,8 @@ execution:
 - `consumer/backend/persistence/deterministic_terminal.py`：待提交终态和产物日志恢复。
 - `consumer/backend/persistence/execution_store.py` 与 `consumer/backend/persistence/run_store.py`：检查点、终态事务、取消优先和不可改写终态。
 - `consumer/backend/agent/tools/business_data/deterministic.py`：只读图 Provider、数据修订、访问范围与物理快照绑定。
+- `consumer/backend/shared_capabilities/ontology_script_sdk/deterministic_provider.py`：沙箱内无凭据的 Unix socket 能力客户端。
+- `consumer/backend/ontology/directory_replacement.py`：可移植目录发布的持久回滚点和启动恢复。
 - `consumer/backend/agent/tools/business_data/endpoint_security.py`：Provider endpoint 中认证材料、敏感查询参数和 fragment 的拒绝规则。
 - `consumer/backend/integration/sandbox/runtime_contract.py`：沙箱运行契约加载、运行时修订计算和共享证明读取。
 - `consumer/backend/integration/sandbox/runtime-contract.json`：沙箱 Runner、依赖与公开沙箱运行时 SDK 契约。
@@ -286,6 +290,8 @@ execution:
 - `consumer/backend/tests/test_deterministic_package.py`：包契约、锁、不可变性和静态安全验证。
 - `consumer/backend/tests/test_deterministic_execution_service.py`：执行、交互、Provider、沙箱、输出和产物验证。
 - `consumer/backend/tests/test_deterministic_provider_revision.py`：数据修订、物理作用域和凭据隔离验证。
+- `consumer/backend/tests/test_deterministic_provider_broker.py`：能力允许列表、作用域、固定 IP 和 TLS 身份验证。
+- `consumer/backend/tests/test_directory_replacement.py`：目录替换各崩溃状态与启动恢复验证。
 - `consumer/backend/tests/test_deterministic_runtime_revision.py`：应用与沙箱运行时证明验证。
 - `consumer/backend/tests/test_orchestrator_runtime.py`、`consumer/backend/tests/test_sandbox.py` 和协议回归测试：模型解析延迟、终态事务、取消、沙箱证明与跨协议一致性验证。
 - `consumer/frontend/src/features/chat/lib/streamHelpers.test.js`、`conversationModel.test.js` 和 `toolOutput.test.js`：权威结果、产物和旧结果兼容投影验证。

@@ -15,7 +15,7 @@ COPY runtime-contract.json /app/sandbox-runtime/runtime-contract.json
 COPY runtime-entrypoint.sh /usr/local/bin/onto-jiuwenbox-entrypoint
 
 RUN PYTHONPATH=/app/sandbox-runtime/python \
-        /usr/bin/python3 -c "import neo4j; import requests; import onto_sandbox_runtime.bounded_runner; import onto_sandbox_runtime.deterministic_runner; from shared_capabilities.business_data import ProviderResult; from shared_capabilities.ontology_script_sdk import DataProviderClient"
+        /usr/bin/python3 -c "import neo4j; import requests; import onto_sandbox_runtime.bounded_runner; import onto_sandbox_runtime.deterministic_runner; from shared_capabilities.business_data import ProviderResult; from shared_capabilities.ontology_script_sdk import DataProviderClient, DeterministicProviderClient"
 
 RUN chmod 0555 /usr/local/bin/onto-jiuwenbox-entrypoint
 

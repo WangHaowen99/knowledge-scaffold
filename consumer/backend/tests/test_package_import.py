@@ -1472,6 +1472,12 @@ def test_normalize_rejects_symbolic_links(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "normalized"
     _write_v01_package(source)
+    probe = tmp_path / "link_probe"
+    try:
+        probe.symlink_to(source / "scripts" / "query_part.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic link creation not permitted on this platform")
+    probe.unlink()
     (source / "linked.py").symlink_to(source / "scripts" / "query_part.py")
     with pytest.raises(ValueError, match="symbolic links"):
         normalize_imported_package(source, target)

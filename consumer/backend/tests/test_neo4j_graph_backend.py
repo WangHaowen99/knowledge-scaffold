@@ -543,3 +543,27 @@ def test_neo4j_uses_separate_connection_and_query_timeouts(monkeypatch):
         10,
     )
     assert getattr(calls[2][0], "timeout", None) == 30
+
+
+def test_neo4j_resolver_uses_pinned_ip_and_keeps_original_tls_uri(monkeypatch):
+    captured = {}
+
+    def fake_driver(uri, **kwargs):
+        captured["uri"] = uri
+        captured.update(kwargs)
+        return _FakeDriver([])
+
+    monkeypatch.setattr("neo4j.GraphDatabase.driver", fake_driver)
+    backend = Neo4jGraphBackend({
+        "uri": "neo4j+s://snapshot.example.com:7687",
+        "resolved_uri": "neo4j+s://192.0.2.24:7687",
+        "username": "operator_a",
+        "password": "synthetic-provider-secret",
+    })
+
+    backend._get_driver()
+
+    assert captured["uri"] == "neo4j+s://snapshot.example.com:7687"
+    resolved = captured["resolver"](("snapshot.example.com", 7687))
+    assert resolved == [("192.0.2.24", 7687)]
+    assert resolved[0]._host_name == "snapshot.example.com"

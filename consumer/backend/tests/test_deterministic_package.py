@@ -366,35 +366,45 @@ def test_deterministic_package_rejects_dependency_outside_sandbox_contract(tmp_p
     assert "dependency_that_does_not_exist_onto" in str(exc_info.value)
 
 
-def test_deterministic_package_accepts_declared_sandbox_dependency(tmp_path):
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import requests\nvalue = requests.__name__\n",
+        (
+            "from requests.sessions import preferred_clock\n"
+            "value = preferred_clock()\n"
+        ),
+        "from neo4j import GraphDatabase\nvalue = GraphDatabase.__name__\n",
+    ),
+)
+def test_deterministic_package_rejects_external_dependency_aliases(tmp_path, source):
     _write_package(tmp_path)
     (tmp_path / "scripts" / "query.py").write_text(
-        "import json\n"
-        "import requests\n"
-        "print(json.dumps({'value': requests.__name__}))\n",
+        "import json\n" + source + "print(json.dumps({'value': value}))\n",
         encoding="utf-8",
     )
 
-    specs = validate_and_lock_deterministic_operations(tmp_path)
+    with pytest.raises(DeterministicPackageError) as exc_info:
+        validate_and_lock_deterministic_operations(tmp_path)
 
-    assert specs[0].handler.entrypoint == "scripts/query.py"
-
-
-def test_deterministic_package_accepts_pinned_neo4j_driver(tmp_path):
-    _write_package(tmp_path)
-    (tmp_path / "scripts" / "query.py").write_text(
-        "import json\n"
-        "from neo4j import GraphDatabase\n"
-        "print(json.dumps({'value': GraphDatabase.__name__}))\n",
-        encoding="utf-8",
-    )
-
-    specs = validate_and_lock_deterministic_operations(tmp_path)
-
-    assert specs[0].handler.entrypoint == "scripts/query.py"
+    assert exc_info.value.code == "deterministic_dependency_unavailable"
 
 
 def test_deterministic_package_accepts_public_runtime_sdk_export(tmp_path):
+    _write_package(tmp_path)
+    (tmp_path / "scripts" / "query.py").write_text(
+        "import json\n"
+        "from shared_capabilities.ontology_script_sdk import DeterministicProviderClient\n"
+        "print(json.dumps({'value': DeterministicProviderClient.__name__}))\n",
+        encoding="utf-8",
+    )
+
+    specs = validate_and_lock_deterministic_operations(tmp_path)
+
+    assert specs[0].handler.entrypoint == "scripts/query.py"
+
+
+def test_deterministic_package_rejects_credential_bearing_runtime_sdk_export(tmp_path):
     _write_package(tmp_path)
     (tmp_path / "scripts" / "query.py").write_text(
         "import json\n"
@@ -403,9 +413,38 @@ def test_deterministic_package_accepts_public_runtime_sdk_export(tmp_path):
         encoding="utf-8",
     )
 
-    specs = validate_and_lock_deterministic_operations(tmp_path)
+    with pytest.raises(DeterministicPackageError) as exc_info:
+        validate_and_lock_deterministic_operations(tmp_path)
 
-    assert specs[0].handler.entrypoint == "scripts/query.py"
+    assert exc_info.value.code == "deterministic_dependency_unavailable"
+
+
+@pytest.mark.parametrize(
+    "introspection",
+    (
+        "write_artifact.__globals__['os'].urandom(8)",
+        "getattr(write_artifact, '__closure__')",
+        "operator.attrgetter('__globals__')(write_artifact)",
+    ),
+)
+def test_deterministic_package_rejects_runtime_capability_introspection(
+    tmp_path,
+    introspection,
+):
+    _write_package(tmp_path)
+    (tmp_path / "scripts" / "query.py").write_text(
+        "import json\n"
+        "import operator\n"
+        "from shared_capabilities.ontology_script_sdk import write_artifact\n"
+        "value = {}\n".format(introspection)
+        + "print(json.dumps({'value': str(value)}))\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DeterministicPackageError) as exc_info:
+        validate_and_lock_deterministic_operations(tmp_path)
+
+    assert exc_info.value.code == "determinism_contract_violation"
 
 
 @pytest.mark.parametrize("private_name", ("bounded_runner", "connection_env"))
@@ -980,7 +1019,12 @@ def test_symlinked_deterministic_lock_remains_immutable_in_file_editor(tmp_path)
     version_dir = tmp_path / "versions" / "1.0.0"
     operations_dir = version_dir / "operations"
     operations_dir.mkdir(parents=True)
-    (version_dir / DETERMINISTIC_LOCK_NAME).symlink_to(version_dir / "missing-lock")
+    try:
+        (version_dir / DETERMINISTIC_LOCK_NAME).symlink_to(
+            version_dir / "missing-lock"
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic link creation not permitted on this platform")
 
     app = Flask(__name__)
     with app.app_context():

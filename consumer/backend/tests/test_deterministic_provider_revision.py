@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -6,6 +7,19 @@ from agent.tools.business_data.deterministic import (
     DeterministicProviderError,
     resolve_deterministic_provider_binding,
 )
+from integration.sandbox.errors import SandboxUnavailableError
+
+
+@pytest.fixture(autouse=True)
+def _pin_synthetic_provider_endpoint(monkeypatch):
+    from agent.tools.business_data import deterministic as module
+
+    def pin(endpoint):
+        parsed = urlsplit(endpoint)
+        port = ":{}".format(parsed.port) if parsed.port else ""
+        return parsed._replace(netloc="192.0.2.24{}".format(port)).geturl()
+
+    monkeypatch.setattr(module, "sandbox_reachable_url", pin)
 
 
 def _source(provider="neo4j", **overrides):
@@ -40,7 +54,7 @@ def test_neo4j_snapshot_binding_is_revision_pinned_and_scope_digest_is_secret_fr
 
     assert binding.provider == "neo4j"
     assert binding.data_revision == "2026-08-08"
-    assert binding.network_endpoint == "bolt://snapshot.example.com:7687"
+    assert binding.network_endpoint == "bolt://192.0.2.24:7687"
     assert binding.scope_digest.startswith("sha256:")
     assert "secret-password" not in binding.scope_digest
     assert binding.effective_connection.options["workspace_id"] == "workspace-a"
@@ -102,6 +116,28 @@ def test_provider_requires_workspace_before_resolution(monkeypatch):
     assert exc.value.code == "provider_scope_invalid"
 
 
+def test_provider_endpoint_resolution_failure_is_closed_before_execution(monkeypatch):
+    from agent.tools.business_data import deterministic as module
+
+    monkeypatch.setattr(module, "resolve_business_data_source", lambda **_kwargs: _source())
+    monkeypatch.setattr(
+        module,
+        "sandbox_reachable_url",
+        lambda _endpoint: (_ for _ in ()).throw(
+            SandboxUnavailableError("synthetic resolution failure")
+        ),
+    )
+
+    with pytest.raises(DeterministicProviderError) as exc:
+        resolve_deterministic_provider_binding(
+            workspace_id="workspace-a",
+            ontology_id="ontology-a",
+            ontology_version="1.0.0",
+        )
+
+    assert exc.value.code == "provider_endpoint_unresolved"
+
+
 def test_provider_endpoint_change_changes_scope_digest(monkeypatch):
     from agent.tools.business_data import deterministic as module
 
@@ -117,6 +153,37 @@ def test_provider_endpoint_change_changes_scope_digest(monkeypatch):
         ontology_version="1.0.0",
     )
     active_source = _source(uri="bolt://other-snapshot.example.com:7687")
+    second = resolve_deterministic_provider_binding(
+        workspace_id="workspace-a",
+        ontology_id="ontology-a",
+        ontology_version="1.0.0",
+    )
+
+    assert first.data_revision == second.data_revision
+    assert first.scope_digest != second.scope_digest
+
+
+def test_provider_resolved_ip_change_changes_scope_digest(monkeypatch):
+    from agent.tools.business_data import deterministic as module
+
+    active_ip = "192.0.2.24"
+    monkeypatch.setattr(
+        module,
+        "resolve_business_data_source",
+        lambda **_kwargs: _source(),
+    )
+
+    def pin(endpoint):
+        parsed = urlsplit(endpoint)
+        return parsed._replace(netloc="{}:7687".format(active_ip)).geturl()
+
+    monkeypatch.setattr(module, "sandbox_reachable_url", pin)
+    first = resolve_deterministic_provider_binding(
+        workspace_id="workspace-a",
+        ontology_id="ontology-a",
+        ontology_version="1.0.0",
+    )
+    active_ip = "192.0.2.25"
     second = resolve_deterministic_provider_binding(
         workspace_id="workspace-a",
         ontology_id="ontology-a",
