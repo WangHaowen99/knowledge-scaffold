@@ -970,7 +970,7 @@ def _build_script_env_overrides(
             )
             raise BusinessDataConnectionError(
                 "Required business data connection is unavailable."
-            ) from None
+            ) from exc
         raise
 
 

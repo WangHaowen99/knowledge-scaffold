@@ -19,7 +19,7 @@ class DirectoryReplacementRecoveryError(RuntimeError):
 def _sync_directory(path: Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = os.open(path, flags, 0o600)
     except OSError:
         return
     try:

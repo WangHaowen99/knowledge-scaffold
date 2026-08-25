@@ -11,7 +11,7 @@ import threading
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from agent.tools.business_data.deterministic import DeterministicProviderBinding
 from agent.tools.business_data.providers.graph.backends.base import (
@@ -95,6 +95,26 @@ def _read_exact(stream: socket.socket, size: int) -> bytes:
     return b"".join(chunks)
 
 
+def _endpoint_identity_matches(original: SplitResult, pinned: SplitResult) -> bool:
+    if not original.scheme:
+        return False
+    if original.fragment or pinned.fragment:
+        return False
+    original_identity = (
+        original.scheme.casefold(),
+        original.port,
+        original.path,
+        original.query,
+    )
+    pinned_identity = (
+        pinned.scheme.casefold(),
+        pinned.port,
+        pinned.path,
+        pinned.query,
+    )
+    return original_identity == pinned_identity
+
+
 def _provider_config(binding: DeterministicProviderBinding) -> dict[str, Any]:
     connection = binding.effective_connection
     provider = str(getattr(binding, "provider", None) or connection.provider).strip().casefold()
@@ -130,17 +150,7 @@ def _provider_config(binding: DeterministicProviderBinding) -> dict[str, Any]:
         raise DeterministicProviderBrokerError(
             "deterministic provider endpoint is not pinned to an IP address"
         ) from exc
-    original_port = original.port
-    pinned_port = pinned.port
-    if (
-        not original.scheme
-        or original.scheme.casefold() != pinned.scheme.casefold()
-        or original_port != pinned_port
-        or original.path != pinned.path
-        or original.query != pinned.query
-        or original.fragment
-        or pinned.fragment
-    ):
+    if not _endpoint_identity_matches(original, pinned):
         raise DeterministicProviderBrokerError(
             "deterministic provider endpoint pin does not match its origin"
         )
@@ -222,6 +232,7 @@ class DeterministicProviderBroker:
     def start(self) -> "DeterministicProviderBroker":
         if self._server is not None:
             raise DeterministicProviderBrokerError("provider broker is already running")
+        server: socket.socket | None = None
         try:
             self.socket_path.unlink(missing_ok=True)
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -231,13 +242,16 @@ class DeterministicProviderBroker:
             server.listen(4)
             server.settimeout(0.1)
         except OSError as exc:
-            close = locals().get("server")
-            if close is not None:
-                close.close()
+            if server is not None:
+                server.close()
             self.socket_path.unlink(missing_ok=True)
             raise DeterministicProviderBrokerError(
                 "provider broker socket could not be created"
             ) from exc
+        if server is None:
+            raise DeterministicProviderBrokerError(
+                "provider broker socket could not be created"
+            )
         self._server = server
         self._thread = threading.Thread(
             target=self._serve,
@@ -338,8 +352,6 @@ class DeterministicProviderBroker:
         except (
             DeterministicProviderBrokerError,
             OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
             TypeError,
             ValueError,
         ):

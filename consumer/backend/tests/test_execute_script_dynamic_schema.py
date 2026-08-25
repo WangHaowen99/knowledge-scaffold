@@ -594,6 +594,27 @@ def test_handle_execute_script_fails_before_required_business_data_script(
     assert executed == []
 
 
+@pytest.mark.parametrize("error_type", [OSError, ValueError, TimeoutError])
+def test_required_connection_error_preserves_internal_cause(monkeypatch, error_type):
+    root_error = error_type("synthetic connection failure")
+    monkeypatch.setattr(
+        execute_script_module,
+        "resolve_business_data_source",
+        lambda **_kwargs: (_ for _ in ()).throw(root_error),
+    )
+
+    with pytest.raises(execute_script_module.BusinessDataConnectionError) as exc:
+        execute_script_module._build_script_env_overrides(
+            workspace_id="workspace_demo",
+            ontology_id="knowledge_package_demo",
+            required=True,
+        )
+
+    assert str(exc.value) == "Required business data connection is unavailable."
+    assert exc.value.__cause__ is root_error
+    assert "synthetic connection failure" not in str(exc.value)
+
+
 def test_handle_execute_script_discards_success_stderr(monkeypatch, tmp_path):
     ontology_dir = tmp_path / "ontology"
     scripts_dir = ontology_dir / "scripts"

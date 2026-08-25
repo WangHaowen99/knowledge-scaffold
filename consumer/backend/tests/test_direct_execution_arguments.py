@@ -238,6 +238,19 @@ def test_deterministic_structured_parameters_use_canonical_json_without_changing
     assert (missing_right, error_right) == ([], None)
 
 
+def test_deterministic_legacy_set_value_is_json_encoded():
+    args, missing, error = build_direct_cli_args(
+        script_args=["--ids", "<ids>"],
+        business_arguments={"ids": {"synthetic_a", "synthetic_b"}},
+        canonicalize_structured=True,
+    )
+
+    assert missing == []
+    assert error is None
+    assert args[0] == "--ids"
+    assert set(json.loads(args[1])) == {"synthetic_a", "synthetic_b"}
+
+
 def test_direct_optional_runtime_parameter_can_be_omitted_without_context():
     args, missing, error = build_direct_cli_args(
         script_parameters=[

@@ -92,9 +92,7 @@ class DeterministicProviderClient:
                         "Deterministic provider response is invalid.",
                     )
                 response_payload = _read_exact(stream, response_size)
-        except DeterministicProviderCallError:
-            raise
-        except (OSError, TimeoutError) as exc:
+        except OSError as exc:
             raise DeterministicProviderCallError(
                 "provider_transport_error",
                 "Deterministic provider broker is unavailable.",

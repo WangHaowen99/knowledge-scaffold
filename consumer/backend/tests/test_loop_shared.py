@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+from types import SimpleNamespace
 
 from agent.tools.base import ToolBatchResult
 
@@ -29,6 +30,71 @@ def test_resolve_agent_mode_normalizes_supported_modes():
     assert resolve_agent_mode({"agent_mode": "MULTI_AGENT"}) == "multi_agent"
     assert resolve_agent_mode({"agent_mode": "unknown"}) == "quick"
     assert resolve_agent_mode(None) == "quick"
+
+
+def test_prompt_and_tool_context_share_sole_active_ontology(monkeypatch):
+    import agent.core.shared.prompting as prompting_module
+    import agent.core.shared.tool_context as tool_context_module
+
+    state = {
+        "workspace_id": "workspace_demo",
+        "messages": [],
+        "user_context": {},
+    }
+    captured = {}
+    monkeypatch.setattr(
+        prompting_module,
+        "active_ontology_id_from_state",
+        lambda _state: "knowledge_package_demo",
+    )
+    monkeypatch.setattr(
+        prompting_module,
+        "get_workspace_runtime_config",
+        lambda _workspace_id: {"lang": {"enabled": False}},
+    )
+    monkeypatch.setattr(
+        prompting_module,
+        "build_ontologies_section",
+        lambda *, selected_ontology_id, workspace_id: captured.update(
+            selected_ontology_id=selected_ontology_id,
+            workspace_id=workspace_id,
+        )
+        or "synthetic ontology section",
+    )
+    monkeypatch.setattr(
+        prompting_module,
+        "build_skills_section",
+        lambda **_kwargs: "synthetic skills section",
+    )
+    monkeypatch.setattr(
+        prompting_module,
+        "build_universal_system_prompt",
+        lambda **kwargs: kwargs["ontologies_section"],
+    )
+    monkeypatch.setattr(
+        tool_context_module,
+        "active_ontology_id_from_state",
+        lambda _state: "knowledge_package_demo",
+    )
+
+    prompt = prompting_module.build_main_system_prompt(state)
+    context = tool_context_module.build_tool_context(
+        state,
+        memory_manager=None,
+        agent_config=SimpleNamespace(),
+        caller="main",
+        agent_iteration=1,
+        workspace_id="workspace_demo",
+        project_root=None,
+    )
+
+    assert prompt == "synthetic ontology section"
+    assert captured == {
+        "selected_ontology_id": "knowledge_package_demo",
+        "workspace_id": "workspace_demo",
+    }
+    assert context.selected_ontology_id == "knowledge_package_demo"
+    assert "selected_ontology_id" not in state["user_context"]
 
 
 def test_apply_tool_batch_result_to_state_merges_runtime_fields():

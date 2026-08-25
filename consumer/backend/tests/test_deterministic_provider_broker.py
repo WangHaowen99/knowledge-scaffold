@@ -135,6 +135,68 @@ def test_broker_config_rejects_domain_as_connect_address():
         )
 
 
+@pytest.mark.parametrize(
+    "network_endpoint",
+    [
+        "neo4j+ssc://192.0.2.24:7687",
+        "neo4j+s://192.0.2.24:7688",
+        "neo4j+s://192.0.2.24:7687/other",
+        "neo4j+s://192.0.2.24:7687?target=other",
+        "neo4j+s://192.0.2.24:7687#other",
+    ],
+)
+def test_broker_config_rejects_mismatched_pinned_endpoint(network_endpoint):
+    with pytest.raises(DeterministicProviderBrokerError, match="does not match"):
+        _provider_config(_binding(network_endpoint=network_endpoint))
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+def test_broker_start_closes_socket_when_setup_fails(tmp_path, monkeypatch):
+    class FailingSocket:
+        closed = False
+
+        def bind(self, _path):
+            raise OSError("synthetic bind failure")
+
+        def close(self):
+            self.closed = True
+
+    server = FailingSocket()
+    monkeypatch.setattr(socket, "socket", lambda *_args: server)
+    broker = DeterministicProviderBroker(binding=_binding(), socket_dir=tmp_path)
+
+    with pytest.raises(DeterministicProviderBrokerError, match="could not be created"):
+        broker.start()
+
+    assert server.closed is True
+
+
+def test_provider_client_maps_timeout_to_transport_error(tmp_path, monkeypatch):
+    class FailingSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+        def connect(self, _path):
+            raise TimeoutError("synthetic timeout")
+
+    monkeypatch.setattr(socket, "socket", lambda *_args: FailingSocket())
+    monkeypatch.setenv(
+        DETERMINISTIC_PROVIDER_SOCKET_ENV,
+        str(tmp_path / "provider.sock"),
+    )
+
+    with pytest.raises(DeterministicProviderCallError) as exc:
+        DeterministicProviderClient().execute("count_search")
+
+    assert exc.value.code == "provider_transport_error"
+
+
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
 def test_broker_close_interrupts_active_backend_call(tmp_path, monkeypatch):
     entered = threading.Event()

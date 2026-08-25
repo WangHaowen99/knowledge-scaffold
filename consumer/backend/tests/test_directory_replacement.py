@@ -4,11 +4,35 @@ from __future__ import annotations
 
 import pytest
 
+from ontology import directory_replacement
 from ontology.directory_replacement import (
     DirectoryReplacementRecoveryError,
     recover_directory_replacements,
     recover_workspace_ontology_replacements,
 )
+
+
+def test_sync_directory_opens_with_explicit_restrictive_mode(tmp_path, monkeypatch):
+    opened = []
+
+    def fake_open(path, flags, mode):
+        opened.append((path, flags, mode))
+        return 7
+
+    monkeypatch.setattr(directory_replacement.os, "open", fake_open)
+    monkeypatch.setattr(directory_replacement.os, "fsync", lambda _descriptor: None)
+    monkeypatch.setattr(directory_replacement.os, "close", lambda _descriptor: None)
+
+    directory_replacement._sync_directory(tmp_path)
+
+    assert opened == [
+        (
+            tmp_path,
+            directory_replacement.os.O_RDONLY
+            | getattr(directory_replacement.os, "O_DIRECTORY", 0),
+            0o600,
+        )
+    ]
 
 
 def _interrupted_backup(parent, target_name):

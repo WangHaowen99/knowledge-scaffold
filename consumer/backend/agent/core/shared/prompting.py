@@ -11,7 +11,7 @@ from ontology.ontologies import build_ontologies_section
 from utils.skills import build_skills_section
 from workspace.workspaces import get_current_workspace_runtime_config, get_workspace_runtime_config
 from .interaction_policy import user_interaction_supported_from_state
-from .ontology_context import selected_ontology_id_from_state
+from .ontology_context import active_ontology_id_from_state
 
 
 def build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration: bool = True) -> str:
@@ -40,7 +40,7 @@ def build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration:
 
     return build_universal_system_prompt(
         ontologies_section=build_ontologies_section(
-            selected_ontology_id=selected_ontology_id_from_state(state),
+            selected_ontology_id=active_ontology_id_from_state(state),
             workspace_id=workspace_id,
         ),
         skills_section=(

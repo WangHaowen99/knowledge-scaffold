@@ -708,7 +708,7 @@ def _convert_legacy_value(
     canonicalize_structured: bool,
 ) -> Tuple[str, Optional[str]]:
     if canonicalize_structured and isinstance(value, (list, tuple, set, dict)):
-        serializable = list(value) if isinstance(value, tuple) else value
+        serializable = list(value) if isinstance(value, (tuple, set)) else value
         try:
             return _serialize_json_cli_value(serializable, canonicalize=True), None
         except (TypeError, ValueError):
