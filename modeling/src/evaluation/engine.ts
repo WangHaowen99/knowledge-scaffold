@@ -11,6 +11,7 @@ import {
   ensureEvaluationWorkspace,
   evaluationWorkspaceId,
   shadowWorkspaceId,
+  type ConsumerRequest,
 } from './shadow-workspace.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import {
@@ -19,7 +20,7 @@ import {
   type EvaluationExecutionTrace,
 } from './trace-client.js';
 import { validateSpecIntegrity } from '../workflow/spec-validation.js';
-import { EvaluationAuthSession } from './auth-session.js';
+import { EvaluationAuthenticationError, EvaluationAuthSession } from './auth-session.js';
 import type { Testcase } from '../workflow/m3-repo.js';
 import { currentLlmUser, runWithLlmUser } from '../llm/user-context.js';
 
@@ -109,6 +110,7 @@ interface RunOptions {
   owner?: string;
   token: string; // 专家 token 透传
   refreshToken?: string; // 仅保留在评测任务内存中，用于长任务续期
+  authSession?: EvaluationAuthSession; // Agent 评测复用 Core 内存中的可续期会话
   caseIds?: string[]; // 为空时全量；有值时只运行受影响的真实用例
   evaluationScope?: repo.EvaluationScope;
   packageSnapshot: {
@@ -290,7 +292,9 @@ async function runRound(
   signal: AbortSignal,
 ): Promise<void> {
   const { projectId, owner } = opts;
-  const auth = new EvaluationAuthSession({ accessToken: opts.token, refreshToken: opts.refreshToken });
+  const auth = opts.authSession
+    ?? new EvaluationAuthSession({ accessToken: opts.token, refreshToken: opts.refreshToken });
+  const request: ConsumerRequest = (_token, path, options) => authenticatedConsumerRequest(auth, path, options);
   const ws = workspaceId;
   const log = (m: string) => repo.roundLog(roundId, m);
   assertEvaluationNotCancelled(signal);
@@ -299,6 +303,9 @@ async function runRound(
   const workspace = await ensureEvaluationWorkspace({
     projectId, workspaceId: ws, owner, token: await auth.getAccessToken(),
     signal,
+    // Default shadow workspaces use service-credential provisioning. Other workspaces
+    // use the renewable user session because Consumer checks their membership.
+    ...(ws === shadowWorkspaceId(projectId) && owner ? {} : { request }),
   });
   assertEvaluationNotCancelled(signal);
   if (workspace.created) {
@@ -321,6 +328,7 @@ async function runRound(
     ontologyId: latest.spec.id,
     zip,
     signal,
+    request,
   });
   assertEvaluationNotCancelled(signal);
   log(`知识包已导入评测工作空间：${importResult.ontology_id}（对象 ${importResult.objects_count ?? '-'} / 操作 ${importResult.operations_count ?? '-'}）`);
@@ -331,6 +339,7 @@ async function runRound(
     ontologyId: importResult.ontology_id,
     version: latest.spec.version,
     signal,
+    request,
   });
   log(`已激活并确认版本：${latest.spec.version}`);
 
@@ -339,6 +348,7 @@ async function runRound(
   await prepareProjectDataSourceForEvaluation({
     token: await auth.getAccessToken(), ontologyId: importResult.ontology_id, dataSource,
     signal,
+    request,
   });
   assertEvaluationNotCancelled(signal);
   if (dataSource.mode === 'connection') {
@@ -359,7 +369,7 @@ async function runRound(
     let verdict: 'pass' | 'partial' | 'fail' | 'error' = 'error';
     let reason = '';
     try {
-      const run = await runCase(auth, ws, tc.question, signal);
+      const run = await runCase(request, ws, tc.question, signal);
       assertEvaluationNotCancelled(signal);
       finalAnswer = run.finalAnswer;
       trace = run.trace;
@@ -376,6 +386,7 @@ async function runRound(
       });
     } catch (e) {
       if (signal.aborted) throw signal.reason;
+      if (e instanceof EvaluationAuthenticationError) throw e;
       reason = `运行失败：${e instanceof Error ? e.message : e}`;
       repo.addResult(roundId, { testcaseId: tc.id, question: tc.question, groundTruth: tc.groundTruth, finalAnswer, verdict, reason, trace });
     }
@@ -393,26 +404,20 @@ async function runRound(
 
 // runs/sync：429/503 退避重试
 async function runCase(
-  auth: EvaluationAuthSession,
+  request: ConsumerRequest,
   ws: string,
   question: string,
   signal: AbortSignal,
 ): Promise<{ finalAnswer: string; trace: EvaluationExecutionTrace }> {
   const sessionId = `mw-eval-${randomUUID().slice(0, 8)}`;
   let rateLimitAttempts = 0;
-  let authRetried = false;
   while (rateLimitAttempts < 4) {
     assertEvaluationNotCancelled(signal);
-    const res = await consumerFetch(await auth.getAccessToken(), '/agentic/runs/sync', {
+    const res = await request('', '/agentic/runs/sync', {
       method: 'POST', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request: question, session_id: sessionId, include_trace: true }),
       signal,
     });
-    if (res.status === 401 && !authRetried) {
-      await auth.refreshAfterUnauthorized();
-      authRetried = true;
-      continue;
-    }
     if (res.status === 429 || res.status === 503) {
       rateLimitAttempts++;
       await new Promise<void>((resolve, reject) => {
@@ -435,4 +440,22 @@ async function runCase(
     return { finalAnswer: evaluationFinalAnswer(data), trace };
   }
   throw new Error('runs/sync 重试后仍被限流');
+}
+
+async function authenticatedConsumerRequest(
+  auth: EvaluationAuthSession,
+  path: string,
+  options: RequestInit & { workspaceId?: string } = {},
+): Promise<Response> {
+  let response = await consumerFetch(await auth.getAccessToken(), path, options);
+  if (response.status !== 401) return response;
+
+  await response.body?.cancel();
+  await auth.refreshAfterUnauthorized();
+  response = await consumerFetch(await auth.getAccessToken(), path, options);
+  if (response.status === 401) {
+    await response.body?.cancel();
+    throw new EvaluationAuthenticationError('评测登录续期后仍未通过 Consumer 认证，请重新登录后再启动评测');
+  }
+  return response;
 }

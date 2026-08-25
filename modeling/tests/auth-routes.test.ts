@@ -281,6 +281,8 @@ test('login：缺参 → 400', async () => {
 });
 
 test('login 成功 → 200 {token, user, refresh_token, expires_in}', async () => {
+  const { backgroundAuthSessions } = await import('../src/auth/background-session.js');
+  backgroundAuthSessions.forget('alice');
   const token = await signToken();
   routes.set('POST /token', {
     status: 200,
@@ -291,6 +293,7 @@ test('login 成功 → 200 {token, user, refresh_token, expires_in}', async () =
   const body = res.json();
   assert.deepEqual(Object.keys(body).sort(), ['expires_in', 'refresh_token', 'token', 'user']);
   assert.deepEqual(body.user, { username: 'alice', role: 'user' });
+  assert.equal(await backgroundAuthSessions.get('alice')?.getAccessToken(), token);
 });
 
 test('login：invalid_grant → 401 登录失败', async () => {
@@ -321,6 +324,7 @@ test('login：强制改密用户 → 403 PASSWORD_CHANGE_REQUIRED', async () => 
 // ---------------- /auth/refresh ----------------
 
 test('refresh：缺参 → 400；上游拒绝 → 401；上游 5xx → 503；成功 → 200 字段名正确', async () => {
+  const { backgroundAuthSessions } = await import('../src/auth/background-session.js');
   let res = await app.inject({ method: 'POST', url: '/auth/refresh', payload: {} });
   assert.equal(res.statusCode, 400);
 
@@ -333,13 +337,15 @@ test('refresh：缺参 → 400；上游拒绝 → 401；上游 5xx → 503；成
   res = await app.inject({ method: 'POST', url: '/auth/refresh', payload: { refresh_token: 'rt' } });
   assert.equal(res.statusCode, 503);
 
+  const refreshedToken = await signToken();
   routes.set('POST /token', {
     status: 200,
-    body: JSON.stringify({ access_token: 'at-2', refresh_token: 'rt-2', token_type: 'Bearer', expires_in: 900 }),
+    body: JSON.stringify({ access_token: refreshedToken, refresh_token: 'rt-2', token_type: 'Bearer', expires_in: 900 }),
   });
   res = await app.inject({ method: 'POST', url: '/auth/refresh', payload: { refresh_token: 'rt-1' } });
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.json(), { token: 'at-2', refresh_token: 'rt-2', expires_in: 900 });
+  assert.deepEqual(res.json(), { token: refreshedToken, refresh_token: 'rt-2', expires_in: 900 });
+  assert.equal(await backgroundAuthSessions.get('alice')?.getAccessToken(), refreshedToken);
 });
 
 // ---------------- 注册代理 ----------------

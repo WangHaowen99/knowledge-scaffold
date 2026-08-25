@@ -61,6 +61,52 @@ async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() ->
     assert first == second
     assert first != other
     assert tool_trace_group_id("read_file", {"path": "rules/example.md"}) == ""
+    latest_results = tool_trace_group_id("get_evaluation_results", {})
+    specific_results = tool_trace_group_id("get_evaluation_results", {"round_id": "round-2"})
+    assert latest_results.startswith("snapshot:get_evaluation_results:")
+    assert latest_results != specific_results
+
+
+async def test_repeated_completed_evaluation_read_calls_core_once_and_emits_one_trace(settings) -> None:
+    model = ScriptedModel(
+        [
+            [ToolTurn("get_evaluation_results", {})],
+            [ToolTurn("get_evaluation_results", {})],
+            [],
+        ],
+        final="已根据本轮结果完成归因。",
+    )
+    gateway = FakeGateway({
+        "get_evaluation_results": {
+            "round": {"id": "round-1", "status": "done", "total": 7, "passed": 4},
+            "counts": {"pass": 4, "fail": 3},
+            "results": [{"testcaseId": "case-1", "verdict": "fail"}],
+            "display": {"text": "已读取 7 条真实评测结果"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_evaluation_result_cache",
+            token="token_1",
+            message="归因本轮评测失败",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        calls = [call for call in gateway.calls if call["tool"] == "get_evaluation_results"]
+        assert len(calls) == 1
+        trace = [
+            event.payload for event in runtime.store.events_after(
+                "project_evaluation_result_cache", 0,
+            )
+            if event.kind == "tool"
+            and event.payload.get("name") == "get_evaluation_results"
+        ]
+        assert [event["phase"] for event in trace] == ["started", "completed"]
+    finally:
+        await runtime.shutdown()
 
 
 async def test_held_text_is_flushed_when_required_tool_finishes_at_stream_boundary(settings) -> None:

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const { mergeToolTrace } = await import('../frontend/src/workbench/lib/appStore.js');
+const { traceSummary } = await import('../frontend/src/workbench/shell/ProcessDrawer.jsx');
 
 test('同一工具调用的自动修正终态只保留一条轨迹', () => {
   const started = mergeToolTrace([], {
@@ -93,4 +94,25 @@ test('历史 Rail 拒绝与紧邻的失败终态合并为一条未执行记录',
   assert.equal(merged[0].seq, 2951);
   assert.equal(merged[0].toolCallId, 'call-old-write');
   assert.equal(nonAdjacent.length, 2);
+});
+
+test('同一评测轮次的历史重复读取合并为一条轨迹', () => {
+  let trace: any[] = [];
+  for (let index = 1; index <= 3; index += 1) {
+    trace = mergeToolTrace(trace, {
+      runId: 'run-evaluation',
+      toolCallId: `call-results-${index}`,
+      name: 'get_evaluation_results',
+      phase: 'completed',
+      summary: '已读取 7 条真实评测结果',
+      createdAt: `2026-08-25T14:41:${String(index).padStart(2, '0')}.000Z`,
+    }, index);
+  }
+
+  assert.equal(trace.length, 1);
+  assert.equal(trace[0].segmentCount, 3);
+  assert.deepEqual(trace[0].toolCallIds, [
+    'call-results-1', 'call-results-2', 'call-results-3',
+  ]);
+  assert.equal(traceSummary(trace[0]), '已读取 7 条真实评测结果 · 共 3 次读取，已合并');
 });

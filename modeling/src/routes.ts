@@ -10,6 +10,7 @@ import {
 import { PackageChatConversation } from './ai-construction/package-chat-conversation.js';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
+import { backgroundAuthSessions } from './auth/background-session.js';
 import { getDb } from './db/index.js';
 import {
   createProject,
@@ -513,6 +514,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return reply.code(503).send({ error: '认证服务暂不可用' });
     }
     if (!result) return reply.code(401).send({ error: '登录失败' });
+    backgroundAuthSessions.remember(result.user.username, result.token, result.refreshToken);
     const body: Record<string, unknown> = { token: result.token, user: result.user };
     // 上游提供 refresh 能力时加法追加（冻结契约 {token, user} 不变）
     if (result.refreshToken) {
@@ -529,6 +531,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const tokens = await getAuthClient().refresh(refresh_token);
       // 401 → 前端清 token 登出；503（上游不可达）→ 前端不登出
       if (!tokens) return reply.code(401).send({ error: 'Unauthorized' });
+      const user = await getAuthClient().verify(tokens.token);
+      if (user) backgroundAuthSessions.remember(user.username, tokens.token, tokens.refreshToken);
       return { token: tokens.token, refresh_token: tokens.refreshToken, expires_in: tokens.expiresIn };
     } catch {
       return reply.code(503).send({ error: '认证服务暂不可用' });
@@ -2245,12 +2249,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (blocked) return blocked;
       const token = (req.headers.authorization ?? '').slice(7);
       const { refresh_token: refreshToken } = (req.body ?? {}) as { refresh_token?: string };
+      const authSession = refreshToken
+        ? backgroundAuthSessions.remember(req.user!.username, token, refreshToken)
+        : backgroundAuthSessions.get(req.user!.username);
       try {
         const { roundId } = await startCurrentEvaluation({
           projectId: c.p.id,
           owner: req.user!.username,
           token,
           refreshToken,
+          authSession,
         });
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };

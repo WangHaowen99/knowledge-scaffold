@@ -2,6 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
+import {
+  backgroundAuthSessions,
+  type BackgroundAuthSessionRegistry,
+} from '../auth/background-session.js';
 import type {
   PackageArtifactFiles,
   PackageCandidateRevision,
@@ -18,6 +22,7 @@ import { getDocumentRawContent, listDocuments, updateDocumentDirectives } from '
 import { parseFullTableDocumentIsolated } from '../documents/parse-service.js';
 import { config } from '../config.js';
 import { getProjectDataSource } from '../evaluation/data-source-repo.js';
+import { EvaluationAuthenticationError } from '../evaluation/auth-session.js';
 import { getRunningEvaluationDatabaseImportRun } from '../evaluation/eval-db-import-repo.js';
 import { redactEvaluationDatabaseError, resolveEvaluationDatabaseTarget } from '../evaluation/evaluation-database-target.js';
 import { startCurrentEvaluation, startEvaluation, waitForEvaluation } from '../evaluation/engine.js';
@@ -159,7 +164,6 @@ export interface AgentToolContext {
   project: Project;
   runId: string;
   username: string;
-  token?: string;
 }
 
 export class AgentCoreService {
@@ -168,7 +172,10 @@ export class AgentCoreService {
   private readonly packageFusion: PackageFusionService;
   private readonly validationReports: ValidationReportStore;
 
-  constructor(db: DatabaseSync = getDb()) {
+  constructor(
+    db: DatabaseSync = getDb(),
+    private readonly authSessions: BackgroundAuthSessionRegistry = backgroundAuthSessions,
+  ) {
     this.db = db;
     this.packageFusion = new PackageFusionService(db, this.artifacts);
     this.validationReports = new ValidationReportStore(db);
@@ -3289,8 +3296,14 @@ export class AgentCoreService {
         { gate: 'ready_for_eval', blockers: gate.blockers },
       );
     }
-    if (!context.token) {
-      throw new AgentCoreError('AUTH_REQUIRED', '启动评测需要当前登录凭据', ['重新登录后再运行评测'], 401);
+    const authSession = this.authSessions.get(context.username);
+    if (!authSession) {
+      throw new AgentCoreError(
+        'AUTH_REQUIRED',
+        '启动评测需要当前可续期的登录凭据',
+        ['在建模工作台重新登录后再运行评测'],
+        401,
+      );
     }
     const rawCaseIds = args.case_ids;
     if (rawCaseIds !== undefined && !Array.isArray(rawCaseIds)) {
@@ -3312,7 +3325,8 @@ export class AgentCoreService {
       const evaluationInput = {
         projectId: context.project.id,
         owner: context.username,
-        token: context.token,
+        token: await authSession.getAccessToken(),
+        authSession,
         caseIds,
       };
       const result = source
@@ -3334,6 +3348,20 @@ export class AgentCoreService {
         : await startCurrentEvaluation(evaluationInput);
       if (!source) advanceStage(context.project.id, 'evaluate');
       const round = await waitForEvaluation(context.project.id, result.roundId);
+      if (round.status !== 'done') {
+        const authenticationFailed = /评测(?:访问凭据|登录续期)|Consumer 认证/u.test(round.log);
+        throw new AgentCoreError(
+          authenticationFailed ? 'AUTH_REQUIRED' : 'EVALUATION_RUN_FAILED',
+          authenticationFailed
+            ? '评测登录凭据无法续期，本轮已停止'
+            : '评测运行失败，本轮已停止',
+          authenticationFailed
+            ? ['在建模工作台重新登录后明确发起新一轮评测']
+            : ['查看评测轮次日志，修复运行环境后再明确发起新一轮评测'],
+          authenticationFailed ? 401 : 409,
+          { roundId: round.id },
+        );
+      }
       const results = listResults(round.id);
       return {
         roundId: result.roundId,
@@ -3354,6 +3382,15 @@ export class AgentCoreService {
         },
       };
     } catch (error) {
+      if (error instanceof AgentCoreError) throw error;
+      if (error instanceof EvaluationAuthenticationError) {
+        throw new AgentCoreError(
+          'AUTH_REQUIRED',
+          error.message,
+          ['在建模工作台重新登录后明确发起新一轮评测'],
+          401,
+        );
+      }
       throw new AgentCoreError(
         'EVALUATION_START_FAILED',
         error instanceof Error ? error.message : '评测启动失败',

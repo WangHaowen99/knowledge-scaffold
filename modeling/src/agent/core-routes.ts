@@ -359,7 +359,6 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
         project,
         runId,
         username: request.user!.username,
-        token: String(request.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim(),
       }, String((request.params as any).tool ?? ''), args);
     } catch (error) {
       return sendAgentCoreError(reply, error);

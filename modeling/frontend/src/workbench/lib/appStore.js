@@ -852,8 +852,11 @@ export function mergeToolTrace(trace, event, seq) {
   const legacySubject = event.name === 'read_document'
     ? String(event.summary || '').match(/《([^》]+)》/u)?.[1] || ''
     : '';
+  const legacyStableRead = event.name === 'get_evaluation_results'
+    ? `legacy:${event.name}`
+    : '';
   const traceGroupId = String(event.traceGroupId || (
-    legacySubject ? `legacy:${event.name}:${legacySubject}` : ''
+    legacySubject ? `legacy:${event.name}:${legacySubject}` : legacyStableRead
   ));
   const id = traceGroupId
     ? `tool-group:${event.runId || ''}:${traceGroupId}`

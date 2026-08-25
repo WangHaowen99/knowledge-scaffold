@@ -97,6 +97,7 @@ class ToolContext:
     confirmation_guard: ConfirmationGuard | None = None
     tool_receipt_lookup: ToolReceiptLookup | None = None
     tool_receipt_save: ToolReceiptSave | None = None
+    stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     confirmation_required: bool = False
     interjection_reply_required: bool = False
     release_declined: bool = False
@@ -904,7 +905,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "get_evaluation_results",
-        "读取指定或最近一轮真实评测的逐条回答、判定理由和轨迹；失败归因前必须调用。",
+        "读取指定或最近一轮真实评测的逐条回答、判定理由和轨迹；失败归因前调用一次。run_evaluation 已返回 roundId 时必须传 round_id，同一轮结果不得重复读取。",
         {"round_id": STRING},
         display="正在读取评测结果",
     ),
