@@ -460,6 +460,32 @@ try {
 } catch (e) { console.log('✗ 流内活动派生:', e.message); bad++; }
 
 store.set({
+  activity: {
+    id: 'restored-live-activity',
+    text: '正在根据处理结果判断下一步',
+    detail: '当前操作已经结束，正在规划下一项可执行工作',
+    progress: {},
+    observedAt: Date.now(),
+  },
+  trace: [],
+  lastSeq: 0,
+  replayUntilSeq: 10_000,
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 23, runId: 'historic-run', toolCallId: 'historic-tool',
+  name: 'read_file', phase: 'completed', summary: '历史文件读取完成',
+  createdAt: new Date(Date.now() - 60_000).toISOString(),
+});
+try {
+  if (store.get().activity?.id !== 'restored-live-activity'
+    || store.get().trace.length !== 1
+    || store.get().trace[0]?.phase !== 'completed') {
+    throw new Error('历史工具终态清空了服务端恢复的最新活动，或没有补入运行轨迹');
+  }
+  console.log('✓ 历史轨迹回放不覆盖当前运行活动');
+} catch (e) { console.log('✗ 历史轨迹活动隔离:', e.message); bad++; }
+
+store.set({
   demo: false,
   loading: false,
   project: { name: '持续运行项目' },

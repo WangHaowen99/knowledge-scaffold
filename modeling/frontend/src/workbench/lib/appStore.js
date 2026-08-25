@@ -295,12 +295,16 @@ export const actions = {
     if (eventType === 'tool') {
       const createdAt = event.createdAt || new Date().toISOString();
       const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
-      const activity = replaying ? null : store.get().activity;
       const terminal = ['completed', 'failed', 'blocked', 'rejected', 'waiting'].includes(event.phase);
       store.set((state) => ({
-        activity: terminal
-          ? null
-          : activity ? { ...activity, sub: [line, ...(activity.sub || [])].slice(0, 8) } : activity,
+        // 刷新后的历史回放只重建轨迹，不能清空 state 接口恢复的最新活动。
+        activity: replaying
+          ? state.activity
+          : terminal
+            ? null
+            : state.activity
+              ? { ...state.activity, sub: [line, ...(state.activity.sub || [])].slice(0, 8) }
+              : state.activity,
         trace: mergeToolTrace(state.trace, event, seq),
       }));
       if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation'].includes(event.name)) {
