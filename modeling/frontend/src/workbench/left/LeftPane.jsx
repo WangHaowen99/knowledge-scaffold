@@ -30,7 +30,7 @@ export default function LeftPane() {
         <button role="tab" aria-selected={tab === 'pkg'} className={tab === 'pkg' ? 'on' : ''}
           onClick={() => actions.setLeftTab('pkg')}>知识包</button>
         <button role="tab" aria-selected={tab === 'mat'} className={tab === 'mat' ? 'on' : ''}
-          onClick={() => actions.setLeftTab('mat')}>资料 {demo ? F.materials.length : materials.length}</button>
+          onClick={() => actions.setLeftTab('mat')}>资料 <span className="wb-tab-count">{demo ? F.materials.length : materials.length}</span></button>
       </div>
       {tab === 'pkg' ? <PackageTree /> : <MaterialList />}
     </>
@@ -258,14 +258,19 @@ function MaterialList() {
     <>
       <div className="wb-scroll">
         <div style={{ padding: 'var(--s-2) 0' }}>
-          {materials.map((m) => (
-            <button key={m.id} className={`wb-mat${cur === m.id ? ' on' : ''}`}
-              onClick={() => actions.selectMaterial(m.id)} title={m.name}>
-              <span className={`dot dot-${m.st}`} />
-              <span className="mn">{m.name}</span>
-              <span className="mc">{m.st === 'stale' ? '无法解析' : `v${m.v} · 引用 ${m.refs}`}</span>
-            </button>
-          ))}
+          {materials.map((m) => {
+            const ext = (m.name || '').split('.').pop();
+            const iconName = ['xlsx', 'xls', 'csv'].includes(ext) ? 'sheet' : 'file';
+            return (
+              <button key={m.id} className={`wb-mat${cur === m.id ? ' on' : ''}`}
+                onClick={() => actions.selectMaterial(m.id)} title={m.name}>
+                <Icon name={iconName} size={14} className="mat-icon" />
+                <span className={`dot dot-${m.st}`} />
+                <span className="mn">{m.name}</span>
+                <span className="mc">{m.st === 'stale' ? '无法解析' : `v${m.v} · 引用 ${m.refs}`}</span>
+              </button>
+            );
+          })}
           {demo && <div style={{ padding: 'var(--s-4)', borderTop: '1px solid var(--c-line-soft)', marginTop: 'var(--s-2)' }}>
             <div className="t-sm"><b>口述证据 {F.spokenEvidence} 条</b></div>
             <div className="t-xs faint" style={{ marginTop: 2 }}>

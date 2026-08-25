@@ -86,8 +86,8 @@ export default function TopBar() {
 
       <span className="spacer" />
 
-      <span className="counts">
-        当前产物 <b>{counts.flows}</b> 流程 / <b>{counts.objects}</b> 对象 / <b>{counts.scripts}</b> 脚本
+      <span className="pill pill-plain wb-counts-pill" title={`${counts.flows} 流程 · ${counts.objects} 对象 · ${counts.scripts} 脚本`}>
+        <b>{counts.flows + counts.objects + counts.scripts}</b> 产物
       </span>
 
       {/* demo 场景切换：接后端后由真实状态驱动，这里保留为开发入口 */}

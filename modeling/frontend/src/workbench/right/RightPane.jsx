@@ -147,13 +147,12 @@ function Message({ m }) {
   const system = m.role === 'system';
   const at = m.at || formatTime(m.createdAt);
   return (
-    <div className="wb-msg">
+    <div className={`wb-msg${mine ? ' wb-msg-user' : ''}`}>
       <div className="wb-who">
         <b>{mine ? '你' : system ? '资料' : '助手'}</b>{at ? ` · ${at}` : ''}
         {m.focus && (
           <>
             <span className="spacer" />
-            {/* 助手说「看这个」，点一下中栏就跳过去并重新跟随 */}
             <button className="wb-jump" onClick={() => actions.focusFrom(m.focus)}>
               <Icon name="arrow" size={11} />{m.focusLabel || '定位'}
             </button>
@@ -163,7 +162,7 @@ function Message({ m }) {
       {mine ? (
         <div className="wb-bubble">{messageText(m.blocks?.[0], false)}</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+        <div className="wb-msg-assistant-body">
           {m.blocks.map((b, i) => <Block key={i} block={b} />)}
           {m.streaming && <span className="wb-stream-cursor" aria-label="助手正在输出" />}
         </div>

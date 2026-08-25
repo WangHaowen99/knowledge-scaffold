@@ -65,8 +65,12 @@ export default function DocView() {
           <div className="card-h">这段被谁引用<span className="spacer" />{docSample.referrers.length} 条</div>
           <div className="wb-backref">
             {docSample.referrers.map((r) => (
-              <a key={r.path} onClick={() => actions.selectPath(r.path)}>
-                <b>{r.path}</b><span>{r.why}</span>
+              <a key={r.path} onClick={() => actions.selectPath(r.path)} title={r.path}>
+                <RefIcon path={r.path} />
+                <div>
+                  <b>{r.path.split('/').pop()}</b>
+                  <span>{r.why}</span>
+                </div>
               </a>
             ))}
           </div>
@@ -101,6 +105,12 @@ export default function DocView() {
       </aside>
     </div>
   );
+}
+
+function RefIcon({ path }) {
+  const ext = (path || '').split('.').pop();
+  const name = ext === 'mmd' ? 'layers' : ext === 'xlsx' || ext === 'csv' ? 'sheet' : 'file';
+  return <Icon name={name} size={15} className="ref-icon" />;
 }
 
 function Unparsed({ mat, error }) {
@@ -158,8 +168,12 @@ function RealDocument({ material, referrers, location }) {
       <div className="card-h">{location ? '这处依据被谁引用' : '这份资料被谁引用'}<span className="spacer" />{referrers.length} 条</div>
       <div className="wb-backref">
         {referrers.map((item) => (
-          <a key={item.path} onClick={() => actions.selectPath(item.path)}>
-            <b>{item.path}</b><span>{item.why || `第 ${item.line} 行`}</span>
+          <a key={item.path} onClick={() => actions.selectPath(item.path)} title={item.path}>
+            <RefIcon path={item.path} />
+            <div>
+              <b>{item.path.split('/').pop()}</b>
+              <span>{item.why || (item.path.includes('/') ? item.path.split('/').slice(0, -1).join('/') : `第 ${item.line} 行`)}</span>
+            </div>
           </a>
         ))}
         {!referrers.length && <div className="empty t-sm">当前知识包还没有引用这份资料</div>}

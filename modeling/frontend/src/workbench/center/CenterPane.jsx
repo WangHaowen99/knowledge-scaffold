@@ -48,9 +48,14 @@ export default function CenterPane() {
   const demo = useStore(store, selDemo);
   const loading = useStore(store, selLoading);
   const materials = useStore(store, selMaterials);
+  const docMaterial = focus.kind === 'doc'
+    ? materials.find((item) => item.id === focus.target || item.filename === focus.target)
+    : null;
   const title = loading && focus.kind === 'empty'
     ? '正在加载项目'
-    : (TITLES[focus.kind] || (() => focus.target))(focus);
+    : focus.kind === 'doc' && docMaterial
+      ? docMaterial.filename
+      : (TITLES[focus.kind] || (() => focus.target))(focus);
   const sub = demo ? SUBS[focus.kind] : focus.kind === 'conflict' && focus.target === '多来源融合'
     ? '来源 / 去向账本 / 质量门禁'
     : {

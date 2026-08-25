@@ -35,12 +35,12 @@
 
   --t-xs: 10.5px;
   --t-sm: 11.5px;
-  --t-md: 12.5px;
-  --t-lg: 13.5px;
-  --t-xl: 15px;
+  --t-md: 13px;
+  --t-lg: 14px;
+  --t-xl: 15.5px;
 
   --s-1: 4px;  --s-2: 6px;  --s-3: 8px;  --s-4: 10px;
-  --s-5: 12px; --s-6: 16px; --s-7: 20px; --s-8: 28px;
+  --s-5: 12px; --s-6: 16px; --s-7: 20px; --s-8: 28px; --s-9: 36px;
 
   /* 圆角对齐 .mwr（按钮 9px、卡片 12px、标签 99px） */
   --r-sm: 6px; --r-md: 9px; --r-lg: 12px; --r-full: 99px;
