@@ -44,6 +44,8 @@ _CONFIRMATION_CARD_CLAIMS = (
 )
 
 MERMAID_SOURCE_VALIDATOR_VERSION = "mermaid-source-v1"
+_STABLE_READ_TOOLS = frozenset({"get_evaluation_results"})
+_STABLE_READ_INVALIDATORS = frozenset({"run_evaluation"})
 
 
 def requests_explicit_decision(text: str) -> bool:
@@ -438,7 +440,7 @@ class InterjectionSafetyRail(AgentRail):
 
 
 class ToolBoundaryRail(AgentRail):
-    """Replay a completed OpenJiuwen tool boundary without submitting it twice."""
+    """Replay completed boundaries and stable reads without submitting them twice."""
 
     priority = 105
 
@@ -446,18 +448,36 @@ class ToolBoundaryRail(AgentRail):
         self._context = context
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        if ctx.extra.get("_skip_tool") or self._context.tool_receipt_lookup is None:
+        if ctx.extra.get("_skip_tool"):
             return
+        name = _tool_name(ctx)
+        arguments = _call_args(ctx)
         call_id = _tool_call_id(ctx)
-        if not call_id:
+        if call_id and self._context.tool_receipt_lookup is not None:
+            result = self._context.tool_receipt_lookup(name, call_id, arguments)
+            if result is not None:
+                ctx.extra["_tool_receipt_replayed"] = True
+                _skip_tool(ctx, result)
+                return
+        if name in _STABLE_READ_INVALIDATORS:
+            self._context.stable_read_cache.clear()
             return
-        result = self._context.tool_receipt_lookup(_tool_name(ctx), call_id, _call_args(ctx))
-        if result is None:
+        cache_key = _stable_read_cache_key(name, arguments)
+        cached = self._context.stable_read_cache.get(cache_key)
+        if cached is None:
             return
-        ctx.extra["_tool_receipt_replayed"] = True
-        _skip_tool(ctx, result)
+        ctx.extra["_stable_read_replayed"] = True
+        _skip_tool(ctx, _stable_read_replay(cached))
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
+        result = _result_dict(getattr(ctx.inputs, "tool_result", None))
+        if not ctx.extra.get("_tool_receipt_replayed") and not ctx.extra.get("_stable_read_replayed"):
+            _remember_stable_read(
+                self._context.stable_read_cache,
+                _tool_name(ctx),
+                _call_args(ctx),
+                result,
+            )
         if (
             ctx.extra.get("_tool_receipt_replayed")
             or self._context.tool_receipt_save is None
@@ -466,10 +486,47 @@ class ToolBoundaryRail(AgentRail):
         call_id = _tool_call_id(ctx)
         if not call_id:
             return
-        result = _result_dict(getattr(ctx.inputs, "tool_result", None))
         if result.get("error"):
             return
         self._context.tool_receipt_save(_tool_name(ctx), call_id, _call_args(ctx), result)
+
+
+def _stable_read_cache_key(name: str, arguments: dict[str, Any]) -> str:
+    if name not in _STABLE_READ_TOOLS:
+        return ""
+    round_id = str(arguments.get("round_id") or "").strip() or "latest"
+    return f"{name}:{round_id}"
+
+
+def _remember_stable_read(
+    cache: dict[str, dict[str, Any]],
+    name: str,
+    arguments: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    cache_key = _stable_read_cache_key(name, arguments)
+    round_value = result.get("round")
+    if not cache_key or result.get("error") or not isinstance(round_value, Mapping):
+        return
+    if str(round_value.get("status") or "") not in {"done", "failed"}:
+        return
+    cache[cache_key] = dict(result)
+    round_id = str(round_value.get("id") or "").strip()
+    if round_id:
+        cache[f"{name}:{round_id}"] = dict(result)
+
+
+def _stable_read_replay(cached: dict[str, Any]) -> dict[str, Any]:
+    results = cached.get("results")
+    return {
+        "duplicateRead": True,
+        "round": cached.get("round"),
+        "counts": cached.get("counts"),
+        "resultsCount": len(results) if isinstance(results, list) else 0,
+        "instruction": "同一轮完整结果已在上一条工具响应中返回；直接据此完成归因或说明结论，不要再次读取。",
+        "suppressTrace": True,
+        "display": {"text": "同一轮评测结果已读取，本次未重复请求"},
+    }
 
 
 class DecisionCardSafetyRail(AgentRail):
@@ -1131,6 +1188,11 @@ def _usage_value(usage: Any, name: str) -> int:
 
 
 def tool_trace_group_id(name: str, arguments: dict[str, Any]) -> str:
+    if name == "get_evaluation_results":
+        round_id = str(arguments.get("round_id") or "").strip() or "latest"
+        encoded = json.dumps({"name": name, "roundId": round_id}, ensure_ascii=False, sort_keys=True)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+        return f"snapshot:{name}:{digest}"
     paged_arguments = {
         "read_document": {"offset", "limit"},
         "read_table_rows": {"offset", "limit"},

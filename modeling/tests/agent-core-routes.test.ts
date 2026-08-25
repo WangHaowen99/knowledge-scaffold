@@ -2054,6 +2054,52 @@ test('评测启动服从确定性门禁，评测库拒绝写 SQL', async (t) => 
   assert.equal(writeQuery.json().code, 'READ_ONLY_SQL_REQUIRED');
 });
 
+test('Agent 评测忽略转发的旧 Access Token，只接受 Core 托管的可续期会话', async (t) => {
+  const [{ backgroundAuthSessions }, { saveProjectDataSource }, m3] = await Promise.all([
+    import('../src/auth/background-session.js'),
+    import('../src/evaluation/data-source-repo.js'),
+    import('../src/workflow/m3-repo.js'),
+  ]);
+  backgroundAuthSessions.forget('alice');
+  const project = createProject({
+    owner: 'alice',
+    name: 'Agent 评测认证隔离',
+    kind: 'package',
+    runtime: 'agent',
+  });
+  const store = getPackageArtifactStore();
+  const initial = await store.initializeDraftPackage(project.id, {
+    id: 'agent-auth-package',
+    name: 'Agent 评测认证隔离',
+    description: '验证 Agent 旧令牌不能直接授权评测',
+  });
+  await store.saveFiles(project.id, {
+    files: {
+      'package/objects/auth-check.md': '# 认证检查\n\n用于确定性门禁测试。\n',
+    },
+    expectedRevision: initial.revision.oid,
+    action: {
+      cause: 'test_setup',
+      summary: '建立已导入知识基线',
+      actorKind: 'user',
+      actorName: 'alice',
+    },
+  });
+  m3.addTestcase(project.id, '当前认证是否有效？', '应使用 Core 中的最新登录会话', 'manual');
+  saveProjectDataSource({
+    projectId: project.id,
+    mode: 'none',
+    workspaceId: `mw-shadow-${project.id.replace(/[^a-zA-Z0-9-]/g, '-')}`.slice(0, 60),
+  });
+  const app = appFor(t);
+
+  const response = await tool(app, project.id, 'run_evaluation', {}, `run-${project.id}`);
+
+  assert.equal(response.statusCode, 401, response.body);
+  assert.equal(response.json().code, 'AUTH_REQUIRED');
+  assert.match(response.json().reason, /可续期的登录凭据/u);
+});
+
 test('Agent 可读取最近一轮真实评测的运行错误和轨迹', async (t) => {
   const project = createProject({ owner: 'alice', name: '评测错误归因' });
   const app = appFor(t);

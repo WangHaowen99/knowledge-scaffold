@@ -108,6 +108,7 @@ class LiveRun:
     confirmation_required: bool = False
     autonomous_seed: bool = False
     tool_summaries: list[str] = field(default_factory=list)
+    stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_chars_published: int = 0
     reasoning_truncated: bool = False
     package_contract: dict[str, Any] = field(default_factory=dict)
@@ -867,6 +868,7 @@ class AgentService:
             raise AgentRuntimeError("RUN_NOT_STEERABLE", "当前运行暂时不能接收资料事件", status=409)
         steering_id = self.store.queue_steering(project_id, run.id, prompt)
         live.token = token
+        live.stable_read_cache.clear()
         live.required_tools.update(required_tools)
         live.release_reentry_authorized = True
         live.confirmation_required = live.confirmation_required or confirmation_required
@@ -1093,6 +1095,7 @@ class AgentService:
             raise AgentRuntimeError("RUN_NOT_STEERABLE", "当前运行暂时不能接收插话", status=409)
         steering_id = self.store.queue_steering(project_id, run.id, message)
         live.token = token
+        live.stable_read_cache.clear()
         live.required_tools.update(_required_tools_for_user_intent(message))
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
@@ -1485,6 +1488,7 @@ class AgentService:
                     tool_receipt_save=lambda name, call_id, arguments, result: self.store.save_tool_receipt(
                         live.run_id, call_id, name, arguments, result,
                     ),
+                    stable_read_cache=live.stable_read_cache,
                     confirmation_required=live.confirmation_required,
                     release_declined=live.release_declined,
                     validation_repair=live.validation_repair,

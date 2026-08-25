@@ -227,6 +227,57 @@ def _write_call_context(arguments: dict) -> SimpleNamespace:
     )
 
 
+def _tool_call_context(
+    name: str,
+    arguments: dict,
+    call_id: str,
+    result: dict | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        inputs=SimpleNamespace(
+            tool_name=name,
+            tool_args=arguments,
+            tool_call=SimpleNamespace(id=call_id),
+            tool_result=json.dumps(result, ensure_ascii=False) if result is not None else None,
+            tool_msg=None,
+        ),
+        extra={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_boundary_reuses_completed_evaluation_read_until_new_round() -> None:
+    context = ToolContext(
+        project_id="project_evaluation",
+        run_id="run_evaluation",
+        token="",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    rail = ToolBoundaryRail(context)
+    result = {
+        "round": {"id": "round-1", "status": "done"},
+        "counts": {"pass": 4, "fail": 3},
+        "results": [{"testcaseId": "case-1", "verdict": "fail"}],
+        "display": {"text": "已读取 7 条真实评测结果"},
+    }
+    first = _tool_call_context("get_evaluation_results", {}, "call-results-1", result)
+    await rail.after_tool_call(first)  # type: ignore[arg-type]
+
+    repeated = _tool_call_context("get_evaluation_results", {}, "call-results-2")
+    await rail.before_tool_call(repeated)  # type: ignore[arg-type]
+    replay = json.loads(repeated.inputs.tool_result)
+    assert replay["duplicateRead"] is True
+    assert replay["round"]["id"] == "round-1"
+    assert replay["suppressTrace"] is True
+
+    invalidator = _tool_call_context("run_evaluation", {}, "call-evaluation-2")
+    await rail.before_tool_call(invalidator)  # type: ignore[arg-type]
+    after_new_round = _tool_call_context("get_evaluation_results", {}, "call-results-3")
+    await rail.before_tool_call(after_new_round)  # type: ignore[arg-type]
+    assert after_new_round.inputs.tool_result is None
+
+
 @pytest.mark.asyncio
 async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
     events: list[tuple[str, dict]] = []

@@ -228,5 +228,8 @@ export function humanizeTraceSummary(summary, toolName = '') {
 export function traceSummary(item = {}) {
   const summary = humanizeTraceSummary(item.summary, item.name);
   const count = Number(item.segmentCount) || 0;
+  if (item.name === 'get_evaluation_results' && count > 1) {
+    return `${summary} · 共 ${count} 次读取，已合并`;
+  }
   return count > 1 ? `${summary} · ${count} 个连续分段` : summary;
 }
