@@ -270,6 +270,12 @@ async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
         "repairAttempt": 1,
         "repairRoundId": "unscoped",
         "findingCount": 1,
+    }), ("progress", {
+        "activityId": "after-tool:call_goal_evidence",
+        "text": "正在根据处理结果判断下一步",
+        "detail": "当前操作已经结束，正在规划下一项可执行工作",
+        "phase": "planning",
+        "counters": {},
     })]
 
 
@@ -351,8 +357,10 @@ async def test_repair_stop_emits_one_blocker_and_keeps_recovery_tools_available(
 
     assert json.loads(first.inputs.tool_result)["error"] == "CANDIDATE_REPAIR_STOPPED"
     assert json.loads(second.inputs.tool_result)["suppressTrace"] is True
-    assert len(events) == 1
+    assert len(events) == 2
     assert events[0][1]["phase"] == "blocked"
+    assert events[1][0] == "progress"
+    assert events[1][1]["detail"] == "正在核对失败原因和可恢复的下一步"
 
     for tool_name in ("delete_file", "discard_rejected_candidate_changes"):
         recovery = SimpleNamespace(

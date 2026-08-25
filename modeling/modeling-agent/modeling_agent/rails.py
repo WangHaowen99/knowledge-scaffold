@@ -1101,6 +1101,17 @@ class ActivityRail(AgentRail):
         if trace_group_id:
             payload["traceGroupId"] = trace_group_id
         self._emit("tool", payload)
+        self._emit("progress", {
+            "activityId": f"after-tool:{_tool_call_id(ctx) or uuid.uuid4().hex[:12]}",
+            "text": "正在根据处理结果判断下一步",
+            "detail": (
+                "正在核对失败原因和可恢复的下一步"
+                if phase in {"failed", "blocked", "rejected"}
+                else "当前操作已经结束，正在规划下一项可执行工作"
+            ),
+            "phase": "planning",
+            "counters": {},
+        })
 
 
 def _messages_size(messages: list[Any]) -> int:

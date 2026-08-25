@@ -296,8 +296,11 @@ export const actions = {
       const createdAt = event.createdAt || new Date().toISOString();
       const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
       const activity = replaying ? null : store.get().activity;
+      const terminal = ['completed', 'failed', 'blocked', 'rejected', 'waiting'].includes(event.phase);
       store.set((state) => ({
-        activity: activity ? { ...activity, sub: [line, ...(activity.sub || [])].slice(0, 8) } : activity,
+        activity: terminal
+          ? null
+          : activity ? { ...activity, sub: [line, ...(activity.sub || [])].slice(0, 8) } : activity,
         trace: mergeToolTrace(state.trace, event, seq),
       }));
       if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation'].includes(event.name)) {

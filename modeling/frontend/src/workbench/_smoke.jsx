@@ -515,6 +515,16 @@ try {
     throw new Error('本次执行起点不可信时仍沿用 run 生命周期显示耗时');
   }
   store.set({ run: { id: 'unknown-start', status: 'completed' }, activity: null });
+  store.set({
+    run: { id: 'tool-terminal', status: 'running', updatedAt: new Date().toISOString() },
+    activity: { id: 'read', text: '正在读取资料', progress: { percent: 92 }, observedAt: Date.now() },
+  });
+  actions.handleEvent({
+    eventType: 'tool', seq: 4, name: 'read_documents_fully', phase: 'completed', summary: '全文读取完成',
+  });
+  if (store.get().activity !== null || renderToString(<ActivityLine />).includes('92%')) {
+    throw new Error('工具完成后仍保留旧百分比活动');
+  }
   console.log('✓ active run 全程保留流内进度且输入框可用');
 } catch (e) { console.log('✗ active run 进度连续性:', e.message); bad++; }
 

@@ -1,13 +1,37 @@
 /* 文件和流程图使用中栏全部可用空间，其他业务视图仍保持紧凑阅读宽度。 */
 .wb-content-scroll { display: flex; }
-.wb-content-canvas { width: 100%; max-width: none; min-height: 100%; padding: var(--s-4); }
-.wb-content-canvas > .wb-focus { flex: none; }
-.wb-content-canvas > .wb-doc { width: 100%; min-height: 100%; }
+.wb-content-canvas {
+  display: flex; flex-direction: column; width: 100%; max-width: none; min-height: 100%; padding: 0;
+}
+.wb-content-canvas > .wb-focus { flex: none; margin: var(--s-4); }
+.wb-content-canvas > .wb-doc {
+  flex: 1; width: 100%; min-height: 100%; border: 0; border-radius: 0; padding: 0;
+}
+.wb-content-canvas .wb-file-toolbar {
+  margin: 0; padding: var(--s-4) var(--s-6); background: var(--c-surface);
+}
 
 .wb-content-canvas .wb-markdown,
-.wb-content-canvas .wb-structured { width: 100%; max-width: none; margin: 0; }
+.wb-content-canvas .wb-structured {
+  width: 100%; max-width: none; margin: 0; padding: var(--s-6) var(--s-7) var(--s-8);
+}
+.wb-content-canvas .wb-source,
+.wb-content-canvas .wb-structured-error {
+  min-height: calc(100% - 57px); border-radius: 0; padding: var(--s-6) var(--s-7) var(--s-8);
+}
 
-.wb-flow-view { display: flex; flex-direction: column; width: 100%; min-height: 100%; }
+.wb-flow-view {
+  display: flex; flex: 1; flex-direction: column; width: 100%; min-height: 100%; padding: var(--s-4);
+}
 .wb-flow-view .wb-flow-toolbar { flex: none; }
 .wb-flow-view .wb-mermaid-viewport,
 .wb-flow-view .wb-flow-source { flex: 1; min-height: 360px; max-height: none; }
+
+@media (max-width: 640px) {
+  .wb-content-canvas .wb-file-toolbar { padding: var(--s-3) var(--s-4); }
+  .wb-content-canvas .wb-markdown,
+  .wb-content-canvas .wb-structured,
+  .wb-content-canvas .wb-source,
+  .wb-content-canvas .wb-structured-error { padding: var(--s-4); }
+  .wb-flow-view { padding: var(--s-3); }
+}
