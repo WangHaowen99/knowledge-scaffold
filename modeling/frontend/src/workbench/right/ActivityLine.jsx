@@ -9,6 +9,7 @@ const selAct = (s) => s.activity;
 const selOpen = (s) => s.activityOpen;
 const selRun = (s) => s.run;
 const selInteraction = (s) => s.interaction;
+const selTrace = (s) => s.trace;
 const selStreaming = (s) => s.messages.some((message) => message.role === 'assistant' && message.streaming);
 
 export function executionStartedAt(run, now = Date.now()) {
@@ -16,7 +17,28 @@ export function executionStartedAt(run, now = Date.now()) {
   return Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= now ? updatedAt : undefined;
 }
 
-export function visibleRunActivity({ activity, run, interaction, streaming }, now = Date.now()) {
+export function traceRunActivity(trace, run, executionStart) {
+  const runId = String(run?.id || '');
+  const latest = (Array.isArray(trace) ? trace : [])
+    .filter((item) => !runId || !item?.runId || item.runId === runId)
+    .reduce((current, item) => Number(item?.seq || 0) >= Number(current?.seq || 0) ? item : current, null);
+  if (!latest) return null;
+  const observedAt = Date.parse(String(latest.createdAt || ''));
+  if (executionStart !== undefined
+    && (!Number.isFinite(observedAt) || observedAt < executionStart - 1_000)) return null;
+  const active = ['started', 'repairing'].includes(String(latest.phase || ''));
+  return {
+    id: `trace:${latest.id || latest.seq || latest.toolCallId || 'current'}`,
+    text: latest.summary || '助手正在处理当前步骤',
+    detail: active ? '运行轨迹正在更新，你可以继续输入' : '当前动作已结束，正在继续下一步',
+    progress: {},
+    sub: [],
+    startedAt: Number.isFinite(observedAt) ? observedAt : executionStart,
+    observedAt: Number.isFinite(observedAt) ? observedAt : undefined,
+  };
+}
+
+export function visibleRunActivity({ activity, run, interaction, streaming, trace }, now = Date.now()) {
   const status = String(run?.status || '');
   const active = ['queued', 'running'].includes(status);
   if (interaction && !active) return null;
@@ -28,6 +50,8 @@ export function visibleRunActivity({ activity, run, interaction, streaming }, no
       || (Number.isFinite(observedAt) && observedAt >= executionStart - 1_000)) return activity;
   }
   if (!['queued', 'running'].includes(status)) return null;
+  const traceActivity = traceRunActivity(trace, run, executionStart);
+  if (traceActivity) return traceActivity;
   return {
     id: `run:${run?.id || 'active'}`,
     text: status === 'queued'
@@ -49,9 +73,10 @@ export default function ActivityLine() {
   const open = useStore(store, selOpen);
   const run = useStore(store, selRun);
   const interaction = useStore(store, selInteraction);
+  const trace = useStore(store, selTrace);
   const streaming = useStore(store, selStreaming);
-  const act = useMemo(() => visibleRunActivity({ activity, run, interaction, streaming }), [
-    activity, interaction, run, streaming,
+  const act = useMemo(() => visibleRunActivity({ activity, run, interaction, streaming, trace }), [
+    activity, interaction, run, streaming, trace,
   ]);
   const [, tick] = useState(0);
 

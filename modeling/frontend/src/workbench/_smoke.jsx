@@ -447,11 +447,22 @@ try {
     interaction: { id: 'question' },
     streaming: false,
   }, 100);
+  const traceFallback = visibleRunActivity({
+    activity: null,
+    run: { id: 'trace-run', status: 'running', updatedAt: resumedAt.toISOString() },
+    interaction: null,
+    streaming: true,
+    trace: [{
+      id: 'trace-evaluation', seq: 9, runId: 'trace-run', phase: 'started',
+      summary: '正在运行评测', createdAt: new Date(resumedAt.getTime() + 2_000).toISOString(),
+    }],
+  }, resumedAt.getTime() + 5_000);
   if (actual !== genuine || queued?.text !== '任务已提交，等待开始'
     || Object.hasOwn(queued?.progress || {}, 'percent') || waiting !== null || blocked !== null
     || interjection?.text !== '任务已提交，等待开始'
     || resumed?.startedAt !== resumedAt.getTime()
     || staleProgress?.text !== '助手正在处理当前步骤' || staleProgress?.startedAt !== resumedAt.getTime()
+    || traceFallback?.text !== '正在运行评测' || !traceFallback?.detail.includes('运行轨迹正在更新')
     || queued?.startedAt !== undefined
     || executionStartedAt({ updatedAt: 'not-a-time' }, resumedAt.getTime()) !== undefined) {
     throw new Error('active run 兜底覆盖了真实进度、伪造百分比或越过等待边界');
