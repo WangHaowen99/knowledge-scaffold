@@ -58,6 +58,7 @@ _FIELD_TITLE_HEADERS = (
     "name",
 )
 _FIELD_ALIAS_HEADERS = ("别名", "aliases", "alias", "属性别名")
+_EMPTY_FIELD_ALIAS_MARKERS = frozenset({"-", "—", "–", "无", "n/a"})
 _FIELD_SECTION_TITLES = frozenset(
     {
         "字段",
@@ -1350,10 +1351,23 @@ def validate_field_aliases(ontology_dir: Path) -> FieldAliasValidationResult:
                 ),
             )
             errors.append(
-                "对象“{}”的字段名称“{}”同时指向 [{}]".format(
+                "对象文件“objects/{}”中的对象“{}”的字段名称“{}”同时指向 [{}]；"
+                "原始声明：[{}]".format(
+                    path.name,
                     object_name,
                     display_claim[1],
                     ", ".join(field_keys),
+                    "，".join(
+                        "字段“{}”的{}原值“{}”".format(field_key, kind, value)
+                        for kind, value, field_key in sorted(
+                            set(claims),
+                            key=lambda claim: (
+                                normalize_object_identifier(claim[2]),
+                                claim_priority[claim[0]],
+                                normalize_object_identifier(claim[1]),
+                            ),
+                        )
+                    ),
                 )
             )
 
@@ -1526,9 +1540,18 @@ def _load_field_definitions(
 
 def _split_field_alias_tokens(value: Any) -> Tuple[str, ...]:
     text = str(value or "").strip()
-    if not text or text == "-":
+    if not text:
         return ()
-    return tuple(item.strip() for item in _FIELD_ALIAS_SPLIT_RE.split(text))
+    return tuple(
+        item
+        for item in (token.strip() for token in _FIELD_ALIAS_SPLIT_RE.split(text))
+        if not _is_empty_field_alias_marker(item)
+    )
+
+
+def _is_empty_field_alias_marker(value: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    return bool(normalized) and normalized in _EMPTY_FIELD_ALIAS_MARKERS
 
 
 def _parse_field_definition_table(

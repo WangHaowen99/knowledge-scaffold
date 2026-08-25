@@ -18,6 +18,8 @@ import {
   packageManifestIssues,
   parsePackageManifest,
 } from './package-contract.js';
+import { normalizeFieldAlias } from './field-alias.js';
+import { canonicalizePackageSpec } from './package-spec.js';
 
 const MAX_ZIP_BYTES = 50 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
@@ -257,7 +259,7 @@ function parseObject(path: string, markdown: string, mapping: any): SpecObject {
   const objectMapping = mapping?.objects?.[key];
   const fields: SpecField[] = tableRows(section(body, '字段')).map((row) => ({
     key: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || undefined,
-    required: required(row[3] ?? ''), note: row[4] || undefined, alias: row[5] || undefined,
+    required: required(row[3] ?? ''), note: row[4] || undefined, alias: normalizeFieldAlias(row[5]),
     valueBindingRef: optionalString(objectMapping?.fields?.[row[0] ?? '']?.value_binding_ref),
   })).filter((field) => field.key && field.key !== '—');
   const relations = tableRows(section(body, '关系')).map((row) => ({
@@ -442,7 +444,7 @@ function parseRenderedSpec(files: Record<string, string>): PackageSpec {
  * 避免两套 Markdown 解释规则逐渐分叉。
  */
 export function parseRenderedPackageFiles(files: Record<string, string>): PackageSpec {
-  return parseRenderedSpec(files);
+  return canonicalizePackageSpec(parseRenderedSpec(files));
 }
 
 function inferredCoverage(spec: PackageSpec): CoverageResult {
@@ -463,7 +465,7 @@ export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
   const rawFiles = Object.fromEntries(Object.entries(archive.rawFiles).filter(([path]) => !path.startsWith('model/')));
   const manifestIssues = packageManifestIssues(parsePackageManifest(files['manifest.yaml']));
   if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
-  const spec = embeddedSpec ?? parseRenderedSpec(files);
+  const spec = canonicalizePackageSpec(embeddedSpec ?? parseRenderedSpec(files));
   if (!spec.id || !spec.name || !spec.version || !spec.objects || !spec.operations) {
     throw new Error('知识包缺少 id、name、version、objects 或 operations');
   }

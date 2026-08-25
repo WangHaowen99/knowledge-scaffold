@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { getDb, nowIso } from '../db/index.js';
 import { findObjectDataMappingProblems } from './data-mapping.js';
+import { describeFieldNameConflict, findFieldNameConflicts } from './field-alias.js';
 import { validateKey } from './keys.js';
 import {
   mappingFieldName,
@@ -348,6 +349,17 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
     id: fid(), source: 'format', severity, category, target, message, suggestion,
     ...(releaseBlocking ? { releaseBlocking: true } : {}),
   }));
+
+  for (const conflict of findFieldNameConflicts(spec.objects ?? [])) {
+    add(
+      '错误',
+      '字段名称冲突',
+      conflict.path,
+      describeFieldNameConflict(conflict),
+      `修正对象 ${conflict.objectKey} 中冲突字段的真实别名；无别名时留空`,
+      true,
+    );
+  }
 
   // 存量知识包必须保持可浏览，但无效脚本仍要成为可定位、可受控修复的确定性阻断项。
   for (const conflict of duplicateScriptEntrypoints(spec)) {

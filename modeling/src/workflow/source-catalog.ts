@@ -4,6 +4,7 @@ import type {
   DocumentSourceRef,
   SpecObject,
 } from '../types.js';
+import { normalizeObjectFieldAliases } from './field-alias.js';
 
 export type TableReferenceResolution =
   | { status: 'resolved'; tableName: string; matchedBy: 'exact' | 'display' | 'normalized' }
@@ -172,7 +173,7 @@ export function createSourceCatalog(
         });
         return source;
       };
-      const value = objects.map((object) => ({
+      const value = objects.map((object) => normalizeObjectFieldAliases({
         ...object,
         ...(object.sourceTable
           ? { sourceTable: resolveObjectReference(object, object.sourceTable) }

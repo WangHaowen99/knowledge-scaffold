@@ -1,6 +1,7 @@
 import { FormData } from 'undici';
 import { consumerFetch } from '../consumer/client.js';
 import { zipPackage } from '../workflow/export.js';
+import { assertNoFieldNameConflicts } from '../workflow/field-alias.js';
 import type { ConnectionDataSourceInput } from './data-source.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { ensureEvaluationWorkspace, type ConsumerRequest } from './shadow-workspace.js';
@@ -96,6 +97,7 @@ async function currentPackageZip(projectId: string, ontologyId: string): Promise
   if (String(current.spec.id ?? '').trim() !== ontologyId) {
     throw new Error('同步本体数据源失败：知识包 ID 已变化，请重新保存数据源配置');
   }
+  assertNoFieldNameConflicts(current.spec.objects ?? []);
   return zipPackage(current.files);
 }
 

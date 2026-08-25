@@ -5,6 +5,7 @@ import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
 import { updateManifestPlatformMetadata } from '../workflow/package-contract.js';
 import { renderPackage } from '../workflow/package-render.js';
+import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { validateGeneratedScriptSafety } from '../workflow/script-safety.js';
 import {
@@ -2026,12 +2027,13 @@ function packageFiles(
   coverage: CoverageResult,
   includeDraftTemplate = false,
 ): Map<string, Uint8Array> {
+  const normalizedSpec = canonicalizePackageSpec(spec);
   const encoder = new TextEncoder();
   const files = new Map<string, Uint8Array>([
-    [SPEC_PATH, encoder.encode(`${JSON.stringify(spec, null, 2)}\n`)],
+    [SPEC_PATH, encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`)],
     [COVERAGE_PATH, encoder.encode(`${JSON.stringify(coverage, null, 2)}\n`)],
   ]);
-  for (const [path, content] of Object.entries(renderPackage(spec, { includeDraftTemplate }))) {
+  for (const [path, content] of Object.entries(renderPackage(normalizedSpec, { includeDraftTemplate }))) {
     files.set(`${PACKAGE_PREFIX}${path}`, encoder.encode(content));
   }
   return files;
@@ -2066,6 +2068,7 @@ function importedPackageFiles(
   coverage: CoverageResult,
   imported: Readonly<Record<string, string | Uint8Array>>,
 ): Map<string, Uint8Array> {
+  const normalizedSpec = canonicalizePackageSpec(spec);
   const manifest = imported?.['manifest.yaml'];
   if (!imported || typeof imported !== 'object'
     || (typeof manifest !== 'string' && !(manifest instanceof Uint8Array))) {
@@ -2074,7 +2077,7 @@ function importedPackageFiles(
   if (manifest instanceof Uint8Array) decodeText(manifest);
   const encoder = new TextEncoder();
   const files = new Map<string, Uint8Array>([
-    [SPEC_PATH, encoder.encode(`${JSON.stringify(spec, null, 2)}\n`)],
+    [SPEC_PATH, encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`)],
     [COVERAGE_PATH, encoder.encode(`${JSON.stringify(coverage, null, 2)}\n`)],
   ]);
   for (const [relativePath, content] of Object.entries(imported)) {
@@ -2123,12 +2126,13 @@ function metadataChanges(current: readonly ArtifactFile[], spec: PackageSpec): A
   const manifest = current.find((file) => file.path === `${PACKAGE_PREFIX}manifest.yaml`);
   if (!manifest) throw new PackageArtifactStoreError('invalid_package', '知识包缺少 manifest.yaml');
   const encoder = new TextEncoder();
+  const normalizedSpec = canonicalizePackageSpec(spec);
   return [
-    { kind: 'write', path: SPEC_PATH, content: encoder.encode(`${JSON.stringify(spec, null, 2)}\n`) },
+    { kind: 'write', path: SPEC_PATH, content: encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`) },
     {
       kind: 'write',
       path: `${PACKAGE_PREFIX}manifest.yaml`,
-      content: encoder.encode(updateManifestMetadata(decodeText(manifest.content), spec)),
+      content: encoder.encode(updateManifestMetadata(decodeText(manifest.content), normalizedSpec)),
     },
   ];
 }
@@ -2222,7 +2226,7 @@ function changesForManagedFiles(current: readonly ArtifactFile[], target: Readon
 
 function parseSpec(value: string): PackageSpec {
   try {
-    const spec = JSON.parse(value) as PackageSpec;
+    const spec = canonicalizePackageSpec(JSON.parse(value) as PackageSpec);
     validatePackageSpec(spec);
     return spec;
   } catch (error) {
