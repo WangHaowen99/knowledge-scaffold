@@ -186,6 +186,7 @@ export function resolveFailureDiagnosis(input: {
         ? 'deferred'
         : 'confirmed';
   const enablesPackageRepair = ['confirm_rule', 'clarify_semantics'].includes(input.action);
+  const clearsBlocking = ['data_updated', 'not_applicable'].includes(input.action);
   const nextSuggestedAction = enablesPackageRepair
     ? `${current.suggested_action}\n专家确认：${input.note}`.trim()
     : current.suggested_action;
@@ -196,7 +197,7 @@ export function resolveFailureDiagnosis(input: {
     WHERE id = ? AND project_id = ?`).run(
     status, input.action, input.note.trim(), input.actor,
     JSON.stringify(input.payload ?? {}), nowIso(),
-    enablesPackageRepair ? 0 : (input.action === 'data_updated' || input.action === 'not_applicable' || input.action === 'defer' ? 0 : current.blocking),
+    enablesPackageRepair ? 0 : (clearsBlocking ? 0 : current.blocking),
     enablesPackageRepair ? 1 : 0,
     enablesPackageRepair ? 'package' : current.repair_scope,
     nextSuggestedAction,

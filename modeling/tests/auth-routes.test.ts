@@ -2240,6 +2240,114 @@ test('评测用例 API：手工新增和修改均推进项目阶段', async () =
   assert.equal(project.json().project.stage, 'testcases');
 });
 
+test('评测用例 API：新增和编辑会去除首尾空白，空白问题会被拒绝且不推进阶段', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '评测用例空白校验项目' },
+  });
+  const projectId = created.json().project.id;
+  const { setStage } = await import('../src/projects/repo.js');
+
+  const blankAdded = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/testcases`, headers,
+    payload: { question: '   ', groundTruth: '  答案  ' },
+  });
+  assert.equal(blankAdded.statusCode, 400, blankAdded.body);
+
+  const added = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/testcases`, headers,
+    payload: { question: '  真实问题  ', groundTruth: '  标准答案  ' },
+  });
+  assert.equal(added.statusCode, 200, added.body);
+  assert.deepEqual(added.json().testcase.question, '真实问题');
+  assert.deepEqual(added.json().testcase.groundTruth, '标准答案');
+
+  setStage(projectId, 'data_source');
+  const blankPatched = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${projectId}/testcases/${added.json().testcase.id}`,
+    headers,
+    payload: { question: '   ', groundTruth: '  不应保存  ' },
+  });
+  assert.equal(blankPatched.statusCode, 400, blankPatched.body);
+  let project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'data_source');
+
+  const patched = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${projectId}/testcases/${added.json().testcase.id}`,
+    headers,
+    payload: { question: '  修正问题  ', groundTruth: '  修正答案  ' },
+  });
+  assert.equal(patched.statusCode, 200, patched.body);
+  assert.deepEqual(patched.json().testcases.map((item: any) => [item.question, item.groundTruth]), [
+    ['修正问题', '修正答案'],
+  ]);
+  project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'testcases');
+});
+
+test('评测用例 API：跨项目或不存在的用例不能被修改或删除', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const createdA = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '评测用例归属项目A' },
+  });
+  const createdB = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '评测用例归属项目B' },
+  });
+  const projectA = createdA.json().project.id;
+  const projectB = createdB.json().project.id;
+  const added = await app.inject({
+    method: 'POST', url: `/api/projects/${projectA}/testcases`, headers,
+    payload: { question: '项目A用例', groundTruth: '项目A答案' },
+  });
+  const testcaseId = added.json().testcase.id;
+
+  const crossPatch = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${projectB}/testcases/${testcaseId}`,
+    headers,
+    payload: { groundTruth: '越权修改' },
+  });
+  assert.equal(crossPatch.statusCode, 404, crossPatch.body);
+
+  const missingPatch = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${projectA}/testcases/tc_missing`,
+    headers,
+    payload: { groundTruth: '不存在' },
+  });
+  assert.equal(missingPatch.statusCode, 404, missingPatch.body);
+
+  const crossDelete = await app.inject({
+    method: 'DELETE',
+    url: `/api/projects/${projectB}/testcases/${testcaseId}`,
+    headers,
+  });
+  assert.equal(crossDelete.statusCode, 404, crossDelete.body);
+
+  const missingDelete = await app.inject({
+    method: 'DELETE',
+    url: `/api/projects/${projectA}/testcases/tc_missing`,
+    headers,
+  });
+  assert.equal(missingDelete.statusCode, 404, missingDelete.body);
+
+  const projectATestcases = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectA}/testcases`,
+    headers,
+  });
+  assert.deepEqual(projectATestcases.json().testcases.map((item: any) => [item.id, item.question, item.groundTruth]), [
+    [testcaseId, '项目A用例', '项目A答案'],
+  ]);
+});
+
 test('评测用例批量导入 API 去重并一次推进项目阶段', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
@@ -2312,6 +2420,69 @@ test('专家处置只记录下一步提示且不会改写 legacy 工作流节点
   ]);
   assert.equal('staleSteps' in response.json(), false);
   assert.equal(getNode(legacyNode.id)?.status, 'done');
+});
+
+test('阻断型知识包诊断暂缓处理后仍不能回流建模修缮', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '阻断诊断暂缓后回流门禁' },
+  });
+  const projectId = created.json().project.id;
+  await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
+
+  const [{ getPackageArtifactStore }, m3repo, diagnosisRepo] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/workflow/m3-repo.js'),
+    import('../src/evaluation/failure-diagnosis-repo.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'deferred-blocking-diagnosis-package',
+      name: '阻断诊断暂缓后回流门禁',
+      description: '验证 defer 不会绕过阻断',
+      version: '1.0.0',
+      language: 'zh-CN',
+      status: 'review',
+      defaultProviderAlias: 'data',
+      objects: [],
+      operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '生成测试知识包',
+    action: { cause: 'generate', summary: '生成测试知识包', actorKind: 'agent', actorName: '助手' },
+  });
+  const round = m3repo.createRound(projectId, '1.0.0', 1, generated.revision.oid);
+  const [diagnosis] = diagnosisRepo.replaceFailureDiagnoses(
+    projectId, round.id, '1.0.0', generated.revision.oid, [{
+      category: 'data_gap', title: '字段口径待确认', summary: '当前字段缺少权威语义',
+      evidence: ['资料未说明字段定义'], confidence: 'high', blocking: true,
+      repairScope: 'package', packageOptimizable: false, resultIds: ['result-1'],
+      relatedQuestions: ['如何计算收益？'], suggestedAction: '请专家先确认字段口径。',
+    }],
+  );
+
+  const deferred = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/optimize/diagnoses/${diagnosis.id}/resolve`,
+    headers,
+    payload: { action: 'defer', note: '等待业务口径确认后再处理' },
+  });
+  assert.equal(deferred.statusCode, 200, deferred.body);
+  assert.equal(deferred.json().diagnosis.resolutionStatus, 'deferred');
+  assert.equal(deferred.json().diagnosis.blocking, true);
+  assert.equal(deferred.json().canProposeOptimizations, false);
+
+  const planned = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
+    payload: { roundId: round.id, diagnosisIds: [diagnosis.id] },
+  });
+  assert.equal(planned.statusCode, 409, planned.body);
+  assert.equal(planned.json().code, 'BLOCKING_PACKAGE_DEFECT');
 });
 
 test('优化应用专家复核可由状态接口恢复，并支持带反馈重试或跳过', async () => {
@@ -2500,12 +2671,34 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
   const projectId = created.json().project.id;
   await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
 
-  const [m3repo, diagnosisRepo] = await Promise.all([
+  const [{ getPackageArtifactStore }, m3repo, diagnosisRepo] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
     import('../src/workflow/m3-repo.js'),
     import('../src/evaluation/failure-diagnosis-repo.js'),
   ]);
-  const round = m3repo.createRound(projectId, '0.1.0', 2);
-  const stored = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', 'rev-0', [
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'evaluation-repair-package',
+      name: '评测缺陷回建模',
+      description: '用于验证评测缺陷回流建模',
+      version: '0.1.0',
+      language: 'zh-CN',
+      status: 'review',
+      defaultProviderAlias: 'data',
+      objects: [],
+      operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '生成回流建模基线',
+    action: {
+      cause: 'test_version', summary: '生成回流建模基线', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const round = m3repo.createRound(projectId, '0.1.0', 2, generated.revision.oid);
+  const stored = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', generated.revision.oid, [
     {
       category: 'knowledge_gap', title: '缺少分流适用条件', summary: '没有说明触发门槛',
       evidence: ['用例 3 回答与预期不符'], confidence: 'high', blocking: false,
@@ -2569,4 +2762,84 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
       .actions.map((action: any) => action.id),
     ['open_optimization', 'review_knowledge_files'],
   );
+});
+
+test('评测缺陷回流建模会拒绝旧工件修订上的失败诊断', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers, payload: { name: '评测缺陷旧修订门禁' },
+  });
+  const projectId = created.json().project.id;
+  await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
+
+  const [{ getPackageArtifactStore }, m3repo, diagnosisRepo] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/workflow/m3-repo.js'),
+    import('../src/evaluation/failure-diagnosis-repo.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const revisionA = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'stale-evaluation-repair-package',
+      name: '评测缺陷旧修订门禁',
+      description: '用于验证旧修订诊断不能回流当前建模任务',
+      version: '0.1.0',
+      language: 'zh-CN',
+      status: 'review',
+      defaultProviderAlias: 'data',
+      objects: [],
+      operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '生成旧修订基线',
+    action: {
+      cause: 'test_version', summary: '生成旧修订基线', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const revisionB = await store.savePackageVersion(projectId, {
+    expectedRevision: revisionA.revision.oid,
+    spec: {
+      id: 'stale-evaluation-repair-package',
+      name: '评测缺陷旧修订门禁',
+      description: '当前知识包已演进到新修订',
+      version: '0.1.0',
+      language: 'zh-CN',
+      status: 'review',
+      defaultProviderAlias: 'data',
+      objects: [],
+      operations: [{
+        key: 'route_question',
+        title: '问题路由',
+        description: '用于占位，制造当前修订变化',
+        inputs: [],
+        outputs: [],
+        flow: ['读取问题', '分流'],
+      }],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '生成当前修订',
+    action: {
+      cause: 'test_version', summary: '生成当前修订', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const round = m3repo.createRound(projectId, '0.1.0', 1, revisionA.revision.oid);
+  const [diagnosis] = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', revisionA.revision.oid, [{
+    category: 'knowledge_gap', title: '旧修订缺少规则', summary: '这是旧修订上的失败诊断', evidence: ['旧评测证据'],
+    confidence: 'high', blocking: false, repairScope: 'package', packageOptimizable: true,
+    resultIds: [], relatedQuestions: ['何时启用旧规则'], suggestedAction: '补充旧修订规则',
+  }]);
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
+    payload: { roundId: round.id, diagnosisIds: [diagnosis.id] },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'STALE_DIAGNOSIS_REVISION');
+  assert.match(response.json().error, /旧工件修订/);
+
+  const current = await store.current(projectId);
+  assert.equal(current?.revision.oid, revisionB.revision.oid);
 });

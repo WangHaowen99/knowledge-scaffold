@@ -120,9 +120,16 @@ const RESOLUTION_LABEL = {
   deferred: '已暂缓', irrelevant: '已标记不适用',
 };
 
-function DiagnosisCard({ diagnosis, resolving, onResolve, selected = false, onToggleSelect }) {
+function DiagnosisCard({
+  diagnosis,
+  currentRevisionOid = '',
+  resolving,
+  onResolve,
+  selected = false,
+  onToggleSelect,
+}) {
   const tone = diagnosis.blocking || !diagnosis.packageOptimizable ? 'tag-lang' : 'tag-ok';
-  const selectable = canPlanEvaluationRepair(diagnosis);
+  const selectable = canPlanEvaluationRepair(diagnosis, currentRevisionOid);
   const askAndResolve = (action, prompt, optional = false) => {
     const note = window.prompt(prompt, diagnosis.resolutionNote || '');
     if (note === null || (!optional && !note.trim())) return;
@@ -185,7 +192,13 @@ function DiagnosisCard({ diagnosis, resolving, onResolve, selected = false, onTo
   );
 }
 
-export function FailureDiagnosisPanel({ projectId, onAdvance, onGoEvaluate, onChanged }) {
+export function FailureDiagnosisPanel({
+  projectId,
+  currentRevisionOid = '',
+  onAdvance,
+  onGoEvaluate,
+  onChanged,
+}) {
   const [rounds, setRounds] = useState(null);
   const [diagnoses, setDiagnoses] = useState([]);
   const [diagnosisCanPropose, setDiagnosisCanPropose] = useState(false);
@@ -287,8 +300,20 @@ export function FailureDiagnosisPanel({ projectId, onAdvance, onGoEvaluate, onCh
     } catch (e) { setErr(e.message); } finally { setBusy(''); setOperationTask(null); }
   };
 
-  const packageDefects = selectableEvaluationDefects(currentDiagnoses);
-  const plannableDefectIds = submittableEvaluationDefectIds(currentDiagnoses, selectedDefects);
+  const packageDefects = selectableEvaluationDefects(currentDiagnoses, currentRevisionOid);
+  const plannableDefectIds = submittableEvaluationDefectIds(
+    currentDiagnoses,
+    selectedDefects,
+    currentRevisionOid,
+  );
+  const packageDiagnosisCount = currentDiagnoses.filter((diagnosis) => diagnosis.repairScope === 'package').length;
+  const stalePackageDefectCount = currentRevisionOid
+    ? currentDiagnoses.filter((diagnosis) => (
+      diagnosis.repairScope === 'package'
+        && diagnosis.basedRevisionOid !== currentRevisionOid
+    )).length
+    : 0;
+  const revisionMissingForRepair = !currentRevisionOid && packageDiagnosisCount > 0;
 
   const planRepair = async () => {
     if (!targetRound || !plannableDefectIds.length) return;
@@ -351,8 +376,19 @@ export function FailureDiagnosisPanel({ projectId, onAdvance, onGoEvaluate, onCh
             <span className="sg-bar-t">失败原因</span>
             <span className="sg-bar-c">{currentDiagnoses.length} 项，{packageDefects.length} 项可回流修缮</span>
           </div>
+          {revisionMissingForRepair && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--warn, #9a6700)' }}>
+              当前知识包不存在，请重新生成并评测当前修订后再回流建模。
+            </div>
+          )}
+          {!revisionMissingForRepair && stalePackageDefectCount > 0 && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--warn, #9a6700)' }}>
+              有 {stalePackageDefectCount} 项知识包诊断基于旧工件修订，不能直接回流当前知识包；请对当前修订重新评测并诊断。
+            </div>
+          )}
           {currentDiagnoses.map((diagnosis) => (
             <DiagnosisCard key={diagnosis.id} diagnosis={diagnosis}
+              currentRevisionOid={currentRevisionOid}
               resolving={resolvingId === diagnosis.id}
               selected={selectedDefects.has(diagnosis.id)}
               onToggleSelect={(id) => setSelectedDefects((current) => toggleEvaluationDefect(current, id))}

@@ -1715,8 +1715,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const { question, groundTruth } = (req.body ?? {}) as any;
-      if (!question) return reply.code(400).send({ error: 'question 必填' });
-      const testcase = m3repo.addTestcase(c.p.id, question, groundTruth ?? '');
+      const normalizedQuestion = String(question ?? '').trim();
+      const normalizedGroundTruth = String(groundTruth ?? '').trim();
+      if (!normalizedQuestion) return reply.code(400).send({ error: 'question 必填' });
+      const testcase = m3repo.addTestcase(c.p.id, normalizedQuestion, normalizedGroundTruth);
       setProjectStage(c.p.id, 'testcases');
       return { testcase };
     });
@@ -1748,14 +1750,35 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.patch('/api/projects/:id/testcases/:tcId', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      m3repo.updateTestcase((req.params as any).tcId, (req.body ?? {}) as any);
+      const tcId = String((req.params as any).tcId ?? '');
+      if (!m3repo.testcaseBelongsToProject(tcId, c.p.id)) {
+        return reply.code(404).send({ error: '评测用例不存在' });
+      }
+      const body = (req.body ?? {}) as any;
+      const patch: { question?: string; groundTruth?: string } = {};
+      if (Object.prototype.hasOwnProperty.call(body, 'question')) {
+        const normalizedQuestion = String(body.question ?? '').trim();
+        if (!normalizedQuestion) return reply.code(400).send({ error: 'question 必填' });
+        patch.question = normalizedQuestion;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'groundTruth')) {
+        patch.groundTruth = String(body.groundTruth ?? '').trim();
+      }
+      const updated = m3repo.updateTestcase(c.p.id, tcId, patch);
+      if (!updated) return reply.code(404).send({ error: '评测用例不存在' });
       setProjectStage(c.p.id, 'testcases');
       return { testcases: m3repo.listTestcases(c.p.id) };
     });
     r.delete('/api/projects/:id/testcases/:tcId', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      m3repo.deleteTestcase((req.params as any).tcId);
+      const tcId = String((req.params as any).tcId ?? '');
+      if (!m3repo.testcaseBelongsToProject(tcId, c.p.id)) {
+        return reply.code(404).send({ error: '评测用例不存在' });
+      }
+      if (!m3repo.deleteTestcase(c.p.id, tcId)) {
+        return reply.code(404).send({ error: '评测用例不存在' });
+      }
       return { testcases: m3repo.listTestcases(c.p.id) };
     });
 
@@ -1923,11 +1946,24 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
       }
       const latest = await packageArtifacts.current(c.p.id);
+      if (!latest) {
+        return reply.code(409).send({
+          error: '当前知识包不存在，请重新生成并评测当前修订',
+          code: 'PACKAGE_REVISION_MISSING',
+        });
+      }
+      const staleDiagnoses = diagnoses.filter((diagnosis) => diagnosis.basedRevisionOid !== latest.revision.oid);
+      if (staleDiagnoses.length) {
+        return reply.code(409).send({
+          error: '失败诊断基于旧工件修订，请对当前修订重新评测并诊断',
+          code: 'STALE_DIAGNOSIS_REVISION',
+        });
+      }
       try {
         const result = aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
           roundId: round.id,
           packageVersion: round.packageVersion,
-          ...(latest ? { packageRevisionOid: latest.revision.oid } : {}),
+          packageRevisionOid: latest.revision.oid,
           defects: diagnoses.map((diagnosis) => ({
             id: diagnosis.id,
             title: diagnosis.title,

@@ -43,7 +43,10 @@ export function PackageDataSourceHelp() {
   );
 }
 
-export function DataSourceSummary({ dataSource }) {
+export function DataSourceSummary({ dataSource, error = '' }) {
+  if (error) {
+    return <div className="lerr" style={{ marginBottom: 0 }}>{error}</div>;
+  }
   if (!dataSource) {
     return <div className="empty" style={{ padding: '14px 0' }}>尚未保存数据源配置</div>;
   }

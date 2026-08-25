@@ -681,6 +681,25 @@ test('优化候选成功后刷新右侧卡片并把异步出现的卡片滚动�
   );
 });
 
+test('失败诊断回流只允许基于当前知识包 revision 的诊断', () => {
+  assert.match(
+    packageWorkspaceSource,
+    /<FailureDiagnosisPanel[\s\S]*currentRevisionOid=\{pkg\?\.revision\}/,
+  );
+  assert.match(
+    optimizationPanelSource,
+    /canPlanEvaluationRepair\(diagnosis,\s*currentRevisionOid\)/,
+  );
+  assert.match(
+    optimizationPanelSource,
+    /selectableEvaluationDefects\(currentDiagnoses,\s*currentRevisionOid\)/,
+  );
+  assert.match(
+    optimizationPanelSource,
+    /submittableEvaluationDefectIds\([\s\S]*currentRevisionOid[\s\S]*\)/,
+  );
+});
+
 test('优化页重新激活时刷新可改项且旧请求不能覆盖新状态', () => {
   assert.match(
     packageWorkspaceSource,
