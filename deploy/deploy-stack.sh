@@ -373,7 +373,7 @@ cmd_up() {
 
   echo
   ok "部署完成。访问入口："
-  [ "$modeling_only" -eq 0 ] && log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin（密码取 AUTH_BOOTSTRAP_ADMIN_PASSWORD，首次登录强制改密）"
+  [ "$modeling_only" -eq 0 ] && log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin（密码取 AUTH_BOOTSTRAP_ADMIN_PASSWORD）"
   [ "$consumer_only" -eq 0 ] && log "  建模工作台          http://localhost:${MODELING_PORT:-5100}/workbench.html#/create   用 consumer 账号登录"
   log "后续初始化步骤见 deploy/README.md 第 4 节。"
 }

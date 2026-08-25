@@ -98,14 +98,15 @@ def test_bootstrap_and_password_grant_login(client, tmp_path):
     assert claims["role"] == "admin"
     assert claims["typ"] == "access"
     assert claims["ver"] == 1
-    assert claims["pwd_cr"] is True  # bootstrap admin 强制改密
+    assert claims["pwd_cr"] is False
     assert claims["exp"] - claims["iat"] == 900
 
     users_file = tmp_path / "data" / "users.json"
     data = json.loads(users_file.read_text(encoding="utf-8"))
     (record,) = data["users"]
     assert record["username"] == "admin"
-    assert record["must_change_password"] is True
+    assert record["must_change_password"] is False
+    assert record["password_changed_at"]
     assert record["password_hash"].startswith("pbkdf2_sha256$600000$")
 
 
@@ -196,7 +197,7 @@ def test_revoke_always_returns_200(client):
     assert refresh(client, body["refresh_token"]).status_code == 200
 
 
-def test_admin_reset_revokes_refresh_and_sets_pwd_cr(client):
+def test_admin_reset_revokes_refresh_without_requiring_password_change(client):
     assert create_user(client, "alice").status_code == 201
     old = login(client, "alice", STRONG_PASSWORD).get_json()
 
@@ -207,16 +208,16 @@ def test_admin_reset_revokes_refresh_and_sets_pwd_cr(client):
     assert resp.get_json()["user"] == {
         "username": "alice",
         "role": "user",
-        "password_change_required": True,
+        "password_change_required": False,
     }
 
     # 重置后旧 refresh 失效（token_version+1）
     assert refresh(client, old["refresh_token"]).status_code == 400
-    # 旧密码不能再登录，新密码可以，且 access token 带 pwd_cr=true
+    # 旧密码不能再登录，新密码可以直接使用。
     assert login(client, "alice", STRONG_PASSWORD).status_code == 400
     body = login(client, "alice", NEW_STRONG_PASSWORD).get_json()
     claims = decode_with_jwks(client, body["access_token"])
-    assert claims["pwd_cr"] is True
+    assert claims["pwd_cr"] is False
     assert claims["ver"] == 2
 
 
@@ -376,7 +377,7 @@ def test_userinfo(client):
     assert resp.get_json() == {
         "sub": "admin",
         "role": "admin",
-        "password_change_required": True,
+        "password_change_required": False,
     }
 
     # 缺头 / 垃圾 token / 用 refresh token 冒充 access → 401
@@ -420,7 +421,7 @@ def test_admin_api_rejects_missing_or_wrong_token(client):
     resp = client.get("/admin/users", headers=admin_headers())
     assert resp.status_code == 200
     assert resp.get_json() == {
-        "users": [{"username": "admin", "role": "admin", "password_change_required": True}]
+        "users": [{"username": "admin", "role": "admin", "password_change_required": False}]
     }
 
 
@@ -522,7 +523,7 @@ def test_legacy_users_json_without_token_version(tmp_path):
                 "password_version": 3,
             },
             {
-                # 遗留明文 password 字段：首登迁移为哈希并强制改密
+                # 遗留明文 password 字段：登录时迁移为哈希。
                 "username": "frank",
                 "password": "Fr4nk!Plain#Pass",
                 "role": "admin",
@@ -545,7 +546,7 @@ def test_legacy_users_json_without_token_version(tmp_path):
 
     resp = login(client, "frank", "Fr4nk!Plain#Pass")
     assert resp.status_code == 200
-    assert decode_with_jwks(client, resp.get_json()["access_token"])["pwd_cr"] is True
+    assert decode_with_jwks(client, resp.get_json()["access_token"])["pwd_cr"] is False
 
     saved = json.loads((data_dir / "users.json").read_text(encoding="utf-8"))
     eve = next(r for r in saved["users"] if r["username"] == "eve")
@@ -555,7 +556,8 @@ def test_legacy_users_json_without_token_version(tmp_path):
     frank = next(r for r in saved["users"] if r["username"] == "frank")
     assert "password" not in frank
     assert frank["password_hash"].startswith("pbkdf2_sha256$600000$")
-    assert frank["must_change_password"] is True
+    assert frank["must_change_password"] is False
+    assert frank["password_changed_at"]
 
 
 # ------------------------------------------------------------------ 开放注册
@@ -697,7 +699,7 @@ def test_registered_email_persisted_and_admin_list_visible(reg_client, tmp_path)
     assert admin_entry == {
         "username": "admin",
         "role": "admin",
-        "password_change_required": True,
+        "password_change_required": False,
     }
 
 

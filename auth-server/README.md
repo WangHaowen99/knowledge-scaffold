@@ -5,7 +5,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 
 ## 定位
 
-- 只管身份（sub）、凭据（PBKDF2 密码哈希 / 密码策略 / 强制改密数据）、token 签发与生命周期（决策 D3）。
+- 只管身份（sub）、凭据（PBKDF2 密码哈希 / 密码策略）、token 签发与生命周期（决策 D3）。
 - 对 consumer 暴露标准 OAuth2/OIDC 子集（密码模式 + refresh + RFC 7009 吊销 + JWKS + discovery，决策 D1），
   后续可整体替换为企业 IdP：替换 = 换 issuer/discovery URL。
 - 独立容器部署、不对外暴露端口；与 consumer 之间**禁止任何 Python import**，唯一接口是 HTTP（决策 D4）。
@@ -13,7 +13,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
   现有文件放进 `<DATA_DIR>/users.json` 即可直接登录，用户无需重设密码。
 - 吊销语义：改密 / 管理员重置 / /revoke 时 `token_version+1`，全量吊销该用户 refresh token；
   已签发的 access token 在 ≤ TTL 内自然失效（决策 D2 的显式放宽）。
-- 首启无用户文件时使用环境变量 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建 `admin`（role=admin、强制改密）；未配置或不符合密码策略时拒绝启动。
+- 首启无用户文件时使用环境变量 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建 `admin`（role=admin）；未配置或不符合密码策略时拒绝启动。
 
 ## 端点清单
 
@@ -21,7 +21,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 
 | 端点 | 说明 |
 | --- | --- |
-| `POST /token` | form 或 json。`grant_type=password`（username/password）或 `grant_type=refresh_token`。成功返回 `{access_token, refresh_token, token_type: "Bearer", expires_in}`；凭据/refresh 无效返回 400 `invalid_grant`；其他 grant_type 返回 400 `unsupported_grant_type`。强制改密用户照常发 token，access token 带 `pwd_cr=true`（拦截由 consumer 负责） |
+| `POST /token` | form 或 json。`grant_type=password`（username/password）或 `grant_type=refresh_token`。成功返回 `{access_token, refresh_token, token_type: "Bearer", expires_in}`；凭据/refresh 无效返回 400 `invalid_grant`；其他 grant_type 返回 400 `unsupported_grant_type`。兼容字段 `pwd_cr` 固定为 `false` |
 | `POST /revoke` | RFC 7009 风格，`{token}`。合法 refresh token 触发该用户 `token_version+1` 全量吊销；无论成功与否一律 200 `{}` |
 | `GET /.well-known/openid-configuration` | discovery：issuer、token/revocation/userinfo 端点、jwks_uri、`grant_types_supported=["password","refresh_token"]` |
 | `GET /jwks.json` | JWKS 公钥集（含 kid，支持多把 key 以备轮换） |
@@ -51,9 +51,9 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | --- | --- |
 | `GET /admin/users` | `{"users": [{username, role, password_change_required[, email]}]}`（email 仅注册用户有，存量用户形状不变） |
 | `POST /admin/users` | `{username, password[, role]}` → 201 `{"user": {...}}`；策略违规 400 `{error, code: "PASSWORD_POLICY_FAILED", violations}` |
-| `PUT /admin/users/<username>` | `{password}` 管理员重置：`password_version+1` 且 `token_version+1`、`must_change_password=True`（可选 `{role}` 改角色） |
+| `PUT /admin/users/<username>` | `{password}` 管理员重置：写 `password_changed_at`，`password_version+1` 且 `token_version+1`（可选 `{role}` 改角色） |
 | `DELETE /admin/users/<username>` | `{"success": true}`；用户不存在 400 中文错误 |
-| `PUT /admin/change-password` | `{username, old_password, new_password}` 本人改密语义：清除强制改密、写 `password_changed_at`、双 version+1 → `{"success": true}` |
+| `PUT /admin/change-password` | `{username, old_password, new_password}` 本人改密语义：写 `password_changed_at`、双 version+1 → `{"success": true}` |
 
 注意："依赖当前登录用户"的守卫（不能删除自己、不能删除 admin 管理员、不能通过用户管理重置当前登录
 用户密码）留在 consumer BFF——本服务不感知调用者身份。

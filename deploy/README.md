@@ -98,11 +98,11 @@ npx tsx scripts/nl2sql-service.ts     # 监听 5600
 
 ### 3.3 鉴权说明
 
-auth-server 已是必备组件，无需额外开关。脚本校验配置后把敏感值从 `consumer/backend/.env` 注入容器且不打印具体值；首启使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员 `admin` 并强制改密。自助注册默认开启，不允许自行建号时设置 `AUTH_ENABLE_REGISTRATION=false`。
+auth-server 已是必备组件，无需额外开关。脚本校验配置后把敏感值从 `consumer/backend/.env` 注入容器且不打印具体值；首启使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员 `admin`，该密码可直接登录。自助注册默认开启，不允许自行建号时设置 `AUTH_ENABLE_REGISTRATION=false`。
 
 ## 4. 首次初始化（部署后必做）
 
-1. **consumer 改密**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录，按提示修改初始密码；`users.json` 创建后可从环境中移除该初始密码。
+1. **consumer 登录**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录；`users.json` 创建后可从环境中移除该引导密码。
 2. **consumer 配模型**：控制台 → 配置中心 → 全局配置 → 模型池：添加 OpenAI-compatible 模型并「测试」通过、设为默认。（若已在 `backend/.env` 配了 `LLM_*` 可跳过。）
 3. **配置并进入新建模工作台**（形态 B/C）：打开 `http://localhost:5100/workbench.html#/create`，先用 `admin` 登录，在「配置中心 → 大模型 → 平台默认」填写 Base URL、模型名和 API Key，测试通过后保存。该配置会立即成为所有未设置个人覆盖账号的 core 与 Agent 统一默认，新任务无需重启容器即可使用。
    - **consumer 服务**：默认已指向容器网内 backend，点「测试连接」，须三项全绿（服务可达 / 认证通过 / 模型就绪——第三项依赖步骤 2）。
