@@ -1651,8 +1651,10 @@ class JiuwenReactLoopEngine:
         from ..tools.registry import get_tools_schema
 
         schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
+        include_memory = _memory_tool_requested_in_state(state)
         return get_tools_schema(
             schema_caller,
+            include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
@@ -1663,8 +1665,10 @@ class JiuwenReactLoopEngine:
 
     def _jiuwen_tool_infos_for_state(self, state: Mapping[str, Any], *, caller: str) -> list[Mapping[str, Any]]:
         schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
+        include_memory = _memory_tool_requested_in_state(state)
         return get_jiuwen_tool_infos(
             schema_caller,
+            include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
@@ -2682,6 +2686,26 @@ def _should_emit_answer_delta(stream_state: Optional[Mapping[str, str]], output:
     if isinstance(stream_state, Mapping):
         streamed_content = str(stream_state.get("content") or "")
     return not streamed_content.strip().endswith(normalized_output)
+
+
+def _memory_tool_requested_in_state(state: Mapping[str, Any]) -> bool:
+    from ..tools.memory import has_explicit_memory_request
+
+    messages = [
+        dict(message)
+        for message in list(state.get("messages") or [])
+        if isinstance(message, Mapping)
+    ]
+    current_request = str(state.get("user_request") or "").strip()
+    should_append_request = bool(current_request)
+    if should_append_request and messages:
+        last_message = messages[-1]
+        if last_message.get("role") == "user":
+            last_content = str(last_message.get("content") or "").strip()
+            should_append_request = last_content != current_request
+    if should_append_request:
+        messages.append({"role": "user", "content": current_request})
+    return has_explicit_memory_request(messages)
 
 
 def _last_user_message_content(state: Mapping[str, Any]) -> str:

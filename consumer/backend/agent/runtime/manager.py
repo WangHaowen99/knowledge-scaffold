@@ -43,6 +43,7 @@ def request_fingerprint(context: RuntimeInvocationContext) -> str:
             "agent_mode": context.agent_mode,
             "llm_request_mode": context.llm_request_mode,
             "model_profile_id": context.model_profile_id,
+            "requested_operation_key": context.requested_operation_key,
             "arguments": context.arguments,
             "include_trace": context.include_trace,
             "supports_user_interaction": context.supports_user_interaction,

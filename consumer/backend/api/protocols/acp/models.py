@@ -92,6 +92,8 @@ class AgentDetail(BaseModel):
 class RunRequest(BaseModel):
     messages: list[Message] = Field(..., description="消息列表")
     context: dict[str, Any] | None = Field(default_factory=dict, description="上下文信息")
+    arguments: dict[str, Any] | None = Field(default_factory=dict, description="可选结构化参数")
+    requested_operation_key: str | None = Field(None, description="可选确定性 Operation key")
     metadata: dict[str, Any] | None = Field(default_factory=dict, description="元数据")
     lang: str | None = Field(None, description="用户语言类型(ISO 639-1)，如en/zh/ja/ko等。不传则自动检测")
 
@@ -117,6 +119,8 @@ class RunResponse(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     awaiting: AwaitResponse | None = Field(None, description="等待用户输入")
     error: str | None = Field(None, description="错误信息")
+    error_code: str | None = Field(None, description="稳定错误码")
+    result: Any | None = Field(None, description="结构化终态结果")
     metadata: dict[str, Any] | None = Field(default_factory=dict, description="元数据")
 
 

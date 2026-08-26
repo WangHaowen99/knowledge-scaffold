@@ -187,6 +187,9 @@ def _request_fingerprint(
             "model_profile_id": str(
                 data.get("model_profile_id") or ""
             ).strip(),
+            "requested_operation_key": str(
+                data.get("requested_operation_key") or ""
+            ).strip(),
             "arguments": data.get("arguments"),
             "include_trace": data.get("include_trace") is True,
         },
@@ -335,6 +338,36 @@ async def _validate_model_profile(
         model_profile_id or None,
         allow_default_fallback=not bool(model_profile_id),
         workspace_id=workspace_id,
+    )
+
+
+async def _deterministic_preflight(
+    runtime: Any,
+    *,
+    user_request: str,
+    user_context: dict[str, Any],
+    arguments: dict[str, Any] | None,
+    session_id: str,
+    username: str,
+    workspace_id: str,
+) -> bool:
+    preflight = getattr(
+        _get_orchestrator(),
+        "is_deterministic_request_potentially_applicable",
+        None,
+    )
+    if not callable(preflight):
+        return False
+    return bool(
+        await runtime.short_io.run(
+            preflight,
+            user_request=user_request,
+            user_context=user_context,
+            arguments=arguments,
+            session_id=session_id,
+            user_id=username,
+            workspace_id=workspace_id,
+        )
     )
 
 
@@ -819,11 +852,24 @@ async def create_run(
                 retriable=True,
             )
         model_profile_id = str(data.get("model_profile_id") or "").strip()
-        await _validate_model_profile(
+        deterministic_candidate = await _deterministic_preflight(
             runtime,
-            model_profile_id=model_profile_id,
+            user_request=user_request,
+            user_context={
+                **data,
+                "interaction_response": interaction_response,
+            },
+            arguments=(dict(arguments) if arguments is not None else None),
+            session_id=session_id,
+            username=current_user.username,
             workspace_id=workspace_id,
         )
+        if not deterministic_candidate:
+            await _validate_model_profile(
+                runtime,
+                model_profile_id=model_profile_id,
+                workspace_id=workspace_id,
+            )
     except SystemConfigValidationError as exc:
         return _error("INVALID_ARGUMENT", str(exc), 422)
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
@@ -912,6 +958,10 @@ async def create_run(
                     data.get("llm_request_mode")
                 ),
                 model_profile_id=model_profile_id or None,
+                requested_operation_key=(
+                    str(data.get("requested_operation_key") or "").strip()
+                    or None
+                ),
                 arguments=dict(arguments) if arguments is not None else None,
                 include_trace=data.get("include_trace") is True,
                 supports_user_interaction=True,
@@ -1048,11 +1098,24 @@ async def create_sync_run(
                 session_id=session_id,
                 limit=_run_tps_limit(_get_orchestrator()),
             )
-        await _validate_model_profile(
+        deterministic_candidate = await _deterministic_preflight(
             runtime,
-            model_profile_id=model_profile_id,
+            user_request=user_request,
+            user_context={
+                **context_values,
+                "interaction_response": data.get("interaction_response"),
+            },
+            arguments=(dict(arguments) if arguments is not None else None),
+            session_id=session_id,
+            username=current_user.username,
             workspace_id=workspace_id,
         )
+        if not deterministic_candidate:
+            await _validate_model_profile(
+                runtime,
+                model_profile_id=model_profile_id,
+                workspace_id=workspace_id,
+            )
     except SystemConfigValidationError as exc:
         return _sync_error(str(exc), 400, session_id=session_id)
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
@@ -1107,6 +1170,14 @@ async def create_sync_run(
                     agent_mode=resolve_agent_mode({"agent_mode": agent_mode}),
                     llm_request_mode=normalize_llm_request_mode(llm_request_mode),
                     model_profile_id=model_profile_id or None,
+                    requested_operation_key=(
+                        str(
+                            data.get("requested_operation_key")
+                            or context_values.get("requested_operation_key")
+                            or ""
+                        ).strip()
+                        or None
+                    ),
                     arguments=dict(arguments) if arguments is not None else None,
                     include_trace=include_trace,
                     supports_user_interaction=False,

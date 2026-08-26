@@ -2655,7 +2655,7 @@ data: { ... }
 
 ## 10. ACP Protocol
 
-ACP 适配层复用现有 `AgenticOrchestrator` 和 `agent-stream.v2` 内核，对外暴露 ACP 风格的 run 接口。ACP run 会写入同一个 RunStore，并通过 `X-Workspace-Id` 解析工作空间。
+ACP 适配层复用现有 `AsyncRunManager` 和 `agent-stream.v2` 内核，对外暴露 ACP 风格的 run 接口。ACP run 会写入同一个 ExecutionStore，并通过 `X-Workspace-Id` 解析工作空间。
 
 ### 10.1 Agent Detail `GET /acp/agent`
 

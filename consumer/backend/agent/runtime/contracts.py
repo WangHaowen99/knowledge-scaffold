@@ -79,6 +79,7 @@ class RuntimeInvocationContext(BaseModel):
     agent_mode: str = "quick"
     llm_request_mode: LlmRequestMode = "stream"
     model_profile_id: str | None = None
+    requested_operation_key: str | None = Field(default=None, exclude=True)
     arguments: dict[str, Any] | None = None
     history_messages: list[RuntimeHistoryMessage] = Field(default_factory=list)
     model_profile_ref: dict[str, Any] | None = Field(default=None, exclude=True)
@@ -108,6 +109,13 @@ class RuntimeInvocationContext(BaseModel):
     @field_validator("model_profile_id")
     @classmethod
     def _normalize_model_profile_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    @field_validator("requested_operation_key")
+    @classmethod
+    def _normalize_requested_operation_key(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return str(value).strip() or None

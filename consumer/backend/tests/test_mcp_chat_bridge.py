@@ -236,6 +236,26 @@ def test_mcp_awaits_canonical_run_without_sync_bridge(tmp_path):
     assert manager.context.traceparent == _scope().traceparent
 
 
+def test_mcp_forwards_explicit_deterministic_operation_and_arguments(tmp_path):
+    manager = _Manager()
+
+    body, status_code = _execute(
+        tmp_path,
+        manager,
+        payload={
+            "request": "synthetic deterministic request",
+            "session_id": "session_explicit_operation",
+            "requested_operation_key": "operation_demo",
+            "arguments": {"code": "CODE-42"},
+        },
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert manager.context.requested_operation_key == "operation_demo"
+    assert manager.context.arguments == {"code": "CODE-42"}
+
+
 def test_mcp_rejects_unexpected_awaiting_without_resuming_run(tmp_path):
     manager = _Manager(
         status=RunStatus.AWAITING_INPUT,

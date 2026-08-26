@@ -2,6 +2,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from persistence.chat_store import ChatStore
+from persistence.deterministic_terminal import (
+    persist_deterministic_terminal,
+    recover_pending_deterministic_artifacts,
+    recover_pending_deterministic_terminal,
+)
 from persistence.execution_store import (
     INTERACTION_CANCELLED_MESSAGE,
     INTERACTION_CANCELLED_NOTICE,
@@ -34,6 +40,172 @@ def _seed_choice_checkpoint(store: ExecutionStore, session_id: str = "sess-choic
         final_output={"type": "user_interaction", "interaction": interaction},
     )
     return interaction
+
+
+def test_deterministic_terminal_journal_recovers_failed_event_projection(
+    tmp_path,
+    monkeypatch,
+):
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    chat_store.create_session(session_id="session_terminal_recovery")
+    execution_store.start_turn(
+        "session_terminal_recovery",
+        1,
+        "run_terminal_recovery",
+        "synthetic request",
+    )
+    event = {
+        "event": "agent.v2",
+        "data": {
+            "protocol": "agent-stream.v2",
+            "event_id": "run_terminal_recovery:1",
+            "seq": 1,
+            "type": "turn.finished",
+            "run_id": "run_terminal_recovery",
+            "session_id": "session_terminal_recovery",
+            "turn_id": 1,
+            "payload": {"status": "completed"},
+        },
+    }
+    original_append = chat_store.append_events_once
+    monkeypatch.setattr(
+        chat_store,
+        "append_events_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic projection failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic projection failure"):
+        persist_deterministic_terminal(
+            execution_store,
+            chat_store,
+            session_id="session_terminal_recovery",
+            turn_id=1,
+            status="success",
+            final_output={
+                "status": "success",
+                "text": "synthetic answer",
+                "execution": {"type": "deterministic"},
+            },
+            llm_context=[],
+            events=[event],
+        )
+
+    assert execution_store.get_pending_deterministic_terminal(
+        "session_terminal_recovery"
+    ) is not None
+    monkeypatch.setattr(chat_store, "append_events_once", original_append)
+
+    assert recover_pending_deterministic_terminal(
+        execution_store,
+        chat_store,
+        "session_terminal_recovery",
+    ) is True
+    assert execution_store.get_pending_deterministic_terminal(
+        "session_terminal_recovery"
+    ) is None
+    assert execution_store.get_turn("session_terminal_recovery", 1)["status"] == "success"
+    assert any(
+        (item.get("data") or {}).get("event_id") == "run_terminal_recovery:1"
+        for item in chat_store.get_session("session_terminal_recovery").events
+    )
+
+
+def test_deterministic_artifact_journal_removes_failed_run_output(tmp_path):
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    chat_store.create_session(session_id="session_artifact_recovery")
+    execution_store.start_turn(
+        "session_artifact_recovery",
+        1,
+        "run_artifact_recovery",
+        "synthetic request",
+    )
+    output_ref = "a" * 32
+    execution_store.reserve_deterministic_artifacts(
+        "session_artifact_recovery",
+        1,
+        "run_artifact_recovery",
+        [output_ref],
+    )
+    stored = chat_store.store_tool_output(
+        "session_artifact_recovery",
+        "run_artifact_recovery",
+        "deterministic:result.txt",
+        "synthetic artifact",
+        output_ref=output_ref,
+    )
+    assert stored is not None
+    execution_store.fail_turn(
+        "session_artifact_recovery",
+        1,
+        "synthetic failure",
+        run_id="run_artifact_recovery",
+    )
+
+    assert recover_pending_deterministic_artifacts(
+        execution_store,
+        chat_store,
+        "session_artifact_recovery",
+        run_is_active=lambda _run_id: False,
+    ) is True
+    assert execution_store.get_pending_deterministic_artifacts(
+        "session_artifact_recovery"
+    ) == []
+    assert chat_store.get_tool_output(
+        "session_artifact_recovery",
+        "run_artifact_recovery",
+        output_ref,
+    ) is None
+
+
+def test_deterministic_artifact_recovery_preserves_running_turn(tmp_path):
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    chat_store.create_session(session_id="session_running_artifact")
+    execution_store.start_turn(
+        "session_running_artifact",
+        1,
+        "run_running_artifact",
+        "synthetic request",
+    )
+    output_ref = "b" * 32
+    execution_store.reserve_deterministic_artifacts(
+        "session_running_artifact",
+        1,
+        "run_running_artifact",
+        [output_ref],
+    )
+    chat_store.store_tool_output(
+        "session_running_artifact",
+        "run_running_artifact",
+        "deterministic:result.txt",
+        "synthetic artifact",
+        output_ref=output_ref,
+    )
+
+    assert recover_pending_deterministic_artifacts(
+        execution_store,
+        chat_store,
+        "session_running_artifact",
+        run_is_active=lambda _run_id: False,
+    ) is False
+    assert execution_store.get_pending_deterministic_artifacts(
+        "session_running_artifact"
+    ) == [
+        {
+            "turn_id": 1,
+            "run_id": "run_running_artifact",
+            "output_refs": [output_ref],
+        }
+    ]
+    assert chat_store.get_tool_output(
+        "session_running_artifact",
+        "run_running_artifact",
+        output_ref,
+    ) is not None
 
 
 def _seed_one_run_checkpoint(

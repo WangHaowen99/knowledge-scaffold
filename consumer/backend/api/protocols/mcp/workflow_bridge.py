@@ -93,6 +93,13 @@ async def execute_mcp_chat_workflow_async(
             trace=_trace_snapshot(collector),
         )
     context_values = dict(context_values or {})
+    requested_operation_key = str(
+        data.get("requested_operation_key")
+        or context_values.get("requested_operation_key")
+        or ""
+    ).strip()
+    if requested_operation_key:
+        context_values["requested_operation_key"] = requested_operation_key
     raw_arguments = data.get("arguments")
     if raw_arguments is not None and not isinstance(raw_arguments, dict):
         return _workflow_error(
@@ -134,12 +141,31 @@ async def execute_mcp_chat_workflow_async(
         or ""
     ).strip()
     try:
-        await short_io.run(
-            resolve_effective_llm_profile_config,
-            model_profile_id or None,
-            allow_default_fallback=not bool(model_profile_id),
-            workspace_id=scope.workspace_id,
+        from api.routes import get_orchestrator
+
+        try:
+            orchestrator = get_orchestrator()
+        except RuntimeError:
+            orchestrator = None
+        deterministic_candidate = bool(
+            orchestrator is not None
+            and await short_io.run(
+                orchestrator.is_deterministic_request_potentially_applicable,
+                user_request=query,
+                user_context=context_values,
+                arguments=arguments,
+                session_id=session_id,
+                user_id=scope.username,
+                workspace_id=scope.workspace_id,
+            )
         )
+        if not deterministic_candidate:
+            await short_io.run(
+                resolve_effective_llm_profile_config,
+                model_profile_id or None,
+                allow_default_fallback=not bool(model_profile_id),
+                workspace_id=scope.workspace_id,
+            )
     except SystemConfigValidationError as exc:
         return _workflow_error(
             "INVALID_MODEL_PROFILE",
@@ -185,6 +211,7 @@ async def execute_mcp_chat_workflow_async(
                     context_values.get("llm_request_mode")
                 ),
                 model_profile_id=model_profile_id or None,
+                requested_operation_key=requested_operation_key or None,
                 arguments=arguments,
                 include_trace=include_trace,
                 supports_user_interaction=False,

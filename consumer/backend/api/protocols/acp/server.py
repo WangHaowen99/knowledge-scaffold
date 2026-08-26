@@ -314,6 +314,10 @@ async def _admit_run(
             model_profile_id=(
                 str(context_values.get("model_profile_id") or "").strip() or None
             ),
+            requested_operation_key=(
+                str(context_values.get("requested_operation_key") or "").strip()
+                or None
+            ),
             arguments=dict(raw_arguments) if raw_arguments is not None else None,
             include_trace=False,
             supports_user_interaction=True,
@@ -617,6 +621,19 @@ async def create_run(
     if context_values is not None and not isinstance(context_values, dict):
         return JSONResponse({"detail": "context must be an object or null"}, status_code=400)
     context_values = dict(context_values or {})
+    raw_arguments = payload.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
+        return JSONResponse(
+            {"detail": "arguments must be an object or null"},
+            status_code=400,
+        )
+    if raw_arguments is not None:
+        context_values["arguments"] = dict(raw_arguments)
+    requested_operation_key = str(
+        payload.get("requested_operation_key") or ""
+    ).strip()
+    if requested_operation_key:
+        context_values["requested_operation_key"] = requested_operation_key
     external_run_id = "run_{}".format(uuid.uuid4().hex)
     try:
         session_id = validate_session_id(
@@ -748,6 +765,19 @@ async def _create_from_payload(
     if context_values is not None and not isinstance(context_values, dict):
         return JSONResponse({"detail": "context must be an object or null"}, status_code=400)
     context_values = dict(context_values or {})
+    raw_arguments = payload.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
+        return JSONResponse(
+            {"detail": "arguments must be an object or null"},
+            status_code=400,
+        )
+    if raw_arguments is not None:
+        context_values["arguments"] = dict(raw_arguments)
+    requested_operation_key = str(
+        payload.get("requested_operation_key") or ""
+    ).strip()
+    if requested_operation_key:
+        context_values["requested_operation_key"] = requested_operation_key
     external_run_id = "run_{}".format(uuid.uuid4().hex)
     session_id = validate_session_id(
         context_values.get("session_id") or "session_{}".format(uuid.uuid4().hex)

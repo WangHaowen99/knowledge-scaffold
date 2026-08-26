@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import json
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsupportedError
 from ..filter_expr import build_filter_where, cypher_prop_ref, safe_prop
@@ -64,6 +65,7 @@ class Neo4jGraphBackend:
 
     def __init__(self, provider_config: Mapping[str, Any]) -> None:
         self.uri = str(provider_config.get("uri") or "").strip()
+        self.resolved_uri = str(provider_config.get("resolved_uri") or "").strip()
         self.database = str(provider_config.get("database") or "neo4j").strip() or "neo4j"
         self.username = str(provider_config.get("username") or "").strip()
         self.password = str(provider_config.get("password") or "")
@@ -788,13 +790,42 @@ class Neo4jGraphBackend:
             raise GraphBackendError("Neo4J URI 未配置")
         try:
             from neo4j import GraphDatabase
+            from neo4j._addressing import ResolvedAddress
         except ImportError as exc:
             raise GraphBackendError("Neo4J driver 未安装") from exc
-        self._driver = GraphDatabase.driver(
-            self.uri,
-            auth=(self.username, self.password),
-            connection_timeout=self.connection_timeout,
-        )
+        driver_options: dict[str, Any] = {
+            "auth": (self.username, self.password),
+            "connection_timeout": self.connection_timeout,
+        }
+        if self.resolved_uri:
+            resolved = urlsplit(self.resolved_uri)
+            resolved_host = str(resolved.hostname or "").strip()
+            resolved_port = resolved.port
+            tls_server_name = str(urlsplit(self.uri).hostname or "").strip()
+            if not resolved_host or not tls_server_name:
+                raise GraphBackendError("Neo4J 固定连接地址无效")
+
+            def fixed_resolver(address):
+                address_port = getattr(address, "port", None)
+                if address_port is None:
+                    try:
+                        address_port = address[-1]
+                    except (IndexError, TypeError):
+                        address_port = None
+                port = resolved_port or address_port
+                if ":" in resolved_host:
+                    resolved_address = (resolved_host, port, 0, 0)
+                else:
+                    resolved_address = (resolved_host, port)
+                return [
+                    ResolvedAddress(
+                        resolved_address,
+                        host_name=tls_server_name,
+                    )
+                ]
+
+            driver_options["resolver"] = fixed_resolver
+        self._driver = GraphDatabase.driver(self.uri, **driver_options)
         return self._driver
 
     def _run(self, query: str, params: Mapping[str, Any]):

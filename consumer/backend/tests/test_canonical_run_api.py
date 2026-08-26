@@ -342,6 +342,7 @@ def _ordinary_payload(
         "session_id": session_id,
         "agent_mode": "quick",
         "llm_request_mode": "stream",
+        "requested_operation_key": "operation_demo",
         "include_trace": False,
         # Client-provided identities must never become Run authority.
         "run_id": "client_supplied_run_id",
@@ -377,6 +378,10 @@ def test_post_run_allocates_server_ids_and_exact_retry_starts_one_task(
             assert created["turn_id"] != 9001
             assert created["session_id"] == "session_api_contract"
             assert created["status"] == "queued"
+            assert (
+                harness.manager.started_contexts[0].requested_operation_key
+                == "operation_demo"
+            )
             assert created["links"] == {
                 "self": "/agentic/runs/{}".format(created["run_id"]),
                 "events": "/agentic/runs/{}/events".format(created["run_id"]),
@@ -454,6 +459,7 @@ def test_sync_run_waits_for_terminal_and_returns_legacy_trace(monkeypatch, tmp_p
                         "agent_mode": "thinking",
                         "llm_request_mode": "sync",
                     },
+                    "requested_operation_key": "operation_demo",
                     "include_trace": True,
                 },
             )
@@ -479,6 +485,7 @@ def test_sync_run_waits_for_terminal_and_returns_legacy_trace(monkeypatch, tmp_p
         assert context.supports_user_interaction is False
         assert context.agent_mode == "thinking"
         assert context.llm_request_mode == "sync"
+        assert context.requested_operation_key == "operation_demo"
         assert context.timeout_seconds is None
         history = harness.execution_store.get_session_history(
             "session_sync_contract"
@@ -589,6 +596,19 @@ def test_post_run_rejects_idempotency_conflict_and_same_session_busy(
             )
             assert first.status_code == 202, first.text
             first_run_id = first.json()["run_id"]
+
+            operation_conflict_payload = _ordinary_payload()
+            operation_conflict_payload["requested_operation_key"] = "operation_other"
+            operation_conflict = await client.post(
+                "/agentic/runs",
+                json=operation_conflict_payload,
+                headers=_headers("conflict-request-key"),
+            )
+            assert operation_conflict.status_code == 409, operation_conflict.text
+            assert (
+                operation_conflict.json()["error"]["error_code"]
+                == "IDEMPOTENCY_CONFLICT"
+            )
 
             conflict = await client.post(
                 "/agentic/runs",

@@ -284,6 +284,29 @@ def test_public_adapter_uses_tool_whitelist_and_marks_truncation():
     assert truncated.payload["omitted"]["text_fields_truncated"] == 1
 
 
+def test_public_adapter_preserves_complete_terminal_output():
+    content = "x" * 5000
+    terminal = RuntimeEvent(
+        event_type="turn.finished",
+        status="completed",
+        run_id="run-long-terminal",
+        session_id="session-01",
+        turn_id=1,
+        payload={
+            "status": "completed",
+            "content": content,
+            "structured_content": {"text": content},
+        },
+    )
+
+    draft = PublicEventAdapter(max_text_length=32).adapt(terminal)
+
+    assert draft is not None
+    assert draft.payload["content"] == content
+    assert draft.payload["structured_content"]["text"] == content
+    assert "truncated" not in draft.payload
+
+
 def test_reasoning_and_terminal_trace_follow_include_trace_switch():
     reasoning = RuntimeEvent(
         event_type="reasoning.delta",

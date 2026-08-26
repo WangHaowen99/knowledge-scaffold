@@ -31,6 +31,10 @@ class TurnExecutionRecord(TypedDict):
     evolution_feedback_vote: NotRequired[str]
     feedback: NotRequired[Dict[str, Any]]
     error_code: NotRequired[str]
+    deterministic_checkpoint: NotRequired[Dict[str, Any]]
+    prior_deterministic_checkpoint: NotRequired[Dict[str, Any]]
+    prior_interaction_response: NotRequired[Dict[str, Any]]
+    prior_interaction_turn_id: NotRequired[int]
 
 
 class SessionExecutionHistory(TypedDict):

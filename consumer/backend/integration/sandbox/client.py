@@ -35,10 +35,15 @@ class JiuwenboxClient:
                 transport=transport,
                 base_url="http://jiuwenbox",
                 timeout=timeout,
+                trust_env=False,
             )
         if "://" not in normalized:
             normalized = f"http://{normalized}"
-        return httpx.Client(base_url=normalized.rstrip("/"), timeout=timeout)
+        return httpx.Client(
+            base_url=normalized.rstrip("/"),
+            timeout=timeout,
+            trust_env=False,
+        )
 
     def create_sandbox(
         self,

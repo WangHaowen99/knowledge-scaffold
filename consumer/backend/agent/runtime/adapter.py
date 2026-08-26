@@ -143,11 +143,32 @@ class PublicEventAdapter:
 
         raw_payload = self._normalize_payload(event)
         stats = _SanitizeStats()
-        sanitized = self._sanitize(
-            raw_payload,
-            stats=stats,
-            allow_public_interaction_prompt=self._allows_public_interaction_prompt(event),
-        )
+        if event.event_type == "turn.finished":
+            sanitized = {
+                key: self._sanitize(
+                    value,
+                    stats=stats,
+                    key=key,
+                    path=(self._normalized_key(key),),
+                    truncate_text=key not in {
+                        "content",
+                        "structured_content",
+                        "usage",
+                    },
+                    allow_public_interaction_prompt=(
+                        self._allows_public_interaction_prompt(event)
+                    ),
+                )
+                for key, value in raw_payload.items()
+            }
+        else:
+            sanitized = self._sanitize(
+                raw_payload,
+                stats=stats,
+                allow_public_interaction_prompt=(
+                    self._allows_public_interaction_prompt(event)
+                ),
+            )
         payload = dict(sanitized) if isinstance(sanitized, Mapping) else {"value": sanitized}
         if stats.text_fields_truncated or stats.sensitive_fields_redacted:
             payload["omitted"] = {

@@ -102,6 +102,43 @@ test('conversation blocks keep source segment order and add lifecycle last', () 
   assert.equal(turn.blocks.at(-1).status, 'finished');
 });
 
+test('deterministic artifact segments normalize download metadata', () => {
+  const message = {
+    ...assistantMessage,
+    streamSegments: [
+      ...assistantMessage.streamSegments,
+      {
+        type: 'artifacts',
+        state: 'final',
+        text: '',
+        meta: {
+          artifacts: [{
+            name: 'result.json',
+            media_type: 'application/json',
+            size: 14,
+            sha256: 'sha256:abc',
+            output_ref: 'artifact-ref',
+          }],
+        },
+        finished: true,
+      },
+    ],
+  };
+
+  const model = buildConversationViewModel([message]);
+  const block = model.turns[0].blocks.find((item) => item.kind === 'artifacts');
+
+  assert.ok(block);
+  assert.deepEqual(block.artifacts[0], {
+    key: 'artifact-ref',
+    name: 'result.json',
+    mediaType: 'application/json',
+    size: 14,
+    sha256: 'sha256:abc',
+    outputRef: 'artifact-ref',
+  });
+});
+
 test('conversation keys and timing are deterministic across rebuilds', () => {
   const first = buildConversationViewModel([assistantMessage]);
   const second = buildConversationViewModel([assistantMessage]);

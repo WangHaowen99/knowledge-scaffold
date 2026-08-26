@@ -25,6 +25,19 @@ logger = get_logger("tools.memory")
 _MEMORY_TYPES = set(MEMORY_TYPE_TO_DIR)
 _EVOLUTION_KINDS = {"procedure", "pitfall", "schema"}
 
+_EXPLICIT_MEMORY_PATTERNS = (
+    re.compile(r"(?:请|帮我|麻烦)?(?:记住|记下|记一下|记下来|保存到记忆|存到记忆)"),
+    re.compile(r"(?:以后|今后|后续|下次).{0,16}(?:一直|都|继续|记得|遵循|使用|采用|按照)"),
+    re.compile(r"\bremember\s+(?:that|to|this|my)\b", re.IGNORECASE),
+    re.compile(r"\b(?:save|store)\s+this\s+(?:for|in)\b", re.IGNORECASE),
+    re.compile(r"\bfrom\s+now\s+on\b", re.IGNORECASE),
+)
+_NEGATED_MEMORY_PATTERN = re.compile(
+    r"(?:不要|别|无需|不用|不必).{0,8}(?:记住|记忆|保存)|"
+    r"\b(?:do\s+not|don't|dont|never)\s+(?:remember|save|store)\b",
+    re.IGNORECASE,
+)
+
 MEMORY_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
@@ -166,6 +179,32 @@ def _strip_json_fence(text: str) -> str:
 
 def _safe_str(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _latest_user_request(messages: List[Dict[str, Any]]) -> str:
+    for message in reversed(list(messages or [])):
+        if str(message.get("role") or "").strip().lower() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") in {None, "text"}
+            )
+    return ""
+
+
+def has_explicit_memory_request(messages: List[Dict[str, Any]]) -> bool:
+    request = _latest_user_request(messages)
+    if not request or _NEGATED_MEMORY_PATTERN.search(request):
+        return False
+    return any(pattern.search(request) for pattern in _EXPLICIT_MEMORY_PATTERNS)
+
+
+_has_explicit_memory_request = has_explicit_memory_request
 
 
 def _recent_read_context(read_documents: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -683,6 +722,17 @@ async def handle_memory(
     if not content:
         return json.dumps(
             {"stored": False, "status": "error", "error": "empty content"},
+            ensure_ascii=False,
+        )
+
+    context_messages = list(context.messages or [])
+    if context_messages and not _has_explicit_memory_request(context_messages):
+        return json.dumps(
+            {
+                "stored": False,
+                "status": "rejected",
+                "error": "explicit_current_user_memory_request_required",
+            },
             ensure_ascii=False,
         )
 

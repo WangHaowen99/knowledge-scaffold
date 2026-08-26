@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import time
+import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -74,6 +77,135 @@ def _build_tool_output_artifact_writer(
     return write
 
 
+def _build_deterministic_artifact_writer(
+    chat_store: Any,
+    *,
+    session_id: str,
+    run_id: str,
+    execution_store: Any,
+    turn_id: int,
+):
+    store_tool_output = getattr(chat_store, "store_tool_output", None)
+    delete_tool_output = getattr(chat_store, "delete_tool_output", None)
+    if not callable(store_tool_output):
+        return None
+
+    lock = threading.Lock()
+    output_refs: set[str] = set()
+    reserved_refs: set[str] = set()
+    prepared_refs: dict[str, str] = {}
+    closed = False
+    journal_enabled = all(
+        callable(getattr(execution_store, name, None))
+        for name in (
+            "reserve_deterministic_artifacts",
+            "release_deterministic_artifacts",
+        )
+    )
+
+    def prepare_artifacts(names) -> None:
+        normalized = [str(name or "").strip() for name in names]
+        if not normalized:
+            return
+        if any(not name for name in normalized) or len(set(normalized)) != len(
+            normalized
+        ):
+            raise ValueError("deterministic artifact names are invalid")
+        with lock:
+            if closed:
+                raise RuntimeError("deterministic artifact writer is closed")
+            allocated = {name: uuid.uuid4().hex for name in normalized}
+            if journal_enabled:
+                execution_store.reserve_deterministic_artifacts(
+                    session_id,
+                    turn_id,
+                    run_id,
+                    list(allocated.values()),
+                )
+            prepared_refs.update(allocated)
+            reserved_refs.update(allocated.values())
+
+    def write(name: str, output: str, media_type: str):
+        nonlocal closed
+        with lock:
+            if closed:
+                raise RuntimeError("deterministic artifact writer is closed")
+            reserved_ref = prepared_refs.pop(str(name), "")
+            stored = store_tool_output(
+                session_id=session_id,
+                run_id=run_id,
+                tool_call_id="deterministic:{}".format(name),
+                output=output,
+                content_type=media_type,
+                **(
+                    {"output_ref": reserved_ref}
+                    if journal_enabled and reserved_ref
+                    else {}
+                ),
+            )
+            if isinstance(stored, Mapping):
+                output_ref = str(stored.get("output_ref") or "").strip()
+                if output_ref:
+                    output_refs.add(output_ref)
+            if journal_enabled and (
+                not isinstance(stored, Mapping)
+                or str(stored.get("output_ref") or "").strip() != reserved_ref
+            ):
+                raise RuntimeError(
+                    "deterministic artifact store changed its reserved output_ref"
+                )
+            return stored
+
+    def rollback(refs=()) -> None:
+        nonlocal closed
+        with lock:
+            closed = True
+            candidates = set(reserved_refs)
+            candidates.update(output_refs)
+            candidates.update(str(item or "").strip() for item in refs)
+            deleted_refs: set[str] = set()
+            failed_refs: set[str] = set()
+            for output_ref in candidates:
+                if not output_ref or not callable(delete_tool_output):
+                    if output_ref:
+                        failed_refs.add(output_ref)
+                    continue
+                try:
+                    deleted = bool(delete_tool_output(
+                        session_id=session_id,
+                        run_id=run_id,
+                        output_ref=output_ref,
+                        missing_ok=True,
+                    ))
+                except Exception:
+                    deleted = False
+                    logger.warning(
+                        "Failed to rollback deterministic artifact run=%s",
+                        run_id,
+                        exc_info=True,
+                    )
+                if deleted:
+                    deleted_refs.add(output_ref)
+                else:
+                    failed_refs.add(output_ref)
+            released = deleted_refs
+            if journal_enabled and released:
+                execution_store.release_deterministic_artifacts(
+                    session_id,
+                    run_id,
+                    sorted(released),
+                )
+            output_refs.clear()
+            output_refs.update(failed_refs)
+            reserved_refs.intersection_update(failed_refs)
+            prepared_refs.clear()
+
+    setattr(write, "rollback", rollback)
+    setattr(write, "cancel_and_rollback", rollback)
+    setattr(write, "prepare_artifacts", prepare_artifacts)
+    return write
+
+
 def _history_with_turn(
     context: RuntimeInvocationContext,
     content: str,
@@ -88,12 +220,40 @@ def _history_with_turn(
     return history
 
 
+def _deterministic_final_output(envelope: Mapping[str, Any]) -> dict[str, Any]:
+    """Add a readable projection while retaining the deterministic envelope."""
+
+    structured = envelope.get("structured_result")
+    text = ""
+    if isinstance(structured, Mapping):
+        for key in ("text", "formatted_result", "message", "result"):
+            value = structured.get(key)
+            if isinstance(value, str) and value.strip():
+                text = value.strip()
+                break
+    if not text:
+        text = json.dumps(structured, ensure_ascii=False, sort_keys=True, indent=2)
+    return {**dict(envelope), "text": text}
+
+
+def _is_deterministic_result(result: RuntimeResult) -> bool:
+    structured = result.structured_content
+    execution = (
+        structured.get("execution") if isinstance(structured, Mapping) else None
+    )
+    return bool(
+        isinstance(execution, Mapping)
+        and str(execution.get("type") or "") == "deterministic"
+    )
+
+
 def _direct_terminal_event(
     context: RuntimeInvocationContext,
     *,
     status: str,
     content: str,
     error: RuntimeErrorInfo | None = None,
+    structured_content: dict[str, Any] | None = None,
 ) -> RuntimeEvent:
     payload: dict[str, Any] = {
         "status": status,
@@ -103,6 +263,8 @@ def _direct_terminal_event(
     }
     if error is not None:
         payload["error"] = error.model_dump(mode="json")
+    if structured_content is not None:
+        payload["structured_content"] = structured_content
     return RuntimeEvent(
         event_type="turn.finished",
         status=status,
@@ -289,6 +451,32 @@ def _result_from_terminal(
     )
 
 
+def _terminal_draft_from_result(
+    context: RuntimeInvocationContext,
+    result: RuntimeResult,
+    *,
+    source: dict[str, Any],
+) -> PublicEventDraft:
+    payload: dict[str, Any] = {"status": result.status}
+    if result.content is not None:
+        payload["content"] = result.content
+    if result.structured_content is not None:
+        payload["structured_content"] = result.structured_content
+    if result.usage is not None:
+        payload["usage"] = result.usage
+    if result.error is not None:
+        payload["error"] = result.error.model_dump(mode="json")
+    return PublicEventDraft(
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        event_type="turn.finished",
+        status=result.status,
+        source=source,
+        payload=payload,
+    )
+
+
 class _PublicRuntimeEventSink(RuntimeEventSink):
     def __init__(
         self,
@@ -316,12 +504,25 @@ class _PublicRuntimeEventSink(RuntimeEventSink):
             return
         await self.sink.emit(draft)
 
-    async def emit_deferred(self, *, status: str) -> None:
-        if status == "awaiting_input":
+    async def emit_deferred(
+        self,
+        context: RuntimeInvocationContext,
+        result: RuntimeResult,
+    ) -> bool:
+        if result.status == "awaiting_input":
             for draft in self.interaction_drafts:
                 await self.sink.emit(draft)
         if self.terminal_draft is not None:
-            await self.sink.emit(self.terminal_draft)
+            terminal_draft = self.terminal_draft
+            if result.status != terminal_draft.status:
+                terminal_draft = _terminal_draft_from_result(
+                    context,
+                    result,
+                    source=terminal_draft.source,
+                )
+            await self.sink.emit(terminal_draft)
+            return True
+        return False
 
 
 class AsyncExecutionService:
@@ -350,7 +551,7 @@ class AsyncExecutionService:
     ) -> RuntimeResult:
         adapter = PublicEventAdapter(include_trace=context.include_trace)
         direct_events = None
-        if self.session_adapter is not None and context.interaction_response is None:
+        if self.session_adapter is not None:
             direct_events = await self.session_adapter.try_direct_execute(context)
         if direct_events is not None:
             return await self._consume_events(
@@ -409,9 +610,20 @@ class AsyncExecutionService:
                 for interaction_draft in interaction_drafts:
                     await sink.emit(interaction_draft)
             if terminal is not None:
-                terminal_draft = adapter.adapt(terminal)
+                if result.status == terminal.status:
+                    terminal_draft = adapter.adapt(terminal)
+                else:
+                    terminal_draft = _terminal_draft_from_result(
+                        context,
+                        result,
+                        source={
+                            "node": "consumer",
+                            "component": "execution_service",
+                        },
+                    )
                 if terminal_draft is not None:
                     await sink.emit(terminal_draft)
+                    await self._submit_reflection(context, result)
             return result
 
         runtime_sink = _PublicRuntimeEventSink(adapter, sink)
@@ -423,7 +635,9 @@ class AsyncExecutionService:
         except _MultipleInteractionsRequested:
             return await self._finish_multiple_interactions(context, sink)
         result = await self._finalize(context, result)
-        await runtime_sink.emit_deferred(status=result.status)
+        terminal_emitted = await runtime_sink.emit_deferred(context, result)
+        if terminal_emitted:
+            await self._submit_reflection(context, result)
         return result
 
     async def _finish_multiple_interactions(
@@ -453,6 +667,7 @@ class AsyncExecutionService:
                 },
             )
         )
+        await self._submit_reflection(context, result)
         return result
 
     async def _consume_events(
@@ -463,6 +678,7 @@ class AsyncExecutionService:
         events: list[RuntimeEvent],
     ) -> RuntimeResult:
         terminal: RuntimeEvent | None = None
+        interaction_drafts: list[PublicEventDraft] = []
         for event in events:
             if event.event_type == "turn.finished":
                 if terminal is not None:
@@ -471,7 +687,15 @@ class AsyncExecutionService:
                 continue
             draft = adapter.adapt(event)
             if draft is not None:
-                await sink.emit(draft)
+                if event.event_type == "interaction.requested":
+                    if interaction_drafts:
+                        return await self._finish_multiple_interactions(
+                            context,
+                            sink,
+                        )
+                    interaction_drafts.append(draft)
+                else:
+                    await sink.emit(draft)
         if terminal is None:
             result = RuntimeResult(
                 status="failed",
@@ -485,10 +709,23 @@ class AsyncExecutionService:
         else:
             result = _result_from_terminal(terminal, adapter)
         result = await self._finalize(context, result)
+        if result.status == "awaiting_input":
+            for interaction_draft in interaction_drafts:
+                await sink.emit(interaction_draft)
         if terminal is not None:
-            terminal_draft = adapter.adapt(terminal)
-            if terminal_draft is not None:
-                await sink.emit(terminal_draft)
+            if result.status == terminal.status:
+                terminal_draft = adapter.adapt(terminal)
+            else:
+                terminal_draft = _terminal_draft_from_result(
+                    context,
+                    result,
+                    source={
+                        "node": "consumer",
+                        "component": "execution_service",
+                    },
+                )
+            await sink.emit(terminal_draft)
+            await self._submit_reflection(context, result)
         return result
 
     async def cancel(self, run_id: str, reason: str) -> bool:
@@ -519,8 +756,15 @@ class AsyncExecutionService:
             )
         if self.session_adapter is not None:
             await self.session_adapter.finalize(context, result)
-            await self.session_adapter.submit_reflection(context, result)
         return result
+
+    async def _submit_reflection(
+        self,
+        context: RuntimeInvocationContext,
+        result: RuntimeResult,
+    ) -> None:
+        if self.session_adapter is not None:
+            await self.session_adapter.submit_reflection(context, result)
 
     async def finalize_aborted(
         self,
@@ -693,6 +937,19 @@ class OrchestratorSessionAdapter:
     ) -> None:
         if result.status != "completed":
             return
+        _chat_store, execution_store = self._stores(context)
+        get_turn = getattr(execution_store, "get_turn", None)
+        if not callable(get_turn):
+            return
+        turn = await run_sync_compat(
+            get_turn,
+            context.session_id,
+            context.turn_id,
+            run_id=context.run_id,
+            task_name="reflection-terminal-check",
+        )
+        if not isinstance(turn, Mapping) or str(turn.get("status") or "") != "success":
+            return
         orchestrator = self._orchestrator_provider()
         submit = getattr(orchestrator, "_submit_reflection", None)
         if not callable(submit):
@@ -735,9 +992,8 @@ class OrchestratorSessionAdapter:
         orchestrator = self._orchestrator_provider()
         agent_config = getattr(orchestrator, "agent_config", None)
         direct_config = getattr(agent_config, "direct_execution", None)
-        if direct_config is None or not bool(getattr(direct_config, "enabled", False)):
-            return None
-
+        from agent.direct_execution.contracts import NotApplicable
+        from agent.direct_execution.service import DeterministicExecutionService
         from agent.direct_execution import OperationDirectRouter
         from agent.direct_execution.models import RuntimeContext
         from agent.direct_execution.runner import run_direct_script
@@ -750,15 +1006,68 @@ class OrchestratorSessionAdapter:
             "run_direct_script": run_direct_script,
             "tool_output_artifact_writer_context": tool_output_artifact_writer_context,
             "load_system_config": load_system_config,
+            "DeterministicExecutionService": DeterministicExecutionService,
+            "NotApplicable": NotApplicable,
+            "cancel_event": threading.Event(),
         }
         _resolve_workspace_scope()
-        return await run_sync_compat(
-            self._try_direct_execute_sync,
-            context,
-            dependencies,
-            run_id=context.run_id,
-            task_name="consumer-direct-execution",
+        operation = asyncio.create_task(
+            run_sync_compat(
+                self._try_direct_execute_sync,
+                context,
+                dependencies,
+                run_id=context.run_id,
+                task_name="consumer-direct-execution",
+            )
         )
+
+        def rollback_cancelled_artifacts(_completed=None) -> None:
+            writer = dependencies.get("artifact_writer")
+            rollback = getattr(writer, "cancel_and_rollback", None)
+            if callable(rollback):
+                try:
+                    rollback(())
+                except Exception:
+                    logger.warning(
+                        "Failed to rollback cancelled deterministic artifacts run=%s",
+                        context.run_id,
+                        exc_info=True,
+                    )
+            if _completed is not None:
+                try:
+                    _completed.exception()
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            dependencies["cancel_event"].set()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(operation),
+                    timeout=min(
+                        10.0,
+                        max(
+                            1.0,
+                            float(
+                                getattr(
+                                    agent_config,
+                                    "execute_script_timeout",
+                                    10,
+                                )
+                            ),
+                        ),
+                    ),
+                )
+            except TimeoutError:
+                rollback_cancelled_artifacts()
+                operation.add_done_callback(rollback_cancelled_artifacts)
+            except Exception:
+                rollback_cancelled_artifacts()
+            else:
+                rollback_cancelled_artifacts()
+            raise
 
     async def persist_event(self, event: PublicEvent) -> None:
         terminal = event.event_type == "turn.finished"
@@ -911,8 +1220,66 @@ class OrchestratorSessionAdapter:
                 session_metadata.get("model_profile_id") or ""
             ).strip()
             profile_ref = requested_profile or stored_profile or None
+            interaction_response = (
+                dict(context.interaction_response)
+                if context.interaction_response
+                else None
+            )
+            deterministic_candidate = False
+            if selected_ontology_id:
+                from agent.direct_execution.contracts import (
+                    DeterministicRequest,
+                )
+                from agent.direct_execution.models import RuntimeContext
+                from agent.direct_execution.service import (
+                    DeterministicExecutionService,
+                )
+
+                checkpoint = (
+                    execution_store.get_pending_deterministic_checkpoint(
+                        context.session_id
+                    )
+                    if interaction_response
+                    else None
+                )
+                deterministic_candidate = (
+                    DeterministicExecutionService().is_potentially_applicable(
+                        DeterministicRequest(
+                            user_request=context.query,
+                            context={
+                                "agent_mode": effective_agent_mode,
+                                "llm_request_mode": effective_llm_mode,
+                                "requested_operation_key": (
+                                    context.requested_operation_key
+                                ),
+                                "supports_user_interaction": (
+                                    context.supports_user_interaction
+                                ),
+                                **arguments,
+                            },
+                            arguments=arguments,
+                            runtime_context=RuntimeContext(
+                                session_id=context.session_id,
+                                run_id=context.run_id,
+                                turn_id=(
+                                    int(existing_turn["turn_id"])
+                                    if existing_turn is not None
+                                    else turn_count + 1
+                                ),
+                                user_id=context.username,
+                                workspace_id=context.workspace_id,
+                                selected_ontology_id=selected_ontology_id,
+                                selected_ontology_version=(
+                                    selected_ontology_version or None
+                                ),
+                            ),
+                            checkpoint=checkpoint,
+                            interaction_response=interaction_response,
+                        )
+                    )
+                )
             selected_profile = None
-            if hasattr(orchestrator, "agent_config"):
+            if hasattr(orchestrator, "agent_config") and not deterministic_candidate:
                 selected_profile = resolve_effective_llm_profile_config(
                     profile_ref,
                     workspace_id=context.workspace_id,
@@ -990,11 +1357,6 @@ class OrchestratorSessionAdapter:
                 else ""
             )
 
-            interaction_response = (
-                dict(context.interaction_response)
-                if context.interaction_response
-                else None
-            )
             if existing_turn is None:
                 started_turn, interaction_response = execution_store.start_next_turn(
                     session_id=context.session_id,
@@ -1105,7 +1467,7 @@ class OrchestratorSessionAdapter:
         parse_execution_summary: Callable[[str], Any] | None,
     ) -> None:
         with self._finalize_lock:
-            _chat_store, execution_store = self._stores(context)
+            chat_store, execution_store = self._stores(context)
             turn = execution_store.get_turn(
                 context.session_id,
                 context.turn_id,
@@ -1117,6 +1479,25 @@ class OrchestratorSessionAdapter:
             if current_status in {"success", "failed", "cancelled"}:
                 return
             if current_status == "awaiting_input" and result.status == "awaiting_input":
+                return
+            if _is_deterministic_result(result):
+                # The public EventBus assigns the canonical event_id/seq after
+                # finalize(). Keep this turn running until that event and the
+                # terminal recovery intent can be committed together.
+                try:
+                    get_active_run = getattr(chat_store, "get_active_run", None)
+                    clear_active_run = getattr(chat_store, "clear_active_run", None)
+                    if callable(clear_active_run) and (
+                        not callable(get_active_run)
+                        or get_active_run(context.session_id)
+                        in {None, "", context.run_id}
+                    ):
+                        clear_active_run(context.session_id)
+                except Exception:
+                    self._log_terminal_projection_failure(
+                        context.run_id,
+                        "active_run",
+                    )
                 return
             try:
                 self._finalize_phase_sync(context, result, parse_execution_summary)
@@ -1181,6 +1562,14 @@ class OrchestratorSessionAdapter:
                     final_output=final_output,
                     summary=None,
                     run_id=context.run_id,
+                    deterministic_checkpoint=(
+                        final_output.get("deterministic_checkpoint")
+                        if isinstance(
+                            final_output.get("deterministic_checkpoint"),
+                            dict,
+                        )
+                        else None
+                    ),
                 )
             elif result.status == "completed":
                 execution_store.complete_turn(
@@ -1203,9 +1592,13 @@ class OrchestratorSessionAdapter:
                     context.session_id,
                     context.turn_id,
                     error=(
-                        result.error.message
-                        if result.error is not None
-                        else "运行失败"
+                        final_output
+                        if result.structured_content is not None
+                        else (
+                            result.error.message
+                            if result.error is not None
+                            else "运行失败"
+                        )
                     ),
                     run_id=context.run_id,
                 )
@@ -1305,13 +1698,14 @@ class OrchestratorSessionAdapter:
             "tool_output_artifact_writer_context"
         ]
         load_system_config = dependencies["load_system_config"]
+        DeterministicExecutionService = dependencies.get(
+            "DeterministicExecutionService"
+        )
+        NotApplicable = dependencies.get("NotApplicable")
 
         orchestrator = self._orchestrator_provider()
         agent_config = getattr(orchestrator, "agent_config", None)
         direct_config = getattr(agent_config, "direct_execution", None)
-        if direct_config is None or not bool(getattr(direct_config, "enabled", False)):
-            return None
-
         arguments = dict(context.arguments or {})
         selected_ontology_id = str(
             arguments.get("selected_ontology_id") or ""
@@ -1331,6 +1725,201 @@ class OrchestratorSessionAdapter:
             selected_ontology_version=selected_ontology_version or None,
         )
         with _workspace_context(context.workspace_id):
+            chat_store, execution_store = self._stores(context)
+            checkpoint = (
+                execution_store.get_pending_deterministic_checkpoint(
+                    context.session_id
+                )
+                if context.interaction_response
+                else None
+            )
+            from agent.direct_execution.contracts import (
+                AwaitingInput,
+                Completed,
+                DeterministicRequest,
+                Failed,
+            )
+
+            request = DeterministicRequest(
+                user_request=context.query,
+                context={
+                    "agent_mode": context.agent_mode,
+                    "llm_request_mode": context.llm_request_mode,
+                    "model_profile_id": context.model_profile_id,
+                    "requested_operation_key": context.requested_operation_key,
+                    "supports_user_interaction": (
+                        context.supports_user_interaction
+                    ),
+                    **arguments,
+                },
+                arguments=arguments,
+                runtime_context=runtime_context,
+                checkpoint=checkpoint,
+                interaction_response=(
+                    dict(context.interaction_response)
+                    if context.interaction_response
+                    else None
+                ),
+            )
+            artifact_writer = _build_deterministic_artifact_writer(
+                chat_store,
+                session_id=context.session_id,
+                run_id=context.run_id,
+                execution_store=execution_store,
+                turn_id=context.turn_id,
+            )
+            if isinstance(dependencies, dict):
+                dependencies["artifact_writer"] = artifact_writer
+            system_config = load_system_config()
+            outcome = (
+                DeterministicExecutionService().execute(
+                    request,
+                    enabled=bool(
+                        getattr(
+                            agent_config,
+                            "deterministic_execution_enabled",
+                            False,
+                        )
+                    ),
+                    project_root=str(system_config["storage"]["project_root"]),
+                    timeout_seconds=int(agent_config.execute_script_timeout),
+                    artifact_writer=artifact_writer,
+                    cancel_event=dependencies.get("cancel_event"),
+                )
+                if DeterministicExecutionService is not None
+                and agent_config is not None
+                else None
+            )
+            if outcome is not None and not isinstance(outcome, NotApplicable):
+                events = [
+                    RuntimeEvent(
+                        event_type="turn.started",
+                        status="running",
+                        run_id=context.run_id,
+                        session_id=context.session_id,
+                        turn_id=context.turn_id,
+                        source={
+                            "node": "deterministic_execution",
+                            "component": "service",
+                        },
+                        payload={"turn_id": context.turn_id},
+                    ),
+                    RuntimeEvent(
+                        event_type="tool.started",
+                        status="running",
+                        run_id=context.run_id,
+                        session_id=context.session_id,
+                        turn_id=context.turn_id,
+                        source={
+                            "node": "deterministic_execution",
+                            "component": "service",
+                        },
+                        payload={
+                            "name": "execute_script",
+                            "tool_call_id": "deterministic",
+                            "message": "确定性执行",
+                        },
+                    ),
+                ]
+                if isinstance(outcome, Completed):
+                    envelope = _deterministic_final_output(outcome.envelope)
+                    events.append(
+                        RuntimeEvent(
+                            event_type="tool.finished",
+                            status="completed",
+                            run_id=context.run_id,
+                            session_id=context.session_id,
+                            turn_id=context.turn_id,
+                            source={
+                                "node": "deterministic_execution",
+                                "component": "service",
+                            },
+                            payload={
+                                "name": "execute_script",
+                                "tool_call_id": "deterministic",
+                                "status": "completed",
+                                "elapsed_ms": outcome.elapsed_ms,
+                                "output_projection": envelope.get(
+                                    "structured_result"
+                                ),
+                            },
+                        )
+                    )
+                    events.append(
+                        _direct_terminal_event(
+                            context,
+                            status="completed",
+                            content=str(envelope.get("text") or ""),
+                            structured_content=envelope,
+                        )
+                    )
+                    return events
+                if isinstance(outcome, AwaitingInput):
+                    interaction = dict(outcome.interaction)
+                    prompt = str(interaction.get("prompt") or "")
+                    envelope = {
+                        "type": "user_interaction",
+                        "text": prompt,
+                        "interaction": interaction,
+                        "options": list(interaction.get("options") or []),
+                        "deterministic_checkpoint": dict(outcome.checkpoint),
+                        "execution": {
+                            "type": "deterministic",
+                            "authoritative": False,
+                            "complete": False,
+                            "operation_key": outcome.operation_key,
+                        },
+                    }
+                    events.append(
+                        RuntimeEvent(
+                            event_type="interaction.requested",
+                            status="awaiting_input",
+                            run_id=context.run_id,
+                            session_id=context.session_id,
+                            turn_id=context.turn_id,
+                            source={
+                                "node": "deterministic_execution",
+                                "component": "service",
+                            },
+                            payload=interaction,
+                        )
+                    )
+                    events.append(
+                        _direct_terminal_event(
+                            context,
+                            status="awaiting_input",
+                            content=prompt,
+                            structured_content=envelope,
+                        )
+                    )
+                    return events
+                if isinstance(outcome, Failed):
+                    rollback = getattr(artifact_writer, "rollback", None)
+                    if callable(rollback):
+                        rollback(())
+                    events.append(
+                        _direct_terminal_event(
+                            context,
+                            status="failed",
+                            content=outcome.message,
+                            structured_content=outcome.public_result(),
+                            error=RuntimeErrorInfo(
+                                error_code=outcome.code,
+                                message=outcome.message,
+                                retriable=False,
+                                source="tool",
+                            ),
+                        )
+                    )
+                    return events
+                raise RuntimeError("deterministic execution returned an unknown outcome")
+
+            if context.interaction_response:
+                return None
+            if direct_config is None or not bool(
+                getattr(direct_config, "enabled", False)
+            ):
+                return None
             decision = OperationDirectRouter(config=direct_config).route(
                 user_request=context.query,
                 context={
@@ -1373,7 +1962,6 @@ class OrchestratorSessionAdapter:
                 )
                 return events
 
-            chat_store, _execution_store = self._stores(context)
             artifact_writer = _build_tool_output_artifact_writer(
                 chat_store,
                 session_id=context.session_id,
@@ -1422,8 +2010,128 @@ class OrchestratorSessionAdapter:
             context = self._run_contexts.get(event.run_id)
         if context is None:
             return
-        chat_store, _execution_store = self._stores(context)
+        chat_store, execution_store = self._stores(context)
         envelope = _chat_event_envelope(event)
+        terminal_output = event.payload.get("structured_content")
+        deterministic_execution = (
+            terminal_output.get("execution")
+            if isinstance(terminal_output, Mapping)
+            else None
+        )
+        deterministic_source = (
+            str((event.source or {}).get("node") or "")
+            == "deterministic_execution"
+        )
+        if (
+            event.event_type == "turn.finished"
+            and (
+                deterministic_source
+                or (
+                    isinstance(deterministic_execution, Mapping)
+                    and deterministic_execution.get("type") == "deterministic"
+                )
+            )
+        ):
+            from persistence.deterministic_terminal import (
+                persist_deterministic_terminal,
+            )
+
+            status = {
+                "completed": "success",
+                "awaiting_input": "awaiting_input",
+                "failed": "failed",
+                "cancelled": "cancelled",
+            }[event.status]
+            final_output = (
+                dict(terminal_output)
+                if isinstance(terminal_output, Mapping)
+                else {
+                    "status": status,
+                    "cancel_reason": event.payload.get("cancel_reason"),
+                    "execution": {
+                        "type": "deterministic",
+                        "authoritative": False,
+                        "complete": False,
+                    },
+                }
+            )
+            persist_deterministic_terminal(
+                execution_store,
+                chat_store,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                status=status,
+                final_output=final_output,
+                llm_context=(
+                    execution_store.get_llm_context(context.session_id) or []
+                ),
+                events=[envelope],
+                deterministic_checkpoint=(
+                    dict(terminal_output["deterministic_checkpoint"])
+                    if isinstance(terminal_output, Mapping)
+                    and isinstance(
+                        terminal_output.get("deterministic_checkpoint"),
+                        Mapping,
+                    )
+                    else None
+                ),
+            )
+            if event.status == "completed":
+                execution_store.commit_deterministic_artifacts(
+                    context.session_id,
+                    context.turn_id,
+                    context.run_id,
+                )
+            compact = getattr(chat_store, "compact_session", None)
+            if callable(compact):
+                compact(context.session_id)
+            return
+        if event.event_type == "turn.finished":
+            reconcile = getattr(
+                execution_store,
+                "reconcile_canonical_terminal",
+                None,
+            )
+            if callable(reconcile):
+                status = {
+                    "completed": "success",
+                    "awaiting_input": "awaiting_input",
+                    "failed": "failed",
+                    "cancelled": "cancelled",
+                }[event.status]
+                raw_output = (
+                    event.payload.get("structured_content")
+                    if event.payload.get("structured_content") is not None
+                    else event.payload.get("final_output")
+                )
+                if raw_output is None:
+                    raw_output = event.payload.get("content")
+                if isinstance(raw_output, Mapping):
+                    final_output = dict(raw_output)
+                elif raw_output is not None:
+                    final_output = {"text": str(raw_output)}
+                elif event.status == "cancelled":
+                    final_output = {
+                        "cancel_reason": event.payload.get("cancel_reason")
+                    }
+                elif event.status == "failed":
+                    final_output = {"error": event.payload.get("error")}
+                else:
+                    final_output = {"status": status}
+                raw_error = event.payload.get("error")
+                error_code = (
+                    str(raw_error.get("error_code") or "").strip()
+                    if isinstance(raw_error, Mapping)
+                    else str(event.payload.get("error_code") or "").strip()
+                )
+                reconcile(
+                    context.session_id,
+                    context.turn_id,
+                    run_id=context.run_id,
+                    status=status,
+                    final_output=final_output,
+                    error_code=error_code or None,
+                )
         if not chat_store.append_event(context.session_id, envelope):
             logger.warning(
                 "Failed to persist async event for session_id=%s run_id=%s",

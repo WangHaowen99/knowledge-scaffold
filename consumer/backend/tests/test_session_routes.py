@@ -16,6 +16,7 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     ExecutionStore,
 )
+from utils.streaming import build_agent_event
 from workspace.workspaces import create_workspace
 
 
@@ -638,6 +639,12 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
     )
     assert response.headers["X-Tool-Call-Id"] == "call-output"
     assert response.headers["X-Tool-Output-Ref"] == artifact["output_ref"]
+    assert response.headers["X-Tool-Output-SHA256"] == artifact["sha256"]
+    assert "X-Tool-Output-SHA256" in response.headers[
+        "Access-Control-Expose-Headers"
+    ]
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Content-Security-Policy"] == "sandbox; default-src 'none'"
 
 
 def test_get_tool_output_rejects_invalid_workspace_before_store_lookup(

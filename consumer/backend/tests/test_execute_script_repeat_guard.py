@@ -4,6 +4,7 @@ from agent.tools.base import ToolContext
 from agent.tools.execute_script import (
     MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION,
     ExecuteScriptTool,
+    _is_successful_script_output,
     _prior_successful_operation_calls,
 )
 
@@ -98,3 +99,12 @@ def test_failed_script_call_does_not_consume_retry_budget():
         operation_key="装置负荷校验",
         current_tool_call_id="call-retry",
     ) == []
+
+
+def test_operation_selection_redirect_does_not_consume_retry_budget():
+    content = (
+        "Operation selection blocked: load the coordinating operation first. "
+        "The script did not run."
+    )
+
+    assert _is_successful_script_output(content) is False

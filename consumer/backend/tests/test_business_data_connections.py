@@ -238,6 +238,8 @@ def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch
     assert neo4j_fields["graph_agent_timeout_seconds"]["default"] == 120
     assert hugegraph_fields["token"]["secret"] is True
     assert neo4j_fields["ontology_property"]["default"] == "d2o_ontology_id"
+    assert neo4j_fields["deterministic_snapshot_immutable"]["default"] is False
+    assert neo4j_fields["deterministic_scope_isolated"]["default"] is False
     assert hugegraph_fields["ontology_property"]["default"] == "d2o_ontology_id"
     assert hugegraph_fields["graph_connect_timeout_seconds"]["default"] == 10
     assert hugegraph_fields["graph_query_timeout_seconds"]["default"] == 30
@@ -249,7 +251,7 @@ def test_graph_provider_defaults_and_explicitly_disables_ontology_scope():
     from agent.tools.business_data.provider_registry import normalize_provider_config
 
     base_config = {
-        "uri": "bolt://neo4j.example.local:7687",
+        "uri": "bolt://neo4j.example.com:7687",
         "username": "neo4j",
         "password": "secret-password",
     }
@@ -262,6 +264,93 @@ def test_graph_provider_defaults_and_explicitly_disables_ontology_scope():
 
     assert defaulted["ontology_property"] == "d2o_ontology_id"
     assert disabled["ontology_property"] == ""
+
+
+@pytest.mark.parametrize(
+    ("provider", "config"),
+    [
+        (
+            "neo4j",
+            {
+                "uri": "bolt://embedded:uri-secret@neo4j.example.com:7687",
+                "username": "neo4j",
+                "password": "dedicated-secret",
+            },
+        ),
+        (
+            "neo4j",
+            {
+                "uri": "neo4j:uri-secret@neo4j.example.com:7687",
+                "username": "neo4j",
+                "password": "dedicated-secret",
+            },
+        ),
+        (
+            "hugegraph",
+            {"url": "https://embedded:uri-secret@hugegraph.example.com"},
+        ),
+        (
+            "hugegraph",
+            {"url": "https://hugegraph.example.com?access_token=query-secret"},
+        ),
+        (
+            "hugegraph",
+            {"url": "https://hugegraph.example.com#fragment-secret"},
+        ),
+    ],
+)
+def test_graph_provider_config_rejects_endpoint_userinfo(provider, config):
+    from agent.tools.business_data.provider_registry import (
+        BusinessDataProviderError,
+        normalize_provider_config,
+    )
+
+    with pytest.raises(BusinessDataProviderError) as exc:
+        normalize_provider_config(provider, config)
+
+    assert "uri-secret" not in str(exc.value)
+
+
+def test_legacy_endpoint_userinfo_is_removed_from_public_provider_config():
+    from agent.tools.business_data.provider_registry import publicize_provider_config
+
+    public = publicize_provider_config(
+        "hugegraph",
+        {"url": "https://embedded:uri-secret@hugegraph.example.com"},
+    )
+
+    assert public["url"] == "https://hugegraph.example.com"
+    assert "uri-secret" not in str(public)
+
+
+def test_legacy_schemeless_endpoint_userinfo_is_fully_redacted():
+    from agent.tools.business_data.endpoint_security import endpoint_secret_values
+    from agent.tools.business_data.provider_registry import publicize_provider_config
+
+    endpoint = "neo4j:uri-secret@neo4j.example.com:7687"
+    public = publicize_provider_config("neo4j", {"uri": endpoint})
+
+    assert public["uri"] == "[redacted-endpoint]"
+    assert "uri-secret" in endpoint_secret_values(endpoint)
+    assert endpoint in endpoint_secret_values(endpoint)
+
+
+def test_legacy_endpoint_query_credentials_and_fragment_are_removed_from_public_config():
+    from agent.tools.business_data.provider_registry import publicize_provider_config
+
+    public = publicize_provider_config(
+        "hugegraph",
+        {
+            "url": (
+                "https://hugegraph.example.com?region=east&access_token=query-secret"
+                "#fragment-secret"
+            )
+        },
+    )
+
+    assert public["url"] == "https://hugegraph.example.com?region=east"
+    assert "query-secret" not in str(public)
+    assert "fragment-secret" not in str(public)
 
 
 def test_legacy_graph_timeout_is_publicized_without_widening_stricter_limits():
@@ -280,7 +369,7 @@ def test_legacy_graph_timeout_is_publicized_without_widening_stricter_limits():
         (
             "neo4j",
             {
-                "uri": "bolt://neo4j.example.local:7687",
+                "uri": "bolt://neo4j.example.com:7687",
                 "username": "neo4j",
                 "password": "secret-password",
                 "timeout_seconds": 5,
@@ -289,7 +378,7 @@ def test_legacy_graph_timeout_is_publicized_without_widening_stricter_limits():
         (
             "hugegraph",
             {
-                "url": "https://hugegraph.example.local",
+                "url": "https://hugegraph.example.com",
                 "timeout_seconds": 5,
             },
         ),
@@ -317,7 +406,7 @@ def test_neo4j_source_secret_is_encrypted_at_rest(tmp_path, monkeypatch):
             "mode": "direct_provider",
             "provider": "neo4j",
             "config": {
-                "uri": "bolt://neo4j.example.local:7687",
+                "uri": "bolt://neo4j.example.com:7687",
                 "database": "neo4j",
                 "username": "neo4j",
                 "password": "secret-password",

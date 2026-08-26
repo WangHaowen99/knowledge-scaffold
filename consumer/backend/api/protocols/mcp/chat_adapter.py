@@ -60,6 +60,9 @@ def execute_chat_tool(
         "session_id": str(payload.get("session_id") or "").strip(),
         "context": dict(payload.get("context") or {}),
         "arguments": bound_arguments,
+        "requested_operation_key": str(
+            payload.get("requested_operation_key") or ""
+        ).strip(),
         "include_trace": payload.get("include_trace") is True,
     }
     model_profile_id = str(payload.get("model_profile_id") or "").strip()

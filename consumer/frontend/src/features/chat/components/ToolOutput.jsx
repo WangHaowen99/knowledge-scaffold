@@ -2,23 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Braces, ChevronDown, Loader2, Maximize2, RefreshCw, TriangleAlert } from 'lucide-react';
 
 import { authFetch } from '../../../shared/api/auth';
-import { formatOutputBytes, resolveToolOutputUrl } from '../lib/toolOutput';
+import {
+  formatOutputBytes,
+  outputResponseDigestMatches,
+  parseOutputResponse,
+  resolveToolOutputUrl,
+} from '../lib/toolOutput';
 import { CopyButton } from './RunActions';
 
-const parseFullOutput = async (response) => {
-  const contentType = response.headers.get('Content-Type') || '';
-  if (contentType.includes('application/json')) {
-    const payload = await response.json().catch(() => ({}));
-    const output = payload.output ?? payload.content ?? payload.data;
-    if (typeof output === 'string') return output;
-    if (output != null) return JSON.stringify(output, null, 2);
-    if (payload.error || payload.detail) throw new Error(payload.error || payload.detail);
-    return JSON.stringify(payload, null, 2);
-  }
-  return response.text();
-};
-
-export default function ToolOutput({ meta = {}, fallbackText = '', sessionId = '', runId = '' }) {
+export default function ToolOutput({
+  meta = {},
+  fallbackText = '',
+  sessionId = '',
+  runId = '',
+  rawOutput = false,
+}) {
   const preview = String(meta.output_preview ?? fallbackText ?? '');
   const outputRef = resolveToolOutputUrl(meta.output_ref, sessionId, runId);
   const truncated = Boolean(meta.output_truncated);
@@ -44,7 +42,10 @@ export default function ToolOutput({ meta = {}, fallbackText = '', sessionId = '
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || payload.detail || `完整输出加载失败（${response.status}）`);
       }
-      const output = await parseFullOutput(response);
+      if (!outputResponseDigestMatches(response, meta.sha256)) {
+        throw new Error('完整输出摘要与权威结果不一致');
+      }
+      const output = await parseOutputResponse(response, { raw: rawOutput });
       if (controller.signal.aborted) return;
       setFullOutput(output);
       setState('loaded');

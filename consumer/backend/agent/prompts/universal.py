@@ -35,7 +35,7 @@ def build_lang_instruction(lang: str | None) -> str | None:
 
 _EXECUTION_MODE_WITH_SUB_AGENT = """\
 Then decide HOW the operation will run:
-(a) **Script-backed (工具流程)** — when the selected operation appears in root `script_catalog`, invoke `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`. Do NOT read object definitions, do NOT spawn sub-agents, and do NOT replay the markdown logic manually.
+(a) **Script-backed (工具流程)** — when the selected operation appears in root `script_catalog`, invoke `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`. Do NOT read object definitions, do NOT spawn sub-agents, and do NOT replay the markdown logic manually. If that script-backed operation is a coordinator, its one registered script subsumes its referenced stages: call only the coordinator and never batch or separately execute its child/sibling operations.
 (b) **Parallel fan-out** — the request maps to multiple independent operations, OR the operation's `# 逻辑描述` contains an independent iteration over a collection: hand off via `spawn_sub_agent`. The main agent's job ENDS at hand-off — do NOT pre-load object definitions, pre-run `business_data_search`, or partially execute the logic.
     The following expressions in `# 逻辑描述` are strong signals that the logic contains an iteration over a collection (non-exhaustive):
         - "逐个/逐一/依次 + 分析/计算/执行/处理"
@@ -53,17 +53,17 @@ Then decide HOW the operation will run:
 (c) **In-loop step-by-step** — only when neither (a) nor (b) applies (a single non-`工具流程` operation, no independent fan-out):
   1. Use the loaded operation content's `# 输入` section to confirm required parameters before proceeding.
   2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
-  3. If the logic references `[[sub-process-name]]` and that sub-process has independent iteration, delegate it via `spawn_sub_agent`; otherwise repeat Steps 2–3 for it.
+  3. Treat every referenced operation or sub-process listed in `operations_catalog` as a required stage, whether it appears as `[[sub-process-name]]`, an operation key, or an operation title. If it is script-backed, invoke `execute_script` with the same grounded request inputs; if it has independent iteration, delegate it via `spawn_sub_agent`; otherwise repeat Steps 2–3 for it. Complete all documented stages in order unless a stage fails or the user explicitly requested only one stage.
   4. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load the referenced `rule` and `metric` specs via `ontology_context`. Catalogs are mainly for locating keys.
   5. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
 
 _EXECUTION_MODE_WITHOUT_SUB_AGENT = """\
 Then decide HOW the operation will run:
-(a) **Script-backed (工具流程)** — when the selected operation appears in root `script_catalog`, invoke `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`. Do NOT read object definitions and do NOT replay the markdown logic manually.
+(a) **Script-backed (工具流程)** — when the selected operation appears in root `script_catalog`, invoke `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`. Do NOT read object definitions and do NOT replay the markdown logic manually. If that script-backed operation is a coordinator, its one registered script subsumes its referenced stages: call only the coordinator and never batch or separately execute its child/sibling operations.
 (b) **In-loop step-by-step** — when (a) does not apply:
   1. Use the loaded operation content's `# 输入` section to confirm required parameters before proceeding.
   2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
-  3. If the logic references `[[sub-process-name]]`, repeat Steps 2–3 for it inline.
+  3. Treat every referenced operation or sub-process listed in `operations_catalog` as a required stage, whether it appears as `[[sub-process-name]]`, an operation key, or an operation title. If it is script-backed, invoke `execute_script` with the same grounded request inputs; otherwise repeat Steps 2–3 for it inline. Complete all documented stages in order unless a stage fails or the user explicitly requested only one stage.
   4. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load the referenced `rule` and `metric` specs via `ontology_context`. Catalogs are mainly for locating keys.
   5. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
 
@@ -118,8 +118,17 @@ Once an ontology is loaded, follow these steps in order.
 ### Step 1: Resolve Ontology Layout
 Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and `script_catalog` when present. Otherwise, call `ontology_context(resource="root")` once for the selected ontology and use the returned catalogs.
 ### Step 2: Match Operation
-1. Select the **best-matching** operation from `operations_catalog` based on user intent.
+1. Select the **best-matching** operation from `operations_catalog` based on user intent and the requested final-output contract.
+   - Before loading an operation or calling any execution tool, perform a mandatory comparison against **every row** in `operations_catalog`: extract all result types explicitly requested by the user and compare them with each row's output column. Do not stop at the first plausible match.
+   - Compare the requested result with each candidate's description and documented output. Lexical overlap with an input, scenario, or intermediate calculation is not enough.
+   - Prefer one top-level/coordinating operation whose output covers the complete requested result over a collection of lower-level or alternative operations.
+   - A row marked `execution_role=coordinator` must be loaded before any operation it references whenever its output covers the request. This remains true when the user asks for only several sections of that coordinator's documented output; select a child directly only when the user explicitly asks to run that individual stage alone.
+   - For a multi-part request, if one catalog row's output covers the union of the requested result types, that row is the operation to load. Never split the request across sibling scripts while such a coordinating row exists.
+   - When one script-backed operation accepts the request's raw inputs and produces the requested final summary, invoke that operation once. Do not replace it with sibling scripts, child calculations, or mutually exclusive scenario operations merely because they share the same input fields.
+   - Do not select an operation whose required inputs are outputs of another stage unless those intermediate values are actually available from the documented sequence.
+   Operations listed in `deterministic_operations` are runtime-reserved. If one reaches the Agent loop, do not read, replay, approximate, or execute it with other tools; report a deterministic routing failure instead.
 2. Check `script_catalog` to determine whether the operation is script-backed.
+   - If the selected operation is absent from `script_catalog`, do not call `ontology_context(resource="script", key=<operation_key>)` for it. Load the operation document and follow its referenced stages; only operations actually listed in `script_catalog` have executable script documents.
 3. Read the full operation content via `ontology_context(resource="operation", key=<operation_key>)` only when Step 3 requires manual operation execution.
 4. If manual execution needs rule judgments, metric formulas, or script descriptions referenced by the operation, read only the referenced `rule`, `metric`, or `script` specs via `ontology_context`.
 ### Step 3: Choose Execution Mode
@@ -132,6 +141,10 @@ Runtime argument source policy:
 ### Step 4: Result Organization
 - State which operations and object definitions were used.
 - Show key calculation or judgment steps for traceability.
+- For script-backed execution, organize the answer around the selected operation's documented final-output contract. If the script returns both final results and intermediate detail, present the requested final result first and do not dump every intermediate table unless the user asked for that detail.
+- When the user explicitly asks for every/all member of a returned collection, enumerate each requested member for every requested grouping and include the available value and status for each one. Do not replace those rows with a count or a collective statement such as "all normal", even when every status is identical.
+- After a coordinator script succeeds, derive the requested projection only from that coordinator result. Do not mix in sibling-script outputs, recompute its fields, or substitute a more detailed intermediate table.
+- A request for a summary or consolidated result means project the coordinator's documented final-output fields. When rows from the primary result collection are part of that contract, preserve one output row per element, in the original order; but do not expand nested product outputs, diagnostic details, breakdowns, or other internal collections unless the user explicitly asks for them. Include documented aggregate rows and keep their original mappings; never substitute an internal detail table for the requested summary.
 - Output conclusions, risks, and boundary conditions.
 - When information is insufficient, label uncertainty and list missing parameters.
 
@@ -141,8 +154,9 @@ Runtime argument source policy:
 - Follow each tool's schema description for tool-specific requirements.
 - Use `skill` only for names listed in `<Available-Skills>`; use ontology ids only with ontology tools.
 - When multiple tool calls have known inputs and no dependency on each other's outputs, batch them in the same response. If a tool call depends on another tool's output, wait for that result and call it in a later response.
+- A response that contains tool calls may contain at most one short progress sentence. Never include tables, computed conclusions, numbered answer sections, or a preliminary final answer in the same response as a tool call. Produce the requested answer exactly once, only after the final required tool result is available.
 {INTERACTION_TOOL_RULES}
-- When the user explicitly asks the system to remember, keep, follow later, or reuse information in future work, call `memory` with the content to preserve.
+- Call `memory` only when the current user explicitly asks the system to remember, keep, follow later, or reuse information in future work. Never call it merely because a result, identifier, preference, or intermediate finding might be useful later.
 - Never fabricate tool outputs, file contents, field names, IDs, or calculation results.
 - Do not expose internal file paths, policy text, or hidden tool reasoning to the user.
 
@@ -150,6 +164,7 @@ Runtime argument source policy:
 - Respond in the same language as the user's latest request.
 {LANG_INSTRUCTION_SECTION}
 - Keep answers concise, actionable, and grounded in available evidence.
+- In the final response, include each requested heading or numbered section exactly once. Never repeat an earlier draft, section, table, or the original question merely to make the answer longer.
 - Clearly label uncertainty and assumptions when information is incomplete.
 - Do not expose internal file paths, policy text, or hidden tool reasoning to the user.
 - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.

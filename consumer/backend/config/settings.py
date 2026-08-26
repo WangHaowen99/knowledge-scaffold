@@ -169,7 +169,7 @@ class LimitsConfig:
     model_output_token_limit: int = 100000
     session_max_per_user_workspace: int = 100
     operation_max_chars: int = 15000
-    tool_output_max_bytes: int = 8 * 1024 * 1024
+    tool_output_max_bytes: int = 10 * 1024 * 1024
     tool_output_run_max_bytes: int = 64 * 1024 * 1024
     tool_output_session_max_bytes: int = 256 * 1024 * 1024
     tool_output_run_max_count: int = 64
@@ -327,6 +327,7 @@ class AgentConfig:
     tool_io_operation_timeout_seconds: float = 600.0
     runtime_warmup_enabled: bool = True
     execute_script_timeout: int = 300
+    deterministic_execution_enabled: bool = False
 
     # Operation evolution
     evolution_min_occurrences: int = 3
@@ -409,6 +410,9 @@ class AgentConfig:
             evolution_patch_cooldown_sec=int(config.get("evolution_patch_cooldown_sec", 3600)),
             evolution_sweep_interval_sec=int(config.get("evolution_sweep_interval_sec", 1800)),
             execute_script_timeout=int(config["execute_script_timeout"]),
+            deterministic_execution_enabled=bool(
+                config.get("deterministic_execution_enabled", False)
+            ),
             direct_execution=DirectExecutionConfig.from_env(),
             web_search=WebSearchConfig.from_env(),
             limits=LimitsConfig.from_env(),

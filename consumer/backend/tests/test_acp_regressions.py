@@ -94,6 +94,50 @@ def test_acp_server_has_no_private_registry_or_flask_blueprint():
     assert acp_server.acp_router.prefix == "/acp"
 
 
+def test_acp_forwards_explicit_deterministic_operation_and_arguments(
+    tmp_path,
+    monkeypatch,
+):
+    async def scenario():
+        manager = _Manager()
+        request = _request(manager)
+        store = ExecutionStore(str(tmp_path / "executions"))
+
+        async def stores(_request_value, username, workspace_id):
+            assert username == "operator_a"
+            assert workspace_id == "workspace_demo"
+            return SimpleNamespace(), store
+
+        monkeypatch.setattr(acp_server, "_stores", stores)
+        created = await acp_server._create_from_payload(
+            request,
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "parts": [{"type": "text", "content": "synthetic request"}],
+                    }
+                ],
+                "context": {"session_id": "session_explicit_operation"},
+                "arguments": {"code": "CODE-42"},
+                "requested_operation_key": "operation_demo",
+            },
+            AuthUser(username="operator_a", role="user"),
+            "workspace_demo",
+        )
+
+        assert not isinstance(created, JSONResponse)
+        assert manager.contexts[-1].arguments == {"code": "CODE-42"}
+        assert (
+            manager.contexts[-1].requested_operation_key
+            == "operation_demo"
+        )
+
+    from fastapi.responses import JSONResponse
+
+    asyncio.run(scenario())
+
+
 def test_acp_public_event_keeps_external_id_as_metadata_only():
     event = PublicEvent(
         event_id="event_demo",

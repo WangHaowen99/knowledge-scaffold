@@ -180,6 +180,104 @@ class AgenticOrchestrator:
             )
             return None
 
+    def is_deterministic_request_potentially_applicable(
+        self,
+        *,
+        user_request: str,
+        user_context: Optional[Dict[str, Any]],
+        arguments: Optional[Dict[str, Any]],
+        session_id: str,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> bool:
+        """Return whether protocol admission may safely defer LLM validation."""
+
+        from agent.direct_execution.contracts import (
+            DeterministicRequest,
+        )
+        from agent.direct_execution.models import RuntimeContext
+        from agent.direct_execution.service import DeterministicExecutionService
+        from persistence.deterministic_terminal import (
+            recover_pending_deterministic_terminal,
+        )
+        from utils.identifiers import validate_session_id
+
+        chat_store, execution_store = self._get_stores(user_id, workspace_id)
+        normalized_session_id = validate_session_id(session_id)
+        context = dict(user_context or {})
+        request_arguments = (
+            dict(arguments)
+            if isinstance(arguments, dict)
+            else dict(context.get("arguments") or {})
+        )
+        session = chat_store.get_session(normalized_session_id)
+        if session is not None and callable(
+            getattr(execution_store, "deterministic_terminal_transaction", None)
+        ):
+            recover_pending_deterministic_terminal(
+                execution_store,
+                chat_store,
+                normalized_session_id,
+            )
+            session = chat_store.get_session(normalized_session_id)
+        metadata = dict(getattr(session, "metadata", {}) or {})
+        selected_ontology_id = str(
+            metadata.get("selected_ontology_id")
+            or context.get("selected_ontology_id")
+            or request_arguments.get("selected_ontology_id")
+            or ""
+        ).strip()
+        if not selected_ontology_id:
+            return False
+        selected_version = str(
+            metadata.get("selected_ontology_version")
+            or context.get("selected_ontology_version")
+            or context.get("selected_version")
+            or request_arguments.get("selected_ontology_version")
+            or request_arguments.get("selected_version")
+            or ""
+        ).strip()
+        interaction_response = context.get("interaction_response")
+        if interaction_response is not None and not isinstance(
+            interaction_response,
+            dict,
+        ):
+            return False
+        turns = list(
+            (execution_store.get_session_history(normalized_session_id) or {}).get(
+                "turns"
+            )
+            or []
+        )
+        checkpoint = (
+            execution_store.get_pending_deterministic_checkpoint(
+                normalized_session_id
+            )
+            if interaction_response
+            else None
+        )
+        request = DeterministicRequest(
+            user_request=str(user_request or ""),
+            context=context,
+            arguments=request_arguments,
+            runtime_context=RuntimeContext(
+                session_id=normalized_session_id,
+                run_id="protocol-preflight",
+                turn_id=len(turns) + 1,
+                user_id=user_id,
+                workspace_id=workspace_id or None,
+                selected_ontology_id=selected_ontology_id,
+                selected_ontology_version=selected_version or None,
+            ),
+            checkpoint=checkpoint,
+            interaction_response=(
+                dict(interaction_response)
+                if isinstance(interaction_response, dict)
+                else None
+            ),
+        )
+        return DeterministicExecutionService().is_potentially_applicable(request)
+
     def _record_evolution_recall_outcomes(
         self,
         state: Mapping[str, Any],

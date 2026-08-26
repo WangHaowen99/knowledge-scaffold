@@ -470,6 +470,17 @@ def apply_staged(
     op_path = resolve_operation_md(ontology_id, operation_key, workspace_id=workspace_id)
     if op_path is None:
         return JSONResponse({"error": "Operation .md missing"}, status_code=404)
+    from ontology.operation_execution import is_deterministic_package_locked
+
+    if is_deterministic_package_locked(op_path.parent.parent):
+        return JSONResponse(
+            {
+                "error": "deterministic_operation_immutable",
+                "error_code": "deterministic_operation_immutable",
+                "message": "确定性 Operation 必须通过新 ontology version 发布",
+            },
+            status_code=409,
+        )
 
     meta = _read_meta(meta_path)
     fingerprints: List[str] = list(meta.get("fingerprints") or [])
@@ -551,7 +562,6 @@ def _reject_staged(
     staged_path, meta_path = paths
     if not staged_path.exists():
         return JSONResponse({"error": "No staged patch"}, status_code=404)
-
     meta = _read_meta(meta_path)
     fingerprints: List[str] = list(meta.get("fingerprints") or [])
 

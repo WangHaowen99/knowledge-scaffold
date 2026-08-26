@@ -13,6 +13,7 @@ class A2ATaskState(str, Enum):
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    INPUT_REQUIRED = "input_required"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -30,6 +31,7 @@ class A2ATaskSnapshot:
     updated_at: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -42,6 +44,7 @@ class A2ATaskSnapshot:
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
             "error": self.error,
+            "error_code": self.error_code,
             "result": self.result,
             "metadata": self.metadata,
         }

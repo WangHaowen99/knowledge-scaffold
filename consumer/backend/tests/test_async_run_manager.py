@@ -1,4 +1,8 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +26,7 @@ from agent.runtime.manager import request_fingerprint
 from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.runtime.service import AsyncExecutionService
 from agent.runtime.service import OrchestratorSessionAdapter
+from agent.runtime.service import _build_deterministic_artifact_writer
 from agent.runtime.adapter import PublicEventAdapter
 from agent.runtime.events import RuntimeEvent
 from agent.runtime.event_bus import AsyncEventBus
@@ -60,6 +65,9 @@ def test_request_fingerprint_covers_scope_but_ignores_allocated_run_id():
     )
     assert request_fingerprint(base) != request_fingerprint(
         base.model_copy(update={"supports_user_interaction": False})
+    )
+    assert request_fingerprint(base) != request_fingerprint(
+        base.model_copy(update={"requested_operation_key": "operation_demo"})
     )
 
 
@@ -1075,6 +1083,50 @@ def test_execution_service_supports_astream_runtime():
     asyncio.run(run_test())
 
 
+def test_manager_snapshot_preserves_complete_long_terminal_output():
+    async def run_test():
+        content = "x" * 5000
+
+        class _LongTerminalRuntime:
+            async def astream(self, context):
+                yield RuntimeEvent(
+                    event_type="turn.finished",
+                    status="completed",
+                    run_id=context.run_id,
+                    session_id=context.session_id,
+                    turn_id=context.turn_id,
+                    payload={"status": "completed", "content": content},
+                )
+
+            async def cancel(self, run_id, reason):
+                del run_id, reason
+                return True
+
+        manager = AsyncRunManager(AsyncExecutionService(_LongTerminalRuntime()))
+        context = _context("run_long_terminal").model_copy(
+            update={"llm_request_mode": "stream"}
+        )
+        await manager.create_run(context, _scope())
+
+        completed = await _wait_for_status(
+            manager,
+            context.run_id,
+            RunStatus.COMPLETED,
+        )
+        terminal = [
+            event
+            for event in await manager.repository.list_after(context.run_id, 0)
+            if event.event_type == "turn.finished"
+        ][0]
+
+        assert completed.result is not None
+        assert completed.result.content == content
+        assert terminal.payload["content"] == content
+        assert "truncated" not in terminal.payload
+
+    asyncio.run(run_test())
+
+
 def test_mcp_context_rejects_runtime_interaction_request():
     async def run_test():
         manager = AsyncRunManager(_InteractionRuntime())
@@ -1600,7 +1652,257 @@ def test_terminal_projection_failure_still_releases_session_context():
     asyncio.run(run_test())
 
 
+def test_deterministic_terminal_projection_uses_recovery_journal(tmp_path):
+    chat_store = ChatStore(str(tmp_path / "chat"))
+    chat_store.create_session(session_id="session_demo")
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    execution_store.start_turn(
+        "session_demo",
+        1,
+        "run_deterministic_terminal",
+        "synthetic request",
+    )
+
+    class _Orchestrator:
+        @staticmethod
+        def _get_stores(_username, _workspace_id):
+            return chat_store, execution_store
+
+    adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
+    context = _context("run_deterministic_terminal")
+    adapter._run_contexts[context.run_id] = context
+    event = PublicEvent(
+        schema_version="1.0",
+        event_id="run_deterministic_terminal:1",
+        seq=1,
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        event_type="turn.finished",
+        status="completed",
+        source={"node": "deterministic_execution", "component": "service"},
+        payload={
+            "status": "completed",
+            "content": "synthetic answer",
+            "structured_content": {
+                "status": "success",
+                "text": "synthetic answer",
+                "structured_result": {"value": "synthetic"},
+                "artifacts": [],
+                "execution": {"type": "deterministic", "authoritative": True},
+            },
+        },
+        created_at=utc_now_iso(),
+    )
+
+    adapter._persist_event_sync(event)
+
+    assert execution_store.get_pending_deterministic_terminal(
+        "session_demo"
+    ) is None
+    assert execution_store.get_turn("session_demo", 1)["status"] == "success"
+    persisted = chat_store.get_session("session_demo")
+    assert [
+        (item.get("data") or {}).get("event_id")
+        for item in persisted.events
+    ] == ["run_deterministic_terminal:1"]
+
+
+def test_deterministic_finalize_waits_for_canonical_terminal_event(tmp_path):
+    chat_store = ChatStore(str(tmp_path / "chat"))
+    chat_store.create_session(session_id="session_demo")
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    execution_store.start_turn(
+        "session_demo",
+        1,
+        "run_deterministic_deferred",
+        "synthetic request",
+    )
+
+    class _Orchestrator:
+        @staticmethod
+        def _get_stores(_username, _workspace_id):
+            return chat_store, execution_store
+
+    adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
+    context = _context("run_deterministic_deferred")
+    result = RuntimeResult(
+        status="completed",
+        content="synthetic answer",
+        structured_content={
+            "status": "success",
+            "text": "synthetic answer",
+            "structured_result": {"value": "synthetic"},
+            "artifacts": [],
+            "execution": {"type": "deterministic", "authoritative": True},
+        },
+    )
+
+    adapter._finalize_sync(context, result, None)
+
+    assert execution_store.get_turn("session_demo", 1)["status"] == "running"
+    assert execution_store.get_pending_deterministic_terminal("session_demo") is None
+
+
+def test_cancelled_public_terminal_overrides_precommitted_deterministic_success(
+    tmp_path,
+):
+    chat_store = ChatStore(str(tmp_path / "chat"))
+    chat_store.create_session(session_id="session_demo")
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    execution_store.start_turn(
+        "session_demo",
+        1,
+        "run_deterministic_cancel_race",
+        "synthetic request",
+    )
+    execution_store.complete_turn(
+        "session_demo",
+        1,
+        {"status": "success", "execution": {"type": "deterministic"}},
+        None,
+        run_id="run_deterministic_cancel_race",
+    )
+
+    class _Orchestrator:
+        @staticmethod
+        def _get_stores(_username, _workspace_id):
+            return chat_store, execution_store
+
+    adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
+    context = _context("run_deterministic_cancel_race")
+    adapter._run_contexts[context.run_id] = context
+    event = PublicEvent(
+        schema_version="1.0",
+        event_id="run_deterministic_cancel_race:1",
+        seq=1,
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        event_type="turn.finished",
+        status="cancelled",
+        source={"node": "deterministic_execution", "component": "service"},
+        payload={"status": "cancelled", "cancel_reason": "user_stop"},
+        created_at=utc_now_iso(),
+    )
+
+    adapter._persist_event_sync(event)
+
+    turn = execution_store.get_turn("session_demo", 1)
+    assert turn["status"] == "cancelled"
+    assert turn["final_output"]["cancel_reason"] == "user_stop"
+
+
+def test_cancelled_public_terminal_reconciles_precommitted_regular_success(
+    tmp_path,
+):
+    chat_store = ChatStore(str(tmp_path / "chat"))
+    chat_store.create_session(session_id="session_demo")
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    execution_store.start_turn(
+        "session_demo",
+        1,
+        "run_regular_cancel_race",
+        "synthetic request",
+    )
+    execution_store.complete_turn(
+        "session_demo",
+        1,
+        {"text": "synthetic answer"},
+        None,
+        run_id="run_regular_cancel_race",
+    )
+    reflection_calls = []
+
+    class _Orchestrator:
+        @staticmethod
+        def _get_stores(_username, _workspace_id):
+            return chat_store, execution_store
+
+        @staticmethod
+        async def _submit_reflection(**kwargs):
+            reflection_calls.append(kwargs)
+
+    adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
+    context = _context("run_regular_cancel_race").model_copy(
+        update={"arguments": {"selected_ontology_id": "ontology_demo"}}
+    )
+    adapter._run_contexts[context.run_id] = context
+    event = PublicEvent(
+        schema_version="1.0",
+        event_id="run_regular_cancel_race:1",
+        seq=1,
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        event_type="turn.finished",
+        status="cancelled",
+        source={"node": "react", "component": "runtime"},
+        payload={"status": "cancelled", "cancel_reason": "user_stop"},
+        created_at=utc_now_iso(),
+    )
+
+    adapter._persist_event_sync(event)
+    asyncio.run(
+        adapter.submit_reflection(
+            context,
+            RuntimeResult(status="completed", content="synthetic answer"),
+        )
+    )
+
+    turn = execution_store.get_turn("session_demo", 1)
+    assert turn["status"] == "cancelled"
+    assert turn["final_output"] == {"cancel_reason": "user_stop"}
+    assert reflection_calls == []
+
+
+def test_deterministic_artifact_rollback_deletes_every_reserved_ref():
+    class _ChatStore:
+        def __init__(self):
+            self.deleted = []
+
+        @staticmethod
+        def store_tool_output(**_kwargs):
+            raise RuntimeError("synthetic post-write failure")
+
+        def delete_tool_output(self, **kwargs):
+            self.deleted.append(kwargs["output_ref"])
+            return True
+
+    class _ExecutionStore:
+        def __init__(self):
+            self.reserved = []
+            self.released = []
+
+        def reserve_deterministic_artifacts(self, _session_id, _turn_id, _run_id, refs):
+            self.reserved.extend(refs)
+
+        def release_deterministic_artifacts(self, _session_id, _run_id, refs):
+            self.released.extend(refs)
+
+    chat_store = _ChatStore()
+    execution_store = _ExecutionStore()
+    writer = _build_deterministic_artifact_writer(
+        chat_store,
+        session_id="session_demo",
+        run_id="run_artifact_failure",
+        execution_store=execution_store,
+        turn_id=1,
+    )
+    writer.prepare_artifacts(["result"])
+
+    with pytest.raises(RuntimeError, match="synthetic post-write failure"):
+        writer("result", "synthetic output", "text/plain")
+    writer.rollback(())
+
+    assert len(execution_store.reserved) == 1
+    assert chat_store.deleted == execution_store.reserved
+    assert execution_store.released == execution_store.reserved
+
+
 def test_direct_execution_routes_and_preserves_runtime_scope():
+    from agent.direct_execution.contracts import Completed, NotApplicable
+
     class _RuntimeContext:
         latest = None
 
@@ -1629,6 +1931,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
         def __init__(self):
             self.agent_config = SimpleNamespace(
                 direct_execution=SimpleNamespace(enabled=True),
+                deterministic_execution_enabled=True,
                 execute_script_timeout=12,
             )
 
@@ -1645,6 +1948,12 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
             self.error = error
 
     calls = []
+
+    class _DeterministicService:
+        outcome = NotApplicable("synthetic-fallback")
+
+        def execute(self, *_args, **_kwargs):
+            return self.outcome
 
     def run_direct_script(**kwargs):
         calls.append(kwargs)
@@ -1678,6 +1987,8 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
         "load_system_config": lambda: {
             "storage": {"project_root": "/tmp/synthetic-project"}
         },
+        "DeterministicExecutionService": _DeterministicService,
+        "NotApplicable": NotApplicable,
     }
     context = _context("run_direct")
     context = context.model_copy(update={
@@ -1687,6 +1998,29 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
         }
     })
     adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
+
+    _DeterministicService.outcome = Completed(
+        envelope={
+            "status": "success",
+            "structured_result": {"text": "synthetic deterministic answer"},
+            "artifacts": [],
+            "execution": {"type": "deterministic", "authoritative": True},
+        },
+        operation_key="synthetic_operation",
+        elapsed_ms=4,
+    )
+    deterministic = adapter._try_direct_execute_sync(context, dependencies)
+    assert [event.event_type for event in deterministic] == [
+        "turn.started",
+        "tool.started",
+        "tool.finished",
+        "turn.finished",
+    ]
+    assert deterministic[-1].payload["structured_content"]["execution"] == {
+        "type": "deterministic",
+        "authoritative": True,
+    }
+    _DeterministicService.outcome = NotApplicable("synthetic-fallback")
 
     _DecisionRouter.decision = SimpleNamespace(route="fallback_agent_loop")
     assert adapter._try_direct_execute_sync(context, dependencies) is None
@@ -1722,3 +2056,272 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
     failed = adapter._try_direct_execute_sync(context, dependencies)
     assert failed[-1].status == "failed"
     assert failed[-1].payload["error"]["error_code"] == "SYNTHETIC_ERROR"
+
+
+def test_cancelled_deterministic_worker_rolls_back_late_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    from agent.direct_execution.contracts import Completed
+    import agent.runtime.service as service_module
+    import agent.direct_execution.service as deterministic_module
+
+    chat_store = ChatStore(str(tmp_path / "chat"))
+    chat_store.create_session(session_id="session_demo")
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    execution_store.start_turn(
+        "session_demo",
+        1,
+        "run_cancelled_deterministic",
+        "synthetic request",
+    )
+    started = threading.Event()
+    stored_refs = []
+
+    class _Orchestrator:
+        agent_config = SimpleNamespace(
+            direct_execution=SimpleNamespace(enabled=False),
+            deterministic_execution_enabled=True,
+            execute_script_timeout=5,
+        )
+
+        @staticmethod
+        def _get_stores(_username, _workspace_id):
+            return chat_store, execution_store
+
+    def execute_after_cancel(
+        _self,
+        _request,
+        *,
+        artifact_writer,
+        cancel_event,
+        **_kwargs,
+    ):
+        started.set()
+        deadline = time.monotonic() + 2
+        while not cancel_event.is_set() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        artifact_writer.prepare_artifacts(["late.txt"])
+        stored = artifact_writer("late.txt", "late output", "text/plain")
+        stored_refs.append(stored["output_ref"])
+        return Completed(
+            envelope={
+                "status": "success",
+                "structured_result": {"text": "late"},
+                "artifacts": [
+                    {
+                        "name": "late.txt",
+                        "media_type": "text/plain",
+                        "size": 11,
+                        "sha256": stored["sha256"],
+                        "output_ref": stored["output_ref"],
+                    }
+                ],
+                "execution": {"type": "deterministic"},
+            },
+            operation_key="operation_demo",
+            elapsed_ms=1,
+        )
+
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    async def offload(function, *args, **kwargs):
+        kwargs.pop("run_id", None)
+        kwargs.pop("task_name", None)
+        return await asyncio.get_running_loop().run_in_executor(
+            executor,
+            partial(function, *args, **kwargs),
+        )
+
+    monkeypatch.setattr(
+        deterministic_module.DeterministicExecutionService,
+        "execute",
+        execute_after_cancel,
+    )
+    monkeypatch.setattr(service_module, "run_sync_compat", offload)
+    monkeypatch.setattr(service_module, "_WORKSPACE_SCOPE_RESOLVED", True)
+    monkeypatch.setattr(service_module, "_WORKSPACE_SCOPE", None)
+    adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
+    context = _context("run_cancelled_deterministic").model_copy(
+        update={
+            "arguments": {
+                "selected_ontology_id": "ontology_demo",
+                "selected_ontology_version": "v1",
+            }
+        }
+    )
+
+    async def scenario():
+        task = asyncio.create_task(adapter.try_direct_execute(context))
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=8)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert len(stored_refs) == 1
+    assert execution_store.get_pending_deterministic_artifacts(
+        "session_demo"
+    ) == []
+    assert chat_store.get_tool_output(
+        "session_demo",
+        "run_cancelled_deterministic",
+        stored_refs[0],
+    ) is None
+
+
+def test_noninteractive_direct_result_does_not_publish_interaction_request():
+    context = _context("run_noninteractive_direct").model_copy(
+        update={"supports_user_interaction": False}
+    )
+    interaction = {
+        "id": "interaction_demo",
+        "type": "input",
+        "prompt": "Synthetic prompt",
+        "options": [],
+    }
+    events = [
+        RuntimeEvent(
+            event_type="interaction.requested",
+            status="awaiting_input",
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            payload=interaction,
+        ),
+        RuntimeEvent(
+            event_type="turn.finished",
+            status="awaiting_input",
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            payload={
+                "status": "awaiting_input",
+                "structured_content": {
+                    "type": "user_interaction",
+                    "interaction": interaction,
+                },
+            },
+        ),
+    ]
+
+    class _SessionAdapter:
+        async def finalize(self, _context, _result):
+            return None
+
+        async def submit_reflection(self, _context, _result):
+            return None
+
+    class _Sink:
+        def __init__(self):
+            self.events = []
+
+        async def emit(self, event):
+            self.events.append(event)
+
+    async def scenario():
+        service = AsyncExecutionService(
+            _SuccessRuntime(),
+            session_adapter=_SessionAdapter(),
+        )
+        sink = _Sink()
+        result = await service._consume_events(
+            context,
+            sink,
+            PublicEventAdapter(include_trace=False),
+            events,
+        )
+        return result, sink.events
+
+    result, emitted = asyncio.run(scenario())
+
+    assert result.status == "failed"
+    assert result.error.error_code == "INTERACTION_NOT_SUPPORTED"
+    assert [event.event_type for event in emitted] == ["turn.finished"]
+    assert emitted[0].status == "failed"
+
+
+@pytest.mark.parametrize("llm_request_mode", ["stream", "sync"])
+def test_noninteractive_runtime_result_publishes_normalized_terminal(
+    llm_request_mode,
+):
+    context = _context("run_noninteractive_runtime_{}".format(llm_request_mode)).model_copy(
+        update={
+            "llm_request_mode": llm_request_mode,
+            "supports_user_interaction": False,
+        }
+    )
+    interaction = {
+        "id": "interaction_demo",
+        "type": "input",
+        "prompt": "Synthetic prompt",
+        "options": [],
+    }
+
+    def runtime_events():
+        return [
+            RuntimeEvent(
+                event_type="interaction.requested",
+                status="awaiting_input",
+                run_id=context.run_id,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                payload=interaction,
+            ),
+            RuntimeEvent(
+                event_type="turn.finished",
+                status="awaiting_input",
+                run_id=context.run_id,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                payload={
+                    "status": "awaiting_input",
+                    "structured_content": {
+                        "type": "user_interaction",
+                        "interaction": interaction,
+                    },
+                },
+            ),
+        ]
+
+    class _Runtime:
+        async def astream(self, _context):
+            for event in runtime_events():
+                yield event
+
+        async def arun(self, _context, sink):
+            for event in runtime_events():
+                await sink.emit(event)
+            return RuntimeResult(status="awaiting_input")
+
+        async def cancel(self, run_id, reason):
+            del run_id, reason
+            return True
+
+    class _Sink:
+        def __init__(self):
+            self.events = []
+
+        async def emit(self, event):
+            self.events.append(event)
+
+    async def scenario():
+        sink = _Sink()
+        result = await AsyncExecutionService(_Runtime()).execute(context, sink)
+        return result, sink.events
+
+    result, emitted = asyncio.run(scenario())
+
+    assert result.status == "failed"
+    assert result.error.error_code == "INTERACTION_NOT_SUPPORTED"
+    assert [event.event_type for event in emitted] == ["turn.finished"]
+    assert emitted[0].status == "failed"
+    assert emitted[0].payload["error"]["error_code"] == "INTERACTION_NOT_SUPPORTED"

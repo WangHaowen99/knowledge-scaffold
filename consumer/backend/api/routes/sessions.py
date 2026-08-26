@@ -10,7 +10,7 @@ from api.request_parsing import read_json_object, read_optional_json_object
 from llm import LLMPurpose, get_llm_router
 from config import LimitsConfig
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
-from agent.runtime.contracts import RunScope
+from agent.runtime.contracts import RunScope, TERMINAL_RUN_STATUSES
 from agent.runtime.errors import SessionBusyError
 from agent.core.shared.modes import resolve_agent_mode
 from ontology.ontologies import get_ontology_registry
@@ -20,6 +20,10 @@ from llm.llm_request_mode import normalize_llm_request_mode
 from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     InteractionCheckpointError,
+)
+from persistence.deterministic_terminal import (
+    recover_pending_deterministic_artifacts,
+    recover_pending_deterministic_terminal,
 )
 from workspace.workspaces import workspace_scope
 
@@ -46,6 +50,37 @@ sessions_router = APIRouter(
 def _get_user_stores():
     from api.routes import get_request_stores
     return get_request_stores()
+
+
+def _get_session_after_terminal_recovery(
+    chat_store,
+    execution_store,
+    session_id: str,
+    active_run_ids: set[str] | frozenset[str] = frozenset(),
+):
+    session = chat_store.get_session(session_id)
+    if session is None:
+        return None
+    if not callable(
+        getattr(execution_store, "deterministic_terminal_transaction", None)
+    ):
+        return session
+    if recover_pending_deterministic_terminal(
+        execution_store,
+        chat_store,
+        session_id,
+    ):
+        session = chat_store.get_session(session_id)
+    if callable(
+        getattr(execution_store, "get_pending_deterministic_artifacts", None)
+    ):
+        recover_pending_deterministic_artifacts(
+            execution_store,
+            chat_store,
+            session_id,
+            run_is_active=lambda run_id: run_id in active_run_ids,
+        )
+    return session
 
 
 def _resolve_selected_ontology_selection(value, *, workspace_id: str):
@@ -228,6 +263,35 @@ async def list_sessions(
     runtime = get_runtime_container(request)
     chat_store, _execution_store = _get_user_stores()
     sessions = await runtime.short_io.run(chat_store.list_sessions)
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:read",),
+    )
+    snapshots = (
+        await runtime.manager.list_runs(scope)
+        if runtime.manager is not None
+        else []
+    )
+    active_run_ids = {
+        snapshot.run_id
+        for snapshot in snapshots
+        if str(getattr(snapshot.status, "value", snapshot.status))
+        not in {status.value for status in TERMINAL_RUN_STATUSES}
+    }
+
+    def recover_sessions() -> None:
+        current_chat_store, execution_store = _get_user_stores()
+        for current in sessions:
+            _get_session_after_terminal_recovery(
+                current_chat_store,
+                execution_store,
+                current.id,
+                active_run_ids,
+            )
+
+    await runtime.short_io.run(recover_sessions)
+    sessions = await runtime.short_io.run(chat_store.list_sessions)
     payloads = await _runtime_payloads_for_sessions(
         sessions,
         runtime=runtime,
@@ -327,8 +391,30 @@ async def get_session(
 ):
     """Get a chat session with message history."""
     runtime = get_runtime_container(request)
-    chat_store, _execution_store = _get_user_stores()
-    session = await runtime.short_io.run(chat_store.get_session, session_id)
+    chat_store, execution_store = _get_user_stores()
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:read",),
+    )
+    snapshots = (
+        await runtime.manager.list_runs(scope)
+        if runtime.manager is not None
+        else []
+    )
+    active_run_ids = {
+        snapshot.run_id
+        for snapshot in snapshots
+        if str(getattr(snapshot.status, "value", snapshot.status))
+        not in {status.value for status in TERMINAL_RUN_STATUSES}
+    }
+    session = await runtime.short_io.run(
+        _get_session_after_terminal_recovery,
+        chat_store,
+        execution_store,
+        session_id,
+        active_run_ids,
+    )
 
     if not session:
         return JSONResponse({"error": "Session not found"}, status_code=404)
@@ -392,6 +478,13 @@ async def get_tool_output(
             "X-Tool-Output-Ref": artifact["output_ref"],
             "X-Tool-Call-Id": artifact.get("tool_call_id") or "",
             "X-Tool-Output-Size": str(artifact["output_size"]),
+            "X-Tool-Output-SHA256": str(artifact.get("sha256") or ""),
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Access-Control-Expose-Headers": (
+                "X-Tool-Output-Ref, X-Tool-Call-Id, "
+                "X-Tool-Output-Size, X-Tool-Output-SHA256"
+            ),
         },
     )
     return response

@@ -802,6 +802,37 @@ test('public async runtime terminal uses content and structured_content fields',
   assert.equal(state.streamSegments[0].text, '公共契约最终结果');
 });
 
+test('public deterministic terminal keeps structured output and artifacts', () => {
+  const state = applyPublicEvent(
+    { streamSegments: [], status: 'running', isLoading: true },
+    publicEvent('turn.finished', {
+      status: 'completed',
+      content: 'synthetic deterministic result',
+      structured_content: {
+        status: 'success',
+        text: 'synthetic deterministic result',
+        structured_result: { value: 'synthetic-value' },
+        artifacts: [{
+          name: 'result.json',
+          media_type: 'application/json',
+          size: 27,
+          output_ref: 'synthetic-output-ref',
+        }],
+      },
+    }, 1),
+  );
+
+  assert.equal(state.status, 'finished');
+  assert.deepEqual(
+    state.streamSegments.map((segment) => segment.type),
+    ['content', 'artifacts'],
+  );
+  assert.equal(
+    state.streamSegments[1].meta.artifacts[0].output_ref,
+    'synthetic-output-ref',
+  );
+});
+
 test('public async runtime reasoning delta maps to the reasoning channel', () => {
   const state = applyPublicEvent(
     { streamSegments: [], status: 'running', isLoading: true },

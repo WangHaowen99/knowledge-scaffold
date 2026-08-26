@@ -20,6 +20,10 @@ from ontology.ontology_catalog import (
     read_required_text,
     resolve_object_reference,
 )
+from ontology.operation_execution import (
+    is_protected_handler_descriptor,
+    is_protected_operation_descriptor,
+)
 from utils.read_docs import build_read_document_record, normalize_read_documents_registry
 
 logger = get_logger("tools.ontology_context")
@@ -122,6 +126,10 @@ def _handle_ontology_context_result(
             key=key,
             resource_name="operation",
             key_field="operation_key",
+            path_protection=lambda path: is_protected_operation_descriptor(
+                ontology_dir,
+                path,
+            ),
         )
     if normalized_resource == "object":
         resolution, resolution_error = resolve_object_reference(ontology_dir, key)
@@ -177,7 +185,10 @@ def _handle_ontology_context_result(
             key_field="metric_key",
         )
     if normalized_resource == "script":
-        resolved_key = _resolve_script_resource_key(ontology_dir, key)
+        script_entry = find_script_entry(load_script_catalog(ontology_dir), key)
+        resolved_key = str(
+            (script_entry or {}).get("script_key") or key or ""
+        ).strip()
         return _build_markdown_result(
             ontology_id=ontology.id,
             ontology_dir=ontology_dir,
@@ -185,19 +196,16 @@ def _handle_ontology_context_result(
             key=resolved_key,
             resource_name="script",
             key_field="script_key",
+            path_protection=lambda path: is_protected_handler_descriptor(
+                ontology_dir,
+                path,
+            ),
         )
     return _OntologyContextResult(
         content=(
             "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, or script."
         ).format(normalized_resource)
     )
-
-
-def _resolve_script_resource_key(ontology_dir: Path, key: str) -> str:
-    entry = find_script_entry(load_script_catalog(ontology_dir), key)
-    if not entry:
-        return str(key or "").strip()
-    return str(entry.get("script_key") or key or "").strip()
 
 
 def _build_root_payload(*, ontology: Any, ontology_dir: Path) -> str:
@@ -213,11 +221,28 @@ def _build_markdown_result(
     key: str,
     resource_name: str,
     key_field: str,
+    path_protection: Optional[Callable[[Path], bool]] = None,
 ) -> _OntologyContextResult:
     path, error = find_markdown_file(directory.resolve(), key, resource_name)
     if error:
         return _OntologyContextResult(content=error)
     assert path is not None
+
+    if path_protection is not None:
+        try:
+            if path_protection(path):
+                return _OntologyContextResult(
+                    content="Error: deterministic_operation_protected"
+                )
+        except Exception:
+            logger.exception(
+                "Failed to classify deterministic %s descriptor protection: %s",
+                resource_name,
+                path,
+            )
+            return _OntologyContextResult(
+                content="Error: deterministic_operation_protection_unavailable"
+            )
 
     content, read_error = read_required_text(path, "{} '{}'".format(resource_name, key))
     if read_error:

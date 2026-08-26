@@ -255,6 +255,12 @@ def test_fastapi_lifespan_runs_critical_migrations_before_runtime_startup(monkey
         return True
 
     monkeypatch.setattr(app_module, "run_startup_migrations", lambda: order.append("startup"))
+    monkeypatch.setattr(
+        app_module,
+        "recover_workspace_ontology_replacements",
+        lambda _root: order.append("recover"),
+    )
+    monkeypatch.setattr(app_module, "get_workspaces_root", lambda: object())
     monkeypatch.setattr(app_module, "build_runtime_services", fake_runtime)
     monkeypatch.setattr(app_module, "register_routers", lambda _app: order.append("routes"))
     monkeypatch.setattr(
@@ -312,6 +318,7 @@ def test_fastapi_lifespan_runs_critical_migrations_before_runtime_startup(monkey
             assert order == [
                 "routes",
                 "startup",
+                "recover",
                 "build",
                 "dependencies",
                 "container-build",
@@ -326,6 +333,7 @@ def test_fastapi_lifespan_runs_critical_migrations_before_runtime_startup(monkey
     assert order == [
         "routes",
         "startup",
+        "recover",
         "build",
         "dependencies",
         "container-build",

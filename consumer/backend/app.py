@@ -37,9 +37,11 @@ from integration.platform.manager import (
 )
 from llm import LLMRouter, configure_llm_router
 from migrations.runner import run_startup_migrations
+from ontology.directory_replacement import recover_workspace_ontology_replacements
 from persistence.chat_store import ToolOutputLimits
 from utils.logging import get_logger
 from workspace.user_store_manager import UserStoreManager
+from workspace.workspaces import get_workspaces_root
 
 
 logger = get_logger("app")
@@ -138,6 +140,7 @@ def create_app() -> FastAPI:
         started = False
         try:
             run_startup_migrations()
+            recover_workspace_ontology_replacements(get_workspaces_root())
             services = build_runtime_services()
             app.state.services = _service_mapping(services)
             services_installed = True
