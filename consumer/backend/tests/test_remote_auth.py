@@ -132,7 +132,7 @@ def test_password_login_issue_and_verify(backend):
     user = result.user
     assert user.username == "admin"
     assert user.role == "admin"
-    assert user.password_change_required is True
+    assert user.password_change_required is False
 
     token = result.access_token
     assert isinstance(token, str) and token.count(".") == 2  # RS256 JWT
@@ -144,7 +144,7 @@ def test_password_login_issue_and_verify(backend):
     assert verified is not None
     assert verified.username == "admin"
     assert verified.role == "admin"
-    assert verified.password_change_required is True
+    assert verified.password_change_required is False
 
 
 def test_login_rejects_bad_credentials(backend):
@@ -280,17 +280,17 @@ def test_user_management_via_admin_api(backend):
     created = backend.create_user("alice", STRONG_PASSWORD)
     assert created.username == "alice"
     assert created.role == "user"
-    assert created.password_change_required is True
+    assert created.password_change_required is False
 
     users = backend.list_users()
-    assert {"username": "alice", "role": "user", "password_change_required": True} in users
+    assert {"username": "alice", "role": "user", "password_change_required": False} in users
 
     fetched = backend.get_user("alice")
     assert fetched is not None and fetched.role == "user"
     assert backend.get_user("nobody") is None
 
     updated = backend.update_user("alice", password=STRONG_PASSWORD_2)
-    assert updated.password_change_required is True
+    assert updated.password_change_required is False
 
     changed = backend.change_password("alice", STRONG_PASSWORD_2, "Alz9$Pwd7Xy1!")
     assert changed.password_change_required is False
@@ -372,11 +372,11 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     assert data["user"] == {
         "username": "admin",
         "role": "admin",
-        "password_change_required": True,
+        "password_change_required": False,
     }
     assert data["expires_in"] == 60
 
-    # 拿到的 access token 能通过 require_auth（/auth/me 在强制改密白名单内）
+    # 拿到的 access token 能直接访问受保护接口。
     me = client.get("/auth/me", headers={"Authorization": f"Bearer {data['token']}"})
     assert me.status_code == 200
     assert me.json()["user"]["username"] == "admin"

@@ -112,11 +112,11 @@ cd $REPO
 ./deploy/deploy-stack.sh up --with-auth
 ```
 
-脚本会校验四行齐全（缺任意一行即 `[FAIL]` 中止并打印上述模板），并把配置注入 auth-server 容器；敏感值不会写入日志。auth-server 不暴露宿主端口，仅 backend 经容器网访问；首启使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员 `admin` 并强制改密。自助注册默认开启，注册为一步直接建号，无邮箱验证码，无需任何 SMTP/邮件配置；不允许自行建号时设置 `AUTH_ENABLE_REGISTRATION=false`。
+脚本会校验四行齐全（缺任意一行即 `[FAIL]` 中止并打印上述模板），并把配置注入 auth-server 容器；敏感值不会写入日志。auth-server 不暴露宿主端口，仅 backend 经容器网访问；首启使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员 `admin`，该密码可直接登录。自助注册默认开启，注册为一步直接建号，无邮箱验证码，无需任何 SMTP/邮件配置；不允许自行建号时设置 `AUTH_ENABLE_REGISTRATION=false`。
 
 ## 4. 首次初始化（部署后必做）
 
-1. **consumer 改密**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录，按提示修改初始密码；`users.json` 创建后可从环境中移除该初始密码。
+1. **consumer 登录**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录；`users.json` 创建后可从环境中移除该引导密码。
 2. **consumer 配模型**：控制台 → 配置中心 → 全局配置 → 模型池：添加 OpenAI-compatible 模型并「测试」通过、设为默认。（若已在 `backend/.env` 配了 `LLM_*` 可跳过。）
 3. **建模工作台配置**（形态 B/C/D）：打开 `http://localhost:5100`，用 consumer 账号登录 → 右上角「⚙ 配置中心」：
    - **大模型**：填 Base URL / 模型名 / API Key，点「测试有效性」须通过；试玩填 `faux`。（compose 已注入 `MODELING_LLM_*` 时可跳过。）
