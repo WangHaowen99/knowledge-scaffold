@@ -1,4 +1,4 @@
-# Backend Dockerfile for Flask application
+# Backend Dockerfile for the FastAPI ASGI application
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -30,12 +30,13 @@ RUN python agent/direct_execution/build_revision.py \
 
 # .onto-runtime directory is volume-mounted at runtime; no local data/logs dirs needed
 
-# Expose Flask and standalone MCP ports
+# Expose Consumer ASGI and standalone MCP ports
 EXPOSE 5055 7488
 
 # Set environment variables
-ENV FLASK_APP=run.py
 ENV PYTHONUNBUFFERED=1
 
+STOPSIGNAL SIGTERM
+
 # Run the application
-CMD ["gunicorn", "wsgi:app", "--worker-class=gthread", "--threads=64", "--bind=0.0.0.0:5055", "--timeout=1800", "--access-logfile=-", "--error-logfile=-"]
+CMD ["uvicorn", "app:create_app", "--factory", "--host=0.0.0.0", "--port=5055", "--workers=1", "--timeout-graceful-shutdown=45", "--access-log"]

@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import importlib
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
 
 import agent.core.jiuwen_engine as jiuwen_engine
-from agent.core.jiuwen_engine import JiuwenReactLoopEngine, _run_awaitable
+from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 from agent.exceptions import WorkflowCancelledError
 
 
@@ -101,7 +100,7 @@ def test_owned_runtime_cleanup_removes_only_owned_callbacks_metrics_and_session(
     }
     _install_fake_runner(monkeypatch, framework, released_sessions)
 
-    _run_awaitable(
+    asyncio.run(
         jiuwen_engine._dispose_owned_jiuwen_runtime(
             agent,
             session_id="agent-a.session.1",
@@ -134,7 +133,7 @@ def test_owned_runtime_cleanup_releases_session_when_callback_clear_fails(monkey
     _install_fake_runner(monkeypatch, framework, released_sessions)
 
     with pytest.raises(RuntimeError, match="clear failed"):
-        _run_awaitable(
+        asyncio.run(
             jiuwen_engine._dispose_owned_jiuwen_runtime(
                 agent,
                 session_id="agent-failing-clear.session.1",
@@ -256,15 +255,17 @@ def test_default_runtime_uses_unique_internal_sessions_for_concurrent_business_s
 
     _install_offline_engine_boundary(monkeypatch, create_agent, dispose)
 
-    def run(run_id):
-        return JiuwenReactLoopEngine(agent_config=_offline_agent_config()).run(
+    async def run(run_id):
+        return await JiuwenReactLoopEngine(agent_config=_offline_agent_config()).arun(
             _runtime_state(run_id),
             caller="main",
             system_prompt="offline",
         )
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(run, ("run-a", "run-b")))
+    async def exercise():
+        return await asyncio.gather(run("run-a"), run("run-b"))
+
+    results = asyncio.run(exercise())
 
     internal_sessions = [agent.inputs["conversation_id"] for agent in created_agents]
     assert [result["final_output"] for result in results] == ["ok", "ok"]
@@ -310,10 +311,11 @@ def test_custom_agent_factory_retains_business_session_and_is_not_disposed(monke
     )
 
     state = _runtime_state("run-custom", session_id="business-session-custom")
-    JiuwenReactLoopEngine(
+    engine = JiuwenReactLoopEngine(
         agent_config=_offline_agent_config(),
         agent_factory=lambda: custom_agent,
-    ).run(state, caller="main", system_prompt="offline")
+    )
+    asyncio.run(engine.arun(state, caller="main", system_prompt="offline"))
 
     assert custom_agent.inputs["conversation_id"] == "business-session-custom"
     assert disposed == []
@@ -347,25 +349,31 @@ def test_owned_cleanup_failure_preserves_engine_outcome(monkeypatch, outcome):
     engine = JiuwenReactLoopEngine(agent_config=_offline_agent_config())
 
     if outcome == "success":
-        result = engine.run(
-            _runtime_state("run-cleanup-success"),
-            caller="main",
-            system_prompt="offline",
+        result = asyncio.run(
+            engine.arun(
+                _runtime_state("run-cleanup-success"),
+                caller="main",
+                system_prompt="offline",
+            )
         )
         assert result["final_output"] == "primary success"
     elif outcome == "error":
         with pytest.raises(ValueError, match="primary invoke failure"):
-            engine.run(
-                _runtime_state("run-cleanup-error"),
-                caller="main",
-                system_prompt="offline",
+            asyncio.run(
+                engine.arun(
+                    _runtime_state("run-cleanup-error"),
+                    caller="main",
+                    system_prompt="offline",
+                )
             )
     else:
         with pytest.raises(WorkflowCancelledError, match="primary cancellation"):
-            engine.run(
-                _runtime_state("run-cleanup-cancel"),
-                caller="main",
-                system_prompt="offline",
+            asyncio.run(
+                engine.arun(
+                    _runtime_state("run-cleanup-cancel"),
+                    caller="main",
+                    system_prompt="offline",
+                )
             )
 
     assert len(disposed_sessions) == 1
@@ -435,14 +443,8 @@ def test_managed_stream_cancellation_waits_for_child_producer_cleanup(monkeypatc
         agent_factory=lambda: agent,
     )
 
-    def request_cancel():
-        assert producer_started.wait(timeout=2)
-        cancel_event.set()
-
-    canceller = threading.Thread(target=request_cancel, daemon=True)
-    canceller.start()
-    with pytest.raises(WorkflowCancelledError):
-        _run_awaitable(
+    async def exercise():
+        task = asyncio.create_task(
             engine._consume_managed_agent_stream(
                 agent,
                 {"query": "offline", "conversation_id": "managed-cancel-session"},
@@ -455,13 +457,17 @@ def test_managed_stream_cancellation_waits_for_child_producer_cleanup(monkeypatc
                 token_callback=None,
                 reasoning_summary_callback=None,
                 event_source_node=None,
-            ),
-            cancel_event=cancel_event,
-            state={"run_id": "managed-cancel-run"},
+            )
         )
-    canceller.join(timeout=2)
-
-    async def pending_managed_producers():
+        for _ in range(100):
+            if producer_started.is_set():
+                break
+            await asyncio.sleep(0)
+        assert producer_started.is_set()
+        cancel_event.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
         await asyncio.sleep(0)
         return [
             task
@@ -471,8 +477,10 @@ def test_managed_stream_cancellation_waits_for_child_producer_cleanup(monkeypatc
             and task.get_name() == "jiuwen-managed-stream-producer"
         ]
 
+    pending_managed_producers = asyncio.run(exercise())
+
     assert producer_cancelled.is_set()
     assert session.closed is True
     assert session.committed is True
     assert agent.context_engine.saved == [session]
-    assert _run_awaitable(pending_managed_producers()) == []
+    assert pending_managed_producers == []

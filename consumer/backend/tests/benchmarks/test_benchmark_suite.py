@@ -19,7 +19,8 @@
   所有参数通过 .env 文件或环境变量设置，无需修改源码:
 
     BASE_URL              后端服务地址 (默认 http://localhost:8000)
-    STREAM_PATH           Agent 流式接口路径
+    RUNS_PATH             Agent Run 创建接口路径
+    RUN_EVENTS_PATH       Agent Run SSE 事件接口模板
     SESSIONS_PATH         Sessions 接口路径
     WORKSPACE_ID          工作区 ID
     RUNS_PER_QUESTION     每个问题重复次数 (默认 1)
@@ -58,12 +59,14 @@ _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_URL = get_env("BASE_URL", "http://localhost:5055")
 API_MODE = get_env("API_MODE", "agentic")  # agentic | acp
 TEST_QUESTION_LIMIT = int(get_env("TEST_QUESTION_LIMIT", "0"))  # 0=all, N=first N
-STREAM_PATH = get_env("STREAM_PATH", "/agentic/runs/stream")
+RUNS_PATH = get_env("RUNS_PATH", "/agentic/runs")
+RUN_EVENTS_PATH = get_env("RUN_EVENTS_PATH", "/agentic/runs/{run_id}/events")
 SESSIONS_PATH = get_env("SESSIONS_PATH", "/agentic/sessions")
 ACP_EXECUTE_STREAM_PATH = get_env("ACP_EXECUTE_STREAM_PATH", "/acp/runs/execute_stream")
 ACP_INTERACT_STREAM_PATH = get_env("ACP_INTERACT_STREAM_PATH", "/acp/runs/{run_id}/interact_stream")
 ACP_SUBMODE = get_env("ACP_SUBMODE", "execute_stream")  # execute_stream | stream | execute
 ACP_AUTO_REPLY = get_env("ACP_AUTO_REPLY", "继续")
+AGENTIC_AUTO_REPLY = get_env("AGENTIC_AUTO_REPLY", "继续")
 ACP_LANG = get_env("ACP_LANG", None)  # 单独控制 ACP 传入的 lang 参数，不设置则使用 lang_code
 ACP_SUPPRESS_SCRIPT_PATTERNS = get_env("ACP_SUPPRESS_SCRIPT_PATTERNS", "")  # ACP 输出过滤脚本模式, 逗号分隔
 _RESULT_BASE_DIR = get_env("BENCHMARK_RESULT_DIR") or os.path.join(_TEST_DIR, "result")
@@ -467,10 +470,12 @@ def _ensure_auth() -> str:
     return _AUTH_TOKEN
 
 
-def _headers() -> dict:
+def _headers(*, idempotency_key: str | None = None) -> dict:
     h = {"Content-Type": "application/json", "Authorization": f"Bearer {_ensure_auth()}"}
     if WORKSPACE_ID:
         h["X-Workspace-Id"] = WORKSPACE_ID
+    if idempotency_key:
+        h["Idempotency-Key"] = idempotency_key
     return h
 
 
@@ -1189,11 +1194,12 @@ def call_skill_execution_acp_execute(message: str, session_id: str | None = None
 
 def parse_sse_stream(response_text: str) -> dict:
     """
-    解析 agent-stream.v2 协议的 SSE 响应文本。
+    解析 canonical Run API 的 SSE 响应文本。
 
     本项目 SSE 格式:
-      event: agent.v2
-      data: {"protocol":"agent-stream.v2","type":"<event_type>","run_id":"...","payload":{...},...}
+      id: <seq>
+      event: <event_type>
+      data: {"schema_version":"1.0","event_type":"<event_type>","run_id":"...","payload":{...},...}
 
     关键事件类型:
       - turn.started        : 开始一轮
@@ -1210,6 +1216,8 @@ def parse_sse_stream(response_text: str) -> dict:
     error = None
     dag_perf = {}
     raw_events: list[dict] = []
+    pending_interaction: dict | None = None
+    terminal_status: str | None = None
 
     llm_call_count = 0
     in_reasoning = False
@@ -1242,11 +1250,18 @@ def parse_sse_stream(response_text: str) -> dict:
 
                 raw_events.append(data)
                 event_ts = data.get("ts")
+                if event_ts is None and data.get("created_at"):
+                    try:
+                        event_ts = datetime.fromisoformat(
+                            str(data["created_at"]).replace("Z", "+00:00")
+                        ).timestamp() * 1000
+                    except ValueError:
+                        event_ts = None
 
                 if not run_id:
                     run_id = data.get("run_id")
 
-                event_type = data.get("type", "")
+                event_type = data.get("event_type") or data.get("type", "")
                 payload = data.get("payload", {}) if isinstance(data.get("payload"), dict) else {}
 
                 if event_type == "turn.started":
@@ -1255,9 +1270,20 @@ def parse_sse_stream(response_text: str) -> dict:
                         turn_started_ts = event_ts
 
                 elif event_type == "turn.finished":
-                    status = payload.get("status", "")
-                    if status == "error":
+                    status = payload.get("status") or data.get("status", "")
+                    terminal_status = str(status or "") or None
+                    if status in {"error", "failed"}:
                         error = payload.get("error", "unknown error")
+
+                elif event_type == "interaction.requested":
+                    pending_interaction = {
+                        "interaction_id": (
+                            payload.get("interaction_id") or payload.get("id")
+                        ),
+                        "type": payload.get("type") or "input",
+                        "prompt": payload.get("prompt") or payload.get("text") or "",
+                        "options": list(payload.get("options") or []),
+                    }
 
                 elif event_type == "iteration.completed":
                     llm_call_count += 1
@@ -1279,7 +1305,7 @@ def parse_sse_stream(response_text: str) -> dict:
 
                     _extract_kg_input_from_text(msg, kg_tool_inputs)
 
-                    tool_input = payload.get("input", {})
+                    tool_input = payload.get("input_preview") or payload.get("input", {})
                     if isinstance(tool_input, dict) and tool_input.get("operation_key"):
                         op_key = tool_input["operation_key"]
                         if any(kw in op_key for kw in _KG_OP_KEYWORDS):
@@ -1307,7 +1333,7 @@ def parse_sse_stream(response_text: str) -> dict:
                 elif event_type == "tool.finished":
                     in_reasoning = False
                     token_segments.append([])
-                    tool_name = payload.get("tool_name", "")
+                    tool_name = payload.get("name") or payload.get("tool_name", "")
                     elapsed_ms = payload.get("elapsed_ms", 0)
                     tool_calls.append({
                         "name": tool_name,
@@ -1419,6 +1445,8 @@ def parse_sse_stream(response_text: str) -> dict:
         "avg_inter_token_latency": round(effective_avg_inter_token_latency, 3),
         "kg_tool_outputs": kg_tool_outputs,
         "kg_tool_inputs": kg_tool_inputs,
+        "pending_interaction": pending_interaction,
+        "terminal_status": terminal_status,
     }
 
 
@@ -1874,26 +1902,143 @@ def _detect_output_lang(text: str) -> str | None:
     return max(lang_char_counts, key=lang_char_counts.get)
 
 
-def call_skill_execution(message: str, session_id: str) -> dict:
+def _merge_agentic_turn_results(results: list[dict], run_ids: list[str]) -> dict:
+    merged = dict(results[-1])
+    for key in (
+        "raw_events",
+        "tool_calls",
+        "script_call_details",
+        "kg_tool_outputs",
+        "kg_tool_inputs",
+    ):
+        merged[key] = [item for result in results for item in result.get(key, [])]
+    merged["turn_count"] = sum(
+        int(result.get("turn_count") or 0) for result in results
+    )
+    merged["llm_call_count"] = sum(
+        int(result.get("llm_call_count") or 0) for result in results
+    )
+    merged["run_ids"] = list(run_ids)
+
+    combined_script_stats: dict[str, dict] = {}
+    for result in results:
+        for name, stats in result.get("script_stats", {}).items():
+            target = combined_script_stats.setdefault(
+                name,
+                {"count": 0, "total_ms": 0},
+            )
+            target["count"] += int(stats.get("count") or 0)
+            target["total_ms"] += int(stats.get("total_ms") or 0)
+    merged["script_stats"] = combined_script_stats
+    return merged
+
+
+def _create_agentic_run(
+    message: str,
+    session_id: str,
+    *,
+    interaction_response: dict | None = None,
+) -> dict:
     payload = {
         "request": message,
         "session_id": session_id,
-        "context": {},
+        "agent_mode": "quick",
+        "llm_request_mode": "stream",
+        "include_trace": False,
     }
-    resp = requests.post(
-        f"{BASE_URL}{STREAM_PATH}",
+    if interaction_response is not None:
+        payload["interaction_response"] = interaction_response
+
+    response = requests.post(
+        f"{BASE_URL}{RUNS_PATH}",
         json=payload,
+        headers=_headers(idempotency_key=f"benchmark-{uuid.uuid4().hex}"),
+        timeout=30,
+    )
+    response.raise_for_status()
+    admission = response.json()
+    if not admission.get("run_id"):
+        raise RuntimeError("Agentic Run admission did not return run_id")
+    return admission
+
+
+def _stream_agentic_run(admission: dict) -> dict:
+    run_id = str(admission["run_id"])
+    links = admission.get("links") if isinstance(admission.get("links"), dict) else {}
+    events_path = str(
+        links.get("events")
+        or RUN_EVENTS_PATH.replace("{run_id}", run_id)
+    )
+    events_url = (
+        events_path
+        if events_path.startswith(("http://", "https://"))
+        else f"{BASE_URL}{events_path}"
+    )
+    response = requests.get(
+        events_url,
+        params={"after_seq": 0},
         headers=_headers(),
         timeout=(10, 180),
         stream=True,
     )
-    resp.raise_for_status()
+    response.raise_for_status()
     collected_lines: list[str] = []
-    for line in resp.iter_lines(decode_unicode=True):
+    for line in response.iter_lines(decode_unicode=True):
         if line is not None:
             collected_lines.append(line)
-    resp.close()
+    response.close()
     result = parse_sse_stream("\n".join(collected_lines))
+    result["run_id"] = run_id
+    result["turn_id"] = admission.get("turn_id")
+    return result
+
+
+def call_skill_execution(message: str, session_id: str) -> dict:
+    results: list[dict] = []
+    run_ids: list[str] = []
+    current_message = message
+    interaction_response = None
+
+    for interaction_count in range(9):
+        admission = _create_agentic_run(
+            current_message,
+            session_id,
+            interaction_response=interaction_response,
+        )
+        result = _stream_agentic_run(admission)
+        results.append(result)
+        run_ids.append(str(admission["run_id"]))
+
+        pending = result.get("pending_interaction")
+        if (
+            result.get("terminal_status") != "awaiting_input"
+            or not isinstance(pending, dict)
+            or not pending.get("interaction_id")
+        ):
+            break
+        if interaction_count >= 8:
+            result["error"] = "Agentic HITL auto-reply limit exceeded"
+            break
+
+        options = (
+            pending.get("options")
+            if isinstance(pending.get("options"), list)
+            else []
+        )
+        first_option = options[0] if options and isinstance(options[0], dict) else {}
+        reply_value = first_option.get("value") or AGENTIC_AUTO_REPLY
+        current_message = str(first_option.get("label") or reply_value)
+        interaction_response = {
+            "interaction_id": str(pending["interaction_id"]),
+            "type": str(pending.get("type") or "input"),
+            "value": reply_value,
+        }
+        option_id = first_option.get("id") or first_option.get("option_id")
+        if option_id:
+            interaction_response["option_id"] = option_id
+        print(f"  [Agentic] 自动回复 awaiting_input: {current_message}")
+
+    result = _merge_agentic_turn_results(results, run_ids)
     run_id = result.get("run_id")
     sse_llm_call_count = result.get("llm_call_count", 0)
     if run_id:

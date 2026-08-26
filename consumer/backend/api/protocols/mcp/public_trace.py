@@ -376,6 +376,10 @@ class MCPPublicTraceCollector:
             iteration = max(self._seen_iterations, default=1)
         self._seen_iterations.add(iteration)
         status = str(payload.get("status") or "").strip().lower()
+        if status == "completed":
+            status = "success"
+        elif status == "failed":
+            status = "error"
         summary_value, source = _terminal_summary_source(payload, status)
         summary, summary_truncated = self._text_with_truncation(summary_value)
         item: dict[str, Any] = {
@@ -399,7 +403,10 @@ class MCPPublicTraceCollector:
         return state
 
     def _merge_tool_fields(self, state: dict[str, Any], payload: Mapping[str, Any]) -> None:
-        tool_name = self._text(payload.get("tool_name"), limit=160)
+        tool_name = self._text(
+            payload.get("tool_name") or payload.get("name"),
+            limit=160,
+        )
         if tool_name:
             state["tool_name"] = tool_name
         tool_call_id = self._text(payload.get("tool_call_id"), limit=200)
@@ -410,6 +417,8 @@ class MCPPublicTraceCollector:
             state["iteration"] = iteration
 
         tool_input = payload.get("input")
+        if not isinstance(tool_input, Mapping):
+            tool_input = payload.get("input_preview")
         if not isinstance(tool_input, Mapping):
             tool_input = {}
         ontology_id = payload.get("ontology_id") or tool_input.get("ontology_id")
@@ -718,7 +727,9 @@ class MCPPublicTraceCollector:
         tool_call_id = str(payload.get("tool_call_id") or "").strip()
         if tool_call_id:
             return "id:{}".format(tool_call_id)
-        tool_name = str(payload.get("tool_name") or "").strip()
+        tool_name = str(
+            payload.get("tool_name") or payload.get("name") or ""
+        ).strip()
         if prefer_pending:
             for key in reversed(self._pending_order):
                 state = self._pending_tools.get(key)
@@ -918,11 +929,13 @@ def _terminal_summary_source(
 ) -> tuple[Any, str]:
     fields = (
         ("final_output", "final_output"),
+        ("content", "final_output"),
+        ("structured_content", "final_output"),
         ("error", "error"),
         ("cancel_reason", "cancel_reason"),
     )
     if status not in {"", "success", "awaiting_input"}:
-        fields = (fields[1], fields[2], fields[0])
+        fields = (fields[3], fields[4], fields[0], fields[1], fields[2])
     for field, source in fields:
         value = payload.get(field)
         if value is not None and str(value).strip():

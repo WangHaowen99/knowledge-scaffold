@@ -27,6 +27,9 @@ test('formatOutputBytes formats valid byte counts and ignores invalid values', (
   assert.equal(formatOutputBytes(512), '512 B');
   assert.equal(formatOutputBytes(1536), '1.5 KB');
   assert.equal(formatOutputBytes(2 * 1024 * 1024), '2.0 MB');
+  assert.equal(formatOutputBytes(null), '');
+  assert.equal(formatOutputBytes(undefined), '');
+  assert.equal(formatOutputBytes(''), '');
   assert.equal(formatOutputBytes(-1), '');
   assert.equal(formatOutputBytes('invalid'), '');
 });

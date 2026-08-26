@@ -7,13 +7,13 @@ test('SSE parser preserves event id and joins multiline JSON data', () => {
   assert.deepEqual(parseSSEMessage([
     ': heartbeat',
     'id: 17',
-    'event: agent.v2',
-    'data: {"protocol":"agent-stream.v2",',
-    'data: "seq":17}',
+    'event: token.delta',
+    'data: {"schema_version":"1.0",',
+    'data: "event_type":"token.delta","seq":17}',
   ].join('\n')), {
-    event: 'agent.v2',
+    event: 'token.delta',
     id: '17',
-    data: { protocol: 'agent-stream.v2', seq: 17 },
+    data: { schema_version: '1.0', event_type: 'token.delta', seq: 17 },
   });
 });
 

@@ -8,7 +8,7 @@
 
 ## 1. 背景
 
-当前项目是本体驱动问答系统。用户问题进入 `/agentic/runs/stream` 后，由 `AgenticOrchestrator` 创建 run、session turn 和 SSE 事件，再进入 Jiuwen ReAct loop。主循环通过模型匹配 ontology、匹配 operation、读取本体文档、调用工具，最终生成回答。
+当前项目是本体驱动问答系统。用户问题通过 `POST /agentic/runs` 创建 Run 和 session Turn，服务端返回身份后，客户端用 `GET /agentic/runs/{run_id}/events?after_seq=0` 读取 SSE。原生异步 Runtime 随后进入 Jiuwen ReAct loop；主循环通过模型匹配 ontology、匹配 operation、读取本体文档、调用工具，最终生成回答。
 
 当前系统已经具备脚本型 operation 的执行能力：
 
@@ -54,10 +54,16 @@
 采用“系统开关控制尝试、前置保守路由判断、runtime 占位符注入、原工具复用”的方案。
 
 ```text
-POST /agentic/runs/stream
+POST /agentic/runs
         |
         v
-AgenticOrchestrator.run()
+202 + server-generated run_id / turn_id
+        |
+        v
+GET /agentic/runs/{run_id}/events?after_seq=0
+        |
+        v
+AsyncExecutionService / Jiuwen Runtime
         |
         +--> direct_execution.enabled ?
         |       |
@@ -313,7 +319,7 @@ Jiuwen ReAct loop 不需要知道这个分支存在。
 
 处理策略：
 
-- `session_id` 缺失：系统错误，因为 `/agentic/runs/stream` 已要求 session_id。
+- `session_id` 缺失：系统错误，因为 `POST /agentic/runs` 要求 session_id。
 - `workspace_id` 缺失：如果脚本声明需要，则系统错误或 fallback，根据该字段是否必需。
 - `user_id` 缺失：认证链路异常。
 

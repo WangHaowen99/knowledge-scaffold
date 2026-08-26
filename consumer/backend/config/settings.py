@@ -51,7 +51,7 @@ class LLMConfig:
             model=pick_text("model", fallback.model if fallback else None),
             api_key=pick_text("api_key", fallback.api_key if fallback else None),
             timeout=int(pick_number("timeout", fallback.timeout if fallback else 600)),
-            max_tokens=int(pick_number("max_tokens", fallback.max_tokens if fallback else 4096)),
+            max_tokens=int(pick_number("max_tokens", fallback.max_tokens if fallback else 8192)),
             temperature=float(pick_number("temperature", fallback.temperature if fallback else 0.7)),
             provider=pick_text("provider", fallback.provider if fallback else "openai_compatible") or "openai_compatible",
             profile_id=pick_text("id", fallback.profile_id if fallback else None),
@@ -90,7 +90,7 @@ class LLMConfig:
                 model=None,
                 api_key=None,
                 timeout=600,
-                max_tokens=4096,
+                max_tokens=8192,
                 temperature=0.7,
             )
 
@@ -307,6 +307,24 @@ class AgentConfig:
     sub_agent_max_depth: int
     parallel_default_max_workers: int
     context_max_rounds: int
+    tool_timeout_seconds: int = 600
+    shutdown_total_deadline_seconds: float = 30.0
+    sse_subscriber_queue_size: int = 512
+    sse_max_subscribers_per_run: int = 3
+    sse_max_subscribers_total: int = 100
+    completed_replay_ttl_seconds: float = 120.0
+    short_io_workers: int = 8
+    short_io_max_pending: int = 64
+    short_io_capacity_wait_seconds: float = 1.0
+    short_io_operation_timeout_seconds: float = 30.0
+    external_io_workers: int = 16
+    external_io_max_pending: int = 16
+    external_io_capacity_wait_seconds: float = 0.1
+    external_io_operation_timeout_seconds: float = 300.0
+    tool_io_workers: int = 8
+    tool_io_max_pending: int = 16
+    tool_io_capacity_wait_seconds: float = 0.1
+    tool_io_operation_timeout_seconds: float = 600.0
     runtime_warmup_enabled: bool = True
     execute_script_timeout: int = 300
     deterministic_execution_enabled: bool = False
@@ -343,6 +361,44 @@ class AgentConfig:
             sub_agent_max_depth=int(config["sub_agent_max_depth"]),
             parallel_default_max_workers=int(config["parallel_default_max_workers"]),
             context_max_rounds=int(config["context_max_rounds"]),
+            tool_timeout_seconds=max(1, int(config.get("tool_timeout_seconds") or 600)),
+            shutdown_total_deadline_seconds=float(
+                config["shutdown_total_deadline_seconds"]
+            ),
+            sse_subscriber_queue_size=int(config["sse_subscriber_queue_size"]),
+            sse_max_subscribers_per_run=int(
+                config["sse_max_subscribers_per_run"]
+            ),
+            sse_max_subscribers_total=int(
+                config["sse_max_subscribers_total"]
+            ),
+            completed_replay_ttl_seconds=float(
+                config["completed_replay_ttl_seconds"]
+            ),
+            short_io_workers=int(config["short_io_workers"]),
+            short_io_max_pending=int(config["short_io_max_pending"]),
+            short_io_capacity_wait_seconds=float(
+                config["short_io_capacity_wait_seconds"]
+            ),
+            short_io_operation_timeout_seconds=float(
+                config["short_io_operation_timeout_seconds"]
+            ),
+            external_io_workers=int(config["external_io_workers"]),
+            external_io_max_pending=int(config["external_io_max_pending"]),
+            external_io_capacity_wait_seconds=float(
+                config["external_io_capacity_wait_seconds"]
+            ),
+            external_io_operation_timeout_seconds=float(
+                config["external_io_operation_timeout_seconds"]
+            ),
+            tool_io_workers=int(config["tool_io_workers"]),
+            tool_io_max_pending=int(config["tool_io_max_pending"]),
+            tool_io_capacity_wait_seconds=float(
+                config["tool_io_capacity_wait_seconds"]
+            ),
+            tool_io_operation_timeout_seconds=float(
+                config["tool_io_operation_timeout_seconds"]
+            ),
             runtime_warmup_enabled=bool(config.get("runtime_warmup_enabled", True)),
             evolution_min_occurrences=int(config.get("evolution_min_occurrences", 3)),
             evolution_min_applied=int(config.get("evolution_min_applied", 2)),

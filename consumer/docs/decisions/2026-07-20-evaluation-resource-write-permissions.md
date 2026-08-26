@@ -31,7 +31,7 @@ consumer 前端同时把知识包导入、版本激活、删除、状态修改�
    - `ws.data_source.write`：全局 admin 或 workspace owner。
    - `ws.data_source.test`：全局 admin 或 workspace owner。
    - `ws.kb.write`：全局 admin 或 workspace owner，用于状态修改、删除、文件编辑和上传。
-5. `/agentic/runs/sync` 保持现有认证与 workspace ACL，member 仍可执行评测运行。
+5. 评测统一通过 `POST /agentic/runs` 创建 Run，并从服务端返回的 events link 读取 SSE；现有认证与 workspace ACL 保持不变，member 仍可执行评测运行。
 
 ## Alternatives considered
 

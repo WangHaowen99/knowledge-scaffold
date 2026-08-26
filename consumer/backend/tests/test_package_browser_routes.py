@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+
 import io
 import warnings
 import zipfile
 
 import pytest
 import yaml
-from flask import Flask
 
 from api.auth.auth import AuthManager
 from api.routes import ontologies as ontologies_module
-from api.routes.ontologies import ontologies_bp
+from api.routes.ontologies import ontologies_router
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
@@ -55,15 +58,15 @@ def _build_client(tmp_path, monkeypatch):
     (version1 / ".hidden").mkdir()
     (version1 / ".hidden" / "secret.md").write_text("secret\n", encoding="utf-8")
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
     user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(ontologies_bp)
-    client = app.test_client()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(ontologies_router)
+    client = TestClient(app)
     headers = {"Authorization": "Bearer {}".format(auth_manager.issue_token(user))}
     return client, headers, version1
 
@@ -97,18 +100,18 @@ def test_tree_and_raw_file_share_safe_versioned_browser(tmp_path, monkeypatch):
     )
     raw_response = client.get(
         "/agentic/ontologies/demo-ontology/raw-file",
-        query_string={"path": "operations/流程.md", "version": "2.0.0"},
+        params={"path": "operations/流程.md", "version": "2.0.0"},
         headers=headers,
     )
 
     assert tree_response.status_code == 200
-    tree_paths = _flatten_paths(tree_response.get_json()["entries"])
+    tree_paths = _flatten_paths(tree_response.json()["entries"])
     assert "operations/流程.md" in tree_paths
     assert "dataset" not in tree_paths
     assert ".hidden" not in tree_paths
     assert "file-link.md" not in tree_paths
     assert raw_response.status_code == 200
-    assert raw_response.get_json()["content"] == "v2 flow\n"
+    assert raw_response.json()["content"] == "v2 flow\n"
 
 
 def test_raw_file_rejects_traversal_symlink_binary_and_oversize(tmp_path, monkeypatch):
@@ -126,11 +129,11 @@ def test_raw_file_rejects_traversal_symlink_binary_and_oversize(tmp_path, monkey
     for path, (status_code, error) in cases.items():
         response = client.get(
             "/agentic/ontologies/demo-ontology/raw-file",
-            query_string={"path": path},
+            params={"path": path},
             headers=headers,
         )
         assert response.status_code == status_code
-        assert response.get_json()["error"] == error
+        assert response.json()["error"] == error
 
 
 def test_all_package_read_routes_reject_symlinked_version_directory(tmp_path, monkeypatch):
@@ -146,23 +149,23 @@ def test_all_package_read_routes_reject_symlinked_version_directory(tmp_path, mo
         ),
         client.get(
             "/agentic/ontologies/demo-ontology/raw-file",
-            query_string={"path": "operations/流程.md"},
+            params={"path": "operations/流程.md"},
             headers=headers,
         ),
         client.get(
             "/agentic/ontologies/demo-ontology/files",
-            query_string={"folder": "operations"},
+            params={"folder": "operations"},
             headers=headers,
         ),
         client.get(
             "/agentic/ontologies/demo-ontology/file",
-            query_string={"folder": "operations", "name": "流程.md"},
+            params={"folder": "operations", "name": "流程.md"},
             headers=headers,
         ),
     ]
 
     assert [response.status_code for response in responses] == [400, 400, 400, 400]
-    assert all(response.get_json()["error"] == "Invalid file path" for response in responses)
+    assert all(response.json()["error"] == "Invalid file path" for response in responses)
 
 
 def test_editor_file_listing_uses_browser_filters_and_keeps_env_asset(tmp_path, monkeypatch):
@@ -173,12 +176,12 @@ def test_editor_file_listing_uses_browser_filters_and_keeps_env_asset(tmp_path, 
 
     response = client.get(
         "/agentic/ontologies/demo-ontology/files",
-        query_string={"folder": "assets"},
+        params={"folder": "assets"},
         headers=headers,
     )
 
     assert response.status_code == 200
-    assert [item["name"] for item in response.get_json()["files"]] == [
+    assert [item["name"] for item in response.json()["files"]] == [
         ".env",
         "nested/guide.txt",
     ]
@@ -192,12 +195,12 @@ def test_editor_file_read_rejects_symlink(tmp_path, monkeypatch):
 
     response = client.get(
         "/agentic/ontologies/demo-ontology/file",
-        query_string={"folder": "operations", "name": "linked.md"},
+        params={"folder": "operations", "name": "linked.md"},
         headers=headers,
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"] == "Invalid file path"
+    assert response.json()["error"] == "Invalid file path"
 
 
 def test_editor_asset_read_keeps_env_and_rejects_symlink(tmp_path, monkeypatch):
@@ -208,19 +211,19 @@ def test_editor_asset_read_keeps_env_and_rejects_symlink(tmp_path, monkeypatch):
 
     env_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
-        query_string={"folder": "assets", "name": ".env"},
+        params={"folder": "assets", "name": ".env"},
         headers=headers,
     )
     linked_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
-        query_string={"folder": "assets", "name": "linked.txt"},
+        params={"folder": "assets", "name": "linked.txt"},
         headers=headers,
     )
 
     assert env_response.status_code == 200
-    assert env_response.get_json()["content"] == "KEY=value"
+    assert env_response.json()["content"] == "KEY=value"
     assert linked_response.status_code == 400
-    assert linked_response.get_json()["error"] == "Error: Invalid asset key."
+    assert linked_response.json()["error"] == "Error: Invalid asset key."
 
 
 def test_import_v01_package_normalizes_manifest_catalogs_and_script_mapping(tmp_path, monkeypatch):
@@ -274,8 +277,7 @@ bound_operation: QueryPart
     response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (zip_buffer, "legacy.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("legacy.zip", zip_buffer)},
     )
 
     assert response.status_code == 201
@@ -299,11 +301,11 @@ bound_operation: QueryPart
 
     raw_response = client.get(
         "/agentic/ontologies/legacy-example/raw-file",
-        query_string={"path": "operations/QueryPart.md"},
+        params={"path": "operations/QueryPart.md"},
         headers=headers,
     )
     assert raw_response.status_code == 200
-    assert raw_response.get_json()["content"] == "# Query part\n"
+    assert raw_response.json()["content"] == "# Query part\n"
 
 
 @pytest.mark.parametrize(
@@ -327,12 +329,11 @@ def test_import_zip_rejects_absolute_and_noncanonical_member_paths(
     response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (archive, "unsafe.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("unsafe.zip", archive)},
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"] == "Zip contains unsafe path"
+    assert response.json()["error"] == "Zip contains unsafe path"
 
 
 @pytest.mark.parametrize(
@@ -364,12 +365,11 @@ def test_import_zip_rejects_duplicate_and_colliding_targets(
     response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (archive, "collision.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("collision.zip", archive)},
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"] == expected_error
+    assert response.json()["error"] == expected_error
 
 
 def test_import_zip_rejects_member_count_and_path_depth_limits(tmp_path, monkeypatch):
@@ -380,12 +380,11 @@ def test_import_zip_rejects_member_count_and_path_depth_limits(tmp_path, monkeyp
     count_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (too_many, "many.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("many.zip", too_many)},
     )
 
     assert count_response.status_code == 400
-    assert count_response.get_json()["error"] == "Zip contains too many entries"
+    assert count_response.json()["error"] == "Zip contains too many entries"
 
     monkeypatch.setattr(ontologies_module, "ONTOLOGY_MAX_ZIP_MEMBERS", 10)
     monkeypatch.setattr(ontologies_module, "ONTOLOGY_MAX_ZIP_PATH_DEPTH", 2)
@@ -393,12 +392,11 @@ def test_import_zip_rejects_member_count_and_path_depth_limits(tmp_path, monkeyp
     depth_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (too_deep, "deep.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("deep.zip", too_deep)},
     )
 
     assert depth_response.status_code == 400
-    assert depth_response.get_json()["error"] == "Zip contains unsafe path"
+    assert depth_response.json()["error"] == "Zip contains unsafe path"
 
 
 def test_import_zip_rejects_unsupported_v01_schema_and_ambiguous_roots(tmp_path, monkeypatch):
@@ -416,11 +414,10 @@ def test_import_zip_rejects_unsupported_v01_schema_and_ambiguous_roots(tmp_path,
     invalid_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (invalid_v01, "invalid-v01.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("invalid-v01.zip", invalid_v01)},
     )
     assert invalid_response.status_code == 400
-    assert invalid_response.get_json()["error"] == "Unsupported or invalid ontology package manifest"
+    assert invalid_response.json()["error"] == "Unsupported or invalid ontology package manifest"
 
     current_manifest = (
         "kind: ontology-package\nschema_version: 0.1\nid: current-demo\nname: Current Demo\n"
@@ -445,11 +442,10 @@ def test_import_zip_rejects_unsupported_v01_schema_and_ambiguous_roots(tmp_path,
     ambiguous_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (ambiguous, "ambiguous.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("ambiguous.zip", ambiguous)},
     )
     assert ambiguous_response.status_code == 400
-    assert ambiguous_response.get_json()["error"] == "Zip contains multiple ontology package roots"
+    assert ambiguous_response.json()["error"] == "Zip contains multiple ontology package roots"
 
 
 def test_import_v01_defaults_recommended_language(tmp_path, monkeypatch):
@@ -470,8 +466,7 @@ def test_import_v01_defaults_recommended_language(tmp_path, monkeypatch):
     response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
-        data={"file": (archive, "language-default.zip")},
-        content_type="multipart/form-data",
+        files={"file": ("language-default.zip", archive)},
     )
 
     assert response.status_code == 201

@@ -1,8 +1,4 @@
-import { buildMessagesFromEvents } from './messageBuilder.js';
-import {
-  AGENT_STREAM_EVENT,
-  isAgentV2Envelope,
-} from './streamHelpers.js';
+import { publicErrorMessage } from './streamHelpers.js';
 
 const TERMINAL_STATUSES = new Set(['finished', 'error', 'cancelled', 'awaiting']);
 const BUSINESS_DATA_TOOLS = new Set(['business_data_search']);
@@ -106,7 +102,9 @@ export const conversationKindForTool = (toolName) => {
 
 export const conversationKindForSegment = (segment) => {
   const type = stringValue(segment?.type).trim().toLowerCase();
-  if (type === 'tool') return conversationKindForTool(segment?.meta?.tool_name);
+  if (type === 'tool') {
+    return conversationKindForTool(segment?.meta?.tool_name || segment?.meta?.name);
+  }
   if (type === 'subagent' || type === 'subagent_group') return 'subagent';
   if (type === 'reasoning') return 'reasoning';
   if (type === 'content') return 'content';
@@ -234,7 +232,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
           terminal: Boolean(event?.finished),
           text: event?.kind === 'tool'
             ? stringValue(event?.text || event?.message)
-            : stringValue(event?.text || event?.error),
+            : stringValue(event?.text || publicErrorMessage(event?.error)),
           toolName: stringValue(event?.toolName),
           toolCallId: stringValue(event?.toolCallId),
           traceId: stringValue(event?.traceId || event?.trace_id),
@@ -251,7 +249,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
           parsedOutput: plainObject(event?.outputProjection ?? event?.output_projection)
             ? (event?.outputProjection ?? event?.output_projection)
             : parseOutput(event?.output),
-          error: stringValue(event?.error) || progressError,
+          error: publicErrorMessage(event?.error) || progressError,
           progress,
           startedAt,
           endedAt,
@@ -291,7 +289,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
         status: normalizeConversationStatus(child?.status, !child?.endTs),
         terminal: Boolean(child?.endTs) || ['completed', 'error', 'cancelled'].includes(stringValue(child?.status)),
         result: child?.result ?? null,
-        error: stringValue(child?.error),
+        error: publicErrorMessage(child?.error),
         traceId: stringValue(child?.traceId),
         spanId: stringValue(child?.spanId),
         parentSpanId: stringValue(child?.parentSpanId),
@@ -343,7 +341,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
   const startedAt = timestampValue(segment?.startTs ?? segment?.ts);
   const endedAt = timestampValue(segment?.endTs);
   const meta = segment?.meta || {};
-  const toolName = stringValue(meta.tool_name);
+  const toolName = stringValue(meta.tool_name || meta.name);
   const progress = kind === 'business_data'
     ? normalizeProgress(meta.db_events, kind, key)
     : kind === 'web_search'
@@ -391,7 +389,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     block.outputTruncated = Boolean(meta.output_truncated);
     block.outputProjection = plainObject(meta.output_projection) ? meta.output_projection : null;
     block.parsedOutput = block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
-    block.error = stringValue(meta.error) || progressError;
+    block.error = publicErrorMessage(meta.error) || progressError;
     block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
   }
   if (kind === 'artifacts') {
@@ -447,7 +445,8 @@ const lifecycleBlock = (message, messageKey, status, order) => {
     terminal: TERMINAL_STATUSES.has(status),
     text: awaiting
       ? stringValue(message?.interaction?.prompt || message?.content)
-      : stringValue(message?.meta?.error || message?.meta?.cancel_reason),
+      : publicErrorMessage(message?.meta?.error)
+        || stringValue(message?.meta?.cancel_reason),
     interaction: awaiting ? (message?.interaction || null) : null,
     startedAt,
     endedAt: startedAt,
@@ -516,7 +515,7 @@ const normalizeMessage = (message, index, occurrences) => {
     content: stringValue(message?.content),
     interaction: message?.interaction || null,
     options: Array.isArray(message?.options) ? message.options : [],
-    error: stringValue(message?.meta?.error),
+    error: publicErrorMessage(message?.meta?.error),
     cancelReason: stringValue(message?.meta?.cancel_reason),
     startedAt,
     endedAt,
@@ -527,29 +526,15 @@ const normalizeMessage = (message, index, occurrences) => {
   };
 };
 
-const durableEventsFromEnvelopes = (envelopes) => (Array.isArray(envelopes) ? envelopes : [])
-  .map((item) => {
-    if (item?.event && item?.data) return item;
-    if (isAgentV2Envelope(item)) return { event: AGENT_STREAM_EVENT, data: item };
-    return null;
-  })
-  .filter(Boolean);
-
 const resolveMessages = (input) => {
-  if (Array.isArray(input)) {
-    const looksLikeEnvelope = input.some((item) => isAgentV2Envelope(item) || item?.event === AGENT_STREAM_EVENT);
-    return looksLikeEnvelope ? buildMessagesFromEvents(durableEventsFromEnvelopes(input)) : input;
-  }
+  if (Array.isArray(input)) return input;
   if (Array.isArray(input?.messages) && input.messages.length > 0) return input.messages;
-  if (Array.isArray(input?.envelopes)) {
-    return buildMessagesFromEvents(durableEventsFromEnvelopes(input.envelopes));
-  }
   return [];
 };
 
 /**
- * Canonical renderer input for a conversation. Existing messages are authoritative;
- * raw agent.v2 envelopes are accepted as a hydration fallback.
+ * Canonical renderer input for a conversation. Hydration adapters must project
+ * stored events into messages before they reach this renderer boundary.
  */
 export const buildConversationViewModel = (input = []) => {
   const occurrences = new Map();

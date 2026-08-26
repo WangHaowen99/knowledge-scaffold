@@ -1,11 +1,14 @@
 import hashlib
+
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
 import json
 
-from flask import Flask
 import pytest
 
-from api.routes.system_config import system_config_bp
-from api.auth.auth import AuthManager
+from api.routes.system_config import system_config_router
+from auth_test_backend import AuthManager
 
 
 def _build_client(tmp_path, monkeypatch):
@@ -16,18 +19,18 @@ def _build_client(tmp_path, monkeypatch):
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_dir / "system_config.json")
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
-    app.config["REFRESH_RUNTIME_SERVICES"] = lambda current_app: None
+    app = TestApplication()
+    app.state.services["TESTING"] = True
+    app.state.services["REFRESH_RUNTIME_SERVICES"] = lambda asgi_app: None
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert admin is not None
     admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(system_config_bp)
-    client = app.test_client()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(system_config_router)
+    client = TestClient(app)
     token = auth_manager.issue_token(admin)
     headers = {"Authorization": f"Bearer {token}"}
     return client, headers
@@ -61,7 +64,7 @@ def test_get_system_config_hides_secrets(tmp_path, monkeypatch):
     response = client.get("/api/system-config", headers=headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["llm"]["base_url"] == ""
     assert payload["llm"]["model"] == ""
     assert payload["llm"]["has_api_key"] is False
@@ -122,11 +125,11 @@ def test_get_system_config_returns_sanitized_migration_required_error(
     response = client.get("/api/system-config", headers=headers)
 
     assert response.status_code == 409
-    assert response.get_json() == {
+    assert response.json() == {
         "code": "SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED",
         "detail": "系统配置包含明文 secret，需要先完成安全迁移",
     }
-    assert "plaintext-api-secret" not in response.get_data(as_text=True)
+    assert "plaintext-api-secret" not in response.text
     assert config_path.read_bytes() == original
 
 
@@ -183,9 +186,9 @@ def test_get_system_config_rejects_semantically_invalid_persisted_config(
 
     for read_response in (response, readiness_response):
         assert read_response.status_code == 409
-        assert read_response.get_json()["code"] == "SYSTEM_CONFIG_INVALID"
-        assert "private-unsupported" not in read_response.get_data(as_text=True)
-        assert "bad id" not in read_response.get_data(as_text=True)
+        assert read_response.json()["code"] == "SYSTEM_CONFIG_INVALID"
+        assert "private-unsupported" not in read_response.text
+        assert "bad id" not in read_response.text
     assert config_path.read_bytes() == original
 
 
@@ -268,9 +271,9 @@ def test_reads_allow_persisted_profiles_above_write_admission_limit(
     assert len(raw["llm_profiles"]["profiles"]) == 11
     assert len(effective["llm_profiles"]["profiles"]) == 11
     assert response.status_code == 200
-    assert len(response.get_json()["llm_profiles"]["profiles"]) == 11
+    assert len(response.json()["llm_profiles"]["profiles"]) == 11
     assert readiness_response.status_code == 200
-    assert readiness_response.get_json()["ready"] is True
+    assert readiness_response.json()["ready"] is True
     assert config_path.read_bytes() == original
 
 
@@ -324,10 +327,10 @@ def test_over_limit_profiles_remain_manageable_but_cannot_grow(
 
     assert unrelated_update.status_code == 200
     assert same_count_update.status_code == 200
-    assert len(same_count_update.get_json()["config"]["profiles"]) == 11
+    assert len(same_count_update.json()["config"]["profiles"]) == 11
     assert growth_import.status_code == 400
     assert reduction_update.status_code == 200
-    assert len(reduction_update.get_json()["config"]["profiles"]) == 10
+    assert len(reduction_update.json()["config"]["profiles"]) == 10
 
 
 def test_load_system_config_sanitizes_effective_normalization_errors(
@@ -370,7 +373,7 @@ def test_get_system_config_readiness_is_available_to_authenticated_users(tmp_pat
     response = client.get("/api/system-config/readiness", headers=user_headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["ready"] is False
     assert payload["model"]["missing_fields"] == ["llm_profiles.profiles"]
     assert "ontology_search" not in payload
@@ -396,7 +399,7 @@ def test_patch_updates_section_and_preserves_secret_masking(tmp_path, monkeypatc
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["section"] == "llm"
     assert payload["config"]["base_url"] == "https://example.com/v1"
     assert payload["config"]["model"] == "test-model"
@@ -404,7 +407,7 @@ def test_patch_updates_section_and_preserves_secret_masking(tmp_path, monkeypatc
     assert "api_key" not in payload["config"]
 
     fetch_response = client.get("/api/system-config", headers=headers)
-    fetch_payload = fetch_response.get_json()
+    fetch_payload = fetch_response.json()
     assert fetch_payload["llm"]["has_api_key"] is True
     assert fetch_payload["llm"]["timeout"] == 120
 
@@ -414,8 +417,12 @@ def test_template_and_import_round_trip(tmp_path, monkeypatch):
 
     template_response = client.get("/api/system-config/template", headers=headers)
     assert template_response.status_code == 200
-    template_payload = template_response.get_json()
+    template_payload = template_response.json()
     assert template_payload["agent"]["main_agent_max_iterations"] == 50
+    assert template_payload["agent"]["sse_max_subscribers_per_run"] == 3
+    assert template_payload["agent"]["sse_max_subscribers_total"] == 100
+    assert template_payload["agent"]["short_io_operation_timeout_seconds"] == 30
+    assert template_payload["agent"]["external_io_operation_timeout_seconds"] == 300
     assert template_payload["auth"]["auth_secret"] == ""
     assert template_payload["llm"]["base_url"] == ""
     assert template_payload["llm"]["model"] == ""
@@ -444,7 +451,7 @@ def test_template_and_import_round_trip(tmp_path, monkeypatch):
     )
 
     assert import_response.status_code == 200
-    payload = import_response.get_json()
+    payload = import_response.json()
     assert payload["success"] is True
     assert payload["config"]["llm"]["base_url"] == "https://example.com/v1"
     assert payload["config"]["llm"]["has_api_key"] is True
@@ -474,7 +481,7 @@ def test_patch_updates_web_search_and_preserves_secret_masking(tmp_path, monkeyp
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["section"] == "web_search"
     assert payload["config"]["enabled"] is True
     assert payload["config"]["provider"] == "tavily"
@@ -500,7 +507,7 @@ def test_patch_updates_web_search_and_preserves_secret_masking(tmp_path, monkeyp
     )
 
     assert update_response.status_code == 200
-    update_payload = update_response.get_json()
+    update_payload = update_response.json()
     assert update_payload["config"]["timeout_seconds"] == 11
     assert update_payload["config"]["search_depth"] == "fast"
     assert update_payload["config"]["has_api_key"] is True
@@ -536,10 +543,10 @@ def test_explicit_writes_keep_invalid_payload_contract_at_400(
     client, headers = _build_client(tmp_path, monkeypatch)
     path = "/api/system-config" if method == "patch" else "/api/system-config/import"
 
-    response = client.open(path, method=method.upper(), json=payload, headers=headers)
+    response = client.request(method.upper(), path, json=payload, headers=headers)
 
     assert response.status_code == 400
-    assert "SYSTEM_CONFIG_INVALID" not in response.get_data(as_text=True)
+    assert "SYSTEM_CONFIG_INVALID" not in response.text
 
 
 def test_patch_rejects_global_observability_section(tmp_path, monkeypatch):
@@ -567,7 +574,32 @@ def test_patch_rejects_global_observability_section(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 400
-    assert "section 非法" in response.get_json()["detail"]
+    assert "section 非法" in response.json()["detail"]
+
+
+def test_patch_rejects_process_subscriber_limit_below_run_limit(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_client(tmp_path, monkeypatch)
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "section": "agent",
+            "data": {
+                "sse_max_subscribers_per_run": 4,
+                "sse_max_subscribers_total": 3,
+            },
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "sse_max_subscribers_total 不能小于 sse_max_subscribers_per_run"
+    )
 
 
 def test_system_config_connection_test_rejects_global_observability_section(tmp_path, monkeypatch):
@@ -585,7 +617,7 @@ def test_system_config_connection_test_rejects_global_observability_section(tmp_
     )
 
     assert response.status_code == 400
-    assert "section 非法" in response.get_json()["detail"]
+    assert "section 非法" in response.json()["detail"]
 
 
 def test_user_can_view_but_cannot_modify_system_config(tmp_path, monkeypatch):
@@ -683,7 +715,7 @@ def test_new_llm_profile_does_not_inherit_legacy_or_other_profile_api_key(tmp_pa
     )
     assert second_profile_response.status_code == 200
 
-    payload = second_profile_response.get_json()
+    payload = second_profile_response.json()
     profiles = payload["config"]["profiles"]
     profile_map = {item["id"]: item for item in profiles}
 

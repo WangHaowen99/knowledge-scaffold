@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
-import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -62,8 +62,9 @@ class _FakeSubAgent:
     def __init__(self, handler):
         self._handler = handler
 
-    def execute(self, task, context=None, **kwargs):
-        return self._handler(task, context or {}, **kwargs)
+    async def aexecute(self, task, context=None, **kwargs):
+        result = self._handler(task, context or {}, **kwargs)
+        return await result if inspect.isawaitable(result) else result
 
 
 def _patch_subagent(monkeypatch, handler):
@@ -73,6 +74,15 @@ def _patch_subagent(monkeypatch, handler):
         return _FakeSubAgent(handler)
 
     monkeypatch.setattr(manager_module, "SubAgent", factory)
+
+
+def test_sub_agent_and_spawn_tool_expose_only_native_async_execution():
+    from agent.sub_agents.base import SubAgent
+
+    assert not hasattr(SubAgent(), "execute")
+    assert not hasattr(SpawnSubAgentTool(), "execute")
+    assert callable(SubAgent().aexecute)
+    assert callable(SpawnSubAgentTool().aexecute)
 
 
 def test_spawn_sub_agent_batch_returns_group_payload(monkeypatch):
@@ -91,14 +101,20 @@ def test_spawn_sub_agent_batch_returns_group_payload(monkeypatch):
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
-    outcome = tool.execute(
-        args={
-            "tasks": [
-                {"id": "t1", "task": "collect facts", "context": {"scope": "demo"}},
-            ]
-        },
-        context=_make_context(),
-        tool_call_id="call_spawn_1",
+    outcome = asyncio.run(
+        tool.aexecute(
+            args={
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "task": "collect facts",
+                        "context": {"scope": "demo"},
+                    },
+                ]
+            },
+            context=_make_context(),
+            tool_call_id="call_spawn_1",
+        )
     )
 
     payload = json.loads(outcome.content)
@@ -129,17 +145,19 @@ def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
-    outcome = tool.execute(
-        args={
-            "tasks": [
-                {"id": "t1", "task": "delegate nested fan-out"},
-            ]
-        },
-        context=_make_context(
-            agent_mode="multi_agent",
-            model_profile_id="accurate",
+    outcome = asyncio.run(
+        tool.aexecute(
+            args={
+                "tasks": [
+                    {"id": "t1", "task": "delegate nested fan-out"},
+                ]
+            },
+            context=_make_context(
+                agent_mode="multi_agent",
+                model_profile_id="accurate",
+            ),
+            tool_call_id="call_spawn_mode",
         ),
-        tool_call_id="call_spawn_mode",
     )
 
     payload = json.loads(outcome.content)
@@ -166,10 +184,12 @@ def test_spawn_sub_agent_forwards_parent_selected_ontology(monkeypatch):
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
-    outcome = tool.execute(
-        args={"tasks": [{"id": "t1", "task": "use selected ontology"}]},
-        context=_make_context(selected_ontology_id="parent-ontology"),
-        tool_call_id="call_spawn_selected_ontology",
+    outcome = asyncio.run(
+        tool.aexecute(
+            args={"tasks": [{"id": "t1", "task": "use selected ontology"}]},
+            context=_make_context(selected_ontology_id="parent-ontology"),
+            tool_call_id="call_spawn_selected_ontology",
+        )
     )
 
     payload = json.loads(outcome.content)
@@ -187,9 +207,9 @@ def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
         def __init__(self, **kwargs):
             calls["engine_kwargs"] = kwargs
 
-        def run(self, state, **kwargs):
+        async def arun(self, state, **kwargs):
             calls["state"] = state
-            calls["run_kwargs"] = kwargs
+            calls["arun_kwargs"] = kwargs
             return {
                 **state,
                 "final_output": "child result",
@@ -204,19 +224,21 @@ def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
     monkeypatch.setattr("agent.sub_agents.base.build_ontologies_section", lambda **_kwargs: "")
     monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda **_kwargs: "")
 
-    result = SubAgent().execute(
-        "child task",
-        {"ontology_id": "demo"},
-        run_id="run-child",
-        session_id="sess-child",
-        parent_agent_mode="thinking",
-        parent_model_profile_id="accurate",
+    result = asyncio.run(
+        SubAgent().aexecute(
+            "child task",
+            {"ontology_id": "demo"},
+            run_id="run-child",
+            session_id="sess-child",
+            parent_agent_mode="thinking",
+            parent_model_profile_id="accurate",
+        )
     )
 
     assert result["_success"] is True
     assert result["output"] == "child result"
     assert calls["engine_kwargs"] == {"agent_config": agent_config}
-    assert calls["run_kwargs"]["caller"] == "subagent"
+    assert calls["arun_kwargs"]["caller"] == "subagent"
     assert calls["state"]["subagent_id"].startswith("sub_")
     assert calls["state"]["user_context"] == {
         "agent_mode": "thinking",
@@ -259,7 +281,7 @@ def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_sche
         def __init__(self, **kwargs):
             del kwargs
 
-        def run(self, state, **kwargs):
+        async def arun(self, state, **kwargs):
             del kwargs
             calls["state"] = state
             calls["user_prompt"] = state["user_request"]
@@ -296,18 +318,20 @@ def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_sche
         fake_execute_script_schema,
     )
 
-    result = SubAgent().execute(
-        "child task",
-        {
-            "workspace_id": "task-workspace",
-            "selected_ontology_id": "task-ontology",
-            "ontology_id": "operation-ontology",
-        },
-        run_id="run-child",
-        session_id="sess-child",
-        parent_workspace_id="parent-workspace",
-        parent_selected_ontology_id="parent-ontology",
-        parent_selected_ontology_version="1.2.3",
+    result = asyncio.run(
+        SubAgent().aexecute(
+            "child task",
+            {
+                "workspace_id": "task-workspace",
+                "selected_ontology_id": "task-ontology",
+                "ontology_id": "operation-ontology",
+            },
+            run_id="run-child",
+            session_id="sess-child",
+            parent_workspace_id="parent-workspace",
+            parent_selected_ontology_id="parent-ontology",
+            parent_selected_ontology_version="1.2.3",
+        )
     )
 
     assert result["_success"] is True
@@ -332,7 +356,7 @@ def test_sub_agent_task_context_cannot_define_selected_ontology_scope(monkeypatc
         def __init__(self, **kwargs):
             del kwargs
 
-        def run(self, state, **kwargs):
+        async def arun(self, state, **kwargs):
             del kwargs
             calls["state"] = state
             return {**state, "final_output": "done", "messages": []}
@@ -348,11 +372,13 @@ def test_sub_agent_task_context_cannot_define_selected_ontology_scope(monkeypatc
     )
     monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda **_kwargs: "")
 
-    result = SubAgent().execute(
-        "child task",
-        {"selected_ontology_id": "task-controlled-ontology"},
-        parent_workspace_id="parent-workspace",
-        parent_selected_ontology_id=None,
+    result = asyncio.run(
+        SubAgent().aexecute(
+            "child task",
+            {"selected_ontology_id": "task-controlled-ontology"},
+            parent_workspace_id="parent-workspace",
+            parent_selected_ontology_id=None,
+        )
     )
 
     assert result["_success"] is True
@@ -371,7 +397,7 @@ def test_sub_agent_parent_workspace_locks_scope_with_task_context_fallback(monke
         def __init__(self, **kwargs):
             del kwargs
 
-        def run(self, state, **kwargs):
+        async def arun(self, state, **kwargs):
             del kwargs
             states.append(state)
             return {**state, "final_output": "done", "messages": []}
@@ -387,15 +413,19 @@ def test_sub_agent_parent_workspace_locks_scope_with_task_context_fallback(monke
     )
     monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda **_kwargs: "")
 
-    SubAgent().execute(
-        "parent lock",
-        {"workspace_id": "untrusted-task-workspace"},
-        parent_workspace_id="parent-workspace",
-    )
-    SubAgent().execute(
-        "task fallback",
-        {"workspace_id": "task-workspace"},
-    )
+    async def exercise():
+        agent = SubAgent()
+        await agent.aexecute(
+            "parent lock",
+            {"workspace_id": "untrusted-task-workspace"},
+            parent_workspace_id="parent-workspace",
+        )
+        await agent.aexecute(
+            "task fallback",
+            {"workspace_id": "task-workspace"},
+        )
+
+    asyncio.run(exercise())
 
     assert observed_workspaces == ["parent-workspace", "task-workspace"]
     assert [state["workspace_id"] for state in states] == [
@@ -473,22 +503,24 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
-    outcome = tool.execute(
-        args={
-            "tasks": [
-                {
-                    "id": "t1",
-                    "task": "run demo tool",
-                    "context": {
-                        "ontology_id": "demo-ontology",
-                        "operation_key": "demo-tool",
-                        "sub_operation_keys": ["child-tool"],
-                    },
-                }
-            ]
-        },
-        context=_make_context(project_root=str(workspace_paths.workspace_dir)),
-        tool_call_id="call_spawn_enrich",
+    outcome = asyncio.run(
+        tool.aexecute(
+            args={
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "task": "run demo tool",
+                        "context": {
+                            "ontology_id": "demo-ontology",
+                            "operation_key": "demo-tool",
+                            "sub_operation_keys": ["child-tool"],
+                        },
+                    }
+                ]
+            },
+            context=_make_context(project_root=str(workspace_paths.workspace_dir)),
+            tool_call_id="call_spawn_enrich",
+        )
     )
 
     payload = json.loads(outcome.content)
@@ -507,10 +539,12 @@ def test_spawn_sub_agent_rejects_missing_tasks(monkeypatch):
     _patch_subagent(monkeypatch, lambda task, context, **kwargs: {})
 
     tool = SpawnSubAgentTool()
-    outcome = tool.execute(
-        args={},
-        context=_make_context(),
-        tool_call_id="call_missing",
+    outcome = asyncio.run(
+        tool.aexecute(
+            args={},
+            context=_make_context(),
+            tool_call_id="call_missing",
+        )
     )
     payload = json.loads(outcome.content)
     assert payload["status"] == "error"
@@ -522,19 +556,16 @@ def test_spawn_sub_agent_batch_respects_global_concurrency_cap(monkeypatch):
 
     manager_module.clear_subagent_manager_registry()
 
-    lock = threading.Lock()
     current_running = 0
     max_running = 0
 
-    def handler(task, context, **kwargs):
+    async def handler(task, context, **kwargs):
         del context, kwargs
         nonlocal current_running, max_running
-        with lock:
-            current_running += 1
-            max_running = max(max_running, current_running)
-        time.sleep(0.03)
-        with lock:
-            current_running -= 1
+        current_running += 1
+        max_running = max(max_running, current_running)
+        await asyncio.sleep(0.03)
+        current_running -= 1
         return {
             "output": task,
             "_success": True,
@@ -544,23 +575,27 @@ def test_spawn_sub_agent_batch_respects_global_concurrency_cap(monkeypatch):
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
-    outcome = tool.execute(
-        args={
-            "tasks": [
-                {"id": "t1", "task": "one"},
-                {"id": "t2", "task": "two"},
-                {"id": "t3", "task": "three"},
-                {"id": "t4", "task": "four"},
-            ]
-        },
-        context=_make_context(agent_config=_agent_config(sub_agent_max_concurrency=2)),
-        tool_call_id="call_spawn_2",
+    outcome = asyncio.run(
+        tool.aexecute(
+            args={
+                "tasks": [
+                    {"id": "t1", "task": "one"},
+                    {"id": "t2", "task": "two"},
+                    {"id": "t3", "task": "three"},
+                    {"id": "t4", "task": "four"},
+                ]
+            },
+            context=_make_context(
+                agent_config=_agent_config(sub_agent_max_concurrency=2)
+            ),
+            tool_call_id="call_spawn_2",
+        )
     )
 
     payload = json.loads(outcome.content)
     assert payload["status"] == "completed"
     assert len(payload["tasks"]) == 4
-    assert max_running <= 2
+    assert max_running == 2
 
 
 def test_spawn_sub_agent_depth_limit_is_enforced(monkeypatch):
@@ -570,18 +605,20 @@ def test_spawn_sub_agent_depth_limit_is_enforced(monkeypatch):
     _patch_subagent(monkeypatch, lambda task, context, **kwargs: {})
 
     tool = SpawnSubAgentTool()
-    outcome = tool.execute(
-        args={"tasks": [{"id": "c1", "task": "child task"}]},
-        context=_make_context(
-            caller="subagent",
-            agent_config=_agent_config(sub_agent_max_depth=2),
-            subagent_lineage={
-                "subagent_id": "sub_parent",
-                "depth": 2,
-                "root_tool_call_id": "call_root",
-            },
+    outcome = asyncio.run(
+        tool.aexecute(
+            args={"tasks": [{"id": "c1", "task": "child task"}]},
+            context=_make_context(
+                caller="subagent",
+                agent_config=_agent_config(sub_agent_max_depth=2),
+                subagent_lineage={
+                    "subagent_id": "sub_parent",
+                    "depth": 2,
+                    "root_tool_call_id": "call_root",
+                },
+            ),
+            tool_call_id="call_spawn_nested",
         ),
-        tool_call_id="call_spawn_nested",
     )
 
     payload = json.loads(outcome.content)
@@ -595,21 +632,17 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     manager_module.clear_subagent_manager_registry()
     nested_config = _agent_config(sub_agent_max_concurrency=1)
     manager = manager_module.get_subagent_manager("run-subagents", nested_config)
-    manager._semaphore.acquire()
 
-    lock = threading.Lock()
     current_running = 0
     max_running = 0
 
-    def handler(task, context, **kwargs):
+    async def handler(task, context, **kwargs):
         del task, context, kwargs
         nonlocal current_running, max_running
-        with lock:
-            current_running += 1
-            max_running = max(max_running, current_running)
-        time.sleep(0.02)
-        with lock:
-            current_running -= 1
+        current_running += 1
+        max_running = max(max_running, current_running)
+        await asyncio.sleep(0.02)
+        current_running -= 1
         return {
             "output": "ok",
             "_success": True,
@@ -619,28 +652,33 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
-    try:
-        outcome = tool.execute(
-            args={
-                "tasks": [
-                    {"id": "nested-1", "task": "first"},
-                    {"id": "nested-2", "task": "second"},
-                ]
-            },
-            context=_make_context(
-                caller="subagent",
-                agent_config=nested_config,
-                subagent_manager=manager,
-                subagent_lineage={
-                    "subagent_id": "sub_parent",
-                    "depth": 1,
-                    "root_tool_call_id": "call_root",
+    async def exercise():
+        semaphore = manager._get_async_semaphore()
+        await semaphore.acquire()
+        try:
+            return await tool.aexecute(
+                args={
+                    "tasks": [
+                        {"id": "nested-1", "task": "first"},
+                        {"id": "nested-2", "task": "second"},
+                    ]
                 },
-            ),
-            tool_call_id="call_spawn_nested_batch",
-        )
-    finally:
-        manager._semaphore.release()
+                context=_make_context(
+                    caller="subagent",
+                    agent_config=nested_config,
+                    subagent_manager=manager,
+                    subagent_lineage={
+                        "subagent_id": "sub_parent",
+                        "depth": 1,
+                        "root_tool_call_id": "call_root",
+                    },
+                ),
+                tool_call_id="call_spawn_nested_batch",
+            )
+        finally:
+            semaphore.release()
+
+    outcome = asyncio.run(exercise())
 
     payload = json.loads(outcome.content)
     assert payload["status"] == "completed"
@@ -666,14 +704,16 @@ def test_spawn_sub_agent_propagates_workflow_cancellation(monkeypatch):
     tool = SpawnSubAgentTool()
 
     with pytest.raises(WorkflowCancelledError, match="Workflow cancelled by user"):
-        tool.execute(
-            args={"tasks": [{"id": "cancelled-task", "task": "stop now"}]},
-            context=_make_context(
-                event_emitter=lambda event_type, payload: events.append(
-                    (event_type, payload)
-                )
-            ),
-            tool_call_id="call_spawn_cancelled",
+        asyncio.run(
+            tool.aexecute(
+                args={"tasks": [{"id": "cancelled-task", "task": "stop now"}]},
+                context=_make_context(
+                    event_emitter=lambda event_type, payload: events.append(
+                        (event_type, payload)
+                    )
+                ),
+                tool_call_id="call_spawn_cancelled",
+            )
         )
 
     assert events[-1][0] == "subagent_group.finished"

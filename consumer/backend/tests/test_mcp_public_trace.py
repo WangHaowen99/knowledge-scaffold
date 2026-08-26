@@ -351,6 +351,56 @@ def test_public_trace_counts_only_retained_final_output_truncation():
     }
     assert trace["omitted"]["text_fields_truncated"] == 1
 
+
+def test_public_trace_accepts_async_runtime_public_event_fields():
+    collector = MCPPublicTraceCollector(
+        max_events=20,
+        max_bytes=32768,
+        max_text_chars=200,
+    )
+    collector.consume(_event(
+        "tool.started",
+        {
+            "name": "ontology_context",
+            "tool_call_id": "call-public",
+            "input_preview": {
+                "ontology_id": "ontology_demo",
+                "resource": "object",
+                "key": "SyntheticObject",
+            },
+        },
+        seq=1,
+    ))
+    collector.consume(_event(
+        "tool.finished",
+        {
+            "name": "ontology_context",
+            "tool_call_id": "call-public",
+            "status": "completed",
+            "elapsed_ms": 5,
+        },
+        seq=2,
+    ))
+    collector.consume(_event(
+        "turn.finished",
+        {"status": "completed", "content": "公共异步结果"},
+        seq=3,
+    ))
+
+    trace = collector.snapshot()
+
+    assert trace["iterations"][0]["agent_output"] == {
+        "summary": "公共异步结果",
+        "source": "final_output",
+        "truncated": False,
+    }
+    assert trace["iterations"][0]["status"] == "final_output"
+    tool_call = trace["iterations"][0]["tools"]["calls"][0]
+    assert tool_call["name"] == "ontology_context"
+    assert tool_call["ontology_id"] == "ontology_demo"
+    assert tool_call["resource"] == "object"
+    assert tool_call["key"] == "SyntheticObject"
+
     replacement_collector = MCPPublicTraceCollector(
         max_events=20,
         max_bytes=32768,

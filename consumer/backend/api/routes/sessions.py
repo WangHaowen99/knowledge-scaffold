@@ -1,12 +1,17 @@
 """Chat session endpoints: CRUD, messages, title generation."""
 
-from flask import Blueprint, Response, request, jsonify, send_file
-from flask_cors import cross_origin
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 
-from api.auth.auth import require_auth, get_current_user
+from api.auth.auth import AuthUser, require_authenticated_user
+from api.dependencies import get_runtime_container, require_workspace_id
+from api.exceptions import APIError
+from api.request_parsing import read_json_object, read_optional_json_object
 from llm import LLMPurpose, get_llm_router
 from config import LimitsConfig
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
+from agent.runtime.contracts import RunScope, TERMINAL_RUN_STATUSES
+from agent.runtime.errors import SessionBusyError
 from agent.core.shared.modes import resolve_agent_mode
 from ontology.ontologies import get_ontology_registry
 from utils.logging import get_logger
@@ -16,30 +21,30 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     InteractionCheckpointError,
 )
-from persistence.deterministic_terminal import recover_pending_deterministic_terminal
-from integration.observability.speedscope_files import remove_speedscope_session_files
+from persistence.deterministic_terminal import (
+    recover_pending_deterministic_artifacts,
+    recover_pending_deterministic_terminal,
+)
 from workspace.workspaces import workspace_scope
 
 logger = get_logger("routes.sessions")
 
-sessions_bp = Blueprint("sessions", __name__, url_prefix="/agentic")
-
-
-@sessions_bp.before_request
-def _validate_session_path_parameter():
-    session_id = (request.view_args or {}).get("session_id")
+def _validate_session_path_parameter(
+    session_id: str | None = None,
+    _user: AuthUser = Depends(require_authenticated_user),
+) -> None:
     if session_id is None:
-        return None
+        return
     try:
-        request.view_args["session_id"] = validate_session_id(session_id)
+        validate_session_id(session_id)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    return None
+        raise APIError(400, {"error": str(exc)}) from exc
 
 
-def _get_orchestrator():
-    from api.routes import get_orchestrator
-    return get_orchestrator()
+sessions_router = APIRouter(
+    prefix="/agentic",
+    dependencies=[Depends(_validate_session_path_parameter)],
+)
 
 
 def _get_user_stores():
@@ -47,24 +52,15 @@ def _get_user_stores():
     return get_request_stores()
 
 
-def _get_request_workspace_id():
-    from api.routes import get_request_workspace_id
-    return get_request_workspace_id()
-
-
-def _get_run_registry():
-    from api.routes.workflows import get_run_registry
-    return get_run_registry()
-
-
-def _get_session_after_terminal_recovery(chat_store, execution_store, session_id: str):
-    """Load a session after completing any interrupted deterministic terminal."""
+def _get_session_after_terminal_recovery(
+    chat_store,
+    execution_store,
+    session_id: str,
+    active_run_ids: set[str] | frozenset[str] = frozenset(),
+):
     session = chat_store.get_session(session_id)
     if session is None:
         return None
-    # Some route tests and third-party store adapters intentionally expose only
-    # the operations used by their endpoint. Production ExecutionStore always
-    # provides this recovery contract.
     if not callable(
         getattr(execution_store, "deterministic_terminal_transaction", None)
     ):
@@ -75,7 +71,29 @@ def _get_session_after_terminal_recovery(chat_store, execution_store, session_id
         session_id,
     ):
         session = chat_store.get_session(session_id)
+    if callable(
+        getattr(execution_store, "get_pending_deterministic_artifacts", None)
+    ):
+        recover_pending_deterministic_artifacts(
+            execution_store,
+            chat_store,
+            session_id,
+            run_is_active=lambda run_id: run_id in active_run_ids,
+        )
     return session
+
+
+def _collect_active_run_ids(snapshots) -> set[str]:
+    terminal_statuses = set()
+    for status in TERMINAL_RUN_STATUSES:
+        terminal_statuses.add(status.value)
+
+    active_run_ids = set()
+    for snapshot in snapshots:
+        raw_status = getattr(snapshot.status, "value", snapshot.status)
+        if str(raw_status) not in terminal_statuses:
+            active_run_ids.add(snapshot.run_id)
+    return active_run_ids
 
 
 def _resolve_selected_ontology_selection(value, *, workspace_id: str):
@@ -119,12 +137,15 @@ def _is_durable_agent_event(event) -> bool:
     )
 
 
-def _last_durable_seq(events) -> int:
+def _last_durable_seq(events, *, run_id: str | None = None) -> int:
     last_seq = 0
     for event in events or []:
         if not _is_durable_agent_event(event):
             continue
-        last_seq = max(last_seq, _coerce_seq((event.get("data") or {}).get("seq")))
+        data = event.get("data") or {}
+        if run_id is not None and str(data.get("run_id") or "") != run_id:
+            continue
+        last_seq = max(last_seq, _coerce_seq(data.get("seq")))
     return last_seq
 
 
@@ -147,81 +168,56 @@ def _last_turn_status(events) -> str:
     return ""
 
 
-def _handle_matches_scope(handle, *, user_id: str, workspace_id: str) -> bool:
-    return (
-        handle is not None
-        and bool(user_id)
-        and bool(workspace_id)
-        and getattr(handle, "user_id", None) == user_id
-        and getattr(handle, "workspace_id", None) == workspace_id
-    )
-
-
-def _run_matches_scope(run, *, user_id: str, workspace_id: str) -> bool:
-    metadata = dict(getattr(run, "metadata", {}) or {})
-    return (
-        run is not None
-        and bool(user_id)
-        and bool(workspace_id)
-        and metadata.get("user_id") == user_id
-        and metadata.get("workspace_id") == workspace_id
-    )
-
-
 def _session_runtime_payload(
     session,
-    handle=None,
     *,
-    user_id: str,
-    workspace_id: str,
+    history,
+    live_snapshot=None,
 ) -> dict:
-    active_run_id = str(getattr(session, "active_run_id", "") or "").strip()
-    if not _handle_matches_scope(handle, user_id=user_id, workspace_id=workspace_id):
-        handle = None
-    if handle is None:
-        registry = _get_run_registry()
-        active_handle = registry.get(active_run_id) if active_run_id else None
-        if not _handle_matches_scope(
-            active_handle,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        ):
-            active_handle = None
-        handle = active_handle or registry.find_by_session(
-            session.id,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
-    if handle is not None:
-        runtime = handle.runtime_snapshot()
-        status = runtime.get("status") or "running"
-        if not handle.done.is_set():
-            status = "running"
+    if live_snapshot is not None:
+        run_id = live_snapshot.run_id
         return {
-            "active_run_id": runtime.get("active_run_id") or active_run_id,
-            "active_run_status": status,
-            "last_seq": runtime.get("last_seq", 0),
+            "active_run_id": run_id,
+            "active_run_status": live_snapshot.status.value,
+            "last_seq": max(
+                int(live_snapshot.last_seq),
+                _last_durable_seq(
+                    getattr(session, "events", []) or [],
+                    run_id=run_id,
+                ),
+            ),
         }
-    if active_run_id:
-        try:
-            run = _get_orchestrator().run_store.get_run(active_run_id)
-        except RuntimeError:
-            # Session reads can run in isolated tests or maintenance contexts
-            # where the process-wide orchestrator has not been initialized.
-            run = None
-        if not _run_matches_scope(run, user_id=user_id, workspace_id=workspace_id):
-            run = None
-        run_status = str(getattr(getattr(run, "status", None), "value", "") or "").strip()
-        if run_status in {"queued", "running"}:
+    turns = list((history or {}).get("turns") or [])
+    latest = turns[-1] if turns else None
+    if isinstance(latest, dict):
+        status = str(latest.get("status") or "")
+        run_id = str(latest.get("run_id") or "").strip() or None
+        if status == "success":
+            status = "completed"
+        if (
+            status == "failed"
+            and str(latest.get("error_code") or "") == "SERVICE_RESTARTED"
+        ):
+            status = "interrupted"
+        if (
+            status == "awaiting_input"
+            and not latest.get("interaction_consumed_at")
+        ):
             return {
-                "active_run_id": active_run_id,
-                "active_run_status": run_status,
-                "last_seq": _last_durable_seq(getattr(session, "events", []) or []),
+                "active_run_id": run_id,
+                "active_run_status": status,
+                "last_seq": _last_durable_seq(
+                    getattr(session, "events", []) or [],
+                    run_id=run_id,
+                ),
+                "pending_interaction": latest.get("pending_interaction"),
             }
         return {
-            "active_run_id": active_run_id,
-            "active_run_status": "interrupted",
-            "last_seq": _last_durable_seq(getattr(session, "events", []) or []),
+            "active_run_id": None,
+            "active_run_status": status or "idle",
+            "last_seq": _last_durable_seq(
+                getattr(session, "events", []) or []
+            ),
         }
     status = _last_turn_status(getattr(session, "events", []) or [])
     return {
@@ -231,44 +227,102 @@ def _session_runtime_payload(
     }
 
 
-@sessions_bp.route("/sessions", methods=["GET"])
-@require_auth()
-def list_sessions():
+async def _runtime_payloads_for_sessions(
+    sessions,
+    *,
+    runtime,
+    current_user: AuthUser,
+    workspace_id: str,
+) -> dict[str, dict]:
+    manager = runtime.manager
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:read",),
+    )
+    snapshots = await manager.list_runs(scope) if manager is not None else []
+    live_by_session = {}
+    for snapshot in snapshots:
+        current = live_by_session.get(snapshot.session_id)
+        if current is None or snapshot.turn_id > current.turn_id:
+            live_by_session[snapshot.session_id] = snapshot
+
+    _chat_store, execution_store = _get_user_stores()
+
+    def histories_by_session():
+        return {
+            session.id: execution_store.get_session_history(session.id)
+            for session in sessions
+        }
+
+    histories = await runtime.short_io.run(histories_by_session)
+    return {
+        session.id: _session_runtime_payload(
+            session,
+            history=histories.get(session.id),
+            live_snapshot=live_by_session.get(session.id),
+        )
+        for session in sessions
+    }
+
+
+@sessions_router.get("/sessions")
+async def list_sessions(
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
     """List all chat sessions."""
-    current_user = get_current_user()
-    try:
-        workspace_id = _get_request_workspace_id()
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
-    user_id = current_user.username if current_user else ""
+    runtime = get_runtime_container(request)
     chat_store, _execution_store = _get_user_stores()
-    sessions = chat_store.list_sessions()
-    # One locked pass over the registry, then O(1) lookups per session —
-    # avoids an O(runs) scan (and lock acquire) for every session in the list.
-    handles_by_session = _get_run_registry().snapshot_by_session(
-        user_id=user_id,
+    sessions = await runtime.short_io.run(chat_store.list_sessions)
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:read",),
+    )
+    snapshots = (
+        await runtime.manager.list_runs(scope)
+        if runtime.manager is not None
+        else []
+    )
+    active_run_ids = _collect_active_run_ids(snapshots)
+
+    def recover_sessions() -> None:
+        current_chat_store, execution_store = _get_user_stores()
+        for current in sessions:
+            _get_session_after_terminal_recovery(
+                current_chat_store,
+                execution_store,
+                current.id,
+                active_run_ids,
+            )
+
+    await runtime.short_io.run(recover_sessions)
+    sessions = await runtime.short_io.run(chat_store.list_sessions)
+    payloads = await _runtime_payloads_for_sessions(
+        sessions,
+        runtime=runtime,
+        current_user=current_user,
         workspace_id=workspace_id,
     )
 
-    return jsonify({
+    return {
         "sessions": [
             {
                 **s.to_dict(),
-                **_session_runtime_payload(
-                    s,
-                    handles_by_session.get(s.id),
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                ),
+                **payloads[s.id],
             }
             for s in sessions
         ]
-    })
+    }
 
 
-@sessions_bp.route("/sessions", methods=["POST"])
-@require_auth()
-def create_session():
+@sessions_router.post("/sessions")
+async def create_session(
+    request: Request,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """
     Create a new chat session.
 
@@ -280,33 +334,34 @@ def create_session():
             "selected_ontology_id": "Optional enabled ontology id"
         }
     """
-    current_user = get_current_user()
-    data = request.get_json() or {}
+    data = await read_json_object(request)
+    runtime = get_runtime_container(request)
     title = data.get("title")
     agent_mode = resolve_agent_mode({"agent_mode": data.get("agent_mode")})
     llm_request_mode = normalize_llm_request_mode(data.get("llm_request_mode"))
     model_profile_id = str(data.get("model_profile_id") or "").strip()
     try:
-        workspace_id = _get_request_workspace_id()
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
-    try:
-        selected_ontology_id, selected_ontology_version, selected_ontology_name = _resolve_selected_ontology_selection(
+        (
+            selected_ontology_id,
+            selected_ontology_version,
+            selected_ontology_name,
+        ) = await runtime.short_io.run(
+            _resolve_selected_ontology_selection,
             data.get("selected_ontology_id"),
             workspace_id=workspace_id,
         )
     except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
+        return JSONResponse({"detail": str(exc)}, status_code=400)
     try:
-        selected_profile = resolve_effective_llm_profile_config(
+        selected_profile = await runtime.short_io.run(
+            resolve_effective_llm_profile_config,
             model_profile_id or None,
             allow_default_fallback=not bool(model_profile_id),
             workspace_id=workspace_id,
         )
     except SystemConfigValidationError as exc:
-        return jsonify({"detail": str(exc)}), 400
+        return JSONResponse({"detail": str(exc)}, status_code=400)
 
-    chat_store, execution_store = _get_user_stores()
     metadata = {
         "agent_mode": agent_mode,
         "llm_request_mode": llm_request_mode,
@@ -317,199 +372,288 @@ def create_session():
         metadata["selected_ontology_id"] = selected_ontology_id
         metadata["selected_ontology_version"] = selected_ontology_version
         metadata["selected_ontology_name"] = selected_ontology_name
-    session = chat_store.create_session(
-        title=title,
-        metadata=metadata,
-    )
-    for deleted_session_id in chat_store.prune_old_sessions(
-        LimitsConfig.from_env().session_max_per_user_workspace
-    ):
-        execution_store.delete_session(deleted_session_id)
-        remove_speedscope_session_files(
-            workspace_id,
-            deleted_session_id,
-            user_id=current_user.username,
+
+    def create_and_prune():
+        chat_store, execution_store = _get_user_stores()
+        session = chat_store.create_session(
+            title=title,
+            metadata=metadata,
         )
+        for deleted_session_id in chat_store.prune_old_sessions(
+            LimitsConfig.from_env().session_max_per_user_workspace
+        ):
+            execution_store.delete_session(deleted_session_id)
+        return session
 
-    return jsonify(session.to_dict()), 201
+    session = await runtime.short_io.run(create_and_prune)
+
+    return JSONResponse(session.to_dict(), status_code=201)
 
 
-@sessions_bp.route("/sessions/<session_id>", methods=["GET"])
-@require_auth()
-def get_session(session_id: str):
+@sessions_router.get("/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Get a chat session with message history."""
-    current_user = get_current_user()
-    try:
-        workspace_id = _get_request_workspace_id()
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
-    user_id = current_user.username if current_user else ""
+    runtime = get_runtime_container(request)
     chat_store, execution_store = _get_user_stores()
-    session = _get_session_after_terminal_recovery(
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:read",),
+    )
+    snapshots = (
+        await runtime.manager.list_runs(scope)
+        if runtime.manager is not None
+        else []
+    )
+    active_run_ids = _collect_active_run_ids(snapshots)
+    session = await runtime.short_io.run(
+        _get_session_after_terminal_recovery,
         chat_store,
         execution_store,
         session_id,
+        active_run_ids,
     )
 
     if not session:
-        return jsonify({"error": "Session not found"}), 404
+        return JSONResponse({"error": "Session not found"}, status_code=404)
 
-    if request.args.get("since") is not None:
-        return jsonify({
-            "error": "Session delta polling has been removed; reconnect through the run event stream",
-        }), 410
-
-    return jsonify({
-        **session.to_dict(include_messages=True),
-        **_session_runtime_payload(
-            session,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        ),
-    })
-
-
-@sessions_bp.route(
-    "/sessions/<session_id>/runs/<run_id>/tool-outputs/<output_ref>",
-    methods=["GET"],
-)
-@require_auth()
-def get_tool_output(session_id: str, run_id: str, output_ref: str):
-    """Read a complete tool output within the authenticated session scope."""
-    try:
-        _get_request_workspace_id()
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
-    chat_store, _execution_store = _get_user_stores()
-    if not chat_store.get_session(session_id):
-        return jsonify({"error": "Session not found"}), 404
-
-    try:
-        artifact = chat_store.get_tool_output_file(session_id, run_id, output_ref)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    if not artifact:
-        return jsonify({"error": "Tool output not found"}), 404
-
-    artifact_bytes = artifact.get("artifact_bytes")
-    if isinstance(artifact_bytes, bytes):
-        response = Response(
-            artifact_bytes,
-            content_type=artifact["response_content_type"],
+    if "since" in request.query_params:
+        return JSONResponse(
+            {
+                "error": (
+                    "Session delta polling has been removed; reconnect through "
+                    "the run event stream"
+                ),
+            },
+            status_code=410,
         )
-    else:
-        response = send_file(
-            artifact["artifact_path"],
-            mimetype=artifact["response_content_type"],
-            as_attachment=False,
-            conditional=False,
-            etag=False,
-            max_age=0,
-        )
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["X-Tool-Output-Ref"] = artifact["output_ref"]
-    response.headers["X-Tool-Call-Id"] = artifact.get("tool_call_id") or ""
-    response.headers["X-Tool-Output-Size"] = str(artifact["output_size"])
-    if artifact.get("sha256"):
-        response.headers["X-Tool-Output-SHA256"] = artifact["sha256"]
-    response.headers["Access-Control-Expose-Headers"] = (
-        "X-Tool-Output-Ref, X-Tool-Call-Id, X-Tool-Output-Size, "
-        "X-Tool-Output-SHA256"
+
+    payloads = await _runtime_payloads_for_sessions(
+        [session],
+        runtime=runtime,
+        current_user=current_user,
+        workspace_id=workspace_id,
     )
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    # Text artifacts may use active MIME types such as HTML or SVG. A sandboxed
-    # document response keeps direct navigation from becoming same-origin code.
-    response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+    return {
+        **session.to_dict(include_messages=True),
+        **payloads[session.id],
+    }
+
+
+@sessions_router.get(
+    "/sessions/{session_id}/runs/{run_id}/tool-outputs/{output_ref}",
+)
+async def get_tool_output(
+    session_id: str,
+    run_id: str,
+    output_ref: str,
+    request: Request,
+    _workspace_id: str = Depends(require_workspace_id),
+):
+    """Read a complete tool output within the authenticated session scope."""
+    runtime = get_runtime_container(request)
+    chat_store, _execution_store = await runtime.short_io.run(_get_user_stores)
+    if not await runtime.short_io.run(chat_store.get_session, session_id):
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+
+    try:
+        artifact = await runtime.short_io.run(
+            chat_store.get_tool_output_file,
+            session_id,
+            run_id,
+            output_ref,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if not artifact:
+        return JSONResponse({"error": "Tool output not found"}, status_code=404)
+
+    response = FileResponse(
+        path=artifact["artifact_path"],
+        media_type=artifact["response_content_type"],
+        headers={
+            "Cache-Control": "no-store",
+            "X-Tool-Output-Ref": artifact["output_ref"],
+            "X-Tool-Call-Id": artifact.get("tool_call_id") or "",
+            "X-Tool-Output-Size": str(artifact["output_size"]),
+            "X-Tool-Output-SHA256": str(artifact.get("sha256") or ""),
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Access-Control-Expose-Headers": (
+                "X-Tool-Output-Ref, X-Tool-Call-Id, "
+                "X-Tool-Output-Size, X-Tool-Output-SHA256"
+            ),
+        },
+    )
     return response
 
 
-@sessions_bp.route("/sessions/<session_id>", methods=["PATCH"])
-@require_auth()
-def update_session(session_id: str):
+@sessions_router.patch("/sessions/{session_id}")
+async def update_session(
+    session_id: str,
+    request: Request,
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """Update user-facing session attributes."""
-    data = request.get_json(silent=True) or {}
+    data = await read_optional_json_object(request)
     if "pinned" not in data:
-        return jsonify({"error": "pinned is required"}), 400
+        return JSONResponse({"error": "pinned is required"}, status_code=400)
 
     pinned = data.get("pinned")
     if not isinstance(pinned, bool):
-        return jsonify({"error": "pinned must be a boolean"}), 400
+        return JSONResponse(
+            {"error": "pinned must be a boolean"},
+            status_code=400,
+        )
 
-    chat_store, _execution_store = _get_user_stores()
-    session = chat_store.set_session_pinned(session_id, pinned)
+    def set_pinned():
+        chat_store, _execution_store = _get_user_stores()
+        return chat_store.set_session_pinned(session_id, pinned)
+
+    session = await get_runtime_container(request).short_io.run(set_pinned)
     if not session:
-        return jsonify({"error": "Session not found"}), 404
+        return JSONResponse({"error": "Session not found"}, status_code=404)
 
-    return jsonify(session.to_dict())
+    return session.to_dict()
 
 
-@sessions_bp.route("/sessions/<session_id>", methods=["DELETE"])
-@require_auth()
-def delete_session(session_id: str):
+@sessions_router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Delete a chat session."""
-    current_user = get_current_user()
-    workspace_id = _get_request_workspace_id()
-    chat_store, execution_store = _get_user_stores()
-    chat_deleted = chat_store.delete_session(session_id)
-    execution_deleted = execution_store.delete_session(session_id)
+    runtime = get_runtime_container(request)
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:run",),
+    )
+    try:
+        async with runtime.manager.session_guard(scope, session_id):
+            await runtime.manager.assert_session_available(scope, session_id)
+
+            def delete_from_stores():
+                chat_store, execution_store = _get_user_stores()
+                return (
+                    chat_store.delete_session(session_id),
+                    execution_store.delete_session(session_id),
+                )
+
+            chat_deleted, execution_deleted = await runtime.short_io.run(
+                delete_from_stores
+            )
+    except SessionBusyError as exc:
+        return JSONResponse(
+            {
+                "error": "Session has an inflight Run",
+                "error_code": "SESSION_RUN_ACTIVE",
+                "session_id": session_id,
+                "run_id": exc.run_id,
+            },
+            status_code=409,
+        )
 
     if not chat_deleted and not execution_deleted:
-        return jsonify({"error": "Session not found"}), 404
+        return JSONResponse({"error": "Session not found"}, status_code=404)
 
-    remove_speedscope_session_files(
-        workspace_id,
-        session_id,
-        user_id=current_user.username if current_user else None,
-    )
-
-    return jsonify({"success": True})
+    return {"success": True}
 
 
-@sessions_bp.route("/sessions/<session_id>/messages", methods=["GET"])
-@require_auth()
-def get_session_messages(session_id: str):
+@sessions_router.get("/sessions/{session_id}/messages")
+async def get_session_messages(
+    session_id: str,
+    request: Request,
+    limit: int | None = Query(default=None),
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """Get messages for a session."""
-    limit = request.args.get("limit", type=int)
 
-    chat_store, execution_store = _get_user_stores()
-    session = _get_session_after_terminal_recovery(
-        chat_store,
-        execution_store,
+    runtime = get_runtime_container(request)
+    chat_store, _execution_store = await runtime.short_io.run(_get_user_stores)
+    messages = await runtime.short_io.run(
+        chat_store.get_history,
         session_id,
+        limit=limit,
     )
-    if session is None:
-        return jsonify({"error": "Session not found"}), 404
-    messages = chat_store.get_history(session_id, limit=limit)
 
-    return jsonify({
-        "messages": [m.to_dict() for m in messages]
-    })
-
-
-@sessions_bp.route(
-    "/sessions/<session_id>/interactions/<interaction_id>/cancel",
-    methods=["POST"],
-)
-@require_auth()
-def cancel_session_interaction(session_id: str, interaction_id: str):
-    """Cancel one pending interaction while preserving the conversation context."""
-    chat_store, execution_store = _get_user_stores()
-    if _get_session_after_terminal_recovery(
-        chat_store,
-        execution_store,
+    if not messages and not await runtime.short_io.run(
+        chat_store.get_session,
         session_id,
-    ) is None:
-        return jsonify({"error": "Session not found"}), 404
+    ):
+        return JSONResponse({"error": "Session not found"}, status_code=404)
 
-    try:
-        cancellation = execution_store.cancel_pending_interaction(
-            session_id,
-            interaction_id,
+    return {
+        "messages": [m.to_dict() for m in messages]
+    }
+
+
+@sessions_router.post(
+    "/sessions/{session_id}/interactions/{interaction_id}/cancel",
+)
+async def cancel_session_interaction(
+    session_id: str,
+    interaction_id: str,
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    """Cancel one pending interaction while preserving the conversation context."""
+    if not str(request.headers.get("Idempotency-Key") or "").strip():
+        return JSONResponse(
+            {
+                "error": "Idempotency-Key is required",
+                "error_code": "INVALID_ARGUMENT",
+            },
+            status_code=400,
         )
-    except InteractionCheckpointError as exc:
-        return jsonify({"error": str(exc)}), 409
+    runtime = get_runtime_container(request)
+    chat_store, execution_store = _get_user_stores()
+    if not await runtime.short_io.run(chat_store.get_session, session_id):
+        return JSONResponse({"error": "Session not found"}, status_code=404)
 
-    recorded = chat_store.record_interaction_cancellation(
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:run",),
+    )
+    try:
+        async with runtime.manager.session_guard(scope, session_id):
+            await runtime.manager.assert_session_available(scope, session_id)
+            cancellation = await runtime.short_io.run(
+                execution_store.cancel_pending_interaction,
+                session_id,
+                interaction_id,
+            )
+    except InteractionCheckpointError as exc:
+        code = str(getattr(exc, "code", "INTERACTION_CONFLICT"))
+        payload = {"error": str(exc), "error_code": code}
+        existing_run_id = getattr(exc, "existing_run_id", None)
+        if existing_run_id:
+            payload["run_id"] = existing_run_id
+        return JSONResponse(
+            payload,
+            status_code=404 if code == "INTERACTION_NOT_FOUND" else 409,
+        )
+    except SessionBusyError as exc:
+        return JSONResponse(
+            {
+                "error": "Session has an inflight Run",
+                "error_code": "SESSION_BUSY",
+                "run_id": exc.run_id,
+            },
+            status_code=409,
+        )
+
+    recorded = await runtime.short_io.run(
+        chat_store.record_interaction_cancellation,
         session_id,
         interaction_id,
         INTERACTION_CANCELLED_NOTICE,
@@ -521,69 +665,76 @@ def cancel_session_interaction(session_id: str, interaction_id: str):
             session_id,
             interaction_id,
         )
-        return jsonify({"error": "Failed to persist interaction cancellation"}), 500
+        return JSONResponse(
+            {"error": "Failed to persist interaction cancellation"},
+            status_code=500,
+        )
 
-    return jsonify({
+    return {
         "status": "cancelled",
         **cancellation,
-    })
+    }
 
 
-@sessions_bp.route("/sessions/<session_id>/turns", methods=["GET"])
-@require_auth()
-def list_session_turns(session_id: str):
+@sessions_router.get("/sessions/{session_id}/turns")
+async def list_session_turns(
+    session_id: str,
+    request: Request,
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """List durable turn records with optional status and feedback filters."""
 
-    chat_store, execution_store = _get_user_stores()
-    if _get_session_after_terminal_recovery(
-        chat_store,
-        execution_store,
-        session_id,
-    ) is None:
-        return jsonify({"error": "Session not found"}), 404
+    runtime = get_runtime_container(request)
+    chat_store, execution_store = await runtime.short_io.run(_get_user_stores)
+    if not await runtime.short_io.run(chat_store.get_session, session_id):
+        return JSONResponse({"error": "Session not found"}, status_code=404)
 
-    status = str(request.args.get("status") or "").strip() or None
-    turns = execution_store.list_turns_by_status(session_id, status)
-    if _is_truthy(request.args.get("has_feedback")):
+    status = str(request.query_params.get("status") or "").strip() or None
+    turns = await runtime.short_io.run(
+        execution_store.list_turns_by_status,
+        session_id,
+        status,
+    )
+    if _is_truthy(request.query_params.get("has_feedback")):
         turns = [
             turn
             for turn in turns
             if isinstance(turn.get("feedback"), dict)
             and bool(turn["feedback"].get("vote"))
         ]
-    return jsonify({"turns": turns, "count": len(turns)})
+    return {"turns": turns, "count": len(turns)}
 
 
 def _is_truthy(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-@sessions_bp.route("/sessions/<session_id>/generate-title", methods=["POST", "OPTIONS"])
-@cross_origin()
-@require_auth()
-def generate_session_title(session_id: str):
+@sessions_router.post("/sessions/{session_id}/generate-title")
+async def generate_session_title(
+    session_id: str,
+    request: Request,
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """Generate a title for a chat session based on user message."""
-    # Handle CORS preflight
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"})
-
-    data = request.get_json() or {}
+    data = await read_json_object(request)
     message = data.get("message", "").strip()
 
     if not message:
-        return jsonify({"error": "Message is required"}), 400
+        return JSONResponse({"error": "Message is required"}, status_code=400)
 
-    chat_store, _execution_store = _get_user_stores()
+    runtime = get_runtime_container(request)
+    chat_store, _execution_store = await runtime.short_io.run(_get_user_stores)
     # Check if session exists
-    session = chat_store.get_session(session_id)
+    session = await runtime.short_io.run(chat_store.get_session, session_id)
     if not session:
-        return jsonify({"error": "Session not found"}), 404
+        return JSONResponse({"error": "Session not found"}, status_code=404)
 
     # Generate title using LLM
     try:
         prompt = "请用简短的中文（不超过15个字）总结以下用户问题的主题，直接输出标题，不要任何解释或标点符号：\n\n{}"
 
-        response = get_llm_router().call(
+        response = await runtime.external_io.run(
+            get_llm_router().call,
             purpose=LLMPurpose.TASK,
             messages=[{"role": "user", "content": prompt.format(message)}],
             temperature=0.5,
@@ -598,23 +749,31 @@ def generate_session_title(session_id: str):
             title = title[:30] + "..."
 
         # Update session title
-        chat_store.update_session_title(session_id, title)
+        await runtime.short_io.run(
+            chat_store.update_session_title,
+            session_id,
+            title,
+        )
 
         logger.info("Generated title for session {}: {}".format(session_id, title))
 
-        return jsonify({
+        return {
             "title": title,
             "session_id": session_id
-        })
+        }
 
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to generate title")
         # Fallback: use truncated message as title
         fallback_title = message[:20] + ("..." if len(message) > 20 else "")
-        chat_store.update_session_title(session_id, fallback_title)
+        await runtime.short_io.run(
+            chat_store.update_session_title,
+            session_id,
+            fallback_title,
+        )
 
-        return jsonify({
+        return {
             "title": fallback_title,
             "session_id": session_id,
             "fallback": True
-        })
+        }

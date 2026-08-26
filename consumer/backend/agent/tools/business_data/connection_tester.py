@@ -47,6 +47,19 @@ def test_business_data_connection(connection: ResolvedBusinessDataSource) -> Dic
     }
 
 
+async def test_business_data_connection_async(
+    connection: ResolvedBusinessDataSource,
+    *,
+    runtime: Any,
+) -> Dict[str, Any]:
+    """Probe an external data source through the owned external-I/O pool."""
+
+    return await runtime.external_io.run(
+        test_business_data_connection,
+        connection,
+    )
+
+
 def _test_shared_provider(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
     tested_at = _utc_now()
     provider_name = (

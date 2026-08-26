@@ -13,10 +13,12 @@ import { formatTime } from './lib/chatPresentation';
 import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
 import { isBlankChatSubmitting, scheduleBlankChatFocus } from './lib/firstSendCoordinator';
 import { applyInteractionCancellation, findPendingInteraction } from './lib/pendingInteraction';
+import { createIdempotencyKey } from './lib/runAdmission';
 import {
   resolveSessionPreferences,
 } from './lib/sessionModel';
 import { listResumableSessions } from './lib/sessionScope';
+import { publicErrorMessage } from './lib/streamHelpers';
 import { resolveRunProgressView } from './lib/streamLifecycle';
 import { buildTraceViewModel } from './lib/traceModel';
 import { getWorkspaceAgentMode, normalizeAgentMode } from './lib/workspacePreferences';
@@ -138,7 +140,7 @@ function AgentModePicker({ value, onChange, disabled }) {
 
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
-// useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
+// useChatSessions 下发。新版 PublicEvent 流由 useStreamManager / useAgenticStream 统一投影。
 export default function ChatWorkspace({
   chat,
   streamManager,
@@ -368,7 +370,7 @@ export default function ChatWorkspace({
 
   const send = async () => {
     const text = input.trim();
-    if (!workspaceDataReady || !text || streamState.isLoading) return;
+    if (!workspaceDataReady || !text || streamState.isLoading || pendingInteraction) return;
 
     const startRun = (sessionId, isNew = false) => {
       const refreshSessionTime = () => touchSession?.(sessionId);
@@ -435,7 +437,7 @@ export default function ChatWorkspace({
     awaiting: '等待输入',
     cancelled: '已停止',
     cancel_error: streamState.error || '停止失败，运行仍在继续',
-    error: '连接异常',
+    error: streamState.error || '连接异常',
   }[displayedStreamStatus] || '');
   const liveStatusLabel = streamStatusLabel || ({
     finished: '本轮回答已完成',
@@ -479,12 +481,18 @@ export default function ChatWorkspace({
     setInteractionCancelError('');
     try {
       const response = await authFetch(
-        `/agentic/sessions/${targetSessionId}/interactions/${encodeURIComponent(interactionId)}/cancel`,
-        { method: 'POST' },
+        `/agentic/sessions/${encodeURIComponent(targetSessionId)}/interactions/${encodeURIComponent(interactionId)}/cancel`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': createIdempotencyKey() },
+        },
       );
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error || payload.detail || `取消失败（${response.status}）`);
+        throw new Error(publicErrorMessage(
+          payload.error ?? payload.detail ?? payload,
+          `取消失败（${response.status}）`,
+        ));
       }
       setMessages(
         (previous) => applyInteractionCancellation(previous, {

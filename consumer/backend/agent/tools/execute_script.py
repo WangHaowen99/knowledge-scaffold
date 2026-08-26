@@ -56,7 +56,7 @@ logger = get_logger("tools.execute_script")
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 LOG_ARG_PREVIEW_LIMIT = 8
 LOG_OUTPUT_PREVIEW_LIMIT = 240
-MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION = 4
+MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION = 100
 
 # Linux ARG_MAX is typically 2 MB. When env + cmdline exceeds this,
 # we offload CLI args to a temp file to bypass the kernel limit.

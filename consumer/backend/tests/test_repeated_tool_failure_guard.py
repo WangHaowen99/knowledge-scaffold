@@ -15,7 +15,7 @@ from agent.core.jiuwen.tools import (
     CurrentRuntimeToolAdapter,
     register_current_runtime_tools,
 )
-from agent.core.orchestrator import _public_workflow_error_message
+from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.tools.base import ToolBatchResult, ToolInvocation
 from config.settings import AgentConfig
 from integration.observability import RuntimeEventType, RuntimeStatus
@@ -42,7 +42,7 @@ def test_loop_stall_error_uses_a_safe_public_message():
 
     assert exception_type is not None
     exc = exception_type("internal script stderr: TOKEN=do-not-expose")
-    public_message = _public_workflow_error_message(exc)
+    public_message = JiuwenAsyncAgentRuntime._runtime_error(exc).message
     assert public_message == "Tool execution stopped after a repeated failure."
     assert "TOKEN=do-not-expose" not in public_message
 
@@ -481,7 +481,10 @@ def test_stall_error_does_not_expose_raw_script_output():
 
     assert "super-secret" not in raised.value.message
     assert "postgres://internal" not in raised.value.message
-    assert _public_workflow_error_message(raised.value) == raised.value.message
+    assert (
+        JiuwenAsyncAgentRuntime._runtime_error(raised.value).message
+        == raised.value.message
+    )
 
 
 @pytest.mark.parametrize(
@@ -781,7 +784,7 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
             max_tokens=1024,
         ),
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=config)
     monkeypatch.setattr(engine, "_tools_schema_for_state", lambda *_args, **_kwargs: [tool_schema])
@@ -798,11 +801,13 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
     observer = RecordingObserver()
 
     with pytest.raises(agent_exceptions.AgentLoopStalledError):
-        engine.run(
-            state,
-            caller="main",
-            observer=observer,
-            system_prompt="Use the execute_script tool.",
+        asyncio.run(
+            engine.arun(
+                state,
+                caller="main",
+                observer=observer,
+                system_prompt="Use the execute_script tool.",
+            )
         )
 
     assert fake_agent.force_finish_results

@@ -74,7 +74,7 @@ Front Matter 中的 `scope` 表示本文约束的确定性执行 v2 契约范围
 | 有界产物 | MUST | 当前版本最多接受 32 个产物；单文件不超过 10 MiB，总大小不超过 20 MiB，产物树不超过 128 个条目。路径、媒体类型、NFKC 名称唯一性、摘要和敏感值必须全部通过检查。 |
 | 产物冻结与回滚 | MUST | Handler 沙箱及其后代进程终止后才能冻结并检查产物。任一产物写入、摘要校验或终态提交失败时，已经持久化的同批产物必须回滚或由恢复日志协调。 |
 | 权威结果信封 | MUST | 成功结果必须包含结构化结果、产物引用、Operation 身份、包修订、Handler 摘要、运行时修订、依赖修订、参数摘要、结果摘要、耗时和单次执行计数，并标记 `authoritative: true`。 |
-| 终态事务 | MUST | 成功、等待和失败必须在串行事务内协调事件日志、会话上下文、检查点、产物日志和 RunStore 状态；进程异常后必须能够恢复待提交终态。 |
+| 终态事务 | MUST | 成功、等待和失败必须在串行事务内协调事件日志、会话上下文、检查点、产物日志和 ExecutionStore 状态；进程异常后必须能够恢复待提交终态。 |
 | 取消优先 | MUST | 取消信号必须传递给包校验、Parser、Handler 和产物监控。已确认的 `CANCELLED` 终态不得被迟到的成功或失败覆盖。 |
 | 协议结果一致性 | MUST | Consumer 的 HTTP、A2A、ACP、MCP 与 Frontend 必须消费同一编排事件和最终结果信封，保留结构化结果、产物引用和稳定错误码，不得在协议层重新执行业务计算。 |
 | 自动推断旧包语义 | OUT | 当前版本不根据脚本内容或 Operation 名称自动把旧知识包升级为确定性包。 |
@@ -189,7 +189,7 @@ execution:
 
 #### 5.1.7 终态、恢复与取消语义
 
-- 确定性成功、等待和失败必须通过 RunStore 事务与 ExecutionStore 小型恢复日志协调提交。
+- 确定性成功、等待和失败必须通过 AsyncRunManager 的权威终态事件与 ExecutionStore 小型恢复日志协调提交。
 - 事件写入必须具备去重恢复能力。事件已经落盘但终态提交未完成时，后续恢复不能重复产生逻辑事件。
 - 产物先预留、后写入、再随终态提交。终态失败或取消时必须回滚；终态已经权威提交但产物日志提交延迟时，恢复逻辑只能协调日志，不得删除成功结果引用的产物。
 - `COMPLETED`、`FAILED`、`CANCELLED` 是不可改写终态。取消与迟到结果竞态时，以已经持久化的取消终态为准。
@@ -262,7 +262,7 @@ execution:
 - `consumer/backend/agent/direct_execution/build_revision.py`：Consumer Backend 行为文件与已安装依赖的构建修订计算。
 - `consumer/backend/agent/core/orchestrator.py`：预检、模型解析延迟、结果事件、终态事务、取消和回落。
 - `consumer/backend/persistence/deterministic_terminal.py`：待提交终态和产物日志恢复。
-- `consumer/backend/persistence/execution_store.py` 与 `consumer/backend/persistence/run_store.py`：检查点、终态事务、取消优先和不可改写终态。
+- `consumer/backend/persistence/execution_store.py` 与 `consumer/backend/agent/runtime/manager.py`：检查点、终态恢复日志、取消优先和不可改写终态。
 - `consumer/backend/agent/tools/business_data/deterministic.py`：只读图 Provider、数据修订、访问范围与物理快照绑定。
 - `consumer/backend/shared_capabilities/ontology_script_sdk/deterministic_provider.py`：沙箱内无凭据的 Unix socket 能力客户端。
 - `consumer/backend/ontology/directory_replacement.py`：可移植目录发布的持久回滚点和启动恢复。

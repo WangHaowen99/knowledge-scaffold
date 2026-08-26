@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from agent.evolution.models import Aggregate
 from agent.evolution import registry
 from agent.evolution.patcher import OperationPatcher
 from agent.evolution.patcher import PatcherConfig
 from agent.evolution.patcher import StagedMergeOutput
+from agent.runtime.async_utils import (
+    clear_bounded_offload_pools,
+    configure_bounded_offload_pools,
+)
+from agent.runtime.offload import BoundedOffloadPool
+from agent.runtime.supervisor import RunTaskSupervisor
 from llm import LLMPurpose
 
 
@@ -141,11 +149,8 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
         def on_buffer_change(self, *args, **kwargs):
             del args, kwargs
 
-        def start(self):
-            self.started = True
-
-        def shutdown(self, wait=False):
-            self.shutdown_wait = wait
+        def cancel_nowait(self):
+            self.cancelled = True
 
         def update_config(self, config):
             self.updated.append(config)
@@ -164,31 +169,44 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
     registry.reset_operation_patcher()
 
 
-def test_patcher_does_not_stage_sidecars_inside_deterministic_version(
-    monkeypatch,
-    tmp_path,
-):
-    version_dir = tmp_path / "ontology" / "versions" / "1.0.0"
-    operations_dir = version_dir / "operations"
-    operations_dir.mkdir(parents=True)
-    op_path = operations_dir / "OP_A.md"
-    op_path.write_text("# OP_A\n", encoding="utf-8")
-    (version_dir / ".deterministic-lock.json").write_text("{}", encoding="utf-8")
+def test_patcher_close_cancels_sleeping_sweep_without_consuming_deadline():
+    class _Buffer:
+        @staticmethod
+        def iter_op_dirs():
+            return []
 
-    monkeypatch.setattr(
-        "agent.evolution.patcher.resolve_operation_md",
-        lambda *_args, **_kwargs: op_path,
-    )
-    patcher = OperationPatcher(buffer=object(), config=PatcherConfig())
-    monkeypatch.setattr(
-        patcher,
-        "_llm_merge",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("deterministic package must be rejected before LLM")
-        ),
-    )
+    async def scenario():
+        pools = [
+            BoundedOffloadPool(
+                name=f"patcher-close-{name}",
+                max_workers=1,
+                max_pending=2,
+                capacity_wait_seconds=0.05,
+                operation_timeout_seconds=1.0,
+            )
+            for name in ("short", "external", "tool")
+        ]
+        configure_bounded_offload_pools(
+            short_io=pools[0],
+            external_io=pools[1],
+            tool_io=pools[2],
+        )
+        supervisor = RunTaskSupervisor()
+        patcher = OperationPatcher(buffer=_Buffer(), config=PatcherConfig())
+        patcher.bind_supervisor(supervisor)
+        loop = asyncio.get_running_loop()
+        try:
+            assert await patcher.start()
+            await asyncio.sleep(0)
 
-    patcher._scan("example", "OP_A", workspace_id="workspace-a")
+            closed = await patcher.close(deadline=loop.time() + 0.05)
 
-    assert not op_path.with_suffix(".md.staged").exists()
-    assert not op_path.with_suffix(".md.staged.meta.json").exists()
+            assert closed is True
+            assert supervisor.active_derived_count == 0
+        finally:
+            await supervisor.close(deadline=loop.time() + 0.2)
+            for pool in pools:
+                await pool.close(deadline=loop.time() + 0.2)
+            clear_bounded_offload_pools()
+
+    asyncio.run(scenario())

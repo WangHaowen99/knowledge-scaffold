@@ -1,17 +1,44 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { applyAgentV2Event, AGENT_STREAM_PROTOCOL } from './streamHelpers.js';
+import { applyLocalRunTermination, applyPublicEvent } from './streamHelpers.js';
 import { buildTraceViewModel } from './traceModel.js';
 
-const envelope = (type, payload, seq = 1, trace = {}) => ({
-  protocol: AGENT_STREAM_PROTOCOL,
-  type,
-  payload,
-  seq,
-  ts: 1000 + seq,
-  ...trace,
-});
+const canonicalStatus = (status) => ({
+  success: 'completed',
+  error: 'failed',
+  canceled: 'cancelled',
+}[status] || status || 'completed');
+
+const publicEvent = (eventType, payload = {}, seq = 1, trace = {}) => {
+  const {
+    ts = 1000 + seq,
+    span_key: spanKey = '',
+    parent_key: parentKey = '',
+    source = {},
+    ...overrides
+  } = trace;
+  const status = eventType === 'turn.finished'
+    ? canonicalStatus(payload?.status)
+    : 'running';
+  return {
+    schema_version: '1.0',
+    event_id: `run-public:${seq}`,
+    run_id: 'run-public',
+    seq,
+    event_type: eventType,
+    status,
+    source: {
+      node: 'agent',
+      ...source,
+      ...(spanKey ? { span_key: spanKey } : {}),
+      ...(parentKey ? { parent_key: parentKey } : {}),
+    },
+    payload: eventType === 'turn.finished' ? { ...payload, status } : payload,
+    created_at: new Date(ts).toISOString(),
+    ...overrides,
+  };
+};
 
 test('replayed tool events keep one node and preserve the original parent', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
@@ -21,23 +48,23 @@ test('replayed tool events keep one node and preserve the original parent', () =
     message: 'searching',
   };
 
-  state = applyAgentV2Event(
+  state = applyPublicEvent(
     state,
-    envelope('tool.started', payload, 1, {
+    publicEvent('tool.started', payload, 1, {
       span_key: 'tool:main:2:business_data_search:call-replay',
       parent_key: 'iteration:main:2',
     }),
   );
-  state = applyAgentV2Event(
+  state = applyPublicEvent(
     state,
-    envelope('tool.started', payload, 1, {
+    publicEvent('tool.started', payload, 1, {
       span_key: 'tool:main:2:business_data_search:call-replay',
       parent_key: 'iteration:main:999',
     }),
   );
-  state = applyAgentV2Event(
+  state = applyPublicEvent(
     state,
-    envelope('tool.finished', {
+    publicEvent('tool.finished', {
       ...payload,
       status: 'completed',
       output_preview: 'done',
@@ -58,22 +85,22 @@ test('replayed tool events keep one node and preserve the original parent', () =
 test('tool progress uses span id when legacy locators conflict', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 
-  state = applyAgentV2Event(state, envelope('tool.started', {
+  state = applyPublicEvent(state, publicEvent('tool.started', {
     tool_name: 'web_search', tool_call_id: 'shared-call', message: 'first',
   }, 1, {
     span_id: '1111111111111111', parent_span_id: 'aaaaaaaaaaaaaaaa',
   }));
-  state = applyAgentV2Event(state, envelope('tool.started', {
+  state = applyPublicEvent(state, publicEvent('tool.started', {
     tool_name: 'web_search', tool_call_id: 'shared-call', message: 'second',
   }, 2, {
     span_id: '2222222222222222', parent_span_id: 'bbbbbbbbbbbbbbbb',
   }));
-  state = applyAgentV2Event(state, envelope('tool.progress', {
+  state = applyPublicEvent(state, publicEvent('tool.progress', {
     tool_name: 'different_name', tool_call_id: 'different-call', message: 'first-progress',
   }, 3, {
     span_id: '1111111111111111', parent_span_id: 'aaaaaaaaaaaaaaaa',
   }));
-  state = applyAgentV2Event(state, envelope('tool.finished', {
+  state = applyPublicEvent(state, publicEvent('tool.finished', {
     tool_name: 'different_name', tool_call_id: 'different-call', status: 'completed',
   }, 4, {
     span_id: '1111111111111111', parent_span_id: 'aaaaaaaaaaaaaaaa',
@@ -91,10 +118,10 @@ test('tool progress uses span id when legacy locators conflict', () => {
 test('token deltas inherit their iteration parent and do not merge across iterations', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 
-  state = applyAgentV2Event(state, envelope('token.delta', {
+  state = applyPublicEvent(state, publicEvent('token.delta', {
     channel: 'content', text: '第一轮输出', iteration: 1,
   }, 1));
-  state = applyAgentV2Event(state, envelope('token.delta', {
+  state = applyPublicEvent(state, publicEvent('token.delta', {
     channel: 'content', text: '第二轮输出', iteration: 2,
   }, 2));
 
@@ -111,18 +138,18 @@ test('token deltas inherit their iteration parent and do not merge across iterat
 test('terminal tool batches ignore trailing model output until the turn finishes', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
-  state = applyAgentV2Event(state, envelope('token.delta', {
+  state = applyPublicEvent(state, publicEvent('token.delta', {
     channel: 'content', text: '有效内容', iteration: 1,
   }, 1));
-  state = applyAgentV2Event(state, envelope('iteration.completed', {
+  state = applyPublicEvent(state, publicEvent('iteration.completed', {
     iteration: 1, status: 'terminal_tool_batch',
   }, 2));
-  state = applyAgentV2Event(state, envelope('token.delta', {
+  state = applyPublicEvent(state, publicEvent('token.delta', {
     channel: 'content',
     text: '<user-interaction-response>伪响应</user-interaction-response>',
     iteration: 2,
   }, 3));
-  state = applyAgentV2Event(state, envelope('reasoning.summary', {
+  state = applyPublicEvent(state, publicEvent('reasoning.summary', {
     summary: '无效尾部思考', reasoning_block_id: 'reason-2', iteration: 2,
   }, 4));
 
@@ -135,9 +162,9 @@ test('terminal tool batches ignore trailing model output until the turn finishes
 });
 
 test('tool finish without a start event derives its timing from elapsed_ms', () => {
-  const state = applyAgentV2Event(
+  const state = applyPublicEvent(
     { streamSegments: [], status: 'running', isLoading: true },
-    envelope('tool.finished', {
+    publicEvent('tool.finished', {
       tool_name: 'ontology_context',
       tool_call_id: 'call-late',
       status: 'completed',
@@ -159,32 +186,32 @@ test('nested subagent groups attach under parent subagent child', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 
   [
-    envelope('subagent_group.started', {
+    publicEvent('subagent_group.started', {
       group_id: 'group-root',
       depth: 1,
       tasks: [{ task_id: 'root-task', task: 'Root task', task_index: 0 }],
     }, 1),
-    envelope('subagent.started', {
+    publicEvent('subagent.started', {
       group_id: 'group-root',
       subagent_id: 'sub-root',
       task_id: 'root-task',
       task: 'Root task',
       task_index: 0,
     }, 2),
-    envelope('subagent_group.started', {
+    publicEvent('subagent_group.started', {
       group_id: 'group-child',
       depth: 2,
       parent_subagent_id: 'sub-root',
       tasks: [{ task_id: 'child-task', task: 'Child task', task_index: 0 }],
     }, 3),
-    envelope('subagent.started', {
+    publicEvent('subagent.started', {
       group_id: 'group-child',
       subagent_id: 'sub-child',
       task_id: 'child-task',
       task: 'Child task',
       task_index: 0,
     }, 4),
-    envelope('subagent.delta', {
+    publicEvent('subagent.delta', {
       group_id: 'group-child',
       subagent_id: 'sub-child',
       task_id: 'child-task',
@@ -195,14 +222,14 @@ test('nested subagent groups attach under parent subagent child', () => {
       span_id: 'bbbbbbbbbbbbbbbb',
       parent_span_id: 'cccccccccccccccc',
     }),
-    envelope('subagent.finished', {
+    publicEvent('subagent.finished', {
       group_id: 'group-child',
       subagent_id: 'sub-child',
       task_id: 'child-task',
       status: 'completed',
       result: { output: 'done' },
     }, 6),
-    envelope('subagent_group.finished', {
+    publicEvent('subagent_group.finished', {
       group_id: 'group-child',
       depth: 2,
       status: 'completed',
@@ -211,7 +238,7 @@ test('nested subagent groups attach under parent subagent child', () => {
       error_count: 0,
     }, 7),
   ].forEach((event) => {
-    state = applyAgentV2Event(state, event);
+    state = applyPublicEvent(state, event);
   });
 
   assert.equal(state.streamSegments.length, 1);
@@ -244,25 +271,25 @@ test('cancelled subagent tool event remains a distinct cancelled terminal event'
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 
   [
-    envelope('subagent_group.started', {
+    publicEvent('subagent_group.started', {
       group_id: 'group-cancel',
       depth: 1,
       tasks: [{ task_id: 'cancel-task', task: 'Cancel task', task_index: 0 }],
     }, 1),
-    envelope('subagent.started', {
+    publicEvent('subagent.started', {
       group_id: 'group-cancel',
       subagent_id: 'sub-cancel',
       task_id: 'cancel-task',
       task: 'Cancel task',
       task_index: 0,
     }, 2),
-    envelope('tool.started', {
+    publicEvent('tool.started', {
       group_id: 'group-cancel',
       subagent_id: 'sub-cancel',
       tool_name: 'slow_tool',
       tool_call_id: 'call-cancel',
     }, 3),
-    envelope('tool.finished', {
+    publicEvent('tool.finished', {
       group_id: 'group-cancel',
       subagent_id: 'sub-cancel',
       tool_name: 'slow_tool',
@@ -274,7 +301,7 @@ test('cancelled subagent tool event remains a distinct cancelled terminal event'
       output_truncated: true,
     }, 4),
   ].forEach((event) => {
-    state = applyAgentV2Event(state, event);
+    state = applyPublicEvent(state, event);
   });
 
   const child = state.streamSegments[0].children['sub-cancel'];
@@ -290,15 +317,83 @@ test('turn finished error stores provider detail in message meta', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
   const error = '您的账户已达到速率限制，请您控制请求频率';
 
-  state = applyAgentV2Event(
+  state = applyPublicEvent(
     state,
-    envelope('turn.finished', { status: 'error', error }, 1),
+    publicEvent('turn.finished', { status: 'error', error }, 1),
   );
 
   assert.equal(state.status, 'error');
   assert.equal(state.error, true);
   assert.equal(state.isLoading, false);
   assert.equal(state.meta.error, error);
+});
+
+test('turn finished extracts a display message from structured runtime errors', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyPublicEvent(
+    state,
+    publicEvent('turn.finished', {
+      status: 'failed',
+      error: {
+        error_code: 'MODEL_PROVIDER_ERROR',
+        message: '模型服务请求失败',
+        retriable: false,
+        source: 'model',
+        details: {},
+      },
+    }, 1),
+  );
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.meta.error, '模型服务请求失败');
+});
+
+test('local transport termination updates UI state without fabricating a PublicEvent', () => {
+  const state = applyLocalRunTermination(
+    { streamSegments: [], status: 'running', isLoading: true },
+    {
+      status: 'failed',
+      error: 'Synthetic transport failure',
+      timestamp: 2000,
+    },
+  );
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.isLoading, false);
+  assert.equal(state.endTs, 2000);
+  assert.equal(state.meta.error, 'Synthetic transport failure');
+  assert.equal('event_id' in state, false);
+  assert.equal('schema_version' in state, false);
+});
+
+test('completed tools with an empty error field do not gain a fallback error', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyPublicEvent(state, publicEvent('tool.started', {
+    tool_name: 'ontology_context',
+    tool_call_id: 'call-success',
+  }, 1));
+  state = applyPublicEvent(state, publicEvent('tool.finished', {
+    tool_name: 'ontology_context',
+    tool_call_id: 'call-success',
+    status: 'completed',
+    output_preview: 'synthetic result',
+    error: '',
+  }, 2));
+
+  const tool = state.streamSegments[0];
+  assert.equal(tool.toolStatus, 'completed');
+  assert.equal(tool.meta.error, '');
+
+  const trace = buildTraceViewModel([{
+    id: 'success-with-empty-error',
+    role: 'assistant',
+    status: 'finished',
+    streamSegments: state.streamSegments,
+  }]);
+  assert.equal(trace.turns[0].nodes[0].status, 'finished');
+  assert.equal(trace.turns[0].nodes[0].error, '');
 });
 
 test('turn finished awaiting input keeps interaction state without error', () => {
@@ -309,9 +404,9 @@ test('turn finished awaiting input keeps interaction state without error', () =>
     prompt: '请选择处理方式',
   };
 
-  state = applyAgentV2Event(
+  state = applyPublicEvent(
     state,
-    envelope('turn.finished', {
+    publicEvent('turn.finished', {
       status: 'awaiting_input',
       final_output: {
         type: 'user_interaction',
@@ -330,36 +425,31 @@ test('turn finished awaiting input keeps interaction state without error', () =>
   assert.equal(state.interaction.id, 'interaction_call_user');
 });
 
-test('deterministic terminal artifacts remain available as dedicated segments', () => {
-  const state = applyAgentV2Event(
+test('interaction requested exposes its public prompt before the terminal event', () => {
+  const state = applyPublicEvent(
     { streamSegments: [], status: 'running', isLoading: true },
-    envelope('turn.finished', {
-      status: 'success',
-      final_output: {
-        text: 'done',
-        structured_result: { value: 'ok' },
-        artifacts: [{
-          name: 'result.json',
-          media_type: 'application/json',
-          size: 14,
-          sha256: 'sha256:abc',
-          output_ref: 'artifact-ref',
-        }],
-      },
-    }, 1),
+    publicEvent('interaction.requested', {
+      interaction_id: 'interaction_synthetic_input',
+      type: 'input',
+      prompt: 'Provide a synthetic input value',
+      options: [],
+    }, 1, { status: 'awaiting_input' }),
   );
 
-  const artifactSegment = state.streamSegments.find((segment) => segment.type === 'artifacts');
-  assert.ok(artifactSegment);
-  assert.equal(artifactSegment.meta.artifacts[0].name, 'result.json');
-  assert.equal(artifactSegment.meta.artifacts[0].output_ref, 'artifact-ref');
+  assert.equal(state.interaction.id, 'interaction_synthetic_input');
+  assert.equal(state.interaction.prompt, 'Provide a synthetic input value');
+  assert.equal(state.content, 'Provide a synthetic input value');
+  assert.equal(state.messageType, 'user_interaction');
+  assert.equal(state.status, 'awaiting');
+  assert.equal(state.isLoading, false);
+  assert.equal(state.endTs, 1001);
 });
 
 test('standalone whitespace token deltas do not create empty stream segments', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
-  state = applyAgentV2Event(state, envelope('token.delta', { channel: 'content', text: '\n\n' }, 1));
-  state = applyAgentV2Event(state, envelope('token.delta', { channel: 'content', text: '实际内容' }, 2));
+  state = applyPublicEvent(state, publicEvent('token.delta', { channel: 'content', text: '\n\n' }, 1));
+  state = applyPublicEvent(state, publicEvent('token.delta', { channel: 'content', text: '实际内容' }, 2));
 
   assert.equal(state.streamSegments.length, 1);
   assert.equal(state.streamSegments[0].text, '实际内容');
@@ -368,12 +458,12 @@ test('standalone whitespace token deltas do not create empty stream segments', (
 test('cancelled turn freezes unfinished business data search as cancelled', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
-  state = applyAgentV2Event(state, envelope('tool.started', {
+  state = applyPublicEvent(state, publicEvent('tool.started', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-search',
     input: { entity: '客户', query: '查询客户中名称为"示例制造企业"' },
   }, 1));
-  state = applyAgentV2Event(state, envelope('tool.progress', {
+  state = applyPublicEvent(state, publicEvent('tool.progress', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-search',
     progress: {
@@ -383,7 +473,7 @@ test('cancelled turn freezes unfinished business data search as cancelled', () =
       },
     },
   }, 2));
-  state = applyAgentV2Event(state, envelope('turn.finished', {
+  state = applyPublicEvent(state, publicEvent('turn.finished', {
     status: 'cancelled',
     error: 'Workflow cancelled by user',
     cancel_reason: 'user_stop',
@@ -401,24 +491,24 @@ test('cancelled turn freezes unfinished business data search as cancelled', () =
 test('business data provider errors remain visible while empty progress is ignored', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
-  state = applyAgentV2Event(state, envelope('tool.started', {
+  state = applyPublicEvent(state, publicEvent('tool.started', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-unreachable',
     input: { entity: '主CHANGE_ORDER', query: '查询所有主CHANGE_ORDER编号' },
   }, 1));
-  state = applyAgentV2Event(state, envelope('tool.progress', {
+  state = applyPublicEvent(state, publicEvent('tool.progress', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-unreachable',
     progress: { business_data_search_event: { type: 'start', content: '' } },
   }, 2));
-  state = applyAgentV2Event(state, envelope('tool.progress', {
+  state = applyPublicEvent(state, publicEvent('tool.progress', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-unreachable',
     progress: {
       business_data_search_event: { type: 'error', content: 'MindsDB request failed' },
     },
   }, 3));
-  state = applyAgentV2Event(state, envelope('tool.finished', {
+  state = applyPublicEvent(state, publicEvent('tool.finished', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-unreachable',
     status: 'error',
@@ -439,7 +529,7 @@ test('business data provider errors remain visible while empty progress is ignor
 
 test('nested groups split surrounding subagent token events without reordering them', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
-  const simultaneousEnvelope = (type, payload, seq) => envelope(type, payload, seq, { ts: 1000 });
+  const simultaneousEnvelope = (type, payload, seq) => publicEvent(type, payload, seq, { ts: 1000 });
   [
     simultaneousEnvelope('subagent_group.started', {
       group_id: 'outer', tasks: [{ task_id: 'outer-task', task: 'Outer', task_index: 0 }],
@@ -459,7 +549,7 @@ test('nested groups split surrounding subagent token events without reordering t
     simultaneousEnvelope('token.delta', {
       group_id: 'outer', subagent_id: 'outer-agent', channel: 'content', text: 'after',
     }, 6),
-  ].forEach((event) => { state = applyAgentV2Event(state, event); });
+  ].forEach((event) => { state = applyPublicEvent(state, event); });
   const child = state.streamSegments[0].children['outer-agent'];
 
   assert.deepEqual(child.events.map((event) => event.text), ['before', 'after']);
@@ -472,29 +562,29 @@ test('nested groups split surrounding subagent token events without reordering t
 test('cancelled turns recursively close unfinished subagent tools as cancelled', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
   [
-    envelope('subagent_group.started', {
+    publicEvent('subagent_group.started', {
       group_id: 'cancel-group',
       tasks: [{ task_id: 'cancel-task', task: 'Slow task', task_index: 0 }],
     }, 1),
-    envelope('subagent.started', {
+    publicEvent('subagent.started', {
       group_id: 'cancel-group', subagent_id: 'cancel-agent', task_id: 'cancel-task', task: 'Slow task',
     }, 2),
-    envelope('tool.started', {
+    publicEvent('tool.started', {
       group_id: 'cancel-group', subagent_id: 'cancel-agent', task_id: 'cancel-task',
       tool_name: 'slow_tool', tool_call_id: 'slow-call',
     }, 3),
-    envelope('subagent.finished', {
+    publicEvent('subagent.finished', {
       group_id: 'cancel-group', subagent_id: 'cancel-agent', task_id: 'cancel-task',
       status: 'cancelled', error: 'Workflow cancelled by user',
     }, 4),
-    envelope('subagent_group.finished', {
+    publicEvent('subagent_group.finished', {
       group_id: 'cancel-group', status: 'cancelled', task_count: 1,
       completed_count: 0, error_count: 1,
     }, 5),
-    envelope('turn.finished', {
+    publicEvent('turn.finished', {
       status: 'cancelled', error: 'Workflow cancelled by user', cancel_reason: 'user_stop',
     }, 6),
-  ].forEach((event) => { state = applyAgentV2Event(state, event); });
+  ].forEach((event) => { state = applyPublicEvent(state, event); });
 
   const group = state.streamSegments[0];
   const child = group.children['cancel-agent'];
@@ -517,27 +607,27 @@ test('cancelled turns recursively close unfinished subagent tools as cancelled',
 test('successful subagent completion closes token events before Trace rendering', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
   [
-    envelope('subagent_group.started', {
+    publicEvent('subagent_group.started', {
       group_id: 'success-group',
       tasks: [{ task_id: 'success-task', task: 'Complete task', task_index: 0 }],
     }, 1),
-    envelope('subagent.started', {
+    publicEvent('subagent.started', {
       group_id: 'success-group', subagent_id: 'success-agent', task_id: 'success-task', task: 'Complete task',
     }, 2),
-    envelope('token.delta', {
+    publicEvent('token.delta', {
       group_id: 'success-group', subagent_id: 'success-agent', channel: 'reasoning', text: 'reason',
     }, 3),
-    envelope('token.delta', {
+    publicEvent('token.delta', {
       group_id: 'success-group', subagent_id: 'success-agent', channel: 'content', text: 'answer',
     }, 4),
-    envelope('subagent.finished', {
+    publicEvent('subagent.finished', {
       group_id: 'success-group', subagent_id: 'success-agent', task_id: 'success-task', status: 'completed',
     }, 5),
-    envelope('subagent_group.finished', {
+    publicEvent('subagent_group.finished', {
       group_id: 'success-group', status: 'completed', task_count: 1, completed_count: 1, error_count: 0,
     }, 6),
-    envelope('turn.finished', { status: 'success', final_output: 'done' }, 7),
-  ].forEach((event) => { state = applyAgentV2Event(state, event); });
+    publicEvent('turn.finished', { status: 'success', final_output: 'done' }, 7),
+  ].forEach((event) => { state = applyPublicEvent(state, event); });
 
   const child = state.streamSegments[0].children['success-agent'];
   assert.deepEqual(child.events.map((event) => event.status), ['completed', 'completed']);
@@ -554,12 +644,12 @@ test('successful subagent completion closes token events before Trace rendering'
 test('web search progress events are accumulated on the tool segment', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
-  state = applyAgentV2Event(state, envelope('tool.started', {
+  state = applyPublicEvent(state, publicEvent('tool.started', {
     tool_name: 'web_search',
     tool_call_id: 'call-web',
     input: { query: '示例企业总部地址' },
   }, 1));
-  state = applyAgentV2Event(state, envelope('tool.progress', {
+  state = applyPublicEvent(state, publicEvent('tool.progress', {
     tool_name: 'web_search',
     tool_call_id: 'call-web',
     query: '示例企业总部地址',
@@ -570,7 +660,7 @@ test('web search progress events are accumulated on the tool segment', () => {
       },
     },
   }, 2));
-  state = applyAgentV2Event(state, envelope('tool.progress', {
+  state = applyPublicEvent(state, publicEvent('tool.progress', {
     tool_name: 'web_search',
     tool_call_id: 'call-web',
     query: '示例企业总部地址',
@@ -594,25 +684,25 @@ test('web search progress events are accumulated on the tool segment', () => {
 test('turn finished appends final output after tool-only stream segments', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
-  state = applyAgentV2Event(state, envelope('tool.started', {
+  state = applyPublicEvent(state, publicEvent('tool.started', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-search-1',
     input: { query: '查询处理成本' },
     iteration: 1,
   }, 1));
-  state = applyAgentV2Event(state, envelope('tool.finished', {
+  state = applyPublicEvent(state, publicEvent('tool.finished', {
     tool_name: 'business_data_search',
     tool_call_id: 'call-search-1',
     output_preview: '查询完成',
     status: 'completed',
     iteration: 1,
   }, 2));
-  state = applyAgentV2Event(state, envelope('iteration.completed', {
+  state = applyPublicEvent(state, publicEvent('iteration.completed', {
     iteration: 1,
     status: 'final_output',
     total_elapsed_ms: 20,
   }, 3));
-  state = applyAgentV2Event(state, envelope('turn.finished', {
+  state = applyPublicEvent(state, publicEvent('turn.finished', {
     status: 'success',
     final_output: '最终处理成本为 3000 元。',
   }, 4));
@@ -624,46 +714,132 @@ test('turn finished appends final output after tool-only stream segments', () =>
   assert.equal(state.streamSegments[1].parentKey, 'iteration:main:1');
 });
 
-test('deterministic envelope renders business result and bounded tool preview', () => {
+test('streamed agent output is grouped under its runtime iteration', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
-  state = applyAgentV2Event(state, envelope('tool.started', {
-    tool_name: 'execute_script',
-    tool_call_id: 'deterministic',
-    message: '确定性执行：query',
+
+  state = applyPublicEvent(state, publicEvent('token.delta', {
+    text: 'synthetic answer',
+    iteration: 2,
   }, 1));
-  state = applyAgentV2Event(state, envelope('tool.finished', {
-    tool_name: 'execute_script',
-    tool_call_id: 'deterministic',
-    output_preview: '{"value":"CODE-42"}',
-    output_size: 19,
-    output_truncated: false,
-    status: 'completed',
+  state = applyPublicEvent(state, publicEvent('iteration.completed', {
+    iteration: 2,
+    status: 'final_output',
+    total_elapsed_ms: 25,
   }, 2));
-  state = applyAgentV2Event(state, envelope('turn.finished', {
-    status: 'success',
-    final_output: {
-      status: 'success',
-      text: 'CODE-42',
-      structured_result: { value: 'CODE-42' },
-      execution: { type: 'deterministic', authoritative: true },
-    },
+  state = applyPublicEvent(state, publicEvent('turn.finished', {
+    status: 'completed',
+    content: 'synthetic answer',
   }, 3));
 
-  assert.equal(state.status, 'finished');
-  assert.equal(state.streamSegments[0].meta.output_preview, '{"value":"CODE-42"}');
-  assert.equal(state.streamSegments.at(-1).text, 'CODE-42');
+  const trace = buildTraceViewModel([{
+    id: 'streamed-output-iteration',
+    role: 'assistant',
+    status: 'finished',
+    iterationMetrics: state.iterationMetrics,
+    streamSegments: state.streamSegments,
+  }]);
+  const iteration = trace.turns[0].iterations[0];
+  assert.equal(iteration.metrics.iteration, 2);
+  assert.deepEqual(iteration.children.map((node) => node.type), ['content']);
+  assert.equal(
+    trace.turns[0].nodes.filter((node) => node.type === 'content').length,
+    0,
+  );
 });
 
-test('legacy deterministic envelope without text remains readable', () => {
+test('public async runtime tool payload uses the contracted name field', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
-  state = applyAgentV2Event(state, envelope('turn.finished', {
-    status: 'success',
-    final_output: {
-      status: 'success',
-      structured_result: { value: 'legacy' },
-      execution: { type: 'deterministic' },
-    },
+
+  state = applyPublicEvent(state, publicEvent('tool.started', {
+    name: 'ontology_context',
+    tool_call_id: 'call-public-1',
+    input_preview: { resource: 'root' },
+    iteration: 1,
+  }, 1));
+  state = applyPublicEvent(state, publicEvent('tool.finished', {
+    name: 'ontology_context',
+    tool_call_id: 'call-public-1',
+    status: 'completed',
+    elapsed_ms: 10,
+    output_preview: 'synthetic output',
+    output_size: 128,
+    output_truncated: false,
+    iteration: 1,
+  }, 2));
+  state = applyPublicEvent(state, publicEvent('iteration.completed', {
+    iteration: 1,
+    status: 'continue',
+    total_elapsed_ms: 10,
+  }, 3));
+
+  assert.equal(state.streamSegments.length, 1);
+  assert.equal(state.streamSegments[0].meta.name, 'ontology_context');
+  assert.equal(state.streamSegments[0].text, '调用工具: ontology_context');
+  assert.equal(state.streamSegments[0].finished, true);
+  const trace = buildTraceViewModel([{
+    id: 'public-tool-contract',
+    role: 'assistant',
+    status: 'finished',
+    iterationMetrics: state.iterationMetrics,
+    streamSegments: state.streamSegments,
+  }]);
+  const tool = trace.turns[0].iterations[0].children[0];
+  assert.equal(tool.toolName, 'ontology_context');
+  assert.deepEqual(tool.input, { resource: 'root' });
+  assert.equal(tool.outputSize, 128);
+});
+
+test('public async runtime terminal uses content and structured_content fields', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyPublicEvent(state, publicEvent('turn.finished', {
+    status: 'completed',
+    content: '公共契约最终结果',
   }, 1));
 
-  assert.match(state.streamSegments.at(-1).text, /"value": "legacy"/);
+  assert.equal(state.status, 'finished');
+  assert.equal(state.content, '公共契约最终结果');
+  assert.equal(state.streamSegments[0].text, '公共契约最终结果');
+});
+
+test('public deterministic terminal keeps structured output and artifacts', () => {
+  const state = applyPublicEvent(
+    { streamSegments: [], status: 'running', isLoading: true },
+    publicEvent('turn.finished', {
+      status: 'completed',
+      content: 'synthetic deterministic result',
+      structured_content: {
+        status: 'success',
+        text: 'synthetic deterministic result',
+        structured_result: { value: 'synthetic-value' },
+        artifacts: [{
+          name: 'result.json',
+          media_type: 'application/json',
+          size: 27,
+          output_ref: 'synthetic-output-ref',
+        }],
+      },
+    }, 1),
+  );
+
+  assert.equal(state.status, 'finished');
+  assert.deepEqual(
+    state.streamSegments.map((segment) => segment.type),
+    ['content', 'artifacts'],
+  );
+  assert.equal(
+    state.streamSegments[1].meta.artifacts[0].output_ref,
+    'synthetic-output-ref',
+  );
+});
+
+test('public async runtime reasoning delta maps to the reasoning channel', () => {
+  const state = applyPublicEvent(
+    { streamSegments: [], status: 'running', isLoading: true },
+    publicEvent('reasoning.delta', { text: '分析步骤' }, 1),
+  );
+
+  assert.equal(state.reasoning, '分析步骤');
+  assert.equal(state.streamSegments[0].type, 'reasoning');
+  assert.equal(state.content || '', '');
 });

@@ -109,11 +109,11 @@ const classifyToolPhase = (payload) => {
   return 'tool';
 };
 
-export const classifyRunProgressFromEnvelope = (envelope) => {
-  if (!envelope || typeof envelope !== 'object') return null;
+export const classifyRunProgressFromPublicEvent = (event) => {
+  if (!event || typeof event !== 'object') return null;
 
-  const type = String(envelope.type || '').trim().toLowerCase();
-  const payload = normalizePayload(envelope.payload);
+  const type = String(event.event_type || '').trim().toLowerCase();
+  const payload = normalizePayload(event.payload);
   if (!type) return null;
 
   if (type === 'turn.started') return { phase: 'analyzing' };

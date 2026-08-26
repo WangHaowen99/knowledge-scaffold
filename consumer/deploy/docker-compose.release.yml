@@ -3,6 +3,7 @@ services:
     image: ${BACKEND_IMAGE}
     container_name: onto-agent-backend
     restart: unless-stopped
+    stop_grace_period: 45s
     ports:
       - "${BACKEND_PORT:-5055}:5055"
     volumes:
@@ -13,7 +14,6 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
       - DETERMINISTIC_ARTIFACT_STAGING_ROOT=/run/onto-deterministic-artifacts

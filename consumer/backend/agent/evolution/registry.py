@@ -68,7 +68,6 @@ def init_operation_patcher(
             config=resolved_config,
         )
         buffer.set_change_listener(patcher.on_buffer_change)
-        patcher.start()
         _PATCHER = patcher
         return patcher
 
@@ -85,7 +84,7 @@ def reset_operation_patcher() -> None:
         _PATCHER = None
     if patcher is not None:
         try:
-            patcher.shutdown(wait=True)
+            patcher.cancel_nowait()
         finally:
             try:
                 get_proposal_buffer().set_change_listener(None)

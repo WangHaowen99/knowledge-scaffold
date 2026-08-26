@@ -5,10 +5,8 @@ from __future__ import annotations
 import threading
 
 import pytest
-from flask import Flask
 
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter, _SharedInvocationIndex
-from api.routes.workflows import _traceparent_from_request
 from integration.mcp.scope import resolve_mcp_scope_from_token
 from integration.mcp.token_service import MCPTokenAuthError
 from integration.observability import ObservabilityBus, RuntimeEvent, RuntimeEventType
@@ -66,13 +64,6 @@ def test_traceparent_parser_normalizes_valid_w3c_context():
 def test_traceparent_parser_rejects_malformed_or_zero_ids(value, error):
     with pytest.raises(TraceParentValidationError, match=error):
         parse_traceparent(value)
-
-
-def test_http_workflow_entrypoint_rejects_invalid_traceparent():
-    app = Flask(__name__)
-    with app.test_request_context(headers={"traceparent": "00-invalid"}):
-        with pytest.raises(TraceParentValidationError):
-            _traceparent_from_request()
 
 
 def test_mcp_scope_rejects_invalid_traceparent_before_token_resolution():

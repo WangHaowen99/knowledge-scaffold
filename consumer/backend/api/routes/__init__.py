@@ -1,122 +1,142 @@
-"""Flask routes for the agentic API."""
+"""FastAPI router assembly and native async runtime dependency wiring."""
+
+from __future__ import annotations
 
 from typing import Optional
-
-from flask import request
 
 from config import AgentConfig
 from agent.core.orchestrator import AgenticOrchestrator
 from workspace.user_store_manager import UserStoreManager
 from api.auth.auth import get_current_user
 from utils.logging import get_logger
-from workspace.workspaces import WorkspaceNotFoundError, resolve_workspace_id
+from workspace.workspaces import (
+    WorkspaceNotFoundError,
+    get_current_workspace_id,
+)
 
-from api.routes.workflows import workflows_bp
-from api.routes.sessions import sessions_bp
-from api.routes.ontologies import ontologies_bp
-from api.routes.operations import operations_bp
-from api.routes.skills import skills_bp
-from api.routes.system_config import system_config_bp
-from api.routes.platform_config import platform_config_bp
-from api.routes.workspaces import workspaces_bp
-from api.routes.business_data import business_data_bp
-from api.routes.a2a import a2a_bp
-from api.routes.performance import performance_bp
-from api.routes.memories import memories_bp
-from api.routes.mcp import mcp_bp
+from api.routes.workflows import workflows_router
+from api.routes.sessions import sessions_router
+from api.routes.ontologies import ontologies_router
+from api.routes.operations import operations_router
+from api.routes.skills import skills_router
+from api.routes.system_config import system_config_router
+from api.routes.platform_config import platform_config_router
+from api.routes.workspaces import workspaces_router
+from api.routes.business_data import business_data_router
+from api.routes.a2a import a2a_router
+from api.routes.performance import performance_router
+from api.routes.memories import memories_router
+from api.routes.mcp import mcp_router
 from api.routes.errors import workspace_not_found_response
-from api.protocols.acp.server import acp_bp, set_orchestrator as acp_set_orchestrator
-from agent.skill_evolution.registry import init_skill_evolution_worker
-from api.routes.skill_evolution import skill_evolution_bp
+from api.protocols.acp.server import acp_router
+from api.routes.skill_evolution import skill_evolution_router
+
 
 logger = get_logger("routes")
 
-# Global orchestrator instance (initialized by register_routes)
+ROUTERS = (
+    workflows_router,
+    sessions_router,
+    ontologies_router,
+    operations_router,
+    skills_router,
+    system_config_router,
+    platform_config_router,
+    workspaces_router,
+    business_data_router,
+    a2a_router,
+    performance_router,
+    memories_router,
+    mcp_router,
+    acp_router,
+    skill_evolution_router,
+)
+
 _orchestrator: Optional[AgenticOrchestrator] = None
 _user_store_manager: Optional[UserStoreManager] = None
+_agent_execution_runtime = None
+
+
+def register_routers(app) -> None:
+    """Attach every Consumer router to the single FastAPI application."""
+    for router in ROUTERS:
+        app.include_router(router)
+
+    async def handle_workspace_not_found(_request, exc: WorkspaceNotFoundError):
+        return workspace_not_found_response(exc)
+
+    app.add_exception_handler(WorkspaceNotFoundError, handle_workspace_not_found)
+    logger.info("Agentic routers registered")
+
+
+def initialize_runtime_dependencies(
+    user_store_manager: Optional[UserStoreManager] = None,
+    agent_config: Optional[AgentConfig] = None,
+) -> AgenticOrchestrator:
+    """Initialize process services during FastAPI lifespan startup."""
+    global _orchestrator, _user_store_manager
+    _user_store_manager = user_store_manager
+    _orchestrator = AgenticOrchestrator(
+        user_store_manager=user_store_manager,
+        agent_config=agent_config,
+    )
+    return _orchestrator
 
 
 def register_routes(
     app,
     user_store_manager: Optional[UserStoreManager] = None,
     agent_config: Optional[AgentConfig] = None,
-):
-    """
-    Register agentic routes with the Flask app.
-
-    Args:
-        app: Flask application
-        user_store_manager: Optional user store manager
-        agent_config: Optional agent configuration
-    """
-    global _orchestrator, _user_store_manager
-    _user_store_manager = user_store_manager
-
-    # Initialize orchestrator
-    _orchestrator = AgenticOrchestrator(
+) -> None:
+    """Test-oriented convenience that attaches routers and initializes services."""
+    register_routers(app)
+    initialize_runtime_dependencies(
         user_store_manager=user_store_manager,
         agent_config=agent_config,
     )
-
-    # Register blueprints
-    app.register_blueprint(workflows_bp)
-    app.register_blueprint(sessions_bp)
-    app.register_blueprint(ontologies_bp)
-    app.register_blueprint(operations_bp)
-    app.register_blueprint(skills_bp)
-    app.register_blueprint(system_config_bp)
-    app.register_blueprint(platform_config_bp)
-    app.register_blueprint(workspaces_bp)
-    app.register_blueprint(business_data_bp)
-    app.register_blueprint(a2a_bp)
-    app.register_blueprint(performance_bp)
-    app.register_blueprint(memories_bp)
-    app.register_blueprint(mcp_bp)
-    app.register_blueprint(acp_bp)
-    app.register_blueprint(skill_evolution_bp)
-    app.register_error_handler(WorkspaceNotFoundError, workspace_not_found_response)
-
-    acp_set_orchestrator(_orchestrator)
-
-    # Start the skill-evolution background worker (no-op when feature disabled).
-    try:
-        init_skill_evolution_worker()
-    except Exception:
-        logger.exception("Failed to start skill-evolution worker")
-
-    logger.info("Agentic routes registered")
 
 
 def update_runtime_dependencies(
     user_store_manager: Optional[UserStoreManager] = None,
     agent_config: Optional[AgentConfig] = None,
-):
-    """Refresh shared runtime dependencies after config changes."""
+) -> AgenticOrchestrator:
+    """Refresh shared runtime dependencies after configuration changes."""
     global _orchestrator, _user_store_manager
-    previous_run_store = _orchestrator.run_store if _orchestrator is not None else None
     _user_store_manager = user_store_manager
-    _orchestrator = AgenticOrchestrator(
-        user_store_manager=user_store_manager,
-        agent_config=agent_config,
-        run_store=previous_run_store,
-    )
-    acp_set_orchestrator(_orchestrator)
-
-
-def get_orchestrator() -> AgenticOrchestrator:
-    """Get the orchestrator instance."""
     if _orchestrator is None:
-        raise RuntimeError("Orchestrator not initialized. Call register_routes first.")
+        _orchestrator = AgenticOrchestrator(
+            user_store_manager=user_store_manager,
+            agent_config=agent_config,
+        )
+    else:
+        _orchestrator.user_store_manager = user_store_manager
+        if agent_config is not None:
+            _orchestrator.agent_config = agent_config
     return _orchestrator
 
 
+def get_orchestrator() -> AgenticOrchestrator:
+    if _orchestrator is None:
+        raise RuntimeError("Orchestrator not initialized")
+    return _orchestrator
+
+
+def set_agent_execution_runtime(runtime) -> None:
+    global _agent_execution_runtime
+    _agent_execution_runtime = runtime
+
+
+def get_agent_execution_runtime():
+    if _agent_execution_runtime is None:
+        raise RuntimeError("Agent execution runtime not initialized")
+    return _agent_execution_runtime
+
+
 def get_request_workspace_id() -> str:
-    """Resolve the current request workspace."""
-    return resolve_workspace_id(request)
+    return get_current_workspace_id()
 
 
 def get_request_stores():
-    """Get chat and execution stores for the current user and workspace."""
     user = get_current_user()
     if not user:
         raise RuntimeError("User not resolved for request")
@@ -126,4 +146,19 @@ def get_request_stores():
     return (
         _user_store_manager.get_chat_store(user.username, workspace_id),
         _user_store_manager.get_execution_store(user.username, workspace_id),
+    )
+
+
+def get_user_stores(username: str, workspace_id: str):
+    """Resolve durable stores for non-HTTP protocol adapters."""
+    if not _user_store_manager:
+        raise RuntimeError("User store manager not initialized")
+    normalized_user = str(username or "anonymous").strip() or "anonymous"
+    normalized_workspace = str(workspace_id or "default").strip() or "default"
+    return (
+        _user_store_manager.get_chat_store(normalized_user, normalized_workspace),
+        _user_store_manager.get_execution_store(
+            normalized_user,
+            normalized_workspace,
+        ),
     )

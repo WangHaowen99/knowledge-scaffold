@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterator, Mapping
+from typing import Any, AsyncIterator, Mapping
 
+from agent.runtime.async_utils import run_sync_compat
 from agent.tools.business_data.providers.base import OntologySearchEvent
 from .agent import GraphAgentError, GraphAgentTimeoutError, GraphAgentUnavailableError
 from .backends.base import GraphBackend, GraphBackendError, GraphBackendUnsupportedError
@@ -40,17 +41,23 @@ class GraphSearchRuntime:
         self.mapping_resolver = mapping_resolver
         self.graph_agent = graph_agent
 
-    def search_stream(
+    async def asearch_stream(
         self,
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> AsyncIterator[OntologySearchEvent]:
         normalized_query = str(query or "").strip()
         normalized_entity = str(entity or "").strip()
 
         try:
-            context = self._build_context(query=normalized_query, entity=normalized_entity)
+            context = await run_sync_compat(
+                self._build_context,
+                query=normalized_query,
+                entity=normalized_entity,
+                task_name="graph-search-context",
+                offload_kind="tool",
+            )
         except GraphScopeError as exc:
             yield _final(build_error_result(
                 provider=self.provider,
@@ -93,7 +100,7 @@ class GraphSearchRuntime:
             event_sink=trace_sink,
         )
         try:
-            agent_result = agent.run(
+            agent_result = await agent.arun(
                 context=context,
                 mapping=context.mapping,
                 tool_executor=tool_executor,

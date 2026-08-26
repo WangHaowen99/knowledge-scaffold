@@ -10,6 +10,38 @@ from utils.logging import get_logger
 logger = get_logger("persistence.deterministic_terminal")
 
 
+def persist_deterministic_terminal(
+    execution_store: ExecutionStore,
+    chat_store: ChatStore,
+    *,
+    session_id: str,
+    turn_id: int,
+    status: str,
+    final_output: dict,
+    llm_context: list[dict],
+    events: list[dict],
+    deterministic_checkpoint: Optional[dict] = None,
+) -> None:
+    """Durably project one deterministic terminal event with recovery intent."""
+
+    with execution_store.deterministic_terminal_transaction(session_id):
+        execution_store.prepare_deterministic_terminal(
+            session_id,
+            turn_id,
+            status=status,
+            final_output=final_output,
+            summary=None,
+            llm_context=llm_context,
+            events=events,
+            deterministic_checkpoint=deterministic_checkpoint,
+        )
+        if not chat_store.append_events_once(session_id, events):
+            raise RuntimeError("deterministic terminal session is missing")
+        if not chat_store.sync_event_log(session_id):
+            raise RuntimeError("deterministic terminal event could not be synced")
+        execution_store.commit_deterministic_terminal(session_id, turn_id)
+
+
 def _artifact_transaction_fields(transaction: dict) -> tuple[int, str, list[str]]:
     turn_id = transaction.get("turn_id")
     run_id = str(transaction.get("run_id") or "").strip()
@@ -63,11 +95,9 @@ def recover_pending_deterministic_artifacts(
     run_is_active: Optional[Callable[[str], bool]] = None,
 ) -> bool:
     """Resolve artifacts left between durable file writes and terminal commit."""
-    # Do not call into RunStore while holding the per-session ExecutionStore
-    # lock. Terminal run transitions hold RunStore's lock while committing the
-    # execution journal, so the opposite order would deadlock. Snapshot first,
-    # classify active runs without either ExecutionStore transaction lock, then
-    # revalidate the exact transaction before changing it.
+    # Classify active runs before taking the per-session transaction lock. The
+    # async run manager may finalize the same turn concurrently, so recovery
+    # revalidates the exact journal entry after acquiring the store lock.
     snapshot = execution_store.get_pending_deterministic_artifacts(session_id)
     snapshot_by_run_id = {}
     inactive_run_ids = set()
@@ -92,17 +122,25 @@ def recover_pending_deterministic_artifacts(
                 continue
 
             turn = execution_store.get_turn(session_id, turn_id)
-            if (
+            turn_belongs_to_run = bool(
                 isinstance(turn, dict)
                 and str(turn.get("run_id") or "") == run_id
-                and str(turn.get("status") or "") == "success"
-            ):
+            )
+            turn_status = (
+                str(turn.get("status") or "") if turn_belongs_to_run else ""
+            )
+            if turn_status == "success":
                 execution_store.commit_deterministic_artifacts(
                     session_id,
                     turn_id,
                     run_id,
                 )
                 recovered = True
+                continue
+            # An active-set snapshot can predate a newly admitted Run. Never
+            # infer abandonment from absence alone while its durable Turn is
+            # still resumable or running.
+            if turn_status in {"running", "awaiting_input"}:
                 continue
 
             deleted_refs = []

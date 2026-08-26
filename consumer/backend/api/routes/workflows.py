@@ -1,60 +1,385 @@
-"""Workflow run endpoints: start/stream, status, cancel, sync."""
+"""Canonical FastAPI endpoints for asynchronous workflow Runs."""
 
+from __future__ import annotations
+
+import asyncio
+import hashlib
 import json
 import math
 import os
-import queue
-import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple
+from typing import Any
 
-from flask import Blueprint, Response, request, jsonify, stream_with_context
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from agent.core.shared.interaction_policy import set_user_interaction_capability
-from api.auth.auth import require_auth, get_current_user
+from agent.core.shared.modes import resolve_agent_mode
+from agent.runtime.contracts import (
+    RunScope,
+    RunSnapshot,
+    RunStatus,
+    RuntimeInvocationContext,
+    TERMINAL_RUN_STATUSES,
+)
+from agent.runtime.errors import (
+    EventReplayUnavailableError,
+    RunNotFoundError,
+    SessionBusyError,
+)
+from agent.runtime.event_bus import (
+    EventSubscriberLimitExceeded,
+    EventSubscriberReservationError,
+)
+from agent.runtime.offload import OffloadPoolClosed, OffloadPoolSaturated
+from agent.runtime.runtime import RuntimeState
+from api.auth.auth import AuthUser, require_authenticated_user
+from api.dependencies import require_workspace_id
 from api.final_output import coerce_final_output_to_text
+from api.request_parsing import read_json_object, read_optional_json_object
 from config.system_config import (
     SystemConfigValidationError,
     get_public_llm_profiles,
     resolve_effective_llm_profile_config,
 )
-from persistence.run_queue import QueuedRunAdmission, RunAdmissionQueue
-from persistence.run_store import RunStatus
 from integration.observability.trace_context import (
-    bind_otel_context,
-    bind_otel_traceparent,
-    capture_otel_context,
     TraceParentValidationError,
-    W3CTraceParent,
     parse_traceparent,
 )
-from utils.logging import get_logger
-from utils.identifiers import validate_session_id
-from utils.streaming import PROTOCOL, build_agent_event
-from workspace.workspaces import (
-    WorkspaceNotFoundError,
-    enforce_workspace_access,
-    workspace_scope,
+from llm.llm_request_mode import normalize_llm_request_mode
+from persistence.execution_store import (
+    ExecutionStoreCorruptionError,
+    IdempotencyConflictError as DurableIdempotencyConflictError,
+    InteractionCheckpointError,
 )
-from api.routes.errors import workspace_not_found_response
+from utils.identifiers import validate_session_id
+from utils.logging import get_logger
 
-logger = get_logger("routes.workflows")
 
-workflows_bp = Blueprint("workflows", __name__, url_prefix="/agentic")
+workflows_router = APIRouter(prefix="/agentic")
+logger = get_logger("api.routes.workflows")
+_SSE_HEARTBEAT_SECONDS = max(
+    1.0,
+    float(os.getenv("AGENTIC_SSE_HEARTBEAT_SECONDS", "15")),
+)
+_SYNC_CLEANUP_TIMEOUT_SECONDS = 10.0
+_SYNC_TRACE_MAX_TOOL_CALLS = 2048
+_SYNC_TRACE_MAX_TOOL_FAILURES = 512
 
 
 def _get_orchestrator():
     from api.routes import get_orchestrator
+
     return get_orchestrator()
 
 
-def _get_request_workspace_id():
-    from api.routes import get_request_workspace_id
-    return get_request_workspace_id()
+def _get_runtime():
+    from api.routes import get_agent_execution_runtime
+
+    return get_agent_execution_runtime()
 
 
-def _run_tps_limit(orchestrator) -> int:
+def _get_stores():
+    from api.routes import get_request_stores
+
+    return get_request_stores()
+
+
+def _run_scope(username: str, workspace_id: str, action: str) -> RunScope:
+    required = {
+        "run": "agent:run",
+        "read": "agent:read",
+        "cancel": "agent:cancel",
+    }.get(action)
+    return RunScope(
+        username=username,
+        workspace_id=workspace_id,
+        scopes=(required,) if required else (),
+    )
+
+
+def _run_links(run_id: str) -> dict[str, str]:
+    base = "/agentic/runs/{}".format(run_id)
+    return {
+        "self": base,
+        "events": "{}/events".format(base),
+        "cancel": "{}/cancel".format(base),
+    }
+
+
+def _error(
+    error_code: str,
+    detail: str,
+    status_code: int,
+    *,
+    retriable: bool = False,
+    run_id: str | None = None,
+) -> JSONResponse:
+    body: dict[str, Any] = {
+        "error": {
+            "type": "async_run_error",
+            "error_code": error_code,
+            "detail": detail,
+            "retriable": retriable,
+        }
+    }
+    if run_id:
+        body["run_id"] = run_id
+    return JSONResponse(body, status_code=status_code)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _encode_event(event: Any) -> str:
+    return "id: {}\nevent: {}\ndata: {}\n\n".format(
+        event.seq,
+        event.event_type,
+        json.dumps(
+            _json_safe(event.to_dict()),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def _heartbeat(run_id: str, last_seq: int) -> str:
+    payload = json.dumps(
+        {
+            "run_id": run_id,
+            "last_seq": last_seq,
+            "ts": int(time.time() * 1000),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return ": heartbeat {}\n\n".format(payload)
+
+
+def _request_fingerprint(
+    *,
+    username: str,
+    workspace_id: str,
+    session_id: str,
+    data: dict[str, Any],
+) -> str:
+    canonical = json.dumps(
+        {
+            "username": username,
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "request": str(data.get("request") or "").strip(),
+            "interaction_response": data.get("interaction_response"),
+            "agent_mode": resolve_agent_mode(
+                {"agent_mode": data.get("agent_mode")}
+            ),
+            "llm_request_mode": normalize_llm_request_mode(
+                data.get("llm_request_mode")
+            ),
+            "model_profile_id": str(
+                data.get("model_profile_id") or ""
+            ).strip(),
+            "requested_operation_key": str(
+                data.get("requested_operation_key") or ""
+            ).strip(),
+            "arguments": data.get("arguments"),
+            "include_trace": data.get("include_trace") is True,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _idempotency_hash(request: Request) -> str:
+    raw = str(request.headers.get("Idempotency-Key") or "").strip()
+    if not raw:
+        raise ValueError("Idempotency-Key is required")
+    if len(raw) > 512:
+        raise ValueError("Idempotency-Key is too long")
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _status_from_turn(turn: dict[str, Any]) -> str:
+    return {
+        "success": "completed",
+        "queued": "queued",
+        "running": "running",
+        "awaiting_input": "awaiting_input",
+        "failed": "failed",
+        "cancelled": "cancelled",
+    }.get(str(turn.get("status") or ""), "failed")
+
+
+def _durable_payload(
+    turn: dict[str, Any],
+    *,
+    created: bool | None = None,
+) -> dict[str, Any]:
+    run_id = str(turn.get("run_id") or "")
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "session_id": str(turn.get("session_id") or ""),
+        "turn_id": int(turn.get("turn_id") or 0),
+        "status": _status_from_turn(turn),
+        "links": _run_links(run_id),
+    }
+    if created is not None:
+        payload["created"] = created
+    final_output = turn.get("final_output")
+    if final_output is not None:
+        payload["result"] = final_output
+    pending = turn.get("pending_interaction")
+    if isinstance(pending, dict):
+        payload["pending_interaction"] = dict(pending)
+    error_code = str(turn.get("error_code") or "").strip()
+    if error_code:
+        error_detail = "Execution failed"
+        if isinstance(final_output, dict):
+            error_detail = str(final_output.get("error") or error_detail)
+        payload["error"] = {
+            "error_code": error_code,
+            "message": error_detail,
+            "retriable": error_code in {
+                "SERVICE_RESTARTED",
+                "TASK_START_FAILED",
+            },
+        }
+    return payload
+
+
+def _snapshot_payload(
+    snapshot: RunSnapshot,
+    *,
+    created: bool | None = None,
+) -> dict[str, Any]:
+    payload = snapshot.to_view().to_dict()
+    payload["links"] = _run_links(snapshot.run_id)
+    if created is not None:
+        payload["created"] = created
+    return payload
+
+
+async def _existing_admission_payload(
+    turn: dict[str, Any],
+    *,
+    manager: Any,
+    scope: RunScope,
+) -> dict[str, Any]:
+    snapshot = await manager.get_run(str(turn.get("run_id") or ""), scope)
+    if snapshot is not None:
+        return _snapshot_payload(snapshot, created=False)
+    return _durable_payload(turn, created=False)
+
+
+async def _lookup_exact_retry(
+    *,
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    idempotency_key_hash: str,
+    request_fingerprint: str,
+) -> dict[str, Any] | None:
+    return await runtime.short_io.run(
+        execution_store.lookup_idempotent_turn,
+        session_id=session_id,
+        idempotency_key_hash=idempotency_key_hash,
+        request_fingerprint=request_fingerprint,
+    )
+
+
+async def _lookup_repeated_interaction(
+    *,
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    interaction_response: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if interaction_response is None:
+        return None
+    return await runtime.short_io.run(
+        execution_store.lookup_consumed_interaction_turn,
+        session_id=session_id,
+        interaction_id=str(
+            interaction_response.get("interaction_id") or ""
+        ).strip(),
+        interaction_response=interaction_response,
+    )
+
+
+def _interaction_error(exc: InteractionCheckpointError) -> JSONResponse:
+    code = str(getattr(exc, "code", "INTERACTION_CONFLICT"))
+    return _error(
+        code,
+        str(exc),
+        404 if code == "INTERACTION_NOT_FOUND" else 409,
+        run_id=getattr(exc, "existing_run_id", None),
+    )
+
+
+async def _validate_model_profile(
+    runtime: Any,
+    *,
+    model_profile_id: str,
+    workspace_id: str,
+) -> None:
+    await runtime.short_io.run(
+        resolve_effective_llm_profile_config,
+        model_profile_id or None,
+        allow_default_fallback=not bool(model_profile_id),
+        workspace_id=workspace_id,
+    )
+
+
+async def _deterministic_preflight(
+    runtime: Any,
+    *,
+    user_request: str,
+    user_context: dict[str, Any],
+    arguments: dict[str, Any] | None,
+    session_id: str,
+    username: str,
+    workspace_id: str,
+) -> bool:
+    preflight = getattr(
+        _get_orchestrator(),
+        "is_deterministic_request_potentially_applicable",
+        None,
+    )
+    if not callable(preflight):
+        return False
+    return bool(
+        await runtime.short_io.run(
+            preflight,
+            user_request=user_request,
+            user_context=user_context,
+            arguments=arguments,
+            session_id=session_id,
+            user_id=username,
+            workspace_id=workspace_id,
+        )
+    )
+
+
+async def _check_rate_limit(runtime: Any) -> bool:
+    limiter = getattr(_get_orchestrator(), "run_rate_limiter", None)
+    try_acquire = getattr(limiter, "try_acquire", None)
+    if not callable(try_acquire):
+        return True
+    return bool(await runtime.short_io.run(try_acquire))
+
+
+def _run_tps_limit(orchestrator: Any) -> int:
     agent_config = getattr(orchestrator, "agent_config", None)
     limits = getattr(agent_config, "limits", None)
     try:
@@ -63,603 +388,1089 @@ def _run_tps_limit(orchestrator) -> int:
         return 50
 
 
-def _reject_if_run_rate_limited(orchestrator):
-    limiter = getattr(orchestrator, "run_rate_limiter", None)
-    try_acquire = getattr(limiter, "try_acquire", None)
-    if callable(try_acquire) and not try_acquire():
-        return jsonify({
-            "error": "请求过于频繁，请稍后重试",
-            "limit": _run_tps_limit(orchestrator),
-        }), 429
+def _sync_error(
+    detail: str,
+    status_code: int,
+    *,
+    session_id: str = "",
+    run_id: str = "",
+    error_code: str = "",
+    limit: int | None = None,
+) -> JSONResponse:
+    body: dict[str, Any] = {
+        "status": "error",
+        "error": detail,
+        "final_answer": "",
+    }
+    if session_id:
+        body["session_id"] = session_id
+    if run_id:
+        body["run_id"] = run_id
+    if error_code:
+        body["error_code"] = error_code
+    if limit is not None:
+        body["limit"] = limit
+    return JSONResponse(body, status_code=status_code)
+
+
+def _sync_status(status: RunStatus) -> str:
+    return {
+        RunStatus.COMPLETED: "success",
+        RunStatus.FAILED: "error",
+        RunStatus.CANCELLED: "cancelled",
+        RunStatus.AWAITING_INPUT: "awaiting_input",
+    }.get(status, status.value)
+
+
+def _log_sync_cleanup_completion(
+    task: asyncio.Task[Any],
+    *,
+    action: str,
+    run_id: str,
+) -> None:
+    if task.cancelled():
+        logger.warning(
+            "sync cleanup task cancelled action=%s run_id=%s",
+            action,
+            run_id,
+        )
+        return
+    error = task.exception()
+    if error is not None:
+        logger.warning(
+            "sync cleanup task failed action=%s run_id=%s error_type=%s",
+            action,
+            run_id,
+            type(error).__name__,
+        )
+
+
+async def _run_sync_cleanup(
+    operation: Any,
+    *,
+    action: str,
+    run_id: str,
+) -> Any:
+    cleanup = asyncio.create_task(operation)
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(cleanup),
+            timeout=_SYNC_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        cleanup.add_done_callback(
+            lambda task: _log_sync_cleanup_completion(
+                task,
+                action=action,
+                run_id=run_id,
+            )
+        )
+        raise
+    except TimeoutError:
+        cleanup.add_done_callback(
+            lambda task: _log_sync_cleanup_completion(
+                task,
+                action=action,
+                run_id=run_id,
+            )
+        )
+        logger.warning(
+            "sync cleanup timed out action=%s run_id=%s",
+            action,
+            run_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "sync cleanup failed action=%s run_id=%s error_type=%s",
+            action,
+            run_id,
+            type(exc).__name__,
+        )
     return None
 
 
-def _deterministic_preflight(
-    orchestrator: Any,
+async def _cancel_sync_run(
     *,
-    user_request: str,
-    user_context: Dict[str, Any],
-    arguments: Optional[Dict[str, Any]],
-    session_id: str,
-    user_id: Optional[str],
-    workspace_id: Optional[str],
-) -> bool:
-    preflight = getattr(
-        orchestrator,
-        "is_deterministic_request_potentially_applicable",
-        None,
+    manager: Any,
+    run_id: str,
+    scope: RunScope,
+    reason: str,
+) -> RunSnapshot | None:
+    return await _run_sync_cleanup(
+        manager.cancel_run(run_id, scope, reason=reason),
+        action="cancel_run",
+        run_id=run_id,
     )
-    if not callable(preflight):
-        return False
-    return bool(
-        preflight(
-            user_request=user_request,
-            user_context=user_context,
-            arguments=arguments,
+
+
+async def _release_sync_reservation(
+    *,
+    event_hub: Any,
+    reservation_id: str,
+    run_id: str,
+) -> None:
+    await _run_sync_cleanup(
+        event_hub.release_subscriber_reservation(reservation_id),
+        action="release_reservation",
+        run_id=run_id,
+    )
+
+
+async def _mark_sync_turn_start_failed(
+    *,
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    turn_id: int,
+    run_id: str,
+) -> None:
+    await _run_sync_cleanup(
+        runtime.short_io.run(
+            execution_store.mark_turn_task_start_failed,
+            session_id,
+            turn_id,
+        ),
+        action="mark_turn_task_start_failed",
+        run_id=run_id,
+    )
+
+
+async def _allocate_sync_turn(
+    *,
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    user_request: str,
+    run_id: str,
+) -> tuple[dict[str, Any], bool]:
+    abandoned = asyncio.Event()
+
+    async def allocate() -> tuple[dict[str, Any], bool]:
+        turn, created = await runtime.short_io.run(
+            execution_store.create_turn_for_run,
             session_id=session_id,
-            user_id=user_id,
+            user_request=user_request,
+            run_id=run_id,
+            protocol_metadata={"protocol": "agentic_sync"},
+        )
+        if abandoned.is_set() and created:
+            await _mark_sync_turn_start_failed(
+                runtime=runtime,
+                execution_store=execution_store,
+                session_id=session_id,
+                turn_id=int(turn["turn_id"]),
+                run_id=str(turn["run_id"]),
+            )
+        return turn, created
+
+    allocation = asyncio.create_task(allocate())
+    try:
+        return await asyncio.shield(allocation)
+    except asyncio.CancelledError:
+        abandoned.set()
+        if allocation.done() and not allocation.cancelled():
+            error = allocation.exception()
+            if error is None:
+                turn, created = allocation.result()
+                if created:
+                    await _mark_sync_turn_start_failed(
+                        runtime=runtime,
+                        execution_store=execution_store,
+                        session_id=session_id,
+                        turn_id=int(turn["turn_id"]),
+                        run_id=str(turn["run_id"]),
+                    )
+        else:
+            allocation.add_done_callback(
+                lambda task: _log_sync_cleanup_completion(
+                    task,
+                    action="allocate_turn",
+                    run_id=run_id,
+                )
+            )
+        raise
+
+
+def _collect_sync_trace_event(
+    event: Any,
+    *,
+    tool_calls: list[str],
+    tool_failures: list[dict[str, str]],
+) -> None:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    if event.event_type == "tool.started":
+        tool_name = str(
+            payload.get("name") or payload.get("tool_name") or ""
+        ).strip()[:256]
+        if tool_name and len(tool_calls) < _SYNC_TRACE_MAX_TOOL_CALLS:
+            tool_calls.append(tool_name)
+        return
+    if event.event_type != "tool.finished" or str(
+        payload.get("status") or ""
+    ).strip().lower() not in {"error", "failed"}:
+        return
+    tool_name = str(
+        payload.get("name") or payload.get("tool_name") or ""
+    ).strip()[:256]
+    raw_error = payload.get("error")
+    error = (
+        str(raw_error.get("message") or "")
+        if isinstance(raw_error, dict)
+        else str(raw_error or "")
+    ).strip()[:1024]
+    if (
+        tool_name
+        and error
+        and len(tool_failures) < _SYNC_TRACE_MAX_TOOL_FAILURES
+    ):
+        tool_failures.append({"tool_name": tool_name, "error": error})
+
+
+async def _wait_for_sync_terminal(
+    *,
+    manager: Any,
+    event_hub: Any,
+    run_id: str,
+    scope: RunScope,
+    reservation_id: str,
+    include_trace: bool,
+) -> tuple[RunSnapshot, dict[str, Any] | None]:
+    cursor = 0
+    pending_reservation_id: str | None = reservation_id
+    trace_complete = include_trace
+    tool_calls: list[str] = []
+    tool_failures: list[dict[str, str]] = []
+
+    while True:
+        stream = event_hub.stream(
+            run_id,
+            after_seq=cursor,
+            reservation_id=pending_reservation_id,
+        )
+        pending_reservation_id = None
+        try:
+            async for event in stream:
+                cursor = max(cursor, int(event.seq))
+                if include_trace and trace_complete:
+                    _collect_sync_trace_event(
+                        event,
+                        tool_calls=tool_calls,
+                        tool_failures=tool_failures,
+                    )
+        except EventSubscriberReservationError:
+            # A very fast terminal Run releases outstanding reservations before
+            # this request activates its stream. Re-open without the consumed
+            # reservation; terminal replay does not consume subscriber capacity.
+            continue
+        except EventReplayUnavailableError:
+            snapshot = await manager.get_run(run_id, scope)
+            if snapshot is None:
+                raise RuntimeError("canonical run disappeared")
+            trace_complete = False
+            if snapshot.status in TERMINAL_RUN_STATUSES:
+                return snapshot, None
+            cursor = snapshot.last_seq
+            continue
+        finally:
+            await stream.aclose()
+
+        snapshot = await manager.get_run(run_id, scope)
+        if snapshot is None:
+            raise RuntimeError("canonical run disappeared")
+        if snapshot.status in TERMINAL_RUN_STATUSES:
+            if not include_trace or not trace_complete:
+                return snapshot, None
+            trace: dict[str, Any] = {"tool_calls": tool_calls}
+            if tool_failures:
+                trace["tool_failures"] = tool_failures
+            return snapshot, trace
+        # A slow-consumer detach closes the stream without completing the Run.
+        # Reattach after the last observed sequence instead of projecting an
+        # active snapshot as a terminal response.
+        await asyncio.sleep(0)
+
+
+def _sync_terminal_response(
+    snapshot: RunSnapshot,
+    *,
+    execution_trace: dict[str, Any] | None,
+) -> JSONResponse:
+    runtime_result = snapshot.result
+    final_output = (
+        runtime_result.content
+        if runtime_result is not None and runtime_result.content is not None
+        else (
+            runtime_result.structured_content
+            if runtime_result is not None
+            else None
+        )
+    )
+    body: dict[str, Any] = {
+        "status": _sync_status(snapshot.status),
+        "final_answer": coerce_final_output_to_text(final_output),
+        "session_id": snapshot.session_id,
+        "run_id": snapshot.run_id,
+    }
+    if snapshot.error is not None and snapshot.error.message:
+        body["error"] = snapshot.error.message
+    if snapshot.pending_interaction is not None:
+        body["pending_user_interaction"] = dict(snapshot.pending_interaction)
+    if execution_trace is not None:
+        body["execution_trace"] = execution_trace
+    return JSONResponse(body)
+
+
+@workflows_router.get("/model-profiles")
+async def list_model_profiles(
+    workspace_id: str = Depends(require_workspace_id),
+):
+    runtime = _get_runtime()
+    return await runtime.short_io.run(
+        get_public_llm_profiles,
+        workspace_id=workspace_id,
+    )
+
+
+@workflows_router.post("/runs")
+async def create_run(
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    data = await read_json_object(request)
+    user_request = str(data.get("request") or "").strip()
+    if not user_request:
+        return _error("INVALID_ARGUMENT", "request is required", 400)
+    raw_session_id = data.get("session_id")
+    if raw_session_id in (None, ""):
+        return _error("INVALID_ARGUMENT", "session_id is required", 400)
+    try:
+        session_id = validate_session_id(raw_session_id)
+        idempotency_key_hash = _idempotency_hash(request)
+        trace_context = parse_traceparent(request.headers.get("traceparent"))
+    except TraceParentValidationError as exc:
+        return _error("INVALID_TRACEPARENT", str(exc), 400)
+    except ValueError as exc:
+        return _error("INVALID_ARGUMENT", str(exc), 400)
+
+    arguments = data.get("arguments")
+    if arguments is not None and not isinstance(arguments, dict):
+        return _error("INVALID_ARGUMENT", "arguments must be an object or null", 400)
+    if "include_trace" in data and not isinstance(data.get("include_trace"), bool):
+        return _error("INVALID_ARGUMENT", "include_trace must be a boolean", 400)
+    interaction_response = data.get("interaction_response")
+    if interaction_response is not None and not isinstance(
+        interaction_response,
+        dict,
+    ):
+        return _error(
+            "INVALID_ARGUMENT",
+            "interaction_response must be an object or null",
+            400,
+        )
+    if isinstance(interaction_response, dict) and str(
+        interaction_response.get("action") or ""
+    ).strip().lower() == "cancel":
+        return _error(
+            "INTERACTION_CONFLICT",
+            "cancel the interaction through the session interaction endpoint",
+            409,
+        )
+
+    runtime = _get_runtime()
+    manager = runtime.manager
+    if manager is None or runtime.short_io is None:
+        return _error("RUNTIME_DRAINING", "runtime is unavailable", 503, retriable=True)
+    scope = _run_scope(current_user.username, workspace_id, "run")
+    _chat_store, execution_store = _get_stores()
+    fingerprint = _request_fingerprint(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        data=data,
+    )
+
+    try:
+        existing = await _lookup_exact_retry(
+            runtime=runtime,
+            execution_store=execution_store,
+            session_id=session_id,
+            idempotency_key_hash=idempotency_key_hash,
+            request_fingerprint=fingerprint,
+        )
+        if existing is not None:
+            return JSONResponse(
+                await _existing_admission_payload(
+                    existing,
+                    manager=manager,
+                    scope=scope,
+                ),
+                status_code=200,
+            )
+        repeated = await _lookup_repeated_interaction(
+            runtime=runtime,
+            execution_store=execution_store,
+            session_id=session_id,
+            interaction_response=interaction_response,
+        )
+        if repeated is not None:
+            return JSONResponse(
+                await _existing_admission_payload(
+                    repeated,
+                    manager=manager,
+                    scope=scope,
+                ),
+                status_code=200,
+            )
+    except DurableIdempotencyConflictError as exc:
+        return _error("IDEMPOTENCY_CONFLICT", str(exc), 409)
+    except InteractionCheckpointError as exc:
+        return _interaction_error(exc)
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _error(
+            "RUNTIME_CAPACITY_EXCEEDED",
+            "runtime capacity is exhausted",
+            429,
+            retriable=True,
+        )
+    except ExecutionStoreCorruptionError as exc:
+        return _error("EXECUTION_STORE_CORRUPT", str(exc), 503)
+
+    if runtime.state is not RuntimeState.ACCEPTING:
+        return _error(
+            "RUNTIME_DRAINING",
+            "runtime is not accepting new runs",
+            503,
+            retriable=True,
+        )
+    try:
+        if not await _check_rate_limit(runtime):
+            return _error(
+                "RUN_RATE_LIMITED",
+                "too many run requests",
+                429,
+                retriable=True,
+            )
+        model_profile_id = str(data.get("model_profile_id") or "").strip()
+        deterministic_candidate = await _deterministic_preflight(
+            runtime,
+            user_request=user_request,
+            user_context={
+                **data,
+                "interaction_response": interaction_response,
+            },
+            arguments=(dict(arguments) if arguments is not None else None),
+            session_id=session_id,
+            username=current_user.username,
             workspace_id=workspace_id,
         )
-    )
-
-
-def _traceparent_from_request() -> Optional[W3CTraceParent]:
-    return parse_traceparent(request.headers.get("traceparent"))
-
-
-def _invalid_traceparent_response(exc: TraceParentValidationError):
-    return jsonify({
-        "error": str(exc),
-        "error_code": "INVALID_TRACEPARENT",
-    }), 400
-
-
-def _trace_metadata(trace_context: Optional[W3CTraceParent]) -> Dict[str, str]:
-    if trace_context is None:
-        return {}
-    return {
-        "traceparent": trace_context.value,
-        "external_trace_id": trace_context.trace_id,
-        "external_parent_span_id": trace_context.parent_id,
-        "external_trace_flags": trace_context.trace_flags,
-    }
-
-
-def _ensure_run_owner(run_id: str, user_id: str) -> bool:
-    request_workspace_id = _get_request_workspace_id()
-    orchestrator = _get_orchestrator()
-    run = orchestrator.run_store.get_run(run_id)
-    if not run:
-        return False
-    metadata = dict(getattr(run, "metadata", {}) or {})
-    if metadata.get("user_id") != user_id:
-        return False
-    workspace_id = str(metadata.get("workspace_id") or "").strip()
-    if not workspace_id:
-        return False
-    if request_workspace_id != workspace_id:
-        return False
-    enforce_workspace_access(workspace_id)
-    return True
-
-
-_RUN_TERMINAL = object()
-_RUN_RECONNECT = object()
-_RUN_COMPLETED_TTL_SECONDS = max(0.0, float(os.getenv("AGENTIC_RUN_COMPLETED_TTL", "120")))
-_SSE_HEARTBEAT_SECONDS = max(1.0, float(os.getenv("AGENTIC_SSE_HEARTBEAT_SECONDS", "15")))
-_SSE_SUBSCRIBER_QUEUE_SIZE = max(1, int(os.getenv("AGENTIC_SSE_SUBSCRIBER_QUEUE_SIZE", "512")))
-
-
-def _extract_agent_envelope(event: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(event, dict):
-        return None
-    if event.get("protocol") == PROTOCOL:
-        return event
-    if event.get("event") == "agent.v2" and isinstance(event.get("data"), dict):
-        data = event["data"]
-        if data.get("protocol") == PROTOCOL:
-            return data
-    return None
-
-
-def _json_safe_sse_value(value: Any) -> Any:
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {key: _json_safe_sse_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe_sse_value(item) for item in value]
-    return value
-
-
-def _encode_agent_sse(envelope: Dict[str, Any]) -> str:
-    return "id: {}\nevent: agent.v2\ndata: {}\n\n".format(
-        _coerce_seq(envelope.get("seq")),
-        json.dumps(
-            _json_safe_sse_value(envelope),
-            ensure_ascii=False,
-            allow_nan=False,
-        ),
-    )
-
-
-def _encode_heartbeat_sse(handle: "AgenticRunHandle") -> str:
-    snapshot = handle.runtime_snapshot()
-    return "event: heartbeat\ndata: {}\n\n".format(
-        json.dumps(
-            {
-                "run_id": handle.active_run_id or handle.run_id,
-                "last_seq": snapshot.get("last_seq", 0),
-                "status": snapshot.get("status", "running"),
-                "ts": int(time.time() * 1000),
-            },
-            ensure_ascii=False,
+        if not deterministic_candidate:
+            await _validate_model_profile(
+                runtime,
+                model_profile_id=model_profile_id,
+                workspace_id=workspace_id,
+            )
+    except SystemConfigValidationError as exc:
+        return _error("INVALID_ARGUMENT", str(exc), 422)
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _error(
+            "RUNTIME_CAPACITY_EXCEEDED",
+            "runtime capacity is exhausted",
+            429,
+            retriable=True,
         )
-    )
 
-
-def _run_status_from_envelope(envelope: Dict[str, Any]) -> Optional[str]:
-    if str(envelope.get("type") or "") != "turn.finished":
-        return None
-    payload = envelope.get("payload") if isinstance(envelope.get("payload"), dict) else {}
-    status = str(payload.get("status") or "").strip()
-    return status or "success"
-
-
-def _mark_session_active(orchestrator, *, session_id: str, run_id: str, user_id: str, workspace_id: str) -> None:
     try:
-        chat_store, _execution_store = orchestrator._get_stores(user_id, workspace_id)  # pylint: disable=protected-access
-        set_active_run = getattr(chat_store, "set_active_run", None)
-        if callable(set_active_run):
-            set_active_run(session_id, run_id)
-    except Exception:
-        logger.debug(
-            "Skipping active-run marker for session_id=%s run_id=%s",
-            session_id,
-            run_id,
-            exc_info=True,
-        )
-
-
-def _clear_session_active(orchestrator, *, session_id: str, run_id: str, user_id: str, workspace_id: str) -> None:
-    try:
-        chat_store, _execution_store = orchestrator._get_stores(user_id, workspace_id)  # pylint: disable=protected-access
-        get_active_run = getattr(chat_store, "get_active_run", None)
-        clear_active_run = getattr(chat_store, "clear_active_run", None)
-        if callable(get_active_run) and get_active_run(session_id) not in {None, "", run_id}:
-            return
-        if callable(clear_active_run):
-            clear_active_run(session_id)
-    except Exception:
-        logger.debug(
-            "Skipping active-run clear for session_id=%s run_id=%s",
-            session_id,
-            run_id,
-            exc_info=True,
-        )
-
-
-class AgenticRunHandle:
-    """Owns one workflow run independently from transient HTTP subscribers."""
-
-    def __init__(
-        self,
-        *,
-        run_id: str,
-        user_request: str,
-        user_context: Dict[str, Any],
-        arguments: Optional[Dict[str, Any]],
-        session_id: str,
-        user_id: str,
-        workspace_id: str,
-        orchestrator: Any,
-        slot_manager: Any,
-        slot_limit_user_id: str,
-        traceparent: str = "",
-        event_observer: Optional[Callable[[Dict[str, Any]], None]] = None,
-        deterministic_preflight_result: Optional[bool] = None,
-        runtime_event_observer: Optional[Callable[[Any], None]] = None,
-    ) -> None:
-        self.run_id = run_id
-        self.active_run_id = run_id
-        self.user_request = user_request
-        self.user_context = dict(user_context or {})
-        self.arguments = arguments
-        self.session_id = session_id
-        self.user_id = user_id
-        self.workspace_id = workspace_id
-        self.orchestrator = orchestrator
-        self.slot_manager = slot_manager
-        self.slot_limit_user_id = slot_limit_user_id
-        self.traceparent = str(traceparent or "")
-        self.otel_context = capture_otel_context()
-        self.event_observer = event_observer
-        self.deterministic_preflight_result = deterministic_preflight_result
-        self.runtime_event_observer = runtime_event_observer
-        self.done = threading.Event()
-        self._lock = threading.RLock()
-        self._subscribers: Dict[str, "queue.Queue[Any]"] = {}
-        self._durable: list[Dict[str, Any]] = []
-        self._last_seq = 0
-        self._last_turn_id = 0
-        self._terminal_status: Optional[str] = None
-        self._terminal_payload: Dict[str, Any] = {}
-        self._completed_at: Optional[float] = None
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._run_with_context,
-            name="agentic-run-{}".format(self.run_id),
-            daemon=True,
-        )
-        self._thread.start()
-
-    def _run_with_context(self) -> None:
-        if self.runtime_event_observer is not None:
-            from integration.observability.workspace_router import (
-                register_run_runtime_event_consumer,
-                unregister_run_runtime_event_consumer,
+        async with manager.session_guard(scope, session_id):
+            existing = await _lookup_exact_retry(
+                runtime=runtime,
+                execution_store=execution_store,
+                session_id=session_id,
+                idempotency_key_hash=idempotency_key_hash,
+                request_fingerprint=fingerprint,
             )
-
-            register_run_runtime_event_consumer(self.run_id, self.runtime_event_observer)
-        try:
-            with bind_otel_context(self.otel_context):
-                self._run()
-        finally:
-            if self.runtime_event_observer is not None:
-                unregister_run_runtime_event_consumer(self.run_id, self.runtime_event_observer)
-
-    def _emit(self, envelope: Dict[str, Any]) -> None:
-        event_run_id = str(envelope.get("run_id") or "").strip()
-        if event_run_id:
-            self.active_run_id = event_run_id
-        turn_id = envelope.get("turn_id")
-        if isinstance(turn_id, int):
-            self._last_turn_id = turn_id
-
-        terminal_status = _run_status_from_envelope(envelope)
-        seq = envelope.get("seq")
-        try:
-            seq_int = int(seq)
-        except (TypeError, ValueError):
-            seq_int = 0
-
-        with self._lock:
-            # Buffer every envelope for cursor replay. Each subscriber has a
-            # bounded live queue; a slow subscriber is disconnected and resumes
-            # from its last delivered SSE id instead of growing memory forever.
-            self._durable.append(envelope)
-            if seq_int > self._last_seq:
-                self._last_seq = seq_int
-            if terminal_status:
-                self._terminal_status = terminal_status
-                payload = envelope.get("payload")
-                if isinstance(payload, dict):
-                    self._terminal_payload = dict(payload)
-            subscribers = list(self._subscribers.items())
-
-        if self.event_observer is not None:
-            try:
-                self.event_observer(envelope)
-            except Exception:
-                logger.warning("Workflow event observer failed", exc_info=True)
-
-        for sub_id, sub_queue in subscribers:
-            try:
-                sub_queue.put_nowait(envelope)
-            except queue.Full:
-                with self._lock:
-                    if self._subscribers.get(sub_id) is sub_queue:
-                        self._subscribers.pop(sub_id, None)
-                while True:
-                    try:
-                        sub_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                sub_queue.put_nowait(_RUN_RECONNECT)
-
-    def _build_error_envelope(self, exc: BaseException) -> Dict[str, Any]:
-        return build_agent_event(
-            run_id=self.active_run_id or self.run_id,
-            session_id=self.session_id,
-            turn_id=self._last_turn_id or 0,
-            event_type="turn.finished",
-            source={"node": "routes", "component": "workflow"},
-            payload={
-                "status": "error",
-                "error": "Workflow stream failed: {}".format(str(exc)),
-            },
-        )
-
-    def _run(self) -> None:
-        try:
-            _mark_session_active(
-                self.orchestrator,
-                session_id=self.session_id,
-                run_id=self.run_id,
-                user_id=self.user_id,
-                workspace_id=self.workspace_id,
-            )
-            with workspace_scope(self.workspace_id):
-                with bind_otel_traceparent(self.traceparent):
-                    for event in self.orchestrator.run(
-                        user_request=self.user_request,
-                        user_context=self.user_context,
-                        arguments=self.arguments,
-                        session_id=self.session_id,
-                        user_id=self.user_id,
-                        workspace_id=self.workspace_id,
-                        requested_run_id=self.run_id,
-                        traceparent=self.traceparent,
-                        deterministic_preflight_result=self.deterministic_preflight_result,
-                    ):
-                        envelope = _extract_agent_envelope(event)
-                        if envelope:
-                            self._emit(envelope)
-        except Exception as exc:
-            logger.exception("Error in workflow run handle")
-            try:
-                self._emit(self._build_error_envelope(exc))
-            except Exception:
-                logger.exception("Failed to emit workflow run-handle error envelope")
-        finally:
-            with self._lock:
-                if self._terminal_status is None:
-                    self._terminal_status = "interrupted"
-                self._completed_at = time.time()
-                subscribers = list(self._subscribers.values())
-                self._subscribers.clear()
-                self.done.set()
-
-            _clear_session_active(
-                self.orchestrator,
-                session_id=self.session_id,
-                run_id=self.run_id,
-                user_id=self.user_id,
-                workspace_id=self.workspace_id,
-            )
-            try:
-                self.slot_manager.release(self.slot_limit_user_id)
-            except Exception:
-                logger.warning("Failed to release run slot for %s", self.slot_limit_user_id, exc_info=True)
-            for sub_queue in subscribers:
-                try:
-                    sub_queue.put_nowait(_RUN_TERMINAL)
-                except queue.Full:
-                    while True:
-                        try:
-                            sub_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                    sub_queue.put_nowait(_RUN_RECONNECT)
-
-    def subscribe(
-        self,
-        *,
-        after_seq: int = 0,
-    ) -> Tuple[str, "queue.Queue[Any]", list[Dict[str, Any]], bool]:
-        sub_id = uuid.uuid4().hex
-        sub_queue: "queue.Queue[Any]" = queue.Queue(maxsize=_SSE_SUBSCRIBER_QUEUE_SIZE)
-        cursor = max(0, int(after_seq or 0))
-        with self._lock:
-            replay = [
-                envelope
-                for envelope in self._durable
-                if _coerce_seq(envelope.get("seq")) > cursor
-            ]
-            finished = self.done.is_set()
-            if not finished:
-                self._subscribers[sub_id] = sub_queue
-        return sub_id, sub_queue, replay, finished
-
-    def unsubscribe(self, sub_id: str) -> None:
-        with self._lock:
-            self._subscribers.pop(sub_id, None)
-
-    def runtime_snapshot(self) -> Dict[str, Any]:
-        """Cheap status/last_seq for list enrichment without building deltas."""
-        with self._lock:
-            status = self._terminal_status or ("completed" if self.done.is_set() else "running")
-            return {
-                "active_run_id": self.active_run_id or self.run_id,
-                "status": status,
-                "last_seq": self._last_seq,
-            }
-
-    def terminal_payload(self) -> Dict[str, Any]:
-        """Return the terminal envelope payload without rebuilding event replay."""
-        with self._lock:
-            return dict(self._terminal_payload)
-
-
-class AgenticRunRegistry:
-    """Process-local live run registry keyed by the client-visible run id."""
-
-    def __init__(self, *, completed_ttl: float = _RUN_COMPLETED_TTL_SECONDS) -> None:
-        self._runs: Dict[str, AgenticRunHandle] = {}
-        self._lock = threading.Lock()
-        self.completed_ttl = completed_ttl
-
-    def _expired_locked(self, handle: AgenticRunHandle, now: float) -> bool:
-        return (
-            handle.done.is_set()
-            and handle._completed_at is not None
-            and now - handle._completed_at > self.completed_ttl
-        )
-
-    def _sweep_locked(self) -> None:
-        now = time.time()
-        for run_id in [rid for rid, handle in self._runs.items() if self._expired_locked(handle, now)]:
-            self._runs.pop(run_id, None)
-
-    def get(self, run_id: str) -> Optional[AgenticRunHandle]:
-        clean = str(run_id or "").strip()
-        if not clean:
-            return None
-        with self._lock:
-            self._sweep_locked()
-            handle = self._runs.get(clean)
-            if handle is not None and self._expired_locked(handle, time.time()):
-                self._runs.pop(clean, None)
-                return None
-            return handle
-
-    @staticmethod
-    def _matches_scope(
-        handle: AgenticRunHandle,
-        *,
-        user_id: str,
-        workspace_id: str,
-    ) -> bool:
-        return (
-            bool(user_id)
-            and bool(workspace_id)
-            and handle.user_id == user_id
-            and handle.workspace_id == workspace_id
-        )
-
-    def find_by_session(
-        self,
-        session_id: str,
-        *,
-        user_id: str,
-        workspace_id: str,
-    ) -> Optional[AgenticRunHandle]:
-        clean = str(session_id or "").strip()
-        if not clean:
-            return None
-        with self._lock:
-            self._sweep_locked()
-            for handle in self._runs.values():
-                if handle.session_id == clean and self._matches_scope(
-                    handle,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                ):
-                    return handle
-        return None
-
-    def snapshot_by_session(
-        self,
-        *,
-        user_id: str,
-        workspace_id: str,
-    ) -> Dict[str, AgenticRunHandle]:
-        """Return all live handles keyed by session_id in one locked pass.
-
-        Lets list_sessions enrich every session without doing an O(runs) scan
-        (plus lock acquire) per session.
-        """
-        with self._lock:
-            self._sweep_locked()
-            return {
-                handle.session_id: handle
-                for handle in self._runs.values()
-                if handle.session_id
-                and self._matches_scope(
-                    handle,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
+            if existing is not None:
+                return JSONResponse(
+                    await _existing_admission_payload(
+                        existing,
+                        manager=manager,
+                        scope=scope,
+                    ),
+                    status_code=200,
                 )
-            }
+            repeated = await _lookup_repeated_interaction(
+                runtime=runtime,
+                execution_store=execution_store,
+                session_id=session_id,
+                interaction_response=interaction_response,
+            )
+            if repeated is not None:
+                return JSONResponse(
+                    await _existing_admission_payload(
+                        repeated,
+                        manager=manager,
+                        scope=scope,
+                    ),
+                    status_code=200,
+                )
+            await manager.assert_session_available(scope, session_id)
+            if interaction_response is None:
+                turn, created = await runtime.short_io.run(
+                    execution_store.create_turn_for_run,
+                    session_id=session_id,
+                    user_request=user_request,
+                    idempotency_key_hash=idempotency_key_hash,
+                    request_fingerprint=fingerprint,
+                )
+            else:
+                turn, created = await runtime.short_io.run(
+                    execution_store.consume_interaction_and_create_turn,
+                    session_id=session_id,
+                    interaction_id=str(
+                        interaction_response.get("interaction_id") or ""
+                    ).strip(),
+                    user_request=user_request,
+                    interaction_response=dict(interaction_response),
+                    idempotency_key_hash=idempotency_key_hash,
+                    request_fingerprint=fingerprint,
+                )
+            if not created:
+                return JSONResponse(
+                    await _existing_admission_payload(
+                        turn,
+                        manager=manager,
+                        scope=scope,
+                    ),
+                    status_code=200,
+                )
 
-    def add(self, handle: AgenticRunHandle) -> AgenticRunHandle:
-        # Register and start under the same lock so there is no window in which
-        # the handle is visible in the registry but its thread hasn't started --
-        # a reattacher in that window would block on an empty subscriber queue
-        # with no TERMINAL ever arriving. start() only spawns a daemon thread
-        # and does not re-enter the registry lock, so holding it is safe.
-        with self._lock:
-            self._sweep_locked()
-            existing = self._runs.get(handle.run_id)
-            if existing is not None and not existing.done.is_set():
-                return existing
-            self._runs[handle.run_id] = handle
+            context = RuntimeInvocationContext(
+                run_id=str(turn["run_id"]),
+                session_id=session_id,
+                turn_id=int(turn["turn_id"]),
+                workspace_id=workspace_id,
+                username=current_user.username,
+                query=user_request,
+                agent_mode=resolve_agent_mode(
+                    {"agent_mode": data.get("agent_mode")}
+                ),
+                llm_request_mode=normalize_llm_request_mode(
+                    data.get("llm_request_mode")
+                ),
+                model_profile_id=model_profile_id or None,
+                requested_operation_key=(
+                    str(data.get("requested_operation_key") or "").strip()
+                    or None
+                ),
+                arguments=dict(arguments) if arguments is not None else None,
+                include_trace=data.get("include_trace") is True,
+                supports_user_interaction=True,
+                traceparent=(
+                    trace_context.value if trace_context is not None else ""
+                ),
+                interaction_response=(
+                    dict(interaction_response)
+                    if interaction_response is not None
+                    else None
+                ),
+                concurrency_limit=100 if current_user.role == "admin" else 1,
+            )
             try:
-                handle.start()
-            except Exception:
-                # Don't leave a never-started zombie that would hang reattachers.
-                self._runs.pop(handle.run_id, None)
+                snapshot, manager_created = await manager.create_run(
+                    context,
+                    scope,
+                    session_guarded=True,
+                )
+            except BaseException:
+                await runtime.short_io.run(
+                    execution_store.mark_turn_task_start_failed,
+                    session_id,
+                    int(turn["turn_id"]),
+                )
                 raise
-        return handle
+            if not manager_created:
+                await runtime.short_io.run(
+                    execution_store.mark_turn_task_start_failed,
+                    session_id,
+                    int(turn["turn_id"]),
+                )
+                return _error(
+                    "TASK_START_FAILED",
+                    "run task was not uniquely registered",
+                    500,
+                )
+            return JSONResponse(
+                _snapshot_payload(snapshot, created=True),
+                status_code=202,
+            )
+    except DurableIdempotencyConflictError as exc:
+        return _error("IDEMPOTENCY_CONFLICT", str(exc), 409)
+    except InteractionCheckpointError as exc:
+        return _interaction_error(exc)
+    except SessionBusyError as exc:
+        return _error(
+            "SESSION_BUSY",
+            str(exc),
+            409,
+            run_id=exc.run_id,
+        )
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _error(
+            "RUNTIME_CAPACITY_EXCEEDED",
+            "runtime capacity is exhausted",
+            429,
+            retriable=True,
+        )
+    except ExecutionStoreCorruptionError as exc:
+        return _error("EXECUTION_STORE_CORRUPT", str(exc), 503)
 
 
-def _coerce_seq(value: Any) -> int:
+@workflows_router.post("/runs/sync")
+async def create_sync_run(
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    """Run the canonical async workflow and project its terminal legacy JSON."""
+
+    data = await read_json_object(request)
+    user_request = str(data.get("request") or "").strip()
+    if not user_request:
+        return _sync_error("Request is required", 400)
+
+    raw_context = data.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return _sync_error("context must be an object or null", 400)
+    context_values = dict(raw_context or {})
+    arguments = data.get("arguments")
+    if arguments is not None and not isinstance(arguments, dict):
+        return _sync_error("arguments must be an object or null", 400)
+    if "include_trace" in data and not isinstance(data.get("include_trace"), bool):
+        return _sync_error("include_trace must be a boolean", 400)
+    include_trace = data.get("include_trace") is True
+
+    raw_session_id = data.get("session_id")
+    generated_session_id = "sync_{}".format(uuid.uuid4().hex[:8])
     try:
-        return int(value)
+        session_id = validate_session_id(
+            raw_session_id
+            if raw_session_id not in (None, "")
+            else generated_session_id
+        )
+    except ValueError as exc:
+        return _sync_error(str(exc), 400)
+    try:
+        trace_context = parse_traceparent(request.headers.get("traceparent"))
+    except TraceParentValidationError as exc:
+        return _sync_error(
+            str(exc),
+            400,
+            session_id=session_id,
+            error_code="INVALID_TRACEPARENT",
+        )
+
+    runtime = _get_runtime()
+    manager = getattr(runtime, "manager", None)
+    event_hub = getattr(runtime, "event_hub", None) or getattr(
+        manager,
+        "event_bus",
+        None,
+    )
+    if manager is None or runtime.short_io is None or event_hub is None:
+        return _sync_error("runtime is unavailable", 503, session_id=session_id)
+    if runtime.state is not RuntimeState.ACCEPTING:
+        return _sync_error(
+            "runtime is not accepting new runs",
+            503,
+            session_id=session_id,
+        )
+
+    model_profile_id = str(
+        data.get("model_profile_id")
+        or context_values.get("model_profile_id")
+        or ""
+    ).strip()
+    try:
+        if not await _check_rate_limit(runtime):
+            return _sync_error(
+                "请求过于频繁，请稍后重试",
+                429,
+                session_id=session_id,
+                limit=_run_tps_limit(_get_orchestrator()),
+            )
+        deterministic_candidate = await _deterministic_preflight(
+            runtime,
+            user_request=user_request,
+            user_context={
+                **context_values,
+                "interaction_response": data.get("interaction_response"),
+            },
+            arguments=(dict(arguments) if arguments is not None else None),
+            session_id=session_id,
+            username=current_user.username,
+            workspace_id=workspace_id,
+        )
+        if not deterministic_candidate:
+            await _validate_model_profile(
+                runtime,
+                model_profile_id=model_profile_id,
+                workspace_id=workspace_id,
+            )
+    except SystemConfigValidationError as exc:
+        return _sync_error(str(exc), 400, session_id=session_id)
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _sync_error(
+            "runtime capacity is exhausted",
+            429,
+            session_id=session_id,
+        )
+
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:run", "agent:read", "agent:cancel"),
+    )
+    _chat_store, execution_store = _get_stores()
+    run_id = "agentic-{}".format(uuid.uuid4().hex)
+    turn_id = 0
+    turn_allocated = False
+    reservation_id: str | None = None
+    run_started = False
+    admission_complete = False
+    admission_cancel_reason = "sync_admission_failed"
+    try:
+        async with manager.session_guard(scope, session_id):
+            await manager.assert_session_available(scope, session_id)
+            try:
+                reservation_id = await event_hub.reserve_subscriber(run_id)
+                turn, created = await _allocate_sync_turn(
+                    runtime=runtime,
+                    execution_store=execution_store,
+                    session_id=session_id,
+                    user_request=user_request,
+                    run_id=run_id,
+                )
+                turn_id = int(turn["turn_id"])
+                if not created or str(turn["run_id"]) != run_id:
+                    raise RuntimeError("sync run admission was not unique")
+                turn_allocated = True
+                agent_mode = data.get("agent_mode")
+                if agent_mode in (None, ""):
+                    agent_mode = context_values.get("agent_mode")
+                llm_request_mode = data.get("llm_request_mode")
+                if llm_request_mode in (None, ""):
+                    llm_request_mode = context_values.get("llm_request_mode")
+                invocation = RuntimeInvocationContext(
+                    run_id=run_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    workspace_id=workspace_id,
+                    username=current_user.username,
+                    query=user_request,
+                    agent_mode=resolve_agent_mode({"agent_mode": agent_mode}),
+                    llm_request_mode=normalize_llm_request_mode(llm_request_mode),
+                    model_profile_id=model_profile_id or None,
+                    requested_operation_key=(
+                        str(
+                            data.get("requested_operation_key")
+                            or context_values.get("requested_operation_key")
+                            or ""
+                        ).strip()
+                        or None
+                    ),
+                    arguments=dict(arguments) if arguments is not None else None,
+                    include_trace=include_trace,
+                    supports_user_interaction=False,
+                    traceparent=(
+                        trace_context.value if trace_context is not None else ""
+                    ),
+                    concurrency_limit=(
+                        100 if current_user.role == "admin" else 1
+                    ),
+                    admission_timeout_seconds=300.0,
+                )
+                _snapshot, manager_created = await manager.create_run(
+                    invocation,
+                    scope,
+                    session_guarded=True,
+                )
+                if not manager_created:
+                    raise RuntimeError("sync run task was not uniquely registered")
+                run_started = True
+            except BaseException:
+                try:
+                    if turn_allocated:
+                        await _mark_sync_turn_start_failed(
+                            runtime=runtime,
+                            execution_store=execution_store,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            run_id=run_id,
+                        )
+                finally:
+                    if reservation_id is not None:
+                        await _release_sync_reservation(
+                            event_hub=event_hub,
+                            reservation_id=reservation_id,
+                            run_id=run_id,
+                        )
+                        reservation_id = None
+                raise
+        admission_complete = True
+    except EventSubscriberLimitExceeded:
+        return _sync_error(
+            "runtime capacity is exhausted",
+            429,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    except SessionBusyError as exc:
+        return _sync_error(
+            str(exc),
+            409,
+            session_id=session_id,
+            run_id=exc.run_id,
+        )
+    except InteractionCheckpointError as exc:
+        return _sync_error(
+            str(exc),
+            409,
+            session_id=session_id,
+            run_id=getattr(exc, "existing_run_id", None) or "",
+        )
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _sync_error(
+            "runtime capacity is exhausted",
+            429,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    except ExecutionStoreCorruptionError:
+        return _sync_error(
+            "execution store is unavailable",
+            503,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    except asyncio.CancelledError:
+        admission_cancel_reason = "sync_request_cancelled"
+        raise
+    except Exception as exc:
+        logger.warning(
+            "sync run admission failed run_id=%s error_type=%s",
+            run_id,
+            type(exc).__name__,
+        )
+        return _sync_error(
+            "运行失败",
+            500,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    finally:
+        if not admission_complete:
+            try:
+                if run_started:
+                    await _cancel_sync_run(
+                        manager=manager,
+                        run_id=run_id,
+                        scope=scope,
+                        reason=admission_cancel_reason,
+                    )
+            finally:
+                if reservation_id is not None:
+                    await _release_sync_reservation(
+                        event_hub=event_hub,
+                        reservation_id=reservation_id,
+                        run_id=run_id,
+                    )
+                    reservation_id = None
+
+    try:
+        terminal, execution_trace = await _wait_for_sync_terminal(
+            manager=manager,
+            event_hub=event_hub,
+            run_id=run_id,
+            scope=scope,
+            reservation_id=reservation_id,
+            include_trace=include_trace,
+        )
+        return _sync_terminal_response(
+            terminal,
+            execution_trace=execution_trace,
+        )
+    except asyncio.CancelledError:
+        await _cancel_sync_run(
+            manager=manager,
+            run_id=run_id,
+            scope=scope,
+            reason="sync_request_cancelled",
+        )
+        raise
+    except Exception as exc:
+        current = await manager.get_run(run_id, scope)
+        if current is not None and current.status in TERMINAL_RUN_STATUSES:
+            return _sync_terminal_response(current, execution_trace=None)
+        await _cancel_sync_run(
+            manager=manager,
+            run_id=run_id,
+            scope=scope,
+            reason="sync_wait_failed",
+        )
+        logger.warning(
+            "sync run wait failed run_id=%s error_type=%s",
+            run_id,
+            type(exc).__name__,
+        )
+        return _sync_error(
+            "运行失败",
+            500,
+            session_id=session_id,
+            run_id=run_id,
+        )
+    finally:
+        if reservation_id is not None:
+            await _release_sync_reservation(
+                event_hub=event_hub,
+                reservation_id=reservation_id,
+                run_id=run_id,
+            )
+
+
+@workflows_router.get("/runs/{run_id}")
+async def get_run(
+    run_id: str,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    runtime = _get_runtime()
+    manager = runtime.manager
+    scope = _run_scope(current_user.username, workspace_id, "read")
+    if manager is not None:
+        snapshot = await manager.get_run(run_id, scope)
+        if snapshot is not None:
+            return _snapshot_payload(snapshot)
+    _chat_store, execution_store = _get_stores()
+    try:
+        _session_id, turn = await runtime.short_io.run(
+            execution_store.find_turn_by_run_id,
+            run_id,
+        )
+    except ExecutionStoreCorruptionError as exc:
+        return _error("EXECUTION_STORE_CORRUPT", str(exc), 503)
+    if turn is None:
+        return _error("RUN_NOT_FOUND", "Run not found", 404)
+    return _durable_payload(turn)
+
+
+def _event_cursor(request: Request) -> int:
+    header = request.headers.get("Last-Event-ID")
+    query = request.query_params.get("after_seq")
+    if header not in (None, "") and query not in (None, ""):
+        if int(header) != int(query):
+            raise ValueError("Last-Event-ID and after_seq conflict")
+    cursor = int(header or query or 0)
+    if cursor < 0:
+        raise ValueError("after_seq must be a non-negative integer")
+    return cursor
+
+
+@workflows_router.get("/runs/{run_id}/events")
+async def stream_run_events(
+    run_id: str,
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    runtime = _get_runtime()
+    manager = runtime.manager
+    scope = _run_scope(current_user.username, workspace_id, "read")
+    snapshot = (
+        await manager.get_run(run_id, scope)
+        if manager is not None
+        else None
+    )
+    if snapshot is None:
+        _chat_store, execution_store = _get_stores()
+        _session_id, turn = await runtime.short_io.run(
+            execution_store.find_turn_by_run_id,
+            run_id,
+        )
+        if turn is None:
+            return _error("RUN_NOT_FOUND", "Run not found", 404)
+        return JSONResponse(
+            {
+                "error": {
+                    "type": "async_run_error",
+                    "error_code": "EVENT_REPLAY_UNAVAILABLE",
+                    "detail": "Run event replay is unavailable after service restart",
+                    "retriable": False,
+                },
+                "run_id": run_id,
+                "status": _status_from_turn(turn),
+            },
+            status_code=410,
+        )
+    try:
+        cursor = _event_cursor(request)
     except (TypeError, ValueError):
-        return 0
+        return _error(
+            "INVALID_ARGUMENT",
+            "after_seq must be a non-negative integer",
+            400,
+        )
+    try:
+        await manager.repository.list_after(run_id, cursor)
+        reservation_id = await manager.event_bus.reserve_subscriber(run_id)
+    except EventReplayUnavailableError as exc:
+        return _error(exc.error_code, str(exc), 410, run_id=run_id)
+    except EventSubscriberLimitExceeded as exc:
+        return _error(
+            "RUNTIME_CAPACITY_EXCEEDED",
+            str(exc),
+            429,
+            retriable=True,
+        )
 
+    event_stream = manager.event_bus.stream(
+        run_id,
+        after_seq=cursor,
+        reservation_id=reservation_id,
+    )
 
-_RUN_REGISTRY = AgenticRunRegistry()
-
-
-def get_run_registry() -> AgenticRunRegistry:
-    return _RUN_REGISTRY
-
-
-def _get_run_admission_queue(orchestrator: Any) -> RunAdmissionQueue:
-    admission_queue = getattr(orchestrator, "run_admission_queue", None)
-    if isinstance(admission_queue, RunAdmissionQueue):
-        return admission_queue
-    admission_queue = RunAdmissionQueue(orchestrator.slot_manager)
-    setattr(orchestrator, "run_admission_queue", admission_queue)
-    return admission_queue
-
-
-def _run_links(run_id: str) -> Dict[str, str]:
-    return {
-        "status": "/agentic/runs/{}/status".format(run_id),
-        "events": "/agentic/runs/{}/events".format(run_id),
-        "cancel": "/agentic/runs/{}/cancel".format(run_id),
-    }
-
-
-def _queued_run_payload(orchestrator: Any, run_id: str) -> Dict[str, Any]:
-    run = orchestrator.run_store.get_run(run_id)
-    admission_queue = _get_run_admission_queue(orchestrator)
-    position = admission_queue.position(run_id)
-    metadata = dict(getattr(run, "metadata", {}) or {})
-    return {
-        "run_id": run_id,
-        "session_id": metadata.get("session_id"),
-        "status": run.status.value if run is not None else "queued",
-        "queue": {
-            "position": position,
-            "limit": metadata.get("admission_limit"),
-            "queued_at": metadata.get("queued_at"),
-        },
-        "links": _run_links(run_id),
-    }
-
-
-def _stream_response(handle: AgenticRunHandle, *, after_seq: int = 0) -> Response:
-    sub_id, sub_queue, replay, finished = handle.subscribe(after_seq=after_seq)
-
-    def generate() -> Iterator[str]:
+    async def generate():
+        last_seq = cursor
+        next_event: asyncio.Task[Any] | None = None
         try:
             yield "retry: 2000\n\n"
-            for envelope in replay:
-                yield _encode_agent_sse(envelope)
-            if finished:
-                return
+            next_event = asyncio.create_task(anext(event_stream))
             while True:
-                try:
-                    item = sub_queue.get(timeout=_SSE_HEARTBEAT_SECONDS)
-                except queue.Empty:
-                    yield _encode_heartbeat_sse(handle)
+                done, _pending = await asyncio.wait(
+                    {next_event},
+                    timeout=_SSE_HEARTBEAT_SECONDS,
+                )
+                if not done:
+                    yield _heartbeat(run_id, last_seq)
                     continue
-                if item is _RUN_TERMINAL or item is _RUN_RECONNECT:
-                    break
-                if isinstance(item, dict):
-                    yield _encode_agent_sse(item)
+                try:
+                    event = next_event.result()
+                except StopAsyncIteration:
+                    return
+                last_seq = int(event.seq)
+                yield _encode_event(event)
+                next_event = asyncio.create_task(anext(event_stream))
         finally:
-            handle.unsubscribe(sub_id)
+            if next_event is not None and not next_event.done():
+                next_event.cancel()
+                await asyncio.gather(next_event, return_exceptions=True)
+            await event_stream.aclose()
+            await manager.event_bus.release_subscriber_reservation(
+                reservation_id
+            )
 
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
@@ -668,558 +1479,131 @@ def _stream_response(handle: AgenticRunHandle, *, after_seq: int = 0) -> Respons
     )
 
 
-@workflows_bp.route("/model-profiles", methods=["GET"])
-@require_auth()
-def list_model_profiles():
-    """List enabled model profiles available for chat selection."""
+@workflows_router.post("/runs/{run_id}/cancel")
+async def cancel_run(
+    run_id: str,
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    data = await read_optional_json_object(request)
+    reason = str(data.get("reason") or "").strip() or "user_requested"
+    runtime = _get_runtime()
+    manager = runtime.manager
+    if manager is None:
+        return _error("RUN_NOT_FOUND", "Run not found", 404)
     try:
-        workspace_id = _get_request_workspace_id()
-    except WorkspaceNotFoundError as exc:
-        return workspace_not_found_response(exc)
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
-    return jsonify(get_public_llm_profiles(workspace_id=workspace_id))
-
-
-@workflows_bp.route("/runs/stream", methods=["POST"])
-@require_auth()
-def start_workflow_stream():
-    """
-    Start an agentic workflow and stream events via SSE.
-
-    Request body:
-        {
-            "request": "User request text",
-            "context": {"optional": "context"},
-            "session_id": "required-session-id"
-        }
-
-    Returns:
-        SSE stream of workflow events
-    """
-    data = request.get_json() or {}
-    user_request = data.get("request", "").strip()
-
-    if not user_request:
-        return jsonify({"error": "Request is required"}), 400
-
-    current_user = get_current_user()
-    if not current_user:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    try:
-        trace_context = _traceparent_from_request()
-    except TraceParentValidationError as exc:
-        return _invalid_traceparent_response(exc)
-
-    raw_context = data.get("context")
-    if raw_context is not None and not isinstance(raw_context, dict):
-        return jsonify({"error": "context must be an object"}), 400
-    user_context = set_user_interaction_capability(
-        dict(raw_context or {}),
-        supported=True,
-    )
-    top_level_operation_key = str(data.get("requested_operation_key") or "").strip()
-    context_operation_key = str(user_context.get("requested_operation_key") or "").strip()
-    requested_operation_key = top_level_operation_key or context_operation_key
-    if requested_operation_key:
-        user_context["requested_operation_key"] = requested_operation_key
-    arguments = data.get("arguments")
-    if arguments is not None and not isinstance(arguments, dict):
-        return jsonify({"error": "arguments must be an object"}), 400
-    raw_session_id = data.get("session_id")
-    requested_run_id = str(data.get("run_id") or "").strip() or None
-    workspace_id = _get_request_workspace_id()
-
-    if raw_session_id in (None, ""):
-        return jsonify({"error": "session_id is required"}), 400
-    try:
-        session_id = validate_session_id(raw_session_id)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    orchestrator = _get_orchestrator()
-    defer_llm_validation = _deterministic_preflight(
-        orchestrator,
-        user_request=user_request,
-        user_context=user_context,
-        arguments=arguments,
-        session_id=session_id,
-        user_id=current_user.username,
-        workspace_id=workspace_id,
-    )
-    if not defer_llm_validation:
-        requested_model_profile_id = str(user_context.get("model_profile_id") or "").strip()
-        try:
-            resolve_effective_llm_profile_config(
-                requested_model_profile_id or None,
-                allow_default_fallback=not bool(requested_model_profile_id),
-                workspace_id=workspace_id,
-            )
-        except SystemConfigValidationError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-    logger.info("Starting agentic workflow stream")
-
-    admission_queue = _get_run_admission_queue(orchestrator)
-    limit = 100 if current_user.role == "admin" else 1
-    run_id = requested_run_id or "agentic-{}".format(uuid.uuid4().hex)
-    registry = get_run_registry()
-
-    handle = registry.get(run_id)
-    if handle is not None and (
-        handle.user_id != current_user.username or handle.workspace_id != workspace_id
-    ):
-        return jsonify({"error": "Run not found"}), 404
-
-    if handle is not None:
-        return _stream_response(handle)
-
-    existing_run = orchestrator.run_store.get_run(run_id)
-    if existing_run is not None:
-        if (
-            existing_run.metadata.get("user_id") != current_user.username
-            or existing_run.metadata.get("workspace_id") != workspace_id
-        ):
-            return jsonify({"error": "Run not found"}), 404
-        if existing_run.status == RunStatus.QUEUED:
-            return jsonify(_queued_run_payload(orchestrator, run_id)), 202
-        if existing_run.status == RunStatus.RUNNING:
-            payload = _queued_run_payload(orchestrator, run_id)
-            payload["status"] = "running"
-            return jsonify(payload), 202
-        return jsonify({"error": "Run already finished", "run_id": run_id}), 409
-
-    rate_limit_response = _reject_if_run_rate_limited(orchestrator)
-    if rate_limit_response is not None:
-        return rate_limit_response
-
-    run_metadata = {
-        "source": "agentic_stream",
-        "session_id": session_id,
-        "user_id": current_user.username,
-        "workspace_id": workspace_id,
-        "admission_limit": limit,
-        **_trace_metadata(trace_context),
-    }
-    handle = AgenticRunHandle(
-        run_id=run_id,
-        user_request=user_request,
-        user_context=user_context,
-        arguments=arguments,
-        session_id=session_id,
-        user_id=current_user.username,
-        workspace_id=workspace_id,
-        orchestrator=orchestrator,
-        slot_manager=admission_queue,
-        slot_limit_user_id=current_user.username,
-        traceparent=trace_context.value if trace_context is not None else "",
-        deterministic_preflight_result=True if defer_llm_validation else None,
-    )
-
-    if admission_queue.try_acquire(current_user.username, limit):
-        orchestrator.run_store.create_run(
-            run_id=run_id,
-            user_request=user_request,
-            metadata=run_metadata,
+        snapshot = await manager.cancel_run(
+            run_id,
+            _run_scope(current_user.username, workspace_id, "cancel"),
+            reason=reason,
         )
-        try:
-            registered_handle = registry.add(handle)
-        except Exception:
-            orchestrator.run_store.fail_run(run_id, "Failed to start workflow run")
-            admission_queue.release(current_user.username)
-            raise
-        if registered_handle is not handle:
-            admission_queue.release(current_user.username)
-        return _stream_response(registered_handle)
-
-    queued_metadata = {
-        **run_metadata,
-        "queued_at": int(time.time() * 1000),
-    }
-    orchestrator.run_store.queue_run(
-        run_id=run_id,
-        user_request=user_request,
-        metadata=queued_metadata,
-    )
-    _mark_session_active(
-        orchestrator,
-        session_id=session_id,
-        run_id=run_id,
-        user_id=current_user.username,
-        workspace_id=workspace_id,
-    )
-
-    def admit_queued_run() -> None:
-        try:
-            queued_run = orchestrator.run_store.get_run(run_id)
-            if queued_run is None or queued_run.status != RunStatus.QUEUED:
-                admission_queue.release(current_user.username)
-                return
-            orchestrator.run_store.create_run(
-                run_id=run_id,
-                user_request=user_request,
-                metadata=run_metadata,
-            )
-            registered_handle = registry.add(handle)
-            if registered_handle is not handle:
-                admission_queue.release(current_user.username)
-        except Exception:
-            logger.exception("Failed to admit queued run %s", run_id)
-            orchestrator.run_store.fail_run(run_id, "Failed to start queued workflow run")
-            _clear_session_active(
-                orchestrator,
-                session_id=session_id,
-                run_id=run_id,
-                user_id=current_user.username,
-                workspace_id=workspace_id,
-            )
-            admission_queue.release(current_user.username)
-
-    position = admission_queue.enqueue(
-        QueuedRunAdmission(
-            run_id=run_id,
-            user_id=current_user.username,
-            limit=limit,
-            on_admit=admit_queued_run,
-        )
-    )
-    if position is None:
-        admitted_handle = registry.get(run_id)
-        if admitted_handle is not None:
-            return _stream_response(admitted_handle)
-    return jsonify(_queued_run_payload(orchestrator, run_id)), 202
-
-
-@workflows_bp.route("/runs/<run_id>/status", methods=["GET"])
-@require_auth()
-def get_run_status(run_id: str):
-    """Get status of a workflow run."""
-    current_user = get_current_user()
-    if not current_user or not _ensure_run_owner(run_id, current_user.username):
-        return jsonify({"error": "Run not found"}), 404
-
-    orchestrator = _get_orchestrator()
-    status = orchestrator.get_run_status(run_id)
-
-    if not status:
-        return jsonify({"error": "Run not found"}), 404
-
-    status["links"] = _run_links(run_id)
-    if status.get("status") == RunStatus.QUEUED.value:
-        run = orchestrator.run_store.get_run(run_id)
-        metadata = dict(getattr(run, "metadata", {}) or {})
-        status["queue"] = {
-            "position": _get_run_admission_queue(orchestrator).position(run_id),
-            "limit": metadata.get("admission_limit"),
-            "queued_at": metadata.get("queued_at"),
-        }
-
-    return jsonify(status)
-
-
-@workflows_bp.route("/runs/<run_id>/events", methods=["GET"])
-@require_auth()
-def stream_run_events(run_id: str):
-    """Attach or reattach to one admitted run using an SSE sequence cursor."""
-    current_user = get_current_user()
-    if not current_user or not _ensure_run_owner(run_id, current_user.username):
-        return jsonify({"error": "Run not found"}), 404
-
-    orchestrator = _get_orchestrator()
-    run = orchestrator.run_store.get_run(run_id)
-    if run is not None and run.status == RunStatus.QUEUED:
-        return jsonify(_queued_run_payload(orchestrator, run_id)), 409
-
-    handle = get_run_registry().get(run_id)
-    if handle is None:
-        return jsonify({
-            "error": "Run event stream is no longer available",
-            "run_id": run_id,
-            "status": run.status.value if run is not None else "not_found",
-        }), 410
-
-    cursor_raw = request.headers.get("Last-Event-ID") or request.args.get("after_seq") or 0
-    return _stream_response(handle, after_seq=_coerce_seq(cursor_raw))
-
-
-@workflows_bp.route("/runs/<run_id>/cancel", methods=["POST"])
-@require_auth()
-def cancel_run(run_id: str):
-    """Cancel a running workflow."""
-    current_user = get_current_user()
-    if not current_user or not _ensure_run_owner(run_id, current_user.username):
-        return jsonify({"error": "Run not found"}), 404
-
-    data = request.get_json(silent=True) or {}
-    reason = data.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        reason = "unspecified"
-
-    orchestrator = _get_orchestrator()
-    run = orchestrator.run_store.get_run(run_id)
-    was_queued = _get_run_admission_queue(orchestrator).cancel(run_id)
-    success = orchestrator.cancel_run(run_id, reason=reason)
-
-    if not success:
-        current_run = orchestrator.run_store.get_run(run_id)
-        if current_run is None:
-            return jsonify({"error": "Run not found"}), 404
-        return jsonify({
-            "success": False,
-            "cancelled": False,
-            "was_queued": was_queued,
-            "status": current_run.status.value,
-            "error": "Run is not cancellable in its current state",
-        }), 409
-
-    if was_queued and run is not None:
-        metadata = dict(run.metadata or {})
-        session_id = str(metadata.get("session_id") or "").strip()
-        workspace_id = str(metadata.get("workspace_id") or "").strip()
-        if session_id and workspace_id:
-            _clear_session_active(
-                orchestrator,
-                session_id=session_id,
-                run_id=run_id,
-                user_id=current_user.username,
-                workspace_id=workspace_id,
-            )
-
-    return jsonify({"success": True, "cancelled": True, "was_queued": was_queued})
+    except RunNotFoundError:
+        return _error("RUN_NOT_FOUND", "Run not found", 404)
+    return _snapshot_payload(snapshot)
 
 
 _FEEDBACK_VOTES = {"up", "down", "none"}
 
 
-@workflows_bp.route("/runs/<run_id>/feedback", methods=["POST"])
-@require_auth()
-def submit_run_feedback(run_id: str):
-    """Vote on memories that were injected into this turn.
-
-    Body: ``{"vote": "up"|"down"|"none"}``. Pure indicator update — no reflection
-    re-pass, no proposal creation. New proposals come from
-    `memory` (active_chat) or reflection (passive); this
-    route only adjusts active_endorsements / rejection_count for fingerprints
-    that were already injected via near_point_recall.
-    """
-    current_user = get_current_user()
-    if not current_user or not _ensure_run_owner(run_id, current_user.username):
-        return jsonify({"error": "Run not found"}), 404
-
-    data = request.get_json(silent=True) or {}
+@workflows_router.post("/runs/{run_id}/feedback")
+async def submit_run_feedback(
+    run_id: str,
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    data = await read_optional_json_object(request)
     vote = str(data.get("vote") or data.get("feedback") or "").strip().lower()
     if vote not in _FEEDBACK_VOTES:
-        return jsonify({"error": "Invalid vote", "allowed": sorted(_FEEDBACK_VOTES)}), 400
-
+        return JSONResponse(
+            {"error": "Invalid vote", "allowed": sorted(_FEEDBACK_VOTES)},
+            status_code=400,
+        )
+    runtime = _get_runtime()
+    manager = runtime.manager
+    scope = _run_scope(current_user.username, workspace_id, "read")
+    live = await manager.get_run(run_id, scope) if manager is not None else None
+    _chat_store, execution_store = _get_stores()
+    session_id, turn = await runtime.short_io.run(
+        execution_store.find_turn_by_run_id,
+        run_id,
+    )
+    if turn is None or session_id is None:
+        if live is None:
+            return _error("RUN_NOT_FOUND", "Run not found", 404)
+        return _error(
+            "RUN_NOT_DURABLE",
+            "Run feedback is unavailable until its Turn is durable",
+            409,
+        )
     orchestrator = _get_orchestrator()
-    voted = orchestrator.vote_on_run_memories(run_id, vote=vote)
-    persisted = orchestrator.persist_run_feedback(run_id, vote=vote)
-    return jsonify({
+    records = list(turn.get("evolution_recall_records") or [])
+    previous_vote = str(turn.get("evolution_feedback_vote") or "").strip() or None
+    voted = await runtime.short_io.run(
+        orchestrator.vote_on_memory_records,
+        records,
+        vote=vote,
+        previous_vote=previous_vote,
+    )
+    if records and vote != previous_vote:
+        await runtime.short_io.run(
+            execution_store.set_turn_evolution_feedback_vote,
+            session_id,
+            int(turn["turn_id"]),
+            vote,
+        )
+    persisted = await runtime.short_io.run(
+        execution_store.set_turn_feedback,
+        session_id,
+        int(turn["turn_id"]),
+        vote=vote,
+    )
+    return {
         "success": True,
         "vote": vote,
         "fingerprints_voted": voted,
         "feedback_persisted": persisted,
-    })
-
-
-@workflows_bp.route("/runs/sync", methods=["POST"])
-@require_auth()
-def start_workflow_sync():
-    """
-    Synchronous (non-streaming) agentic workflow endpoint.
-
-    Runs the full agent loop, collects all events, and returns the
-    final answer in a single JSON response.
-
-    Request body:
-        {
-            "request": "User request text",
-            "context": {"optional": "context"},
-            "session_id": "optional-session-id"
-        }
-
-    Returns:
-        {
-            "status": "success" | "error",
-            "final_answer": "...",
-            "session_id": "...",
-            "run_id": "..."
-        }
-    """
-    data = request.get_json() or {}
-    user_request = data.get("request", "").strip()
-    include_trace = data.get("include_trace") is True
-
-    if not user_request:
-        return jsonify({"error": "Request is required"}), 400
-
-    raw_context = data.get("context")
-    if raw_context is not None and not isinstance(raw_context, dict):
-        return jsonify({"error": "context must be an object"}), 400
-    user_context = set_user_interaction_capability(
-        dict(raw_context or {}),
-        supported=False,
-    )
-    top_level_operation_key = str(data.get("requested_operation_key") or "").strip()
-    context_operation_key = str(user_context.get("requested_operation_key") or "").strip()
-    requested_operation_key = top_level_operation_key or context_operation_key
-    if requested_operation_key:
-        user_context["requested_operation_key"] = requested_operation_key
-    arguments = data.get("arguments")
-    if arguments is not None and not isinstance(arguments, dict):
-        return jsonify({"error": "arguments must be an object"}), 400
-    workspace_id = _get_request_workspace_id()
-
-    current_user = get_current_user()
-    if not current_user:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    raw_session_id = data.get("session_id")
-    try:
-        session_id = validate_session_id(
-            raw_session_id if raw_session_id not in (None, "") else f"sync_{uuid.uuid4().hex[:8]}"
-        )
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    orchestrator = _get_orchestrator()
-    defer_llm_validation = _deterministic_preflight(
-        orchestrator,
-        user_request=user_request,
-        user_context=user_context,
-        arguments=arguments,
-        session_id=session_id,
-        user_id=current_user.username,
-        workspace_id=workspace_id,
-    )
-    if not defer_llm_validation:
-        requested_model_profile_id = str(user_context.get("model_profile_id") or "").strip()
-        try:
-            resolve_effective_llm_profile_config(
-                requested_model_profile_id or None,
-                allow_default_fallback=not bool(requested_model_profile_id),
-                workspace_id=workspace_id,
-            )
-        except SystemConfigValidationError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-    try:
-        trace_context = _traceparent_from_request()
-    except TraceParentValidationError as exc:
-        return _invalid_traceparent_response(exc)
-
-    logger.info("Starting agentic workflow sync, session=%s", session_id)
-
-    rate_limit_response = _reject_if_run_rate_limited(orchestrator)
-    if rate_limit_response is not None:
-        return rate_limit_response
-    slot_manager = orchestrator.slot_manager
-    limit = 100 if current_user.role == "admin" else 1
-
-    # Queue — block until a slot is available, with 300 s timeout
-    if not slot_manager.acquire(current_user.username, limit, timeout=300):
-        return jsonify({
-            "error": "排队超时，请稍后重试",
-            "limit": limit,
-        }), 503
-
-    final_output = ""
-    pending_user_interaction = None
-    run_id = None
-    last_status = "success"
-    last_error = ""
-    last_error_code = ""
-    tool_calls = []
-    tool_failures = []
-
-    try:
-        with workspace_scope(workspace_id), bind_otel_traceparent(
-            trace_context.value if trace_context is not None else ""
-        ):
-            for event in orchestrator.run(
-                user_request=user_request,
-                user_context=user_context,
-                arguments=arguments,
-                session_id=session_id,
-                user_id=current_user.username,
-                workspace_id=workspace_id,
-                traceparent=trace_context.value if trace_context is not None else "",
-                deterministic_preflight_result=True if defer_llm_validation else None,
-            ):
-                event_data = event.get("data", event) if isinstance(event, dict) else event
-                if not isinstance(event_data, dict):
-                    continue
-
-                event_run_id = event_data.get("run_id")
-                if event_run_id:
-                    run_id = event_run_id
-
-                if include_trace and event_data.get("type") == "tool.started":
-                    payload = event_data.get("payload", {})
-                    tool_name = str(payload.get("tool_name") or "").strip()
-                    if tool_name:
-                        tool_calls.append(tool_name)
-
-                if include_trace and event_data.get("type") == "tool.finished":
-                    payload = event_data.get("payload", {})
-                    if str(payload.get("status") or "").strip().lower() == "error":
-                        tool_name = str(payload.get("tool_name") or "").strip()
-                        error = str(payload.get("error") or "").strip()
-                        if tool_name and error:
-                            tool_failures.append({
-                                "tool_name": tool_name,
-                                "error": error[:1024],
-                            })
-
-                if event_data.get("type") == "turn.finished":
-                    payload = event_data.get("payload", {})
-                    last_status = payload.get("status", "success")
-                    last_error = str(payload.get("error") or "").strip()
-                    last_error_code = str(payload.get("error_code") or "").strip()
-                    if "final_output" in payload:
-                        value = payload["final_output"]
-                        if isinstance(value, str):
-                            final_output = value
-                        elif last_status == "awaiting_input" and isinstance(value, dict):
-                            legacy_text = value.get("text")
-                            has_structured_prompt = bool(value.get("id") or value.get("prompt"))
-                            if isinstance(legacy_text, str) and not has_structured_prompt:
-                                final_output = legacy_text
-                                pending_user_interaction = None
-                            else:
-                                pending_user_interaction = value
-                                final_output = ""
-                        elif value is None:
-                            final_output = ""
-                        else:
-                            final_output = value
-    except Exception as exc:
-        logger.exception("Error in workflow sync")
-        return jsonify({
-            "status": "error",
-            "error": str(exc),
-            "final_answer": "",
-            "session_id": session_id,
-            "run_id": run_id,
-        }), 500
-    finally:
-        slot_manager.release(current_user.username)
-
-    response_body = {
-        "status": last_status,
-        "final_answer": coerce_final_output_to_text(final_output),
-        "session_id": session_id,
-        "run_id": run_id,
     }
-    if last_error:
-        response_body["error"] = last_error
-    if last_error_code:
-        response_body["error_code"] = last_error_code
-    if pending_user_interaction is not None:
-        response_body["pending_user_interaction"] = pending_user_interaction
-    if include_trace:
-        response_body["execution_trace"] = {"tool_calls": tool_calls}
-        if tool_failures:
-            response_body["execution_trace"]["tool_failures"] = tool_failures
-    return jsonify(response_body)
+
+
+@workflows_router.post("/runs/stream", include_in_schema=False)
+async def retired_run_stream():
+    """Explain the permanent replacement for the retired single-call stream API."""
+
+    return JSONResponse(
+        {
+            "error": {
+                "type": "async_run_error",
+                "error_code": "ENDPOINT_RETIRED",
+                "detail": (
+                    "POST /agentic/runs/stream has been retired; create a Run "
+                    "with POST /agentic/runs and follow links.events"
+                ),
+                "retriable": False,
+            },
+            "replacement": {
+                "create": {
+                    "method": "POST",
+                    "path": "/agentic/runs",
+                },
+                "events": {
+                    "method": "GET",
+                    "path": "/agentic/runs/{run_id}/events",
+                },
+            },
+        },
+        status_code=410,
+    )
+
+
+@workflows_router.api_route(
+    "/runs/{unsupported_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    include_in_schema=False,
+)
+async def unsupported_run_control_path(unsupported_path: str):
+    """Return a hard 404 for every non-canonical Run control path."""
+
+    del unsupported_path
+    return _error("RUN_NOT_FOUND", "Run control endpoint not found", 404)

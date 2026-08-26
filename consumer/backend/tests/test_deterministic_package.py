@@ -4,7 +4,6 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from flask import Flask
 
 import agent.tools.execute_script as execute_script_module
 
@@ -1007,12 +1006,10 @@ def test_installed_deterministic_version_is_immutable_in_file_editor(tmp_path):
     operations_dir.mkdir(parents=True)
     (version_dir / DETERMINISTIC_LOCK_NAME).write_text("{}", encoding="utf-8")
 
-    app = Flask(__name__)
-    with app.app_context():
-        response, status_code = _deterministic_package_immutable_response(operations_dir)
+    response = _deterministic_package_immutable_response(operations_dir)
 
-    assert status_code == 409
-    assert response.get_json()["error_code"] == "deterministic_operation_immutable"
+    assert response.status_code == 409
+    assert json.loads(response.body)["error_code"] == "deterministic_operation_immutable"
 
 
 def test_symlinked_deterministic_lock_remains_immutable_in_file_editor(tmp_path):
@@ -1026,12 +1023,10 @@ def test_symlinked_deterministic_lock_remains_immutable_in_file_editor(tmp_path)
     except (OSError, NotImplementedError):
         pytest.skip("Symbolic link creation not permitted on this platform")
 
-    app = Flask(__name__)
-    with app.app_context():
-        response, status_code = _deterministic_package_immutable_response(operations_dir)
+    response = _deterministic_package_immutable_response(operations_dir)
 
-    assert status_code == 409
-    assert response.get_json()["error_code"] == "deterministic_operation_immutable"
+    assert response.status_code == 409
+    assert json.loads(response.body)["error_code"] == "deterministic_operation_immutable"
 
 
 def test_installed_deterministic_version_cannot_be_overwritten(tmp_path):

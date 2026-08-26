@@ -2,13 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildMessagesFromEvents, historyToMessages } from './messageBuilder.js';
-import { AGENT_STREAM_EVENT, AGENT_STREAM_PROTOCOL } from './streamHelpers.js';
+import {
+  LEGACY_AGENT_STREAM_EVENT,
+  LEGACY_AGENT_STREAM_PROTOCOL,
+} from './legacyAgentEvent.js';
 
 test('durable awaiting-input event restores interaction after page refresh', () => {
   const messages = buildMessagesFromEvents([{
-    event: AGENT_STREAM_EVENT,
+    event: LEGACY_AGENT_STREAM_EVENT,
     data: {
-      protocol: AGENT_STREAM_PROTOCOL,
+      protocol: LEGACY_AGENT_STREAM_PROTOCOL,
       type: 'turn.finished',
       run_id: 'run-awaiting',
       seq: 8,
@@ -32,12 +35,107 @@ test('durable awaiting-input event restores interaction after page refresh', () 
   assert.equal(messages[0].isLoading, false);
 });
 
+test('run.started does not create a phantom turn during replay', () => {
+  const envelope = (type, turnId, seq, payload = {}) => ({
+    event: LEGACY_AGENT_STREAM_EVENT,
+    data: {
+      protocol: LEGACY_AGENT_STREAM_PROTOCOL,
+      type,
+      run_id: 'run-existing-session',
+      turn_id: turnId,
+      seq,
+      ts: 1000 + seq,
+      payload,
+    },
+  });
+
+  const messages = buildMessagesFromEvents([
+    envelope('run.started', 1, 1, { status: 'running' }),
+    envelope('turn.started', 3, 2, { turn_id: 3 }),
+    envelope('turn.finished', 3, 3, {
+      status: 'completed',
+      content: 'synthetic answer',
+    }),
+  ]);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].turnId, '3');
+  assert.equal(messages[0].status, 'finished');
+});
+
+test('canonical PublicEvent history uses the same message projection', () => {
+  const messages = buildMessagesFromEvents([{
+    schema_version: '1.0',
+    event_id: 'run-public-history:1',
+    run_id: 'run-public-history',
+    turn_id: 1,
+    seq: 1,
+    event_type: 'turn.finished',
+    status: 'completed',
+    source: { node: 'agent' },
+    payload: { status: 'completed', content: 'synthetic canonical answer' },
+    created_at: '2026-08-24T00:00:00.000Z',
+  }]);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].runId, 'run-public-history');
+  assert.equal(messages[0].status, 'finished');
+  assert.equal(messages[0].content, 'synthetic canonical answer');
+});
+
+test('successive interactions in one run restore as separate turn bubbles', () => {
+  const waitingOutput = (interactionId, text) => ({
+    status: 'awaiting_input',
+    final_output: {
+      type: 'user_interaction',
+      text,
+      interaction: { id: interactionId, type: 'input', prompt: text },
+    },
+  });
+  const messages = buildMessagesFromEvents([
+    {
+      event: LEGACY_AGENT_STREAM_EVENT,
+      data: {
+        protocol: LEGACY_AGENT_STREAM_PROTOCOL,
+        type: 'turn.finished',
+        run_id: 'run-successive-interactions',
+        turn_id: 1,
+        seq: 3,
+        payload: waitingOutput('interaction-first', 'Provide the first synthetic value'),
+      },
+    },
+    {
+      event: 'chat_message',
+      data: { role: 'user', content: 'synthetic response', metadata: {} },
+    },
+    {
+      event: LEGACY_AGENT_STREAM_EVENT,
+      data: {
+        protocol: LEGACY_AGENT_STREAM_PROTOCOL,
+        type: 'turn.finished',
+        run_id: 'run-successive-interactions',
+        turn_id: 2,
+        seq: 7,
+        payload: waitingOutput('interaction-second', 'Provide the second synthetic value'),
+      },
+    },
+  ]);
+
+  assert.equal(messages.length, 3);
+  assert.equal(messages[0].turnId, '1');
+  assert.equal(messages[0].interaction.id, 'interaction-first');
+  assert.equal(messages[1].role, 'user');
+  assert.equal(messages[2].turnId, '2');
+  assert.equal(messages[2].interaction.id, 'interaction-second');
+  assert.equal(messages[2].status, 'awaiting');
+});
+
 test('durable cancellation marker clears an awaiting interaction after refresh', () => {
   const messages = buildMessagesFromEvents([
     {
-      event: AGENT_STREAM_EVENT,
+      event: LEGACY_AGENT_STREAM_EVENT,
       data: {
-        protocol: AGENT_STREAM_PROTOCOL,
+        protocol: LEGACY_AGENT_STREAM_PROTOCOL,
         type: 'turn.finished',
         run_id: 'run-awaiting',
         seq: 8,

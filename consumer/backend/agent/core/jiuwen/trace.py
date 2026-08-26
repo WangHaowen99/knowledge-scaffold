@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import time
 from collections.abc import Mapping
 from inspect import isawaitable
@@ -39,6 +40,7 @@ class JiuwenModelTraceBridge:
         enable_reasoning: bool,
         event_class_provider: Any = None,
         model_timing_observer: Optional[Callable[[int, int], None]] = None,
+        model_error_callback: Optional[Callable[[BaseException | None], None]] = None,
         prompt_build_ms: int = 0,
         system_prompt_chars: int = 0,
         sliding_window_applied: bool,
@@ -53,6 +55,7 @@ class JiuwenModelTraceBridge:
         self.enable_reasoning = bool(enable_reasoning)
         self.event_class_provider = event_class_provider
         self.model_timing_observer = model_timing_observer
+        self.model_error_callback = model_error_callback
         self.prompt_build_ms = max(0, int(prompt_build_ms or 0))
         self.system_prompt_chars = max(0, int(system_prompt_chars or 0))
         # Keep the legacy exported name, but store only the static ownership
@@ -105,6 +108,8 @@ class JiuwenModelTraceBridge:
         self._registered = []
 
     async def _on_before_model_call(self, ctx: Any) -> None:
+        if self.model_error_callback is not None:
+            self.model_error_callback(None)
         iteration = self._current_iteration()
         call_index = self._next_call_index(iteration)
         inputs = read_field(ctx, "inputs")
@@ -180,6 +185,12 @@ class JiuwenModelTraceBridge:
         if record is None:
             record = self._start_missing_record(ctx)
         exc = read_field(ctx, "exception")
+        if (
+            isinstance(exc, BaseException)
+            and not isinstance(exc, asyncio.CancelledError)
+            and self.model_error_callback is not None
+        ):
+            self.model_error_callback(exc)
         self._notify_model_timing(
             int(record["iteration"]),
             elapsed_ms_since(record.get("started_at")),

@@ -15,6 +15,7 @@ export const resolveToolOutputUrl = (value, sessionId, runId) => {
 };
 
 export const formatOutputBytes = (value) => {
+  if (value == null || value === '') return '';
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes < 0) return '';
   if (bytes < 1024) return `${bytes} B`;

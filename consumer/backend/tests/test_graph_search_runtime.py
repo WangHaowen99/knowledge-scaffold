@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from agent.tools.business_data.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
@@ -12,6 +13,13 @@ from agent.tools.business_data.providers.graph.models import (
 )
 from agent.tools.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
 from agent.tools.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
+
+
+def _collect(stream):
+    async def consume():
+        return [event async for event in stream]
+
+    return asyncio.run(consume())
 
 
 class _StaticResolver:
@@ -68,7 +76,7 @@ class _StaticGraphAgent:
         self.result = result
         self.calls = []
 
-    def run(self, **kwargs):
+    async def arun(self, **kwargs):
         self.calls.append(kwargs)
         return self.result
 
@@ -77,13 +85,13 @@ class _TimeoutGraphAgent:
     def __init__(self):
         self.calls = []
 
-    def run(self, **kwargs):
+    async def arun(self, **kwargs):
         self.calls.append(kwargs)
         raise GraphAgentTimeoutError("GraphQueryAgent 调用超时（1s）")
 
 
 class _ErrorGraphAgent:
-    def run(self, **kwargs):
+    async def arun(self, **kwargs):
         del kwargs
         raise GraphAgentError("GraphQueryAgent 未调用可用图检索工具")
 
@@ -179,7 +187,7 @@ def test_runtime_uses_graph_agent_internal_tool_result_with_forced_scope():
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询 CHANGE_ORDER_ID 为 CHANGE_ORDER-001 的对象", entity="change_order_affected_object"))
+    events = _collect(runtime.asearch_stream(query="查询 CHANGE_ORDER_ID 为 CHANGE_ORDER-001 的对象", entity="change_order_affected_object"))
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is True
@@ -209,7 +217,7 @@ def test_runtime_rejects_missing_workspace_scope_before_backend_access():
         graph_agent=_StaticGraphAgent(_agent_result()),
     )
 
-    events = list(runtime.search_stream(query="查询 TargetItem", entity="TargetItem"))
+    events = _collect(runtime.asearch_stream(query="查询 TargetItem", entity="TargetItem"))
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is False
@@ -228,7 +236,7 @@ def test_runtime_missing_mapping_does_not_call_graph_agent_or_backend():
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询对象", entity="missing"))
+    events = _collect(runtime.asearch_stream(query="查询对象", entity="missing"))
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is False
@@ -247,7 +255,7 @@ def test_runtime_can_fallback_to_exact_schema_label():
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询 TargetItem", entity="TargetItem"))
+    events = _collect(runtime.asearch_stream(query="查询 TargetItem", entity="TargetItem"))
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is True
@@ -268,7 +276,7 @@ def test_runtime_stops_when_graph_agent_times_out():
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询对象", entity="CHANGE_ORDER受影响对象"))
+    events = _collect(runtime.asearch_stream(query="查询对象", entity="CHANGE_ORDER受影响对象"))
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is False
@@ -288,7 +296,7 @@ def test_runtime_returns_agent_error_without_backend_query():
         graph_agent=_ErrorGraphAgent(),
     )
 
-    events = list(runtime.search_stream(query="查询对象", entity="CHANGE_ORDER受影响对象"))
+    events = _collect(runtime.asearch_stream(query="查询对象", entity="CHANGE_ORDER受影响对象"))
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is False
@@ -318,7 +326,7 @@ def test_runtime_loads_operation_rule_script_context(tmp_path):
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询 TargetItem 的物料成本", entity="TargetItem"))
+    events = _collect(runtime.asearch_stream(query="查询 TargetItem 的物料成本", entity="TargetItem"))
     final = json.loads(events[-1]["content"])
     business_context = agent.calls[0]["context"].business_context
     schema_context = agent.calls[0]["context"].schema_context
@@ -352,7 +360,7 @@ def test_runtime_marks_path_intent_and_preloads_relation_triples():
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询 SourceItem 编码 101000-001 对应的 TargetItem 信息", entity="SourceItem与TargetItem工艺关系"))
+    events = _collect(runtime.asearch_stream(query="查询 SourceItem 编码 101000-001 对应的 TargetItem 信息", entity="SourceItem与TargetItem工艺关系"))
     final = json.loads(events[-1]["content"])
     schema_context = agent.calls[0]["context"].schema_context
 
@@ -382,8 +390,7 @@ def test_runtime_marks_relationship_record_query_as_property_filter_sufficient()
         graph_agent=agent,
     )
 
-    events = list(
-        runtime.search_stream(
+    events = _collect(runtime.asearch_stream(
             query='查询SourceItem编码为"101001-001"且SourceItem版本为"A"的工艺关系记录',
             entity="SourceItem与TargetItem工艺关系",
         )

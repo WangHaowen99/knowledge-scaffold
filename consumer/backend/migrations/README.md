@@ -8,9 +8,9 @@
 
 - 稳定的 `migration_id` 与独立模块；
 - `phase`：
-  - `startup`：小型文件迁移，可在本地启动和普通 Flask 启动时运行；
+  - `startup`：小型文件迁移，可在本地启动和普通 ASGI 启动时运行；
   - `deployment`：需要停止旧版本写入、全量扫描或可能耗时的迁移；
-  - `external-admin`：外部存储管理迁移，不会由 Flask worker 或普通部署迁移自动执行；
+  - `external-admin`：外部存储管理迁移，不会由 Uvicorn worker 或普通部署迁移自动执行；
 - `failure_policy`：
   - `blocking`：失败后新运行时无法安全读取数据，runner 必须失败；
   - `non-blocking`：核心服务有明确安全降级，runner 记录告警后继续，源数据必须保留以便下次重试。

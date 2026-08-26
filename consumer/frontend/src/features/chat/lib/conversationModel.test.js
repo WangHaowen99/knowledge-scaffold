@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildConversationViewModel } from './conversationModel.js';
-import { AGENT_STREAM_PROTOCOL } from './streamHelpers.js';
+import {
+  LEGACY_AGENT_STREAM_EVENT,
+  LEGACY_AGENT_STREAM_PROTOCOL,
+} from './legacyAgentEvent.js';
+import { buildMessagesFromEvents } from './messageBuilder.js';
+
+const hydrateLegacyEnvelopes = (envelopes) => buildMessagesFromEvents(
+  envelopes.map((data) => ({ event: LEGACY_AGENT_STREAM_EVENT, data })),
+);
 
 const assistantMessage = {
   id: 'turn-message-1',
@@ -181,6 +189,25 @@ test('awaiting interaction is a terminal renderer block with a stable lifecycle 
   assert.equal(awaiting.blocks.at(-1).key, running.blocks.at(-1).key);
 });
 
+test('structured runtime errors render their public message instead of object text', () => {
+  const turn = buildConversationViewModel([{
+    ...assistantMessage,
+    status: 'error',
+    content: '',
+    streamSegments: [],
+    meta: {
+      error: {
+        error_code: 'MODEL_PROVIDER_ERROR',
+        message: '模型服务请求失败',
+        source: 'model',
+      },
+    },
+  }]).turns[0];
+
+  assert.equal(turn.error, '模型服务请求失败');
+  assert.equal(turn.blocks.at(-1).text, '模型服务请求失败');
+});
+
 test('web search and generic tools remain distinct renderer kinds', () => {
   const message = {
     ...assistantMessage,
@@ -228,6 +255,27 @@ test('web search and generic tools remain distinct renderer kinds', () => {
   assert.equal(blocks[1].error, 'boom');
 });
 
+test('canonical tool name fields select specialized renderer kinds', () => {
+  const message = {
+    ...assistantMessage,
+    streamSegments: [{
+      type: 'tool',
+      state: 'completed',
+      meta: {
+        name: 'business_data_search',
+        tool_call_id: 'call-canonical-business-data',
+        db_events: [{ type: 'final', content: 'Synthetic query completed', seq: 2, ts: 1200 }],
+      },
+      finished: true,
+    }],
+  };
+
+  const block = buildConversationViewModel([message]).turns[0].blocks[0];
+  assert.equal(block.kind, 'business_data');
+  assert.equal(block.toolName, 'business_data_search');
+  assert.equal(block.progress[0].text, 'Synthetic query completed');
+});
+
 test('business data exposes progress and parsed structured output', () => {
   const block = buildConversationViewModel([assistantMessage]).turns[0].blocks[1];
   const structured = buildConversationViewModel([{
@@ -270,7 +318,7 @@ test('business data progress omits empty entries and keeps provider errors', () 
 
 test('raw envelopes hydrate into the same ordered conversation model', () => {
   const envelope = (type, payload, seq, ts) => ({
-    protocol: AGENT_STREAM_PROTOCOL,
+    protocol: LEGACY_AGENT_STREAM_PROTOCOL,
     type,
     payload,
     run_id: 'run-envelope',
@@ -292,7 +340,7 @@ test('raw envelopes hydrate into the same ordered conversation model', () => {
     envelope('turn.finished', { status: 'success', final_output: '回答' }, 6, 150),
   ];
 
-  const model = buildConversationViewModel({ envelopes });
+  const model = buildConversationViewModel(hydrateLegacyEnvelopes(envelopes));
   assert.equal(model.turns[0].runId, 'run-envelope');
   assert.deepEqual(
     model.turns[0].blocks.map((block) => block.kind),
@@ -335,7 +383,7 @@ test('finished narrative segments cannot remain visually running', () => {
 
 test('raw tool envelopes preserve elapsed timing including orphan completions', () => {
   const rawEnvelope = (type, payload, seq, ts) => ({
-    protocol: AGENT_STREAM_PROTOCOL,
+    protocol: LEGACY_AGENT_STREAM_PROTOCOL,
     type,
     payload,
     run_id: 'run-timing',
@@ -343,7 +391,7 @@ test('raw tool envelopes preserve elapsed timing including orphan completions', 
     seq,
     ts,
   });
-  const model = buildConversationViewModel({ envelopes: [
+  const messages = hydrateLegacyEnvelopes([
     rawEnvelope('turn.started', {}, 1, 100),
     rawEnvelope('tool.started', { tool_name: 'lookup', tool_call_id: 'timed' }, 2, 120),
     rawEnvelope('tool.finished', {
@@ -353,7 +401,8 @@ test('raw tool envelopes preserve elapsed timing including orphan completions', 
       tool_name: 'orphan', tool_call_id: 'orphan', status: 'completed', elapsed_ms: 25,
     }, 4, 220),
     rawEnvelope('turn.finished', { status: 'success', final_output: 'done' }, 5, 240),
-  ] });
+  ]);
+  const model = buildConversationViewModel(messages);
   const tools = model.turns[0].blocks.filter((block) => block.kind === 'tool');
 
   assert.deepEqual(tools.map((block) => block.durationMs), [45, 25]);

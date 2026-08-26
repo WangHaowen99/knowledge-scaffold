@@ -35,6 +35,17 @@ def test_runtime_warmup_env_fallback_can_disable_default(tmp_path, monkeypatch):
     assert config["agent"]["runtime_warmup_enabled"] is False
 
 
+def test_tool_timeout_uses_default_and_env_override(tmp_path, monkeypatch):
+    config_path = tmp_path / "system_config.json"
+    monkeypatch.setattr(system_config, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(system_config, "CONFIG_DIR", config_path.parent)
+
+    assert system_config.load_system_config()["agent"]["tool_timeout_seconds"] == 600
+
+    monkeypatch.setenv("AGENT_TOOL_TIMEOUT_SECONDS", "45")
+    assert system_config.load_system_config()["agent"]["tool_timeout_seconds"] == 45
+
+
 def test_agent_config_defaults_warmup_on_for_legacy_mapping(monkeypatch):
     legacy_agent = _effective_agent_config()
     legacy_agent.pop("runtime_warmup_enabled")

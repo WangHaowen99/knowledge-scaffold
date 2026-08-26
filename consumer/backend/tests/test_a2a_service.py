@@ -1,207 +1,174 @@
-"""Tests for A2A task service safeguards and status projection."""
+"""A2A adapter contract tests over canonical Runs and durable Turns."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from types import SimpleNamespace
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
 
-from flask import Flask, current_app
+import pytest
 
-from api.protocols.a2a.models import A2ATaskState
+from agent.runtime.contracts import (
+    RunSnapshot,
+    RunStatus,
+    RuntimeResult,
+)
+from agent.runtime.errors import RunConflictError
+from api.protocols.a2a.models import A2ATaskCreateRequest, A2ATaskState
 from api.protocols.a2a.service import A2ATaskService
-from persistence.run_store import RunStore, RunStatus
+from persistence.execution_store import ExecutionStore
 
 
-class _FakeChatStore:
-    def __init__(self, sessions=None):
-        self.sessions = dict(sessions or {})
-
-    def get_session(self, session_id):
-        return self.sessions.get(session_id)
-
-    def create_session(self, session_id):
-        session = SimpleNamespace(session_id=session_id)
-        self.sessions[session_id] = session
-        return session
+class _InlinePool:
+    async def run(self, function, *args, **kwargs):
+        return function(*args, **kwargs)
 
 
-class _FakeExecutionStore:
-    def __init__(self, history=None):
-        self.history = history
-        self.failed_turns = []
+class _Manager:
+    def __init__(self):
+        self.snapshots = {}
+        self.contexts = []
+        self.cancelled = []
 
-    def get_session_history(self, session_id):
-        del session_id
-        return self.history
+    @asynccontextmanager
+    async def session_guard(self, _scope, _session_id):
+        yield
 
-    def fail_turn(self, session_id, turn_id, error):
-        self.failed_turns.append(
-            {
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "error": error,
-            }
+    async def assert_session_available(self, _scope, _session_id):
+        return None
+
+    async def create_run(self, context, scope, *, session_guarded=False):
+        assert session_guarded is True
+        self.contexts.append(context)
+        snapshot = RunSnapshot(
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            status=RunStatus.QUEUED,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            last_seq=0,
+            scope=scope,
+            context=context,
         )
+        self.snapshots[context.run_id] = snapshot
+        return snapshot, True
+
+    async def get_run(self, run_id, scope):
+        snapshot = self.snapshots.get(run_id)
+        return snapshot if snapshot is not None and scope.owns(snapshot) else None
+
+    async def cancel_run(self, run_id, scope, reason):
+        snapshot = await self.get_run(run_id, scope)
+        assert snapshot is not None
+        self.cancelled.append((run_id, reason))
+        snapshot = replace(
+            snapshot,
+            status=RunStatus.CANCELLED,
+            result=RuntimeResult(status="cancelled"),
+        )
+        self.snapshots[run_id] = snapshot
+        return snapshot
 
 
-class _FakeOrchestrator:
-    def __init__(self, *, run_impl, run_store=None):
-        self._run_impl = run_impl
-        self.run_store = run_store or RunStore()
-
-    def run(self, **kwargs):
-        return self._run_impl(**kwargs)
+class _Runtime:
+    def __init__(self, manager):
+        self.manager = manager
+        self.short_io = _InlinePool()
 
 
-def test_get_task_ignores_other_run_awaiting_input():
-    run_store = RunStore()
-    run_store.create_run("task-a", "hello", metadata={"session_id": "session-1"})
-    run_store.complete_run("task-a", {"ok": True})
+def _service(tmp_path, manager=None):
+    manager = manager or _Manager()
+    return A2ATaskService(
+        runtime=_Runtime(manager),
+        execution_store=ExecutionStore(str(tmp_path / "executions")),
+        username="operator_a",
+        workspace_id="workspace_demo",
+    ), manager
 
-    execution_store = _FakeExecutionStore(
-        {
-            "turns": [
-                {"turn_id": 1, "run_id": "task-a", "status": "success"},
-                {"turn_id": 2, "run_id": "task-b", "status": "awaiting_input"},
-            ]
-        }
+
+def test_create_task_keeps_external_id_out_of_canonical_identity(tmp_path):
+    service, manager = _service(tmp_path)
+
+    view, snapshot = asyncio.run(service.create_task(
+        A2ATaskCreateRequest(
+            message="synthetic question",
+            session_id="session_demo",
+            task_id="external_task_demo",
+        )
+    ))
+
+    assert view.id == "external_task_demo"
+    assert snapshot.run_id.startswith("agentic-")
+    assert snapshot.run_id != view.id
+    assert view.metadata["canonical_run_id"] == snapshot.run_id
+    assert manager.contexts[0].supports_user_interaction is False
+    _, turn = service.execution_store.find_turn_by_protocol_id(
+        "a2a", "external_task_demo"
     )
-    service = A2ATaskService(
-        orchestrator=SimpleNamespace(run_store=run_store),
-        chat_store=_FakeChatStore(),
-        execution_store=execution_store,
-        user_id="user-1",
-        workspace_id="ws-1",
+    assert turn["run_id"] == snapshot.run_id
+
+
+def test_duplicate_external_task_id_is_rejected(tmp_path):
+    service, _manager = _service(tmp_path)
+    request = A2ATaskCreateRequest(
+        message="synthetic question",
+        session_id="session_demo",
+        task_id="external_task_demo",
     )
+    asyncio.run(service.create_task(request))
 
-    snapshot = service.get_task("task-a")
-
-    assert snapshot.state == A2ATaskState.COMPLETED
-
-
-def test_get_task_ignores_stale_matching_awaiting_input_run():
-    run_store = RunStore()
-    run_store.create_run("task-a", "hello", metadata={"session_id": "session-1"})
-    run_store.complete_run("task-a", {"ok": True})
-
-    execution_store = _FakeExecutionStore(
-        {
-            "turns": [
-                {"turn_id": 1, "run_id": "task-a", "status": "awaiting_input"},
-            ]
-        }
-    )
-    service = A2ATaskService(
-        orchestrator=SimpleNamespace(run_store=run_store),
-        chat_store=_FakeChatStore(),
-        execution_store=execution_store,
-        user_id="user-1",
-        workspace_id="ws-1",
-    )
-
-    snapshot = service.get_task("task-a")
-
-    assert snapshot.state == A2ATaskState.COMPLETED
+    with pytest.raises(RunConflictError, match="task_id already exists"):
+        asyncio.run(service.create_task(request))
 
 
-def test_get_failed_deterministic_task_preserves_structured_result():
-    run_store = RunStore()
-    run_store.create_run("task-failed", "query", metadata={"session_id": "session-1"})
-    public_result = {
-        "status": "failed",
-        "error": {"code": "handler_failed", "message": "failed safely"},
-    }
-    run_store.fail_run_transaction(
-        "task-failed",
-        "handler_failed: failed safely",
-        {"execution_type": "deterministic", "error_code": "handler_failed"},
-        lambda: None,
-        result=public_result,
-    )
-    service = A2ATaskService(
-        orchestrator=SimpleNamespace(run_store=run_store),
-        chat_store=_FakeChatStore(),
-        execution_store=_FakeExecutionStore(),
-        user_id="user-1",
-        workspace_id="ws-1",
-    )
+def test_unexpected_awaiting_is_projected_as_interaction_not_supported(tmp_path):
+    service, manager = _service(tmp_path)
+    scope = service.scope
+    context = manager.contexts[0] if manager.contexts else None
+    if context is None:
+        from agent.runtime.contracts import RuntimeInvocationContext
 
-    snapshot = service.get_task("task-failed")
-
-    assert snapshot.state == A2ATaskState.FAILED
-    assert snapshot.error_code == "handler_failed"
-    assert snapshot.result == public_result
-
-
-def test_background_task_enters_workspace_and_app_context(monkeypatch):
-    entered = {"workspace": None, "app_name": None}
-
-    @contextmanager
-    def fake_workspace_scope(workspace_id):
-        entered["workspace"] = workspace_id
-        yield workspace_id
-
-    monkeypatch.setattr("api.protocols.a2a.service.workspace_scope", fake_workspace_scope)
-
-    app = Flask("a2a-service-test")
-
-    def run_impl(**kwargs):
-        assert kwargs["workspace_id"] == "ws-1"
-        assert entered["workspace"] == "ws-1"
-        assert kwargs["user_context"]["supports_user_interaction"] is False
-        entered["app_name"] = current_app.name
-        yield {"event": "agent.v2", "data": {"run_id": kwargs["requested_run_id"]}}
-
-    service = A2ATaskService(
-        orchestrator=_FakeOrchestrator(run_impl=run_impl),
-        chat_store=_FakeChatStore(),
-        execution_store=_FakeExecutionStore(),
-        user_id="user-1",
-        workspace_id="ws-1",
-        flask_app=app,
+        context = RuntimeInvocationContext(
+            run_id="agentic-synthetic",
+            session_id="session_demo",
+            turn_id=1,
+            workspace_id="workspace_demo",
+            username="operator_a",
+            query="synthetic question",
+            supports_user_interaction=False,
+        )
+    snapshot = RunSnapshot(
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        status=RunStatus.AWAITING_INPUT,
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:01Z",
+        last_seq=1,
+        scope=scope,
+        context=context,
+        result=RuntimeResult(status="awaiting_input"),
+        pending_interaction={"id": "interaction_demo", "type": "input"},
     )
 
-    service._run_task_in_background(
-        task_id="task-1",
-        session_id="session-1",
-        message="hello",
-        context={},
-    )
+    view = service.project(snapshot, external_task_id="external_task_demo")
 
-    assert entered["workspace"] == "ws-1"
-    assert entered["app_name"] == "a2a-service-test"
+    assert view.state is A2ATaskState.FAILED
+    assert view.metadata["error_code"] == "INTERACTION_NOT_SUPPORTED"
 
 
-def test_background_task_marks_failed_when_bootstrap_raises(monkeypatch):
-    @contextmanager
-    def fake_workspace_scope(workspace_id):
-        yield workspace_id
+def test_cancel_uses_canonical_run_id(tmp_path):
+    service, manager = _service(tmp_path)
+    _view, snapshot = asyncio.run(service.create_task(
+        A2ATaskCreateRequest(
+            message="synthetic question",
+            session_id="session_demo",
+            task_id="external_task_demo",
+        )
+    ))
 
-    monkeypatch.setattr("api.protocols.a2a.service.workspace_scope", fake_workspace_scope)
+    cancelled = asyncio.run(service.cancel_task("external_task_demo"))
 
-    run_store = RunStore()
-
-    def run_impl(**kwargs):
-        del kwargs
-        raise RuntimeError("boom")
-
-    service = A2ATaskService(
-        orchestrator=_FakeOrchestrator(run_impl=run_impl, run_store=run_store),
-        chat_store=_FakeChatStore(),
-        execution_store=_FakeExecutionStore(),
-        user_id="user-1",
-        workspace_id="ws-1",
-    )
-
-    service._run_task_in_background(
-        task_id="task-boot-fail",
-        session_id="session-1",
-        message="hello",
-        context={},
-    )
-
-    run = run_store.get_run("task-boot-fail")
-    assert run is not None
-    assert run.status == RunStatus.FAILED
-    assert run.error == "Workflow execution failed"
-    assert run.metadata["session_id"] == "session-1"
+    assert cancelled.state is A2ATaskState.CANCELED
+    assert manager.cancelled == [(snapshot.run_id, "a2a_cancel")]

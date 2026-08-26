@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from agent.evolution.reflection_worker import (
@@ -59,8 +60,9 @@ def test_reflection_worker_persists_ontology_lessons_to_evolution_buffer(monkeyp
     )
     worker = ReflectionWorker(max_workers=1)
 
-    result = worker._reflect_and_store(
-        ReflectionSnapshot(
+    result = asyncio.run(
+        worker.run(
+            ReflectionSnapshot(
             run_id="run-1",
             session_id="session-1",
             turn_id=1,
@@ -75,12 +77,11 @@ def test_reflection_worker_persists_ontology_lessons_to_evolution_buffer(monkeyp
             tool_events=[],
             iteration_count=1,
             duration_ms=100,
+            )
         )
     )
-    worker.shutdown(wait=False)
 
     assert result == {"outcome": "completed", "written": 2}
     assert [record["kind"] for record in buffer.records] == ["procedure", "pitfall"]
     assert all(record["ontology_id"] == "example" for record in buffer.records)
     assert all(record["operation_key"] == "OP_A" for record in buffer.records)
-

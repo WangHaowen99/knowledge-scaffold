@@ -10,7 +10,8 @@ from agent.tools.events import (
     emit_tool_started,
     tool_output_artifact_writer_context,
 )
-from agent.tools.registry import ToolContext, execute_tool_batch
+from agent.tools.registry import ToolContext
+from tool_execution_test_adapter import execute_tool_batch
 from utils.streaming import build_agent_event, clear_run_sequence
 from utils.streaming import stream_writer_context
 

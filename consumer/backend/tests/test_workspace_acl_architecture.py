@@ -8,6 +8,14 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ROUTES_ROOT = BACKEND_ROOT / "api" / "routes"
 
 
+def _callable_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
 def test_http_routes_do_not_write_workspace_acl_through_storage_functions():
     violations = []
     required_service_calls = {
@@ -40,16 +48,23 @@ def test_http_routes_do_not_write_workspace_acl_through_storage_functions():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            function_name = None
-            if isinstance(node.func, ast.Name):
-                function_name = node.func.id
-            elif isinstance(node.func, ast.Attribute):
-                function_name = node.func.attr
-            if function_name in service_aliases:
-                observed_service_calls.add(service_aliases[function_name])
-            if function_name in {"create_workspace", "update_workspace"} or function_name in storage_aliases:
-                violations.append(f"{path.relative_to(BACKEND_ROOT)}:{node.lineno} calls {function_name}")
-            if function_name == "update_workspace_authorized" and any(
+            function_name = _callable_name(node.func)
+            callback_name = None
+            if function_name == "run_in_runtime_pool" and len(node.args) >= 3:
+                callback_name = _callable_name(node.args[2])
+            invoked_names = {name for name in (function_name, callback_name) if name}
+            observed_service_calls.update(
+                service_aliases[name]
+                for name in invoked_names
+                if name in service_aliases
+            )
+            unsafe_storage = invoked_names & ({"create_workspace", "update_workspace"} | storage_aliases)
+            if unsafe_storage:
+                violations.append(
+                    f"{path.relative_to(BACKEND_ROOT)}:{node.lineno} calls "
+                    f"{sorted(unsafe_storage)[0]}"
+                )
+            if "update_workspace_authorized" in invoked_names and any(
                 keyword.arg is None or keyword.arg in {"owner", "members"}
                 for keyword in node.keywords
             ):

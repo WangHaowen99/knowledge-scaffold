@@ -32,6 +32,14 @@ class WorkflowCancelledError(AgenticError):
     pass
 
 
+class ModelInvocationError(AgenticError):
+    """Mark an exception observed at the model-call boundary."""
+
+    def __init__(self, cause: BaseException) -> None:
+        self.cause = cause
+        super().__init__("Model invocation failed")
+
+
 class AgentLoopStalledError(AgenticError):
     """Raised when the agent repeats an identical failed tool call."""
 

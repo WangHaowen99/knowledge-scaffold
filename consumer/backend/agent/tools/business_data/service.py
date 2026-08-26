@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping, Tuple
+from typing import Any, AsyncIterator, Iterator, Mapping, Tuple
 
+from agent.runtime.async_utils import run_sync_compat
 from agent.tools.business_data.providers.base import OntologySearchEvent
 from workspace.workspaces import get_workspace, get_workspace_paths
 from agent.tools.business_data.effective_connection import build_effective_connection
@@ -115,6 +116,110 @@ def query_business_data_stream(
         close = getattr(provider, "close", None)
         if callable(close):
             close()
+
+
+async def query_business_data_async(
+    request: BusinessDataSearchRequest,
+    *,
+    connection: ResolvedBusinessDataSource,
+) -> AsyncIterator[OntologySearchEvent]:
+    """Execute providers without moving a nested Agent onto a worker loop."""
+
+    if connection.provider not in {"neo4j", "hugegraph"}:
+        events = await run_sync_compat(
+            lambda: list(
+                query_business_data_stream(request, connection=connection)
+            ),
+            run_id=str(request.provider_runtime_context.get("run_id") or "")
+            or None,
+            task_name="business-data-provider",
+            offload_kind="tool",
+        )
+        for event in events:
+            yield event
+        return
+
+    provider = await run_sync_compat(
+        _build_graph_provider,
+        request,
+        connection,
+        run_id=str(request.provider_runtime_context.get("run_id") or "")
+        or None,
+        task_name="graph-provider-setup",
+        offload_kind="tool",
+    )
+    try:
+        async for event in provider.asearch_stream(
+            query=request.query,
+            entity=request.entity,
+        ):
+            yield event
+    finally:
+        close = getattr(provider, "close", None)
+        if callable(close):
+            await run_sync_compat(
+                close,
+                run_id=str(
+                    request.provider_runtime_context.get("run_id") or ""
+                )
+                or None,
+                task_name="graph-provider-close",
+                offload_kind="tool",
+            )
+
+
+def _build_graph_provider(
+    request: BusinessDataSearchRequest,
+    connection: ResolvedBusinessDataSource,
+):
+    """Build graph provider state inside the bounded tool pool."""
+
+    spec = get_provider_spec(connection.provider)
+    workspace_root = ""
+    if request.workspace_id:
+        try:
+            workspace_root = str(
+                get_workspace_paths(request.workspace_id).ontologies_dir
+            )
+        except Exception:
+            pass
+    scoped_provider_config: dict[str, Any] = {
+        **dict(connection.config),
+        "_workspace_root": workspace_root,
+        "workspace_id": request.workspace_id,
+        "ontology_id": request.ontology_id,
+        "ontology_version": request.ontology_version,
+    }
+    workspace_property = str(
+        scoped_provider_config.get("workspace_property")
+        or "d2o_workspace_id"
+    ).strip()
+    if workspace_property == "workspace_name":
+        try:
+            scoped_provider_config["workspace_name"] = str(
+                get_workspace(request.workspace_id).get("name") or ""
+            ).strip()
+        except Exception:
+            scoped_provider_config["workspace_name"] = ""
+    allowed_runtime_context_keys = {
+        "run_id",
+        "session_id",
+        "turn_id",
+        "parent_span_key",
+        "agent_iteration",
+        "model_profile_id",
+        "_observer",
+    }
+    for key, value in dict(request.provider_runtime_context or {}).items():
+        if key in allowed_runtime_context_keys:
+            scoped_provider_config[key] = value
+    return spec.factory(
+        {
+            "ontology_search": {
+                connection.provider: scoped_provider_config,
+            }
+        }
+    )
 
 
 def _append_field_alias_mappings(

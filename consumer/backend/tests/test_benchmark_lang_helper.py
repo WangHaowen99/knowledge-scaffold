@@ -21,7 +21,14 @@ def test_benchmark_lang_loads_local_dotenv_into_environment(tmp_path):
         env.pop(name, None)
     backend_dir = Path(__file__).resolve().parents[1]
     env["PYTHONPATH"] = os.pathsep.join(
-        [str(helper_dir), str(backend_dir)]
+        filter(
+            None,
+            [
+                str(helper_dir),
+                str(backend_dir),
+                os.environ.get("PYTHONPATH", ""),
+            ],
+        )
     )
     completed = subprocess.run(
         [

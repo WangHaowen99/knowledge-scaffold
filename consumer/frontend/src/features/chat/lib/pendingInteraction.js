@@ -12,7 +12,10 @@ export function findPendingInteraction(messages) {
       && isSessionWaitingForUserStatus(message.status)
       && message.interaction?.id
     ) {
-      return message.interaction;
+      const runId = String(message.runId || message.interaction.runId || '').trim();
+      return runId && !message.interaction.runId
+        ? { ...message.interaction, runId }
+        : message.interaction;
     }
   }
   return null;

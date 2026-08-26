@@ -1,34 +1,44 @@
+import asyncio
 import logging
 from types import SimpleNamespace
+
+import pytest
 
 import agent.core.warmup as warmup
 
 
-class _InlineThread:
-    starts = 0
+class _InlineShortIO:
+    async def run(self, function, **kwargs):
+        return function(**kwargs)
 
-    def __init__(self, *, target, args, name, daemon):
+
+class _Supervisor:
+    def __init__(self):
+        self.starts = 0
+
+    def start_derived(self, awaitable, *, name):
         assert name == "runtime-warmup"
-        assert daemon is True
-        self._target = target
-        self._args = args
+        self.starts += 1
+        return asyncio.create_task(awaitable, name=name)
 
-    def start(self):
-        type(self).starts += 1
-        self._target(*self._args)
+
+def _runtime(*, short_io=None):
+    return SimpleNamespace(
+        short_io=short_io or _InlineShortIO(),
+        supervisor=_Supervisor(),
+    )
 
 
 def _reset_status(monkeypatch):
-    _InlineThread.starts = 0
     monkeypatch.setattr(
         warmup,
         "_status",
         warmup.RuntimeWarmupStatus(enabled=False, state="idle"),
     )
-    monkeypatch.setattr(warmup.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(warmup, "_task", None)
 
 
-def test_runtime_warmup_can_be_disabled(monkeypatch):
+def test_runtime_warmup_can_be_disabled_without_runtime(monkeypatch):
     _reset_status(monkeypatch)
 
     status = warmup.start_runtime_warmup(
@@ -37,93 +47,114 @@ def test_runtime_warmup_can_be_disabled(monkeypatch):
 
     assert status.state == "disabled"
     assert status.enabled is False
-    assert _InlineThread.starts == 0
 
 
-def test_runtime_warmup_runs_once_and_records_success(monkeypatch):
+def test_runtime_warmup_runs_once_on_supervised_short_io(monkeypatch):
     _reset_status(monkeypatch)
     calls = []
 
-    monkeypatch.setattr(
-        "agent.core.jiuwen_engine.warm_up_jiuwen_runtime",
-        lambda *, agent_config: calls.append(agent_config)
-        or {"duration_ms": 17, "mode": "jiuwen-runtime"},
-    )
+    def warm(*, agent_config, cancel_event):
+        calls.append((agent_config, cancel_event.is_set()))
+        return {"duration_ms": 17, "mode": "jiuwen-runtime"}
+
+    monkeypatch.setattr(warmup, "_load_runtime_warmup", lambda: warm)
     config = SimpleNamespace(runtime_warmup_enabled=True)
+    runtime = _runtime()
 
-    first = warmup.start_runtime_warmup(agent_config=config)
-    second = warmup.start_runtime_warmup(agent_config=config)
-
-    assert first.state == "success"
-    assert second.state == "success"
-    assert first.duration_ms == 17
-    assert first.mode == "jiuwen-runtime"
-    assert calls == [config]
-    assert _InlineThread.starts == 1
-
-
-def test_runtime_warmup_failure_is_terminal_without_exception_details(monkeypatch, caplog):
-    _reset_status(monkeypatch)
-
-    def fail(*, agent_config):
-        raise RuntimeError("warm-up failed api_key=secret-value")
-
-    monkeypatch.setattr(
-        "agent.core.jiuwen_engine.warm_up_jiuwen_runtime",
-        fail,
-    )
-
-    with caplog.at_level(logging.WARNING, logger="warmup"):
+    async def exercise():
         first = warmup.start_runtime_warmup(
-            agent_config=SimpleNamespace(runtime_warmup_enabled=True)
+            agent_config=config,
+            runtime=runtime,
         )
+        assert first.state == "running"
+        await warmup._task
         second = warmup.start_runtime_warmup(
-            agent_config=SimpleNamespace(runtime_warmup_enabled=True)
+            agent_config=config,
+            runtime=runtime,
         )
+        return second
 
-    assert first.state == "failed"
-    assert first.error_type is None
-    assert first.error_message is None
-    assert second.state == "failed"
-    assert _InlineThread.starts == 1
-    records = [record for record in caplog.records if record.name == "warmup"]
-    assert any(record.getMessage() == "Runtime warm-up finished state=failed" for record in records)
-    assert all(record.exc_info is None for record in records)
-    assert "secret-value" not in caplog.text
-
-
-def test_runtime_warmup_returns_before_daemon_worker_runs(monkeypatch):
-    _reset_status(monkeypatch)
-    captured = {}
-
-    class DeferredThread(_InlineThread):
-        def start(self):
-            type(self).starts += 1
-            captured["target"] = self._target
-            captured["args"] = self._args
-
-    monkeypatch.setattr(warmup.threading, "Thread", DeferredThread)
-
-    status = warmup.start_runtime_warmup(
-        agent_config=SimpleNamespace(runtime_warmup_enabled=True)
-    )
-
-    assert status.state == "running"
-    assert captured["target"] is warmup._run_warmup
-
-
-def test_runtime_warmup_is_enabled_by_default(monkeypatch):
-    _reset_status(monkeypatch)
-    calls = []
-    monkeypatch.setattr(
-        "agent.core.jiuwen_engine.warm_up_jiuwen_runtime",
-        lambda *, agent_config: calls.append(agent_config)
-        or {"duration_ms": 1, "mode": "jiuwen-runtime"},
-    )
-
-    status = warmup.start_runtime_warmup()
+    status = asyncio.run(exercise())
 
     assert status.state == "success"
-    assert status.enabled is True
-    assert calls == [None]
-    assert _InlineThread.starts == 1
+    assert status.duration_ms == 17
+    assert status.mode == "jiuwen-runtime"
+    assert calls == [(config, False)]
+    assert runtime.supervisor.starts == 1
+
+
+def test_runtime_warmup_failure_is_terminal_without_exception_details(
+    monkeypatch,
+    caplog,
+):
+    _reset_status(monkeypatch)
+
+    def fail(*, agent_config, cancel_event):
+        del agent_config, cancel_event
+        raise RuntimeError("warm-up failed detail=private-marker")
+
+    monkeypatch.setattr(warmup, "_load_runtime_warmup", lambda: fail)
+
+    async def exercise():
+        runtime = _runtime()
+        warmup.start_runtime_warmup(
+            agent_config=SimpleNamespace(runtime_warmup_enabled=True),
+            runtime=runtime,
+        )
+        await warmup._task
+
+    with caplog.at_level(logging.WARNING, logger="warmup"):
+        asyncio.run(exercise())
+
+    status = warmup.get_runtime_warmup_status()
+    assert status.state == "failed"
+    assert status.error_type is None
+    assert status.error_message is None
+    records = [record for record in caplog.records if record.name == "warmup"]
+    assert any(
+        record.getMessage() == "Runtime warm-up finished state=failed"
+        for record in records
+    )
+    assert all(record.exc_info is None for record in records)
+    assert "private-marker" not in caplog.text
+
+
+def test_runtime_warmup_cancel_uses_absolute_deadline(monkeypatch):
+    _reset_status(monkeypatch)
+    monkeypatch.setattr(
+        warmup,
+        "_load_runtime_warmup",
+        lambda: (lambda **_kwargs: None),
+    )
+    started = asyncio.Event()
+
+    class BlockingShortIO:
+        async def run(self, function, **kwargs):
+            del function, kwargs
+            started.set()
+            await asyncio.Event().wait()
+
+    async def exercise():
+        runtime = _runtime(short_io=BlockingShortIO())
+        status = warmup.start_runtime_warmup(
+            agent_config=SimpleNamespace(runtime_warmup_enabled=True),
+            runtime=runtime,
+        )
+        assert status.state == "running"
+        await started.wait()
+        deadline = asyncio.get_running_loop().time() + 1.0
+        assert await warmup.stop_runtime_warmup(deadline=deadline) is True
+
+    asyncio.run(exercise())
+
+    assert warmup.get_runtime_warmup_status().state == "cancelled"
+    assert warmup._task is None
+
+
+def test_runtime_warmup_requires_lifespan_runtime(monkeypatch):
+    _reset_status(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="lifespan-owned RuntimeContainer"):
+        warmup.start_runtime_warmup(
+            agent_config=SimpleNamespace(runtime_warmup_enabled=True)
+        )

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import agent.tools.business_data.providers.graph.hugegraph_provider as hugegraph_module
 import agent.tools.business_data.providers.graph.neo4j_provider as neo4j_module
 from agent.tools.business_data.providers.graph.models import GraphAgentResult, GraphBackendResult
 from agent.tools.business_data.providers.graph.provider import GraphSearchProvider
+
+
+def _collect(stream):
+    async def consume():
+        return [event async for event in stream]
+
+    return asyncio.run(consume())
 
 
 class _ProviderBackend:
@@ -25,7 +33,7 @@ class _ProviderBackend:
 
 
 class _ProviderGraphAgent:
-    def run(self, **kwargs):
+    async def arun(self, **kwargs):
         del kwargs
         return GraphAgentResult(
             tool_name="property_filter",
@@ -48,7 +56,7 @@ def test_graph_search_provider_yields_standard_events_and_closes_backend():
         graph_agent=_ProviderGraphAgent(),
     )
 
-    events = list(provider.search_stream(query="查询 TargetItem", entity="TargetItem"))
+    events = _collect(provider.asearch_stream(query="查询 TargetItem", entity="TargetItem"))
     provider.close()
 
     assert [event["type"] for event in events] == [

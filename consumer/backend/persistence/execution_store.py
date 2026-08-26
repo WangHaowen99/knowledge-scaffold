@@ -11,6 +11,7 @@ Storage structure:
             execution.json    # SessionExecutionHistory + session_history
 """
 
+import copy
 import json
 import os
 import threading
@@ -18,6 +19,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from agent.state import (
     SessionExecutionHistory,
@@ -29,6 +31,33 @@ from utils.read_docs import normalize_read_documents_registry
 
 class InteractionCheckpointError(ValueError):
     """Raised when a user response does not match the durable checkpoint."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "INTERACTION_CONFLICT",
+        existing_run_id: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.existing_run_id = existing_run_id
+
+
+class IdempotencyConflictError(ValueError):
+    """Raised when an idempotency key is reused for another request."""
+
+    code = "IDEMPOTENCY_CONFLICT"
+
+
+class ExecutionStoreCorruptionError(RuntimeError):
+    """Raised after a corrupt execution file is isolated."""
+
+    code = "EXECUTION_STORE_CORRUPT"
+
+
+class TurnOwnershipError(RuntimeError):
+    """Raised when a run attempts to update another run's turn."""
 
 
 INTERACTION_CANCELLED_MESSAGE = "我已主动取消上一条交互请求，未提供所请求的信息或选择。"
@@ -57,20 +86,38 @@ def _latest_pending_interaction(
     if not turns:
         return None, None
 
-    latest = turns[-1]
-    if latest.get("status") != "awaiting_input" or latest.get("interaction_consumed_at"):
-        return None, None
+    for turn in reversed(turns):
+        if turn.get("status") != "awaiting_input" or turn.get("interaction_consumed_at"):
+            continue
+        interaction = turn.get("pending_interaction")
+        if not isinstance(interaction, dict):
+            final_output = turn.get("final_output")
+            interaction = (
+                final_output.get("interaction")
+                if isinstance(final_output, dict)
+                else None
+            )
+        if not isinstance(interaction, dict):
+            raise InteractionCheckpointError(
+                "pending interaction checkpoint is invalid",
+                code="INTERACTION_CONFLICT",
+            )
+        return turn, interaction
+    return None, None
 
-    final_output = latest.get("final_output")
-    interaction = final_output.get("interaction") if isinstance(final_output, dict) else None
-    if not isinstance(interaction, dict):
-        raise InteractionCheckpointError("pending interaction checkpoint is invalid")
-    return latest, interaction
 
-
-def _turn_interaction(turn: TurnExecutionRecord) -> Optional[Dict[str, Any]]:
+def _turn_interaction(
+    turn: TurnExecutionRecord,
+) -> Optional[Dict[str, Any]]:
+    interaction = turn.get("pending_interaction")
+    if isinstance(interaction, dict):
+        return interaction
     final_output = turn.get("final_output")
-    interaction = final_output.get("interaction") if isinstance(final_output, dict) else None
+    interaction = (
+        final_output.get("interaction")
+        if isinstance(final_output, dict)
+        else None
+    )
     return interaction if isinstance(interaction, dict) else None
 
 
@@ -82,33 +129,26 @@ def _latest_recoverable_interaction_claim(
     Optional[Dict[str, Any]],
     Optional[Dict[str, Any]],
 ]:
-    """Return a running response claim that can be retried after a crash."""
+    """Return an interrupted deterministic response claim, if one exists."""
+
     turns = list(history.get("turns") or [])
     if not turns:
         return None, None, None, None
     claimed_turn = turns[-1]
     claimed_response = claimed_turn.get("prior_interaction_response")
-    if claimed_turn.get("status") != "running" or not isinstance(claimed_response, dict):
+    if claimed_turn.get("status") != "running" or not isinstance(
+        claimed_response,
+        dict,
+    ):
         return None, None, None, None
-
     source_turn_id = claimed_turn.get("prior_interaction_turn_id")
-    source_turn = next(
-        (
-            turn
-            for turn in reversed(turns[:-1])
-            if source_turn_id is not None and turn.get("turn_id") == source_turn_id
-        ),
-        None,
-    )
-    if source_turn is None:
-        interaction_id = str(claimed_response.get("interaction_id") or "").strip()
+    source_turn = None
+    if source_turn_id is not None:
         for turn in reversed(turns[:-1]):
-            candidate_interaction = _turn_interaction(turn) or {}
-            candidate_id = str(candidate_interaction.get("id") or "").strip()
-            if candidate_id == interaction_id:
+            if turn.get("turn_id") == source_turn_id:
                 source_turn = turn
                 break
-    interaction = _turn_interaction(source_turn) if source_turn is not None else None
+    interaction = _turn_interaction(source_turn) if source_turn else None
     if source_turn is None or interaction is None:
         return None, None, None, None
     if source_turn.get("status") != "awaiting_input":
@@ -118,19 +158,6 @@ def _latest_recoverable_interaction_claim(
     if not source_turn.get("interaction_consumed_at"):
         return None, None, None, None
     return claimed_turn, source_turn, interaction, claimed_response
-
-
-def _latest_unconsumed_interaction_cancellation(
-    history: SessionExecutionHistory,
-) -> tuple[Optional[TurnExecutionRecord], Optional[Dict[str, Any]]]:
-    for turn in reversed(list(history.get("turns") or [])):
-        response = turn.get("interaction_response")
-        if not isinstance(response, dict) or response.get("action") != "cancel":
-            continue
-        if turn.get("interaction_context_consumed_at"):
-            return None, None
-        return turn, response
-    return None, None
 
 
 def _is_standard_json_value(value: Any) -> bool:
@@ -239,6 +266,124 @@ def _validated_interaction_response(
     return canonical
 
 
+def _normalize_loaded_history(
+    history: SessionExecutionHistory,
+) -> SessionExecutionHistory:
+    """Normalize additive Turn fields without weakening corrupt-file handling."""
+
+    normalized = copy.deepcopy(history)
+    turns = normalized.get("turns")
+    if not isinstance(turns, list):
+        raise ExecutionStoreCorruptionError("execution history turns must be a list")
+    for turn in turns:
+        if not isinstance(turn, dict):
+            raise ExecutionStoreCorruptionError("execution history turn must be an object")
+        if isinstance(turn.get("pending_interaction"), dict):
+            continue
+        final_output = turn.get("final_output")
+        interaction = (
+            final_output.get("interaction")
+            if isinstance(final_output, dict)
+            else None
+        )
+        if isinstance(interaction, dict):
+            turn["pending_interaction"] = copy.deepcopy(interaction)
+    normalized.setdefault("session_history", [])
+    normalized.setdefault("read_documents", normalize_read_documents_registry(None))
+    return normalized
+
+
+def _turn_for_idempotency_key(
+    history: SessionExecutionHistory,
+    idempotency_key_hash: Optional[str],
+) -> Optional[TurnExecutionRecord]:
+    normalized_key = str(idempotency_key_hash or "").strip()
+    if not normalized_key:
+        return None
+    for turn in history.get("turns", []):
+        if str(turn.get("idempotency_key_hash") or "") == normalized_key:
+            return turn
+    return None
+
+
+def _next_turn_id(history: SessionExecutionHistory) -> int:
+    return max(
+        (int(turn.get("turn_id") or 0) for turn in history.get("turns", [])),
+        default=0,
+    ) + 1
+
+
+def _mark_interrupted_turns(history: SessionExecutionHistory) -> int:
+    interrupted = 0
+    ended_at = datetime.now().isoformat()
+    for turn in history.get("turns", []):
+        if str(turn.get("status") or "") not in {"queued", "running"}:
+            continue
+        turn["status"] = "failed"
+        turn["end_time"] = ended_at
+        turn["error_code"] = "SERVICE_RESTARTED"
+        turn["final_output"] = {
+            "error": "Execution was interrupted by a service restart",
+            "error_code": "SERVICE_RESTARTED",
+        }
+        interrupted += 1
+    return interrupted
+
+
+def _turn_for_interaction(
+    history: SessionExecutionHistory,
+    interaction_id: str,
+) -> tuple[Optional[TurnExecutionRecord], Optional[Dict[str, Any]]]:
+    requested_id = str(interaction_id or "").strip()
+    for turn in reversed(history.get("turns", [])):
+        interaction = turn.get("pending_interaction")
+        if not isinstance(interaction, dict):
+            final_output = turn.get("final_output")
+            interaction = (
+                final_output.get("interaction")
+                if isinstance(final_output, dict)
+                else None
+            )
+        if (
+            isinstance(interaction, dict)
+            and str(interaction.get("id") or "").strip() == requested_id
+        ):
+            return turn, interaction
+    return None, None
+
+
+def _canonical_response_for_interaction(
+    interaction: Dict[str, Any],
+    response: Dict[str, Any],
+) -> Dict[str, Any]:
+    validation_history: SessionExecutionHistory = {
+        "session_id": "validation",
+        "created_at": "",
+        "updated_at": "",
+        "turns": [
+            {
+                "turn_id": 1,
+                "session_id": "validation",
+                "run_id": "validation",
+                "user_request": "validation",
+                "start_time": "",
+                "end_time": "",
+                "status": "awaiting_input",
+                "final_output": None,
+                "summary": None,
+                "ontology_version": None,
+                "pending_interaction": copy.deepcopy(interaction),
+            }
+        ],
+        "session_history": [],
+        "read_documents": normalize_read_documents_registry(None),
+    }
+    canonical = _validated_interaction_response(validation_history, response)
+    if canonical is None:
+        raise InteractionCheckpointError("interaction response is required")
+    return canonical
+
+
 class ExecutionStore:
     """
     Persistent storage for workflow execution records and LLM context.
@@ -269,6 +414,15 @@ class ExecutionStore:
 
         # Track current turn for each session (session_id -> turn_id)
         self._current_turns: Dict[str, int] = {}
+        self._corrupt_sessions: Dict[str, str] = {}
+
+    @property
+    def corruption_count(self) -> int:
+        return len(self._corrupt_sessions)
+
+    @property
+    def healthy(self) -> bool:
+        return not self._corrupt_sessions
 
     def _lock_for_session(self, session_id: str) -> threading.RLock:
         session_id = validate_session_id(session_id)
@@ -289,6 +443,11 @@ class ExecutionStore:
 
     def _load_session(self, session_id: str) -> SessionExecutionHistory:
         """Load session execution history from disk or create new."""
+        session_id = validate_session_id(session_id)
+        if session_id in self._corrupt_sessions:
+            raise ExecutionStoreCorruptionError(
+                "execution history is isolated as corrupt"
+            )
         if session_id in self._cache:
             return self._cache[session_id]
 
@@ -297,11 +456,32 @@ class ExecutionStore:
             try:
                 with open(session_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self._cache[session_id] = data
-                    return data
-            except (json.JSONDecodeError, IOError):
-                # Corrupted file, create new
-                pass
+                if not isinstance(data, dict):
+                    raise ExecutionStoreCorruptionError(
+                        "execution history root must be an object"
+                    )
+                normalized = _normalize_loaded_history(data)
+                if _mark_interrupted_turns(normalized):
+                    return self._save_session(session_id, normalized)
+                self._cache[session_id] = normalized
+                return normalized
+            except (json.JSONDecodeError, OSError, ExecutionStoreCorruptionError) as exc:
+                suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                quarantine_path = session_path.with_name(
+                    "execution.json.corrupt.{}.{}".format(suffix, uuid4().hex)
+                )
+                try:
+                    os.replace(session_path, quarantine_path)
+                    directory_fd = os.open(str(session_path.parent), os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                finally:
+                    self._corrupt_sessions[session_id] = str(quarantine_path)
+                raise ExecutionStoreCorruptionError(
+                    "execution history is corrupt and was isolated"
+                ) from exc
 
         # Create new session history
         now = datetime.now().isoformat()
@@ -318,6 +498,10 @@ class ExecutionStore:
 
     def _get_existing_session_unlocked(self, session_id: str) -> Optional[SessionExecutionHistory]:
         """Return existing session history while caller owns self._lock."""
+        if session_id in self._corrupt_sessions:
+            raise ExecutionStoreCorruptionError(
+                "execution history is isolated as corrupt"
+            )
         if session_id in self._cache:
             return self._cache[session_id]
 
@@ -329,34 +513,343 @@ class ExecutionStore:
             return None
         return self._load_session(session_id)
 
-    def _save_session(self, session_id: str) -> None:
-        """Atomically save session execution history to disk."""
-        if session_id not in self._cache:
-            return
+    def _save_session(
+        self,
+        session_id: str,
+        history: Optional[SessionExecutionHistory] = None,
+    ) -> SessionExecutionHistory:
+        """Atomically commit one session and publish the cache only after fsync."""
 
-        session_path = self._get_session_path(session_id)
-        history = self._cache[session_id]
-        history["updated_at"] = datetime.now().isoformat()
-        temporary_path = session_path.with_name(
-            ".{}.{}.{}.tmp".format(
-                session_path.name,
-                os.getpid(),
-                threading.get_ident(),
+        session_id = validate_session_id(session_id)
+        if session_id in self._corrupt_sessions:
+            raise ExecutionStoreCorruptionError(
+                "execution history is isolated as corrupt"
             )
+        source = history if history is not None else self._cache.get(session_id)
+        if source is None:
+            raise KeyError(session_id)
+        committed = copy.deepcopy(source)
+        committed["updated_at"] = datetime.now().isoformat()
+        session_path = self._get_session_path(session_id)
+        temp_path = session_path.with_name(
+            ".execution.json.{}.tmp".format(uuid4().hex)
         )
         try:
-            with open(temporary_path, "w", encoding="utf-8") as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+            with open(temp_path, "x", encoding="utf-8") as f:
+                json.dump(committed, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(temporary_path, session_path)
+            os.replace(temp_path, session_path)
             _fsync_directory(session_path.parent)
+        except BaseException:
+            self._cache.pop(session_id, None)
+            raise
         finally:
-            temporary_path.unlink(missing_ok=True)
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        self._cache[session_id] = committed
+        return committed
 
     # =========================================================================
     # Turn Management
     # =========================================================================
+
+    def lookup_idempotent_turn(
+        self,
+        *,
+        session_id: str,
+        idempotency_key_hash: Optional[str],
+        request_fingerprint: Optional[str],
+    ) -> Optional[TurnExecutionRecord]:
+        """Return an exact durable admission retry without mutating state."""
+
+        if not str(idempotency_key_hash or "").strip():
+            return None
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if history is None:
+                return None
+            existing = _turn_for_idempotency_key(
+                history,
+                idempotency_key_hash,
+            )
+            if existing is None:
+                return None
+            if str(existing.get("request_fingerprint") or "") != str(
+                request_fingerprint or ""
+            ):
+                raise IdempotencyConflictError(
+                    "idempotency key was already used for another request"
+                )
+            return copy.deepcopy(existing)
+
+    def lookup_consumed_interaction_turn(
+        self,
+        *,
+        session_id: str,
+        interaction_id: str,
+        interaction_response: Dict[str, Any],
+    ) -> Optional[TurnExecutionRecord]:
+        """Return the Run created by an exact repeated HITL answer.
+
+        This read-only check lets admission retries win before session-busy and
+        capacity checks without consuming a previously unanswered checkpoint.
+        """
+
+        requested_id = str(interaction_id or "").strip()
+        if not requested_id:
+            raise InteractionCheckpointError(
+                "interaction_id is required",
+                code="INTERACTION_CONFLICT",
+            )
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if history is None:
+                raise InteractionCheckpointError(
+                    "session has no matching interaction",
+                    code="INTERACTION_NOT_FOUND",
+                )
+            source_turn, interaction = _turn_for_interaction(
+                history,
+                requested_id,
+            )
+            if source_turn is None or interaction is None:
+                raise InteractionCheckpointError(
+                    "session has no matching interaction_id",
+                    code="INTERACTION_NOT_FOUND",
+                )
+            canonical_response = _canonical_response_for_interaction(
+                interaction,
+                dict(interaction_response or {}),
+            )
+            if not source_turn.get("interaction_consumed_at"):
+                return None
+            consumed_by_turn_id = source_turn.get(
+                "interaction_consumed_by_turn_id"
+            )
+            existing_turn = next(
+                (
+                    turn
+                    for turn in history.get("turns", [])
+                    if turn.get("turn_id") == consumed_by_turn_id
+                ),
+                None,
+            )
+            existing_run_id = (
+                str(existing_turn.get("run_id") or "") or None
+                if existing_turn is not None
+                else None
+            )
+            if source_turn.get("interaction_response") == canonical_response:
+                if existing_turn is not None:
+                    return copy.deepcopy(existing_turn)
+                raise InteractionCheckpointError(
+                    "interaction was cancelled and created no run",
+                    code="INTERACTION_ALREADY_CONSUMED",
+                )
+            raise InteractionCheckpointError(
+                "interaction was already consumed by another response",
+                code="INTERACTION_ALREADY_CONSUMED",
+                existing_run_id=existing_run_id,
+            )
+
+    def create_turn_for_run(
+        self,
+        *,
+        session_id: str,
+        user_request: str,
+        run_id: Optional[str] = None,
+        idempotency_key_hash: Optional[str] = None,
+        request_fingerprint: Optional[str] = None,
+        ontology_version: Optional[str] = None,
+        protocol_metadata: Optional[Dict[str, Any]] = None,
+    ) -> tuple[TurnExecutionRecord, bool]:
+        """Atomically admit one ordinary request and allocate its Turn and Run."""
+
+        with self._lock_for_session(session_id):
+            history = copy.deepcopy(self._load_session(session_id))
+            existing = _turn_for_idempotency_key(history, idempotency_key_hash)
+            if existing is not None:
+                if str(existing.get("request_fingerprint") or "") != str(
+                    request_fingerprint or ""
+                ):
+                    raise IdempotencyConflictError(
+                        "idempotency key was already used for another request"
+                    )
+                return copy.deepcopy(existing), False
+
+            pending_turn, _pending = _latest_pending_interaction(history)
+            if pending_turn is not None:
+                raise InteractionCheckpointError(
+                    "session is awaiting an interaction response",
+                    code="INTERACTION_PENDING",
+                )
+
+            turn_id = _next_turn_id(history)
+            allocated_run_id = str(run_id or "").strip() or "agentic-{}".format(
+                uuid4().hex
+            )
+            if any(
+                str(item.get("run_id") or "") == allocated_run_id
+                for item in history.get("turns", [])
+            ):
+                raise ValueError("run_id is already allocated")
+            started_at = datetime.now().isoformat()
+            turn: TurnExecutionRecord = {
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "run_id": allocated_run_id,
+                "user_request": str(user_request or ""),
+                "start_time": started_at,
+                "end_time": None,
+                "status": "running",
+                "final_output": None,
+                "summary": None,
+                "ontology_version": ontology_version,
+            }
+            if idempotency_key_hash:
+                turn["idempotency_key_hash"] = str(idempotency_key_hash)
+                turn["request_fingerprint"] = str(request_fingerprint or "")
+            if protocol_metadata:
+                turn["protocol_metadata"] = copy.deepcopy(protocol_metadata)
+            history["turns"].append(turn)
+            history.setdefault("session_history", []).append(
+                {
+                    "role": "user",
+                    "content": str(user_request or ""),
+                    "run_id": allocated_run_id,
+                    "turn_id": turn_id,
+                }
+            )
+            committed = self._save_session(session_id, history)
+            self._current_turns[session_id] = turn_id
+            return copy.deepcopy(committed["turns"][-1]), True
+
+    def consume_interaction_and_create_turn(
+        self,
+        *,
+        session_id: str,
+        interaction_id: str,
+        user_request: str,
+        interaction_response: Dict[str, Any],
+        idempotency_key_hash: Optional[str] = None,
+        request_fingerprint: Optional[str] = None,
+        ontology_version: Optional[str] = None,
+        protocol_metadata: Optional[Dict[str, Any]] = None,
+    ) -> tuple[TurnExecutionRecord, bool]:
+        """Consume one durable HITL checkpoint and create exactly one new Run."""
+
+        requested_id = str(interaction_id or "").strip()
+        if not requested_id:
+            raise InteractionCheckpointError(
+                "interaction_id is required",
+                code="INTERACTION_CONFLICT",
+            )
+        with self._lock_for_session(session_id):
+            history = copy.deepcopy(self._load_session(session_id))
+            existing_by_key = _turn_for_idempotency_key(
+                history,
+                idempotency_key_hash,
+            )
+            if existing_by_key is not None:
+                if str(existing_by_key.get("request_fingerprint") or "") != str(
+                    request_fingerprint or ""
+                ):
+                    raise IdempotencyConflictError(
+                        "idempotency key was already used for another request"
+                    )
+                return copy.deepcopy(existing_by_key), False
+
+            source_turn, interaction = _turn_for_interaction(history, requested_id)
+            if source_turn is None or interaction is None:
+                raise InteractionCheckpointError(
+                    "session has no matching interaction_id",
+                    code="INTERACTION_NOT_FOUND",
+                )
+            response = dict(interaction_response or {})
+            if str(response.get("interaction_id") or "").strip() != requested_id:
+                raise InteractionCheckpointError(
+                    "interaction_id does not match the pending interaction",
+                    code="INTERACTION_CONFLICT",
+                )
+            canonical_response = _canonical_response_for_interaction(
+                interaction,
+                response,
+            )
+
+            consumed_at = source_turn.get("interaction_consumed_at")
+            if consumed_at:
+                existing_run_id = None
+                consumed_by_turn_id = source_turn.get(
+                    "interaction_consumed_by_turn_id"
+                )
+                existing_turn = next(
+                    (
+                        turn
+                        for turn in history.get("turns", [])
+                        if turn.get("turn_id") == consumed_by_turn_id
+                    ),
+                    None,
+                )
+                if existing_turn is not None:
+                    existing_run_id = str(existing_turn.get("run_id") or "") or None
+                if source_turn.get("interaction_response") == canonical_response:
+                    if existing_turn is None:
+                        raise InteractionCheckpointError(
+                            "interaction was cancelled and created no run",
+                            code="INTERACTION_ALREADY_CONSUMED",
+                        )
+                    return copy.deepcopy(existing_turn), False
+                raise InteractionCheckpointError(
+                    "interaction was already consumed by another response",
+                    code="INTERACTION_ALREADY_CONSUMED",
+                    existing_run_id=existing_run_id,
+                )
+
+            if source_turn.get("status") != "awaiting_input":
+                raise InteractionCheckpointError(
+                    "interaction checkpoint is not awaiting input",
+                    code="INTERACTION_CONFLICT",
+                )
+
+            turn_id = _next_turn_id(history)
+            run_id = "agentic-{}".format(uuid4().hex)
+            started_at = datetime.now().isoformat()
+            turn: TurnExecutionRecord = {
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "run_id": run_id,
+                "user_request": str(user_request or ""),
+                "start_time": started_at,
+                "end_time": None,
+                "status": "running",
+                "final_output": None,
+                "summary": None,
+                "ontology_version": ontology_version,
+            }
+            if idempotency_key_hash:
+                turn["idempotency_key_hash"] = str(idempotency_key_hash)
+                turn["request_fingerprint"] = str(request_fingerprint or "")
+            if protocol_metadata:
+                turn["protocol_metadata"] = copy.deepcopy(protocol_metadata)
+            source_turn["interaction_response"] = canonical_response
+            source_turn["interaction_consumed_at"] = started_at
+            source_turn["interaction_consumed_by_turn_id"] = turn_id
+            history["turns"].append(turn)
+            history.setdefault("session_history", []).append(
+                {
+                    "role": "user",
+                    "content": str(user_request or ""),
+                    "interaction_response": copy.deepcopy(canonical_response),
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                }
+            )
+            committed = self._save_session(session_id, history)
+            self._current_turns[session_id] = turn_id
+            return copy.deepcopy(committed["turns"][-1]), True
 
     def start_turn(
         self,
@@ -383,73 +876,88 @@ class ExecutionStore:
             The newly created TurnExecutionRecord
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
-            canonical_response = _validated_interaction_response(history, interaction_response)
-            started_at = datetime.now().isoformat()
-            if canonical_response is not None:
-                pending_turn, _interaction = _latest_pending_interaction(history)
-                if pending_turn is None:
-                    claimed_turn, pending_turn, _interaction, claimed_response = (
-                        _latest_recoverable_interaction_claim(history)
-                    )
-                    if (
-                        claimed_turn is None
-                        or pending_turn is None
-                        or claimed_response != canonical_response
-                    ):
-                        raise InteractionCheckpointError(
-                            "interaction recovery claim is unavailable"
-                        )
-                    claimed_turn["end_time"] = started_at
-                    claimed_turn["status"] = "failed"
-                    claimed_turn["final_output"] = {
-                        "error": {
-                            "code": "interaction_resume_interrupted",
-                            "message": "The prior interaction resume was interrupted and retried.",
-                        }
-                    }
-                else:
-                    pending_turn["interaction_response"] = canonical_response
-                    pending_turn["interaction_consumed_at"] = started_at
-                pending_turn["interaction_consumed_by_turn_id"] = turn_id
-                deterministic_checkpoint = pending_turn.get("deterministic_checkpoint")
-            else:
-                deterministic_checkpoint = None
-
-            prior_interaction_cancellation = None
-            if canonical_response is None:
-                cancelled_turn, cancellation = _latest_unconsumed_interaction_cancellation(history)
-                if cancelled_turn is not None and cancellation is not None:
-                    prior_interaction_cancellation = dict(cancellation)
-                    cancelled_turn["interaction_context_consumed_at"] = started_at
-                    cancelled_turn["interaction_context_consumed_by_turn_id"] = turn_id
-
-            # Create new turn record
-            turn: TurnExecutionRecord = {
-                "turn_id": turn_id,
-                "session_id": session_id,
-                "run_id": run_id,
-                "user_request": user_request,
-                "start_time": started_at,
-                "end_time": None,
-                "status": "running",
-                "final_output": None,
-                "summary": None,
-                "ontology_version": ontology_version,
-            }
-            if prior_interaction_cancellation is not None:
-                turn["prior_interaction_cancellation"] = prior_interaction_cancellation
-            if canonical_response is not None:
-                turn["prior_interaction_response"] = dict(canonical_response)
-                turn["prior_interaction_turn_id"] = pending_turn.get("turn_id")
-            if isinstance(deterministic_checkpoint, dict):
-                turn["prior_deterministic_checkpoint"] = dict(deterministic_checkpoint)
-
-            history["turns"].append(turn)
-            self._current_turns[session_id] = turn_id
-            self._save_session(session_id)
-
+            history = copy.deepcopy(self._load_session(session_id))
+            turn, _canonical_response = self._start_turn_unlocked(
+                history,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                user_request=user_request,
+                ontology_version=ontology_version,
+                interaction_response=interaction_response,
+            )
             return turn
+
+    def start_next_turn(
+        self,
+        session_id: str,
+        run_id: str,
+        user_request: str,
+        ontology_version: Optional[str] = None,
+        interaction_response: Optional[Dict[str, Any]] = None,
+    ) -> tuple[TurnExecutionRecord, Optional[Dict[str, Any]]]:
+        """Atomically allocate and start the next turn for one session."""
+        with self._lock_for_session(session_id):
+            history = copy.deepcopy(self._load_session(session_id))
+            turn_id = _next_turn_id(history)
+            return self._start_turn_unlocked(
+                history,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                user_request=user_request,
+                ontology_version=ontology_version,
+                interaction_response=interaction_response,
+            )
+
+    def _start_turn_unlocked(
+        self,
+        history: SessionExecutionHistory,
+        *,
+        session_id: str,
+        turn_id: int,
+        run_id: str,
+        user_request: str,
+        ontology_version: Optional[str],
+        interaction_response: Optional[Dict[str, Any]],
+    ) -> tuple[TurnExecutionRecord, Optional[Dict[str, Any]]]:
+        expected_turn_id = _next_turn_id(history)
+        if int(turn_id) != expected_turn_id:
+            raise ValueError(
+                "turn_id must be allocated monotonically by ExecutionStore"
+            )
+        canonical_response = _validated_interaction_response(
+            history,
+            interaction_response,
+        )
+        started_at = datetime.now().isoformat()
+        if canonical_response is not None:
+            pending_turn, _pending = _latest_pending_interaction(history)
+            if pending_turn is None:
+                raise InteractionCheckpointError(
+                    "session has no pending interaction",
+                    code="INTERACTION_NOT_FOUND",
+                )
+            pending_turn["interaction_response"] = canonical_response
+            pending_turn["interaction_consumed_at"] = started_at
+            pending_turn["interaction_consumed_by_turn_id"] = turn_id
+
+        turn: TurnExecutionRecord = {
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "user_request": user_request,
+            "start_time": started_at,
+            "end_time": None,
+            "status": "running",
+            "final_output": None,
+            "summary": None,
+            "ontology_version": ontology_version,
+        }
+        history["turns"].append(turn)
+        committed = self._save_session(session_id, history)
+        self._current_turns[session_id] = turn_id
+        return copy.deepcopy(committed["turns"][-1]), canonical_response
 
     def validate_interaction_response(
         self,
@@ -842,32 +1350,53 @@ class ExecutionStore:
             raise InteractionCheckpointError("interaction_id is required")
 
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
 
-            # Retries stay idempotent even when the user has already started a new turn.
-            for turn in reversed(list(history.get("turns") or [])):
-                response = turn.get("interaction_response")
-                if not isinstance(response, dict):
-                    continue
-                if (
-                    response.get("action") == "cancel"
-                    and str(response.get("interaction_id") or "").strip() == requested_id
-                ):
-                    return dict(response)
-
-            pending_turn, interaction = _latest_pending_interaction(history)
-            if pending_turn is None or interaction is None:
-                raise InteractionCheckpointError("session has no pending interaction")
-
-            expected_id = str(interaction.get("id") or "").strip()
-            if not expected_id or requested_id != expected_id:
+            source_turn, interaction = _turn_for_interaction(
+                history,
+                requested_id,
+            )
+            if source_turn is None or interaction is None:
                 raise InteractionCheckpointError(
-                    "interaction_id does not match the pending interaction"
+                    "session has no matching interaction_id",
+                    code="INTERACTION_NOT_FOUND",
+                )
+            existing_response = source_turn.get("interaction_response")
+            if source_turn.get("interaction_consumed_at"):
+                if (
+                    isinstance(existing_response, dict)
+                    and existing_response.get("action") == "cancel"
+                ):
+                    return copy.deepcopy(existing_response)
+                consumed_by_turn_id = source_turn.get(
+                    "interaction_consumed_by_turn_id"
+                )
+                existing_turn = next(
+                    (
+                        turn
+                        for turn in history.get("turns", [])
+                        if turn.get("turn_id") == consumed_by_turn_id
+                    ),
+                    None,
+                )
+                raise InteractionCheckpointError(
+                    "interaction was already consumed by an answer",
+                    code="INTERACTION_ALREADY_CONSUMED",
+                    existing_run_id=(
+                        str(existing_turn.get("run_id") or "") or None
+                        if existing_turn is not None
+                        else None
+                    ),
+                )
+            if source_turn.get("status") != "awaiting_input":
+                raise InteractionCheckpointError(
+                    "interaction checkpoint is not awaiting input",
+                    code="INTERACTION_CONFLICT",
                 )
 
             cancelled_at = datetime.now().isoformat()
             cancellation = {
-                "interaction_id": expected_id,
+                "interaction_id": requested_id,
                 "type": str(interaction.get("type") or "input").strip() or "input",
                 "action": "cancel",
                 "cancelled": True,
@@ -875,16 +1404,15 @@ class ExecutionStore:
                 "cancelled_at": cancelled_at,
                 "message": INTERACTION_CANCELLED_MESSAGE,
                 "display_message": INTERACTION_CANCELLED_NOTICE,
-                "run_id": pending_turn.get("run_id"),
-                "turn_id": pending_turn.get("turn_id"),
+                "run_id": source_turn.get("run_id"),
+                "turn_id": source_turn.get("turn_id"),
             }
 
-            pending_turn["status"] = "cancelled"
-            pending_turn["end_time"] = cancelled_at
-            pending_turn["interaction_response"] = cancellation
-            pending_turn["interaction_consumed_at"] = cancelled_at
-            pending_turn["interaction_cancelled_at"] = cancelled_at
-            self._save_session(session_id)
+            source_turn["interaction_response"] = cancellation
+            source_turn["interaction_consumed_at"] = cancelled_at
+            source_turn["interaction_cancelled_at"] = cancelled_at
+            source_turn.pop("interaction_consumed_by_turn_id", None)
+            self._save_session(session_id, history)
             return cancellation
 
     def complete_turn(
@@ -893,6 +1421,8 @@ class ExecutionStore:
         turn_id: int,
         final_output: Optional[Dict[str, Any]],
         summary: Optional[str],
+        *,
+        run_id: Optional[str] = None,
     ) -> None:
         """
         Finalize a turn with output and summary.
@@ -904,24 +1434,26 @@ class ExecutionStore:
             summary: Summary for history context
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
 
-            # Find the turn
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "success"
-                    turn["final_output"] = final_output
-                    turn["summary"] = summary
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None and str(turn.get("status") or "") not in {
+                "success", "failed", "cancelled", "awaiting_input"
+            }:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "success"
+                turn["final_output"] = final_output
+                turn["summary"] = summary
 
-            self._save_session(session_id)
+            self._save_session(session_id, history)
 
     def fail_turn(
         self,
         session_id: str,
         turn_id: int,
         error: Any,
+        *,
+        run_id: Optional[str] = None,
     ) -> None:
         """
         Mark a turn as failed.
@@ -932,27 +1464,29 @@ class ExecutionStore:
             error: The error message
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
 
-            # Find the turn
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    if turn.get("status") in {
-                        "success",
-                        "failed",
-                        "cancelled",
-                        "awaiting_input",
-                    }:
-                        break
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "failed"
-                    # Add error to final_output
-                    turn["final_output"] = (
-                        dict(error) if isinstance(error, dict) else {"error": error}
-                    )
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None and str(turn.get("status") or "") not in {
+                "success", "failed", "cancelled", "awaiting_input"
+            }:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "failed"
+                output = (
+                    copy.deepcopy(error)
+                    if isinstance(error, dict)
+                    else {"error": str(error)}
+                )
+                nested_error = output.get("error")
+                error_code = (
+                    nested_error.get("code")
+                    if isinstance(nested_error, dict)
+                    else output.get("error_code")
+                )
+                turn["error_code"] = str(error_code or "RUNTIME_FAILED")
+                turn["final_output"] = output
 
-            self._save_session(session_id)
+            self._save_session(session_id, history)
 
     def cancel_turn(
         self,
@@ -961,6 +1495,8 @@ class ExecutionStore:
         reason: str,
         final_output: Optional[Dict[str, Any]] = None,
         summary: Optional[str] = None,
+        *,
+        run_id: Optional[str] = None,
     ) -> None:
         """
         Mark a turn as cancelled.
@@ -973,18 +1509,76 @@ class ExecutionStore:
             summary: Optional turn summary
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
 
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "cancelled"
-                    turn["final_output"] = final_output or {"cancel_reason": reason}
-                    if summary is not None:
-                        turn["summary"] = summary
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None and str(turn.get("status") or "") not in {
+                "success", "failed", "cancelled", "awaiting_input"
+            }:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "cancelled"
+                turn["final_output"] = final_output or {"cancel_reason": reason}
+                if summary is not None:
+                    turn["summary"] = summary
 
-            self._save_session(session_id)
+            self._save_session(session_id, history)
+
+    def reconcile_canonical_terminal(
+        self,
+        session_id: str,
+        turn_id: int,
+        *,
+        run_id: str,
+        status: str,
+        final_output: Dict[str, Any],
+        error_code: Optional[str] = None,
+    ) -> bool:
+        """Make the durable Turn match the Manager's canonical terminal event.
+
+        Normal terminal helpers deliberately reject terminal rewrites. This
+        method is narrower: it is called only while EventBus serializes the one
+        accepted ``turn.finished`` event, after cancellation priority has been
+        resolved by AsyncRunManager.
+        """
+
+        if status not in {"success", "failed", "cancelled", "awaiting_input"}:
+            raise ValueError("unsupported canonical terminal status")
+        if not isinstance(final_output, dict):
+            raise ValueError("canonical final_output must be an object")
+
+        with self._lock_for_session(session_id):
+            history = copy.deepcopy(self._load_session(session_id))
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is None:
+                raise TurnOwnershipError("canonical terminal turn is missing")
+            if str(turn.get("status") or "") == status:
+                return False
+
+            turn["end_time"] = datetime.now().isoformat()
+            turn["status"] = status
+            turn["final_output"] = copy.deepcopy(final_output)
+            if status == "failed":
+                turn["error_code"] = str(error_code or "RUNTIME_FAILED")
+            else:
+                turn.pop("error_code", None)
+            if status == "awaiting_input":
+                interaction = final_output.get("interaction")
+                if not isinstance(interaction, dict):
+                    interaction = final_output.get("pending_user_interaction")
+                if not isinstance(interaction, dict):
+                    raise InteractionCheckpointError(
+                        "pending interaction checkpoint is invalid",
+                        code="INTERACTION_CONFLICT",
+                    )
+                turn["pending_interaction"] = copy.deepcopy(interaction)
+            else:
+                turn.pop("pending_interaction", None)
+                turn.pop("deterministic_checkpoint", None)
+            if status != "success":
+                turn["summary"] = None
+
+            self._save_session(session_id, history)
+            return True
 
     def await_turn(
         self,
@@ -992,6 +1586,8 @@ class ExecutionStore:
         turn_id: int,
         final_output: Optional[Dict[str, Any]] = None,
         summary: Optional[str] = None,
+        *,
+        run_id: Optional[str] = None,
         deterministic_checkpoint: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
@@ -1001,22 +1597,59 @@ class ExecutionStore:
         in a later turn once the user submits the requested input or decision.
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
 
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "awaiting_input"
-                    turn["final_output"] = final_output or {"status": "awaiting_input"}
-                    if summary is not None:
-                        turn["summary"] = summary
-                    if deterministic_checkpoint is not None:
-                        turn["deterministic_checkpoint"] = dict(
-                            deterministic_checkpoint
-                        )
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None and str(turn.get("status") or "") not in {
+                "success", "failed", "cancelled", "awaiting_input"
+            }:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "awaiting_input"
+                turn["final_output"] = final_output or {"status": "awaiting_input"}
+                output = turn["final_output"]
+                interaction = (
+                    output.get("interaction")
+                    if isinstance(output, dict)
+                    else None
+                )
+                if not isinstance(interaction, dict) and isinstance(output, dict):
+                    interaction = output.get("pending_user_interaction")
+                if not isinstance(interaction, dict):
+                    raise InteractionCheckpointError(
+                        "pending interaction checkpoint is invalid",
+                        code="INTERACTION_CONFLICT",
+                    )
+                turn["pending_interaction"] = copy.deepcopy(interaction)
+                if deterministic_checkpoint is not None:
+                    turn["deterministic_checkpoint"] = copy.deepcopy(
+                        deterministic_checkpoint
+                    )
+                if summary is not None:
+                    turn["summary"] = summary
 
-            self._save_session(session_id)
+            self._save_session(session_id, history)
+
+    @staticmethod
+    def _turn_for_update(
+        history: SessionExecutionHistory,
+        turn_id: int,
+        run_id: Optional[str],
+    ) -> Optional[TurnExecutionRecord]:
+        matching_turns = [
+            turn
+            for turn in history.get("turns", [])
+            if turn.get("turn_id") == turn_id
+        ]
+        if run_id is None:
+            return matching_turns[0] if matching_turns else None
+        if not matching_turns:
+            return None
+        for turn in matching_turns:
+            if turn.get("run_id") == run_id:
+                return turn
+        raise TurnOwnershipError(
+            "turn does not belong to run '{}'".format(run_id)
+        )
 
     def set_turn_feedback(
         self,
@@ -1030,7 +1663,8 @@ class ExecutionStore:
         if normalized not in {"up", "down", "none"}:
             raise ValueError("vote must be one of: down, none, up")
         with self._lock_for_session(session_id):
-            history = self._get_existing_session_unlocked(session_id)
+            existing = self._get_existing_session_unlocked(session_id)
+            history = copy.deepcopy(existing) if existing is not None else None
             if not history:
                 return False
             for turn in history.get("turns", []):
@@ -1043,7 +1677,63 @@ class ExecutionStore:
                         "vote": normalized,
                         "ts": datetime.now().isoformat(),
                     }
-                self._save_session(session_id)
+                self._save_session(session_id, history)
+                return True
+            return False
+
+    def set_turn_evolution_records(
+        self,
+        session_id: str,
+        turn_id: int,
+        records: List[Dict[str, Any]],
+    ) -> bool:
+        """Persist recall anchors on the authoritative Turn record."""
+
+        normalized = [
+            copy.deepcopy(record)
+            for record in records
+            if isinstance(record, dict)
+        ]
+        with self._lock_for_session(session_id):
+            existing = self._get_existing_session_unlocked(session_id)
+            history = copy.deepcopy(existing) if existing is not None else None
+            if not history:
+                return False
+            for turn in history.get("turns", []):
+                if turn.get("turn_id") != turn_id:
+                    continue
+                if normalized:
+                    turn["evolution_recall_records"] = normalized
+                else:
+                    turn.pop("evolution_recall_records", None)
+                self._save_session(session_id, history)
+                return True
+            return False
+
+    def set_turn_evolution_feedback_vote(
+        self,
+        session_id: str,
+        turn_id: int,
+        vote: str,
+    ) -> bool:
+        """Record the last applied memory vote without a second Run store."""
+
+        normalized = str(vote or "").strip().lower()
+        if normalized not in {"up", "down", "none"}:
+            raise ValueError("vote must be one of: down, none, up")
+        with self._lock_for_session(session_id):
+            existing = self._get_existing_session_unlocked(session_id)
+            history = copy.deepcopy(existing) if existing is not None else None
+            if not history:
+                return False
+            for turn in history.get("turns", []):
+                if turn.get("turn_id") != turn_id:
+                    continue
+                if normalized == "none":
+                    turn.pop("evolution_feedback_vote", None)
+                else:
+                    turn["evolution_feedback_vote"] = normalized
+                self._save_session(session_id, history)
                 return True
             return False
 
@@ -1063,16 +1753,182 @@ class ExecutionStore:
         tool-based sessions too.
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
             for turn in history.get("turns", []):
                 if turn.get("turn_id") == turn_id:
                     turn["ontology_version"] = ontology_version
                     break
-            self._save_session(session_id)
+            self._save_session(session_id, history)
 
     # =========================================================================
     # Retrieval
     # =========================================================================
+
+    def get_turn_by_run_id(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Optional[TurnExecutionRecord]:
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if history is None:
+                return None
+            for turn in history.get("turns", []):
+                if str(turn.get("run_id") or "") == str(run_id or ""):
+                    return copy.deepcopy(turn)
+            return None
+
+    def find_turn_by_run_id(
+        self,
+        run_id: str,
+    ) -> tuple[Optional[str], Optional[TurnExecutionRecord]]:
+        """Find one durable Run without rebuilding any live runtime state."""
+
+        session_ids = set(self._cache)
+        if self.storage_dir.exists():
+            session_ids.update(
+                path.name
+                for path in self.storage_dir.iterdir()
+                if path.is_dir()
+            )
+        for session_id in sorted(session_ids):
+            try:
+                turn = self.get_turn_by_run_id(session_id, run_id)
+            except ValueError:
+                continue
+            if turn is not None:
+                return session_id, turn
+        return None, None
+
+    def find_turn_by_protocol_id(
+        self,
+        protocol: str,
+        external_run_id: str,
+    ) -> tuple[Optional[str], Optional[TurnExecutionRecord]]:
+        """Resolve a protocol identifier from durable Turn metadata."""
+
+        normalized_protocol = str(protocol or "").strip().lower()
+        normalized_external_id = str(external_run_id or "").strip()
+        if not normalized_protocol or not normalized_external_id:
+            return None, None
+        session_ids = set(self._cache)
+        if self.storage_dir.exists():
+            session_ids.update(
+                path.name
+                for path in self.storage_dir.iterdir()
+                if path.is_dir()
+            )
+        for session_id in sorted(session_ids):
+            try:
+                history = self.get_session_history(session_id)
+            except ValueError:
+                continue
+            if history is None:
+                continue
+            for turn in reversed(history.get("turns", [])):
+                metadata = turn.get("protocol_metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                if str(metadata.get("protocol") or "").strip().lower() != normalized_protocol:
+                    continue
+                candidate = str(
+                    metadata.get("external_run_id")
+                    or metadata.get("external_id")
+                    or ""
+                ).strip()
+                if candidate == normalized_external_id:
+                    return session_id, copy.deepcopy(turn)
+        return None, None
+
+    def list_turns_by_protocol(
+        self,
+        protocol: str,
+    ) -> List[TurnExecutionRecord]:
+        """List the newest durable Turn for each external protocol Run."""
+
+        normalized_protocol = str(protocol or "").strip().lower()
+        if not normalized_protocol:
+            return []
+        latest: Dict[str, TurnExecutionRecord] = {}
+        session_ids = set(self._cache)
+        if self.storage_dir.exists():
+            session_ids.update(
+                path.name
+                for path in self.storage_dir.iterdir()
+                if path.is_dir()
+            )
+        for session_id in sorted(session_ids):
+            try:
+                history = self.get_session_history(session_id)
+            except ValueError:
+                continue
+            if history is None:
+                continue
+            for turn in history.get("turns", []):
+                metadata = turn.get("protocol_metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                if str(metadata.get("protocol") or "").strip().lower() != normalized_protocol:
+                    continue
+                external_id = str(
+                    metadata.get("external_run_id")
+                    or metadata.get("external_id")
+                    or ""
+                ).strip()
+                if not external_id:
+                    continue
+                current = latest.get(external_id)
+                if current is None or str(turn.get("start_time") or "") > str(
+                    current.get("start_time") or ""
+                ):
+                    latest[external_id] = copy.deepcopy(turn)
+        return sorted(
+            latest.values(),
+            key=lambda turn: str(turn.get("start_time") or ""),
+            reverse=True,
+        )
+
+    def pending_interaction(
+        self,
+        session_id: str,
+    ) -> tuple[Optional[TurnExecutionRecord], Optional[Dict[str, Any]]]:
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if history is None:
+                return None, None
+            turn, interaction = _latest_pending_interaction(history)
+            return copy.deepcopy(turn), copy.deepcopy(interaction)
+
+    def mark_turn_task_start_failed(
+        self,
+        session_id: str,
+        turn_id: int,
+    ) -> None:
+        with self._lock_for_session(session_id):
+            history = copy.deepcopy(self._load_session(session_id))
+            for turn in history.get("turns", []):
+                if turn.get("turn_id") != turn_id:
+                    continue
+                turn["status"] = "failed"
+                turn["end_time"] = datetime.now().isoformat()
+                turn["error_code"] = "TASK_START_FAILED"
+                turn["final_output"] = {
+                    "error": "Execution task could not be started",
+                    "error_code": "TASK_START_FAILED",
+                }
+                self._save_session(session_id, history)
+                return
+            raise KeyError(turn_id)
+
+    def reconcile_interrupted_turns(self, session_id: str) -> int:
+        """Mark legacy inflight Turns interrupted without recreating execution."""
+
+        with self._lock_for_session(session_id):
+            history = copy.deepcopy(self._load_session(session_id))
+            interrupted = _mark_interrupted_turns(history)
+            if interrupted:
+                self._save_session(session_id, history)
+            return interrupted
 
     def get_session_history(
         self,
@@ -1088,12 +1944,15 @@ class ExecutionStore:
             SessionExecutionHistory or None if not found
         """
         with self._lock_for_session(session_id):
-            return self._get_existing_session_unlocked(session_id)
+            history = self._get_existing_session_unlocked(session_id)
+            return copy.deepcopy(history) if history is not None else None
 
     def get_turn(
         self,
         session_id: str,
         turn_id: int,
+        *,
+        run_id: Optional[str] = None,
     ) -> Optional[TurnExecutionRecord]:
         """
         Get a specific turn's execution record.
@@ -1110,11 +1969,8 @@ class ExecutionStore:
             if not history:
                 return None
 
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    return turn
-
-            return None
+            turn = self._turn_for_update(history, turn_id, run_id)
+            return copy.deepcopy(turn) if turn is not None else None
 
     def get_recent_turns(
         self,
@@ -1138,7 +1994,7 @@ class ExecutionStore:
 
             # Return most recent turns
             turns = history["turns"]
-            return list(reversed(turns[-limit:]))
+            return copy.deepcopy(list(reversed(turns[-limit:])))
 
     def list_turns_by_status(
         self,
@@ -1159,7 +2015,7 @@ class ExecutionStore:
                     for turn in turns
                     if str(turn.get("status") or "") == normalized_status
                 ]
-            return list(reversed(turns))
+            return copy.deepcopy(list(reversed(turns)))
 
     def delete_session(self, session_id: str) -> bool:
         """
@@ -1216,7 +2072,7 @@ class ExecutionStore:
         """
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
-            return history.get("session_history", [])
+            return copy.deepcopy(history.get("session_history", []))
 
     def set_llm_context(
         self,
@@ -1236,9 +2092,9 @@ class ExecutionStore:
             True if successful
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
-            history["session_history"] = session_history
-            self._save_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
+            history["session_history"] = copy.deepcopy(session_history)
+            self._save_session(session_id, history)
             return True
 
     def get_read_documents_context(self, session_id: str) -> Dict[str, Any]:
@@ -1248,9 +2104,11 @@ class ExecutionStore:
         This ledger is kept separately from LLM messages so tool guards can
         validate document prerequisites across turns without parsing tool text.
         """
-        with self._lock:
+        with self._lock_for_session(session_id):
             history = self._load_session(session_id)
-            return normalize_read_documents_registry(history.get("read_documents"))
+            return copy.deepcopy(
+                normalize_read_documents_registry(history.get("read_documents"))
+            )
 
     def set_read_documents_context(
         self,
@@ -1260,10 +2118,10 @@ class ExecutionStore:
         """
         Persist the structured read-document ledger for future turns.
         """
-        with self._lock:
-            history = self._load_session(session_id)
+        with self._lock_for_session(session_id):
+            history = copy.deepcopy(self._load_session(session_id))
             history["read_documents"] = normalize_read_documents_registry(read_documents)
-            self._save_session(session_id)
+            self._save_session(session_id, history)
             return True
 
     def append_to_llm_context(
@@ -1282,9 +2140,9 @@ class ExecutionStore:
             True if successful
         """
         with self._lock_for_session(session_id):
-            history = self._load_session(session_id)
+            history = copy.deepcopy(self._load_session(session_id))
             if "session_history" not in history:
                 history["session_history"] = []
-            history["session_history"].append(entry)
-            self._save_session(session_id)
+            history["session_history"].append(copy.deepcopy(entry))
+            self._save_session(session_id, history)
             return True

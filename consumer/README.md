@@ -1,4 +1,4 @@
-该项目是一个面向企业本体与运行时工作区的通用 Agent 系统，提供 React 前端、Flask 后端、工具调用、子 Agent 编排、长期记忆和本体检索能力。
+该项目是一个面向企业本体与运行时工作区的通用 Agent 系统，提供 React 前端、FastAPI 后端、工具调用、子 Agent 编排、长期记忆和本体检索能力。
 
 本文档描述 `consumer/` 应用。除非特别说明，下面的命令都默认在 `consumer/` 目录执行。
 
@@ -18,10 +18,10 @@ Onto Agent 的核心目标是把“企业本体”作为 Agent 的运行上下�
 
 ## 技术栈
 
-- **后端**：Python、Flask、OpenAI-compatible LLM API、Server-Sent Events
+- **后端**：Python、FastAPI、OpenAI-compatible LLM API、Server-Sent Events
 - **前端**：React 19、Vite、lucide-react、react-markdown
 - **存储**：本地 JSON 文件存储会话、执行记录和用户数据
-- **部署**：Docker Compose、nginx 静态前端服务、后端 Flask 服务
+- **部署**：Docker Compose、nginx 静态前端服务、单 worker Uvicorn 后端服务
 
 ## 快速开始
 
@@ -191,46 +191,47 @@ my-ontology.zip
 
 ## 架构概览
 
-一次 Agent 执行从 `POST /agentic/runs/stream` 开始：
+普通消息和 HITL 回答都从 `POST /agentic/runs` 进入。HITL 回答携带
+`interaction_response`，创建新的 Run 和 Turn；客户端随后通过 Run 的事件端点
+消费 SSE：
 
 ```text
-POST /agentic/runs/stream
+POST /agentic/runs
         │
         ▼
-AgenticOrchestrator.run()
-  ├─ 解析 session 与 memory context
-  ├─ 构造 AgenticState
-  └─ 后台线程执行 _stream_agent_loop()
-             │
-             ▼
-    JiuwenReactLoopEngine.run()
-      1. 构建/刷新 system prompt 与 Jiuwen agent 配置
-      2. 注册当前工具到 openJiuwen
-      3. 调用 openJiuwen ReAct agent
-      4. 通过 Jiuwen 回调记录 LLM 子轮次与工具调用
-      5. 工具调用回到 execute_tool_batch() 执行
-      6. 写入 tool result、state_updates 与最终输出
-      7. 遇到 terminal tool batch、取消或迭代上限时返回
+ExecutionStore checkpoint + session 单飞准入
+        │
+        ▼
+RuntimeContainer / AsyncRunManager / RunTaskSupervisor
+        │
+        ▼
+AsyncExecutionService → JiuwenAsyncAgentRuntime
+        │
+        ▼
+JiuwenReactLoopEngine.arun()（ASGI lifespan 所有的 Runner）
+        │
+        ▼
+EventHub 持久化后发布 → GET /agentic/runs/{run_id}/events
 ```
 
 核心模块：
 
 | 模块 | 说明 |
 | --- | --- |
-| `backend/agentic/orchestrator.py` | 运行生命周期、会话持久化、SSE 事件、取消与失败处理 |
-| `backend/agentic/loop/jiuwen_adapter.py` | 主 Agent ReAct 循环入口，负责 openJiuwen 配置、调用与状态桥接 |
-| `backend/agentic/loop/jiuwen/` | Jiuwen 工具绑定、提示词、轨迹与结果归一化 |
-| `backend/agentic/tools/registry.py` | 工具注册表、schema 暴露、调用权限 |
-| `backend/agentic/tools/executor.py` | 工具批处理执行、并发/串行阶段调度 |
-| `backend/agentic/sub_agents/` | 子 Agent 执行与并发管理 |
-| `backend/agentic/memory/` | 长期记忆后端与上下文构造 |
+| `backend/agent/runtime/runtime.py` | ASGI lifespan 内的 Runner、Supervisor、EventHub 与 bounded offload 所有权 |
+| `backend/agent/runtime/manager.py` | Run 单次执行、session 单飞、取消和终态仲裁 |
+| `backend/agent/runtime/service.py` | Runtime 事件到持久化 PublicEvent 的执行边界 |
+| `backend/agent/runtime/jiuwen.py` | Consumer 契约与 Jiuwen 引擎之间的 native async adapter |
+| `backend/agent/core/jiuwen_engine.py` | 主 Agent ReAct 循环和 Jiuwen 工具桥接 |
+| `backend/api/routes/workflows.py` | 统一 Run 准入、查询、事件 SSE 与取消 API |
+| `backend/agent/memory/` | 长期记忆后端与上下文构造 |
 | `backend/agent/tools/business_data/` | ontology 数据源、provider schema 与配置加密 |
 | `backend/migrations/` | 部署与本地启动共用的集中入口，以及可独立删除的一次性兼容迁移 |
-| `backend/agentic/direct_execution/` | 可选直执行分支与脚本运行封装 |
-| `backend/agentic/evolution/` | operation evolution 缓冲、补丁生成与审批 |
-| `backend/agentic/a2a/`, `backend/agentic/acp/` | 外部协议适配层 |
-| `backend/agentic/observability/`, `backend/agentic/perf_analysis/` | 运行时观测导出与本地性能分析 |
-| `backend/agentic/stores/` | 会话、执行记录和运行状态存储 |
+| `backend/agent/direct_execution/` | 可选直执行分支与脚本运行封装 |
+| `backend/agent/evolution/` | operation evolution 缓冲、补丁生成与审批 |
+| `backend/api/protocols/` | A2A、MCP 与 ACP 外部协议适配层 |
+| `backend/integration/observability/` | 运行时观测导出与本地性能分析 |
+| `backend/persistence/` | 会话、Turn checkpoint 和执行记录存储 |
 | `frontend/src/` | React 前端，包含聊天、配置中心、本体管理、运算进化、本地观测与任务过程侧栏 |
 
 ## 工具系统
@@ -243,7 +244,7 @@ AgenticOrchestrator.run()
 | 编排工具 | `spawn_sub_agent` | `main`, `subagent`, `acp` |
 | 记忆工具 | `memory` | `main` |
 
-> 当前 ACP server 作为协议 adapter 复用 `AgenticOrchestrator.run()`，实际执行路径仍进入主 Agent loop；上表的 `acp` 表示工具声明层支持该 caller，不代表 ACP 有一套独立执行引擎。
+> A2A、MCP 和 ACP 是同一 `AsyncRunManager` 的协议 adapter，不创建独立执行引擎。
 
 ## API 与事件流
 
@@ -254,8 +255,10 @@ AgenticOrchestrator.run()
 | `POST` | `/auth/login` | 登录并获取 JWT |
 | `GET` | `/auth/me` | 获取当前用户 |
 | `GET` | `/health` | 健康检查 |
-| `POST` | `/agentic/runs/stream` | 启动或继续一次 Agent 运行，返回 SSE |
-| `GET` | `/agentic/runs/<run_id>/status` | 查询运行状态 |
+| `POST` | `/agentic/runs` | 提交普通消息或 HITL 回答，返回 Run 准入结果 |
+| `POST` | `/agentic/runs/sync` | 等待 Run 终态并返回同步兼容 JSON |
+| `GET` | `/agentic/runs/<run_id>` | 查询运行状态 |
+| `GET` | `/agentic/runs/<run_id>/events` | 按事件序号回放并继续消费 SSE |
 | `POST` | `/agentic/runs/<run_id>/cancel` | 取消运行 |
 | `GET` / `POST` | `/agentic/sessions` | 查询或创建会话 |
 | `GET` / `DELETE` | `/agentic/sessions/<session_id>` | 获取或删除会话 |
@@ -275,14 +278,15 @@ AgenticOrchestrator.run()
 
 完整接口示例见 [`docs/api.md`](docs/api.md)。
 
-SSE 使用统一事件名：
+SSE 的 `event` 字段直接使用强类型公共事件名，`id` 是 Run 内单调递增序号：
 
 ```text
-event: agent.v2
-data: { ... }
+id: 1
+event: token.delta
+data: {"schema_version":"1.0","seq":1,"event_type":"token.delta",...}
 ```
 
-事件 JSON envelope 使用 `protocol = "agent-stream.v2"`。常见事件类型包括：
+`data` 是持久化后的 `PublicEvent`，不再嵌套兼容 envelope。常见事件类型包括：
 
 - `turn.started`
 - `token.delta`
@@ -386,8 +390,9 @@ data: { ... }
 
 ```text
 .
-├── backend/                  # Flask 后端与 agentic runtime
-│   ├── agentic/              # Agent 编排、工具、记忆、存储、路由
+├── backend/                  # FastAPI 后端与 native async runtime
+│   ├── agent/                # Agent 引擎、runtime、工具、记忆与子 Agent
+│   ├── api/                  # FastAPI 路由、鉴权与协议 adapter
 │   ├── tests/                # 后端测试
 │   ├── .env.example          # 后端环境变量模板
 │   └── run.py                # 后端入口

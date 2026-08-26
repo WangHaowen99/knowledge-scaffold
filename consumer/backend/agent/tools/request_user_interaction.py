@@ -126,6 +126,21 @@ class RequestUserInteractionTool:
             terminal=True,
         )
 
+    async def aexecute(
+        self,
+        *,
+        args: Dict[str, Any],
+        context: ToolContext,
+        tool_call_id: Optional[str] = None,
+        event_emitter: Optional[Any] = None,
+    ) -> ToolOutcome:
+        return self.execute(
+            args=args,
+            context=context,
+            tool_call_id=tool_call_id,
+            event_emitter=event_emitter,
+        )
+
 
 def build_user_interaction(args: Dict[str, Any], *, tool_call_id: Optional[str] = None) -> Dict[str, Any]:
     interaction_type = str(args.get("type") or "").strip().lower()

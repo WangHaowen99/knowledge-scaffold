@@ -9,24 +9,23 @@ from __future__ import annotations
 
 import importlib.util
 import asyncio
-import concurrent.futures
 import json
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from copy import copy, deepcopy
 from dataclasses import is_dataclass, replace
 from inspect import isawaitable
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
-from ..exceptions import WorkflowCancelledError
+from ..exceptions import ModelInvocationError, WorkflowCancelledError
 from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER, RuntimeStatus
 from integration.observability import bind_observability_context
 from integration.observability.stack_profiler import profile_current_thread
 from llm import LLMPurpose, get_llm_router
 from llm.provider_adapters import get_provider_adapter
-from ..tools.executor import execute_tool_batch
+from ..tools.executor import aexecute_tool_batch
 from ..tools.base import ToolContext
 from llm.llm_request_mode import is_llm_streaming_enabled
 from utils.logging import bind_log_context, get_logger
@@ -81,8 +80,6 @@ from .shared.timing import (
     tool_window_elapsed_ms as _tool_window_elapsed_ms,
 )
 from .shared.tool_context import build_tool_context
-
-
 logger = get_logger("jiuwen_engine")
 
 
@@ -118,8 +115,162 @@ class _JiuwenTerminalErrorSignal:
             raise error
 
 
+class _JiuwenModelErrorSignal:
+    """Carry the exception observed by Jiuwen's model callback boundary."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._error: BaseException | None = None
+
+    def record(self, error: BaseException | None) -> None:
+        with self._lock:
+            self._error = error
+
+    def get(self) -> BaseException | None:
+        with self._lock:
+            return self._error
+
+    def raise_if_set(self) -> None:
+        error = self.get()
+        if error is not None:
+            raise ModelInvocationError(error) from error
+
+
+class JiuwenEngineEventBufferFull(RuntimeError):
+    """Raised when Engine event producers outrun the stream consumer."""
+
+
+class _JiuwenEngineEventBuffer:
+    """Thread-safe bounded handoff from synchronous callbacks to a stream."""
+
+    def __init__(self, *, max_buffer_size: int) -> None:
+        if max_buffer_size < 1:
+            raise ValueError("max_buffer_size must be positive")
+        self.max_buffer_size = int(max_buffer_size)
+        self._loop = asyncio.get_running_loop()
+        self._loop_thread_id = threading.get_ident()
+        self._queue: asyncio.Queue[Any] = asyncio.Queue(
+            maxsize=self.max_buffer_size
+        )
+        self._closed_marker = object()
+        self._queued_event_tag = object()
+        self._lock = threading.Lock()
+        self._buffered_count = 0
+        self._accepting = True
+        self._close_pending = False
+        self._closed_enqueued = False
+        self._overflow_error: JiuwenEngineEventBufferFull | None = None
+        self._overflow_callback: Callable[[], None] | None = None
+
+    @property
+    def overflow_error(self) -> JiuwenEngineEventBufferFull | None:
+        with self._lock:
+            return self._overflow_error
+
+    def set_overflow_callback(self, callback: Callable[[], None]) -> None:
+        self._overflow_callback = callback
+
+    def publish(self, event: Dict[str, Any]) -> None:
+        overflow_error: JiuwenEngineEventBufferFull | None = None
+        with self._lock:
+            if not self._accepting:
+                return
+            if self._buffered_count >= self.max_buffer_size:
+                overflow_error = self._overflow_error
+                if overflow_error is None:
+                    overflow_error = JiuwenEngineEventBufferFull(
+                        "Jiuwen Engine event buffer is full "
+                        "(max_buffer_size={})".format(self.max_buffer_size)
+                    )
+                    self._overflow_error = overflow_error
+                self._accepting = False
+                self._close_pending = True
+            else:
+                self._buffered_count += 1
+
+        if overflow_error is not None:
+            self._schedule(self._handle_overflow)
+            raise overflow_error
+        try:
+            self._schedule(self._enqueue_event, event)
+        except BaseException:
+            # The slot was reserved under the producer lock. If loop shutdown
+            # prevents scheduling, release that reservation here.
+            self._rollback_reserved_slot()
+            raise
+
+    async def get(self) -> Dict[str, Any] | None:
+        item = await self._queue.get()
+        if item is self._closed_marker:
+            return None
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and item[0] is self._queued_event_tag
+        ):
+            item = item[1]
+        should_close = False
+        with self._lock:
+            self._buffered_count -= 1
+            should_close = self._close_pending and self._buffered_count == 0
+        if should_close:
+            self._enqueue_closed_marker()
+        return item
+
+    def close(self) -> None:
+        with self._lock:
+            self._accepting = False
+            self._close_pending = True
+            should_close = self._buffered_count == 0
+        if should_close:
+            self._schedule(self._enqueue_closed_marker)
+
+    def _handle_overflow(self) -> None:
+        callback = self._overflow_callback
+        if callback is not None:
+            callback()
+        with self._lock:
+            should_close = self._close_pending and self._buffered_count == 0
+        if should_close:
+            self._enqueue_closed_marker()
+
+    def _enqueue_event(self, event: Dict[str, Any]) -> None:
+        try:
+            self._queue.put_nowait((self._queued_event_tag, event))
+        except asyncio.QueueFull:
+            self._rollback_reserved_slot()
+            with self._lock:
+                if self._overflow_error is None:
+                    self._overflow_error = JiuwenEngineEventBufferFull(
+                        "Jiuwen Engine event buffer is full "
+                        "(max_buffer_size={})".format(self.max_buffer_size)
+                    )
+                self._accepting = False
+                self._close_pending = True
+            self._handle_overflow()
+
+    def _rollback_reserved_slot(self) -> None:
+        with self._lock:
+            self._buffered_count = max(0, self._buffered_count - 1)
+
+    def _enqueue_closed_marker(self) -> None:
+        with self._lock:
+            if self._closed_enqueued:
+                return
+            self._closed_enqueued = True
+        self._queue.put_nowait(self._closed_marker)
+
+    def _schedule(self, callback: Callable[..., None], *args: Any) -> None:
+        if threading.get_ident() == self._loop_thread_id:
+            callback(*args)
+            return
+        self._loop.call_soon_threadsafe(callback, *args)
+
+
 def register_current_runtime_tools(*args: Any, **kwargs: Any) -> list[Any]:
-    kwargs.setdefault("tool_batch_executor", execute_tool_batch)
+    # The native engine has one tool scheduling path. Legacy callers enter
+    # through the sync Engine wrapper, not through a second tool executor.
+    kwargs.setdefault("tool_batch_executor", aexecute_tool_batch)
     kwargs.setdefault("import_module", importlib.import_module)
     return _register_current_runtime_tools(*args, **kwargs)
 
@@ -250,7 +401,7 @@ class JiuwenReactLoopEngine:
         self.agent_config = agent_config
         self._agent_factory = agent_factory
 
-    def run(
+    async def arun(
         self,
         state: Dict[str, Any],
         *,
@@ -261,6 +412,11 @@ class JiuwenReactLoopEngine:
         system_prompt: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        """Execute the single native-async ReAct implementation.
+
+        The application owns Runner startup and shutdown through its ASGI
+        lifespan, and every invocation executes on that same event loop.
+        """
         with bind_log_context(
             _build_jiuwen_log_context(
                 state,
@@ -268,7 +424,7 @@ class JiuwenReactLoopEngine:
                 subagent_lineage=kwargs.get("subagent_lineage"),
             )
         ):
-            return self._run(
+            return await self._arun_core(
                 state,
                 caller=caller,
                 event_writer=event_writer,
@@ -278,7 +434,74 @@ class JiuwenReactLoopEngine:
                 **kwargs,
             )
 
-    def _run(
+    async def astream(
+        self,
+        state: Dict[str, Any],
+        *,
+        caller: str,
+        event_writer: Optional[Any] = None,
+        snapshot_callback: Optional[Any] = None,
+        iteration_limit: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        max_event_buffer_size: int = 1024,
+        **kwargs: Any,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Yield existing engine events while the same ``arun`` core executes."""
+        buffer = _JiuwenEngineEventBuffer(
+            max_buffer_size=max(1, int(max_event_buffer_size))
+        )
+        producer_errors: list[BaseException] = []
+
+        def capture_event(event: Dict[str, Any]) -> None:
+            if event_writer is not None:
+                event_writer(event)
+            buffer.publish(event)
+
+        async def produce() -> Dict[str, Any]:
+            try:
+                return await self.arun(
+                    state,
+                    caller=caller,
+                    event_writer=capture_event,
+                    snapshot_callback=snapshot_callback,
+                    iteration_limit=iteration_limit,
+                    system_prompt=system_prompt,
+                    **kwargs,
+                )
+            except BaseException as exc:
+                producer_errors.append(exc)
+                return state
+            finally:
+                buffer.close()
+
+        producer = asyncio.create_task(
+            produce(),
+            name="jiuwen-engine-astream-producer",
+        )
+
+        def cancel_overflowed_producer() -> None:
+            if producer.done() or producer is asyncio.current_task():
+                return
+            producer.cancel()
+
+        buffer.set_overflow_callback(cancel_overflowed_producer)
+        try:
+            while True:
+                event = await buffer.get()
+                if event is None:
+                    break
+                yield event
+            overflow_error = buffer.overflow_error
+            if overflow_error is not None:
+                raise overflow_error
+            if producer_errors:
+                raise producer_errors[0]
+        finally:
+            if not producer.done():
+                producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+
+    async def _arun_core(
         self,
         state: Dict[str, Any],
         *,
@@ -323,6 +546,7 @@ class JiuwenReactLoopEngine:
             "prompt_elapsed_ms": prompt_elapsed_ms,
         }
         terminal_error_signal = _JiuwenTerminalErrorSignal()
+        model_error_signal = _JiuwenModelErrorSignal()
         model_timing_lock = threading.Lock()
         model_elapsed_ms_by_iteration: Dict[int, int] = {}
 
@@ -683,6 +907,7 @@ class JiuwenReactLoopEngine:
             stream_enabled=stream_enabled,
             enable_reasoning=reasoning_enabled,
             model_timing_observer=record_model_timing,
+            model_error_callback=model_error_signal.record,
             prompt_build_ms=prompt_elapsed_ms,
             system_prompt_chars=len(str(system_prompt_for_agent or "")),
             sliding_window_applied=context_engine_managed_window,
@@ -717,11 +942,11 @@ class JiuwenReactLoopEngine:
                     state_snapshot_callback=snapshot_callback,
                     terminal_error_callback=terminal_error_signal.record,
                 )
-            _run_awaitable(model_trace_bridge.register(agent))
-            _run_awaitable(terminal_force_finish_bridge.register(agent))
+            await model_trace_bridge.register(agent)
+            await terminal_force_finish_bridge.register(agent)
             try:
                 try:
-                    raw_result = self._invoke_agent(
+                    raw_result = await self._invoke_agent(
                         agent,
                         inputs,
                         state=state,
@@ -729,7 +954,6 @@ class JiuwenReactLoopEngine:
                         caller=caller,
                         event_writer=event_writer,
                         iteration_provider=start_llm_iteration,
-                        llm_call_index_provider=model_trace_bridge.current_call_index,
                         cancel_event=cancel_event,
                         token_callback=kwargs.get("token_callback"),
                         reasoning_summary_callback=kwargs.get("reasoning_summary_callback"),
@@ -745,25 +969,29 @@ class JiuwenReactLoopEngine:
                             "parent_key": runtime_trace.loop_span_key,
                         },
                     )
+                    model_error_signal.raise_if_set()
                     terminal_error_signal.raise_if_set()
-                except WorkflowCancelledError:
+                except (WorkflowCancelledError, asyncio.CancelledError):
                     fail_unclosed_tool_batch(RuntimeStatus.CANCELLED)
                     runtime_trace.agent_loop_finished(RuntimeStatus.CANCELLED)
                     raise
-                except Exception:
+                except Exception as exc:
+                    model_error = model_error_signal.get()
                     fail_unclosed_tool_batch(RuntimeStatus.ERROR)
                     runtime_trace.agent_loop_finished(RuntimeStatus.ERROR)
+                    if model_error is not None and not isinstance(exc, ModelInvocationError):
+                        raise ModelInvocationError(model_error) from model_error
                     raise
             finally:
                 try:
-                    _run_best_effort_jiuwen_cleanup(
+                    await _run_best_effort_jiuwen_cleanup_async(
                         "terminal force-finish callback unregister",
-                        lambda: _run_awaitable(terminal_force_finish_bridge.unregister()),
+                        terminal_force_finish_bridge.unregister,
                     )
                 finally:
-                    _run_best_effort_jiuwen_cleanup(
+                    await _run_best_effort_jiuwen_cleanup_async(
                         "model trace callback unregister",
-                        lambda: _run_awaitable(model_trace_bridge.unregister()),
+                        model_trace_bridge.unregister,
                     )
             try:
                 _raise_if_jiuwen_cancelled(cancel_event, state)
@@ -842,7 +1070,7 @@ class JiuwenReactLoopEngine:
             )
             runtime_trace.agent_loop_finished(RuntimeStatus.SUCCESS)
             return state
-        except WorkflowCancelledError:
+        except (WorkflowCancelledError, asyncio.CancelledError):
             runtime_trace.agent_loop_finished(RuntimeStatus.CANCELLED)
             raise
         except Exception:
@@ -850,19 +1078,19 @@ class JiuwenReactLoopEngine:
             raise
         finally:
             try:
-                _run_best_effort_jiuwen_cleanup(
+                await _run_best_effort_jiuwen_cleanup_async(
                     "terminal force-finish callback unregister",
-                    lambda: _run_awaitable(terminal_force_finish_bridge.unregister()),
+                    terminal_force_finish_bridge.unregister,
                 )
             finally:
                 try:
-                    _run_best_effort_jiuwen_cleanup(
+                    await _run_best_effort_jiuwen_cleanup_async(
                         "model trace callback unregister",
-                        lambda: _run_awaitable(model_trace_bridge.unregister()),
+                        model_trace_bridge.unregister,
                     )
                 finally:
                     try:
-                        _run_best_effort_jiuwen_cleanup(
+                        await _run_best_effort_jiuwen_cleanup_async(
                             "runtime tool unregister",
                             lambda: unregister_current_runtime_tools(
                                 agent,
@@ -871,13 +1099,11 @@ class JiuwenReactLoopEngine:
                         )
                     finally:
                         if owns_jiuwen_runtime and owned_jiuwen_session_id:
-                            _run_best_effort_jiuwen_cleanup(
+                            await _run_best_effort_jiuwen_cleanup_async(
                                 "owned agent callback and session release",
-                                lambda: _run_awaitable(
-                                    _dispose_owned_jiuwen_runtime(
-                                        agent,
-                                        session_id=owned_jiuwen_session_id,
-                                    )
+                                lambda: _dispose_owned_jiuwen_runtime(
+                                    agent,
+                                    session_id=owned_jiuwen_session_id,
                                 ),
                             )
 
@@ -894,7 +1120,7 @@ class JiuwenReactLoopEngine:
         context_max_rounds: Optional[int] = None,
     ) -> Any:
         if self._agent_factory is not None:
-            # _run validates the factory capability contract once, before any
+            # _arun_core validates the factory capability contract once, before any
             # factory-backed agent can reach this creation point.
             agent = self._agent_factory()
             _install_jiuwen_concurrency_ability_manager(
@@ -948,7 +1174,7 @@ class JiuwenReactLoopEngine:
     def _build_main_system_prompt(self, state: Mapping[str, Any], *, include_orchestration: bool = True) -> str:
         return build_main_system_prompt(state, include_orchestration=include_orchestration)
 
-    def _invoke_agent(
+    async def _invoke_agent(
         self,
         agent: Any,
         inputs: Dict[str, Any],
@@ -958,7 +1184,6 @@ class JiuwenReactLoopEngine:
         caller: str = "main",
         event_writer: Optional[Any] = None,
         iteration_provider: Optional[Any] = None,
-        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event] = None,
         token_callback: Optional[Any] = None,
         reasoning_summary_callback: Optional[Any] = None,
@@ -976,89 +1201,71 @@ class JiuwenReactLoopEngine:
         )
         session = None
         if history_messages:
-            session = _run_awaitable(
-                _seed_jiuwen_context_from_history(
-                    agent,
-                    inputs,
-                    history_messages=history_messages,
-                ),
-                cancel_event=cancel_event,
-                state=state,
+            session = await _seed_jiuwen_context_from_history(
+                agent,
+                inputs,
+                history_messages=history_messages,
             )
             _raise_if_jiuwen_cancelled(cancel_event, state)
         obs_ctx = observability_context or {}
         if stream_enabled and _supports_managed_jiuwen_stream(agent):
-            return _run_awaitable(
-                _with_observability_context(
-                    self._consume_managed_agent_stream(
-                        agent,
-                        inputs,
-                        session=session,
-                        state=state,
-                        caller=caller,
-                        event_writer=event_writer,
-                        iteration_provider=iteration_provider,
-                        llm_call_index_provider=llm_call_index_provider,
-                        cancel_event=cancel_event,
-                        token_callback=token_callback,
-                        reasoning_summary_callback=reasoning_summary_callback,
-                        event_source_node=event_source_node,
-                        terminal_error_signal=terminal_error_signal,
-                        terminal_stop_event=terminal_stop_event,
-                    ),
-                    observer=obs_ctx.get("observer") or NOOP_OBSERVER,
-                    run_id=str(obs_ctx.get("run_id") or ""),
-                    session_id=obs_ctx.get("session_id"),
-                    turn_id=obs_ctx.get("turn_id"),
-                    parent_key=obs_ctx.get("parent_key"),
+            return await _with_observability_context(
+                self._consume_managed_agent_stream(
+                    agent,
+                    inputs,
+                    session=session,
+                    state=state,
+                    caller=caller,
+                    event_writer=event_writer,
+                    iteration_provider=iteration_provider,
+                    cancel_event=cancel_event,
+                    token_callback=token_callback,
+                    reasoning_summary_callback=reasoning_summary_callback,
+                    event_source_node=event_source_node,
+                    terminal_error_signal=terminal_error_signal,
+                    terminal_stop_event=terminal_stop_event,
                 ),
-                cancel_event=cancel_event,
-                state=state,
-            )
-        stream = getattr(agent, "stream", None) if stream_enabled else None
-        if callable(stream):
-            return _run_awaitable(
-                _with_observability_context(
-                    self._consume_agent_stream(
-                        agent,
-                        stream,
-                        inputs,
-                        session=session,
-                        state=state,
-                        caller=caller,
-                        event_writer=event_writer,
-                        iteration_provider=iteration_provider,
-                        llm_call_index_provider=llm_call_index_provider,
-                        cancel_event=cancel_event,
-                        token_callback=token_callback,
-                        reasoning_summary_callback=reasoning_summary_callback,
-                        event_source_node=event_source_node,
-                        terminal_error_signal=terminal_error_signal,
-                        terminal_stop_event=terminal_stop_event,
-                    ),
-                    observer=obs_ctx.get("observer") or NOOP_OBSERVER,
-                    run_id=str(obs_ctx.get("run_id") or ""),
-                    session_id=obs_ctx.get("session_id"),
-                    turn_id=obs_ctx.get("turn_id"),
-                    parent_key=obs_ctx.get("parent_key"),
-                ),
-                cancel_event=cancel_event,
-                state=state,
-            )
-        invoke = getattr(agent, "invoke", None)
-        if invoke is None:
-            raise JiuwenBackendUnavailable("Configured Jiuwen agent does not expose invoke().")
-        result = _run_awaitable(
-            _with_observability_context(
-                _invoke_jiuwen_agent(agent, invoke, inputs, session=session),
                 observer=obs_ctx.get("observer") or NOOP_OBSERVER,
                 run_id=str(obs_ctx.get("run_id") or ""),
                 session_id=obs_ctx.get("session_id"),
                 turn_id=obs_ctx.get("turn_id"),
                 parent_key=obs_ctx.get("parent_key"),
-            ),
-            cancel_event=cancel_event,
-            state=state,
+            )
+        stream = getattr(agent, "stream", None) if stream_enabled else None
+        if callable(stream):
+            return await _with_observability_context(
+                self._consume_agent_stream(
+                    agent,
+                    stream,
+                    inputs,
+                    session=session,
+                    state=state,
+                    caller=caller,
+                    event_writer=event_writer,
+                    iteration_provider=iteration_provider,
+                    cancel_event=cancel_event,
+                    token_callback=token_callback,
+                    reasoning_summary_callback=reasoning_summary_callback,
+                    event_source_node=event_source_node,
+                    terminal_error_signal=terminal_error_signal,
+                    terminal_stop_event=terminal_stop_event,
+                ),
+                observer=obs_ctx.get("observer") or NOOP_OBSERVER,
+                run_id=str(obs_ctx.get("run_id") or ""),
+                session_id=obs_ctx.get("session_id"),
+                turn_id=obs_ctx.get("turn_id"),
+                parent_key=obs_ctx.get("parent_key"),
+            )
+        invoke = getattr(agent, "invoke", None)
+        if invoke is None:
+            raise JiuwenBackendUnavailable("Configured Jiuwen agent does not expose invoke().")
+        result = await _with_observability_context(
+            _invoke_jiuwen_agent(agent, invoke, inputs, session=session),
+            observer=obs_ctx.get("observer") or NOOP_OBSERVER,
+            run_id=str(obs_ctx.get("run_id") or ""),
+            session_id=obs_ctx.get("session_id"),
+            turn_id=obs_ctx.get("turn_id"),
+            parent_key=obs_ctx.get("parent_key"),
         )
         if terminal_error_signal is not None:
             terminal_error_signal.raise_if_set()
@@ -1075,7 +1282,6 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
-        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event],
         token_callback: Optional[Any],
         reasoning_summary_callback: Optional[Any],
@@ -1095,7 +1301,6 @@ class JiuwenReactLoopEngine:
                 caller=caller,
                 event_writer=event_writer,
                 iteration_provider=iteration_provider,
-                llm_call_index_provider=llm_call_index_provider,
                 cancel_event=cancel_event,
                 token_callback=token_callback,
                 reasoning_summary_callback=reasoning_summary_callback,
@@ -1126,7 +1331,6 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
-        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event],
         token_callback: Optional[Any],
         reasoning_summary_callback: Optional[Any],
@@ -1135,39 +1339,36 @@ class JiuwenReactLoopEngine:
         terminal_stop_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         managed_session = session or _create_jiuwen_agent_session(agent, inputs)
-        producer_task: Optional[asyncio.Task[Any]] = None
         try:
             pre_run = getattr(managed_session, "pre_run", None)
             if callable(pre_run):
                 result = pre_run(inputs=dict(inputs))
                 if isawaitable(result):
                     await result
-            producer_task = asyncio.create_task(
-                _produce_managed_jiuwen_stream(agent, inputs, managed_session),
-                name="jiuwen-managed-stream-producer",
-            )
-            return await self._consume_stream_chunks(
-                managed_session.stream_iterator(),
-                state=state,
-                caller=caller,
-                event_writer=event_writer,
-                iteration_provider=iteration_provider,
-                llm_call_index_provider=llm_call_index_provider,
-                cancel_event=cancel_event,
-                token_callback=token_callback,
-                reasoning_summary_callback=reasoning_summary_callback,
-                event_source_node=event_source_node,
-                terminal_error_signal=terminal_error_signal,
-                terminal_stop_event=terminal_stop_event,
-            )
-        finally:
-            if producer_task is not None:
-                if not producer_task.done():
-                    producer_task.cancel()
+            async with asyncio.TaskGroup() as task_group:
+                producer_task = task_group.create_task(
+                    _produce_managed_jiuwen_stream(agent, inputs, managed_session),
+                    name="jiuwen-managed-stream-producer",
+                )
                 try:
-                    await producer_task
-                except asyncio.CancelledError:
-                    pass
+                    stream_result = await self._consume_stream_chunks(
+                        managed_session.stream_iterator(),
+                        state=state,
+                        caller=caller,
+                        event_writer=event_writer,
+                        iteration_provider=iteration_provider,
+                        cancel_event=cancel_event,
+                        token_callback=token_callback,
+                        reasoning_summary_callback=reasoning_summary_callback,
+                        event_source_node=event_source_node,
+                        terminal_error_signal=terminal_error_signal,
+                        terminal_stop_event=terminal_stop_event,
+                    )
+                finally:
+                    if not producer_task.done():
+                        producer_task.cancel()
+            return stream_result
+        finally:
             await _save_jiuwen_session_contexts(agent, managed_session)
             commit = getattr(managed_session, "commit", None)
             if callable(commit):
@@ -1183,7 +1384,6 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
-        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event],
         token_callback: Optional[Any],
         reasoning_summary_callback: Optional[Any],
@@ -1205,7 +1405,6 @@ class JiuwenReactLoopEngine:
                 caller=caller,
                 event_writer=event_writer,
                 iteration_provider=iteration_provider,
-                llm_call_index_provider=llm_call_index_provider,
                 stream_state=stream_state,
                 token_callback=token_callback,
                 event_source_node=event_source_node,
@@ -1219,17 +1418,11 @@ class JiuwenReactLoopEngine:
         if stream_state.get("reasoning_block_id") and not final_result.get("reasoning_block_id"):
             final_result["reasoning_block_id"] = stream_state["reasoning_block_id"]
         if stream_state.get("reasoning") and stream_state.get("reasoning_block_id"):
-            summary_iteration = int(iteration_provider()) if callable(iteration_provider) else 1
             self._dispatch_reasoning_summary(
                 state or {},
                 caller=caller,
                 event_writer=event_writer,
-                iteration=summary_iteration,
-                call_index=(
-                    int(llm_call_index_provider(summary_iteration))
-                    if callable(llm_call_index_provider)
-                    else 1
-                ),
+                iteration=(int(iteration_provider()) if callable(iteration_provider) else 1),
                 reasoning_text=stream_state["reasoning"],
                 reasoning_block_id=stream_state["reasoning_block_id"],
                 reasoning_summary_callback=reasoning_summary_callback,
@@ -1245,7 +1438,6 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
-        llm_call_index_provider: Optional[Any] = None,
         stream_state: Optional[Dict[str, str]] = None,
         token_callback: Optional[Any] = None,
         event_source_node: Optional[str] = None,
@@ -1256,22 +1448,22 @@ class JiuwenReactLoopEngine:
             content = str(payload.get("content") or "")
             if content:
                 channel = "reasoning" if chunk_type == "llm_reasoning" else "content"
-                iteration = int(iteration_provider()) if callable(iteration_provider) else 1
-                call_index = (
-                    int(llm_call_index_provider(iteration))
-                    if callable(llm_call_index_provider)
-                    else 1
-                )
-                meta = {"call_index": max(1, call_index)}
+                meta = None
                 if channel == "reasoning":
-                    meta["reasoning_block_id"] = _ensure_reasoning_block_id(stream_state)
+                    meta = {
+                        "reasoning_block_id": _ensure_reasoning_block_id(stream_state),
+                    }
                 self._emit_token_delta(
                     state or {},
                     caller=caller,
                     event_writer=event_writer,
                     channel=channel,
                     text=content,
-                    iteration=iteration,
+                    iteration=(
+                        int(iteration_provider())
+                        if callable(iteration_provider)
+                        else 1
+                    ),
                     token_callback=token_callback,
                     meta=meta,
                     event_source_node=event_source_node,
@@ -1284,21 +1476,18 @@ class JiuwenReactLoopEngine:
             result_type = str(payload.get("result_type") or "answer")
             reasoning_content = str(payload.get("reasoning_content") or payload.get("reasoning") or "")
             if result_type.strip().lower() != "error" and _should_emit_answer_delta(stream_state, output):
-                iteration = int(iteration_provider()) if callable(iteration_provider) else 1
-                call_index = (
-                    int(llm_call_index_provider(iteration))
-                    if callable(llm_call_index_provider)
-                    else 1
-                )
                 self._emit_token_delta(
                     state or {},
                     caller=caller,
                     event_writer=event_writer,
                     channel="content",
                     text=output,
-                    iteration=iteration,
+                    iteration=(
+                        int(iteration_provider())
+                        if callable(iteration_provider)
+                        else 1
+                    ),
                     token_callback=token_callback,
-                    meta={"call_index": max(1, call_index)},
                     event_source_node=event_source_node,
                 )
                 _record_streamed_text(stream_state, "content", output)
@@ -1341,7 +1530,6 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration: int,
-        call_index: int,
         reasoning_text: str,
         reasoning_block_id: str,
         reasoning_summary_callback: Optional[Any] = None,
@@ -1360,7 +1548,6 @@ class JiuwenReactLoopEngine:
                 summary=summary,
                 reasoning_summary_callback=reasoning_summary_callback,
                 source_node=event_source_node,
-                call_index=call_index,
             )
 
         try:
@@ -1674,25 +1861,64 @@ def create_default_jiuwen_agent(
     return agent
 
 
-def warm_up_jiuwen_runtime(*, agent_config: Any = None) -> dict[str, Any]:
+def _terminal_tool_call_id(batch_result: Any) -> str:
+    explicit_tool_call_id = str(
+        getattr(batch_result, "terminal_tool_call_id", None) or ""
+    ).strip()
+    if explicit_tool_call_id:
+        return explicit_tool_call_id
+    for message in reversed(list(getattr(batch_result, "messages", None) or [])):
+        if not isinstance(message, Mapping):
+            continue
+        tool_call_id = str(message.get("tool_call_id") or "").strip()
+        if tool_call_id:
+            return tool_call_id
+    return ""
+
+
+def _remember_jiuwen_terminal_tool_batch(
+    terminal_result: Dict[str, Any],
+    batch_result: Any,
+) -> None:
+    """Correlate a Consumer terminal result with the active model call."""
+
+    terminal_result["batch_result"] = batch_result
+    terminal_result["tool_call_id"] = _terminal_tool_call_id(batch_result)
+    identity = _current_jiuwen_tool_call_identity()
+    if identity is None:
+        terminal_result.pop("model_tool_call_id", None)
+        terminal_result.pop("correlation_token", None)
+        return
+    terminal_result["model_tool_call_id"] = identity.model_tool_call_id
+    terminal_result["correlation_token"] = identity.correlation_token
+
+
+def warm_up_jiuwen_runtime(
+    *,
+    agent_config: Any = None,
+    cancel_event: Any = None,
+) -> dict[str, Any]:
     """Preload Jiuwen runtime modules and global resources without invoking the LLM.
 
     This creates a throwaway warm-up agent to trigger module imports, class
-    loading, global registry initialization and the background event loop, then
-    discards the agent. Real user requests create their own agent instances and
-    reuse the already-loaded runtime environment.
+    loading and global registry initialization, then discards the agent. Runner
+    ownership remains with the already-started ASGI lifespan.
     """
     started = time.perf_counter()
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise asyncio.CancelledError
     require_openjiuwen()
     _configure_jiuwen_log_path()
-    _JIUWEN_LOOP_RUNNER.get_loop()
 
     llm_config = _resolve_jiuwen_llm_config(
         {},
         caller="main",
         agent_config=agent_config,
     )
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise asyncio.CancelledError
 
     agent = create_default_jiuwen_agent(
         llm_config=llm_config,
@@ -2221,10 +2447,12 @@ def _build_owned_jiuwen_session_id(agent: Any) -> str:
     return "{}.session.{}".format(agent_id, uuid.uuid4().hex)
 
 
-def _run_best_effort_jiuwen_cleanup(step: str, cleanup: Any) -> None:
-    """Run one cleanup step without changing the invocation outcome."""
+async def _run_best_effort_jiuwen_cleanup_async(step: str, cleanup: Any) -> None:
+    """Await one cleanup step without changing the invocation outcome."""
     try:
-        cleanup()
+        result = cleanup()
+        if isawaitable(result):
+            await result
     except Exception:
         logger.warning("OpenJiuwen cleanup step failed: %s", step, exc_info=True)
 
@@ -2318,65 +2546,6 @@ async def _dispose_owned_jiuwen_runtime(
                     await result
 
 
-class _JiuwenLoopRunner:
-    """Owns a single long-lived asyncio loop on a background thread.
-
-    openJiuwen keeps process-wide singletons (Runner.callback_framework, its
-    `asyncio.Lock`s, resource manager) that bind to whichever event loop first
-    awaits them. Running every engine invocation on its own `asyncio.run` loop
-    causes "bound to a different event loop" on the second call. This runner
-    ensures every Jiuwen await uses the same loop for the lifetime of the
-    process.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._ready = threading.Event()
-
-    def get_loop(self) -> asyncio.AbstractEventLoop:
-        loop = self._loop
-        if loop is not None and loop.is_running():
-            return loop
-        with self._lock:
-            if self._loop is not None and self._loop.is_running():
-                return self._loop
-            self._ready.clear()
-            self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(
-                target=self._run_forever,
-                name="jiuwen-loop",
-                daemon=True,
-            )
-            self._thread.start()
-            if not self._ready.wait(timeout=5.0):
-                raise JiuwenBackendUnavailable(
-                    "Jiuwen background event loop failed to start."
-                )
-            return self._loop
-
-    def _run_forever(self) -> None:
-        loop = self._loop
-        assert loop is not None
-        asyncio.set_event_loop(loop)
-        loop.call_soon(self._ready.set)
-        try:
-            loop.run_forever()
-        finally:
-            try:
-                loop.close()
-            except Exception:
-                pass
-
-    def submit(self, coro: Any) -> "concurrent.futures.Future[Any]":
-        loop = self.get_loop()
-        return asyncio.run_coroutine_threadsafe(coro, loop)
-
-
-_JIUWEN_LOOP_RUNNER = _JiuwenLoopRunner()
-
-
 async def _with_observability_context(
     awaitable: Any,
     *,
@@ -2386,14 +2555,7 @@ async def _with_observability_context(
     turn_id: Optional[int],
     parent_key: Optional[str],
 ) -> Any:
-    """Bind the observability context on the Jiuwen loop thread.
-
-    run_coroutine_threadsafe runs the coroutine in the loop's own context, not
-    the caller's, so ContextVars set on the main thread do not propagate here.
-    Binding inside the coroutine makes the real observer/run_id available to
-    downstream synchronous reads (e.g. reasoning-summary scheduling in the LLM
-    service), preventing them from silently falling back to NOOP_OBSERVER.
-    """
+    """Bind observability context for the native async Jiuwen invocation."""
     with profile_current_thread(run_id):
         with bind_observability_context(
             observer=observer,
@@ -2403,54 +2565,6 @@ async def _with_observability_context(
             parent_key=parent_key,
         ):
             return await awaitable
-
-
-def _run_awaitable(
-    awaitable: Any,
-    *,
-    cancel_event: Optional[threading.Event] = None,
-    state: Optional[Mapping[str, Any]] = None,
-) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise JiuwenBackendUnavailable(
-            "Jiuwen ReAct runtime returned an async invoke result, but JiuwenReactLoopEngine.run is synchronous."
-        )
-
-    if cancel_event is not None and cancel_event.is_set():
-        if asyncio.iscoroutine(awaitable):
-            awaitable.close()
-        _raise_if_jiuwen_cancelled(cancel_event, state)
-
-    completion = threading.Event()
-
-    async def await_and_signal() -> Any:
-        try:
-            return await awaitable
-        finally:
-            completion.set()
-
-    future = _JIUWEN_LOOP_RUNNER.submit(await_and_signal())
-    if cancel_event is None:
-        return future.result()
-
-    while True:
-        try:
-            result = future.result(timeout=0.05)
-        except concurrent.futures.TimeoutError:
-            if cancel_event.is_set():
-                future.cancel()
-                while not completion.wait(timeout=0.05):
-                    continue
-                _raise_if_jiuwen_cancelled(cancel_event, state)
-        else:
-            _raise_if_jiuwen_cancelled(cancel_event, state)
-            return result
-
-
 def _raise_if_jiuwen_cancelled(
     cancel_event: Optional[threading.Event],
     state: Optional[Mapping[str, Any]],

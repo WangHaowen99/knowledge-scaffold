@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -216,7 +218,7 @@ def test_startup_runner_blocks_startup_when_legacy_reference_is_invalid(tmp_path
     assert (workspace_dir / "ontology-bindings.json").is_file()
 
 
-def test_create_app_runs_critical_startup_migrations_before_other_startup_work(monkeypatch):
+def test_fastapi_lifespan_runs_critical_migrations_before_runtime_startup(monkeypatch):
     import app as app_module
 
     order = []
@@ -232,6 +234,26 @@ def test_create_app_runs_critical_startup_migrations_before_other_startup_work(m
             "user_store_manager": object(),
         }
 
+    class FakeRuntimeContainer:
+        def __init__(self, *, config, components_factory):
+            del components_factory
+            self.config = config
+            self.runtime = object()
+            order.append("container-build")
+
+        async def start(self):
+            order.append("runtime-start")
+
+        async def close(self, *, deadline):
+            assert deadline > asyncio.get_running_loop().time()
+            order.append("runtime-stop")
+            return True
+
+    async def stop_warmup(*, deadline):
+        assert deadline > asyncio.get_running_loop().time()
+        order.append("warmup-stop")
+        return True
+
     monkeypatch.setattr(app_module, "run_startup_migrations", lambda: order.append("startup"))
     monkeypatch.setattr(
         app_module,
@@ -240,20 +262,94 @@ def test_create_app_runs_critical_startup_migrations_before_other_startup_work(m
     )
     monkeypatch.setattr(app_module, "get_workspaces_root", lambda: object())
     monkeypatch.setattr(app_module, "build_runtime_services", fake_runtime)
-    monkeypatch.setattr(app_module, "register_routes", lambda *args, **kwargs: order.append("routes"))
+    monkeypatch.setattr(app_module, "register_routers", lambda _app: order.append("routes"))
+    monkeypatch.setattr(
+        app_module,
+        "initialize_runtime_dependencies",
+        lambda *args, **kwargs: (
+            order.append("dependencies")
+            or SimpleNamespace(operation_patcher=None, reflection_worker=None)
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "NativeAsyncRuntimeConfig",
+        SimpleNamespace(
+            from_agent_config=lambda _config: SimpleNamespace(
+                shutdown_total_deadline_seconds=1.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(app_module, "RuntimeContainer", FakeRuntimeContainer)
+    monkeypatch.setattr(app_module, "set_agent_execution_runtime", lambda _runtime: None)
     monkeypatch.setattr(app_module, "start_runtime_warmup", lambda **kwargs: order.append("warmup"))
+    monkeypatch.setattr(app_module, "stop_runtime_warmup", stop_warmup)
+    monkeypatch.setattr(
+        app_module,
+        "init_skill_evolution_worker",
+        lambda: order.append("skill-start"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "reset_skill_evolution_singletons",
+        lambda: order.append("skill-stop"),
+    )
     monkeypatch.setattr(
         app_module,
         "start_platform_observer_if_enabled",
-        lambda: order.append("platform"),
+        lambda: order.append("platform-start"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "shutdown_platform_observer",
+        lambda **kwargs: order.append("platform-stop"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "shutdown_observer",
+        lambda **kwargs: order.append("observer-stop"),
     )
 
-    app_module.create_app()
+    asgi_app = app_module.create_app()
+    assert order == ["routes"]
 
-    assert order == ["startup", "recover", "build", "routes", "warmup", "platform"]
+    async def scenario():
+        async with asgi_app.router.lifespan_context(asgi_app):
+            assert order == [
+                "routes",
+                "startup",
+                "recover",
+                "build",
+                "dependencies",
+                "container-build",
+                "runtime-start",
+                "warmup",
+                "skill-start",
+                "platform-start",
+            ]
+
+    asyncio.run(scenario())
+
+    assert order == [
+        "routes",
+        "startup",
+        "recover",
+        "build",
+        "dependencies",
+        "container-build",
+        "runtime-start",
+        "warmup",
+        "skill-start",
+        "platform-start",
+        "warmup-stop",
+        "runtime-stop",
+        "skill-stop",
+        "observer-stop",
+        "platform-stop",
+    ]
 
 
-def test_create_app_does_not_build_runtime_when_critical_migration_fails(monkeypatch):
+def test_fastapi_lifespan_does_not_build_runtime_when_critical_migration_fails(monkeypatch):
     import app as app_module
     from migrations.runner import StartupMigrationError
 
@@ -266,9 +362,18 @@ def test_create_app_does_not_build_runtime_when_critical_migration_fails(monkeyp
         "build_runtime_services",
         lambda *args, **kwargs: pytest.fail("runtime services must not be built"),
     )
+    monkeypatch.setattr(app_module, "register_routers", lambda _app: None)
+    monkeypatch.setattr(app_module, "set_agent_execution_runtime", lambda _runtime: None)
+    monkeypatch.setattr(app_module, "shutdown_observer", lambda **kwargs: None)
 
-    with pytest.raises(StartupMigrationError, match="data source migration failed"):
-        app_module.create_app()
+    asgi_app = app_module.create_app()
+
+    async def scenario():
+        with pytest.raises(StartupMigrationError, match="data source migration failed"):
+            async with asgi_app.router.lifespan_context(asgi_app):
+                pytest.fail("lifespan must not yield after a blocking migration failure")
+
+    asyncio.run(scenario())
 
 
 def test_non_blocking_failure_is_reported_and_later_blocking_migrations_continue(

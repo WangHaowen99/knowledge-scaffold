@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from agent.tools.base import ToolContext
 from agent.tools.execute_script import (
+    MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION,
     ExecuteScriptTool,
     _is_successful_script_output,
     _prior_successful_operation_calls,
@@ -56,7 +57,7 @@ def test_identical_successful_script_call_is_reused_instead_of_executed_again():
 
 def test_distinct_successful_retries_are_capped_before_agent_loops_forever():
     messages = []
-    for index in range(4):
+    for index in range(MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION):
         arguments = {
             "ontology_id": "demo",
             "operation_key": "装置负荷校验",
@@ -72,7 +73,7 @@ def test_distinct_successful_retries_are_capped_before_agent_loops_forever():
         args={
             "ontology_id": "demo",
             "operation_key": "装置负荷校验",
-            "arguments": {"monthlyFeedAndDays": [{"totalProcessingDays": 99}]},
+            "arguments": {"monthlyFeedAndDays": [{"totalProcessingDays": 1000}]},
         },
         context=_context(messages),
         tool_call_id="call-next",

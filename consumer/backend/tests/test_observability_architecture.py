@@ -1569,7 +1569,9 @@ def test_runtime_refresh_resets_observability_provider(monkeypatch):
     }
 
     class FakeApp:
-        config = {"LLM_ROUTER": object()}
+        class state:
+            services = {"LLM_ROUTER": object()}
+            runtime_container = None
 
     def fake_build_runtime_services(previous_llm_router=None):
         del previous_llm_router
@@ -1605,7 +1607,9 @@ def test_runtime_refresh_does_not_restart_platform_manager(monkeypatch):
     }
 
     class FakeApp:
-        config = {"LLM_ROUTER": object()}
+        class state:
+            services = {"LLM_ROUTER": object()}
+            runtime_container = None
 
     monkeypatch.setattr(
         app_mod,

@@ -8,21 +8,22 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from flask import Blueprint, request, jsonify
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from starlette.datastructures import UploadFile
 
-from api.auth.auth import require_auth
+from api.dependencies import (
+    require_admin_workspace_id,
+    require_workspace_id,
+    run_in_runtime_pool,
+)
 from utils.logging import get_logger
 from utils.skills import SkillLoader, get_skill_registry, invalidate_skill_registry
-from workspace.workspaces import (
-    get_workspace_skills_root,
-    resolve_workspace_id,
-    workspace_scope,
-)
-from api.routes.errors import not_found_response
+from workspace.workspaces import get_workspace_skills_root
 
 logger = get_logger("routes.skills")
 
-skills_bp = Blueprint("skills", __name__, url_prefix="/agentic")
+skills_router = APIRouter(prefix="/agentic")
 
 
 # ============================================================================
@@ -132,35 +133,85 @@ def _validate_skill_archive(archive_path: Path, extract_dir: Path) -> tuple[bool
 # ============================================================================
 
 
-@skills_bp.route("/skills", methods=["GET"])
-@require_auth()
-def list_skills():
+@skills_router.get("/skills")
+async def list_skills(
+    request: Request,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """List all available skills."""
-    try:
-        workspace_id = resolve_workspace_id(request)
-    except KeyError as exc:
-        return not_found_response(exc)
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
-
-    with workspace_scope(workspace_id):
-        registry = get_skill_registry(workspace_id=workspace_id)
-
-        skills_list = []
-        for skill in registry.snapshot().values():
-            skills_list.append({
-                "name": skill.name,
-                "description": skill.description,
-                "file_path": skill.file_path,
-                "allowed_tools": skill.allowed_tools,
-            })
-
-        return jsonify({"skills": skills_list})
+    return await run_in_runtime_pool(
+        request,
+        "short_io",
+        _list_skills,
+        workspace_id,
+    )
 
 
-@skills_bp.route("/skills/upload", methods=["POST"])
-@require_auth(roles=["admin"])
-def upload_skill():
+def _list_skills(workspace_id: str):
+    registry = get_skill_registry(workspace_id=workspace_id)
+    skills_list = [
+        {
+            "name": skill.name,
+            "description": skill.description,
+            "file_path": skill.file_path,
+            "allowed_tools": skill.allowed_tools,
+        }
+        for skill in registry.snapshot().values()
+    ]
+    return {"skills": skills_list}
+
+
+def _install_skill_archive(
+    *,
+    workspace_id: str,
+    filename: str,
+    archive_bytes: bytes,
+):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        archive_path = temp_path / filename
+        archive_path.write_bytes(archive_bytes)
+        extract_dir = temp_path / "extracted"
+        extract_dir.mkdir()
+
+        is_valid, error_msg, skill_name = _validate_skill_archive(
+            archive_path,
+            extract_dir,
+        )
+        if not is_valid:
+            return JSONResponse({"error": error_msg}, status_code=400)
+
+        skills_dir = _get_skills_dir()
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = skills_dir / skill_name
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+            logger.info("Replacing existing skill: %s", skill_name)
+
+        source_dir = extract_dir / skill_name
+        shutil.move(str(source_dir), str(target_dir))
+        logger.info("Successfully uploaded skill: %s", skill_name)
+
+        invalidate_skill_registry(workspace_id=workspace_id)
+        skill = get_skill_registry(workspace_id=workspace_id).get_skill(skill_name)
+        return JSONResponse(
+            {
+                "success": True,
+                "skill": {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "file_path": skill.file_path,
+                },
+            },
+            status_code=201,
+        )
+
+
+@skills_router.post("/skills/upload")
+async def upload_skill(
+    request: Request,
+    workspace_id: str = Depends(require_admin_workspace_id),
+):
     """
     Upload a new skill archive.
 
@@ -169,136 +220,104 @@ def upload_skill():
     - Root contains single folder (skill name)
     - Folder contains SKILL.md with YAML frontmatter
     """
-    try:
-        workspace_id = resolve_workspace_id(request)
-    except KeyError as exc:
-        return not_found_response(exc)
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
+    form = await request.form()
+    upload = form.get("file")
+    if not isinstance(upload, UploadFile):
+        return JSONResponse({"error": "No file uploaded"}, status_code=400)
+    if upload.filename == "":
+        return JSONResponse({"error": "No file selected"}, status_code=400)
 
-    with workspace_scope(workspace_id):
-        if "file" not in request.files:
-            return jsonify({"error": "No file uploaded"}), 400
+    filename = Path(upload.filename or "").name
+    if filename in ("", ".", ".."):
+        return JSONResponse({"error": "Invalid file name"}, status_code=400)
 
-        file = request.files["file"]
-        if file.filename == "":
-            return jsonify({"error": "No file selected"}), 400
+    lower_name = filename.lower()
+    if not (
+        lower_name.endswith(".zip")
+        or lower_name.endswith(".tar")
+        or lower_name.endswith(".tar.gz")
+        or lower_name.endswith(".tgz")
+    ):
+        return JSONResponse(
+            {
+                "error": (
+                    "Unsupported file format. Use .zip, .tar, .tar.gz, or .tgz"
+                )
+            },
+            status_code=400,
+        )
 
-        # Check file extension
-        filename = Path(file.filename or "").name
-        if filename in ("", ".", ".."):
-            return jsonify({"error": "Invalid file name"}), 400
-
-        lower_name = filename.lower()
-        if not (lower_name.endswith(".zip") or lower_name.endswith(".tar") or
-                lower_name.endswith(".tar.gz") or lower_name.endswith(".tgz")):
-            return jsonify({
-                "error": "Unsupported file format. Use .zip, .tar, .tar.gz, or .tgz"
-            }), 400
-
-        # Create temporary directory for extraction
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-
-            # Save uploaded file
-            archive_path = temp_path / filename
-            file.save(str(archive_path))
-
-            # Create extraction directory
-            extract_dir = temp_path / "extracted"
-            extract_dir.mkdir()
-
-            # Validate archive
-            is_valid, error_msg, skill_name = _validate_skill_archive(archive_path, extract_dir)
-
-            if not is_valid:
-                return jsonify({"error": error_msg}), 400
-
-            # Ensure skills directory exists
-            skills_dir = _get_skills_dir()
-            skills_dir.mkdir(parents=True, exist_ok=True)
-
-            # Check if skill already exists
-            target_dir = skills_dir / skill_name
-            if target_dir.exists():
-                # Remove existing skill
-                shutil.rmtree(target_dir)
-                logger.info("Replacing existing skill: {}".format(skill_name))
-
-            # Move skill folder to skills directory
-            source_dir = extract_dir / skill_name
-            shutil.move(str(source_dir), str(target_dir))
-
-            logger.info("Successfully uploaded skill: {}".format(skill_name))
-
-            invalidate_skill_registry(workspace_id=workspace_id)
-            registry = get_skill_registry(workspace_id=workspace_id)
-
-            # Get skill info
-            skill = registry.get_skill(skill_name)
-
-            return jsonify({
-                "success": True,
-                "skill": {
-                    "name": skill.name,
-                    "description": skill.description,
-                    "file_path": skill.file_path,
-                }
-            }), 201
+    return await run_in_runtime_pool(
+        request,
+        "tool_io",
+        _install_skill_archive,
+        workspace_id=workspace_id,
+        filename=filename,
+        archive_bytes=await upload.read(),
+    )
 
 
-@skills_bp.route("/skills/<skill_name>", methods=["DELETE"])
-@require_auth(roles=["admin"])
-def delete_skill(skill_name: str):
+@skills_router.delete("/skills/{skill_name}")
+async def delete_skill(
+    skill_name: str,
+    request: Request,
+    workspace_id: str = Depends(require_admin_workspace_id),
+):
     """Delete a skill."""
+    return await run_in_runtime_pool(
+        request,
+        "tool_io",
+        _delete_skill,
+        skill_name,
+        workspace_id,
+    )
+
+
+def _delete_skill(skill_name: str, workspace_id: str):
+    skill_dir, validation_error = _resolve_skill_dir_for_delete(skill_name)
+    if validation_error:
+        return JSONResponse({"error": validation_error}, status_code=400)
+    if not skill_dir or not skill_dir.is_dir():
+        return JSONResponse({"error": "Skill not found"}, status_code=404)
+
     try:
-        workspace_id = resolve_workspace_id(request)
-    except KeyError as exc:
-        return not_found_response(exc)
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
-
-    with workspace_scope(workspace_id):
-        skill_dir, validation_error = _resolve_skill_dir_for_delete(skill_name)
-        if validation_error:
-            return jsonify({"error": validation_error}), 400
-
-        if not skill_dir or not skill_dir.is_dir():
-            return jsonify({"error": "Skill not found"}), 404
-
-        try:
-            shutil.rmtree(skill_dir)
-            logger.info("Deleted skill: {}".format(skill_name))
-            invalidate_skill_registry(workspace_id=workspace_id)
-
-            return jsonify({"success": True})
-        except Exception as e:
-            logger.exception("Failed to delete skill: {}".format(skill_name))
-            return jsonify({"error": "Failed to delete skill '{}'".format(skill_name)}), 500
+        shutil.rmtree(skill_dir)
+        logger.info("Deleted skill: %s", skill_name)
+        invalidate_skill_registry(workspace_id=workspace_id)
+        return {"success": True}
+    except Exception:
+        logger.exception("Failed to delete skill: %s", skill_name)
+        return JSONResponse(
+            {"error": "Failed to delete skill '{}'".format(skill_name)},
+            status_code=500,
+        )
 
 
-@skills_bp.route("/skills/<skill_name>", methods=["GET"])
-@require_auth()
-def get_skill(skill_name: str):
+@skills_router.get("/skills/{skill_name}")
+async def get_skill(
+    skill_name: str,
+    request: Request,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Get skill details."""
-    try:
-        workspace_id = resolve_workspace_id(request)
-    except KeyError as exc:
-        return not_found_response(exc)
-    except ValueError as exc:
-        return jsonify({"detail": str(exc)}), 400
+    return await run_in_runtime_pool(
+        request,
+        "short_io",
+        _get_skill,
+        skill_name,
+        workspace_id,
+    )
 
-    with workspace_scope(workspace_id):
-        registry = get_skill_registry(workspace_id=workspace_id)
-        skill = registry.get_skill(skill_name)
 
-        if not skill:
-            return jsonify({"error": "Skill not found"}), 404
-
-        return jsonify({
-            "name": skill.name,
-            "description": skill.description,
-            "content": skill.content,
-            "file_path": skill.file_path,
-            "allowed_tools": skill.allowed_tools,
-        })
+def _get_skill(skill_name: str, workspace_id: str):
+    registry = get_skill_registry(workspace_id=workspace_id)
+    skill = registry.get_skill(skill_name)
+    if not skill:
+        return JSONResponse({"error": "Skill not found"}, status_code=404)
+    return {
+        "name": skill.name,
+        "description": skill.description,
+        "content": skill.content,
+        "file_path": skill.file_path,
+        "allowed_tools": skill.allowed_tools,
+    }

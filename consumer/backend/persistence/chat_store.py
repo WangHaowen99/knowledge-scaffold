@@ -896,6 +896,37 @@ class _AppendOnlyChatStore:
             logger.warning("Ignoring unsupported event type for persistence: %s", event_name)
             return False
 
+        if event_name == "chat_message":
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            metadata = (
+                data.get("metadata")
+                if isinstance(data.get("metadata"), dict)
+                else {}
+            )
+            turn_id = metadata.get("turn_id")
+            role = str(data.get("role") or "")
+            if turn_id is not None and role:
+                for index in range(len(session.events) - 1, -1, -1):
+                    existing = session.events[index]
+                    if existing.get("event") != "chat_message":
+                        continue
+                    existing_data = (
+                        existing.get("data")
+                        if isinstance(existing.get("data"), dict)
+                        else {}
+                    )
+                    existing_metadata = (
+                        existing_data.get("metadata")
+                        if isinstance(existing_data.get("metadata"), dict)
+                        else {}
+                    )
+                    if (
+                        str(existing_data.get("role") or "") == role
+                        and existing_metadata.get("turn_id") == turn_id
+                    ):
+                        session.events[index] = deepcopy(event)
+                        return True
+
         if event_name == "agent.v2" and session.events:
             data = event.get("data") or {}
             event_type = data.get("type")
@@ -1565,6 +1596,26 @@ class ChatStore:
             metadata=metadata or {},
         )
         return message
+
+    def upsert_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        turn_id: int,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[ChatMessage]:
+        """Project one logical Turn message idempotently into ChatStore."""
+
+        projected_metadata = dict(metadata or {})
+        projected_metadata["turn_id"] = int(turn_id)
+        return self.add_message(
+            session_id,
+            role,
+            content,
+            metadata=projected_metadata,
+        )
 
     def record_interaction_cancellation(
         self,
