@@ -38,7 +38,7 @@ AUTH_SERVER_PORT=5056 python run.py
 说明：
 
 - `backend/.env` 必须配置 `AUTH_SERVER_URL`（本地开发如 `http://localhost:5056`，容器内为 `http://auth-server:5056`），否则后端启动直接报错。
-- auth-server 首次启动使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号 `admin`，未配置或密码不符合策略时拒绝启动；首次登录会被强制修改密码。
+- auth-server 首次启动使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号 `admin`，未配置或密码不符合策略时拒绝启动；管理员可直接使用该密码登录。
 - 使用 Docker Compose 部署时无需单独启动：auth-server 已是 compose 必备服务，会随 `docker compose up` 一并拉起。
 
 ### 2. 准备后端

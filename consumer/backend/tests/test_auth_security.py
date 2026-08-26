@@ -23,17 +23,17 @@ def test_bootstrap_requires_explicit_strong_password(tmp_path, monkeypatch):
         )
 
 
-def test_default_admin_requires_password_change(tmp_path):
+def test_default_admin_can_login_without_password_change(tmp_path):
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
 
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
 
     assert user is not None
-    assert user.password_change_required is True
-    assert user.to_public_dict()["password_change_required"] is True
+    assert user.password_change_required is False
+    assert user.to_public_dict()["password_change_required"] is False
 
 
-def test_user_creation_requires_complex_temporary_password(tmp_path):
+def test_user_creation_requires_complex_password(tmp_path):
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
 
     with pytest.raises(ValueError, match="密码复杂度"):
@@ -43,10 +43,10 @@ def test_user_creation_requires_complex_temporary_password(tmp_path):
 
     user = auth_manager.create_user("operator", STRONG_PASSWORD)
 
-    assert user.password_change_required is True
+    assert user.password_change_required is False
 
 
-def test_change_password_clears_required_flag_and_invalidates_old_token(tmp_path):
+def test_change_password_invalidates_old_token(tmp_path):
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     old_token = auth_manager.issue_token(user)
@@ -59,7 +59,7 @@ def test_change_password_clears_required_flag_and_invalidates_old_token(tmp_path
     assert auth_manager.authenticate("admin", "NewStrongPass123!").password_change_required is False
 
 
-def test_legacy_plaintext_password_is_migrated_and_forced_to_change(tmp_path):
+def test_legacy_plaintext_password_is_migrated_without_forced_change(tmp_path):
     users_file = tmp_path / "users.json"
     users_file.write_text(
         json.dumps(
@@ -82,13 +82,14 @@ def test_legacy_plaintext_password_is_migrated_and_forced_to_change(tmp_path):
     record = payload["users"][0]
 
     assert user is not None
-    assert user.password_change_required is True
+    assert user.password_change_required is False
     assert "password" not in record
     assert record["password_hash"].startswith("pbkdf2_sha256$")
-    assert record["must_change_password"] is True
+    assert record["must_change_password"] is False
+    assert record["password_changed_at"]
 
 
-def test_require_auth_blocks_regular_routes_until_password_is_changed(tmp_path):
+def test_require_auth_allows_regular_routes_without_password_change(tmp_path):
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     token = auth_manager.issue_token(user)
@@ -112,11 +113,8 @@ def test_require_auth_blocks_regular_routes_until_password_is_changed(tmp_path):
     protected_response = client.get("/protected", headers=headers)
     allowed_response = client.put("/auth/change-password", headers=headers)
 
-    assert protected_response.status_code == 403
-    assert protected_response.get_json() == {
-        "error": "Password change required",
-        "code": "PASSWORD_CHANGE_REQUIRED",
-    }
+    assert protected_response.status_code == 200
+    assert protected_response.get_json() == {"success": True}
     assert allowed_response.status_code == 200
 
 

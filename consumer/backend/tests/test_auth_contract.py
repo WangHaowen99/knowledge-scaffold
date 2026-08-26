@@ -61,9 +61,7 @@ def _login(client, username="admin", password="TestBootstrap#2026"):
 
 
 def _admin_headers(client, auth_manager):
-    # bootstrap 的 admin 处于强制改密状态，先改密再登录，得到无限制 token
-    auth_manager.change_password("admin", "TestBootstrap#2026", "ContractTest#2026")
-    response = _login(client, password="ContractTest#2026")
+    response = _login(client)
     token = response.get_json()["token"]
     return {"Authorization": f"Bearer {token}"}
 
@@ -80,7 +78,7 @@ def test_login_response_shape(client):
     assert data["user"] == {
         "username": "admin",
         "role": "admin",
-        "password_change_required": True,
+        "password_change_required": False,
     }
 
 
@@ -133,19 +131,16 @@ def test_non_admin_on_admin_route_returns_403(client, auth_manager):
     assert response.get_json() == {"error": "Forbidden"}
 
 
-# ---- 强制改密流程 ----
+# ---- 存量强制改密状态兼容 ----
 
-def test_password_change_required_blocks_and_whitelists(client):
+def test_password_change_required_state_does_not_block_routes(client, auth_manager):
+    users = auth_manager._load_users()
+    users["admin"]["must_change_password"] = True
+    auth_manager._save_users(users)
     token = _login(client).get_json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    blocked = client.get("/auth/users", headers=headers)
-    assert blocked.status_code == 403
-    assert blocked.get_json() == {
-        "error": "Password change required",
-        "code": "PASSWORD_CHANGE_REQUIRED",
-    }
-    # 白名单：/auth/me 可访问
+    assert client.get("/auth/users", headers=headers).status_code == 200
     assert client.get("/auth/me", headers=headers).status_code == 200
 
 
@@ -199,27 +194,27 @@ def test_user_crud_shapes(client, auth_manager):
     created = client.post("/auth/users", headers=headers, json={"username": "carol", "password": "Kv3$Ntb6Rd5?"})
     assert created.status_code == 201
     assert created.get_json() == {
-        "user": {"username": "carol", "role": "user", "password_change_required": True},
+        "user": {"username": "carol", "role": "user", "password_change_required": False},
     }
 
     listed = client.get("/auth/users", headers=headers)
     assert listed.status_code == 200
     users = listed.get_json()["users"]
-    assert {"username": "carol", "role": "user", "password_change_required": True} in users
+    assert {"username": "carol", "role": "user", "password_change_required": False} in users
 
     deleted = client.delete("/auth/users/carol", headers=headers)
     assert deleted.status_code == 200
     assert deleted.get_json() == {"success": True}
 
 
-def test_admin_reset_forces_change_and_invalidates_tokens(client, auth_manager):
+def test_admin_reset_allows_direct_login_and_invalidates_tokens(client, auth_manager):
     headers = _admin_headers(client, auth_manager)
     client.post("/auth/users", headers=headers, json={"username": "dave", "password": "Hf4%Jsc8Qw1!"})
     dave_token = _login(client, "dave", "Hf4%Jsc8Qw1!").get_json()["token"]
 
     reset = client.put("/auth/users/dave", headers=headers, json={"password": "Hf4%Jsc8Qw2!"})
     assert reset.status_code == 200
-    assert reset.get_json()["user"]["password_change_required"] is True
+    assert reset.get_json()["user"]["password_change_required"] is False
     # 管理员重置必须使被重置用户的旧 token 立即失效
     assert auth_manager.verify_token(dave_token) is None
 
