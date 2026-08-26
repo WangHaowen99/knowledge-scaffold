@@ -95,13 +95,17 @@ def _build_deterministic_artifact_writer(
     reserved_refs: set[str] = set()
     prepared_refs: dict[str, str] = {}
     closed = False
-    journal_enabled = all(
-        callable(getattr(execution_store, name, None))
-        for name in (
-            "reserve_deterministic_artifacts",
-            "release_deterministic_artifacts",
-        )
+    reserve_artifacts = getattr(
+        execution_store,
+        "reserve_deterministic_artifacts",
+        None,
     )
+    release_artifacts = getattr(
+        execution_store,
+        "release_deterministic_artifacts",
+        None,
+    )
+    journal_enabled = callable(reserve_artifacts) and callable(release_artifacts)
 
     def prepare_artifacts(names) -> None:
         normalized = [str(name or "").strip() for name in names]
@@ -2022,16 +2026,13 @@ class OrchestratorSessionAdapter:
             str((event.source or {}).get("node") or "")
             == "deterministic_execution"
         )
-        if (
-            event.event_type == "turn.finished"
-            and (
-                deterministic_source
-                or (
-                    isinstance(deterministic_execution, Mapping)
-                    and deterministic_execution.get("type") == "deterministic"
-                )
-            )
-        ):
+        deterministic_payload = isinstance(
+            deterministic_execution,
+            Mapping,
+        ) and deterministic_execution.get("type") == "deterministic"
+        deterministic_terminal = deterministic_source or deterministic_payload
+        is_terminal_event = event.event_type == "turn.finished"
+        if is_terminal_event and deterministic_terminal:
             from persistence.deterministic_terminal import (
                 persist_deterministic_terminal,
             )

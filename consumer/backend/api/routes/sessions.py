@@ -83,6 +83,19 @@ def _get_session_after_terminal_recovery(
     return session
 
 
+def _collect_active_run_ids(snapshots) -> set[str]:
+    terminal_statuses = set()
+    for status in TERMINAL_RUN_STATUSES:
+        terminal_statuses.add(status.value)
+
+    active_run_ids = set()
+    for snapshot in snapshots:
+        raw_status = getattr(snapshot.status, "value", snapshot.status)
+        if str(raw_status) not in terminal_statuses:
+            active_run_ids.add(snapshot.run_id)
+    return active_run_ids
+
+
 def _resolve_selected_ontology_selection(value, *, workspace_id: str):
     """Validate and canonicalize the optional session ontology selection."""
     selected_ontology_id = str(value or "").strip()
@@ -273,12 +286,7 @@ async def list_sessions(
         if runtime.manager is not None
         else []
     )
-    active_run_ids = {
-        snapshot.run_id
-        for snapshot in snapshots
-        if str(getattr(snapshot.status, "value", snapshot.status))
-        not in {status.value for status in TERMINAL_RUN_STATUSES}
-    }
+    active_run_ids = _collect_active_run_ids(snapshots)
 
     def recover_sessions() -> None:
         current_chat_store, execution_store = _get_user_stores()
@@ -402,12 +410,7 @@ async def get_session(
         if runtime.manager is not None
         else []
     )
-    active_run_ids = {
-        snapshot.run_id
-        for snapshot in snapshots
-        if str(getattr(snapshot.status, "value", snapshot.status))
-        not in {status.value for status in TERMINAL_RUN_STATUSES}
-    }
+    active_run_ids = _collect_active_run_ids(snapshots)
     session = await runtime.short_io.run(
         _get_session_after_terminal_recovery,
         chat_store,

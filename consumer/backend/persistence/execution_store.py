@@ -142,15 +142,12 @@ def _latest_recoverable_interaction_claim(
     ):
         return None, None, None, None
     source_turn_id = claimed_turn.get("prior_interaction_turn_id")
-    source_turn = next(
-        (
-            turn
-            for turn in reversed(turns[:-1])
-            if source_turn_id is not None
-            and turn.get("turn_id") == source_turn_id
-        ),
-        None,
-    )
+    source_turn = None
+    if source_turn_id is not None:
+        for turn in reversed(turns[:-1]):
+            if turn.get("turn_id") == source_turn_id:
+                source_turn = turn
+                break
     interaction = _turn_interaction(source_turn) if source_turn else None
     if source_turn is None or interaction is None:
         return None, None, None, None
