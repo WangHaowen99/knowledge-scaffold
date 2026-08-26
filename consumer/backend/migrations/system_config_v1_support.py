@@ -340,21 +340,30 @@ def _normalize_model_semantics(
     secret_context: str,
     runtime_root: Path,
     object_id: str,
-    defaults: Mapping[str, Any] = PROFILE_DEFAULTS,
+    defaults: Optional[Mapping[str, Any]] = None,
 ) -> tuple[dict[str, Any], Optional[MigrationProblem]]:
+    effective_defaults = PROFILE_DEFAULTS if defaults is None else defaults
     try:
-        provider = _normalize_provider(payload.get("provider", defaults["provider"]))
-        base_url = _coerce_text(payload.get("base_url", defaults["base_url"]))
-        model = _coerce_text(payload.get("model", defaults["model"]))
-        raw_secret = payload.get("api_key", defaults["api_key"])
+        provider = _normalize_provider(
+            payload.get("provider", effective_defaults["provider"])
+        )
+        base_url = _coerce_text(
+            payload.get("base_url", effective_defaults["base_url"])
+        )
+        model = _coerce_text(payload.get("model", effective_defaults["model"]))
+        raw_secret = payload.get("api_key", effective_defaults["api_key"])
         if not isinstance(raw_secret, str):
             raise TypeError("api_key must be a string")
-        timeout = _coerce_int(payload.get("timeout", defaults["timeout"]))
-        max_tokens = _coerce_int(payload.get("max_tokens", defaults["max_tokens"]))
-        temperature = _coerce_float(
-            payload.get("temperature", defaults["temperature"])
+        timeout = _coerce_int(
+            payload.get("timeout", effective_defaults["timeout"])
         )
-        enabled_value = payload.get("enabled", defaults["enabled"])
+        max_tokens = _coerce_int(
+            payload.get("max_tokens", effective_defaults["max_tokens"])
+        )
+        temperature = _coerce_float(
+            payload.get("temperature", effective_defaults["temperature"])
+        )
+        enabled_value = payload.get("enabled", effective_defaults["enabled"])
         if not isinstance(enabled_value, bool):
             raise TypeError("enabled must be a boolean")
     except (TypeError, ValueError, OverflowError):
@@ -519,7 +528,7 @@ def _profile_from_legacy(
     source_context: str,
     runtime_root: Path,
     object_id: str,
-    defaults: Mapping[str, Any] = PROFILE_DEFAULTS,
+    defaults: Optional[Mapping[str, Any]] = None,
 ) -> tuple[dict[str, Any], Optional[MigrationProblem]]:
     semantics, problem = _normalize_model_semantics(
         payload,
@@ -565,8 +574,8 @@ def _profiles_are_semantically_equal(
     right_context: str,
     runtime_root: Path,
     object_id: str,
-    left_defaults: Mapping[str, Any] = PROFILE_DEFAULTS,
-    right_defaults: Mapping[str, Any] = PROFILE_DEFAULTS,
+    left_defaults: Optional[Mapping[str, Any]] = None,
+    right_defaults: Optional[Mapping[str, Any]] = None,
 ) -> tuple[bool, Optional[MigrationProblem]]:
     left_values, problem = _normalize_model_semantics(
         left,
