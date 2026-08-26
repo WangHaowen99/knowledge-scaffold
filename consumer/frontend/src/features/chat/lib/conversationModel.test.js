@@ -67,6 +67,24 @@ const assistantMessage = {
   iterationMetrics: [{ iteration: 1, status: 'completed', totalElapsedMs: 700, ts: 1750 }],
 };
 
+test('conversation model exposes the incomplete-output error code', () => {
+  const model = buildConversationViewModel([{
+    id: 'synthetic-truncated-turn',
+    runId: 'synthetic-run',
+    role: 'assistant',
+    status: 'failed',
+    content: 'synthetic partial answer',
+    meta: {
+      error: '回答达到输出上限，内容尚未完成',
+      error_code: 'MODEL_OUTPUT_TRUNCATED',
+    },
+  }]);
+
+  assert.equal(model.turns[0].status, 'error');
+  assert.equal(model.turns[0].content, 'synthetic partial answer');
+  assert.equal(model.turns[0].errorCode, 'MODEL_OUTPUT_TRUNCATED');
+});
+
 test('system cancellation notice remains a standalone non-turn message', () => {
   const model = buildConversationViewModel([{
     id: 'interaction-cancelled-1',

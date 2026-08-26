@@ -349,6 +349,28 @@ test('turn finished extracts a display message from structured runtime errors', 
   assert.equal(state.meta.error, '模型服务请求失败');
 });
 
+test('truncated turn preserves partial output and records an incomplete error code', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyPublicEvent(state, publicEvent('turn.finished', {
+    status: 'failed',
+    content: 'synthetic partial answer',
+    error: {
+      error_code: 'MODEL_OUTPUT_TRUNCATED',
+      message: '回答达到输出上限，内容尚未完成',
+      retriable: true,
+      source: 'model',
+      details: {},
+    },
+  }, 1));
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.content, 'synthetic partial answer');
+  assert.equal(state.streamSegments[0].text, 'synthetic partial answer');
+  assert.equal(state.meta.error_code, 'MODEL_OUTPUT_TRUNCATED');
+  assert.equal(state.meta.error, '回答达到输出上限，内容尚未完成');
+});
+
 test('local transport termination updates UI state without fabricating a PublicEvent', () => {
   const state = applyLocalRunTermination(
     { streamSegments: [], status: 'running', isLoading: true },

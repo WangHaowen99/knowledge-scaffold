@@ -19,7 +19,12 @@ from dataclasses import is_dataclass, replace
 from inspect import isawaitable
 from typing import Any, Callable, Dict, Optional
 
-from ..exceptions import ModelInvocationError, WorkflowCancelledError
+from ..exceptions import (
+    ModelContentFilteredError,
+    ModelInvocationError,
+    ModelOutputTruncatedError,
+    WorkflowCancelledError,
+)
 from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER, RuntimeStatus
 from integration.observability import bind_observability_context
 from integration.observability.stack_profiler import profile_current_thread
@@ -134,6 +139,86 @@ class _JiuwenModelErrorSignal:
         error = self.get()
         if error is not None:
             raise ModelInvocationError(error) from error
+
+
+class _JiuwenModelCompletionSignal:
+    """Keep the latest provider completion state outside observability."""
+
+    _TRUNCATED_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
+    _FILTERED_REASONS = frozenset({"content_filter"})
+    _COMPLETE_OR_UNSPECIFIED_REASONS = frozenset(
+        {None, "stop", "eos", "stop_sequence"}
+    )
+
+    def __init__(self, *, max_output_tokens: Any = None) -> None:
+        self._lock = threading.Lock()
+        self._latest: dict[str, Any] | None = None
+        try:
+            self._max_output_tokens = max(0, int(max_output_tokens or 0))
+        except (TypeError, ValueError, OverflowError):
+            self._max_output_tokens = 0
+
+    @staticmethod
+    def normalize_finish_reason(value: Any) -> str | None:
+        if value is None:
+            return None
+        raw = getattr(value, "value", value)
+        normalized = str(raw or "").strip().lower()
+        if not normalized or normalized in {"null", "none"}:
+            return None
+        if "." in normalized:
+            normalized = normalized.rsplit(".", 1)[-1]
+        return normalized.replace("-", "_").replace(" ", "_")
+
+    def record(self, completion: Mapping[str, Any]) -> None:
+        normalized = dict(completion)
+        normalized["finish_reason"] = self.normalize_finish_reason(
+            completion.get("finish_reason")
+        )
+        with self._lock:
+            self._latest = normalized
+
+    def raise_if_incomplete(self, partial_output: str) -> None:
+        with self._lock:
+            completion = dict(self._latest) if self._latest is not None else None
+        if completion is None:
+            return
+        reason = completion.get("finish_reason")
+        if reason in self._TRUNCATED_REASONS:
+            raise ModelOutputTruncatedError(
+                partial_output,
+                finish_reason=str(reason),
+            )
+        if reason in self._FILTERED_REASONS:
+            raise ModelContentFilteredError(partial_output)
+        if completion.get("has_tool_calls"):
+            return
+        if (
+            reason in self._COMPLETE_OR_UNSPECIFIED_REASONS
+            and self._reached_configured_output_limit(completion)
+        ):
+            raise ModelOutputTruncatedError(
+                partial_output,
+                finish_reason="token_limit_reached",
+            )
+        if reason not in self._COMPLETE_OR_UNSPECIFIED_REASONS:
+            logger.warning("Unknown model finish reason: %s", reason)
+
+    def _reached_configured_output_limit(
+        self,
+        completion: Mapping[str, Any],
+    ) -> bool:
+        if self._max_output_tokens <= 0:
+            return False
+        usage = completion.get("usage")
+        if not isinstance(usage, Mapping):
+            return False
+        raw_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+        try:
+            output_tokens = int(raw_tokens)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return output_tokens >= self._max_output_tokens
 
 
 class JiuwenEngineEventBufferFull(RuntimeError):
@@ -897,6 +982,9 @@ class JiuwenReactLoopEngine:
             terminal_stop_event.set()
 
         registered_tool_cards: list[Any] = []
+        model_completion_signal = _JiuwenModelCompletionSignal(
+            max_output_tokens=getattr(llm_config_for_agent, "max_tokens", None),
+        )
         model_trace_bridge = _JiuwenModelTraceBridge(
             runtime_trace=runtime_trace,
             state=state,
@@ -908,6 +996,7 @@ class JiuwenReactLoopEngine:
             enable_reasoning=reasoning_enabled,
             model_timing_observer=record_model_timing,
             model_error_callback=model_error_signal.record,
+            model_completion_callback=model_completion_signal.record,
             prompt_build_ms=prompt_elapsed_ms,
             system_prompt_chars=len(str(system_prompt_for_agent or "")),
             sliding_window_applied=context_engine_managed_window,
@@ -1012,6 +1101,7 @@ class JiuwenReactLoopEngine:
                 raise RuntimeError(output or "Jiuwen ReAct runtime returned an error.")
 
             output = _extract_output(raw_result)
+            model_completion_signal.raise_if_incomplete(output)
 
             assistant_message = {"role": "assistant", "content": output}
             reasoning_content = _extract_reasoning_content(raw_result)

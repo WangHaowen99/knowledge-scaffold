@@ -516,6 +516,7 @@ const normalizeMessage = (message, index, occurrences) => {
     interaction: message?.interaction || null,
     options: Array.isArray(message?.options) ? message.options : [],
     error: publicErrorMessage(message?.meta?.error),
+    errorCode: stringValue(message?.meta?.error_code),
     cancelReason: stringValue(message?.meta?.cancel_reason),
     startedAt,
     endedAt,

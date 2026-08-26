@@ -321,6 +321,7 @@ export function RunStatusBlock({ block, turn, answerText, runState = null }) {
   const isFailure = turn.status === 'error';
   const isCancelled = turn.status === 'cancelled';
   const isAwaiting = turn.status === 'awaiting';
+  const isIncomplete = turn.errorCode === 'MODEL_OUTPUT_TRUNCATED';
   const activeProgress = tracksActiveRun ? resolveRunProgressView(runState, nowMs) : null;
   return (
     <div className={`statusline run-status status-${turn.status}`} data-block-key={block.key}>
@@ -328,7 +329,7 @@ export function RunStatusBlock({ block, turn, answerText, runState = null }) {
         {activeProgress
           ? <span className="tdots" aria-hidden="true"><span /><span /><span /></span>
           : turn.status === 'running' ? <Loader2 className="spin" size={12} /> : isFailure ? <AlertCircle size={12} /> : isCancelled ? <Circle size={12} /> : isAwaiting ? <Clock3 size={12} /> : <Check size={12} />}
-        {activeProgress?.summary || `${statusLabel(turn.status)}${duration ? ` · 总耗时 ${duration}` : ''}`}
+        {activeProgress?.summary || `${isIncomplete ? '回答未完成' : statusLabel(turn.status)}${duration ? ` · 总耗时 ${duration}` : ''}`}
       </span>
       {(block.text || turn.error) && (isFailure || isCancelled || isAwaiting) && (
         <span className="run-status-detail">{block.text || turn.error}</span>

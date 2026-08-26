@@ -19,13 +19,19 @@ from agent.core.jiuwen_engine import (
     JiuwenBackendUnavailable,
     JiuwenReactLoopEngine,
     _JiuwenModelTraceBridge,
+    _JiuwenModelCompletionSignal,
     _raise_if_jiuwen_cancelled,
     create_default_jiuwen_agent,
     register_current_runtime_tools,
     _patch_jiuwen_openai_reasoning_alias,
     warm_up_jiuwen_runtime,
 )
-from agent.exceptions import TerminalToolExecutionError, WorkflowCancelledError
+from agent.exceptions import (
+    ModelContentFilteredError,
+    ModelOutputTruncatedError,
+    TerminalToolExecutionError,
+    WorkflowCancelledError,
+)
 from agent.tools.base import ToolBatchResult, ToolInvocation
 from agent.tools.registry import get_tool_schema, get_tool_spec
 from config.settings import AgentConfig, LimitsConfig, WebSearchConfig
@@ -639,6 +645,221 @@ def test_jiuwen_model_trace_reports_timing_without_observability(monkeypatch):
     asyncio.run(fake_agent.agent_callback_manager.callbacks["after_model_call"](ctx))
 
     assert timings == [(2, 37)]
+
+
+def test_jiuwen_model_trace_reports_completion_without_observability(monkeypatch):
+    from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER
+
+    class FakeAgentCallbackEvent:
+        BEFORE_MODEL_CALL = "before_model_call"
+        AFTER_MODEL_CALL = "after_model_call"
+        ON_MODEL_EXCEPTION = "on_model_exception"
+
+    class FakeCallbackManager:
+        def __init__(self):
+            self.callbacks = {}
+
+        async def register_callback(self, event, callback, priority=100):
+            del priority
+            self.callbacks[event] = callback
+
+    class FakeResponse:
+        content = "synthetic partial answer"
+        reasoning_content = ""
+        usage_metadata = None
+        finish_reason = "length"
+        tool_calls = []
+
+    completions = []
+    bridge = _JiuwenModelTraceBridge(
+        runtime_trace=AgentRuntimeTrace(
+            observer=NOOP_OBSERVER,
+            run_id="run-completion-signal",
+            session_id="session-completion-signal",
+            turn_id=1,
+            caller="main",
+        ),
+        state={"run_id": "run-completion-signal"},
+        caller="main",
+        iteration_provider=lambda: 3,
+        model_provider="openai_compatible",
+        stream_enabled=True,
+        enable_reasoning=False,
+        event_class_provider=lambda: FakeAgentCallbackEvent,
+        model_completion_callback=completions.append,
+        sliding_window_applied=True,
+    )
+    fake_agent = SimpleNamespace(
+        agent_callback_manager=FakeCallbackManager(),
+        _config=SimpleNamespace(model_name="synthetic-model"),
+    )
+    ctx = SimpleNamespace(
+        agent=fake_agent,
+        inputs=SimpleNamespace(messages=[], tools=[], response=FakeResponse()),
+        exception=None,
+    )
+
+    assert asyncio.run(bridge.register(fake_agent)) is True
+    asyncio.run(fake_agent.agent_callback_manager.callbacks["before_model_call"](ctx))
+    asyncio.run(fake_agent.agent_callback_manager.callbacks["after_model_call"](ctx))
+
+    assert completions == [{
+        "iteration": 3,
+        "call_index": 1,
+        "finish_reason": "length",
+        "has_tool_calls": False,
+        "usage": {},
+    }]
+
+
+def test_jiuwen_model_completion_signal_rejects_incomplete_final_answers():
+    signal = _JiuwenModelCompletionSignal()
+    signal.record({"finish_reason": "FinishReason.LENGTH", "has_tool_calls": False})
+
+    with pytest.raises(ModelOutputTruncatedError) as truncated:
+        signal.raise_if_incomplete("synthetic partial answer")
+
+    assert truncated.value.partial_output == "synthetic partial answer"
+    assert truncated.value.finish_reason == "length"
+
+    signal.record({"finish_reason": "content-filter", "has_tool_calls": False})
+    with pytest.raises(ModelContentFilteredError):
+        signal.raise_if_incomplete("")
+
+
+@pytest.mark.parametrize("finish_reason", [None, "stop", "eos", "stop_sequence"])
+def test_jiuwen_model_completion_signal_accepts_complete_final_answers(finish_reason):
+    signal = _JiuwenModelCompletionSignal()
+    signal.record({"finish_reason": finish_reason, "has_tool_calls": False})
+
+    signal.raise_if_incomplete("synthetic complete answer")
+
+
+def test_jiuwen_model_completion_signal_accepts_completed_tool_calls():
+    signal = _JiuwenModelCompletionSignal()
+    signal.record({"finish_reason": "tool_calls", "has_tool_calls": True})
+
+    signal.raise_if_incomplete("")
+
+
+def test_jiuwen_model_completion_signal_rejects_truncated_tool_calls():
+    signal = _JiuwenModelCompletionSignal()
+    signal.record({"finish_reason": "length", "has_tool_calls": True})
+
+    with pytest.raises(ModelOutputTruncatedError):
+        signal.raise_if_incomplete("")
+
+
+def test_jiuwen_model_completion_signal_detects_limit_when_provider_reports_stop():
+    signal = _JiuwenModelCompletionSignal(max_output_tokens=80)
+    signal.record({
+        "finish_reason": "stop",
+        "has_tool_calls": False,
+        "usage": {"completion_tokens": 80},
+    })
+
+    with pytest.raises(ModelOutputTruncatedError) as truncated:
+        signal.raise_if_incomplete("synthetic partial answer")
+
+    assert truncated.value.finish_reason == "token_limit_reached"
+
+
+def test_jiuwen_model_completion_signal_accepts_stop_below_configured_limit():
+    signal = _JiuwenModelCompletionSignal(max_output_tokens=80)
+    signal.record({
+        "finish_reason": "stop",
+        "has_tool_calls": False,
+        "usage": {"completion_tokens": 79},
+    })
+
+    signal.raise_if_incomplete("synthetic complete answer")
+
+
+def test_jiuwen_model_completion_signal_does_not_infer_limit_for_tool_calls():
+    signal = _JiuwenModelCompletionSignal(max_output_tokens=80)
+    signal.record({
+        "finish_reason": "tool_calls",
+        "has_tool_calls": True,
+        "usage": {"completion_tokens": 80},
+    })
+
+    signal.raise_if_incomplete("")
+
+
+def test_jiuwen_loop_engine_rejects_length_as_a_successful_final_answer(monkeypatch):
+    class FakeAgentCallbackEvent:
+        BEFORE_MODEL_CALL = "before_model_call"
+        AFTER_MODEL_CALL = "after_model_call"
+        ON_MODEL_EXCEPTION = "on_model_exception"
+
+    class FakeCallbackManager:
+        def __init__(self):
+            self.callbacks = {}
+
+        async def register_callback(self, event, callback, priority=100):
+            del priority
+            self.callbacks[event] = callback
+
+        async def unregister(self, event, callback):
+            del event, callback
+
+    class FakeResponse:
+        content = "synthetic partial answer"
+        reasoning_content = ""
+        usage_metadata = None
+        finish_reason = "length"
+        tool_calls = []
+
+    class TruncatedAgent:
+        def __init__(self):
+            self.agent_callback_manager = FakeCallbackManager()
+            self._config = SimpleNamespace(model_name="synthetic-model")
+
+        async def stream(self, inputs):
+            del inputs
+            ctx = SimpleNamespace(
+                agent=self,
+                inputs=SimpleNamespace(
+                    messages=[],
+                    tools=[],
+                    response=FakeResponse(),
+                ),
+                exception=None,
+            )
+            await self.agent_callback_manager.callbacks["before_model_call"](ctx)
+            await self.agent_callback_manager.callbacks["after_model_call"](ctx)
+            yield SimpleNamespace(
+                type="answer",
+                payload={
+                    "output": "synthetic partial answer",
+                    "result_type": "answer",
+                },
+            )
+
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine._jiuwen_agent_callback_event_class",
+        lambda: FakeAgentCallbackEvent,
+    )
+    state = {
+        "run_id": "run-truncated-final-answer",
+        "session_id": "session-truncated-final-answer",
+        "current_turn_id": 1,
+        "user_request": "synthetic request",
+        "messages": [],
+        "results": {},
+    }
+    engine = JiuwenReactLoopEngine(
+        agent_config=_agent_config(),
+        agent_factory=TruncatedAgent,
+    )
+
+    with pytest.raises(ModelOutputTruncatedError) as raised:
+        _run_engine(engine, state, caller="main")
+
+    assert raised.value.partial_output == "synthetic partial answer"
+    assert "final_output" not in state
+    assert all(message.get("role") != "assistant" for message in state["messages"])
 
 
 def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
@@ -4949,6 +5170,33 @@ def test_patch_jiuwen_openai_reasoning_alias_accepts_message_reasoning_field():
     )
 
     assert parsed.reasoning_content == "非流式兼容思考字段"
+
+
+def test_patch_jiuwen_openai_reasoning_alias_preserves_non_stream_finish_reason():
+    class FakeParsedMessage:
+        finish_reason = "stop"
+        reasoning_content = None
+        usage_metadata = None
+
+    class FakeOpenAIModelClient:
+        async def _parse_response(self, response, parser=None):
+            del response, parser
+            return FakeParsedMessage()
+
+    _patch_jiuwen_openai_reasoning_alias(
+        SimpleNamespace(OpenAIModelClient=FakeOpenAIModelClient)
+    )
+
+    parsed = asyncio.run(
+        FakeOpenAIModelClient()._parse_response(
+            SimpleNamespace(
+                choices=[SimpleNamespace(finish_reason="length")],
+                usage=None,
+            )
+        )
+    )
+
+    assert parsed.finish_reason == "length"
 
 
 def test_create_default_jiuwen_agent_maps_glm_provider_to_openai_client_provider(monkeypatch):

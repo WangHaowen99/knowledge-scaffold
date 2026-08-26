@@ -1592,18 +1592,24 @@ class OrchestratorSessionAdapter:
                     run_id=context.run_id,
                 )
             else:
+                failure_output: Any
+                if result.structured_content is not None:
+                    failure_output = final_output
+                elif content and result.error is not None:
+                    failure_output = {
+                        "text": content,
+                        "error": result.error.model_dump(mode="json"),
+                    }
+                else:
+                    failure_output = (
+                        result.error.message
+                        if result.error is not None
+                        else "运行失败"
+                    )
                 execution_store.fail_turn(
                     context.session_id,
                     context.turn_id,
-                    error=(
-                        final_output
-                        if result.structured_content is not None
-                        else (
-                            result.error.message
-                            if result.error is not None
-                            else "运行失败"
-                        )
-                    ),
+                    error=failure_output,
                     run_id=context.run_id,
                 )
 
@@ -2100,6 +2106,7 @@ class OrchestratorSessionAdapter:
                     "failed": "failed",
                     "cancelled": "cancelled",
                 }[event.status]
+                raw_error = event.payload.get("error")
                 raw_output = (
                     event.payload.get("structured_content")
                     if event.payload.get("structured_content") is not None
@@ -2116,10 +2123,25 @@ class OrchestratorSessionAdapter:
                         "cancel_reason": event.payload.get("cancel_reason")
                     }
                 elif event.status == "failed":
-                    final_output = {"error": event.payload.get("error")}
+                    final_output = {
+                        "error": (
+                            str(raw_error.get("message") or "运行失败")
+                            if isinstance(raw_error, Mapping)
+                            else str(raw_error or "运行失败")
+                        )
+                    }
                 else:
                     final_output = {"status": status}
-                raw_error = event.payload.get("error")
+                if (
+                    event.status == "failed"
+                    and event.payload.get("content") is not None
+                    and raw_error is not None
+                ):
+                    final_output["error"] = (
+                        dict(raw_error)
+                        if isinstance(raw_error, Mapping)
+                        else str(raw_error)
+                    )
                 error_code = (
                     str(raw_error.get("error_code") or "").strip()
                     if isinstance(raw_error, Mapping)

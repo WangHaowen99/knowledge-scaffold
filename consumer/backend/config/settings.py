@@ -51,7 +51,7 @@ class LLMConfig:
             model=pick_text("model", fallback.model if fallback else None),
             api_key=pick_text("api_key", fallback.api_key if fallback else None),
             timeout=int(pick_number("timeout", fallback.timeout if fallback else 600)),
-            max_tokens=int(pick_number("max_tokens", fallback.max_tokens if fallback else 8192)),
+            max_tokens=int(pick_number("max_tokens", fallback.max_tokens if fallback else 32768)),
             temperature=float(pick_number("temperature", fallback.temperature if fallback else 0.7)),
             provider=pick_text("provider", fallback.provider if fallback else "openai_compatible") or "openai_compatible",
             profile_id=pick_text("id", fallback.profile_id if fallback else None),
@@ -90,7 +90,7 @@ class LLMConfig:
                 model=None,
                 api_key=None,
                 timeout=600,
-                max_tokens=8192,
+                max_tokens=32768,
                 temperature=0.7,
             )
 

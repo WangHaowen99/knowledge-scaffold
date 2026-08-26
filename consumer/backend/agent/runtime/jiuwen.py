@@ -10,7 +10,9 @@ from typing import Any, AsyncIterator, Callable, Collection, Mapping, Optional
 
 from agent.exceptions import (
     AgentLoopStalledError,
+    ModelContentFilteredError,
     ModelInvocationError,
+    ModelOutputTruncatedError,
     WorkflowCancelledError,
 )
 from utils.security.redaction import redact_sensitive_text
@@ -195,10 +197,18 @@ class JiuwenAsyncAgentRuntime:
                         await finish_cancelled()
                     elif self._commit_terminal(active):
                         error = self._runtime_error(exc)
+                        terminal_payload: dict[str, Any] = {
+                            "error": error.model_dump(mode="json")
+                        }
+                        if isinstance(
+                            exc,
+                            (ModelOutputTruncatedError, ModelContentFilteredError),
+                        ) and exc.partial_output:
+                            terminal_payload["content"] = exc.partial_output
                         bridge.finish(
                             bridge.turn_finished(
                                 "failed",
-                                {"error": error.model_dump(mode="json")},
+                                terminal_payload,
                             )
                         )
                 finally:
@@ -571,7 +581,7 @@ class JiuwenAsyncAgentRuntime:
                 error_code=explicit_code[:160],
                 message=redact_sensitive_text(safe_public_message).strip()[:1000],
                 retriable=bool(getattr(exc, "retriable", False)),
-                source="tool",
+                source=JiuwenAsyncAgentRuntime._error_source_from_code(explicit_code),
                 details={},
             )
 
@@ -731,5 +741,9 @@ class JiuwenAsyncAgentRuntime:
         }
         return RuntimeResult(
             status=event.status,
+            content=payload.get("content"),
+            structured_content=payload.get("structured_content"),
+            usage=payload.get("usage"),
+            trace=payload.get("trace"),
             error=RuntimeErrorInfo.model_validate(error_payload),
         )
