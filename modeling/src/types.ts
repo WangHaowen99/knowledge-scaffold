@@ -41,6 +41,7 @@ export type TraceKind =
   | 'phase_completed'
   | 'tool_started'
   | 'tool_completed'
+  | 'capture_attempt'
   | 'model_summary'
   | 'validation_warning'
   | 'analysis_failed'

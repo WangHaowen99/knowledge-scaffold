@@ -174,6 +174,7 @@ import { getAuthoringState } from './authoring/state.js';
 import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
+import { describeMaterialAnalysisFailure } from './workflow/material-analysis-failure.js';
 import {
   applySemanticBindingSelection,
   previewSemanticBindingCandidates,
@@ -774,12 +775,18 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             Promise.resolve(listDocuments(p.id)),
           ]);
           if (packageAtCompletion?.revision.oid !== packageAtStart.revision.oid) {
-            const error = new Error('分析期间知识包修订已变化，请基于最新修订重试');
+            const error = Object.assign(
+              new Error('分析期间知识包修订已变化，请基于最新修订重试'),
+              { code: 'MATERIAL_ANALYSIS_PACKAGE_STALE' },
+            );
             error.name = 'MaterialAnalysisStaleError';
             throw error;
           }
           if (materialRevisionFingerprint(currentDocuments) !== materialFingerprint) {
-            const error = new Error('分析期间建模资料已变化，请基于最新资料重试');
+            const error = Object.assign(
+              new Error('分析期间建模资料已变化，请基于最新资料重试'),
+              { code: 'MATERIAL_ANALYSIS_DOCUMENTS_STALE' },
+            );
             error.name = 'MaterialAnalysisStaleError';
             throw error;
           }
@@ -795,10 +802,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }).catch((error) => {
         // 后台失败没有 HTTP 响应可用：failMaterialAnalysis 会写一条带
         // 「重新分析资料 / 补充建模资料」的助手消息，界面据此给出口
+        const failure = describeMaterialAnalysisFailure(error);
         try {
           aiConstructionOrchestrator.failMaterialAnalysis(
             p.id,
-            error instanceof Error ? error.message : String(error),
+            failure.userMessage,
           );
         } catch { /* 收尾失败不再向上抛 */ }
       });

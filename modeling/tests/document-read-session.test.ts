@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Type } from '@earendil-works/pi-ai';
+import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 
 import {
   DocumentReadIncompleteError,
@@ -9,6 +11,7 @@ import {
   runAgentWithDocumentReadGate,
 } from '../src/workflow/document-read-session.js';
 import { verifiedDocumentReadCoverage } from '../src/workflow/document-read-coverage.js';
+import { makeAgent } from '../src/workflow/agent.js';
 
 test('全文读取账本只在从 0 连续覆盖到 EOF 后完成', () => {
   const session = new DocumentReadSession([
@@ -166,6 +169,62 @@ test('连续无进展达到保护阈值时停止全文读取', async () => {
   );
   assert.equal(calls, 3);
   assert.equal(aborts, 1);
+});
+
+test('全文读取完成后模型只返回正文时自动重试提交工具', async () => {
+  const targetToolName = 'submit_synthetic_result';
+  const core = createFauxCore({
+    api: 'openai-completions',
+    provider: 'synthetic-document-submit-retry',
+    models: [{ id: 'synthetic-document-submit-retry' }],
+  });
+  const receivedToolChoices: unknown[] = [];
+  core.setResponses([
+    (_context, options) => {
+      receivedToolChoices.push((options as any)?.toolChoice);
+      return fauxAssistantMessage('合成正文，本轮未提交结构化结果。');
+    },
+    (_context, options) => {
+      receivedToolChoices.push((options as any)?.toolChoice);
+      return fauxAssistantMessage([fauxToolCall(targetToolName, { summary: '合成结果' })]);
+    },
+  ]);
+  let captured = false;
+  const diagnostics: Array<{ outcome: string; attempt: number }> = [];
+  const agent = makeAgent(
+    { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' },
+    '仅处理完全合成的测试输入。',
+    [{
+      name: targetToolName,
+      label: '提交合成结果',
+      description: '提交完全合成的结构化结果。',
+      parameters: Type.Object({ summary: Type.String() }),
+      async execute() {
+        captured = true;
+        return { content: [{ type: 'text' as const, text: '已提交。' }], details: {}, terminate: true };
+      },
+    }],
+  );
+
+  await runAgentWithDocumentReadGate({
+    agent,
+    prompt: '生成合成结果。',
+    session: new DocumentReadSession([], { fullReadMode: true }),
+    captured: () => captured,
+    submitNudge: `请调用 ${targetToolName} 提交。`,
+    targetToolName,
+    onCaptureAttempt: (item) => diagnostics.push(item),
+  });
+
+  assert.equal(captured, true);
+  assert.equal(core.state.callCount, 2);
+  assert.equal(receivedToolChoices[0], undefined, '首轮分析不应阻止其他工具调用');
+  assert.deepEqual(receivedToolChoices[1], {
+    type: 'function', function: { name: targetToolName },
+  });
+  assert.deepEqual(diagnostics.map(({ outcome, attempt }) => ({ outcome, attempt })), [
+    { outcome: 'captured', attempt: 1 },
+  ]);
 });
 
 test('旧文档页在模型上下文中压缩为摘要和 offset 证据', () => {

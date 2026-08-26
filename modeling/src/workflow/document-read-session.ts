@@ -1,3 +1,8 @@
+import type {
+  AgentCaptureAttemptDiagnostics,
+  StructuredToolChoiceState,
+} from './agent.js';
+
 export const DOCUMENT_READ_CHUNK_SIZE = 6_000;
 
 export interface ReadableDocument {
@@ -313,9 +318,13 @@ export async function runAgentWithDocumentReadGate(input: {
   captured?: () => boolean;
   submitNudge?: string;
   missingSubmissionError?: string;
+  targetToolName?: string;
+  maxCaptureAttempts?: number;
+  toolChoiceState?: StructuredToolChoiceState;
+  onCaptureAttempt?: (diagnostics: AgentCaptureAttemptDiagnostics) => void | Promise<void>;
   noProgressTurnLimit?: number;
 }): Promise<unknown[]> {
-  const { runAgent } = await import('./agent.js');
+  const { runAgent, runAgentCaptured } = await import('./agent.js');
   const configuredNoProgressLimit = Number(input.noProgressTurnLimit ?? DEFAULT_DOCUMENT_READ_NO_PROGRESS_TURNS);
   const noProgressTurnLimit = Number.isFinite(configuredNoProgressLimit) && configuredNoProgressLimit > 0
     ? Math.floor(configuredNoProgressLimit)
@@ -371,6 +380,26 @@ export async function runAgentWithDocumentReadGate(input: {
       return input.session.compactMessages(messages);
     }
     if (input.session.complete) {
+      if (input.targetToolName && input.captured) {
+        const capturedMessages = await runAgentCaptured(
+          input.agent,
+          input.submitNudge ?? '全文覆盖已经完成，请立即调用提交工具提交最终结果。',
+          input.captured,
+          input.submitNudge ?? '请立即调用提交工具提交最终结果。',
+          input.observe,
+          {
+            maxCaptureAttempts: input.maxCaptureAttempts ?? 3,
+            requireCapture: true,
+            requiredToolName: input.targetToolName,
+            toolChoiceState: input.toolChoiceState,
+            captureDiagnostics: {
+              targetToolName: input.targetToolName,
+              onAttempt: input.onCaptureAttempt ?? (() => undefined),
+            },
+          },
+        );
+        return input.session.compactMessages(capturedMessages);
+      }
       if (submissionNudges >= 1) {
         throw new Error(input.missingSubmissionError ?? '全文读取完成，但模型未按协议提交结构化结果');
       }
