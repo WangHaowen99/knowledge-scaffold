@@ -237,7 +237,7 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
 
   assert.equal(claimed.statusCode, 200, claimed.body);
   const contract = claimed.json().packageContract;
-  assert.equal(contract.validatorVersion, 'package-contract-v4');
+  assert.equal(contract.validatorVersion, 'package-contract-v5');
   assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
   assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
   assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
@@ -247,6 +247,9 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
   ]);
   assert.match(contract.authoring.goalEvidence.invariants.join('\n'), /正文中的每个 material token/u);
   assert.match(contract.validators.packageFormat, /^package-format-/u);
+  assert.ok(contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
+  assert.equal(contract.packageFormat.mappings.required, true);
+  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, true);
   assert.equal(contract.validators.mermaidSource, 'mermaid-source-v1');
   assert.deepEqual(contract.packageFormat.diagrams, {
     pathPattern: 'diagrams/*.mmd',
@@ -885,6 +888,97 @@ test('删除尚未确认的新增文件会撤销候选写入和变更组', async
   }, runId);
   assert.equal(preflight.statusCode, 409, preflight.body);
   assert.equal(preflight.json().code, 'NO_CANDIDATE');
+});
+
+test('Agent 不能删除必选的 object data mapping', async (t) => {
+  const project = createProject({ owner: 'alice', name: '保护数据映射', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const path = 'mappings/object-data-mappings.json';
+  const before = await tool(app, project.id, 'read_file', { path }, runId);
+  assert.equal(before.statusCode, 200, before.body);
+
+  const blocked = await tool(app, project.id, 'delete_file', {
+    path,
+    change_group: 'remove-mapping',
+    reason: '模拟 Agent 将映射文件误判为无用文件',
+  }, runId);
+
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'REQUIRED_FILE_DELETE_FORBIDDEN');
+  assert.equal(getDb().prepare(`SELECT kind FROM agent_candidate_changes
+    WHERE project_id = ? AND run_id = ? AND path = ?`).get(project.id, runId, path), undefined);
+  const after = await tool(app, project.id, 'read_file', { path }, runId);
+  assert.equal(after.statusCode, 200, after.body);
+  assert.equal(after.json().content, before.json().content);
+});
+
+test('导入基线缺失 mapping 不能被历史问题豁免', async (t) => {
+  const project = createProject({ owner: 'alice', name: '历史映射缺失', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: 'legacy-mapping-missing',
+    name: '历史映射缺失',
+    description: '验证必选 mapping 不受基线豁免',
+  });
+  const importedFiles = renderPackage(initial.spec);
+  delete importedFiles['mappings/object-data-mappings.json'];
+  await artifacts.importPackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: initial.spec,
+    coverage: initial.coverage,
+    files: importedFiles,
+    action: {
+      cause: 'test.legacy_mapping_import',
+      summary: '导入缺失 mapping 的历史包',
+      actorKind: 'system',
+      actorName: 'test',
+    },
+  });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const current = await artifacts.readPackageFiles(project.id);
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const candidate = await artifacts.createCandidateRevision(project.id, {
+    expectedRevision: current.revision.oid,
+    groups: [{
+      id: 'unrelated-manifest',
+      summary: '更新知识包说明',
+      changes: [{
+        kind: 'write',
+        path: 'package/manifest.yaml',
+        content: current.files['manifest.yaml'].replace(
+          /^description:.*$/mu,
+          'description: 只修改与数据映射无关的知识包说明',
+        ),
+      }],
+    }],
+    action: {
+      cause: 'test_unrelated_manifest',
+      summary: '构造与 mapping 无关的候选',
+      actorKind: 'agent',
+      actorName: '测试 Agent',
+    },
+  });
+  getDb().prepare(`UPDATE agent_candidate_workspaces
+    SET candidate_id = ?, base_revision_oid = ? WHERE project_id = ? AND run_id = ?`)
+    .run(candidate.id, current.revision.oid, project.id, runId);
+  getDb().prepare(`INSERT INTO agent_candidate_group_metadata (
+    candidate_id, group_id, tier, title, impact_json, warning
+  ) VALUES (?,?,?,?,?,NULL)`)
+    .run(candidate.id, 'unrelated-manifest', 'index', '更新知识包说明', '[]');
+
+  const blocked = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: '确认无关的 manifest 修改',
+    change_groups: [{ id: 'unrelated-manifest', tier: 'index', title: '更新知识包说明' }],
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'CANDIDATE_FORMAT_INVALID');
+  assert.ok(blocked.json().findings.some((finding: any) => (
+    finding.path === 'mappings/object-data-mappings.json'
+    && finding.category === '必选文件缺失'
+  )));
 });
 
 test('有可读资料时扫描件解析失败只告警，不永久阻塞建模门禁', async (t) => {
@@ -1868,7 +1962,100 @@ test('平台保留 manifest 管理字段，底层预检仍把详细错误返回�
   assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
   assert.equal(receipt.baseRevision, current.revision.oid);
   assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
-  assert.equal(receipt.validatorVersion, 'package-contract-v4');
+  assert.equal(receipt.validatorVersion, 'package-contract-v5');
+});
+
+test('最终确认会校验用户实际选中的变更组快照', async (t) => {
+  const project = createProject({ owner: 'alice', name: '部分确认格式门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const detailGroup = { id: 'selected-detail', tier: 'structural', title: '新增对象详情' };
+  const indexGroup = { id: 'selected-index', tier: 'index', title: '更新对象索引' };
+  const detailContent = `---
+resource: object
+key: selected-object
+title: 候选对象
+description: 用于验证部分确认的候选对象。
+sources:
+  - 文档：用户口述 / 部分确认测试
+---
+# 业务定义
+
+用于验证部分确认的候选对象。
+
+# 字段
+
+| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 |
+| --- | --- | --- | --- | --- | --- |
+| id | 标识 | string | 是 | 候选对象标识 | 编号 |
+
+# 查询边界
+
+只使用用户确认的候选对象。
+`;
+  const indexContent = `---
+resource: object_index
+key: objects
+title: 对象目录
+---
+# 对象目录
+
+| object key | 标题 | 说明 | 来源Sheet |
+| --- | --- | --- | --- |
+| selected-object | 候选对象 | 用于验证部分确认 | — |
+`;
+
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const artifacts = getPackageArtifactStore();
+  const current = await artifacts.current(project.id);
+  assert.ok(current);
+  const candidate = await artifacts.createCandidateRevision(project.id, {
+    expectedRevision: current.revision.oid,
+    groups: [{
+      id: detailGroup.id,
+      summary: detailGroup.title,
+      changes: [{ kind: 'write', path: 'package/objects/selected-object.md', content: detailContent }],
+    }, {
+      id: indexGroup.id,
+      summary: indexGroup.title,
+      changes: [{ kind: 'write', path: 'package/objects/index.md', content: indexContent }],
+    }],
+    action: {
+      cause: 'test_selected_snapshot',
+      summary: '构造无依赖的冻结候选',
+      actorKind: 'agent',
+      actorName: '测试 Agent',
+    },
+  });
+  getDb().prepare(`UPDATE agent_candidate_workspaces
+    SET candidate_id = ?, base_revision_oid = ? WHERE project_id = ? AND run_id = ?`)
+    .run(candidate.id, current.revision.oid, project.id, runId);
+  const insertGroup = getDb().prepare(`INSERT INTO agent_candidate_group_metadata (
+    candidate_id, group_id, tier, title, impact_json, warning
+  ) VALUES (?,?,?,?,?,NULL)`);
+  insertGroup.run(candidate.id, detailGroup.id, detailGroup.tier, detailGroup.title, '[]');
+  insertGroup.run(candidate.id, indexGroup.id, indexGroup.tier, indexGroup.title, '[]');
+
+  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: '验证部分确认快照',
+    change_groups: [detailGroup, indexGroup],
+  }, runId);
+  assert.equal(preflight.statusCode, 200, preflight.body);
+
+  const blocked = await tool(app, project.id, 'request_confirmation', {
+    summary: '验证部分确认快照',
+    change_groups: [detailGroup, indexGroup],
+    ...confirmationReceipt(preflight),
+    review: { approved: true, review_mode: 'partial', selected_groups: [indexGroup.id] },
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'CANDIDATE_FORMAT_INVALID');
+  assert.ok(blocked.json().findings.some((finding: any) => (
+    finding.path === 'objects/index.md' && /selected-object/u.test(finding.message)
+  )));
+  assert.equal((await artifacts.getCandidateRevision(project.id, candidate.id)).status, 'pending');
+  assert.equal((await artifacts.current(project.id))?.revision.oid, current.revision.oid);
 });
 
 test('接受候选前必须匹配预检回执中的内容哈希和校验器版本', async (t) => {
