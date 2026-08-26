@@ -7,7 +7,7 @@ import {
 import type { NodeStatus, NodeType, WorkflowNode, DataDictTable, AnalysisResult } from '../types.js';
 import { buildTaskLlm, type LlmDeps } from '../llm/provider.js';
 import { buildArtifactAnalysisTools, buildTools, type ToolContext } from './tools.js';
-import { makeAgent, runAgent } from './agent.js';
+import { makeAgent, runAgent, type StructuredToolChoiceState } from './agent.js';
 import { appendTraceEvent, traceEventFromAgentEvent } from './trace.js';
 import { createSourceCatalog } from './source-catalog.js';
 import { ensureMaterialHypotheses } from '../ai-construction/material-hypotheses.js';
@@ -105,6 +105,7 @@ export interface MaterialAnalysisProgressUpdate {
   title: string;
   summary?: string;
   percent: number;
+  retryCount?: number;
 }
 
 export function canonicalizeArtifactAnalysisSources(
@@ -245,6 +246,8 @@ export async function runAnalyze(
   const llm = llmOverride ?? buildTaskLlm();
   const captured: Record<string, unknown> = {};
   const documentReadSession = new DocumentReadSession(documents, { fullReadMode: true });
+  const toolChoiceState: StructuredToolChoiceState = { mode: 'named' };
+  let structuredRetryCount = 0;
   const ctx: ToolContext = { tables, documents, captured, documentReadSession };
   const tools = buildTools(ctx);
   const goalContext = confirmedBrief
@@ -299,6 +302,20 @@ export async function runAnalyze(
       captured: () => !!captured.analysis,
       submitNudge: '全文覆盖已由后端确认完成，请立即调用 submit_analysis 提交完整结构化分析。',
       missingSubmissionError: '领域分析完成全文读取后仍未按协议提交，请重试',
+      targetToolName: 'submit_analysis',
+      toolChoiceState,
+      onCaptureAttempt: (diagnostics) => {
+        structuredRetryCount += 1;
+        reportProgress({
+          phase: 'domain_analysis',
+          title: diagnostics.outcome === 'captured'
+            ? '领域分析结构化结果已提交'
+            : '正在重试领域分析结构化提交',
+          summary: `结构化提交尝试 ${diagnostics.attempt}/3`,
+          percent: 24,
+          retryCount: structuredRetryCount,
+        });
+      },
       observe: observe('domain_analysis'),
     });
     messagesSoFar = messages;
@@ -390,6 +407,20 @@ export async function runAnalyze(
         captured: () => !!artifactCaptured.artifactAnalysis,
         submitNudge: '请立即调用 submit_artifact_analysis 提交当前批次完整结构化结果，不要只写正文。',
         missingSubmissionError: '材料知识类型分析未按协议提交，请重试',
+        targetToolName: 'submit_artifact_analysis',
+        toolChoiceState,
+        onCaptureAttempt: (diagnostics) => {
+          structuredRetryCount += 1;
+          reportProgress({
+            phase,
+            title: diagnostics.outcome === 'captured'
+              ? `第 ${index + 1}/${batches.length} 批结构化结果已提交`
+              : `正在重试第 ${index + 1}/${batches.length} 批结构化提交`,
+            summary: `结构化提交尝试 ${diagnostics.attempt}/3`,
+            percent: Math.min(79, batchStartPercent + 2),
+            retryCount: structuredRetryCount,
+          });
+        },
         observe: observe(phase),
       });
       messagesSoFar = [...messages, ...artifactMessages, ...batchMessages];

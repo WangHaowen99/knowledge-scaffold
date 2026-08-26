@@ -1,9 +1,36 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
 import type { TraceKind, TraceStatus, WorkflowTraceEvent } from '../types.js';
+import {
+  extractToolValidationError,
+  normalizeAgentStopReason,
+  sanitizeToolValidationError,
+  type AgentCaptureErrorKind,
+  type AgentCaptureOutcome,
+} from './agent-capture-diagnostics.js';
 
 const SECRET_KEY = /api.?key|token|secret|password/i;
 const PRIVATE_CONTENT_KEY = /reasoning|thinking|content|textContent/i;
+const SAFE_TOKEN_COUNT_KEYS = new Set(['inputTokens', 'outputTokens']);
+const CAPTURE_ERROR_KINDS = new Set<AgentCaptureErrorKind>([
+  'aborted',
+  'context_length_exceeded',
+  'provider_error',
+  'request_timeout',
+]);
+const KNOWN_MODEL_APIS = new Set([
+  'openai-completions',
+  'mistral-conversations',
+  'openai-responses',
+  'azure-openai-responses',
+  'openai-codex-responses',
+  'anthropic-messages',
+  'bedrock-converse-stream',
+  'google-generative-ai',
+  'google-vertex',
+  'custom',
+]);
+const TOOL_CHOICE_MODES = new Set(['named', 'required', 'auto']);
 
 export type TraceEventDraft = Pick<WorkflowTraceEvent, 'phase' | 'kind' | 'status' | 'title'>
   & Pick<Partial<WorkflowTraceEvent>, 'summary' | 'details'>;
@@ -21,6 +48,19 @@ const TOOL_LABELS: Record<string, string> = {
   submit_operations: '提交业务操作',
 };
 
+const CAPTURE_OUTCOME_TITLES: Record<AgentCaptureOutcome, string> = {
+  captured: '结构化提交已捕获',
+  model_error: '模型调用失败',
+  output_truncated: '结构化提交输出被截断',
+  tool_validation_failed: '结构化提交参数校验失败',
+  tool_not_called: '模型未调用结构化提交工具',
+};
+
+function nonNegativeInteger(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+}
+
 function sanitizeValue(value: unknown): unknown {
   if (typeof value === 'string') return value.slice(0, 500);
   if (Array.isArray(value)) return value.slice(0, 20).map(sanitizeValue);
@@ -30,6 +70,10 @@ function sanitizeValue(value: unknown): unknown {
 
 export function sanitizeTraceDetails(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).flatMap(([key, value]) => {
+    if (SAFE_TOKEN_COUNT_KEYS.has(key) && typeof value === 'number'
+      && Number.isFinite(value) && value >= 0) {
+      return [[key, Math.floor(value)]];
+    }
     if (SECRET_KEY.test(key)) return [[key, '[已隐藏]']];
     if (PRIVATE_CONTENT_KEY.test(key)) return [];
     return [[key, sanitizeValue(value)]];
@@ -75,6 +119,74 @@ function toolSummary(toolName: string, details: Record<string, unknown>): string
 }
 
 export function traceEventFromAgentEvent(event: any): TraceEventDraft | null {
+  if (event?.type === 'tool_choice_fallback') {
+    const fromMode = typeof event.fromMode === 'string' && TOOL_CHOICE_MODES.has(event.fromMode)
+      ? event.fromMode
+      : undefined;
+    const toMode = typeof event.toMode === 'string' && TOOL_CHOICE_MODES.has(event.toMode)
+      ? event.toMode
+      : undefined;
+    if (!fromMode || !toMode) return null;
+    const modelApi = typeof event.modelApi === 'string' && KNOWN_MODEL_APIS.has(event.modelApi)
+      ? event.modelApi
+      : 'custom';
+    const toolName = typeof event.targetToolName === 'string' && event.targetToolName.trim()
+      ? event.targetToolName.trim().slice(0, 200)
+      : 'unknown';
+    return {
+      phase: 'agent',
+      kind: 'validation_warning',
+      status: 'warning',
+      title: '模型工具调用模式已自动切换',
+      summary: '兼容性切换已在当前任务内完成，资料分析继续运行',
+      details: { fromMode, toMode, modelApi, toolName },
+    };
+  }
+  if (event?.type === 'capture_attempt_end') {
+    const diagnostics = event.diagnostics;
+    if (!diagnostics || typeof diagnostics !== 'object') return null;
+    const outcome = diagnostics.outcome as AgentCaptureOutcome;
+    if (!Object.hasOwn(CAPTURE_OUTCOME_TITLES, outcome)) return null;
+    const attempt = Math.max(1, nonNegativeInteger(diagnostics.attempt));
+    const toolName = typeof diagnostics.targetToolName === 'string'
+      ? diagnostics.targetToolName.slice(0, 200)
+      : 'unknown';
+    const stopReason = normalizeAgentStopReason(diagnostics.stopReason);
+    const validationError = sanitizeToolValidationError(diagnostics.validationError);
+    const modelApi = typeof diagnostics.modelApi === 'string' && KNOWN_MODEL_APIS.has(diagnostics.modelApi)
+      ? diagnostics.modelApi
+      : undefined;
+    const errorKind = typeof diagnostics.errorKind === 'string'
+      && CAPTURE_ERROR_KINDS.has(diagnostics.errorKind as AgentCaptureErrorKind)
+      ? diagnostics.errorKind as AgentCaptureErrorKind
+      : undefined;
+    const toolChoiceMode = typeof diagnostics.toolChoiceMode === 'string'
+      && TOOL_CHOICE_MODES.has(diagnostics.toolChoiceMode)
+      ? diagnostics.toolChoiceMode
+      : undefined;
+    return {
+      phase: 'agent',
+      kind: 'capture_attempt',
+      status: outcome === 'captured' ? 'done' : outcome === 'model_error' ? 'error' : 'warning',
+      title: CAPTURE_OUTCOME_TITLES[outcome],
+      summary: `第 ${attempt} 次结构化提交尝试`,
+      details: {
+        attempt,
+        outcome,
+        toolName,
+        ...(stopReason ? { stopReason } : {}),
+        targetToolStartedCount: nonNegativeInteger(diagnostics.targetToolStartedCount),
+        targetToolSucceededCount: nonNegativeInteger(diagnostics.targetToolSucceededCount),
+        targetToolFailedCount: nonNegativeInteger(diagnostics.targetToolFailedCount),
+        inputTokens: nonNegativeInteger(diagnostics.inputTokens),
+        outputTokens: nonNegativeInteger(diagnostics.outputTokens),
+        ...(validationError ? { validationError } : {}),
+        ...(modelApi ? { modelApi } : {}),
+        ...(errorKind ? { errorKind } : {}),
+        ...(toolChoiceMode ? { toolChoiceMode } : {}),
+      },
+    };
+  }
   if (event?.type === 'tool_execution_start') {
     const toolName = String(event.toolName ?? 'unknown');
     const details = toolDetails(toolName, (event.args ?? {}) as Record<string, unknown>);
@@ -89,29 +201,52 @@ export function traceEventFromAgentEvent(event: any): TraceEventDraft | null {
   }
   if (event?.type === 'tool_execution_end') {
     const toolName = String(event.toolName ?? 'unknown');
+    const isError = event.isError === true;
+    const validationError = isError ? extractToolValidationError(event.result) : undefined;
     return {
       phase: 'agent',
       kind: 'tool_completed',
-      status: 'done',
-      title: `${TOOL_LABELS[toolName] ?? toolName}完成`,
-      details: { toolName },
+      status: isError ? 'error' : 'done',
+      title: `${TOOL_LABELS[toolName] ?? toolName}${isError ? '失败' : '完成'}`,
+      details: {
+        toolName,
+        isError,
+        ...(validationError ? { validationError } : {}),
+      },
     };
   }
   if (event?.type === 'turn_end') {
+    const stopReason = normalizeAgentStopReason(event.message?.stopReason);
+    if (stopReason === 'length') {
+      const inputTokens = Number(event.message?.usage?.input);
+      const outputTokens = Number(event.message?.usage?.output);
+      return {
+        phase: 'agent',
+        kind: 'validation_warning',
+        status: 'warning',
+        title: '模型输出达到长度上限',
+        details: {
+          stopReason,
+          ...(Number.isFinite(inputTokens) && inputTokens >= 0 ? { inputTokens: Math.floor(inputTokens) } : {}),
+          ...(Number.isFinite(outputTokens) && outputTokens >= 0 ? { outputTokens: Math.floor(outputTokens) } : {}),
+        },
+      };
+    }
     const content = Array.isArray(event.message?.content) ? event.message.content : [];
-    const publicText = content
-      .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block: any) => block.text.trim())
-      .filter(Boolean)
-      .join('\n')
-      .slice(0, 500);
-    if (!publicText) return null;
+    const textBlocks = content.filter((block: any) => (
+      block?.type === 'text' && typeof block.text === 'string' && block.text.trim()
+    ));
+    if (!textBlocks.length) return null;
     return {
       phase: 'agent',
       kind: 'model_summary',
       status: 'done',
       title: '模型公开说明',
-      summary: publicText,
+      summary: '模型本轮返回了文本说明',
+      details: {
+        textBlockCount: textBlocks.length,
+        textCharCount: textBlocks.reduce((total: number, block: any) => total + block.text.length, 0),
+      },
     };
   }
   return null;

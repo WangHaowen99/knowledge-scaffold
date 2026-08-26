@@ -21,9 +21,14 @@ function artifactReplyFor(systemPrompt: string) {
   };
 }
 
-function countingLlm() {
+function countingLlm(config: { omitDomainSubmitOnce?: boolean } = {}) {
   const calls = { domain: 0, artifact: 0 };
-  const core = createFauxCore({ provider: 'incremental', models: [{ id: 'incremental' }] });
+  const domainToolChoices: unknown[] = [];
+  const core = createFauxCore({
+    api: 'openai-completions',
+    provider: 'incremental',
+    models: [{ id: 'incremental' }],
+  });
   const llm: LlmDeps = {
     model: core.getModel(),
     getApiKey: () => 'faux',
@@ -43,6 +48,11 @@ function countingLlm() {
         ])]);
       } else if (system.includes('submit_analysis')) {
         calls.domain += 1;
+        domainToolChoices.push((options as any)?.toolChoice);
+        if (config.omitDomainSubmitOnce && calls.domain === 1) {
+          core.setResponses([fauxAssistantMessage('合成正文，首轮未提交领域分析。')]);
+          return core.streamSimple(model as any, context, options as any);
+        }
         core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
           domainOverview: '增量分析验证', candidateObjects: [], openQuestions: [],
         })])]);
@@ -52,7 +62,7 @@ function countingLlm() {
       return core.streamSimple(model as any, context, options as any);
     }) as LlmDeps['streamFn'],
   };
-  return { llm, calls };
+  return { llm, calls, domainToolChoices };
 }
 
 const doc = (name: string) => ({ filename: name, textContent: `${name} 的内容：满足条件时执行。` });
@@ -94,4 +104,19 @@ test('资料内容被改动后不复用旧结论', async () => {
     { filename: 'x.md', textContent: '改过的内容：门槛提高到 500 万。' }, before[1],
   ], run2.llm);
   assert.equal(run2.calls.artifact, 1, '批次内容变了必须重跑，不能复用');
+});
+
+test('领域分析首轮未调用提交工具时自动强制提交并完成', async () => {
+  const project = createProject({ owner: 'operator_a', name: '合成领域提交恢复' });
+  const observed = countingLlm({ omitDomainSubmitOnce: true });
+
+  const result = await runAnalyze(project.id, [], [doc('synthetic_manual.md')], observed.llm);
+
+  assert.equal(observed.calls.domain, 2);
+  assert.equal(observed.domainToolChoices[0], undefined);
+  assert.deepEqual(observed.domainToolChoices[1], {
+    type: 'function', function: { name: 'submit_analysis' },
+  });
+  assert.equal(result.node.status, 'done');
+  assert.equal(result.analysis.domainOverview, '增量分析验证');
 });

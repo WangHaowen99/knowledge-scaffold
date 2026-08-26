@@ -316,7 +316,7 @@ test('分析候选是建议清单，允许模型只提交有依据的部分对�
   assert.deepEqual(validateObjectBatch(candidates, submitted), []);
 });
 
-test('材料类型分析未提交时分析节点记录失败原因并可重试', async () => {
+test('材料类型分析自动补交耗尽时记录稳定失败原因', async () => {
   const core = createFauxCore({ provider: 'faux', models: [{ id: 'faux-analysis' }] });
   core.setResponses([
     fauxAssistantMessage([fauxToolCall('list_documents', {})]),
@@ -327,15 +327,21 @@ test('材料类型分析未提交时分析节点记录失败原因并可重试',
     fauxAssistantMessage([fauxToolCall('list_documents', {})]),
     fauxAssistantMessage([fauxToolCall('read_document', { filename: 'manual.md', offset: 0 })]),
     fauxAssistantMessage('只返回正文，不调用材料分类工具。'),
-    fauxAssistantMessage('仍然不调用工具。'),
+    fauxAssistantMessage('第一次补交仍然不调用工具。'),
+    fauxAssistantMessage('第二次补交仍然不调用工具。'),
+    fauxAssistantMessage('第三次补交仍然不调用工具。'),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
   const project = createProject({ owner: 'tester', name: '分类失败回归', domain: '金融', background: '' });
 
-  await assert.rejects(runAnalyze(project.id, [], [{ filename: 'manual.md', textContent: '产品规则' }], llm), /材料知识类型分析未按协议提交/);
+  const exhausted = /模型未调用 submit_artifact_analysis 提交结构化结果.*已自动尝试 3 次/;
+  await assert.rejects(
+    runAnalyze(project.id, [], [{ filename: 'manual.md', textContent: '产品规则' }], llm),
+    exhausted,
+  );
   const node = listNodes(project.id).find((item) => item.type === 'analyze');
   assert.equal(node?.status, 'failed');
-  assert.match(node?.reason ?? '', /材料知识类型分析未按协议提交/);
+  assert.match(node?.reason ?? '', exhausted);
 });
 
 test('材料类型分析不能用空结果跳过文档判断', async () => {
