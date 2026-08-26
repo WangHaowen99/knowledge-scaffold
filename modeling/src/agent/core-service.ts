@@ -32,6 +32,7 @@ import {
 import {
   PACKAGE_CONTRACT_VERSION,
   PACKAGE_FORMAT_VALIDATOR_VERSION,
+  PACKAGE_REQUIRED_FILES,
   mergeAgentManifest,
   packageGenerationContract,
 } from '../workflow/package-contract.js';
@@ -75,6 +76,11 @@ const WORKSPACE_LEASE_MS = 30 * 60 * 1000;
 const RUNTIME_GROUP = 'runtime_context';
 const LEGACY_RUNTIME_GROUP = '__runtime_context';
 const MAX_FILE_CHARS = 1_000_000;
+const PACKAGE_REQUIRED_FILE_SET: ReadonlySet<string> = new Set(PACKAGE_REQUIRED_FILES);
+const AGENT_REQUIRED_FILES: ReadonlySet<string> = new Set([
+  '.modeling/goal.md',
+  ...PACKAGE_REQUIRED_FILES,
+]);
 const CHANGE_GROUP_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/u;
 const GATE_LABELS: Record<string, string> = {
   materials_ready: '资料准备',
@@ -1317,7 +1323,7 @@ export class AgentCoreService {
       }
       throw new AgentCoreError('FILE_NOT_FOUND', `知识包文件不存在：${path}`, ['调用 list_dir 核对路径'], 404);
     }
-    if (['.modeling/goal.md', 'manifest.yaml', 'index.md', 'objects/index.md', 'operations/index.md'].includes(path)) {
+    if (AGENT_REQUIRED_FILES.has(path)) {
       throw new AgentCoreError(
         'REQUIRED_FILE_DELETE_FORBIDDEN',
         `《${path}》是项目必需入口，不能删除`,
@@ -2191,12 +2197,17 @@ export class AgentCoreService {
     base: Pick<PackageArtifactFiles, 'spec' | 'files'>,
     candidate: Pick<PackageArtifactFiles, 'spec' | 'files'>,
   ) {
-    const baselineErrors = runFormatChecks(base.spec, base.files)
+    const baseFiles = knowledgePackageFiles(base.files);
+    const candidateFiles = knowledgePackageFiles(candidate.files);
+    const baselineErrors = runFormatChecks(base.spec, baseFiles)
       .filter((finding) => finding.severity === '错误');
     const baselineIdentities = new Set(baselineErrors.map(formatFindingIdentity));
-    const introduced = runFormatChecks(candidate.spec, candidate.files)
+    const introduced = runFormatChecks(candidate.spec, candidateFiles)
       .filter((finding) => finding.severity === '错误')
-      .filter((finding) => !baselineIdentities.has(formatFindingIdentity(finding)));
+      .filter((finding) => (
+        (finding.category === '必选文件缺失' && PACKAGE_REQUIRED_FILE_SET.has(finding.target))
+        || !baselineIdentities.has(formatFindingIdentity(finding))
+      ));
     if (introduced.length) {
       const findings = introduced.map(agentValidationFinding);
       throw new AgentCoreError(
@@ -2213,8 +2224,8 @@ export class AgentCoreService {
       );
     }
 
-    const baselineKnowledgeIssues = new Set(validateKnowledgeMarkdownContract(base.files));
-    const introducedKnowledgeIssues = validateKnowledgeMarkdownContract(candidate.files)
+    const baselineKnowledgeIssues = new Set(validateKnowledgeMarkdownContract(baseFiles));
+    const introducedKnowledgeIssues = validateKnowledgeMarkdownContract(candidateFiles)
       .filter((issue) => !baselineKnowledgeIssues.has(issue));
     if (!introducedKnowledgeIssues.length) return;
     const findings = introducedKnowledgeIssues.map(knowledgeValidationFinding);
@@ -2346,6 +2357,13 @@ export class AgentCoreService {
     const selectedIds = new Set(selected);
     const candidate = await this.artifacts.getCandidateRevision(workspace.project_id, workspace.candidate_id);
     this.assertCandidateValidationReceipt(workspace, candidate, args);
+    const selectedPreview = await this.artifacts.previewCandidateRevision(
+      workspace.project_id,
+      candidate.id,
+      selected,
+    );
+    const base = await this.artifacts.readPackageFiles(workspace.project_id, candidate.baseRevision);
+    this.assertPackageFilesValid(base, selectedPreview);
     const selectedChanges = candidate.groups
       .filter((group) => selectedIds.has(group.id))
       .flatMap((group) => group.changes)
@@ -3467,6 +3485,10 @@ function toArtifactChange(change: ChangeRow): ArtifactChange {
 
 function publicPath(path: string): string {
   return path.startsWith('package/') ? path.slice('package/'.length) : path;
+}
+
+function knowledgePackageFiles(files: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(files).filter(([path]) => !path.startsWith('.modeling/')));
 }
 
 function candidateDiff(base: Record<string, string>, changes: ChangeRow[]): ArtifactFileDiff[] {

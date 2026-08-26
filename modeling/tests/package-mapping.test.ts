@@ -6,6 +6,7 @@ import {
   findObjectDataMappingProblems,
   normalizeObjectDataMappings,
 } from '../src/workflow/data-mapping.js';
+import { packageGenerationContract } from '../src/workflow/package-contract.js';
 import { runFormatChecks } from '../src/workflow/package-check.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import { suggestSemanticBindings, suggestSemanticFieldRefs } from '../src/workflow/semantic-binding.js';
@@ -144,6 +145,44 @@ test('package mapping：同一来源 Sheet 可以支持多个实体，并写入�
 test('package mapping format：纯渲染产物符合语义 mapping 契约', () => {
   const spec = packageSpec();
   assert.deepEqual(runFormatChecks(spec, renderPackage(spec)), []);
+});
+
+test('package mapping contract：mapping 是允许空 objects 的必选文件', () => {
+  const contract = packageGenerationContract();
+
+  assert.equal(contract.validatorVersion, 'package-contract-v5');
+  assert.ok(contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
+  assert.equal(contract.packageFormat.mappings.required, true);
+  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, true);
+});
+
+test('package mapping format：mapping 缺失或为空时阻断知识包', () => {
+  const spec = packageSpec();
+  const missing = renderPackage(spec);
+  delete missing['mappings/object-data-mappings.json'];
+  const missingFindings = runFormatChecks(spec, missing);
+  assert.ok(missingFindings.some((finding) => (
+    finding.category === '必选文件缺失'
+    && finding.target === 'mappings/object-data-mappings.json'
+  )));
+
+  const empty = renderPackage(spec);
+  empty['mappings/object-data-mappings.json'] = '   ';
+  const emptyFindings = runFormatChecks(spec, empty);
+  assert.ok(emptyFindings.some((finding) => (
+    finding.category === '必选文件缺失'
+    && finding.target === 'mappings/object-data-mappings.json'
+  )));
+});
+
+test('package mapping format：无物理对象时允许空 objects 映射', () => {
+  const spec = packageSpec();
+  spec.objects = [];
+  const files = renderPackage(spec);
+  const mappings = JSON.parse(files['mappings/object-data-mappings.json']);
+
+  assert.deepEqual(mappings.objects, {});
+  assert.deepEqual(runFormatChecks(spec, files), []);
 });
 
 test('package mapping format：对象索引必须保留来源 Sheet 列和值', () => {
