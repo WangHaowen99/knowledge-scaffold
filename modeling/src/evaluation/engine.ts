@@ -53,6 +53,9 @@ export function selectOfficialEvaluationTestcases(testcases: Testcase[]): Testca
   if (!official.length) {
     throw new Error('请先录入用户真实场景用例，知识包派生问题不作为正式评测用例');
   }
+  if (official.some((testcase) => !testcase.question.trim())) {
+    throw new Error('存在正式评测用例问题为空，请先修正后再运行评测');
+  }
   return official;
 }
 

@@ -64,6 +64,15 @@ test('没有用户真实用例时不能用知识包派生问题替代评测', ()
   );
 });
 
+test('正式评测启动前会拒绝问题为空的历史真实用例', () => {
+  const project = createProject({ owner: 'alice', name: '脏数据评测范围' });
+  m3repo.addTestcase(project.id, '   ', '答案', 'manual');
+  assert.throws(
+    () => selectOfficialEvaluationTestcases(m3repo.listTestcases(project.id)),
+    /存在正式评测用例问题为空，请先修正后再运行评测/,
+  );
+});
+
 test('Consumer 返回 error 状态时评测必须抛出真实运行错误', () => {
   assert.throws(
     () => evaluationFinalAnswer({ status: 'error', error: '模型额度已耗尽', final_answer: '' }),
