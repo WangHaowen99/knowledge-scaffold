@@ -79,11 +79,28 @@ export const neo4jConnection = (overrides: Record<string, string> = {}) => ({
 });
 
 export function recordingDriver(
-  run: (query: string, params: Record<string, unknown>) => Promise<unknown> | unknown = () => ({}),
+  run?: (query: string, params: Record<string, unknown>) => Promise<unknown> | unknown,
 ) {
   const calls: Array<{ query: string; params: Record<string, unknown> }> = [];
   const state = {
     databases: [] as string[], sessionClosed: false, driverClosed: false, transactionCount: 0,
+    nodeCount: 0, relationshipCount: 0,
+  };
+  const simulatedRun = (query: string, params: Record<string, unknown>) => {
+    if (/RETURN nodeCount, relationshipCount/.test(query)) {
+      return {
+        records: [{
+          get: (key: string) => (key === 'nodeCount' ? state.nodeCount : state.relationshipCount),
+        }],
+      };
+    }
+    if (/DELETE relationship/.test(query)) state.relationshipCount = 0;
+    else if (/DELETE node/.test(query)) state.nodeCount = 0;
+    else if (/MERGE \(node:/.test(query)) state.nodeCount += (params.rows as unknown[]).length;
+    else if (/MERGE \(source\)-\[relationship:/.test(query)) {
+      state.relationshipCount += (params.rows as unknown[]).length;
+    }
+    return {};
   };
   return {
     calls, state,
@@ -96,7 +113,8 @@ export function recordingDriver(
             return work({
               async run(query, params) {
                 calls.push({ query, params });
-                return run(query, params);
+                const result = await run?.(query, params);
+                return result === undefined ? simulatedRun(query, params) : result;
               },
             });
           },
@@ -108,14 +126,17 @@ export function recordingDriver(
   };
 }
 
-export async function createGraphImportProject(name: string): Promise<Project> {
+export async function createGraphImportProject(
+  name: string,
+  spec: PackageSpec = graphPackageSpec,
+): Promise<Project> {
   const [projects, packages, dataSources] = await Promise.all([
     import('../../src/projects/repo.js'),
     import('../../src/workflow/m2-repo.js'),
     import('../../src/evaluation/data-source-repo.js'),
   ]);
   const project = projects.createProject({ owner: 'alice', name });
-  packages.insertPackageVersion(project.id, graphPackageSpec.version, graphPackageSpec, {
+  packages.insertPackageVersion(project.id, spec.version, spec, {
     covered: [], uncovered: [],
   });
   dataSources.saveProjectDataSource({

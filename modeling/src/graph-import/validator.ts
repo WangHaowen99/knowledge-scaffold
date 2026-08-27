@@ -3,6 +3,7 @@ import { assertGraphIdentifier } from '../evaluation/data-source.js';
 import type {
   GraphImportEntityPlan,
   GraphImportMapping,
+  GraphImportObjectDiagnostic,
   GraphImportObjectSchema,
   GraphImportPackageSchema,
   GraphImportRelationPlan,
@@ -31,6 +32,7 @@ interface BuiltEntity {
   plan: GraphImportEntityPlan;
   warnings: string[];
   recordKeyByRowIndex: Map<number, string>;
+  diagnostic?: GraphImportObjectDiagnostic;
 }
 
 type GraphImportEntitySchema = GraphImportObjectSchema | GraphImportValueBindingSchema;
@@ -141,9 +143,33 @@ function buildEntityPlan(
     rows.push({ recordKey: key, properties });
     recordKeyByRowIndex.set(rowIndex, key);
   }
+  let diagnostic: GraphImportObjectDiagnostic | undefined;
+  if (!table.rows!.length) {
+    diagnostic = {
+      objectKey: object.key,
+      sheet: table.name,
+      code: 'GRAPH_IMPORT_EMPTY_SHEET',
+      message: `实体「${object.key}」绑定的 Sheet「${table.name}」没有数据行`,
+    };
+  } else if (!available.length) {
+    diagnostic = {
+      objectKey: object.key,
+      sheet: table.name,
+      code: 'GRAPH_IMPORT_NO_MAPPED_COLUMNS',
+      message: `实体「${object.key}」在 Sheet「${table.name}」中没有可用的映射字段`,
+    };
+  } else if (!rows.length) {
+    diagnostic = {
+      objectKey: object.key,
+      sheet: table.name,
+      code: 'GRAPH_IMPORT_NO_IMPORTABLE_ROWS',
+      message: `实体「${object.key}」在 Sheet「${table.name}」的映射字段中没有非空数据`,
+    };
+  }
   return {
     warnings,
     recordKeyByRowIndex,
+    diagnostic,
     plan: {
       objectKey: object.key,
       label: object.label,
@@ -279,6 +305,9 @@ export function validateGraphImportMapping(
     relationPlan(schema, tables, builtEntities, item)
   ));
   const relations = builtRelations.map((item) => item.plan);
+  const objectDiagnostics = builtEntityList.flatMap((item) => (
+    item.diagnostic ? [item.diagnostic] : []
+  ));
   return {
     nodeCount: entities.reduce((sum, entity) => sum + entity.rows.length, 0),
     relationshipCount: relations.reduce((sum, relation) => sum + relation.pairs.length, 0),
@@ -290,5 +319,6 @@ export function validateGraphImportMapping(
     ])],
     entities,
     relations,
+    objectDiagnostics,
   };
 }

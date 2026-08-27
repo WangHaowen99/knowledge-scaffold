@@ -8,6 +8,11 @@ import { parseExcel } from '../src/documents/parser.js';
 import { normalizeGraphImportMapping, validateGraphImportMapping } from '../src/graph-import/validator.js';
 import { extractGraphImportSchema } from '../src/graph-import/package-schema.js';
 import {
+  assertGraphImportPlanNotEmpty,
+  GraphImportEmptyPlanError,
+  GraphImportNoObjectMappingError,
+} from '../src/graph-import/errors.js';
+import {
   GraphIsolationDataExistsError, inspectGraphIsolation, writeGraphImport,
 } from '../src/graph-import/neo4j-writer.js';
 import { renderPackage } from '../src/workflow/package-render.js';
@@ -159,6 +164,37 @@ test('graph import mapping：无关系映射时仍校验并统计全部实体', 
   });
 });
 
+test('graph import mapping：零实例计划区分空 Sheet、无映射字段和映射列全空', () => {
+  const schema = { ...graphSchema, objects: [graphSchema.objects[0]], relations: [] };
+  const checks = [
+    {
+      rows: [['part_id', 'name']],
+      code: 'GRAPH_IMPORT_EMPTY_SHEET',
+    },
+    {
+      rows: [['unmapped'], ['value']],
+      code: 'GRAPH_IMPORT_NO_MAPPED_COLUMNS',
+    },
+    {
+      rows: [['part_id', 'name', 'unmapped'], ['', '', 'value']],
+      code: 'GRAPH_IMPORT_NO_IMPORTABLE_ROWS',
+    },
+  ];
+
+  for (const check of checks) {
+    const plan = validateGraphImportMapping(schema, parseExcel(workbookBuffer({ Part: check.rows })), {
+      relations: [],
+    });
+    assert.equal(plan.nodeCount, 0);
+    assert.equal(plan.objectDiagnostics?.[0]?.code, check.code);
+    assert.throws(() => assertGraphImportPlanNotEmpty(plan), (error: unknown) => (
+      error instanceof GraphImportEmptyPlanError
+      && error.code === 'GRAPH_IMPORT_EMPTY_PLAN'
+      && error.reasons[0]?.code === check.code
+    ));
+  }
+});
+
 test('graph import schema：支持多实体投影并以稳定 key 生成映射', () => {
   const wideSchema = {
     packageVersion: '1.0.0',
@@ -253,6 +289,19 @@ test('graph import schema：支持多实体投影并以稳定 key 生成映射',
     ...files,
     'objects/index.md': files['objects/index.md'].replace(' | 来源Sheet |', ' |'),
   }), /objects\/index\.md 缺少 来源Sheet 列/);
+});
+
+test('graph import schema：无运行时对象映射时列出知识包对象并阻断', () => {
+  const spec = {
+    ...graphPackageSpec,
+    objects: graphPackageSpec.objects.map(({ sourceTable: _sourceTable, ...object }) => object),
+  };
+  const files = renderPackage(spec);
+  assert.throws(() => extractGraphImportSchema(spec, files), (error: unknown) => (
+    error instanceof GraphImportNoObjectMappingError
+    && error.code === 'GRAPH_IMPORT_NO_OBJECT_MAPPING'
+    && error.missingObjects.map((object) => object.key).join(',') === 'Part,BOMItem'
+  ));
 });
 
 test('graph import mapping：保留重复行并拒绝非法关联字段和缺失 Sheet', () => {
@@ -515,7 +564,7 @@ test('graph import Neo4j：节点和关系同事务幂等写入并带双隔离�
   assert.deepEqual(result, { nodeCount: 2, relationshipCount: 1 });
   assert.deepEqual(driver.state.databases, ['knowledge']);
   assert.equal(driver.state.transactionCount, 1);
-  assert.equal(driver.calls.length, 4);
+  assert.equal(driver.calls.length, 5);
   for (const call of driver.calls) {
     assert.match(call.query, /`d2o_workspace_id`/);
     assert.match(call.query, /`d2o_ontology_id`/);
@@ -586,20 +635,25 @@ test('graph import Neo4j：校验、统计和写入包含未参与关系的实�
 
 test('graph import Neo4j：动态标识符非法时拒绝连接', async () => {
   let connected = false;
-  await assert.rejects(() => writeGraphImport({
-    nodeCount: 0,
-    relationshipCount: 0,
-    skippedBlankJoinCount: 0,
-    skippedUnmatchedJoinCount: 0,
-    warnings: [],
-    entities: [],
-    relations: [],
-  }, neo4jConnection({ workspaceProperty: 'x`) DETACH DELETE n //' }), { userName: 'alice' }, () => {
+  await assert.rejects(() => writeGraphImport(
+    importPlan(),
+    neo4jConnection({ workspaceProperty: 'x`) DETACH DELETE n //' }), { userName: 'alice' }, () => {
     connected = true;
     throw new Error('不应连接');
   }), /Workspace 隔离字段.*格式非法/);
   assert.equal(connected, false);
 
+  await assert.rejects(() => writeGraphImport(
+    importPlan(),
+    neo4jConnection({ workspaceProperty: '_d2o_record_key' }), { userName: 'alice' }, () => {
+    connected = true;
+    throw new Error('不应连接');
+  }), /系统保留字段/);
+  assert.equal(connected, false);
+});
+
+test('graph import Neo4j：空计划在连接及覆盖删除前被拒绝', async () => {
+  let connected = false;
   await assert.rejects(() => writeGraphImport({
     nodeCount: 0,
     relationshipCount: 0,
@@ -608,10 +662,10 @@ test('graph import Neo4j：动态标识符非法时拒绝连接', async () => {
     warnings: [],
     entities: [],
     relations: [],
-  }, neo4jConnection({ workspaceProperty: '_d2o_record_key' }), { userName: 'alice' }, () => {
+  }, neo4jConnection(), { replaceExisting: true, userName: 'operator_a' }, () => {
     connected = true;
     throw new Error('不应连接');
-  }), /系统保留字段/);
+  }), (error: unknown) => error instanceof GraphImportEmptyPlanError);
   assert.equal(connected, false);
 });
 
@@ -689,12 +743,12 @@ test('graph import Neo4j：确认覆盖后只清理完全匹配的双隔离数�
     callCount += 1;
     return callCount === 1
       ? { records: [{ get: (key: string) => (key === 'nodeCount' ? 2 : 1) }] }
-      : {};
+      : undefined;
   });
   await writeGraphImport(importPlan(), neo4jConnection(),
     { replaceExisting: true, userName: 'alice' }, driver.factory);
   assert.equal(driver.state.transactionCount, 1);
-  assert.equal(driver.calls.length, 6);
+  assert.equal(driver.calls.length, 7);
   assert.match(driver.calls[1].query, /MATCH \(\)-\[relationship\]->\(\)/);
   assert.match(driver.calls[1].query, /DELETE relationship/);
   assert.match(driver.calls[2].query, /MATCH \(node\)/);
@@ -788,6 +842,88 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
   assert.equal(history[0].status, 'done');
   assert.equal(history[0].skippedCount, 2);
   assert.doesNotMatch(JSON.stringify(history), /one-time-secret/);
+});
+
+test('graph import service：无对象映射和零实例计划均在创建任务前阻断', async () => {
+  const {
+    executeGraphImport,
+    getGraphImportHistory,
+    uploadGraphImportExcel,
+    validateGraphImportUpload,
+  } = await import('../src/graph-import/service.js');
+  const conceptSpec = {
+    ...graphPackageSpec,
+    objects: graphPackageSpec.objects.map(({ sourceTable: _sourceTable, ...object }) => object),
+  };
+  const conceptProject = await createGraphImportProject('无映射图导入测试', conceptSpec);
+  await assert.rejects(() => uploadGraphImportExcel({
+    projectId: conceptProject.id,
+    owner: 'alice',
+    filename: 'concept.xlsx',
+    buffer: importBuffer(),
+  }), (error: unknown) => error instanceof GraphImportNoObjectMappingError);
+  assert.equal(getGraphImportHistory(conceptProject.id).length, 0);
+
+  const emptyProject = await createGraphImportProject('空计划图导入测试');
+  const emptyUpload = await uploadGraphImportExcel({
+    projectId: emptyProject.id,
+    owner: 'alice',
+    filename: 'empty.xlsx',
+    buffer: workbookBuffer({
+      Part: [['part_id', 'relation_code', 'name']],
+      BOMItem: [['item_id', 'parent_code', 'name']],
+    }),
+  });
+  await assert.rejects(() => validateGraphImportUpload({
+    projectId: emptyProject.id,
+    owner: 'alice',
+    uploadId: emptyUpload.id,
+    mapping: { relations: [] },
+  }), (error: unknown) => error instanceof GraphImportEmptyPlanError
+    && error.reasons.every((reason) => reason.code === 'GRAPH_IMPORT_EMPTY_SHEET'));
+  let inspected = false;
+  await assert.rejects(() => executeGraphImport({
+    projectId: emptyProject.id,
+    owner: 'alice',
+    uploadId: emptyUpload.id,
+    mapping: { relations: [] },
+    password: 'synthetic-secret',
+    replaceExisting: true,
+  }, {
+    inspectIsolation: async () => { inspected = true; return { nodeCount: 1, relationshipCount: 0 }; },
+  }), (error: unknown) => error instanceof GraphImportEmptyPlanError);
+  assert.equal(inspected, false);
+  assert.equal(getGraphImportHistory(emptyProject.id).length, 0);
+});
+
+test('graph import service：writer 零写入结果标记失败并保留临时 Excel', async () => {
+  const { executeGraphImport, getGraphImportHistory, uploadGraphImportExcel } =
+    await import('../src/graph-import/service.js');
+  const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
+  const project = await createGraphImportProject('零写入结果测试');
+  const preview = await uploadGraphImportExcel({
+    projectId: project.id, owner: 'alice', filename: 'zero-write.xlsx', buffer: importBuffer(),
+  });
+  const scheduled: Array<() => Promise<void>> = [];
+  const started = await executeGraphImport({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+    password: 'synthetic-secret',
+  }, {
+    inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+    schedule: (task) => { scheduled.push(task); },
+    writer: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+  });
+  await scheduled[0]();
+
+  const run = getGraphImportHistory(project.id).find((item) => item.id === started.run.id)!;
+  assert.equal(run.status, 'failed');
+  assert.match(run.error ?? '', /写入结果与导入计划不一致/);
+  assert.equal(getGraphImportUpload({
+    uploadId: preview.id, projectId: project.id, owner: 'alice',
+  }).id, preview.id);
 });
 
 test('graph import service：知识包修订变化后拒绝旧上传的校验和执行', async () => {
@@ -1225,6 +1361,19 @@ test('graph import relation controls：清空按钮与新增关系位于同一�
     readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8'),
     /\.mwr \.gi-add-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(104px, \.6fr\) minmax\(104px, \.6fr\)/s,
   );
+});
+
+test('graph import form：零实例不能执行且历史 0/0 不显示成功', () => {
+  assert.match(
+    graphImportPanelSource,
+    /const hasExecutablePlan = \(validation\?\.counts\?\.nodeCount \?\? 0\) > 0/,
+  );
+  assert.match(
+    graphImportPanelSource,
+    /disabled=\{controlsDisabled \|\| !password \|\| !isolationReady \|\| !hasExecutablePlan\}/,
+  );
+  assert.match(graphImportPanelSource, /item\.status === 'done' && item\.nodeCount === 0 \? 'empty'/);
+  assert.match(graphImportPanelSource, /empty: '未导入'/);
 });
 
 test('graph import known relation selector matches the manual relation selector height', () => {
