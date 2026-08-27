@@ -17,6 +17,7 @@ import {
   type FlowchartDiagram,
   type FlowchartDocument,
 } from '../flowchart/index.js';
+import { DIAGRAM_TITLE_MAX_LENGTH, diagramFilePath } from '../flowchart/file-path.js';
 import { findObjectAliasConflicts, normalizeObjectIdentifier } from './object-alias-validation.js';
 import { runFormatChecks, runRuleChecks } from './package-check.js';
 import type { ImportedPackageArchive } from './package-import.js';
@@ -579,6 +580,62 @@ function prefixedId(namespace: string, diagramId: string, value: string): string
   return `${namespace}:${diagramId}:${value}`;
 }
 
+interface PreparedDiagram {
+  source: PreparedSource;
+  sourceOrdinal: number;
+  diagram: FlowchartDiagram;
+  decision: PackageFusionResourceDisposition;
+}
+
+function compactDiagramTitlePart(value: string): string {
+  return String(value ?? '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
+}
+
+function qualifiedDiagramTitle(titleValue: string, qualifierValue: string): string {
+  const title = compactDiagramTitlePart(titleValue);
+  const qualifier = compactDiagramTitlePart(qualifierValue).slice(0, 30).trim();
+  const separator = ' - ';
+  const titleLimit = DIAGRAM_TITLE_MAX_LENGTH - separator.length - qualifier.length;
+  return `${title.slice(0, Math.max(1, titleLimit)).trimEnd()}${separator}${qualifier}`;
+}
+
+function allocateDiagramTitles(rows: PreparedDiagram[]): Map<string, string> {
+  const preserved = rows.filter((row) => row.decision.action === 'preserve');
+  const basePathCounts = new Map<string, number>();
+  for (const row of preserved) {
+    const path = diagramFilePath(row.diagram.title).toLocaleLowerCase('en-US');
+    basePathCounts.set(path, (basePathCounts.get(path) ?? 0) + 1);
+  }
+
+  const allocated = new Map<string, string>();
+  const usedPaths = new Set<string>();
+  for (const row of preserved) {
+    const identity = resourceIdentity(row.source.sourceId, 'diagram', row.diagram.id);
+    const baseTitle = compactDiagramTitlePart(row.diagram.title);
+    const basePath = diagramFilePath(baseTitle).toLocaleLowerCase('en-US');
+    const sourceName = compactDiagramTitlePart(row.source.archive.spec.name);
+    const sourceVersion = compactDiagramTitlePart(row.source.archive.spec.version);
+    const qualifiers = [...new Set([
+      sourceName,
+      `${sourceName} ${sourceVersion}`.trim(),
+      `来源 ${row.sourceOrdinal + 1}`,
+    ].filter(Boolean))];
+    const candidates = [
+      ...(basePathCounts.get(basePath) === 1 ? [baseTitle] : []),
+      ...qualifiers.map((qualifier) => qualifiedDiagramTitle(baseTitle, qualifier)),
+    ];
+    const title = candidates.find((candidate) => {
+      const path = diagramFilePath(candidate).toLocaleLowerCase('en-US');
+      if (usedPaths.has(path)) return false;
+      usedPaths.add(path);
+      return true;
+    });
+    if (!title) throw new Error(`无法为融合流程图分配唯一业务名称：${baseTitle}`);
+    allocated.set(identity, title);
+  }
+  return allocated;
+}
+
 function mergeDiagrams(
   sources: PreparedSource[],
   requested: PackageFusionResourceDisposition[],
@@ -606,10 +663,32 @@ function mergeDiagrams(
     resourceIdentity(item.sourceId, item.kind, item.key),
     item,
   ]));
-  for (const source of sources) {
-    const raw = source.archive.files['diagrams/processes.json'];
-    if (!raw) continue;
-    const document = normalizeFlowchartDocument(JSON.parse(raw));
+  const documents = sources.map((source) => ({
+    source,
+    document: source.archive.files['diagrams/processes.json']
+      ? normalizeFlowchartDocument(JSON.parse(source.archive.files['diagrams/processes.json']))
+      : undefined,
+  }));
+  const preparedDiagrams: PreparedDiagram[] = documents.flatMap(({ source, document }, sourceOrdinal) => (
+    (document?.diagrams ?? []).map((diagram) => ({
+      source,
+      sourceOrdinal,
+      diagram,
+      decision: requestedByIdentity.get(resourceIdentity(source.sourceId, 'diagram', diagram.id)) ?? {
+        sourceId: source.sourceId,
+        kind: 'diagram' as const,
+        key: diagram.id,
+        action: 'preserve' as const,
+      },
+    }))
+  ));
+  const decisionByIdentity = new Map(preparedDiagrams.map((row) => [
+    resourceIdentity(row.source.sourceId, 'diagram', row.diagram.id),
+    row.decision,
+  ]));
+  const titleByIdentity = allocateDiagramTitles(preparedDiagrams);
+  for (const { source, document } of documents) {
+    if (!document) continue;
     const sourceNodeMap = new Map<string, string>();
     const duplicateNodeIds = new Set<string>();
     for (const diagram of document.diagrams) {
@@ -621,12 +700,8 @@ function mergeDiagrams(
     for (const duplicate of duplicateNodeIds) sourceNodeMap.delete(duplicate);
     nodeMaps.set(source.sourceId, sourceNodeMap);
     for (const diagram of document.diagrams) {
-      const decision = requestedByIdentity.get(resourceIdentity(source.sourceId, 'diagram', diagram.id)) ?? {
-        sourceId: source.sourceId,
-        kind: 'diagram' as const,
-        key: diagram.id,
-        action: 'preserve' as const,
-      };
+      const identity = resourceIdentity(source.sourceId, 'diagram', diagram.id);
+      const decision = decisionByIdentity.get(identity)!;
       if (decision.action !== 'preserve') {
         for (const node of diagram.nodes) sourceNodeMap.delete(node.id);
         diagramRows.push({
@@ -650,7 +725,7 @@ function mergeDiagrams(
       diagrams.push({
         ...diagram,
         id: fusedDiagramId,
-        title: `${source.sourceId} - ${diagram.title}`,
+        title: titleByIdentity.get(identity)!,
         sourceCandidateId: diagram.sourceCandidateId
           ? `${source.namespace}:${diagram.sourceCandidateId}`
           : undefined,

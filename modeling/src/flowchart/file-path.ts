@@ -1,6 +1,6 @@
 import type { FlowchartDocument } from './types.js';
 
-const DIAGRAM_TITLE_MAX_LENGTH = 80;
+export const DIAGRAM_TITLE_MAX_LENGTH = 80;
 const FORBIDDEN_FILE_CHARS = /[<>:"/\\|?*#&%()\uFF08\uFF09\u0000-\u001f\u007f]/gu;
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
 const LEGACY_DIAGRAM_PATH = /^diagrams\/process_\d+\.mmd$/u;

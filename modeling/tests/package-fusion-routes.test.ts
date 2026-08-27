@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -20,6 +21,7 @@ const [
   { storePackageMergeSource },
   { renderPackage },
   { renderDiagramFiles },
+  { config },
 ] = await Promise.all([
   import('../src/agent/package-fusion-routes.js'),
   import('../src/agent/core-routes.js'),
@@ -29,6 +31,7 @@ const [
   import('../src/agent/package-merge.js'),
   import('../src/workflow/package-render.js'),
   import('../src/flowchart/index.js'),
+  import('../src/config.js'),
 ]);
 
 function appFor(t: test.TestContext) {
@@ -58,6 +61,45 @@ function agentTool(
       authorization: 'Bearer agent-test-token',
     },
     payload: { arguments: args },
+  });
+}
+
+async function usePassingScriptSandbox(t: test.TestContext) {
+  const socketPath = join(mkdtempSync(join(tmpdir(), 'modeling-fusion-script-sandbox-')), 'jiuwenbox.sock');
+  const previousSocketPath = config.jiuwenboxSocketPath;
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on('end', () => {
+      if (request.method === 'POST' && request.url?.endsWith('/exec')) {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const encodedCases = body.command.at(-1);
+        const cases = JSON.parse(Buffer.from(encodedCases, 'base64').toString('utf8'));
+        const results = cases.map((item: Record<string, unknown>, index: number) => ({
+          index, passed: true, actual: item.expected, expected: item.expected,
+        }));
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({
+          exit_code: 0,
+          stdout: `__MODELING_RESULT__${JSON.stringify(results)}\n`,
+          stderr: '',
+        }));
+        return;
+      }
+      if (request.method === 'DELETE') {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      response.setHeader('Content-Type', 'application/json');
+      response.end('{}');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  config.jiuwenboxSocketPath = socketPath;
+  t.after(async () => {
+    config.jiuwenboxSocketPath = previousSocketPath;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 }
 
@@ -133,7 +175,15 @@ function sourceArchiveWithScript(sourceId: string, objectKey: string): ImportedP
   archive.spec.scripts = [{
     key: 'calculate', title: '计算脚本', description: '来源计算逻辑', boundOperation: 'inspect',
     runtime: 'python', entrypoint: 'calculate.py', timeoutSeconds: 30,
-    parameters: [], outputs: [], boundaries: [], sourceCode: 'print("ok")\n',
+    parameters: [], outputs: [{ key: 'status', type: 'string' }], boundaries: [],
+    sourceCode: [
+      'import argparse',
+      'import json',
+      'parser = argparse.ArgumentParser()',
+      'parser.parse_args()',
+      'print(json.dumps({"status": "ok"}))',
+      '',
+    ].join('\n'),
   }];
   const diagrams = Object.fromEntries(Object.entries(archive.files).filter(([path]) => path.startsWith('diagrams/')));
   archive.files = { ...renderPackage(archive.spec, { validateScripts: false }), ...diagrams };
@@ -238,6 +288,71 @@ test('未逐元素裁决时阻断批量融合且不产生候选版本', async (t
   assert.ok(storedLedger.resources.every((entry: any) => entry.decision === 'preserve' && entry.fusedKey));
   assert.equal(await artifacts.countPendingCandidateRevisions(project.id), 1);
   assert.equal((await artifacts.current(project.id))?.revision.oid, current.revision.oid);
+});
+
+test('含脚本的冻结融合候选在展示确认卡前要求当前隔离测试回执', async (t) => {
+  const project = createProject({ owner: 'alice', name: '融合脚本预检', runtime: 'agent' });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: 'fusion-script-target', name: '脚本融合目标', description: '验证确认前脚本门禁',
+  });
+  const first = storePackageMergeSource(getDb(), {
+    projectId: project.id, filename: 'source-a.zip', uploadedBy: 'alice',
+    archive: sourceArchiveWithScript('source-a-script', 'ObjectA'),
+  });
+  const second = storePackageMergeSource(getDb(), {
+    projectId: project.id, filename: 'source-b.zip', uploadedBy: 'alice',
+    archive: sourceArchive('source-b-script', 'ObjectB'),
+  });
+  const app = appFor(t);
+  const created = await agentTool(app, project.id, 'create_package_fusion_plan', {
+    source_ids: [first.id, second.id],
+    output: {
+      id: 'fusion-script-result', name: '脚本融合结果', description: '保留来源脚本并验证隔离测试',
+    },
+  });
+  assert.equal(created.statusCode, 200, created.body);
+  const resolved = await agentTool(app, project.id, 'update_package_fusion_plan', {
+    plan_id: created.json().id,
+    dispositions: decisions(created.json()),
+  });
+  assert.equal(resolved.statusCode, 200, resolved.body);
+  const compiled = await agentTool(app, project.id, 'compile_package_fusion_plan', {
+    plan_id: created.json().id,
+  });
+  assert.equal(compiled.statusCode, 200, compiled.body);
+  const groups = await agentTool(app, project.id, 'prepare_confirmation_groups');
+  assert.equal(groups.statusCode, 200, groups.body);
+
+  const blocked = await agentTool(app, project.id, 'request_confirmation_preflight', {
+    summary: '确认含脚本的融合候选',
+    change_groups: groups.json().change_groups,
+  });
+
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'SCRIPT_TEST_REQUIRED');
+  assert.ok(blocked.json().blockers.some((path: string) => path.endsWith('.py')));
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_validation_receipts
+    WHERE candidate_id = ?`).get(compiled.json().candidateId)?.count, 0);
+  assert.equal((await getPackageArtifactStore().getCandidateRevision(
+    project.id,
+    compiled.json().candidateId,
+  )).status, 'pending');
+
+  await usePassingScriptSandbox(t);
+  const tested = await agentTool(app, project.id, 'run_script_test', {
+    script: 'scripts/calculate.py',
+    cases: [{ input: {}, expected: { status: 'ok' } }],
+  });
+  assert.equal(tested.statusCode, 200, tested.body);
+  assert.equal(tested.json().passed, 1);
+
+  const ready = await agentTool(app, project.id, 'request_confirmation_preflight', {
+    summary: '确认含脚本的融合候选',
+    change_groups: groups.json().change_groups,
+  });
+  assert.equal(ready.statusCode, 200, ready.body);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_script_test_receipts
+    WHERE project_id = ?`).get(project.id)?.count, 1);
 });
 
 test('既有融合计划可增量登记跨包概念并写入候选来源账本', async (t) => {

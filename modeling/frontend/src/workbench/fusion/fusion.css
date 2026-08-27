@@ -76,6 +76,10 @@
 .fusion-empty b { color: var(--c-ink-2); }
 .fusion-empty span { max-width: 520px; font-size: var(--t-sm); }
 .fusion-empty .btn { margin-top: var(--s-2); }
+.fusion-package-upload { width: 100%; font: inherit; cursor: pointer; }
+.fusion-package-upload:hover { border-color: var(--c-accent-line); background: var(--c-accent-bg); }
+.fusion-package-upload:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+.fusion-package-upload:disabled { cursor: wait; opacity: .72; }
 .fusion-loading { display: flex; align-items: center; justify-content: center; gap: var(--s-3); min-height: 240px; color: var(--c-muted); }
 
 @media (max-width: 900px) {

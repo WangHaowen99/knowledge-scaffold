@@ -75,7 +75,12 @@ import {
   qualityRows,
   unresolvedEntries,
 } from './fusion/fusion-model.js';
-import { DecisionControl, FusionBuilder, FusionPlan } from './fusion/FusionView.jsx';
+import {
+  DecisionControl,
+  FusionBuilder,
+  FusionPlan,
+  packageFilesFromSelection,
+} from './fusion/FusionView.jsx';
 import { StudioAccessBanner, StudioKindTabs, studioFieldEditable } from './studio/StudioView.jsx';
 
 let bad = 0;
@@ -656,12 +661,28 @@ try {
       summary: '正在运行评测', createdAt: new Date(resumedAt.getTime() + 2_000).toISOString(),
     }],
   }, resumedAt.getTime() + 5_000);
+  const postToolPlanning = visibleRunActivity({
+    activity: {
+      id: 'after-tool:write-rule', phase: 'planning', text: '正在根据处理结果判断下一步',
+      detail: '当前操作已经结束，正在规划下一项可执行工作',
+      observedAt: resumedAt.getTime() + 3_000,
+    },
+    run: { id: 'trace-run', status: 'running', updatedAt: resumedAt.toISOString() },
+    interaction: null,
+    streaming: false,
+    trace: [{
+      id: 'trace-rule', seq: 10, runId: 'trace-run', phase: 'completed',
+      summary: '已创建规则《合成规则》及其索引',
+      createdAt: new Date(resumedAt.getTime() + 2_000).toISOString(),
+    }],
+  }, resumedAt.getTime() + 5_000);
   if (actual !== genuine || queued?.text !== '任务已提交，等待开始'
     || Object.hasOwn(queued?.progress || {}, 'percent') || waiting !== null || blocked !== null
     || interjection?.text !== '任务已提交，等待开始'
     || resumed?.startedAt !== resumedAt.getTime()
     || staleProgress?.text !== '助手正在处理当前步骤' || staleProgress?.startedAt !== resumedAt.getTime()
     || traceFallback?.text !== '正在运行评测' || !traceFallback?.detail.includes('运行轨迹正在更新')
+    || postToolPlanning?.text !== '已创建规则《合成规则》及其索引'
     || queued?.startedAt !== undefined
     || executionStartedAt({ updatedAt: 'not-a-time' }, resumedAt.getTime()) !== undefined) {
     throw new Error('active run 兜底覆盖了真实进度、伪造百分比或越过等待边界');
@@ -1389,6 +1410,25 @@ try {
     onCreate={() => {}}
     onOpenPlan={() => {}}
   />);
+  const emptyBuilder = renderToString(<FusionBuilder
+    sources={[]}
+    selected={[]}
+    setSelected={() => {}}
+    sourceScopes={{}}
+    setSourceScopes={() => {}}
+    output={{ id: 'fusion-ui', name: '融合结果', description: '融合说明', version: '1.0.0' }}
+    setOutput={() => {}}
+    plans={[]}
+    baselineReady
+    busy=""
+    error=""
+    onCreate={() => {}}
+    onOpenPlan={() => {}}
+  />);
+  let liveFiles = [{ name: 'source-a.zip' }, { name: 'notes.txt' }, { name: 'SOURCE-B.ZIP' }];
+  const liveSelection = { [Symbol.iterator]: () => liveFiles[Symbol.iterator]() };
+  const selectedPackages = packageFilesFromSelection(liveSelection);
+  liveFiles = [];
   const decision = renderToString(<DecisionControl
     entry={{ sourceId: 'source-a', kind: 'object', sourceKey: '设备', decision: null, included: true }}
     entries={[
@@ -1403,6 +1443,9 @@ try {
   const builderText = builder.replaceAll('<!-- -->', '');
   if (!builderText.includes('纳入范围') || !builderText.includes('脚本 0/1') || builderText.includes('流程图')
     || !builderText.includes('相同 package id') || !builderText.includes('当前范围会留下 1 处依赖缺口')
+    || !emptyBuilder.includes('选择多个来源知识包') || !emptyBuilder.includes('multiple=""')
+    || !emptyBuilder.includes('.zip,application/zip') || !emptyBuilder.includes('fusion-package-upload')
+    || selectedPackages.map((file) => file.name).join(',') !== 'source-a.zip,SOURCE-B.ZIP'
     || !decision.includes('独立保留') || !decision.includes('归并为同一项') || !decision.includes('不纳入结果')
     || />[^<]*(source-a|exclude_scope)[^<]*</u.test(builder + decision)) {
     throw new Error('范围选择或三种互斥业务去向没有形成可用界面');
