@@ -409,9 +409,14 @@ function parseParameterDefault(value: string): string | number | boolean {
   return text;
 }
 
-function parseRenderedSpec(files: Record<string, string>): PackageSpec {
+function parseRenderedSpec(
+  files: Record<string, string>,
+  options: { allowMissingManifestStatus?: boolean } = {},
+): PackageSpec {
   const manifest = parsePackageManifest(files['manifest.yaml']);
-  const manifestIssues = packageManifestIssues(manifest);
+  const manifestIssues = packageManifestIssues(manifest).filter((issue) => (
+    !options.allowMissingManifestStatus || issue.ruleId !== 'manifest.required.status'
+  ));
   if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
   const mapping = parseJson<any>(files['mappings/object-data-mappings.json'], '数据映射') ?? {};
   const detailPaths = (folder: string) => Object.keys(files)
@@ -466,9 +471,18 @@ export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
   const embeddedCoverage = parseJson<CoverageResult>(allFiles[MODEL_COVERAGE_PATH], '知识包覆盖结果');
   const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => !path.startsWith('model/')));
   const rawFiles = Object.fromEntries(Object.entries(archive.rawFiles).filter(([path]) => !path.startsWith('model/')));
-  const manifestIssues = packageManifestIssues(parsePackageManifest(files['manifest.yaml']));
+  const manifest = parsePackageManifest(files['manifest.yaml']);
+  const missingManifestStatus = manifest.status === undefined
+    || manifest.status === null
+    || String(manifest.status).trim() === '';
+  const manifestIssues = packageManifestIssues(manifest).filter((issue) => (
+    !missingManifestStatus || issue.ruleId !== 'manifest.required.status'
+  ));
   if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
-  const spec = canonicalizePackageSpec(embeddedSpec ?? parseRenderedSpec(files));
+  const spec = canonicalizePackageSpec(embeddedSpec ?? parseRenderedSpec(files, {
+    allowMissingManifestStatus: missingManifestStatus,
+  }));
+  if (missingManifestStatus) spec.status = 'draft';
   if (!spec.id || !spec.name || !spec.version || !spec.objects || !spec.operations) {
     throw new Error('知识包缺少 id、name、version、objects 或 operations');
   }
@@ -478,6 +492,7 @@ export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
     files,
     rawFiles,
     warnings: [
+      ...(missingManifestStatus ? ['来源包 manifest 未声明 status，已按 draft 兼容导入。'] : []),
       ...(embeddedSpec ? [] : ['该知识包未携带结构化规格，已从标准目录和 Markdown 内容重建。']),
       ...(Object.keys(rawFiles).length > Object.keys(files).length
         ? ['包内二进制附件已原样保留，可随知识包导出，但不支持在线编辑。'] : []),

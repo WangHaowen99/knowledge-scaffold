@@ -114,6 +114,30 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   assert.equal(imported.files['objects/Customer.md'], files['objects/Customer.md']);
 });
 
+test('来源 ZIP 缺少 manifest status 时按 draft 兼容导入，但仍拒绝非法状态', () => {
+  const files = renderPackage(demoSpec());
+  const manifestWithoutStatus = files['manifest.yaml'].replace(/^status:.*\n?/mu, '');
+  const compatibleFiles = { ...files, 'manifest.yaml': manifestWithoutStatus };
+
+  const imported = parsePackageArchive(zipPackage(compatibleFiles, 'import-demo'));
+
+  assert.equal(imported.spec.status, 'draft');
+  assert.equal(imported.files['manifest.yaml'], manifestWithoutStatus);
+  assert.equal(
+    new TextDecoder().decode(imported.rawFiles['manifest.yaml']),
+    manifestWithoutStatus,
+  );
+  assert.ok(imported.warnings.some((warning) => warning.includes('按 draft 兼容导入')));
+
+  assert.throws(
+    () => parsePackageArchive(zipPackage({
+      ...files,
+      'manifest.yaml': files['manifest.yaml'].replace(/^status:.*$/mu, 'status: unknown'),
+    }, 'import-demo')),
+    /manifest 的 status 不正确/u,
+  );
+});
+
 test('ZIP 中带结构化规格时优先使用规格且保留包文件', () => {
   const spec = demoSpec();
   const rendered = renderPackage(spec);
