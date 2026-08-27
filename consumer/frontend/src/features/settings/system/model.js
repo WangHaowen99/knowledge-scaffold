@@ -8,6 +8,7 @@ export const SYSTEM_CONFIG_SECTIONS = Object.freeze([
   'web_search',
   'direct_execution',
   'skill_evolution',
+  'ontology_evidence',
 ]);
 
 export const SYSTEM_CONFIG_SECTION_LABELS = Object.freeze({
@@ -20,6 +21,7 @@ export const SYSTEM_CONFIG_SECTION_LABELS = Object.freeze({
   web_search: '联网搜索',
   direct_execution: '直接执行',
   skill_evolution: '技能进化',
+  ontology_evidence: '本体证据',
 });
 
 export const EMPTY_TEST_STATUS = Object.freeze({

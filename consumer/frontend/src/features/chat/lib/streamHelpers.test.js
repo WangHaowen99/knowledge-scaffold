@@ -313,6 +313,103 @@ test('cancelled subagent tool event remains a distinct cancelled terminal event'
   assert.equal(child.events.at(-1).outputTruncated, true);
 });
 
+test('subagent ontology evidence search preserves its artifact reference', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+  const outputPreview = JSON.stringify({
+    contract: 'OntologyEvidenceSearch/v1',
+    success: true,
+    hits: [],
+  });
+  const outputRef = '0123456789abcdef0123456789abcdef';
+
+  [
+    publicEvent('subagent_group.started', {
+      group_id: 'group-evidence',
+      tasks: [{ task_id: 'evidence-task', task: '查找证据', task_index: 0 }],
+    }, 1),
+    publicEvent('subagent.started', {
+      group_id: 'group-evidence',
+      subagent_id: 'sub-evidence',
+      task_id: 'evidence-task',
+      task: '查找证据',
+      task_index: 0,
+    }, 2),
+    publicEvent('tool.started', {
+      group_id: 'group-evidence',
+      subagent_id: 'sub-evidence',
+      tool_name: 'ontology_evidence_search',
+      tool_call_id: 'call-evidence',
+    }, 3),
+    publicEvent('tool.finished', {
+      group_id: 'group-evidence',
+      subagent_id: 'sub-evidence',
+      tool_name: 'ontology_evidence_search',
+      tool_call_id: 'call-evidence',
+      status: 'completed',
+      output_preview: outputPreview,
+      output_ref: outputRef,
+      output_size: 8192,
+      output_truncated: true,
+    }, 4),
+  ].forEach((event) => {
+    state = applyPublicEvent(state, event);
+  });
+
+  const toolEvent = state.streamSegments[0].children['sub-evidence'].events.at(-1);
+  assert.equal(toolEvent.output, outputPreview);
+  assert.equal(toolEvent.outputRef, outputRef);
+  assert.equal(toolEvent.outputSize, 8192);
+  assert.equal(toolEvent.outputTruncated, true);
+});
+
+test('subagent business data search preserves its Runtime Fact artifact reference', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+  const outputPreview = JSON.stringify({
+    success: true,
+    runtime_evidence: { evidence_id: 'ev_69067acabf6749079898fd9ade68ea6f' },
+  });
+  const outputRef = 'fedcba9876543210fedcba9876543210';
+
+  [
+    publicEvent('subagent_group.started', {
+      group_id: 'group-runtime-evidence',
+      tasks: [{ task_id: 'runtime-task', task: '查询业务数据', task_index: 0 }],
+    }, 1),
+    publicEvent('subagent.started', {
+      group_id: 'group-runtime-evidence',
+      subagent_id: 'sub-runtime-evidence',
+      task_id: 'runtime-task',
+      task: '查询业务数据',
+      task_index: 0,
+    }, 2),
+    publicEvent('tool.started', {
+      group_id: 'group-runtime-evidence',
+      subagent_id: 'sub-runtime-evidence',
+      tool_name: 'business_data_search',
+      tool_call_id: 'call-runtime-evidence',
+    }, 3),
+    publicEvent('tool.finished', {
+      group_id: 'group-runtime-evidence',
+      subagent_id: 'sub-runtime-evidence',
+      tool_name: 'business_data_search',
+      tool_call_id: 'call-runtime-evidence',
+      status: 'completed',
+      output_preview: outputPreview,
+      output_ref: outputRef,
+      output_size: 16384,
+      output_truncated: true,
+    }, 4),
+  ].forEach((event) => {
+    state = applyPublicEvent(state, event);
+  });
+
+  const toolEvent = state.streamSegments[0].children['sub-runtime-evidence'].events.at(-1);
+  assert.equal(toolEvent.output, outputPreview);
+  assert.equal(toolEvent.outputRef, outputRef);
+  assert.equal(toolEvent.outputSize, 16384);
+  assert.equal(toolEvent.outputTruncated, true);
+});
+
 test('turn finished error stores provider detail in message meta', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
   const error = '您的账户已达到速率限制，请您控制请求频率';

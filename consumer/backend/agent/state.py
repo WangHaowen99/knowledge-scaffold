@@ -77,8 +77,10 @@ class ReadDocumentRecord(TypedDict, total=False):
     normalized_path: str
     doc_type: str
     ontology_id: Optional[str]
+    ontology_version: Optional[str]
     entity_name: Optional[str]
     operation_name: Optional[str]
+    description: Optional[str]
     source: str
     turn_id: int
     iteration: Optional[int]
@@ -86,6 +88,32 @@ class ReadDocumentRecord(TypedDict, total=False):
     size_bytes: int
     mtime_ns: Optional[int]
     read_count: int
+    mutation_revision: int
+    ontology_epoch: str
+    source_content_sha256: str
+
+
+class GroundingEvidenceBinding(TypedDict, total=False):
+    subject_key: str
+    workspace_id: str
+    normalized_path: str
+    ontology_id: str
+    ontology_version: str
+    ontology_epoch: str
+    mutation_revision: int
+    index_generation: str
+    resource: str
+    resource_key: str
+    section_anchor: str
+    source_content_sha256: str
+    loaded_turn_id: int
+    loaded_iteration: Optional[int]
+    read_count: int
+
+
+class GroundingIndex(TypedDict):
+    by_evidence_id: Dict[str, GroundingEvidenceBinding]
+    by_subject: Dict[str, List[str]]
 
 
 class ReadDocumentsRegistry(TypedDict):
@@ -94,6 +122,7 @@ class ReadDocumentsRegistry(TypedDict):
     by_path: Dict[str, ReadDocumentRecord]
     recent_paths: List[str]
     active_object_docs: List[str]
+    grounding_index: GroundingIndex
 
 
 class AgenticState(TypedDict):

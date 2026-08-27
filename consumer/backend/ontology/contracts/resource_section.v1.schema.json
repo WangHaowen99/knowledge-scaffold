@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:knowledge-scaffold:ontology:ResourceSection:v1",
+  "title": "ResourceSection/v1",
+  "$ref": "#/$defs/resourceSection",
+  "$defs": {
+    "resourceSection": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "section_anchor", "heading_path", "heading_level", "title", "ordinal", "text",
+        "plain_text", "start_line", "end_line", "tables", "links", "content_hash", "contract"
+      ],
+      "properties": {
+        "section_anchor": {"type": "string", "minLength": 1},
+        "heading_path": {"type": "array", "items": {"type": "string"}},
+        "heading_level": {"type": ["integer", "null"], "minimum": 1, "maximum": 6},
+        "title": {"type": "string"},
+        "ordinal": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"},
+        "plain_text": {"type": "string"},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "tables": {"type": "array", "items": {"$ref": "#/$defs/parsedTable"}},
+        "links": {"type": "array", "items": {"$ref": "#/$defs/resourceLink"}},
+        "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "contract": {"const": "ResourceSection/v1"}
+      }
+    },
+    "parsedTable": {
+      "type": "object", "additionalProperties": false,
+      "required": ["headers", "rows", "start_line", "end_line", "contract"],
+      "properties": {
+        "headers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "rows": {"type": "array", "items": {"type": "object", "additionalProperties": {"type": "string"}}},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "contract": {"const": "ParsedTable/v1"}
+      }
+    },
+    "resourceLink": {
+      "type": "object", "additionalProperties": false,
+      "required": ["resource", "key", "relation", "section_anchor", "source_line", "contract"],
+      "properties": {
+        "resource": {"enum": ["operation", "object", "rule", "metric", "script"]},
+        "key": {"type": "string", "minLength": 1},
+        "relation": {"enum": ["uses", "applies_to", "references", "bound_operation"]},
+        "section_anchor": {"type": ["string", "null"]},
+        "source_line": {"type": "integer", "minimum": 1},
+        "contract": {"const": "ResourceLink/v1"}
+      }
+    }
+  }
+}

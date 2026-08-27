@@ -813,6 +813,10 @@ def _validate_tool_prerequisites(
 
 
 def _build_tool_progress_message(name: Optional[str], args: Dict[str, Any]) -> Optional[str]:
+    if name == "ontology_evidence_search":
+        query = str(args.get("query") or "").strip()
+        return "检索本体依据 {}".format(query or "...")
+
     if name == "ontology_context":
         resource = str(args.get("resource") or "").strip()
         key = str(args.get("key") or "").strip()

@@ -898,8 +898,8 @@ class SkillEvolutionService:
         # Lazy import to avoid circular import with routes/__init__.
         from api.routes.ontologies import (
             ONTOLOGY_VERSIONED_SKIP_NAMES,
-            _copy_versioned_package_contents,
             _install_ontology_version_package,
+            _overwrite_ontology_active_version_package,
         )
 
         with ontology_mutation_lock(ontology_dir):
@@ -939,12 +939,34 @@ class SkillEvolutionService:
                     ontology_description=ontology.description,
                     target_version=target_version,
                     existed=True,
+                    workspace_id=record.workspace_id,
+                    mutation_audit={
+                        "operator": (
+                            {"type": "user", "id": decided_by[:128]}
+                            if decided_by
+                            else None
+                        ),
+                        "request_id": (record.run_id or record.task_id)[:128],
+                    },
+                    mutation_trigger="admin",
                 )
                 new_version = target_version
             else:
-                # overwrite active version contents (in-place; rollback via new_version mode)
-                version_dir = self._active_version_dir(record.workspace_id, ontology)
-                _copy_versioned_package_contents(evolved_root, version_dir)
+                _overwrite_ontology_active_version_package(
+                    source_root=evolved_root,
+                    ontology_dir=ontology_dir,
+                    ontology_id=ontology.id,
+                    workspace_id=record.workspace_id,
+                    mutation_audit={
+                        "operator": (
+                            {"type": "user", "id": decided_by[:128]}
+                            if decided_by
+                            else None
+                        ),
+                        "request_id": (record.run_id or record.task_id)[:128],
+                    },
+                    mutation_trigger="admin",
+                )
 
         record.status = "approved"
         record.decision = decision

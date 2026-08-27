@@ -38,7 +38,13 @@ _WEB_SEARCH_SCAN_LIMIT = 32
 _WEB_SEARCH_URL_LIMIT = 2048
 _BUSINESS_EXECUTED_STEP_LIMIT = 8
 _BUSINESS_EXECUTED_STEP_SUMMARY_LIMIT = 300
-_FULL_TRACE_OUTPUT_TOOLS = {"ontology_context", "business_data_search"}
+_ONTOLOGY_EVIDENCE_HIT_LIMIT = 5
+_EVIDENCE_ID_LIMIT = 160
+_FULL_TRACE_OUTPUT_TOOLS = {
+    "ontology_context",
+    "ontology_evidence_search",
+    "business_data_search",
+}
 
 
 def _bounded_text(value: Any, limit: int) -> str:
@@ -124,12 +130,27 @@ def _build_web_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _build_business_data_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
+def _bounded_string_list(value: Any, *, limit: int, item_limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item
+        for item in (_bounded_text(raw, item_limit) for raw in value[:limit])
+        if item
+    ]
+
+
+def _parse_json_object(raw_output: str) -> Optional[Dict[str, Any]]:
     try:
         parsed = json.loads(raw_output)
     except (TypeError, ValueError):
         return None
-    if not isinstance(parsed, dict):
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _build_business_data_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
+    parsed = _parse_json_object(raw_output)
+    if parsed is None:
         return None
 
     # lookup_values action produces a structured response distinct from the
@@ -236,12 +257,152 @@ def _build_lookup_values_projection(parsed: Dict[str, Any]) -> Optional[Dict[str
     return {key: value for key, value in projection.items() if value not in ("", None)}
 
 
+def _build_ontology_evidence_projection(raw_output: str) -> Optional[Dict[str, Any]]:
+    parsed = _parse_json_object(raw_output)
+    if not parsed or parsed.get("contract") != "OntologyEvidenceSearch/v1":
+        return None
+    raw_hits = parsed.get("hits") if isinstance(parsed.get("hits"), list) else []
+    hits = []
+    for item in raw_hits[:_ONTOLOGY_EVIDENCE_HIT_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        hits.append({
+            "evidence_id": _bounded_text(item.get("evidence_id"), _EVIDENCE_ID_LIMIT),
+            "resource": _bounded_text(item.get("resource"), 40),
+            "key": _bounded_text(item.get("key"), 256),
+            "title": _bounded_text(item.get("title"), 240),
+            "section": _bounded_text(item.get("section"), 240),
+            "section_anchor": _bounded_text(item.get("section_anchor"), 240),
+            "chunk_type": _bounded_text(item.get("chunk_type"), 80),
+            "snippet": _bounded_text(item.get("snippet"), 240),
+            "source_path": _bounded_text(item.get("source_path"), 512),
+            "content_hash": _bounded_text(item.get("content_hash"), 96),
+            "relevance_score": _finite_number(item.get("relevance_score")),
+            "confidence_band": _bounded_text(item.get("confidence_band"), 20),
+            "reason_codes": _bounded_string_list(item.get("reason_codes"), limit=8, item_limit=64),
+            "loaded_before": item.get("loaded_before") is True,
+        })
+    retrieval = parsed.get("retrieval") if isinstance(parsed.get("retrieval"), dict) else {}
+    projection: Dict[str, Any] = {
+        "contract": "OntologyEvidenceSearch/v1",
+        "success": parsed.get("success") is True,
+        "status": _bounded_text(parsed.get("status"), 40),
+        "result_code": _bounded_text(parsed.get("result_code"), 80),
+        "ontology_id": _bounded_text(parsed.get("ontology_id"), 160),
+        "ontology_version": _bounded_text(parsed.get("ontology_version"), 160),
+        "ontology_epoch": _bounded_text(parsed.get("ontology_epoch"), 160),
+        "index_generation": _bounded_text(parsed.get("index_generation"), 160),
+        "query": _bounded_text(parsed.get("query"), 512),
+        "retrieval": {
+            "mode": _bounded_text(retrieval.get("mode"), 40),
+            "degraded": retrieval.get("degraded") is True,
+            "degraded_channels": _bounded_string_list(
+                retrieval.get("degraded_channels"), limit=8, item_limit=64
+            ),
+        },
+        "hits": hits,
+        "projection_truncated": len(raw_hits) > len(hits),
+    }
+    error = parsed.get("error")
+    if isinstance(error, dict):
+        projection["error"] = {
+            "code": _bounded_text(error.get("code"), 80),
+            "message": _bounded_text(error.get("message"), 240),
+            "retryable": error.get("retryable") is True,
+        }
+    return projection
+
+
+def _build_ontology_context_projection(raw_output: str) -> Optional[Dict[str, Any]]:
+    parsed = _parse_json_object(raw_output)
+    if not parsed or parsed.get("contract") != "OntologyContext/v2":
+        return None
+    meta = parsed.get("context_meta") if isinstance(parsed.get("context_meta"), dict) else {}
+    return {
+        "contract": "OntologyContext/v2",
+        "success": parsed.get("success") is True,
+        "result_code": _bounded_text(parsed.get("result_code"), 80),
+        "ontology_id": _bounded_text(parsed.get("ontology_id"), 160),
+        "resource": _bounded_text(parsed.get("resource"), 40),
+        "key": _bounded_text(parsed.get("key"), 256),
+        "section": _bounded_text(parsed.get("section"), 240),
+        "content": _bounded_text(parsed.get("content"), 480),
+        "context_meta": {
+            "ontology_version": _bounded_text(meta.get("ontology_version"), 160),
+            "mutation_revision": meta.get("mutation_revision")
+            if isinstance(meta.get("mutation_revision"), int) else None,
+            "ontology_epoch": _bounded_text(meta.get("ontology_epoch"), 160),
+            "index_generation": _bounded_text(meta.get("index_generation"), 160),
+            "source_path": _bounded_text(meta.get("source_path"), 512),
+            "content_hash": _bounded_text(meta.get("content_hash"), 96),
+            "source_evidence_ids": _bounded_string_list(
+                meta.get("source_evidence_ids"), limit=20, item_limit=_EVIDENCE_ID_LIMIT
+            ),
+            "grounding_recorded": meta.get("grounding_recorded") is True,
+        },
+    }
+
+
+def _business_evidence_metadata(raw_output: str) -> Optional[Dict[str, Any]]:
+    parsed = _parse_json_object(raw_output)
+    if parsed and isinstance(parsed.get("runtime_evidence"), dict):
+        return parsed
+    start_marker = "<runtime-evidence>"
+    end_marker = "</runtime-evidence>"
+    start = raw_output.find(start_marker)
+    if start < 0:
+        return None
+    start += len(start_marker)
+    end = raw_output.find(end_marker, start)
+    if end < 0:
+        return None
+    return _parse_json_object(raw_output[start:end].strip())
+
+
+def _build_business_evidence_projection(raw_output: str) -> Optional[Dict[str, Any]]:
+    parsed = _business_evidence_metadata(raw_output)
+    receipt = parsed.get("runtime_evidence") if isinstance(parsed, dict) else None
+    if not isinstance(receipt, dict):
+        return None
+    return {
+        "contract": "BusinessDataEvidenceProjection/v1",
+        "success": parsed.get("success") is not False,
+        "message": _bounded_text(parsed.get("message"), 240),
+        "evidence_capability": _bounded_text(parsed.get("evidence_capability"), 80),
+        "runtime_evidence": {
+            "evidence_id": _bounded_text(receipt.get("evidence_id"), _EVIDENCE_ID_LIMIT),
+            "persistence_status": _bounded_text(receipt.get("persistence_status"), 40),
+            "grounding_status": _bounded_text(receipt.get("grounding_status"), 40),
+            "grounding_warnings": _bounded_string_list(
+                receipt.get("grounding_warnings"), limit=8, item_limit=160
+            ),
+            "derived_from": _bounded_string_list(
+                receipt.get("derived_from"), limit=20, item_limit=_EVIDENCE_ID_LIMIT
+            ),
+        },
+    }
+
+
+def _build_business_data_projection(raw_output: str) -> Optional[Dict[str, Any]]:
+    execution_projection = _build_business_data_search_projection(raw_output)
+    evidence_projection = _build_business_evidence_projection(raw_output)
+    if execution_projection is None:
+        return evidence_projection
+    if evidence_projection is None:
+        return execution_projection
+    return {**execution_projection, **evidence_projection}
+
+
 def _build_output_projection(tool_name: str, raw_output: str) -> Optional[Dict[str, Any]]:
     normalized_name = str(tool_name or "").strip().lower()
     if normalized_name == "web_search":
         return _build_web_search_projection(raw_output)
+    if normalized_name == "ontology_evidence_search":
+        return _build_ontology_evidence_projection(raw_output)
+    if normalized_name == "ontology_context":
+        return _build_ontology_context_projection(raw_output)
     if normalized_name == "business_data_search":
-        return _build_business_data_search_projection(raw_output)
+        return _build_business_data_projection(raw_output)
     return None
 
 

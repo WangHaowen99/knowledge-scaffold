@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ontology.ontologies import (
@@ -70,15 +72,67 @@ def get_selected_ontology_context(state: Mapping[str, Any]) -> Optional[str]:
 
 
 def hydrate_selected_ontology_read_documents(state: Dict[str, Any]) -> None:
+    selected_ontology_id = active_ontology_id_from_state(state)
     records = build_selected_ontology_preload_records(
-        selected_ontology_id=active_ontology_id_from_state(state),
+        selected_ontology_id=selected_ontology_id,
         selected_ontology_version=selected_ontology_version_from_state(state),
         turn_id=int(state.get("current_turn_id") or 0),
         workspace_id=str(state.get("workspace_id") or "").strip() or None,
     )
     if not records:
         return
+    _stamp_preload_evidence_context(
+        records,
+        workspace_id=str(state.get("workspace_id") or "").strip() or None,
+        ontology_id=selected_ontology_id,
+    )
     state["read_documents"] = merge_read_documents_registry(
         state.get("read_documents"),
         records,
     )
+
+
+def _stamp_preload_evidence_context(
+    records: list[Dict[str, object]],
+    *,
+    workspace_id: Optional[str],
+    ontology_id: Optional[str],
+) -> None:
+    """Attach the ready pointer snapshot without opening catalog or index."""
+    from config.evidence_config import EvidenceConfig
+    from ontology.evidence.manager import (
+        EvidenceIndexManagerError,
+        active_pointer_is_serviceable,
+        read_active_pointer_snapshot,
+    )
+    from workspace.workspaces import (
+        get_current_workspace_id,
+        get_workspace_paths,
+        get_workspace_project_root,
+    )
+
+    selected = str(ontology_id or "").strip()
+    workspace = str(workspace_id or "").strip() or get_current_workspace_id()
+    if not selected or EvidenceConfig.load().workspace_mode(workspace) == "off":
+        return
+    try:
+        pointer = read_active_pointer_snapshot(get_workspace_paths(workspace).runtime_dir, selected)
+    except (ValueError, EvidenceIndexManagerError):
+        return
+    if not active_pointer_is_serviceable(pointer) or pointer.get("epoch_status") != "ready":
+        return
+
+    project_root = get_workspace_project_root(workspace)
+    for record in records:
+        record.update(
+            {
+                "ontology_id": selected,
+                "mutation_revision": int(pointer.get("mutation_revision") or 0),
+                "ontology_epoch": str(pointer.get("expected_epoch") or ""),
+            }
+        )
+        path = Path(project_root) / str(record.get("normalized_path") or record.get("path") or "")
+        try:
+            record["source_content_sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue

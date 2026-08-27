@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Set, Tuple
 
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.business_data.resolver import (
@@ -30,6 +30,13 @@ from ontology.ontology_catalog import (
     get_ontology_manifest,
     resolve_object_reference_result,
 )
+from agent.core.shared.runtime_fact_projector import (
+    capture_business_data_snapshot,
+    grounding_snapshot_is_resolved,
+    project_business_data_result,
+)
+from config.evidence_config import EvidenceConfig
+from utils.read_docs import merge_read_documents_registry
 
 logger = get_logger("tools.business_data_search")
 BusinessDataSearchEventEmitter = Callable[[Dict[str, str]], None]
@@ -154,6 +161,7 @@ def handle_business_data_search(
     provider_runtime_context: Optional[Mapping[str, Any]] = None,
     _resolved_connection: Optional[ResolvedBusinessDataSource] = None,
     _field_alias_mappings: Optional[Tuple[Tuple[str, str], ...]] = None,
+    execution_metadata: Optional[Dict[str, Any]] = None,
     *,
     ontology_version: Optional[str] = None,
 ) -> str:
@@ -191,6 +199,14 @@ def handle_business_data_search(
             )
         except BusinessDataConnectionError as exc:
             return "Error: {}".format(str(exc))
+    if execution_metadata is not None:
+        execution_metadata.update(
+            {
+                "provider": connection.provider,
+                "mode": connection.mode,
+                "ontology_id": connection.ontology_id,
+            }
+        )
 
     logger.info(
         "Sending business_data_search query: workspace_id=%s ontology_id=%s mode=%s provider=%s entity=%s query=%s (tool_call_id=%s)",
@@ -594,6 +610,21 @@ class BusinessDataSearchTool:
         if graph_fallback_connection is not None:
             normalized_args["_resolved_connection"] = graph_fallback_connection
 
+        grounded_context, grounding_records = _prepare_business_data_grounding(
+            context=context,
+            args=normalized_args,
+            tool_call_id=tool_call_id,
+        )
+        snapshot, evidence_mode = capture_business_data_snapshot(
+            context=grounded_context,
+            args=normalized_args,
+            tool_call_id=tool_call_id,
+            provider=None,
+        )
+        execution_metadata: Dict[str, Any] = {}
+        # develop 骨架走原生异步入口，不接收 execution_metadata；provider 信息
+        # 由结果内容/快照兜底，project_business_data_result 的 provider_override
+        # 传 None 时自动回退。
         content = await handle_business_data_search_async(
             **normalized_args,
             ontology_version=(
@@ -605,11 +636,24 @@ class BusinessDataSearchTool:
             event_emitter=event_emitter,
             tool_call_id=tool_call_id,
             provider_runtime_context=_build_provider_runtime_context(
-                context=context,
+                context=grounded_context,
                 tool_call_id=tool_call_id,
             ),
         )
+        evidence_metadata: Optional[Dict[str, Any]] = None
+        if snapshot is not None:
+            evidence_metadata = project_business_data_result(
+                snapshot=snapshot,
+                content=content,
+                provider_override=str(execution_metadata.get("provider") or "") or None,
+            )
+        elif evidence_mode == "disabled":
+            evidence_metadata = {"evidence_capability": "disabled"}
+        if evidence_metadata:
+            content = _attach_evidence_metadata(content, evidence_metadata)
         state_updates: Dict[str, Any] = {}
+        if grounding_records:
+            state_updates["read_document_records"] = grounding_records
         entity_name = resolved_entity if graph_fallback_connection is None else ""
         if entity_name and _business_query_succeeded(content):
             state_updates["object_context_usage"] = [
@@ -626,7 +670,6 @@ class BusinessDataSearchTool:
             state_updates=state_updates,
             terminal=terminal_error is not None,
         )
-
 
 _SUCCESS_FLAG_KEYS = ("ok", "_success", "success")
 _ERROR_FLAG_KEYS = ("error", "_error")
@@ -661,7 +704,6 @@ def _business_query_succeeded(content: str) -> bool:
         "failed",
     }
 
-
 def _resolve_graph_schema_fallback_connection(
     *,
     workspace_id: Optional[str],
@@ -677,6 +719,82 @@ def _resolve_graph_schema_fallback_connection(
     if connection.provider not in _GRAPH_SCHEMA_FALLBACK_PROVIDERS:
         return None
     return connection
+
+
+def _prepare_business_data_grounding(
+    *,
+    context: ToolContext,
+    args: Mapping[str, Any],
+    tool_call_id: Optional[str],
+) -> tuple[ToolContext, list[Dict[str, Any]]]:
+    """Load the exact object evidence when the model omitted that step.
+
+    This path is feature-gated and only runs for an ungrounded selector.  It
+    prevents Runtime Facts from losing their static ontology lineage merely
+    because the model reused conversational context instead of calling
+    ontology_context again in the current turn.
+    """
+    workspace_id = str(context.workspace_id or "").strip()
+    ontology_id = str(args.get("ontology_id") or "").strip()
+    entity = str(args.get("entity") or "").strip()
+    config = EvidenceConfig.load()
+    if not workspace_id or not ontology_id or not entity:
+        return context, []
+    if not config.auto_ground_business_data or not config.structured_context_enabled:
+        return context, []
+    if config.workspace_mode(workspace_id) == "off" or config.runtime_fact_mode == "off":
+        return context, []
+
+    snapshot, _mode = capture_business_data_snapshot(
+        context=context,
+        args=args,
+        tool_call_id=tool_call_id,
+        provider=None,
+    )
+    if snapshot is None or grounding_snapshot_is_resolved(snapshot):
+        return context, []
+
+    # Imported lazily to keep the tool modules acyclic at import time.
+    from agent.tools.ontology_context import _build_structured_context
+
+    content, record = _build_structured_context(
+        args={
+            "ontology_id": ontology_id,
+            "resource": "object",
+            "key": entity,
+            "response_format": "structured",
+            "max_chars": 8000,
+        },
+        context=context,
+    )
+    if record is None or str(content or "").startswith("Error:"):
+        return context, []
+
+    registry = merge_read_documents_registry(context.read_documents, [record])
+    return replace(context, read_documents=registry), [record]
+
+
+def _attach_evidence_metadata(content: str, evidence_metadata: Mapping[str, Any]) -> str:
+    """Expose only the unified Runtime Fact receipt, never provider raw evidence IDs."""
+    text = str(content or "")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        payload["evidence_capability"] = evidence_metadata.get("evidence_capability")
+        if isinstance(evidence_metadata.get("runtime_evidence"), Mapping):
+            payload["runtime_evidence"] = dict(evidence_metadata["runtime_evidence"])
+        if evidence_metadata.get("error_code"):
+            payload["evidence_error"] = {
+                "code": evidence_metadata.get("error_code"),
+                "message": evidence_metadata.get("message"),
+            }
+        return json.dumps(payload, ensure_ascii=False)
+    return "{}\n\n<runtime-evidence>\n{}\n</runtime-evidence>".format(
+        text,
+        json.dumps(dict(evidence_metadata), ensure_ascii=False, separators=(",", ":")),
+    ).strip()
 
 
 def _build_provider_runtime_context(
