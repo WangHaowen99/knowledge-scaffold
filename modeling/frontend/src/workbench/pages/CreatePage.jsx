@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { createModelingProject } from '../lib/api.js';
+import { createModelingProject, downloadTermTemplate, savePackageDataSource } from '../lib/api.js';
 import { actions, store, materialPurposeLabel } from '../lib/appStore.js';
 import Icon from '../ui/Icon.jsx';
 
@@ -22,6 +22,7 @@ export default function CreatePage() {
   const [goal, setGoal] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const [packageDataSourceType, setPackageDataSourceType] = useState('neo4j');
   const input = useRef(null);
 
   const addFiles = (items) => {
@@ -36,12 +37,23 @@ export default function CreatePage() {
 
   const updateFile = (name, patch) => setFiles((current) => current.map((item) => item.name === name ? { ...item, ...patch } : item));
 
+  const downloadTemplate = async () => {
+    const response = await downloadTermTemplate();
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'term-table-template.xlsx';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  };
+
   const start = async () => {
     if (!name.trim() || creating) return;
     setCreating(true); setError('');
     try {
       const result = await createModelingProject({ name: name.trim(), background: goal.trim(), domain: '' });
       const projectId = result.project.id;
+      await savePackageDataSource(projectId, packageDataSourceType);
       store.set({
         demo: false,
         projectId,
@@ -138,9 +150,13 @@ export default function CreatePage() {
                 <div className="wb-material-directives">
                   <label><span>用途</span><select className="input" value={f.purpose} aria-label={`${f.name}的资料用途`}
                     onChange={(event) => updateFile(f.name, { purpose: event.target.value })}>
-                    {['auto', 'goal', 'schema', 'evidence'].map((value) => <option key={value} value={value}
-                      disabled={value === 'schema' && !table}>{materialPurposeLabel(value)}</option>)}
+                    {['auto', 'goal', 'schema', 'term', 'evidence'].map((value) => <option key={value} value={value}
+                      disabled={['schema', 'term'].includes(value) && !table}>{materialPurposeLabel(value)}</option>)}
                   </select></label>
+                  {f.purpose === 'term' && <button className="btn btn-sm" type="button"
+                    onClick={(event) => { event.stopPropagation(); void downloadTemplate(); }}>
+                    <Icon name="download" size={12} />下载模板
+                  </button>}
                   <label className="wb-material-reading"><input type="checkbox" checked={f.readingMode === 'full'}
                     onChange={(event) => updateFile(f.name, { readingMode: event.target.checked ? 'full' : 'on_demand' })} />
                     <span>全文精读</span></label>
@@ -150,6 +166,8 @@ export default function CreatePage() {
           </div>
 
           {error && <div className="card card-stale" style={{ marginTop: 'var(--s-5)' }}><div className="card-b">{error}</div></div>}
+
+          <DataSourceSelector value={packageDataSourceType} disabled={creating} onChange={setPackageDataSourceType} />
 
           <div className="btn-row" style={{ marginTop: 'var(--s-7)' }}>
             <button className="btn btn-p" style={{ padding: '9px 22px' }} disabled={!name.trim() || creating}
@@ -161,6 +179,40 @@ export default function CreatePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function DataSourceSelector({ value, disabled, onChange }) {
+  const options = [
+    {
+      value: 'neo4j',
+      title: 'Neo4j（默认）',
+    },
+    {
+      value: 'nl2sql',
+      title: 'NL2SQL',
+    },
+  ];
+  return (
+    <fieldset className="wb-data-source-choice" disabled={disabled}>
+      <legend>
+        <span>知识包数据源类型</span>
+        <span className="wb-help" tabIndex={0} aria-label="知识包数据源类型说明">?
+          <span className="wb-help-pop" role="tooltip">
+            选择知识包后续要连接的数据源类型。Neo4j 适合导入图数据库后查询，适合关系较多的场景。NL2SQL 适合直接基于表格数据查询。后续切换类型需要重新生成知识包。
+          </span>
+        </span>
+      </legend>
+      <div className="wb-data-source-options">
+        {options.map((option) => (
+          <label key={option.value} className={`wb-radio-card ${value === option.value ? 'on' : ''}`}>
+            <input type="radio" name="package-data-source" value={option.value}
+              checked={value === option.value} onChange={() => onChange(option.value)} />
+            <span>{option.title}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
   );
 }
 

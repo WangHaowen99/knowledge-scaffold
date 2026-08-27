@@ -5,6 +5,7 @@ import Icon from '../../ui/Icon.jsx';
 import { useRef, useState } from 'react';
 import MarkdownContent from '../../../MarkdownContent.jsx';
 import { userFacingText } from '../../lib/userFacingText.js';
+import { downloadTermTemplate } from '../../lib/api.js';
 
 export function Block({ block }) {
   switch (block.type) {
@@ -290,6 +291,15 @@ function LiveRelease({ interaction }) {
 }
 
 function UploadBlock({ block }) {
+  const downloadTemplate = async () => {
+    const response = await downloadTermTemplate(store.get().projectId);
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'term-table-template.xlsx';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  };
   const uploading = block.files.filter((file) => file.status === 'uploading').length;
   const parsed = block.files.filter((file) => file.status === 'parsed').length;
   const failed = block.files.filter((file) => !['uploading', 'parsing', 'parsed'].includes(file.status)).length;
@@ -317,8 +327,11 @@ function UploadBlock({ block }) {
         {canConfigure && <div className="wb-material-directives">
           <label><span>用途</span><select className="input" aria-label={`${file.name}的资料用途`} value={purpose}
             onChange={(event) => void actions.setMaterialDirectives(file.documentId, { purpose: event.target.value })}>
-            {['auto', 'goal', 'schema', 'evidence'].map((value) => <option key={value} value={value} disabled={value === 'schema' && !table}>{materialPurposeLabel(value)}</option>)}
+            {['auto', 'goal', 'schema', 'term', 'evidence'].map((value) => <option key={value} value={value} disabled={['schema', 'term'].includes(value) && !table}>{materialPurposeLabel(value)}</option>)}
           </select></label>
+          {purpose === 'term' && <button className="btn btn-sm" type="button" onClick={() => void downloadTemplate()}>
+            <Icon name="download" size={12} />下载模板
+          </button>}
           <label className="wb-material-reading"><input type="checkbox" checked={readingMode === 'full'}
             onChange={(event) => void actions.setMaterialDirectives(file.documentId, { readingMode: event.target.checked ? 'full' : 'on_demand' })} />
             <span>全文精读</span></label>

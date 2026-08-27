@@ -17,6 +17,7 @@ import {
   updateMaterialDirectives,
   uploadMaterial,
   uploadPackageSource,
+  savePackageDataSource,
 } from './api.js';
 
 /** demo 场景：对应设计草图的各屏状态。接后端后由真实事件驱动，这里只是入口。 */
@@ -80,6 +81,7 @@ const initial = {
   openTiers: { caliber: true, structural: false, index: false },
   policy: F.policy,
   confirmPolicy: [],
+  packageDataSource: { dataSourceType: 'neo4j' },
   reviewMode: null,                     // full | sequential | sampled
   widths: { left: 232, right: 384 },
   drawerOpen: false,
@@ -185,6 +187,7 @@ export const actions = {
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
         candidateDiff: candidate.files || [],
         confirmPolicy: snapshot.confirmPolicy || [],
+        packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
         selectedMaterial: snapshot.materials[0]?.id || '',
         run: agent.run,
         interaction: agent.interaction,
@@ -218,6 +221,7 @@ export const actions = {
       materials: snapshot.materials,
       candidateDiff: candidate.files || [],
       confirmPolicy: snapshot.confirmPolicy || [],
+      packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
     });
   },
   async loadFile(path) {
@@ -570,6 +574,21 @@ export const actions = {
       }));
       return null;
     }
+  },
+  async setPackageDataSource(dataSourceType) {
+    const { projectId, packageVersion } = store.get();
+    if (!projectId) return null;
+    const result = await savePackageDataSource(projectId, dataSourceType);
+    store.set({ packageDataSource: result.packageDataSource || { dataSourceType }, error: '' });
+    if (result.requiresRegeneration && result.message && packageVersion) {
+      actions.appendMessage({
+        id: optimisticId('package-data-source-note'),
+        role: 'assistant',
+        createdAt: new Date().toISOString(),
+        blocks: [{ type: 'text', text: result.message }],
+      });
+    }
+    return result;
   },
   async upload(filesLike, options = {}) {
     const { projectId } = store.get();
@@ -979,6 +998,7 @@ export function materialPurposeLabel(purpose) {
     auto: '由助手判断',
     goal: '建模目标依据',
     schema: '数据 Schema',
+    term: '术语表',
     evidence: '通用业务依据',
   })[purpose] || '由助手判断';
 }

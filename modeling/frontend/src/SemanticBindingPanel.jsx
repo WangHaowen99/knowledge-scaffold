@@ -144,6 +144,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
         ))}
         {!bindingStage && fieldSuggestions.map((ref) => {
           const id = refId(ref, ref.bindingKey);
+          const hasCoverageCount = Number.isFinite(ref.matchedValueCount) && Number.isFinite(ref.sourceValueCount);
           return (
             <article key={id} className="semantic-binding-item">
               <label className="semantic-binding-main">
@@ -157,6 +158,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
               </label>
               <div className="semantic-binding-meta">
                 {ref.sourceSheet ? `${ref.sourceSheet}.` : ''}{ref.sourceColumn} · 覆盖率 {Math.round(Number(ref.coverage ?? 0) * 100)}%
+                {hasCoverageCount ? ` · 命中 ${ref.matchedValueCount}/${ref.sourceValueCount} 个取值` : ''}
               </div>
             </article>
           );

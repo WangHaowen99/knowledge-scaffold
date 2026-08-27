@@ -1,5 +1,6 @@
 import type { DataDictField, DataDictTable, PackageSpec, SpecObject } from '../types.js';
 import { tableSourcesFor } from './source-references.js';
+import { isTermTable } from './term-table.js';
 
 const CODE_NAME = /(?:^|[_\-\s])(cd|code|id|no)(?:$|[_\-\s])|编号|代码|代号/iu;
 const SEMANTIC_NAME = /名称|中文|描述|名|name|desc|description/iu;
@@ -31,6 +32,8 @@ export interface SemanticBindingSuggestion {
     sourceColumn: string;
     sourceSheet?: string;
     coverage: number;
+    matchedValueCount?: number;
+    sourceValueCount?: number;
   }>;
   confidence: number;
   reasons: string[];
@@ -43,6 +46,8 @@ export interface SemanticFieldRefSuggestion {
   sourceSheet?: string;
   bindingKey: string;
   coverage: number;
+  matchedValueCount?: number;
+  sourceValueCount?: number;
 }
 
 function normalized(value: string): string {
@@ -78,20 +83,24 @@ function valueSet(table: DataDictTable | undefined, field: DataDictField): Set<s
   return new Set(values.map(normalized));
 }
 
-function coverage(
+function coverageStats(
   source: DataDictField,
   target: DataDictField,
   sourceTable?: DataDictTable,
   targetTable?: DataDictTable,
-): number {
+): { coverage: number; matchedValueCount: number; sourceValueCount: number } {
   const sourceValues = valueSet(sourceTable, source);
-  if (!sourceValues.size) return 0;
+  if (!sourceValues.size) return { coverage: 0, matchedValueCount: 0, sourceValueCount: 0 };
   const targetValues = valueSet(targetTable, target);
   let matched = 0;
   for (const value of sourceValues) {
     if (targetValues.has(value)) matched++;
   }
-  return matched / sourceValues.size;
+  return {
+    coverage: matched / sourceValues.size,
+    matchedValueCount: matched,
+    sourceValueCount: sourceValues.size,
+  };
 }
 
 function isCodeField(field: DataDictField): boolean {
@@ -198,6 +207,36 @@ function uniqueKey(base: string, used: Set<string>): string {
   return key;
 }
 
+function termTableBindingSuggestion(
+  spec: PackageSpec,
+  table: DataDictTable,
+  usedKeys: Set<string>,
+  existingBindingSignatures: Set<string>,
+): SemanticBindingSuggestion | null {
+  const valueField = table.fields[0];
+  const semanticField = table.fields[1];
+  if (!valueField?.name.trim() || !semanticField?.name.trim()) return null;
+  if (existingBindingSignatures.has(bindingSignature({
+    resource: table.name,
+    valueField: valueField.name,
+    semanticField: semanticField.name,
+  }))) return null;
+  return {
+    key: uniqueKey(keyFrom(table.name, valueField.name), usedKeys),
+    resource: table.name,
+    valueField: valueField.name,
+    semanticField: semanticField.name,
+    providerAlias: spec.defaultProviderAlias,
+    aliasFields: table.fields.slice(2).map((field) => field.name.trim()).filter(Boolean),
+    candidateFieldRefs: [],
+    confidence: 0.99,
+    reasons: [
+      `已上传术语表「${table.name}」，按固定列顺序识别第 1 列「${valueField.name}」为 value，第 2 列「${semanticField.name}」为 semantic`,
+      '第 3 列及后续列将作为 alias 字段；业务字段关联将在确认后单独推荐',
+    ],
+  };
+}
+
 export function suggestSemanticBindings(
   spec: PackageSpec,
   tables: DataDictTable[],
@@ -213,6 +252,15 @@ export function suggestSemanticBindings(
   const existingBindingSignatures = new Set((spec.valueBindings ?? []).map(bindingSignature));
 
   const suggestions: SemanticBindingSuggestion[] = [];
+  const termTables = tables.filter(isTermTable);
+  if (termTables.length) {
+    for (const table of termTables) {
+      const suggestion = termTableBindingSuggestion(spec, table, usedKeys, existingBindingSignatures);
+      if (suggestion) suggestions.push(suggestion);
+    }
+    return suggestions.sort((a, b) => b.confidence - a.confidence || a.key.localeCompare(b.key));
+  }
+
   for (const table of tables) {
     if (!isTerminologyResourceTable(table)) continue;
     const codeFields = table.fields.filter(isCodeField);
@@ -277,15 +325,17 @@ export function suggestSemanticFieldRefs(
         const { table: sourceTable, field: sourceField, sourceColumn } = sourceFieldByObject(object, tablesByName, field.key);
         if (!sourceField || !sourceTable) continue;
         if (sourceTable.name === resource.name && sourceColumn === valueField.name) continue;
-        const score = coverage(sourceField, valueField, sourceTable, resource);
-        if (score < 0.5) continue;
+        const stats = coverageStats(sourceField, valueField, sourceTable, resource);
+        if (stats.coverage < 0.5) continue;
         suggestions.push({
           objectKey: object.key,
           fieldKey: field.key,
           sourceColumn,
           sourceSheet: sourceTable.name,
           bindingKey: binding.key,
-          coverage: Number(score.toFixed(3)),
+          coverage: Number(stats.coverage.toFixed(3)),
+          matchedValueCount: stats.matchedValueCount,
+          sourceValueCount: stats.sourceValueCount,
         });
       }
     }

@@ -66,6 +66,39 @@ const importPlan = () => validateGraphImportMapping(graphSchema, parseExcel(work
     BOMItem: [['item_id', 'parent_code', 'name'], ['I-001', 'R-1', '机翼 BOM 行']],
   }), { maxRows: 50_000, rejectOverflow: true }), graphMapping);
 
+test('graph import mapping：导入 value_bindings 术语资源为图节点', () => {
+  const schema = {
+    ...graphSchema,
+    valueBindings: [{
+      key: 'status-code',
+      label: 'status_terms',
+      defaultSheet: 'status_terms',
+      valueField: 'STATUS_CODE',
+      semanticField: 'STATUS_NAME',
+      aliasFields: ['STATUS_ALIAS'],
+      propertyMappings: [
+        { property: 'STATUS_CODE', sourceColumn: 'STATUS_CODE' },
+        { property: 'STATUS_NAME', sourceColumn: 'STATUS_NAME' },
+        { property: 'STATUS_ALIAS', sourceColumn: 'STATUS_ALIAS' },
+      ],
+    }],
+  };
+  const tables = parseExcel(workbookBuffer({
+    Part: [['part_id', 'relation_code', 'name'], ['P-001', 'R-1', '机翼']],
+    BOMItem: [['item_id', 'parent_code', 'name'], ['I-001', 'R-1', '机翼 BOM 行']],
+    status_terms: [
+      ['STATUS_CODE', 'STATUS_NAME', 'STATUS_ALIAS'],
+      ['A', '启用', '有效'],
+      ['I', '停用', '无效'],
+    ],
+  }), { maxRows: 50_000, rejectOverflow: true });
+  const plan = validateGraphImportMapping(schema, tables, graphMapping);
+  const terms = plan.entities.find((entity) => entity.objectKey === 'status-code');
+  assert.equal(terms?.label, 'status_terms');
+  assert.equal(terms?.rows.length, 2);
+  assert.equal(plan.nodeCount, 4);
+});
+
 test('graph import Excel：保留字段注释和完整行，并拒绝静默截断', () => {
   const tables = parseExcel(workbookBuffer({
     Part: [

@@ -19,6 +19,7 @@ import {
   parsePackageManifest,
 } from './package-contract.js';
 import { normalizeFieldAlias } from './field-alias.js';
+import { parseObjectIndex, type ObjectIndexEntry } from './object-index.js';
 import { canonicalizePackageSpec } from './package-spec.js';
 
 const MAX_ZIP_BYTES = 50 * 1024 * 1024;
@@ -253,7 +254,12 @@ function optionalString(value: unknown): string | undefined {
   return text || undefined;
 }
 
-function parseObject(path: string, markdown: string, mapping: any): SpecObject {
+function parseObject(
+  path: string,
+  markdown: string,
+  mapping: any,
+  objectIndex: Map<string, ObjectIndexEntry> = new Map(),
+): SpecObject {
   const { data, body } = frontmatter(markdown, path);
   const key = String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? '').trim();
   const objectMapping = mapping?.objects?.[key];
@@ -267,6 +273,10 @@ function parseObject(path: string, markdown: string, mapping: any): SpecObject {
     ...(row[3] ? { evidence: row[3].split('；').map((item) => item.trim()).filter(Boolean) } : {}),
   })).filter((item) => item.relation && item.target);
   const sourceRefs = strings(data.sources).map(parseSource).filter((item): item is SourceRef => Boolean(item));
+  const indexedSourceSheet = objectIndex.get(key)?.sourceSheet;
+  const fallbackSourceRefs = sourceRefs.length || !indexedSourceSheet || indexedSourceSheet === '—'
+    ? []
+    : [{ kind: 'table' as const, table: indexedSourceSheet }];
   return {
     key,
     title: String(data.title ?? key),
@@ -275,7 +285,7 @@ function parseObject(path: string, markdown: string, mapping: any): SpecObject {
     ...(strings(data.aliases).length ? { aliases: strings(data.aliases) } : {}),
     ...(section(body, '查询边界') ? { queryBoundary: paragraph(section(body, '查询边界')) } : {}),
     ...(relations.length ? { relations } : {}),
-    ...(sourceRefs.length ? { sourceRefs } : {}),
+    ...(sourceRefs.length || fallbackSourceRefs.length ? { sourceRefs: sourceRefs.length ? sourceRefs : fallbackSourceRefs } : {}),
     ...(Array.isArray(objectMapping?.primary_key) ? { primaryKey: strings(objectMapping.primary_key) } : {}),
   };
 }
@@ -419,10 +429,11 @@ function parseRenderedSpec(
   ));
   if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
   const mapping = parseJson<any>(files['mappings/object-data-mappings.json'], '数据映射') ?? {};
+  const objectIndex = files['objects/index.md'] ? parseObjectIndex(files['objects/index.md']) : new Map();
   const detailPaths = (folder: string) => Object.keys(files)
     .filter((path) => path.startsWith(`${folder}/`) && path.endsWith('.md') && path !== `${folder}/index.md`)
     .sort();
-  const objects = detailPaths('objects').map((path) => parseObject(path, files[path], mapping));
+  const objects = detailPaths('objects').map((path) => parseObject(path, files[path], mapping, objectIndex));
   const operations = detailPaths('operations').map((path) => parseOperation(path, files[path]));
   const rules = detailPaths('rules').map((path) => parseRule(path, files[path]));
   const metrics = detailPaths('metrics').map((path) => parseMetric(path, files[path]));

@@ -1,8 +1,13 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
+import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { PackageArtifactStoreError } from '../artifacts/package-store.js';
 import { canReadProject, canWriteProject, claimAgentRuntime, getProject, projectMemberRole } from '../projects/repo.js';
 import { parsePackageArchive } from '../workflow/package-import.js';
+import {
+  getProjectPackageDataSourceSelection,
+  saveProjectPackageDataSourceSelection,
+} from '../workflow/package-data-source-selection.js';
 import { AgentCoreError, AgentCoreService } from './core-service.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 import {
@@ -18,6 +23,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
   const service = new AgentCoreService();
   const studioWrites = new StudioWriteService();
   const studioReviews = new StudioReviewService();
+  const artifacts = getPackageArtifactStore();
 
   app.get('/api/projects/:id/agent/snapshot', async (request, reply) => {
     let project = getProject(String((request.params as any).id ?? ''));
@@ -42,6 +48,39 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       return service.setWorkbenchConfirmPolicy(project.id, body.tier, body.mode);
     } catch (error) {
       return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/agent/package-data-source', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    return { packageDataSource: getProjectPackageDataSourceSelection(project.id) };
+  });
+
+  app.put('/api/projects/:id/agent/package-data-source', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const before = getProjectPackageDataSourceSelection(project.id).dataSourceType;
+      const saved = saveProjectPackageDataSourceSelection(
+        project.id,
+        (request.body as any)?.dataSourceType,
+      );
+      const current = await artifacts.current(project.id);
+      const currentType = current?.spec.dataSourceType ?? 'neo4j';
+      return {
+        packageDataSource: saved,
+        requiresRegeneration: Boolean(current && (before !== saved.dataSourceType || currentType !== saved.dataSourceType)),
+        message: current && currentType !== saved.dataSourceType
+          ? '数据源类型会影响 mapping 生成，修改后需要重新生成知识包才能生效。'
+          : '',
+      };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 

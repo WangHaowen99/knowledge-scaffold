@@ -19,9 +19,20 @@ export interface GraphImportRelationSchema {
   note?: string;
 }
 
+export interface GraphImportValueBindingSchema {
+  key: string;
+  label: string;
+  defaultSheet: string;
+  valueField: string;
+  semanticField: string;
+  aliasFields: string[];
+  propertyMappings: GraphImportPropertyMapping[];
+}
+
 export interface GraphImportPackageSchema {
   packageVersion: string;
   objects: GraphImportObjectSchema[];
+  valueBindings: GraphImportValueBindingSchema[];
   relations: GraphImportRelationSchema[];
 }
 

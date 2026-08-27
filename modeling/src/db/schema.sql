@@ -201,7 +201,7 @@ CREATE TABLE IF NOT EXISTS documents (
   filename      TEXT NOT NULL,
   kind          TEXT NOT NULL,
   purpose       TEXT NOT NULL DEFAULT 'auto'
-                  CHECK (purpose IN ('auto', 'goal', 'schema', 'evidence')),
+                  CHECK (purpose IN ('auto', 'goal', 'schema', 'evidence', 'term')),
   reading_mode  TEXT NOT NULL DEFAULT 'on_demand'
                   CHECK (reading_mode IN ('on_demand', 'full')),
   directive_revision INTEGER NOT NULL DEFAULT 0,
@@ -561,6 +561,8 @@ CREATE TABLE IF NOT EXISTS agent_candidate_workspaces (
   run_id            TEXT NOT NULL,
   owner             TEXT NOT NULL,
   base_revision_oid TEXT NOT NULL,
+  package_data_source_type TEXT NOT NULL DEFAULT 'neo4j'
+                    CHECK (package_data_source_type IN ('nl2sql', 'neo4j')),
   candidate_id      TEXT REFERENCES artifact_candidate_revisions(id) ON DELETE SET NULL,
   lease_expires_at  TEXT NOT NULL,
   credential_hash   TEXT,
@@ -847,6 +849,14 @@ CREATE TABLE IF NOT EXISTS project_data_sources (
   workspace_id      TEXT NOT NULL,
   ontology_id       TEXT,
   public_config_json TEXT NOT NULL DEFAULT '{}',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+-- 知识包生成使用的数据源类型。它只决定 mapping 资源命名，不保存真实连接信息。
+CREATE TABLE IF NOT EXISTS project_package_data_sources (
+  project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  data_source_type  TEXT NOT NULL CHECK (data_source_type IN ('nl2sql', 'neo4j')),
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
 );

@@ -10,6 +10,7 @@ import type {
   GraphImportObjectSchema,
   GraphImportPackageSchema,
   GraphImportRelationSchema,
+  GraphImportValueBindingSchema,
 } from './types.js';
 import { assertGraphLabel } from './graph-label.js';
 
@@ -113,6 +114,36 @@ function relations(spec: PackageSpec, files: PackageFiles): GraphImportRelationS
   return result;
 }
 
+function valueBindings(rawMapping: any): GraphImportValueBindingSchema[] {
+  const bindings = rawMapping?.value_bindings;
+  if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings)) return [];
+  return Object.entries<any>(bindings).map(([key, binding]) => {
+    const label = String(binding?.resource ?? '').trim();
+    const valueField = String(binding?.value_field ?? '').trim();
+    const semanticField = String(binding?.semantic_field ?? '').trim();
+    const aliasFields = Array.isArray(binding?.alias_fields)
+      ? binding.alias_fields.map((item: unknown) => String(item ?? '').trim()).filter(Boolean)
+      : [];
+    if (!key || !label || !valueField || !semanticField) {
+      throw new Error(`value_bindings.${key || '未命名'} 缺少 resource、value_field 或 semantic_field`);
+    }
+    assertGraphLabel(label, `术语绑定 ${key} 的 Neo4j Label`);
+    const propertyMappings = [valueField, semanticField, ...aliasFields].map((field) => {
+      assertGraphIdentifier(field, `术语绑定 ${key} 的 Property`);
+      return { property: field, sourceColumn: field };
+    });
+    return {
+      key,
+      label,
+      defaultSheet: label,
+      valueField,
+      semanticField,
+      aliasFields,
+      propertyMappings,
+    };
+  });
+}
+
 export function extractGraphImportSchema(spec: PackageSpec, files: PackageFiles): GraphImportPackageSchema {
   const rawObjectIndex = files['objects/index.md'];
   if (!rawObjectIndex) throw new Error('最终知识包缺少 objects/index.md');
@@ -126,6 +157,7 @@ export function extractGraphImportSchema(spec: PackageSpec, files: PackageFiles)
   return {
     packageVersion: spec.version,
     objects,
+    valueBindings: valueBindings(parsed),
     relations: relations(spec, files).filter((relation) => (
       mappedObjectKeys.has(relation.sourceObject) && mappedObjectKeys.has(relation.targetObject)
     )),
