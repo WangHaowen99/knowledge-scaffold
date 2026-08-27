@@ -25,7 +25,13 @@ import { getProjectDataSource } from '../evaluation/data-source-repo.js';
 import { EvaluationAuthenticationError } from '../evaluation/auth-session.js';
 import { getRunningEvaluationDatabaseImportRun } from '../evaluation/eval-db-import-repo.js';
 import { redactEvaluationDatabaseError, resolveEvaluationDatabaseTarget } from '../evaluation/evaluation-database-target.js';
-import { startCurrentEvaluation, startEvaluation, waitForEvaluation } from '../evaluation/engine.js';
+import {
+  cancelEvaluation,
+  isEvaluationActive,
+  startCurrentEvaluation,
+  startEvaluation,
+  waitForEvaluation,
+} from '../evaluation/engine.js';
 import { projectEvaluationDatabaseName } from '../evaluation/project-evaluation-database.js';
 import { advanceStage, getProject } from '../projects/repo.js';
 import type {
@@ -426,6 +432,7 @@ export class AgentCoreService {
     if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
+    if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id);
     const workspace = await this.ensureWorkspace(context);
     switch (tool) {
       case 'list_documents': return this.listDocuments(context.project.id);
@@ -3228,6 +3235,23 @@ export class AgentCoreService {
     return { roundId: ready.id, status: ready.status, total: ready.progress_total, passed: ready.pass_count,
       scope: getRound(String(ready.id))?.scope ?? { kind: 'current' },
       display: { text: ready.status === 'running' ? '评测正在后台运行' : '已读取最近一轮真实评测结果' } };
+  }
+
+  private async cancelEvaluation(projectId: string) {
+    if (!isEvaluationActive(projectId)) {
+      return {
+        cancelled: false,
+        idempotent: true,
+        display: { text: '当前没有运行中的评测' },
+      };
+    }
+    const round = await cancelEvaluation(projectId);
+    return {
+      cancelled: true,
+      roundId: round.id,
+      status: round.status,
+      display: { text: '当前评测已停止' },
+    };
   }
 
   private evaluationResults(projectId: string, args: Record<string, unknown>) {

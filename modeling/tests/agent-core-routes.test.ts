@@ -2552,6 +2552,17 @@ if __name__ == "__main__":
   assert.equal(confirmed.statusCode, 200, confirmed.body);
 });
 
+test('Agent 停止运行时取消评测工具可幂等执行', async (t) => {
+  const project = createProject({ owner: 'alice', name: '评测停止幂等' });
+  const app = appFor(t);
+
+  const cancelled = await tool(app, project.id, 'cancel_evaluation', {}, `run-${project.id}`);
+
+  assert.equal(cancelled.statusCode, 200, cancelled.body);
+  assert.equal(cancelled.json().cancelled, false);
+  assert.equal(cancelled.json().idempotent, true);
+});
+
 test('评测启动服从确定性门禁，评测库拒绝写 SQL', async (t) => {
   const project = createProject({ owner: 'alice', name: '评测工具门禁' });
   const app = appFor(t);

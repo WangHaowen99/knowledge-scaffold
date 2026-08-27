@@ -116,6 +116,8 @@ class LiveRun:
     reasoning_truncated: bool = False
     package_contract: dict[str, Any] = field(default_factory=dict)
     validation_repair: CandidateValidationRepairState = field(default_factory=CandidateValidationRepairState)
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    inflight_core_calls: set[asyncio.Task[Any]] = field(default_factory=set)
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -1306,9 +1308,32 @@ class AgentService:
         if run is None:
             raise AgentRuntimeError("RUN_NOT_ACTIVE", "当前没有运行中的 Agent", status=409)
         live = self._live.get(run.id)
-        if live and live.task and not live.task.done():
-            live.task.cancel()
+        if live:
+            live.cancel_event.set()
         updated = self.store.update_run(run.id, status=RUN_CANCELLED, error="用户已停止运行")
+        try:
+            await asyncio.wait_for(
+                self._gateway.call(
+                    project_id=project_id,
+                    run_id=run.id,
+                    token=live.token if live else "",
+                    tool="cancel_evaluation",
+                    arguments={},
+                ),
+                timeout=30,
+            )
+        except Exception as error:  # noqa: BLE001 - local cancellation must still complete
+            logger.warning("Could not cancel core evaluation for run %s: %s", run.id, error)
+        tasks: list[asyncio.Task[Any]] = []
+        if live:
+            tasks.extend(live.inflight_core_calls)
+            if live.task and not live.task.done():
+                tasks.append(live.task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._publish_state(project_id, run.id)
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
         return self._run_public(updated, self.store.project_state(project_id))
@@ -1508,6 +1533,8 @@ class AgentService:
                     release_declined=live.release_declined,
                     validation_repair=live.validation_repair,
                     package_contract=live.package_contract,
+                    cancel_event=live.cancel_event,
+                    inflight_core_calls=live.inflight_core_calls,
                 )
                 live.bundle = build_agent(
                     self.settings,

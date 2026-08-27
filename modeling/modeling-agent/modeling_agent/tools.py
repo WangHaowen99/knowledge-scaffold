@@ -107,6 +107,8 @@ class ToolContext:
     decision_card_requested: bool = False
     validation_repair: CandidateValidationRepairState = field(default_factory=lambda: CandidateValidationRepairState())
     package_contract: dict[str, Any] = field(default_factory=dict)
+    cancel_event: asyncio.Event | None = None
+    inflight_core_calls: set[asyncio.Task[Any]] | None = None
 
     def __post_init__(self) -> None:
         confirmation = self.package_contract.get("confirmation")
@@ -960,6 +962,8 @@ class CoreTool(Tool):
         self.context = context
 
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
+        if self.context.cancel_event is not None and self.context.cancel_event.is_set():
+            raise asyncio.CancelledError
         arguments = input_dict(inputs)
         arguments = _bounded_source_arguments(self.spec.name, arguments)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -980,9 +984,13 @@ class CoreTool(Tool):
             tool=self.spec.name,
             arguments=arguments,
         ))
+        if self.context.inflight_core_calls is not None:
+            self.context.inflight_core_calls.add(call)
         started = time.monotonic()
         try:
             while True:
+                if self.context.cancel_event is not None and self.context.cancel_event.is_set():
+                    raise asyncio.CancelledError
                 done, _pending = await asyncio.wait({call}, timeout=FULL_READ_PROGRESS_INTERVAL_SECONDS)
                 if done:
                     result = call.result()
@@ -1028,7 +1036,11 @@ class CoreTool(Tool):
                     })
         except BaseException:
             call.cancel()
+            await asyncio.gather(call, return_exceptions=True)
             raise
+        finally:
+            if self.context.inflight_core_calls is not None:
+                self.context.inflight_core_calls.discard(call)
         if _is_retryable_validation_failure(self.spec.name, result):
             result = self.context.validation_repair.decorate(result)
         elif not result.get("error"):

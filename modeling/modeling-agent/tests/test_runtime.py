@@ -1711,6 +1711,55 @@ async def test_normal_confirmation_core_failure_keeps_interaction_pending(settin
         await runtime.shutdown()
 
 
+async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(settings) -> None:
+    class BlockingEvaluationGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.evaluation_started = asyncio.Event()
+            self.evaluation_cancelled = asyncio.Event()
+
+        async def call(self, **kwargs):
+            tool = kwargs["tool"]
+            if tool == "run_evaluation":
+                self.calls.append(kwargs)
+                self.evaluation_started.set()
+                await self.evaluation_cancelled.wait()
+                return {
+                    "error": "EVALUATION_RUN_FAILED",
+                    "reason": "评测运行失败，本轮已停止",
+                }
+            if tool == "cancel_evaluation":
+                self.calls.append(kwargs)
+                self.evaluation_cancelled.set()
+                return {"cancelled": True, "roundId": "round-1", "status": "failed"}
+            return await super().call(**kwargs)
+
+    gateway = BlockingEvaluationGateway()
+    model = ScriptedModel(
+        [[ToolTurn("run_evaluation", {})], [ToolTurn("run_evaluation", {})]],
+        final="继续重试评测。",
+    )
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_cancel_evaluation",
+            token="token_1",
+            message="运行评测",
+        )
+        await asyncio.wait_for(gateway.evaluation_started.wait(), timeout=5)
+
+        cancelled = await runtime.cancel(project_id="project_cancel_evaluation")
+        await asyncio.sleep(0.05)
+
+        assert cancelled["status"] == "cancelled"
+        assert runtime.store.require_run(started["id"]).status == "cancelled"
+        assert [call["tool"] for call in gateway.calls].count("cancel_evaluation") == 1
+        assert [call["tool"] for call in gateway.calls].count("run_evaluation") == 1
+    finally:
+        await runtime.shutdown()
+
+
 async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("run_evaluation", {})], []],
