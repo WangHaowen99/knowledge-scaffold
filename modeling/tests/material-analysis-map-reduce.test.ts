@@ -107,6 +107,56 @@ test('资料分段 Map 按有限并发执行而非串行', async () => {
   assert.ok(observed.peak() <= 3, `峰值并发不得超过配置，实际 ${observed.peak()}`);
 });
 
+test('相同资料和模型的并发全文分析共享同一执行', async () => {
+  const project = createProject({ owner: 'tester', name: '合成并发去重' });
+  const observed = observedLlm({ delayMs: 40 });
+  const input = {
+    projectId: project.id,
+    projectContext: '合成场景',
+    tables: [],
+    documents: documents(['singleflight']),
+    llm: observed.llm,
+    concurrency: 2,
+    documentOnly: true,
+  };
+  const [first, second] = await Promise.all([
+    runMaterialAnalysisMapReduce(input),
+    runMaterialAnalysisMapReduce(input),
+  ]);
+  assert.equal(first.runId, second.runId);
+  assert.equal(observed.calls.get('singleflight.md'), 1);
+});
+
+test('来源集合不同的并发全文分析共享重叠文档的在途分块和汇总', async () => {
+  const project = createProject({ owner: 'tester', name: '合成跨范围并发复用' });
+  const observed = observedLlm({ delayMs: 80 });
+  const shared = documents(['shared'])[0];
+  const first = runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '完整资料范围',
+    tables: [],
+    documents: [shared, ...documents(['extra'])],
+    llm: observed.llm,
+    concurrency: 2,
+    documentOnly: true,
+  });
+  const second = runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '单文档精读',
+    tables: [],
+    documents: [shared],
+    llm: observed.llm,
+    concurrency: 2,
+    documentOnly: true,
+  });
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.notEqual(firstResult.runId, secondResult.runId, '不同来源集合仍应保留独立运行记录');
+  assert.equal(observed.calls.get('shared.md'), 1, '重叠文档的在途分块不得重复调用模型');
+  assert.equal(observed.calls.get('extra.md'), 1);
+  assert.equal(observed.reductions(), 2, '重叠文档汇总应共享，额外文档独立汇总');
+  assert.equal(secondResult.reusedChunks, 1, '加入在途分块应计入复用数量');
+});
+
 test('模型失败后重跑只续跑失败分段，不重新分析已完成分段', async () => {
   const project = createProject({ owner: 'tester', name: '合成断点续跑' });
   const observed = observedLlm({ failOnceFor: 'b.md' });

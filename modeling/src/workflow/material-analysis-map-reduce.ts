@@ -1,4 +1,5 @@
 import { Type } from '@earendil-works/pi-ai';
+import { createHash } from 'node:crypto';
 import type { LlmDeps } from '../llm/provider.js';
 import type {
   AnalysisResult,
@@ -760,7 +761,7 @@ function coverageFromPlan(plan: DocumentAnalysisPlan): AnalysisResult['documentR
   });
 }
 
-export async function runMaterialAnalysisMapReduce(input: {
+interface MaterialAnalysisMapReduceInput {
   projectId: string;
   projectContext: string;
   tables: DataDictTable[];
@@ -772,7 +773,90 @@ export async function runMaterialAnalysisMapReduce(input: {
   concurrency?: number;
   documentOnly?: boolean;
   finalizeAnalysis?: (analysis: AnalysisResult) => AnalysisResult;
-}): Promise<MaterialMapReduceResult> {
+}
+
+const inFlightMaterialAnalyses = new Map<string, Promise<MaterialMapReduceResult>>();
+const inFlightMaterialChunks = new Map<string, Promise<ChunkAnalysisPayload>>();
+const inFlightDocumentReductions = new Map<string, Promise<DocumentAnalysisPayload>>();
+
+function sharedExecution<T>(
+  executions: Map<string, Promise<T>>,
+  key: string,
+  execute: () => Promise<T>,
+): Promise<{ value: T; joined: boolean }> {
+  const existing = executions.get(key);
+  if (existing) return existing.then((value) => ({ value, joined: true }));
+  const running = Promise.resolve().then(execute);
+  executions.set(key, running);
+  void running.finally(() => {
+    if (executions.get(key) === running) executions.delete(key);
+  }).catch(() => undefined);
+  return running.then((value) => ({ value, joined: false }));
+}
+
+function chunkExecutionKey(
+  projectId: string,
+  plan: DocumentAnalysisPlan,
+  chunk: DocumentAnalysisChunk,
+): string {
+  return JSON.stringify([
+    projectId, plan.modelId, plan.protocolVersion,
+    chunk.documentKey, chunk.revisionFingerprint,
+    chunk.startOffset, chunk.endOffset, chunk.contentHash,
+  ]);
+}
+
+function documentReductionKey(
+  projectId: string,
+  plan: DocumentAnalysisPlan,
+  documentKey: string,
+  chunks: MaterialAnalysisChunkRecord[],
+): string {
+  const payloadHash = createHash('sha256').update(JSON.stringify(chunks.map((chunk) => ({
+    index: chunk.chunkIndex,
+    start: chunk.startOffset,
+    end: chunk.endOffset,
+    contentHash: chunk.contentHash,
+    payload: chunk.payload,
+  })))).digest('hex');
+  return JSON.stringify([
+    projectId, plan.modelId, plan.protocolVersion,
+    documentKey, chunks[0]?.revisionFingerprint ?? '', payloadHash,
+  ]);
+}
+
+function materialAnalysisInFlightKey(input: MaterialAnalysisMapReduceInput): string {
+  const plan = planDocumentAnalysis(input.documents, input.llm);
+  return JSON.stringify([
+    input.projectId,
+    materialSourceSetFingerprint({
+      purpose: input.documentOnly ? 'document_facts' : 'analysis',
+      tables: input.tables,
+      documents: input.documents,
+    }),
+    materialBriefFingerprint(input.confirmedBrief),
+    plan.modelId,
+    plan.protocolVersion,
+  ]);
+}
+
+export function runMaterialAnalysisMapReduce(
+  input: MaterialAnalysisMapReduceInput,
+): Promise<MaterialMapReduceResult> {
+  const key = materialAnalysisInFlightKey(input);
+  const existing = inFlightMaterialAnalyses.get(key);
+  if (existing) return existing;
+  const running = runMaterialAnalysisMapReduceOnce(input);
+  inFlightMaterialAnalyses.set(key, running);
+  void running.finally(() => {
+    if (inFlightMaterialAnalyses.get(key) === running) inFlightMaterialAnalyses.delete(key);
+  }).catch(() => undefined);
+  return running;
+}
+
+async function runMaterialAnalysisMapReduceOnce(
+  input: MaterialAnalysisMapReduceInput,
+): Promise<MaterialMapReduceResult> {
   const report = (progress: MaterialMapReduceProgress) => {
     try { input.onProgress?.(progress); } catch { /* 进度展示失败不能阻断分析 */ }
   };
@@ -794,7 +878,7 @@ export async function runMaterialAnalysisMapReduce(input: {
   }
   const contentByChunk = new Map(plan.chunks.map((chunk) => [`${chunk.documentKey}\0${chunk.chunkIndex}`, chunk]));
   const before = store.listChunks(run.id);
-  const reusedChunks = before.filter((chunk) => chunk.status === 'completed').length;
+  let reusedChunks = before.filter((chunk) => chunk.status === 'completed').length;
   store.updateStage(run.id, 'map');
 
   const reportMapProgress = (title: string, summary?: string) => {
@@ -813,7 +897,17 @@ export async function runMaterialAnalysisMapReduce(input: {
       if (!chunk) throw new Error(`分段计划已失效：${record.documentKey}#${record.chunkIndex}`);
       store.beginChunk(run.id, record);
       try {
-        const payload = await analyzeChunk(input.llm, chunk, input.observe?.(`document_map_${record.documentKey}_${record.chunkIndex}`));
+        const shared = await sharedExecution(
+          inFlightMaterialChunks,
+          chunkExecutionKey(input.projectId, plan, chunk),
+          () => analyzeChunk(
+            input.llm,
+            chunk,
+            input.observe?.(`document_map_${record.documentKey}_${record.chunkIndex}`),
+          ),
+        );
+        const payload = shared.value;
+        if (shared.joined) reusedChunks += 1;
         store.completeChunk(run.id, record, payload);
         reportMapProgress(
           `已分析 ${record.filename} 第 ${record.chunkIndex + 1} 段`,
@@ -852,13 +946,18 @@ export async function runMaterialAnalysisMapReduce(input: {
       const first = items[0];
       store.beginDocumentSummary(run.id, first);
       try {
-        const payload = await reduceDocumentHierarchically(
-          input.llm,
-          first,
-          items,
-          input.concurrency ?? Number(process.env.MODELING_MATERIAL_ANALYSIS_CONCURRENCY ?? 5),
-          input.observe?.(`document_reduce_${documentKey}`),
+        const shared = await sharedExecution(
+          inFlightDocumentReductions,
+          documentReductionKey(input.projectId, plan, documentKey, items),
+          () => reduceDocumentHierarchically(
+            input.llm,
+            first,
+            items,
+            input.concurrency ?? Number(process.env.MODELING_MATERIAL_ANALYSIS_CONCURRENCY ?? 5),
+            input.observe?.(`document_reduce_${documentKey}`),
+          ),
         );
+        const payload = shared.value;
         store.completeDocumentSummary(run.id, documentKey, payload);
         return payload;
       } catch (error) {
