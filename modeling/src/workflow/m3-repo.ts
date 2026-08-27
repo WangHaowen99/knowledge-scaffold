@@ -16,7 +16,14 @@ export interface EvalRound {
   phaseStartedAt?: string; currentItemStartedAt?: string;
   progressDone: number; progressTotal: number; passCount: number;
   log: string; createdAt: string; finishedAt?: string;
+  scope: EvaluationScope;
 }
+export type EvaluationScope = { kind: 'current' } | {
+  kind: 'fusion_source';
+  sourceId: string;
+  sourceName: string;
+  fingerprint: string;
+};
 export interface EvalResult {
   id: string; roundId: string; testcaseId: string;
   question: string; groundTruth: string; finalAnswer?: string;
@@ -125,21 +132,40 @@ const rowToRound = (r: any): EvalRound => ({
   currentItemStartedAt: r.current_item_started_at ?? undefined,
   progressDone: r.progress_done, progressTotal: r.progress_total, passCount: r.pass_count,
   log: r.log, createdAt: r.created_at, finishedAt: r.finished_at ?? undefined,
+  scope: parseEvaluationScope(r.evaluation_scope_json),
 });
+
+function parseEvaluationScope(raw: unknown): EvaluationScope {
+  try {
+    const parsed = JSON.parse(String(raw || '{"kind":"current"}')) as Record<string, unknown>;
+    if (parsed.kind === 'fusion_source') {
+      const sourceId = String(parsed.sourceId ?? '').trim();
+      const sourceName = String(parsed.sourceName ?? '').trim();
+      const fingerprint = String(parsed.fingerprint ?? '').trim();
+      if (sourceId && sourceName && fingerprint) {
+        return { kind: 'fusion_source', sourceId, sourceName, fingerprint };
+      }
+    }
+  } catch {
+    // 旧数据或损坏的可选元数据不得改变正式评测语义。
+  }
+  return { kind: 'current' };
+}
 
 export function createRound(
   projectId: string,
   packageVersion: string,
   total: number,
   artifactRevision?: string,
+  scope: EvaluationScope = { kind: 'current' },
 ): EvalRound {
   const id = uid('rd');
   const createdAt = nowIso();
   getDb().prepare(`INSERT INTO eval_rounds
     (id, project_id, package_version, status, progress_done, progress_total, pass_count,
-      phase, phase_started_at, log, artifact_revision_oid, created_at)
-    VALUES (?,?,?,'running',0,?,0,'workspace',?,'',?,?)`)
-    .run(id, projectId, packageVersion, total, createdAt, artifactRevision ?? null, createdAt);
+      phase, phase_started_at, log, artifact_revision_oid, evaluation_scope_json, created_at)
+    VALUES (?,?,?,'running',0,?,0,'workspace',?,'',?,?,?)`)
+    .run(id, projectId, packageVersion, total, createdAt, artifactRevision ?? null, JSON.stringify(scope), createdAt);
   return getRound(id)!;
 }
 export function getRound(id: string): EvalRound | null {
@@ -147,7 +173,8 @@ export function getRound(id: string): EvalRound | null {
   return r ? rowToRound(r as any) : null;
 }
 export function listRounds(projectId: string): EvalRound[] {
-  return getDb().prepare('SELECT * FROM eval_rounds WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map(rowToRound);
+  return getDb().prepare(`SELECT * FROM eval_rounds
+    WHERE project_id = ? ORDER BY created_at DESC, rowid DESC`).all(projectId).map(rowToRound);
 }
 export function roundLog(id: string, line: string): void {
   getDb().prepare("UPDATE eval_rounds SET log = log || ? WHERE id = ?").run(`${line}\n`, id);
@@ -220,6 +247,36 @@ export function addResult(roundId: string, input: {
 }
 export function listResults(roundId: string): EvalResult[] {
   return getDb().prepare('SELECT * FROM eval_results WHERE round_id = ? ORDER BY created_at').all(roundId).map(rowToResult);
+}
+
+export function latestEffectiveEvaluation(
+  projectId: string,
+  artifactRevision: string | null | undefined,
+  testcaseIds?: string[],
+): { latestRound: EvalRound | null; results: EvalResult[] } {
+  const revision = String(artifactRevision ?? '').trim();
+  if (!revision) return { latestRound: null, results: [] };
+  const latestRound = listRounds(projectId).find((round) => (
+    round.scope.kind === 'current' && round.artifactRevision === revision && round.status === 'done'
+  )) ?? null;
+
+  const requiredIds = testcaseIds ? new Set(testcaseIds) : null;
+  const rows = getDb().prepare(`SELECT result.*
+    FROM eval_results result
+    JOIN eval_rounds round ON round.id = result.round_id
+    WHERE round.project_id = ? AND round.artifact_revision_oid = ? AND round.status = 'done'
+      AND json_extract(round.evaluation_scope_json, '$.kind') = 'current'
+    ORDER BY round.created_at DESC, round.rowid DESC, result.created_at DESC, result.rowid DESC`)
+    .all(projectId, revision) as any[];
+  const seen = new Set<string>();
+  const results: EvalResult[] = [];
+  for (const row of rows) {
+    const testcaseId = String(row.testcase_id);
+    if (seen.has(testcaseId) || (requiredIds && !requiredIds.has(testcaseId))) continue;
+    seen.add(testcaseId);
+    results.push(rowToResult(row));
+  }
+  return { latestRound, results };
 }
 
 export function resultBelongsToProject(resultId: string, projectId: string): boolean {

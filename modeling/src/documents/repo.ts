@@ -18,6 +18,8 @@ function rowToDoc(r: any): DocumentRecord {
   return {
     id: r.id, projectId: r.project_id, sourceKey: r.source_key || r.id,
     revisionNo: Number(r.revision_no ?? 1), filename: r.filename, kind: r.kind,
+    purpose: r.purpose ?? 'auto', readingMode: r.reading_mode ?? 'on_demand',
+    directiveRevision: Number(r.directive_revision ?? 0),
     parseStatus: r.parse_status, parseError: r.parse_error ?? undefined,
     textContent: r.text_content ?? undefined,
     tables: r.tables_json ? JSON.parse(r.tables_json) : undefined,
@@ -94,6 +96,8 @@ export class DocumentRevisionRepo {
     parseStatus: DocumentRecord['parseStatus']; parseError?: string;
     textContent?: string; tables?: DataDictTable[]; rawContent?: Buffer;
     sourceKey?: string;
+    purpose?: NonNullable<DocumentRecord['purpose']>;
+    readingMode?: NonNullable<DocumentRecord['readingMode']>;
   }): { document: DocumentRecord; change: MaterialRevisionChange } {
     const filename = input.filename.trim();
     if (!filename) throw new Error('资料文件名不能为空');
@@ -119,14 +123,17 @@ export class DocumentRevisionRepo {
           WHERE id = ? AND lifecycle_status = 'active'`).run(now, previous.id);
       }
       this.db.prepare(`INSERT INTO documents
-        (id, project_id, source_key, revision_no, filename, kind, parse_status, parse_error,
-          text_content, tables_json, content_hash, semantic_hash, lifecycle_status,
+        (id, project_id, source_key, revision_no, filename, kind, purpose, reading_mode, parse_status, parse_error,
+          text_content, tables_json, raw_content, content_hash, semantic_hash, lifecycle_status,
           supersedes_id, created_at, retired_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'active', ?, ?, NULL)`)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'active', ?, ?, NULL)`)
         .run(
-          id, input.projectId, sourceKey, revisionNo, filename, input.kind, input.parseStatus,
+          id, input.projectId, sourceKey, revisionNo, filename, input.kind,
+          input.purpose ?? previous?.purpose ?? 'auto',
+          input.readingMode ?? previous?.readingMode ?? 'on_demand', input.parseStatus,
           input.parseError ?? null, input.textContent ?? null,
           input.tables ? JSON.stringify(input.tables) : null,
+          input.rawContent ?? null,
           contentHash, semanticHash, previous?.id ?? null, now,
         );
       if (ownsTransaction) this.db.exec('COMMIT');
@@ -149,9 +156,62 @@ export class DocumentRevisionRepo {
     };
   }
 
+  completeParse(id: string, input: {
+    parseStatus: 'parsed' | 'failed';
+    parseError?: string;
+    textContent?: string;
+    tables?: DataDictTable[];
+  }): { document: DocumentRecord; change: MaterialRevisionChange } {
+    const pending = this.get(id);
+    if (!pending) throw new Error('待解析资料不存在');
+    if (pending.parseStatus !== 'pending') throw new Error('资料解析已经结束');
+    const previous = pending.supersedesId
+      ? this.get(pending.supersedesId)
+      : undefined;
+    const previousWithHashes = previous ? this.ensureHashes(previous) : undefined;
+    const semanticHash = materialSemanticHash({
+      kind: pending.kind,
+      parseStatus: input.parseStatus,
+      parseError: input.parseError,
+      textContent: input.textContent,
+      tables: input.tables,
+    });
+    const formatOnly = Boolean(previousWithHashes
+      && previousWithHashes.semanticHash === semanticHash
+      && previousWithHashes.contentHash !== pending.contentHash);
+    const result = this.db.prepare(`UPDATE documents
+      SET parse_status = ?, parse_error = ?, text_content = ?, tables_json = ?, semantic_hash = ?
+      WHERE id = ? AND parse_status = 'pending'`).run(
+      input.parseStatus,
+      input.parseError ?? null,
+      input.textContent ?? null,
+      input.tables ? JSON.stringify(input.tables) : null,
+      semanticHash,
+      id,
+    );
+    if (Number(result.changes) !== 1) throw new Error('资料解析状态已被其他任务更新');
+    const document = this.get(id)!;
+    return {
+      document,
+      change: {
+        kind: previousWithHashes ? (formatOnly ? 'format_only' : 'replaced') : 'added',
+        semanticChanged: !previousWithHashes || previousWithHashes.semanticHash !== semanticHash,
+        sourceKey: document.sourceKey ?? document.id,
+        ...(previousWithHashes ? { previous: previousWithHashes } : {}),
+        current: document,
+      },
+    };
+  }
+
   list(projectId: string): DocumentRecord[] {
     const rows = this.db.prepare(`SELECT * FROM documents
       WHERE project_id = ? AND lifecycle_status = 'active' ORDER BY created_at`).all(projectId);
+    return (rows as any[]).map(rowToDoc);
+  }
+
+  pending(): DocumentRecord[] {
+    const rows = this.db.prepare(`SELECT * FROM documents
+      WHERE parse_status = 'pending' AND lifecycle_status = 'active' ORDER BY created_at`).all();
     return (rows as any[]).map(rowToDoc);
   }
 
@@ -167,6 +227,31 @@ export class DocumentRevisionRepo {
   get(id: string): DocumentRecord | null {
     const row = this.db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
     return row ? rowToDoc(row as any) : null;
+  }
+
+  rawContent(id: string): Buffer | null {
+    const row = this.db.prepare('SELECT raw_content FROM documents WHERE id = ?').get(id) as
+      { raw_content?: Uint8Array | null } | undefined;
+    return row?.raw_content ? Buffer.from(row.raw_content) : null;
+  }
+
+  updateDirectives(id: string, input: {
+    purpose: NonNullable<DocumentRecord['purpose']>;
+    readingMode: NonNullable<DocumentRecord['readingMode']>;
+    expectedDirectiveRevision?: number;
+  }): DocumentRecord {
+    const document = this.get(id);
+    if (!document || document.lifecycleStatus !== 'active') throw new Error('资料不存在或已经停用');
+    if (input.purpose === 'schema' && !['excel', 'csv'].includes(document.kind)) {
+      throw new Error('只有 Excel 或 CSV 表格可以指定为数据 Schema');
+    }
+    const expected = input.expectedDirectiveRevision ?? document.directiveRevision ?? 0;
+    const result = this.db.prepare(`UPDATE documents
+      SET purpose = ?, reading_mode = ?, directive_revision = directive_revision + 1
+      WHERE id = ? AND lifecycle_status = 'active' AND directive_revision = ?`)
+      .run(input.purpose, input.readingMode, id, expected);
+    if (Number(result.changes) !== 1) throw new Error('资料设置已在其他位置更新，请刷新后重试');
+    return this.get(id)!;
   }
 
   retire(id: string): MaterialRevisionChange {
@@ -203,8 +288,19 @@ export function insertDocumentRevision(input: Parameters<DocumentRevisionRepo['i
   return repo().insert(input);
 }
 
+export function completeDocumentParse(
+  id: string,
+  input: Parameters<DocumentRevisionRepo['completeParse']>[1],
+) {
+  return repo().completeParse(id, input);
+}
+
 export function listDocuments(projectId: string): DocumentRecord[] {
   return repo().list(projectId);
+}
+
+export function listPendingDocuments(): DocumentRecord[] {
+  return repo().pending();
 }
 
 export function listDocumentRevisions(projectId: string, sourceKey?: string): DocumentRecord[] {
@@ -213,6 +309,17 @@ export function listDocumentRevisions(projectId: string, sourceKey?: string): Do
 
 export function getDocument(id: string): DocumentRecord | null {
   return repo().get(id);
+}
+
+export function getDocumentRawContent(id: string): Buffer | null {
+  return repo().rawContent(id);
+}
+
+export function updateDocumentDirectives(
+  id: string,
+  input: Parameters<DocumentRevisionRepo['updateDirectives']>[1],
+): DocumentRecord {
+  return repo().updateDirectives(id, input);
 }
 
 export function deleteDocument(id: string): MaterialRevisionChange {

@@ -29,6 +29,10 @@ function replaceWorkspaceRoute(projectId, projectKind) {
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
+export function importedPackageStudioUrl(projectId) {
+  return `/workbench.html?project=${encodeURIComponent(projectId)}&studioView=graph`;
+}
+
 export default function App() {
   const [initialRoute] = useState(initialWorkspaceRoute);
   const [status, setStatus] = useState('checking'); // checking | out | in
@@ -93,6 +97,11 @@ export default function App() {
   const openProject = (project) => {
     const id = typeof project === 'string' ? project : project.id;
     const kind = typeof project === 'string' ? 'modeling' : (project.kind || 'modeling');
+    const runtime = typeof project === 'string' ? 'agent' : (project.runtime || 'legacy');
+    if (kind === 'modeling' || runtime === 'agent') {
+      window.location.assign(`/workbench.html?project=${encodeURIComponent(id)}`);
+      return;
+    }
     setProjectAccessNotice('');
     setProjectId(id);
     setProjectKind(kind);
@@ -125,7 +134,7 @@ export default function App() {
     try {
       const result = await importPackageWorkspace(file);
       setImportNotice((result.warnings ?? []).join('；'));
-      openProject(result.project);
+      window.location.assign(importedPackageStudioUrl(result.project.id));
     } catch (error) {
       setImportError(error instanceof Error ? error.message : '知识包导入失败');
     } finally {

@@ -7,6 +7,8 @@ export interface MaterialInventoryItem {
   parseStatus: DocumentRecord['parseStatus'];
   textLength: number;
   tableCount: number;
+  purpose: NonNullable<DocumentRecord['purpose']>;
+  readingMode: NonNullable<DocumentRecord['readingMode']>;
 }
 
 export function buildMaterialInventory(documents: DocumentRecord[]): MaterialInventoryItem[] {
@@ -17,6 +19,8 @@ export function buildMaterialInventory(documents: DocumentRecord[]): MaterialInv
     parseStatus: document.parseStatus,
     textLength: document.textContent?.length ?? 0,
     tableCount: document.tables?.length ?? 0,
+    purpose: document.purpose ?? 'auto',
+    readingMode: document.readingMode ?? 'on_demand',
   }));
 }
 

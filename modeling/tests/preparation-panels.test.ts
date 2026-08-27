@@ -39,9 +39,8 @@ test('统一项目设置不再暴露场景、代码生成和数据源流程开�
   assert.match(html, />正式交付</);
 });
 
-test('新建项目弹窗使用固定的新流程说明', () => {
-  assert.doesNotMatch(projectListSource, /toggleStep\('requiredSteps', 'scenario'\)/);
-  assert.doesNotMatch(projectListSource, /toggleStep\('enabledSteps', 'optimize'\)/);
-  assert.doesNotMatch(projectListSource, /toggleStep\('requiredSteps', 'data_source'\)/);
-  assert.match(projectListSource, /验证阶段固定包含场景推演、数据源绑定和评测/);
+test('新建项目入口直接进入新工作台的一步创建页', () => {
+  assert.match(projectListSource, /window\.location\.assign\('\/workbench\.html#\/create'\)/);
+  assert.doesNotMatch(projectListSource, /项目背景（可选）/);
+  assert.doesNotMatch(projectListSource, /资料级别/);
 });

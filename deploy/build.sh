@@ -101,11 +101,13 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "auth_server_image": "onto-agent-auth-server:${VERSION}",
   "jiuwenbox_image": "onto-agent-jiuwenbox:${VERSION}",
   "modeling_image": "mw-modeling:${VERSION}",
+  "modeling_agent_image": "mw-modeling-agent:${VERSION}",
   "backend_image_tar": "images/onto-agent-backend-${VERSION}.tar",
   "frontend_image_tar": "images/onto-agent-frontend-${VERSION}.tar",
   "auth_server_image_tar": "images/onto-agent-auth-server-${VERSION}.tar",
   "jiuwenbox_image_tar": "images/onto-agent-jiuwenbox-${VERSION}.tar",
   "modeling_image_tar": "images/mw-modeling-${VERSION}.tar",
+  "modeling_agent_image_tar": "images/mw-modeling-agent-${VERSION}.tar",
   "jiuwenswarm_commit": "d7c2ab2f299cd2c73201afb41ebb8b9c00cc7015"
 }
 EOF

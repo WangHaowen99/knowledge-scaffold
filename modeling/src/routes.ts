@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { AiConstructionOrchestrator } from './ai-construction/orchestrator.js';
 import { AiConstructionTaskGraph } from './ai-construction/task-graph.js';
 import { packageRepairAvailability } from './ai-construction/repair-availability.js';
@@ -10,23 +10,38 @@ import {
 import { PackageChatConversation } from './ai-construction/package-chat-conversation.js';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
+import { backgroundAuthSessions } from './auth/background-session.js';
 import { getDb } from './db/index.js';
-import { createProject, getProject, listProjects, setStage } from './projects/repo.js';
+import {
+  createProject,
+  getProject,
+  listProjectMembers,
+  listProjects,
+  projectMemberRole,
+  setProjectMember,
+  setStage,
+} from './projects/repo.js';
 import { deleteProjectLocalData } from './projects/delete-service.js';
 import {
+  completeDocumentParse,
   insertDocumentRevision,
   listDocuments,
   listDocumentRevisions,
   getDocument,
+  getDocumentRawContent,
   deleteDocument,
+  listPendingDocuments,
+  updateDocumentDirectives,
 } from './documents/repo.js';
+import { buildDocumentExport } from './documents/export.js';
 import {
   analyzeMaterialImpact,
   applyMaterialInvalidation,
   listMaterialImpacts,
   storeMaterialImpact,
 } from './documents/material-impact.js';
-import { kindOf, parseDocument } from './documents/parser.js';
+import { kindOf } from './documents/parser.js';
+import { parseDocumentIsolated } from './documents/parse-service.js';
 import { latestNodeOf, listNodes, runAnalyze, upsertNode } from './workflow/engine.js';
 import * as m2 from './workflow/m2.js';
 import * as m2repo from './workflow/m2-repo.js';
@@ -59,7 +74,6 @@ import {
   getCheck,
   runFormatChecks,
   runRuleChecks,
-  runSemanticCheck,
   saveCheck,
 } from './workflow/package-check.js';
 import { getPackageErrorDeferral } from './workflow/package-error-deferral.js';
@@ -104,6 +118,8 @@ import {
   evaluationDatabaseUrlSummary,
   selectEvaluationDatabaseUrlOverride,
 } from './evaluation/evaluation-database-target.js';
+import { validateEvaluationDatabaseExcelContents } from './evaluation/eval-db.js';
+import { shadowWorkspaceId } from './evaluation/shadow-workspace.js';
 import {
   cancelGraphImportUpload,
   cancelGraphImportRun,
@@ -155,6 +171,7 @@ import {
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
+import type { DocumentRecord } from './types.js';
 import { InFlightOperations, OperationAlreadyRunningError } from './in-flight-operations.js';
 import {
   assertNoActivePackageDraft,
@@ -171,9 +188,22 @@ import { registerArtifactRoutes, sendArtifactError } from './artifacts/routes.js
 import { registerAuthoringRoutes } from './authoring/routes.js';
 import { buildProjectAuditFiles } from './authoring/audit-export.js';
 import { getAuthoringState } from './authoring/state.js';
+import { reconcilePackageRepairState } from './authoring/package-repair-reconciliation.js';
+import { jobEtaFromProgress, startJobHeartbeat } from './authoring/job-observability.js';
+import { PiAuthoringAdapter } from './authoring/pi-adapter.js';
 import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
+import { registerAgentCoreRoutes } from './agent/core-routes.js';
+import { registerAgentLlmConfigRoutes } from './agent/llm-config-routes.js';
+import { registerPackageFusionRoutes } from './agent/package-fusion-routes.js';
+import { registerAgentProxyRoutes } from './agent/proxy-routes.js';
+import {
+  deliverAgentProjectEvents,
+  enqueueMaterialParseProjectEvent,
+  enqueuePackageImportedProjectEvent,
+  materialParseDeliveryContext,
+} from './agent/project-event-outbox.js';
 import { describeMaterialAnalysisFailure } from './workflow/material-analysis-failure.js';
 import {
   applySemanticBindingSelection,
@@ -219,6 +249,20 @@ function parseDraftRevision(value: unknown): number | null {
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
   const revision = Number(value);
   return Number.isSafeInteger(revision) ? revision : null;
+}
+
+function parseMaterialPurpose(value: unknown): NonNullable<DocumentRecord['purpose']> | undefined {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return undefined;
+  if (!['auto', 'goal', 'schema', 'evidence'].includes(normalized)) throw new Error('资料用途不正确');
+  return normalized as NonNullable<DocumentRecord['purpose']>;
+}
+
+function parseReadingMode(value: unknown): NonNullable<DocumentRecord['readingMode']> | undefined {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return undefined;
+  if (!['on_demand', 'full'].includes(normalized)) throw new Error('阅读方式不正确');
+  return normalized as NonNullable<DocumentRecord['readingMode']>;
 }
 
 function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
@@ -318,6 +362,25 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
   };
 }
 
+async function readQuickEvaluationDatabaseUpload(req: any): Promise<{
+  filename: string;
+  buffer: Buffer;
+}> {
+  let upload: { filename: string; buffer: Buffer } | undefined;
+  for await (const part of req.parts()) {
+    if (part.type !== 'file') continue;
+    if (upload) throw new Error('一次只能上传一个 Excel 文件');
+    upload = { filename: part.filename, buffer: await part.toBuffer() };
+  }
+  if (!upload) throw new Error('缺少 Excel 文件');
+  validateEvaluationDatabaseExcelContents(upload.filename, upload.buffer);
+  return upload;
+}
+
+function isAgentWorkflowFactRequest(req: FastifyRequest): boolean {
+  return (req.query as { workflow?: string } | undefined)?.workflow === 'agent';
+}
+
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
   // 错误响应统一按 code 挂上「接下来能做什么」：逐个路由补出口既改不动也守不住，
   // 集中派生后新增错误码只要在 error-next-actions 登记一次即可。
@@ -347,12 +410,93 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   ));
   const aiConstruction = new AiConstructionTaskGraph();
   const aiConstructionOrchestrator = new AiConstructionOrchestrator();
+  const documentParseQueues = new Map<string, Promise<void>>();
+  let documentParseTail = Promise.resolve();
+  const enqueueDocumentParse = (projectId: string, task: () => Promise<void>) => {
+    // 单份大型 DOCX 的瞬时内存可达数百 MB。全局串行 Worker 保护共享部署，HTTP 与对话不受阻塞。
+    const current = documentParseTail.catch(() => undefined).then(task);
+    documentParseTail = current;
+    documentParseQueues.set(projectId, current);
+    void current.catch((error) => {
+      app.log.error({ err: error, projectId }, '后台资料解析失败');
+    }).finally(() => {
+      if (documentParseQueues.get(projectId) === current) documentParseQueues.delete(projectId);
+    });
+  };
+  const processPendingDocument = async (
+    documentId: string,
+    authorization = '',
+    autoContinue?: boolean,
+    uploadBatchId?: string,
+    uploadBatchSize?: number,
+  ) => {
+    const pending = getDocument(documentId);
+    if (!pending || pending.parseStatus !== 'pending') return;
+    const storedDelivery = materialParseDeliveryContext(pending.projectId, pending.id);
+    const delivery = {
+      autoContinue: autoContinue ?? storedDelivery.autoContinue,
+      uploadBatchId: uploadBatchId || storedDelivery.uploadBatchId,
+      uploadBatchSize: Math.max(1, uploadBatchSize || storedDelivery.uploadBatchSize),
+    };
+    const buffer = getDocumentRawContent(documentId);
+    let parsed;
+    if (!buffer) {
+      parsed = { error: '原始文件内容不存在，无法继续解析' };
+    } else {
+      try {
+        parsed = await parseDocumentIsolated(pending.kind, buffer, pending.filename);
+      } catch (error) {
+        parsed = { error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    const completed = completeDocumentParse(documentId, {
+      parseStatus: parsed.error ? 'failed' : 'parsed',
+      parseError: parsed.error,
+      textContent: parsed.textContent,
+      tables: parsed.tables,
+    });
+    if (completed.document.lifecycleStatus !== 'active') return;
+    const currentPackage = await packageArtifacts.current(pending.projectId);
+    const impactAnalysis = analyzeMaterialImpact(completed.change, currentPackage?.spec);
+    storeMaterialImpact(getDb(), pending.projectId, completed.change, impactAnalysis);
+    const currentProject = getProject(pending.projectId);
+    if (currentProject?.runtime === 'agent') {
+      enqueueMaterialParseProjectEvent(pending.projectId, {
+        eventId: `material:${completed.document.id}:terminal`,
+        status: completed.document.parseStatus === 'parsed' ? 'parsed' : 'failed',
+        documentId: completed.document.id,
+        sourceKey: completed.document.sourceKey ?? completed.document.id,
+        filename: completed.document.filename,
+        revisionNo: completed.document.revisionNo ?? 1,
+        purpose: completed.document.purpose ?? 'auto',
+        readingMode: completed.document.readingMode ?? 'on_demand',
+        ...delivery,
+        ...(completed.document.parseError ? { parseError: completed.document.parseError } : {}),
+        changeKind: completed.change.kind,
+        semanticChanged: impactAnalysis.semanticChanged,
+      });
+      void deliverAgentProjectEvents(pending.projectId, authorization).catch((error) => {
+        app.log.warn({ err: error, projectId: pending.projectId }, '资料解析事件等待下次重试投递');
+      });
+    } else {
+      applyMaterialInvalidation(getDb(), pending.projectId, impactAnalysis);
+      if (currentProject?.stage === 'project_setup') setStage(pending.projectId, 'ingest');
+      aiConstructionOrchestrator.materialsUploaded(
+        pending.projectId,
+        completed.document,
+        listDocuments(pending.projectId),
+      );
+    }
+  };
   const legacyMigration = await migrateLegacyPackageOverrides();
   if (legacyMigration.projectCount) {
     const log = legacyMigration.failedCount || legacyMigration.pendingReviewCount
       ? app.log.warn.bind(app.log)
       : app.log.info.bind(app.log);
     log({ legacyMigration }, '旧版知识包人工覆盖迁移完成');
+  }
+  for (const pending of listPendingDocuments()) {
+    enqueueDocumentParse(pending.projectId, () => processPendingDocument(pending.id));
   }
   app.get('/health', async () => ({ status: 'ok' }));
 
@@ -371,6 +515,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return reply.code(503).send({ error: '认证服务暂不可用' });
     }
     if (!result) return reply.code(401).send({ error: '登录失败' });
+    backgroundAuthSessions.remember(result.user.username, result.token, result.refreshToken);
     const body: Record<string, unknown> = { token: result.token, user: result.user };
     // 上游提供 refresh 能力时加法追加（冻结契约 {token, user} 不变）
     if (result.refreshToken) {
@@ -387,6 +532,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const tokens = await getAuthClient().refresh(refresh_token);
       // 401 → 前端清 token 登出；503（上游不可达）→ 前端不登出
       if (!tokens) return reply.code(401).send({ error: 'Unauthorized' });
+      const user = await getAuthClient().verify(tokens.token);
+      if (user) backgroundAuthSessions.remember(user.username, tokens.token, tokens.refreshToken);
       return { token: tokens.token, refresh_token: tokens.refreshToken, expires_in: tokens.expiresIn };
     } catch {
       return reply.code(503).send({ error: '认证服务暂不可用' });
@@ -428,6 +575,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   app.register(async (r) => {
     r.addHook('onRequest', (_req, _reply, done) => runWithLlmRequest(done));
     r.addHook('preHandler', requireAuth);
+
+    registerAgentLlmConfigRoutes(r);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
 
@@ -561,21 +710,66 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     // ---- 项目（节点 1）----
     r.get('/api/projects', async (req) => ({
-      projects: listProjects(req.user!.username).map((project) => {
+      projects: await Promise.all(listProjects(req.user!.username).map(async (project) => {
         const construction = aiConstruction.snapshot(project.id);
         const currentTask = construction?.tasks.find(
           (task) => task.id === construction.progress.currentTaskId,
         );
+        let agentState: Record<string, unknown> | null = null;
+        if (project.runtime === 'agent') {
+          try {
+            const response = await fetch(
+              `${config.agentBaseUrl}/v1/projects/${encodeURIComponent(project.id)}/state`,
+              {
+                headers: { authorization: String(req.headers.authorization ?? '') },
+                signal: AbortSignal.timeout(3_000),
+              },
+            );
+            if (!response.ok) throw new Error(`Agent state returned ${response.status}`);
+            const payload = await response.json() as { state?: Record<string, unknown> };
+            agentState = payload.state ?? null;
+          } catch (error) {
+            req.log.warn({ err: error, projectId: project.id }, '项目列表暂时无法读取 Agent 状态');
+          }
+        }
         return {
           ...project,
+          accessRole: projectMemberRole(project.id, req.user!.username),
+          agentState,
           construction: construction ? {
             status: construction.status,
             progress: construction.progress,
             currentTask: currentTask ? { id: currentTask.id, title: currentTask.title } : null,
           } : null,
         };
-      }),
+      })),
     }));
+
+    r.get('/api/projects/:id/members', async (req, reply) => {
+      const project = getProject(String((req.params as any).id ?? ''));
+      if (!project || !projectMemberRole(project.id, req.user!.username)) {
+        return reply.code(404).send({ error: '项目不存在' });
+      }
+      return {
+        members: listProjectMembers(project.id),
+        canManage: project.owner === req.user!.username,
+      };
+    });
+
+    r.put('/api/projects/:id/members', async (req, reply) => {
+      const project = getProject(String((req.params as any).id ?? ''));
+      if (!project || project.owner !== req.user!.username) {
+        return reply.code(404).send({ error: '项目不存在' });
+      }
+      const body = (req.body ?? {}) as any;
+      try {
+        const role = body.role === 'modeler' ? 'modeler' : body.role === 'viewer' ? 'viewer' : null;
+        if (!role) return reply.code(400).send({ error: '请选择建模成员或只读成员' });
+        return { members: setProjectMember(project.id, project.owner, body.username, role) };
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
 
     r.post('/api/projects', async (req, reply) => {
       const b = (req.body ?? {}) as any;
@@ -583,6 +777,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const project = createProject({
         owner: req.user!.username, name: b.name, domain: b.domain,
         background: b.background, targetUsers: b.targetUsers, glossaryPrefs: b.glossaryPrefs,
+        runtime: b.runtime === 'agent' ? 'agent' : 'legacy',
       });
       return reply.code(201).send({ project });
     });
@@ -604,6 +799,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const project = createProject({
         owner: req.user!.username,
         kind: 'package',
+        runtime: 'agent',
         name: imported.spec.name,
         domain: '已有知识包',
         background: `从 ${file.filename} 导入，进入知识包工作区继续检查和改进。`,
@@ -622,6 +818,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             actorKind: 'user',
             actorName: req.user!.username,
           },
+        });
+        enqueuePackageImportedProjectEvent(project.id, {
+          eventId: `package-import:${project.id}:${saved.revision.oid}`,
+          baselineRevision: saved.revision.oid,
+          packageName: imported.spec.name,
+          packageVersion: saved.packageVersion,
+          sourceFilename: String(file.filename),
+          fileCount: Object.keys(imported.rawFiles).length,
         });
         setStage(project.id, 'review');
         const findings = runFormatChecks(imported.spec, imported.files);
@@ -670,44 +874,120 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/documents', async (req, reply) => {
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
-      return withLock(`${p.id}:document-upload`, reply, async () => {
+      const replacementOf = String((req.query as any)?.replacementOf ?? '').trim();
+      const autoContinue = String((req.query as any)?.agentFollowUp ?? '1') !== '0';
+      const uploadBatchId = String((req.query as any)?.uploadBatchId ?? '').trim().slice(0, 200);
+      const requestedBatchSize = Number((req.query as any)?.uploadBatchSize);
+      const uploadBatchSize = Number.isSafeInteger(requestedBatchSize) && requestedBatchSize > 0
+        ? Math.min(requestedBatchSize, 100)
+        : 1;
+      return withLock(`${p.id}:document-upload:${replacementOf || req.id}`, reply, async () => {
+        const replaced = replacementOf ? getDocument(replacementOf) : undefined;
+        if (replacementOf && (!replaced || replaced.projectId !== p.id || replaced.lifecycleStatus !== 'active')) {
+          return reply.code(409).send({ error: '要替换的资料已经变化，请刷新后重新选择新版本' });
+        }
         const file = await (req as any).file();
         if (!file) return reply.code(400).send({ error: '缺少上传文件' });
         const buffer = await file.toBuffer();
-        const kind = kindOf(file.filename);
-        const result = await parseDocument(kind, buffer);
+        const filename = String(file.filename ?? 'material');
+        const kind = kindOf(filename);
+        let purpose: NonNullable<DocumentRecord['purpose']> | undefined;
+        let readingMode: NonNullable<DocumentRecord['readingMode']> | undefined;
+        try {
+          purpose = parseMaterialPurpose((req.query as any)?.purpose);
+          readingMode = parseReadingMode((req.query as any)?.readingMode);
+        } catch (error) {
+          return reply.code(400).send({ error: error instanceof Error ? error.message : '资料设置不正确' });
+        }
+        if (purpose === 'schema' && !['excel', 'csv'].includes(kind)) {
+          return reply.code(400).send({ error: '只有 Excel 或 CSV 表格可以指定为数据 Schema' });
+        }
         const revision = insertDocumentRevision({
-          projectId: p.id, filename: file.filename, kind,
-          parseStatus: result.error ? 'failed' : 'parsed', parseError: result.error,
-          textContent: result.textContent, tables: result.tables, rawContent: buffer,
+          projectId: p.id, filename, kind,
+          parseStatus: 'pending', rawContent: buffer,
+          sourceKey: replaced?.sourceKey,
+          ...(purpose ? { purpose } : {}),
+          ...(readingMode ? { readingMode } : {}),
         });
         const doc = revision.document;
-        const currentPackage = await packageArtifacts.current(p.id);
-        const impactAnalysis = analyzeMaterialImpact(revision.change, currentPackage?.spec);
-        const materialImpact = storeMaterialImpact(getDb(), p.id, revision.change, impactAnalysis);
-        const invalidation = applyMaterialInvalidation(getDb(), p.id, impactAnalysis);
-        if (p.stage === 'project_setup') setStage(p.id, 'ingest');
-        const materialUpdate = aiConstructionOrchestrator.materialsUploaded(
-          p.id,
-          doc,
-          listDocuments(p.id),
-        );
-        return reply.code(201).send({
+        const authorization = String(req.headers.authorization ?? '');
+        if (p.runtime === 'agent') {
+          enqueueMaterialParseProjectEvent(p.id, {
+            eventId: `material:${doc.id}:parsing`,
+            status: 'parsing',
+            documentId: doc.id,
+            sourceKey: doc.sourceKey ?? doc.id,
+            filename: doc.filename,
+            revisionNo: doc.revisionNo ?? 1,
+            purpose: doc.purpose ?? 'auto',
+            readingMode: doc.readingMode ?? 'on_demand',
+            autoContinue,
+            uploadBatchId: uploadBatchId || doc.id,
+            uploadBatchSize,
+          });
+          void deliverAgentProjectEvents(p.id, authorization).catch((error) => {
+            req.log.warn({ err: error, projectId: p.id }, '资料解析开始事件等待下次重试投递');
+          });
+        }
+        enqueueDocumentParse(p.id, () => processPendingDocument(
+          doc.id,
+          authorization,
+          autoContinue,
+          uploadBatchId || doc.id,
+          uploadBatchSize,
+        ));
+        return reply.code(202).send({
+          accepted: true,
           document: doc,
           materialRevision: {
             sourceKey: doc.sourceKey,
             revisionNo: doc.revisionNo,
-            changeKind: revision.change.kind,
-            semanticChanged: revision.change.semanticChanged,
+            parseStatus: 'pending',
           },
-          materialImpact,
-          invalidation,
-          ...(materialUpdate ? {
-            aiConstruction: materialUpdate.aiConstruction,
-            aiConstructionMessage: materialUpdate.message,
-          } : {}),
         });
       });
+    });
+
+    r.patch('/api/projects/:id/documents/:docId/directives', async (req, reply) => {
+      const project = getProject((req.params as any).id);
+      if (!project || project.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      const document = getDocument((req.params as any).docId);
+      if (!document || document.projectId !== project.id || document.lifecycleStatus !== 'active') {
+        return reply.code(404).send({ error: '资料不存在' });
+      }
+      try {
+        const purpose = parseMaterialPurpose((req.body as any)?.purpose) ?? document.purpose ?? 'auto';
+        const readingMode = parseReadingMode((req.body as any)?.readingMode) ?? document.readingMode ?? 'on_demand';
+        const expectedDirectiveRevision = Number((req.body as any)?.expectedDirectiveRevision);
+        if (!Number.isSafeInteger(expectedDirectiveRevision) || expectedDirectiveRevision < 0) {
+          return reply.code(400).send({ error: '缺少有效的资料设置版本，请刷新后重试' });
+        }
+        return { document: updateDocumentDirectives(document.id, {
+          purpose, readingMode, expectedDirectiveRevision,
+        }) };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '资料设置保存失败';
+        return reply.code(message.includes('其他位置更新') ? 409 : 400).send({ error: message });
+      }
+    });
+
+    r.get('/api/projects/:id/documents/:docId/download', async (req, reply) => {
+      const p = getProject((req.params as any).id);
+      if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      const document = getDocument((req.params as any).docId);
+      if (!document || document.projectId !== p.id) {
+        return reply.code(404).send({ error: '建模资料不存在' });
+      }
+      const exported = buildDocumentExport(document, getDocumentRawContent(document.id));
+      if (!exported) {
+        return reply.code(409).send({ error: '该历史资料没有可复用的原始内容' });
+      }
+      reply.header('Content-Type', exported.contentType);
+      reply.header('Content-Length', exported.buffer.byteLength);
+      reply.header('Content-Disposition',
+        `attachment; filename="material"; filename*=UTF-8''${encodeURIComponent(exported.filename)}`);
+      reply.header('X-Material-Export-Mode', exported.mode);
+      return reply.send(exported.buffer);
     });
 
     r.delete('/api/projects/:id/documents/:docId', async (req, reply) => {
@@ -738,6 +1018,18 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const { tables, documents: textDocs } = buildMaterialContext(docs);
       if (!tables.length && !textDocs.length) return reply.code(400).send({ error: '尚无可分析的资料，请先上传文档' });
       const analyzeKey = `${p.id}:analyze`;
+      const existingJob = authoringState.snapshot(p.id).activeRuns.find((run) => (
+        run.state?.purpose === 'material_analysis'
+        && (run.status === 'queued' || run.status === 'running')
+      ));
+      if (existingJob) {
+        return reply.code(202).send({
+          accepted: true,
+          packageRevision: existingJob.baseRevision,
+          aiConstruction: aiConstruction.snapshot(p.id),
+          job: existingJob,
+        });
+      }
       if (inFlight.current(analyzeKey)) {
         return reply.code(409).send({ error: '项目正在处理中', code: 'busy' });
       }
@@ -751,8 +1043,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
       }
       const startedAt = Date.now();
-      // 先把任务标成执行中再返回，界面立刻就能显示「正在分析」
+      // 业务任务图必须先成功进入执行态，避免同步校验失败却留下一个永远 running 的 Job。
       const startedUpdate = aiConstructionOrchestrator.startMaterialAnalysis(p.id);
+      const jobAdapter = new PiAuthoringAdapter(authoringState);
+      const job = jobAdapter.start(p.id, '资料分析', packageAtStart.revision.oid, {
+        purpose: 'material_analysis',
+        phase: '资料解析',
+        currentStep: '准备读取建模资料',
+        progress: 0,
+        retryCount: 0,
+      });
+      const stopHeartbeat = startJobHeartbeat(jobAdapter, p.id, job.run.id, {
+        phase: '资料分析',
+        currentStep: '读取建模资料',
+        progress: 0,
+        retryCount: 0,
+      });
       // 资料分析要跑几分钟到几十分钟，不占请求：进度和结果都走事件流回前端
       void inFlight.run(analyzeKey, 'analyze', async () => {
         {
@@ -762,14 +1068,27 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             tables,
             textDocs,
             undefined,
-            (progress) => aiConstructionOrchestrator.reportMaterialAnalysisProgress(p.id, {
-              title: progress.title,
-              summary: progress.summary,
-              percent: progress.percent,
-              elapsedSeconds: Math.max(1, Math.round((Date.now() - startedAt) / 1_000)),
-            }),
+            (progress) => {
+              const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1_000));
+              aiConstructionOrchestrator.reportMaterialAnalysisProgress(p.id, {
+                title: progress.title,
+                summary: progress.summary,
+                percent: progress.percent,
+                elapsedSeconds,
+              });
+              jobAdapter.heartbeat(p.id, job.run.id, {
+                phase: progress.phase,
+                currentStep: progress.title,
+                progress: progress.percent,
+                retryCount: 0,
+                eta: jobEtaFromProgress(progress.percent, elapsedSeconds),
+              });
+            },
             confirmedBrief,
           );
+          jobAdapter.heartbeat(p.id, job.run.id, {
+            phase: '候选整理', currentStep: '整理分析结果', progress: 90, retryCount: 0,
+          });
           const [packageAtCompletion, currentDocuments] = await Promise.all([
             packageArtifacts.current(p.id),
             Promise.resolve(listDocuments(p.id)),
@@ -798,6 +1117,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           // 重跑早期节点不能让已到达的项目阶段倒退。
           setProjectStage(p.id, 'analyze');
           void completed;
+          jobAdapter.complete(p.id, job.run.id, {
+            phase: '已完成', currentStep: '分析结果已写入', progress: 100, retryCount: 0,
+          });
         }
       }).catch((error) => {
         // 后台失败没有 HTTP 响应可用：failMaterialAnalysis 会写一条带
@@ -809,11 +1131,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             failure.userMessage,
           );
         } catch { /* 收尾失败不再向上抛 */ }
+        try {
+          jobAdapter.fail(p.id, job.run.id, error instanceof Error ? error.message : String(error), {
+            phase: '失败', currentStep: '分析未完成', retryCount: 0,
+            errorCode: error instanceof Error ? error.name : 'MATERIAL_ANALYSIS_FAILED',
+            recoveryAction: 'analyze_materials',
+          });
+        } catch { /* 运行记录收尾失败不覆盖原错误 */ }
+      }).finally(() => {
+        stopHeartbeat();
       });
       return reply.code(202).send({
         accepted: true,
         packageRevision: packageAtStart.revision.oid,
         aiConstruction: startedUpdate.aiConstruction,
+        job: job.run,
       });
     });
 
@@ -850,7 +1182,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if ((req.body as { confirmed?: boolean } | null)?.confirmed !== true) {
         return reply.code(400).send({ error: '请确认删除项目' });
       }
-      const runningOperation = inFlight.currentByPrefix(`${p.id}:`)
+      const runningOperation = (documentParseQueues.has(p.id) ? 'document-parse' : null)
+        ?? inFlight.currentByPrefix(`${p.id}:`)
         ?? (getRunningEvaluationDatabaseImportRun(p.id) ? 'evaluation-database-import' : null);
       if (runningOperation) {
         return reply.code(409).send({
@@ -914,7 +1247,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           packageArtifacts.readPackageFiles(c.p.id, pv.revision.oid),
           getActivePackageDraft(c.p.id),
         ]);
-        const rendered = renderPackage(snapshot.spec);
+        // 导入包的原始脚本可能早于当前生成契约。读取文件树只做原始文件与规范渲染
+        // 的对照，不应把生成期安全校验变成整个工作区的 500；正式检查和发布仍会报出契约问题。
+        const rendered = renderPackage(snapshot.spec, { validateScripts: false });
         const indexedVersion = getDb().prepare(`SELECT revision_oid FROM package_versions
           WHERE project_id = ? AND version = ? AND revision_oid IS NOT NULL
           ORDER BY rowid DESC LIMIT 1`)
@@ -956,7 +1291,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const pv = await pickVersion(c.p.id, req);
         if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
         const file = await packageArtifacts.readFile(c.p.id, `package/${path}`, pv.revision.oid);
-        const rendered = renderPackage(pv.spec)[path];
+        const rendered = renderPackage(pv.spec, { validateScripts: false })[path];
         return {
           path,
           content: file.content,
@@ -1291,24 +1626,46 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/package/chat', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      if (c.p.runtime === 'agent') {
+        return reply.code(410).send({
+          code: 'UNIFIED_AGENT_RUNTIME_REQUIRED',
+          error: '此项目已进入统一建模工作台，请直接在工作台输入框继续；旧知识包助手不会启动',
+        });
+      }
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-chat');
       if (blocked) return blocked;
       const { message, requestId } = (req.body ?? {}) as { message?: string; requestId?: string };
       if (!message?.trim()) return reply.code(400).send({ error: '请输入内容' });
       const chatKey = `${c.p.id}:chat`;
+      const turnId = String(requestId || req.id);
+      const existingJob = authoringState.snapshot(c.p.id).activeRuns.find((run) => (
+        run.state?.purpose === 'package_chat' && run.state?.turnId === turnId
+      ));
+      if (existingJob) {
+        return reply.code(202).send({
+          status: 'accepted', requestId: turnId, runId: existingJob.id, job: existingJob,
+        });
+      }
       if (inFlight.current(chatKey)) return reply.code(409).send({ error: '项目正在处理中' });
 
-      const turnId = String(requestId || req.id);
       const history = packageChatConversation.history(c.p.id);
       const userMessage = packageChatConversation.beginTurn(c.p.id, turnId, message.trim());
       const started = authoringState.apply({
         kind: 'start_run',
         projectId: c.p.id,
         intent: '建模助手分析',
-        state: { purpose: 'package_chat', turnId },
+        state: {
+          purpose: 'package_chat', turnId, phase: '模型分析',
+          currentStep: '准备建模助手请求', progress: 0, retryCount: 0,
+        },
       });
       if (started.kind !== 'run') throw new Error('建模助手任务创建失败');
       const runId = started.run.id;
+      const jobAdapter = new PiAuthoringAdapter(authoringState);
+      const stopHeartbeat = startJobHeartbeat(jobAdapter, c.p.id, runId, {
+        phase: '模型分析', currentStep: '等待模型响应', progress: 10, retryCount: 0,
+      });
+      const chatStartedAt = Date.now();
       const finishRun = (status: 'completed' | 'failed', error?: unknown) => {
         try {
           authoringState.apply({
@@ -1319,12 +1676,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             ...(status === 'failed' ? {
               error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000)
                 || '建模助手处理失败',
+              state: {
+                phase: '失败', currentStep: '建模助手未完成',
+                errorCode: error instanceof Error ? error.name : 'PACKAGE_CHAT_FAILED',
+                recoveryAction: 'retry_package_chat', retryCount: 0,
+              },
             } : {}),
           });
         } catch { /* 对话消息已经落库，运行状态收尾失败不覆盖结果 */ }
       };
 
       void inFlight.run(chatKey, 'package-chat', async () => {
+        jobAdapter.heartbeat(c.p.id, runId, {
+          phase: '模型分析', currentStep: '读取资料并生成答复', progress: 40, retryCount: 0,
+          eta: jobEtaFromProgress(40, Math.max(1, Math.round((Date.now() - chatStartedAt) / 1_000))),
+        });
         const result = await runPackageChatPlan(c.p, history, message.trim(), {
           documents: c.ctx.documents,
           materials: c.ctx.materials,
@@ -1332,13 +1698,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           documentAccess: 'full-read-only',
         });
         packageChatConversation.finishTurn(c.p.id, turnId, result);
+        jobAdapter.heartbeat(c.p.id, runId, {
+          phase: '结果写入', currentStep: '保存建模助手答复', progress: 95, retryCount: 0,
+          eta: jobEtaFromProgress(95, Math.max(1, Math.round((Date.now() - chatStartedAt) / 1_000))),
+        });
       }).then(
         () => finishRun('completed'),
         (error) => {
           packageChatConversation.failTurn(c.p.id, turnId, '建模助手处理失败', error);
           finishRun('failed', error);
         },
-      );
+      ).finally(stopHeartbeat);
       return reply.code(202).send({
         status: 'accepted',
         requestId: turnId,
@@ -1355,7 +1725,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       });
     });
 
-    // 包体检：规则引擎（确定性）+ 语义检查（LLM）；结果落库供回看
+    // 包体检只执行确定性的格式、引用、来源映射和规则检查；结果落库供回看。
     r.post('/api/projects/:id/package/check', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
@@ -1369,14 +1739,52 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const snapshot = await packageArtifacts.readPackageFiles(c.p.id, latest.revision.oid);
         const formatFindings = runFormatChecks(latest.spec, snapshot.files);
         const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, packageIntentQuestions(latest.spec));
-        const semanticFindings = await runSemanticCheck(c.p, latest.spec);
-        const findings = [
-          ...formatFindings,
-          ...ruleFindings,
-          ...semanticFindings,
-        ]
+        const findings = [...formatFindings, ...ruleFindings]
           .sort((a, b) => ['错误', '警告', '提示'].indexOf(a.severity) - ['错误', '警告', '提示'].indexOf(b.severity));
         saveCheck(c.p.id, latest.packageVersion, findings, latest.revision.oid);
+        const packageRepair = reconcilePackageRepairState({
+          projectId: c.p.id,
+          revision: latest.revision.oid,
+          check: getCheck(c.p.id),
+          state: authoringState,
+        });
+        const counts = {
+          errors: findings.filter((finding) => finding.severity === '错误').length,
+          warnings: findings.filter((finding) => finding.severity === '警告').length,
+          hints: findings.filter((finding) => finding.severity === '提示').length,
+        };
+        const constructionUpdate = aiConstructionOrchestrator.reconcileKnowledgeStructureValidation(
+          c.p.id,
+          {
+            packageRevisionOid: latest.revision.oid,
+            messageKey: [
+              'knowledge.rechecked', latest.revision.oid.slice(0, 16),
+              counts.errors, counts.warnings, counts.hints,
+            ].join('.'),
+            version: latest.packageVersion,
+            counts: {
+              operations: latest.spec.operations.length,
+              objects: latest.spec.objects.length,
+              relations: latest.spec.objects.reduce(
+                (total, object) => total + (object.relations?.length ?? 0),
+                0,
+              ),
+              rules: latest.spec.rules?.length ?? 0,
+              metrics: latest.spec.metrics?.length ?? 0,
+            },
+            validation: {
+              ...counts,
+              findings: findings.map((finding) => ({
+                severity: finding.severity === '错误'
+                  ? 'error' as const
+                  : finding.severity === '警告' ? 'warning' as const : 'hint' as const,
+                title: finding.category,
+                summary: finding.userMessage ?? finding.message,
+                ...(finding.target ? { target: finding.target } : {}),
+              })),
+            },
+          },
+        );
         return {
           version: latest.packageVersion,
           revision: latest.revision.oid,
@@ -1385,13 +1793,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           warningReview: getPackageWarningReview(c.p.id, latest.revision.oid),
           repair: packageRepairAvailability({
             errorCount: findings.filter((f) => f.severity === '错误').length,
-            hasActiveDraft: Boolean(getActivePackageDraft(c.p.id)),
+            hasActiveDraft: Boolean(await getActivePackageDraft(c.p.id)),
             graph: aiConstruction.snapshot(c.p.id),
           }),
+          currentStep: { ...packageRepair.currentStep, revision: packageRepair.revision },
+          packageRepair,
+          pendingQueue: packageRepair.pendingQueue,
+          nextActions: packageRepair.nextActions,
+          ...(constructionUpdate ? {
+            aiConstruction: constructionUpdate.aiConstruction,
+            aiConstructionMessages: [constructionUpdate.message],
+          } : {}),
           counts: {
-          错误: findings.filter((f) => f.severity === '错误').length,
-          警告: findings.filter((f) => f.severity === '警告').length,
-          提示: findings.filter((f) => f.severity === '提示').length,
+          错误: counts.errors,
+          警告: counts.warnings,
+          提示: counts.hints,
           },
         };
       } catch (e) {
@@ -1408,15 +1824,29 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         currentPackage?.revision.oid ?? null,
       );
       const check = view.check;
+      const packageRepair = currentPackage
+        ? reconcilePackageRepairState({
+          projectId: c.p.id,
+          revision: currentPackage.revision.oid,
+          check,
+          state: authoringState,
+        })
+        : null;
       return {
         ...view,
         errorDeferral: check?.revision ? getPackageErrorDeferral(c.p.id, check.revision) : null,
         warningReview: check?.revision ? getPackageWarningReview(c.p.id, check.revision) : null,
         repair: packageRepairAvailability({
           errorCount: check?.findings.filter((f) => f.severity === '错误').length ?? 0,
-          hasActiveDraft: Boolean(getActivePackageDraft(c.p.id)),
+          hasActiveDraft: Boolean(await getActivePackageDraft(c.p.id)),
           graph: aiConstruction.snapshot(c.p.id),
         }),
+        currentStep: packageRepair
+          ? { ...packageRepair.currentStep, revision: packageRepair.revision }
+          : null,
+        packageRepair,
+        pendingQueue: packageRepair?.pendingQueue ?? [],
+        nextActions: packageRepair?.nextActions ?? [],
       };
     });
     r.post('/api/projects/:id/package/warnings/accept', async (req, reply) => {
@@ -1515,7 +1945,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             testConnection: options.dataSourceConnectionTester,
             syncConnection: options.dataSourceConsumerSync,
           });
-          setProjectStage(c.p.id, 'data_source');
+          if (!isAgentWorkflowFactRequest(req)) setProjectStage(c.p.id, 'data_source');
           return { dataSource };
         } catch (e) {
           return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
@@ -1569,6 +1999,58 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             ...upload,
           }, options.evaluationDatabaseDependencies);
           return reply.code(202).send(result);
+        } catch (error) {
+          if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
+            return reply.code(409).send({ error: error.message, run: error.run });
+          }
+          if (error instanceof EvaluationDatabaseImportCapacityError) {
+            return reply.code(429).send({ error: error.message });
+          }
+          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+    });
+
+    r.post('/api/projects/:id/evaluation-database/quick-import', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:evaluation-database-import`, reply, async () => {
+        try {
+          assertProjectEvaluationDatabaseImportAvailable(c.p.id);
+          const upload = await readQuickEvaluationDatabaseUpload(req);
+          const defaults = getEvalBindingDefaults();
+          if (!['nl2sql_template', 'nl2sql_http'].includes(defaults.provider)) {
+            throw new Error('平台默认数据源不是 NL2SQL，无法一键导入 Excel');
+          }
+          if (!defaults.url) throw new Error('平台尚未配置 NL2SQL 数据服务 URL');
+          const database = await createProjectEvaluationDatabase(
+            { projectId: c.p.id },
+            options.evaluationDatabaseDependencies,
+          );
+          const token = (req.headers.authorization ?? '').slice(7);
+          const dataSource = await configureProjectDataSource({
+            projectId: c.p.id,
+            owner: req.user!.username,
+            token,
+            input: {
+              mode: 'connection',
+              provider: defaults.provider as 'nl2sql_template' | 'nl2sql_http',
+              config: {
+                url: defaults.url,
+                token: defaults.token,
+                scene: database.database,
+                evaluation_workspace_id: shadowWorkspaceId(c.p.id),
+              },
+            },
+            testConnection: options.dataSourceConnectionTester,
+            syncConnection: options.dataSourceConsumerSync,
+          });
+          const result = startProjectEvaluationDatabaseImport({
+            projectId: c.p.id,
+            ...upload,
+            replaceConfirmed: true,
+          }, options.evaluationDatabaseDependencies);
+          return reply.code(202).send({ ...result, dataSource, database });
         } catch (error) {
           if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
             return reply.code(409).send({ error: error.message, run: error.run });
@@ -1727,7 +2209,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const normalizedGroundTruth = String(groundTruth ?? '').trim();
       if (!normalizedQuestion) return reply.code(400).send({ error: 'question 必填' });
       const testcase = m3repo.addTestcase(c.p.id, normalizedQuestion, normalizedGroundTruth);
-      setProjectStage(c.p.id, 'testcases');
+      if (!isAgentWorkflowFactRequest(req)) setProjectStage(c.p.id, 'testcases');
       return { testcase };
     });
     r.post('/api/projects/:id/testcases/batch', async (req, reply) => {
@@ -1740,7 +2222,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           question: String(item?.question ?? ''),
           groundTruth: String(item?.groundTruth ?? ''),
         })));
-        setProjectStage(c.p.id, 'testcases');
+        if (!isAgentWorkflowFactRequest(req)) setProjectStage(c.p.id, 'testcases');
         return result;
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
@@ -1774,7 +2256,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
       const updated = m3repo.updateTestcase(c.p.id, tcId, patch);
       if (!updated) return reply.code(404).send({ error: '评测用例不存在' });
-      setProjectStage(c.p.id, 'testcases');
+      if (!isAgentWorkflowFactRequest(req)) setProjectStage(c.p.id, 'testcases');
       return { testcases: m3repo.listTestcases(c.p.id) };
     });
     r.delete('/api/projects/:id/testcases/:tcId', async (req, reply) => {
@@ -1798,12 +2280,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (blocked) return blocked;
       const token = (req.headers.authorization ?? '').slice(7);
       const { refresh_token: refreshToken } = (req.body ?? {}) as { refresh_token?: string };
+      const authSession = refreshToken
+        ? backgroundAuthSessions.remember(req.user!.username, token, refreshToken)
+        : backgroundAuthSessions.get(req.user!.username);
       try {
         const { roundId } = await startCurrentEvaluation({
           projectId: c.p.id,
           owner: req.user!.username,
           token,
           refreshToken,
+          authSession,
         });
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
@@ -2140,6 +2626,76 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         runningTask: inFlight.status(`${c.p.id}:optimize`),
       };
     });
+    const editableSuggestionInput = (body: any) => {
+      const title = String(body?.title ?? '').trim();
+      const detail = String(body?.detail ?? '').trim();
+      const kind = String(body?.kind ?? '') as m4repo.SuggestionKind;
+      const diagnosisIds: string[] = Array.isArray(body?.diagnosisIds)
+        ? [...new Set<string>(body.diagnosisIds.map((id: unknown) => String(id)).filter(Boolean))]
+        : [];
+      if (!title || !detail) throw new Error('建议标题和修改要求不能为空');
+      if (!m4repo.SUGGESTION_KINDS.includes(kind)) throw new Error('建议类型不正确');
+      if (!diagnosisIds.length) throw new Error('建议必须关联至少一项已确认的失败根因');
+      return {
+        title, detail, kind, diagnosisIds,
+        target: String(body?.target ?? '').trim() || undefined,
+        relatedQuestion: String(body?.relatedQuestion ?? '').trim() || undefined,
+        evidence: Array.isArray(body?.evidence)
+          ? body.evidence.map((item: unknown) => String(item).trim()).filter(Boolean).slice(0, 20)
+          : [],
+        generalizationPlan: String(body?.generalizationPlan ?? '').trim(),
+        validationPlan: String(body?.validationPlan ?? '').trim(),
+      };
+    };
+    const validateSuggestionDiagnoses = async (projectId: string, roundId: string, basedRevisionOid: string, ids: string[]) => {
+      const current = await packageArtifacts.current(projectId);
+      if (!current || current.revision.oid !== basedRevisionOid) {
+        throw new Error('知识包已变化，请重新评测并分析失败原因');
+      }
+      const diagnoses = diagnosisRepo.listFailureDiagnoses(projectId, roundId);
+      const byId = new Map(diagnoses.map((item) => [item.id, item]));
+      if (ids.some((id) => {
+        const diagnosis = byId.get(id);
+        return !diagnosis || diagnosis.basedRevisionOid !== basedRevisionOid
+          || diagnosis.resolutionStatus !== 'confirmed' || !diagnosis.packageOptimizable || diagnosis.blocking;
+      })) throw new Error('建议只能关联当前版本中已确认且可由知识包修复的失败根因');
+    };
+    r.patch('/api/projects/:id/optimize/suggestions/:suggestionId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const existing = m4repo.getSuggestions([String((req.params as any).suggestionId)])
+        .find((item) => item.projectId === c.p.id);
+      if (!existing) return reply.code(404).send({ error: '优化建议不存在' });
+      if (existing.status !== 'pending') return reply.code(409).send({ error: '该建议已进入候选或已关闭，不能再编辑' });
+      try {
+        const input = editableSuggestionInput(req.body);
+        await validateSuggestionDiagnoses(c.p.id, existing.roundId, existing.basedRevisionOid, input.diagnosisIds);
+        return { suggestion: m4repo.updatePendingSuggestion({
+          projectId: c.p.id, suggestionId: existing.id, ...input,
+        }) };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+    r.post('/api/projects/:id/optimize/suggestions/manual', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const roundId = String((req.body as any)?.roundId ?? '');
+      const round = m3repo.getRound(roundId);
+      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+      const current = await packageArtifacts.current(c.p.id);
+      if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+      try {
+        const input = editableSuggestionInput(req.body);
+        await validateSuggestionDiagnoses(c.p.id, round.id, current.revision.oid, input.diagnosisIds);
+        const suggestions = m4repo.insertSuggestions(
+          c.p.id, round.id, round.packageVersion, current.revision.oid, [input],
+        );
+        return { suggestion: suggestions.at(-1), suggestions };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
     r.get('/api/projects/:id/optimize/apply-status', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
@@ -2324,10 +2880,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           const current = await packageArtifacts.current(c.p.id);
           if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
 
-          const latestRound = m3repo.listRounds(c.p.id)[0];
-          const latestResults = latestRound ? m3repo.listResults(latestRound.id) : [];
           const requiredTestcases = m3repo.listTestcases(c.p.id)
             .filter((testcase) => testcase.source === 'manual');
+          const { latestRound, results: latestResults } = m3repo.latestEffectiveEvaluation(
+            c.p.id,
+            current.revision.oid,
+            requiredTestcases.map((testcase) => testcase.id),
+          );
           const constructionRequired = c.p.kind !== 'package';
           const constructionSnapshot = constructionRequired
             ? aiConstruction.snapshot(c.p.id)
@@ -2471,5 +3030,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     registerAuthoringRoutes(r, { packageChatApply: runPackageChatApply, jobs: inFlight });
     registerArtifactRoutes(r);
+    registerAgentCoreRoutes(r);
+    registerPackageFusionRoutes(r);
+    registerAgentProxyRoutes(r);
   });
 }

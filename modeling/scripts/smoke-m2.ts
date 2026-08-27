@@ -9,6 +9,7 @@ import { parse as yamlParseLenient } from './yaml-lite.js';
 import { createProject } from '../src/projects/repo.js';
 import { insertDocument } from '../src/documents/repo.js';
 import { runAnalyze } from '../src/workflow/engine.js';
+import { buildFauxModeler } from '../src/llm/provider.js';
 import * as m2 from '../src/workflow/m2.js';
 import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
 import { renderPackage } from '../src/workflow/package-render.js';
@@ -71,20 +72,7 @@ async function main() {
   const ctx = { tables: TABLES, documents: [] };
 
   // 先跑节点 3 拿 analysis
-  await runAnalyze(project.id, TABLES, [], faux([
-    fauxAssistantMessage([fauxToolCall('submit_analysis', {
-      domainOverview: 'DOMAIN 域', candidateObjects: [{ name: 'STRUCTURE_LIST', rationale: '制造清单', sourceTables: ['STRUCTURE_LIST'] }], openQuestions: [{ topic: 'Effective 语义', why: '需澄清' }],
-    })]),
-    fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-      materialAssessments: [{
-        source: 'STRUCTURE_LIST', sourceType: 'table', suitableFor: ['object'], rationale: 'STRUCTURE_LIST 提供制造清单对象及字段映射。',
-      }],
-      candidateArtifacts: [{
-        kind: 'object', name: 'STRUCTURE_LIST', rationale: '制造清单数据表可直接建模为业务对象。',
-        sources: ['STRUCTURE_LIST'], evidence: 'ID / Effective 字段', readiness: 'extractable',
-      }],
-    })]),
-  ]));
+  await runAnalyze(project.id, TABLES, [], buildFauxModeler());
 
   ok(CONFIRMED_FLOWCHART.diagrams.length === 5, '显式构造 5 条已确认业务流程');
 

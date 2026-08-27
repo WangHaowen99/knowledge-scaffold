@@ -226,7 +226,26 @@ function normalizeDiagram(value: unknown, diagramIndex: number): FlowchartDiagra
   if (description) diagram.description = description;
   if (processMeta) diagram.processMeta = processMeta;
   if (raw.layout !== undefined) diagram.layout = normalizeLayout(raw.layout);
+  if (raw.importSource !== undefined) diagram.importSource = normalizeImportSource(raw.importSource);
   return diagram;
+}
+
+function normalizeImportSource(value: unknown): FlowchartDiagram['importSource'] {
+  const raw = asRecord(value, '流程导入来源');
+  if (raw.kind !== 'mermaid') throw new Error('流程导入来源不支持');
+  if (raw.diagramType !== 'flowchart' && raw.diagramType !== 'graph') {
+    throw new Error('Mermaid 图表类型不支持');
+  }
+  const filename = optionalText(raw.filename);
+  if (filename && (filename.length > 255 || filename === '.' || filename === '..'
+    || /[\/\\\u0000-\u001f\u007f]/u.test(filename))) {
+    throw new Error('Mermaid 文件名格式不正确');
+  }
+  return {
+    kind: 'mermaid',
+    diagramType: raw.diagramType,
+    ...(filename ? { filename } : {}),
+  };
 }
 
 function normalizeNode(value: unknown): FlowchartNode {
@@ -311,8 +330,9 @@ function synchronizeProcessMeta(
 function normalizeLayout(value: unknown): FlowchartDiagram['layout'] {
   const raw = asRecord(value, '流程图布局');
   const directionValue = optionalText(raw.direction);
-  let direction: 'TB' | 'LR' | undefined;
-  if (directionValue === 'TB' || directionValue === 'LR') direction = directionValue;
+  let direction: 'TB' | 'BT' | 'LR' | 'RL' | undefined;
+  if (directionValue === 'TB' || directionValue === 'BT'
+    || directionValue === 'LR' || directionValue === 'RL') direction = directionValue;
   else if (directionValue) throw new Error('流程图布局方向不支持');
   const positionsRaw = asRecord(raw.positions ?? {}, '节点位置');
   const positions: Record<string, { x: number; y: number }> = {};

@@ -3,13 +3,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [--consumer-only|--modeling-only]
 
-Deploy all services by calling each service deploy script.
+Deploy the full stack, including the Modeling Workbench, from either a source
+checkout or an extracted release package.
 EOF
 }
 
@@ -20,6 +20,50 @@ log() {
 die() {
     printf '[deploy][error] %s\n' "$*" >&2
     exit 1
+}
+
+env_get() {
+    local file="$1" key="$2" value
+    value="$([ -f "${file}" ] && grep -E "^${key}=" "${file}" | tail -n 1 | cut -d= -f2- || true)"
+    value="${value%$'\r'}"
+    printf '%s' "${value}" | sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/"
+}
+
+ensure_release_modeling_service_token() {
+    local bundle_root="$1" env_file="${1}/backend/.env" example_file="${1}/backend/.env.example"
+    local secret temp_file
+    if [ ! -f "${env_file}" ]; then
+        [ -f "${example_file}" ] || die "Consumer environment template not found: ${example_file}"
+        cp "${example_file}" "${env_file}"
+        chmod 600 "${env_file}"
+    fi
+    secret="${MODELING_SERVICE_TOKEN:-$(env_get "${env_file}" MODELING_SERVICE_TOKEN)}"
+    if [ -z "${secret}" ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            secret="$(openssl rand -hex 32)"
+        elif command -v python3 >/dev/null 2>&1; then
+            secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+        else
+            die "Cannot generate MODELING_SERVICE_TOKEN: openssl or Python 3 is required"
+        fi
+    fi
+    [ "${#secret}" -ge 32 ] || die "MODELING_SERVICE_TOKEN must contain at least 32 characters"
+    temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || die "Cannot update ${env_file}"
+    chmod 600 "${temp_file}"
+    awk -v secret="${secret}" '
+        BEGIN { updated = 0 }
+        /^MODELING_SERVICE_TOKEN=/ {
+            if (!updated) { print "MODELING_SERVICE_TOKEN=" secret; updated = 1 }
+            next
+        }
+        { print }
+        END { if (!updated) print "MODELING_SERVICE_TOKEN=" secret }
+    ' "${env_file}" > "${temp_file}" || { rm -f "${temp_file}"; die "Cannot update ${env_file}"; }
+    mv "${temp_file}" "${env_file}"
+    chmod 600 "${env_file}"
+    MODELING_SERVICE_TOKEN="${secret}"
+    export MODELING_SERVICE_TOKEN
+    log "Modeling service token is ready (value is not printed)"
 }
 
 CONSUMER_ONLY=0
@@ -49,12 +93,27 @@ if [ "${CONSUMER_ONLY}" = "1" ] && [ "${MODELING_ONLY}" = "1" ]; then
     die "--consumer-only and --modeling-only cannot be used together"
 fi
 
+DEPLOY_ARGS=()
+if [ "${CONSUMER_ONLY}" = "1" ]; then
+    DEPLOY_ARGS+=(--consumer-only)
+elif [ "${MODELING_ONLY}" = "1" ]; then
+    DEPLOY_ARGS+=(--modeling-only)
+fi
+
 if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
     CONSUMER_DEPLOY="${SCRIPT_DIR}/deploy-consumer.sh"
     MODELING_DEPLOY="${SCRIPT_DIR}/modeling/deploy.sh"
+elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
+    log "Detected source checkout; deploying with deploy-stack.sh"
+    bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
+    log "Deployment finished successfully"
+    exit 0
 else
-    die "This deploy.sh is the release-package dispatcher. Build and extract a release package first, or use ${SCRIPT_DIR}/deploy-stack.sh for source deployment."
+    die "Could not find source or release deployment scripts under ${SCRIPT_DIR}"
 fi
+
+BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ensure_release_modeling_service_token "${BUNDLE_ROOT}"
 
 if [ "${MODELING_ONLY}" = "0" ]; then
     [ -f "${CONSUMER_DEPLOY}" ] || die "Consumer deploy script not found: ${CONSUMER_DEPLOY}"
@@ -64,7 +123,7 @@ fi
 
 if [ "${CONSUMER_ONLY}" = "0" ]; then
     [ -f "${MODELING_DEPLOY}" ] || die "Modeling deploy script not found: ${MODELING_DEPLOY}"
-    log "Deploying modeling service"
+    log "Deploying Modeling Workbench (core + Agent)"
     bash "${MODELING_DEPLOY}"
 fi
 

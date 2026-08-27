@@ -55,6 +55,31 @@ test('新导入的知识包以现有包为基线初始化任务图', () => {
   ]);
 });
 
+test('导入成功以来源修订建立单一完成基线且可幂等重放', () => {
+  const project = createMaterialFirstProject('导入即建立基线');
+  const graph = new AiConstructionTaskGraph(getDb());
+  const completed = graph.establishImportedBaseline(project.id, 'revision-imported-v1');
+
+  assert.equal(completed.status, 'completed');
+  assert.deepEqual(completed.milestones.map((item) => ({
+    id: item.id, status: item.status, revision: item.confirmedRevisionOid,
+  })), [{
+    id: 'construction_completed', status: 'confirmed', revision: 'revision-imported-v1',
+  }]);
+  assert.deepEqual(completed.tasks.map((item) => ({
+    kind: item.kind, status: item.status, output: item.outputRevisionOid,
+  })), [{
+    kind: 'package_baseline_review', status: 'completed', output: 'revision-imported-v1',
+  }]);
+  assert.equal(completed.confirmations[0]?.actor.username, 'system/import');
+  assert.match(completed.confirmations[0]?.note ?? '', /浏览器导入已有知识包/u);
+  assert.deepEqual(graph.establishImportedBaseline(project.id, 'revision-imported-v1'), completed);
+  assert.throws(
+    () => graph.establishImportedBaseline(project.id, 'revision-other'),
+    /已经指向另一知识包修订/u,
+  );
+});
+
 test('重复初始化返回同一任务图而不创建重复任务', () => {
   const project = createMaterialFirstProject('重试初始化');
   const graph = new AiConstructionTaskGraph(getDb());
@@ -345,6 +370,30 @@ test('已有有效替代任务时旧 stale 任务不再占用当前任务和进�
   assert.equal(restored.progress.totalTasks, 1);
 });
 
+test('没有替代项的历史 stale 任务也不计入当前进度', () => {
+  const project = createMaterialFirstProject('忽略孤立过时修复');
+  const graph = new AiConstructionTaskGraph(getDb());
+  const initial = graph.snapshot(project.id)!;
+  const completed = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: initial.revision,
+    taskId: initial.tasks[0].id, outputRevisionOid: 'revision-current',
+  });
+  getDb().prepare(`INSERT INTO ai_construction_tasks (
+    id, project_id, task_kind, milestone_id, ordinal, title, goal, status, required,
+    reason, input_revision_oid, created_at, updated_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    'task_stale_orphan', project.id, 'package_repair', completed.tasks[0].milestoneId,
+    999, '历史可选修复', '修复旧修订', 'stale', 0, '当前修订已无需修复',
+    'revision-old', new Date().toISOString(), new Date().toISOString(),
+  );
+
+  const restored = graph.snapshot(project.id)!;
+  assert.equal(restored.progress.currentTaskId, undefined);
+  assert.equal(restored.progress.waitingFor, 'milestone_confirmation');
+  assert.equal(restored.progress.completedTasks, 1);
+  assert.equal(restored.progress.totalTasks, 1);
+});
+
 test('动态任务支持影响预览、暂缓、跳过和恢复并保留审计', () => {
   const project = createMaterialFirstProject('动态任务调整');
   const graph = new AiConstructionTaskGraph(getDb());
@@ -438,6 +487,106 @@ test('重做已确认任务重新激活上游阶段并使下游任务过时', ()
   assert.equal(redone.tasks.find((item) => item.id === goalTask.id)?.status, 'pending');
   assert.equal(redone.tasks.find((item) => item.id === processTask.id)?.status, 'stale');
   assert.equal(redone.confirmations.length, 2, '历史确认记录必须保留');
+});
+
+test('回退到流程确认保留资料和目标并让流程及下游重新处理', () => {
+  const project = createMaterialFirstProject('阶段回退语义');
+  const graph = new AiConstructionTaskGraph(getDb());
+  let snapshot = graph.snapshot(project.id)!;
+  const materialsTask = snapshot.tasks[0];
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: materialsTask.id, outputRevisionOid: 'revision-materials',
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'materials_ready', packageRevisionOid: 'revision-materials',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'modeling_brief', milestoneId: 'goal_confirmed', title: '确认建模目标',
+      goal: '确认知识包目标', required: true, dependsOn: [materialsTask.id],
+    },
+  });
+  const goalTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: goalTask.id, outputRevisionOid: 'revision-goal',
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed', packageRevisionOid: 'revision-goal',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'process_interview', milestoneId: 'process_confirmed', title: '确认核心流程',
+      goal: '确认流程范围', required: true, inputRevisionOid: 'revision-goal',
+      dependsOn: [goalTask.id],
+    },
+  });
+  const processTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: processTask.id, outputRevisionOid: 'revision-process',
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'process_confirmed', packageRevisionOid: 'revision-process',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'knowledge_extraction', milestoneId: 'knowledge_confirmed', title: '生成知识结构',
+      goal: '生成知识结构', required: true, inputRevisionOid: 'revision-process',
+      dependsOn: [processTask.id],
+    },
+  });
+  const knowledgeTask = snapshot.tasks.at(-1)!;
+
+  const preview = graph.previewMilestoneRollback(project.id, 'process_confirmed');
+  assert.equal(preview.allowed, true);
+  assert.equal(preview.restoreRevisionOid, 'revision-goal');
+  assert.deepEqual(preview.preservedMilestones.map((item) => item.id), [
+    'materials_ready', 'goal_confirmed',
+  ]);
+  assert.match(preview.preservedOutputs.join('、'), /资料分析结论/);
+
+  const rollbackId = 'rollback_test_process';
+  getDb().prepare(`INSERT INTO ai_construction_milestone_rollbacks (
+    id, project_id, request_id, target_milestone_id, graph_revision_before,
+    base_package_revision_oid, current_package_revision_oid, restored_package_revision_oid,
+    actor_username, reason, impact_json, status, created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'package_restored',?)`).run(
+    rollbackId, project.id, 'request-process', 'process_confirmed', snapshot.revision,
+    'revision-goal', 'revision-knowledge', 'revision-restored', 'alice',
+    '流程范围需要重新确认', JSON.stringify(preview), new Date().toISOString(),
+  );
+  const rolledBack = graph.rollbackMilestone(project.id, {
+    rollbackId,
+    requestId: 'request-process',
+    expectedRevision: snapshot.revision,
+    targetMilestoneId: 'process_confirmed',
+    basePackageRevisionOid: 'revision-goal',
+    restoredPackageRevisionOid: 'revision-restored',
+    actor: 'alice',
+    reason: '流程范围需要重新确认',
+    impact: preview,
+  }).graph;
+
+  assert.equal(rolledBack.milestones.find((item) => item.id === 'materials_ready')?.status, 'confirmed');
+  assert.equal(rolledBack.milestones.find((item) => item.id === 'goal_confirmed')?.status, 'confirmed');
+  assert.equal(rolledBack.milestones.find((item) => item.id === 'process_confirmed')?.status, 'active');
+  assert.equal(rolledBack.milestones.find((item) => item.id === 'knowledge_confirmed')?.status, 'stale');
+  assert.equal(rolledBack.tasks.find((item) => item.id === materialsTask.id)?.status, 'completed');
+  assert.equal(rolledBack.tasks.find((item) => item.id === goalTask.id)?.status, 'completed');
+  assert.equal(rolledBack.tasks.find((item) => item.id === processTask.id)?.status, 'pending');
+  assert.equal(rolledBack.tasks.find((item) => item.id === knowledgeTask.id)?.status, 'stale');
+  assert.equal(rolledBack.confirmations.filter((item) => item.invalidatedAt).length, 1);
 });
 
 test('项目查询保持纯读，不为存量项目隐式创建任务图', () => {

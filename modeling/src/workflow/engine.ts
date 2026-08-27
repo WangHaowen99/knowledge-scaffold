@@ -1,23 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
-import { throwIfCancelled } from '../cancellation.js';
-import {
-  batchCacheKey, briefFingerprint, readCachedBatchAnalysis, writeCachedBatchAnalysis,
-} from './material-analysis-cache.js';
 import type { NodeStatus, NodeType, WorkflowNode, DataDictTable, AnalysisResult } from '../types.js';
 import { buildTaskLlm, type LlmDeps } from '../llm/provider.js';
-import { buildArtifactAnalysisTools, buildTools, type ToolContext } from './tools.js';
-import { makeAgent, runAgent, type StructuredToolChoiceState } from './agent.js';
 import { appendTraceEvent, traceEventFromAgentEvent } from './trace.js';
 import { createSourceCatalog } from './source-catalog.js';
 import { ensureMaterialHypotheses } from '../ai-construction/material-hypotheses.js';
-import { summarizeModelingBrief, type ModelingBrief } from '../ai-construction/modeling-brief.js';
-import {
-  DocumentReadSession,
-  runAgentWithDocumentReadGate,
-  type ReadableDocument,
-} from './document-read-session.js';
-import { captureDocumentReadCoverage } from './document-read-coverage.js';
+import type { ModelingBrief } from '../ai-construction/modeling-brief.js';
+import type { ReadableDocument } from './document-read-session.js';
+import { runMaterialAnalysisMapReduce } from './material-analysis-map-reduce.js';
 
 const TITLES: Record<NodeType, string> = {
   project_setup: '项目创建', ingest: '资料上传与解析', analyze: '初步分析',
@@ -105,7 +95,6 @@ export interface MaterialAnalysisProgressUpdate {
   title: string;
   summary?: string;
   percent: number;
-  retryCount?: number;
 }
 
 export function canonicalizeArtifactAnalysisSources(
@@ -166,10 +155,6 @@ export function validateArtifactAnalysis(
       issues.push({ ...input, message: `未覆盖输入材料 ${input.sourceType}:${input.source}` });
       continue;
     }
-    if (!assessment.suitableFor?.length) {
-      issues.push({ ...input, message: `材料 ${input.source} 未标注适合生成的知识类型` });
-      continue;
-    }
     for (const kind of assessment.suitableFor) {
       const covered = candidates.some((candidate) => candidate.kind === kind && candidate.sources?.includes(input.source));
       if (!covered) {
@@ -188,53 +173,8 @@ export function formatArtifactIssues(issues: ArtifactValidationIssue[]): string 
   return issues.map((issue) => `- ${issue.message}`).join('\n');
 }
 
-interface ArtifactBatch {
-  tables: DataDictTable[];
-  documents: ReadableDocument[];
-  refs: { source: string; sourceType: 'table' | 'document' }[];
-}
-
-function buildArtifactBatches(
-  tables: DataDictTable[],
-  documents: ReadableDocument[],
-  size = 4,
-): ArtifactBatch[] {
-  const sources = [
-    ...tables.map((table) => ({ source: table.name, sourceType: 'table' as const, table })),
-    ...documents.map((document) => ({ source: document.filename, sourceType: 'document' as const, document })),
-  ];
-  const batches: ArtifactBatch[] = [];
-  for (let start = 0; start < sources.length; start += size) {
-    const chunk = sources.slice(start, start + size);
-    batches.push({
-      tables: chunk.filter((item) => item.sourceType === 'table').map((item) => item.table),
-      documents: chunk.filter((item) => item.sourceType === 'document').map((item) => item.document),
-      refs: chunk.map(({ source, sourceType }) => ({ source, sourceType })),
-    });
-  }
-  return batches;
-}
-
-function mergeArtifactAnalyses(parts: ArtifactAnalysis[]): ArtifactAnalysis {
-  const assessments = new Map<string, NonNullable<AnalysisResult['materialAssessments']>[number]>();
-  const candidates = new Map<string, NonNullable<AnalysisResult['candidateArtifacts']>[number]>();
-  for (const part of parts) {
-    for (const assessment of part.materialAssessments ?? []) {
-      assessments.set(`${assessment.sourceType}:${assessment.source}`, assessment);
-    }
-    for (const candidate of part.candidateArtifacts ?? []) {
-      const sources = [...(candidate.sources ?? [])].sort().join('|');
-      candidates.set(`${candidate.kind}:${candidate.name.trim()}:${sources}`, candidate);
-    }
-  }
-  return {
-    materialAssessments: [...assessments.values()],
-    candidateArtifacts: [...candidates.values()],
-  };
-}
-
-// 节点 3：初步分析。跑一次 pi agent run，让其读数据字典/文档，产出结构化分析。
-// llmOverride 供冒烟注入 faux。
+// 节点 3：动态分段并发分析，文档级 Reduce 后再做一次领域 Reduce。
+// 分段和汇总均持久化，失败或服务重启后从未完成分段继续。
 export async function runAnalyze(
   projectId: string,
   tables: DataDictTable[],
@@ -244,34 +184,10 @@ export async function runAnalyze(
   confirmedBrief?: ModelingBrief,
 ): Promise<{ node: WorkflowNode; analysis: AnalysisResult }> {
   const llm = llmOverride ?? buildTaskLlm();
-  const captured: Record<string, unknown> = {};
-  const documentReadSession = new DocumentReadSession(documents, { fullReadMode: true });
-  const toolChoiceState: StructuredToolChoiceState = { mode: 'named' };
-  let structuredRetryCount = 0;
-  const ctx: ToolContext = { tables, documents, captured, documentReadSession };
-  const tools = buildTools(ctx);
-  const goalContext = confirmedBrief
-    ? `已确认建模目标（不得擅自扩大或改写）：\n${summarizeModelingBrief(confirmedBrief)}`
-    : '';
-
-  const systemPrompt = [
-    '你是企业知识工程建模分析助手。基于已解析的数据表与文档，完成初步分析：',
-    ...(goalContext ? [goalContext] : []),
-    '1) 用 list_tables / describe_table / list_documents / read_document 探查资料；所有文本材料必须从 offset=0 连续读到 eof=true 后才能提交；',
-    '读取下一页时严格使用上次的 nextOffset，并用 previousPageSummary / previousPageEvidence 保留滚动摘要和带 offset 的重要证据；',
-    '2) 围绕已确认建模目标归纳领域概览，识别与目标直接相关的候选业务对象（对应哪些表）；',
-    '3) 已确认建模目标是分析范围，不得另行提出或改写业务目标；',
-    '4) 仅提出最多 3 个能支撑已确认目标的核心业务流程。每个候选需包含触发、角色、输入、步骤、异常、输出、交接和依据；材料缺失的部分可留空，不得编造；',
-    '5) 列出仍需向领域专家澄清的少量开放问题，优先记录无法通过候选选择确认的关键口径；',
-    '6) candidateObjects.sourceTables 只能引用 list_tables 返回的已有表名，不得把文档概念或推测名称当成表名；',
-    '7) 最后调用 submit_analysis 提交结构化结果；若工具返回来源错误，修正后重新提交。',
-  ].join('\n');
-
   const node = upsertNode({ projectId, type: 'analyze', status: 'running', ordinal: nextOrdinal(projectId) });
   const reportProgress = (progress: MaterialAnalysisProgressUpdate) => {
     try { onProgress?.(progress); } catch { /* 进度展示失败不能中断资料分析 */ }
   };
-  let messagesSoFar: unknown[] = [];
   const trace = (input: Parameters<typeof appendTraceEvent>[0]) => appendTraceEvent(input);
   const observe = (phase: string) => (event: unknown) => {
     const draft = traceEventFromAgentEvent(event);
@@ -288,238 +204,37 @@ export async function runAnalyze(
     summary: `数据表 ${tables.length} 张 · 文档 ${documents.length} 份`,
   });
   try {
-    trace({ projectId, nodeId: node.id, phase: 'domain_analysis', kind: 'phase_started', status: 'running', title: '生成领域概览' });
-    reportProgress({ phase: 'domain_analysis', title: '正在理解资料并整理领域概览', percent: 12 });
-    const agent = makeAgent(llm, systemPrompt, tools, [], {
-      transformContext: (agentMessages) => documentReadSession.compactMessages(agentMessages),
-    });
-    const messages = await runAgentWithDocumentReadGate({
-      agent,
-      prompt: confirmedBrief
-        ? `请围绕以下已确认建模目标分析已上传资料，完成后调用 submit_analysis：\n${summarizeModelingBrief(confirmedBrief)}`
-        : '请对已上传的资料做初步分析，完成后调用 submit_analysis。',
-      session: documentReadSession,
-      captured: () => !!captured.analysis,
-      submitNudge: '全文覆盖已由后端确认完成，请立即调用 submit_analysis 提交完整结构化分析。',
-      missingSubmissionError: '领域分析完成全文读取后仍未按协议提交，请重试',
-      targetToolName: 'submit_analysis',
-      toolChoiceState,
-      onCaptureAttempt: (diagnostics) => {
-        structuredRetryCount += 1;
-        reportProgress({
-          phase: 'domain_analysis',
-          title: diagnostics.outcome === 'captured'
-            ? '领域分析结构化结果已提交'
-            : '正在重试领域分析结构化提交',
-          summary: `结构化提交尝试 ${diagnostics.attempt}/3`,
-          percent: 24,
-          retryCount: structuredRetryCount,
-        });
-      },
-      observe: observe('domain_analysis'),
-    });
-    messagesSoFar = messages;
-
-    const submittedAnalysis = (captured.analysis as AnalysisResult) ?? {
-      domainOverview: '(agent 未提交结构化分析)',
-      candidateObjects: [], openQuestions: [],
-    };
-    const canonicalAnalysis = createSourceCatalog(tables).canonicalizeAnalysis(submittedAnalysis);
-    if (canonicalAnalysis.problems.length) {
-      throw new Error(`领域分析来源无效：${canonicalAnalysis.problems.map((problem) => problem.message).join('；')}`);
-    }
-    const baseAnalysis = ensureMaterialHypotheses(canonicalAnalysis.value, confirmedBrief);
-    trace({ projectId, nodeId: node.id, phase: 'domain_analysis', kind: 'phase_completed', status: 'done', title: '领域概览已生成' });
-    reportProgress({
-      phase: 'domain_analysis', title: '已形成候选业务目标和流程', percent: 28,
-      summary: `目标 ${baseAnalysis.candidateGoals?.length ?? 0} 个 · 流程 ${baseAnalysis.candidateProcesses?.length ?? 0} 个`,
-    });
-
-    const batches = buildArtifactBatches(tables, documents);
-    const parts: ArtifactAnalysis[] = [];
-    const artifactMessages: unknown[] = [];
-    const cacheBrief = briefFingerprint(confirmedBrief);
-    let reusedBatches = 0;
-    for (const [index, batch] of batches.entries()) {
-      // 检查点：上一批已经完整落在 parts 里，这里停下来不会留半条记录
-      throwIfCancelled(projectId, 'analyze');
-      const phase = `artifact_batch_${index + 1}`;
-      const batchStartPercent = 28 + Math.round((index / Math.max(1, batches.length)) * 52);
-      // 这批材料一个字节都没变就直接用上次的结果，不再花一次 agent run
-      const cacheKey = batchCacheKey(batch, cacheBrief);
-      const cached = readCachedBatchAnalysis<ArtifactAnalysis>(projectId, cacheKey);
-      if (cached) {
-        reusedBatches += 1;
-        parts.push(cached);
-        trace({
-          projectId, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-          title: `第 ${index + 1}/${batches.length} 批材料复用已有分析`,
-          summary: batch.refs.map((item) => item.source).join('、'),
-          details: { reused: true, sources: batch.refs.map((item) => item.source) },
-        });
-        reportProgress({
-          phase, title: `第 ${index + 1}/${batches.length} 批资料未变动，复用已有分析`,
-          summary: batch.refs.map((item) => item.source).join('、').slice(0, 500),
-          percent: 28 + Math.round(((index + 1) / Math.max(1, batches.length)) * 52),
-        });
-        continue;
-      }
-      trace({
-        projectId, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
-        title: `分析第 ${index + 1}/${batches.length} 批材料`,
-        summary: batch.refs.map((item) => item.source).join('、'),
-        details: { batch: index + 1, totalBatches: batches.length, sources: batch.refs.map((item) => item.source) },
-      });
-      reportProgress({
-        phase, title: `正在分析第 ${index + 1}/${batches.length} 批资料`,
-        summary: batch.refs.map((item) => item.source).join('、').slice(0, 500),
-        percent: batchStartPercent,
-      });
-      const artifactCaptured: Record<string, unknown> = {};
-      const batchReadSession = new DocumentReadSession(batch.documents, { fullReadMode: true });
-      const artifactTools = buildArtifactAnalysisTools({
-        tables: batch.tables,
-        documents: batch.documents,
-        captured: artifactCaptured,
-        documentReadSession: batchReadSession,
-      });
-      const artifactPrompt = [
-        '你是知识材料分类助手。请在领域对象分析之后，逐份判断当前批次材料适合沉淀成哪类知识资源。',
-        ...(goalContext ? [goalContext, '只分类和提取能支撑该目标的知识；其他内容可标记为与当前目标无关。'] : []),
-        '分类单位是材料中的知识片段；同一文档可以同时产出 rule 和 operation。',
-        '判定规则：数据实体/字段/映射 → object；适用条件/判断门槛/例外 → rule；查询/推荐/办理步骤 → operation；公式/统计口径 → metric。',
-        '只有材料明确给出条件、流程或公式时标记 extractable；缺少阈值、权威口径或映射时标记 needs_clarification，禁止猜测。',
-        '每份输入材料都必须有 materialAssessment；suitableFor 中每一种类型都必须至少对应一个 candidateArtifact。',
-        'source 必须精确使用当前批次来源中的名称；candidateArtifact.sources 也使用同样的精确名称。',
-        '每个候选给出材料来源和简短证据或章节定位；在覆盖当前批次所有材料与类型的前提下尽量合并重复候选。',
-        '探查完成后必须调用 submit_artifact_analysis 提交当前批次完整结构化结果。',
-        '所有文本材料必须已由后端账本确认从 offset=0 连续覆盖到 eof=true；未完成时继续 read_document，不能提交或声称读完。',
-        `当前批次来源：${JSON.stringify(batch.refs)}`,
-        `已有领域分析：${JSON.stringify(baseAnalysis).slice(0, 2500)}`,
-      ].join('\n');
-      const artifactAgent = makeAgent(llm, artifactPrompt, artifactTools, [], {
-        transformContext: (agentMessages) => batchReadSession.compactMessages(agentMessages),
-      });
-      let batchMessages = await runAgentWithDocumentReadGate({
-        agent: artifactAgent,
-        prompt: '请探查当前批次材料并调用 submit_artifact_analysis 提交材料适用类型和知识候选。',
-        session: batchReadSession,
-        captured: () => !!artifactCaptured.artifactAnalysis,
-        submitNudge: '请立即调用 submit_artifact_analysis 提交当前批次完整结构化结果，不要只写正文。',
-        missingSubmissionError: '材料知识类型分析未按协议提交，请重试',
-        targetToolName: 'submit_artifact_analysis',
-        toolChoiceState,
-        onCaptureAttempt: (diagnostics) => {
-          structuredRetryCount += 1;
-          reportProgress({
-            phase,
-            title: diagnostics.outcome === 'captured'
-              ? `第 ${index + 1}/${batches.length} 批结构化结果已提交`
-              : `正在重试第 ${index + 1}/${batches.length} 批结构化提交`,
-            summary: `结构化提交尝试 ${diagnostics.attempt}/3`,
-            percent: Math.min(79, batchStartPercent + 2),
-            retryCount: structuredRetryCount,
-          });
-        },
-        observe: observe(phase),
-      });
-      messagesSoFar = [...messages, ...artifactMessages, ...batchMessages];
-      if (!artifactCaptured.artifactAnalysis) throw new Error('材料知识类型分析未按协议提交，请重试');
-      let current = canonicalizeArtifactAnalysisSources(
-        batch.tables,
-        batch.documents,
-        artifactCaptured.artifactAnalysis as ArtifactAnalysis,
-      );
-      let issues = validateArtifactAnalysis(batch.tables, batch.documents, current);
-      for (let repair = 1; issues.length && repair <= 2; repair += 1) {
-        const issueText = formatArtifactIssues(issues);
-        trace({
-          projectId, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
-          title: `第 ${index + 1} 批发现 ${issues.length} 个遗漏`, summary: issueText,
-          details: { issues: issues.map(({ source, sourceType, kind }) => ({ source, sourceType, kind })) },
-        });
-        trace({
-          projectId, nodeId: node.id, phase, kind: 'repair_started', status: 'warning',
-          title: `第 ${repair} 次自动补交`, summary: issueText,
-          details: { attempt: repair, missingCount: issues.length },
-        });
-        reportProgress({
-          phase, title: `正在补齐第 ${index + 1}/${batches.length} 批知识候选`,
-          summary: `发现 ${issues.length} 个遗漏，正在进行第 ${repair} 次自动补交`,
-          percent: Math.min(79, batchStartPercent + 3),
-        });
-        delete artifactCaptured.artifactAnalysis;
-        batchMessages = await runAgent(
-          artifactAgent,
-          `上次提交不完整。请重新提交当前批次完整结果，不要只提交增量：\n${issueText}`,
-          observe(phase),
-        );
-        messagesSoFar = [...messages, ...artifactMessages, ...batchMessages];
-        if (!artifactCaptured.artifactAnalysis) {
-          trace({
-            projectId, nodeId: node.id, phase, kind: 'repair_completed', status: 'warning',
-            title: `第 ${repair} 次自动补交未提交结构化结果`, summary: '模型没有调用材料知识类型提交工具',
-            details: { attempt: repair, remainingCount: issues.length },
-          });
-          continue;
+    const { getProject } = await import('../projects/repo.js');
+    const project = getProject(projectId);
+    const mapReduce = await runMaterialAnalysisMapReduce({
+      projectId,
+      projectContext: [project?.domain, project?.background, project?.targetUsers]
+        .filter(Boolean).join('\n').slice(0, 8_000),
+      tables,
+      documents,
+      llm,
+      confirmedBrief,
+      onProgress: reportProgress,
+      observe,
+      finalizeAnalysis: (submittedAnalysis) => {
+        const canonicalAnalysis = createSourceCatalog(tables).canonicalizeAnalysis(submittedAnalysis);
+        if (canonicalAnalysis.problems.length) {
+          throw new Error(`领域分析来源无效：${canonicalAnalysis.problems.map((problem) => problem.message).join('；')}`);
         }
-        current = canonicalizeArtifactAnalysisSources(
-          batch.tables,
-          batch.documents,
-          artifactCaptured.artifactAnalysis as ArtifactAnalysis,
-        );
-        issues = validateArtifactAnalysis(batch.tables, batch.documents, current);
-        trace({
-          projectId, nodeId: node.id, phase, kind: 'repair_completed',
-          status: issues.length ? 'warning' : 'done', title: `第 ${repair} 次自动补交${issues.length ? '仍有遗漏' : '完成'}`,
-          summary: issues.length ? formatArtifactIssues(issues) : '当前批次校验通过',
-          details: { attempt: repair, remainingCount: issues.length },
-        });
-      }
-      if (issues.length) {
-        throw new Error(`第 ${index + 1} 批材料自动补交 2 次后仍不完整：\n${formatArtifactIssues(issues)}`);
-      }
-      parts.push(current);
-      // 只缓存校验通过的结果：补交两次仍不完整的批次上面已经抛错，不会走到这里
-      writeCachedBatchAnalysis(projectId, cacheKey, current);
-      artifactMessages.push(...batchMessages);
-      messagesSoFar = [...messages, ...artifactMessages];
-      trace({
-        projectId, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-        title: `第 ${index + 1}/${batches.length} 批材料校验通过`,
-        summary: `材料 ${current.materialAssessments?.length ?? 0} · 候选 ${current.candidateArtifacts?.length ?? 0}`,
-      });
-      reportProgress({
-        phase, title: `第 ${index + 1}/${batches.length} 批资料分析完成`,
-        summary: `材料 ${current.materialAssessments?.length ?? 0} 份 · 知识候选 ${current.candidateArtifacts?.length ?? 0} 个`,
-        percent: 28 + Math.round(((index + 1) / Math.max(1, batches.length)) * 52),
-      });
-    }
-    if (reusedBatches) {
-      trace({
-        projectId, nodeId: node.id, phase: 'artifact_analysis', kind: 'phase_completed', status: 'done',
-        title: `复用了 ${reusedBatches}/${batches.length} 批未变动资料的分析`,
-        summary: '只有内容发生变化的资料重新分析，其余沿用上次结果',
-        details: { reusedBatches, totalBatches: batches.length },
-      });
-    }
-    const artifactAnalysis = mergeArtifactAnalyses(parts);
-    const analysis: AnalysisResult = {
-      ...baseAnalysis,
-      ...artifactAnalysis,
-      documentReadCoverage: captureDocumentReadCoverage(documentReadSession, documents),
-    };
+        const canonicalArtifacts = canonicalizeArtifactAnalysisSources(tables, documents, canonicalAnalysis.value);
+        const issues = validateArtifactAnalysis(tables, documents, canonicalArtifacts);
+        if (issues.length) throw new Error(`资料分析结果不完整：\n${formatArtifactIssues(issues)}`);
+        return ensureMaterialHypotheses({ ...canonicalAnalysis.value, ...canonicalArtifacts }, confirmedBrief);
+      },
+    });
+    const analysis = mapReduce.analysis;
 
-    // 资料质量评估：确定性检查（同步、零成本）+ LLM 缺口分析（best-effort）。
-    // 结论并入节点 output（quality 字段），供面板展示与访谈优先澄清。
     trace({ projectId, nodeId: node.id, phase: 'quality', kind: 'phase_started', status: 'running', title: '生成资料质量报告' });
     reportProgress({ phase: 'quality', title: '正在检查资料质量和关键缺口', percent: 86 });
     const { runDataQualityChecks, runGapAnalysis, buildQualityReport } = await import('./data-quality.js');
     const findings = runDataQualityChecks(tables, documents);
     let gaps: Awaited<ReturnType<typeof runGapAnalysis>> = [];
     try {
-      const { getProject } = await import('../projects/repo.js');
-      const project = getProject(projectId);
       if (project) gaps = await runGapAnalysis(project, tables, documents, analysis, llm);
     } catch { /* 缺口分析失败不阻断领域分析 */ }
     const quality = buildQualityReport(findings, gaps, tables.length, documents.filter((d) => d.textContent).length);
@@ -528,7 +243,7 @@ export async function runAnalyze(
 
     const done = upsertNode({
       id: node.id, projectId, type: 'analyze', status: 'done', ordinal: node.ordinal,
-      agentMessages: [...messages, ...artifactMessages], output: { ...analysis, quality },
+      agentMessages: [], output: { ...analysis, quality },
     });
     trace({ projectId, nodeId: node.id, phase: 'complete', kind: 'analysis_completed', status: 'done', title: '领域分析完成' });
     reportProgress({
@@ -540,7 +255,7 @@ export async function runAnalyze(
     const reason = error instanceof Error ? error.message : String(error);
     upsertNode({
       id: node.id, projectId, type: 'analyze', status: 'failed', ordinal: node.ordinal,
-      reason, agentMessages: messagesSoFar,
+      reason, agentMessages: [],
     });
     trace({
       projectId, nodeId: node.id, phase: 'failed', kind: 'analysis_failed', status: 'error',

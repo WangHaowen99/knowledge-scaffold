@@ -20,5 +20,7 @@ test('建模资料列表展示当前修订并提供历史入口', () => {
 
   assert.match(html, /修订 2/);
   assert.match(html, />历史</);
+  assert.match(html, />下载</);
+  assert.match(html, /title="下载 policy.md"/);
   assert.match(html, /已解析/);
 });

@@ -68,6 +68,21 @@ const BY_CODE: Record<string, ErrorNextAction[]> = {
     REVIEW_KNOWLEDGE,
   ],
   PACKAGE_REPAIR_IN_PROGRESS: [{ ...VIEW_VALIDATION, style: 'primary' }],
+  PACKAGE_CANDIDATE_REJECTED: [
+    { id: 'adjust_repair_plan', label: '根据复检结果调整方案', style: 'primary',
+      description: '当前知识包没有应用未通过的候选，可继续调整本轮方案' },
+    { id: 'review_knowledge_files', label: '人工修改知识文件', style: 'secondary' },
+    { id: 'view_validation', label: '查看复检差异', style: 'secondary' },
+  ],
+  MODEL_QUOTA_EXHAUSTED: [
+    { id: 'open_model_settings', label: '检查模型额度与配置', style: 'primary',
+      description: '恢复额度或切换可用模型后，可从当前步骤继续' },
+    { id: 'generate_knowledge_structure', label: '额度恢复后重试', style: 'secondary' },
+  ],
+  CONTROLLED_REPAIR_APPLY_FAILED: [
+    { id: 'repair_knowledge_structure', label: '重试当前修复', style: 'primary' },
+    { id: 'view_validation', label: '查看失败原因', style: 'secondary' },
+  ],
   // 项目写租约被别的长耗时操作占着（生成脚本方案要跑十几分钟）。正确出口是等，
   // 但得让人看到「在等什么、等了多久」，而不是一条不知所措的红字。
   busy: [

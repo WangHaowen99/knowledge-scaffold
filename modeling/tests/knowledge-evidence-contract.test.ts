@@ -6,6 +6,7 @@ import {
   attachKnowledgeChangeEvidence,
   findKnowledgeEvidenceProblems,
 } from '../src/workflow/knowledge-evidence.js';
+import { candidateId } from '../src/workflow/candidate-disposition.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import { applyPackageDraftFiles } from '../src/workflow/package-draft-parser.js';
 import type { AnalysisResult, PackageSpec } from '../src/types.js';
@@ -60,6 +61,17 @@ test('生成链路为流程、规则、指标和关系绑定可追溯证据', ()
   assert.deepEqual(spec.operations[0].evidence, ['diagram:process_1', 'flow-node:step_receive']);
   assert.deepEqual(spec.objects[0].relations?.[0].evidence, ['material:records.md#请求记录']);
   assert.deepEqual(findKnowledgeEvidenceProblems(spec), []);
+});
+
+test('规则指标按候选处置记录绑定证据而不是依赖返回顺序', () => {
+  const reordered = baseSpec();
+  reordered.rules = [{ key: 'rule_second', title: '第二条规则', content: '第二条规则内容。' }, ...reordered.rules ?? []];
+  reordered.candidateDispositions = [{
+    candidateId: candidateId(analysis.candidateArtifacts![0], 0), kind: 'rule', name: '适用规则', status: 'generated',
+    resourceKeys: ['Eligibility'], reason: '由规范定义生成。',
+  }];
+  const spec = attachGeneratedKnowledgeEvidence(reordered, analysis, []);
+  assert.ok(spec.rules?.find((item) => item.key === 'Eligibility')?.evidence?.includes('material:policy.md'));
 });
 
 test('资料证据绑定不可变资料修订而不是仅记录可变文件名', () => {

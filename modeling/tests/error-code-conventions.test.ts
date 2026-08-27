@@ -54,7 +54,10 @@ test('同一个概念的两个错误码至少要给同样的出口', async () =>
 test('注册表里的码都实际出现在路由里，不留无人认领的登记', () => {
   const declared = new Set(declaredCodes().map((item) => item.code));
   // 这几个来自 lease / 状态机而不是路由字面量
-  const fromOtherLayers = new Set(['busy', 'expired', 'REVISION_CONFLICT', 'PACKAGE_DRAFT_REQUIRES_PUBLISH']);
+  const fromOtherLayers = new Set([
+    'busy', 'expired', 'REVISION_CONFLICT', 'PACKAGE_DRAFT_REQUIRES_PUBLISH',
+    'PACKAGE_CANDIDATE_REJECTED', 'MODEL_QUOTA_EXHAUSTED', 'CONTROLLED_REPAIR_APPLY_FAILED',
+  ]);
   const orphans = errorCodesWithNextActions()
     .filter((code) => !declared.has(code) && !fromOtherLayers.has(code));
   assert.deepEqual(orphans, [], `注册了出口但路由里没有该码：${orphans.join('、')}`);

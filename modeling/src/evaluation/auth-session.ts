@@ -2,6 +2,13 @@ import { getAuthClient, type RefreshResult } from '../auth/client.js';
 
 type RefreshFn = (refreshToken: string) => Promise<RefreshResult | null>;
 
+export class EvaluationAuthenticationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EvaluationAuthenticationError';
+  }
+}
+
 export interface EvaluationAuthSessionOptions {
   accessToken: string;
   refreshToken?: string;
@@ -28,6 +35,7 @@ export class EvaluationAuthSession {
   private readonly now: () => number;
   private readonly refreshSkewMs: number;
   private refreshInFlight?: Promise<string>;
+  private revision = 0;
 
   constructor(options: EvaluationAuthSessionOptions) {
     this.accessToken = options.accessToken;
@@ -39,36 +47,60 @@ export class EvaluationAuthSession {
 
   async getAccessToken(): Promise<string> {
     const expiresAt = accessTokenExpiryMs(this.accessToken);
-    if (this.refreshToken && expiresAt !== undefined && expiresAt - this.now() <= this.refreshSkewMs) {
-      return this.rotate();
+    if (expiresAt !== undefined && expiresAt - this.now() <= this.refreshSkewMs) {
+      if (this.refreshToken) return this.rotate();
+      throw new EvaluationAuthenticationError('评测访问凭据即将过期，请重新登录后再启动评测');
     }
     return this.accessToken;
   }
 
   async refreshAfterUnauthorized(): Promise<string> {
     if (!this.refreshToken) {
-      throw new Error('评测访问凭据已过期，请重新登录后再启动评测');
+      throw new EvaluationAuthenticationError('评测访问凭据已过期，请重新登录后再启动评测');
     }
     return this.rotate();
   }
 
+  /** Re-login updates the stable session object already held by a running evaluation. */
+  updateCredentials(accessToken: string, refreshToken?: string): void {
+    this.accessToken = accessToken;
+    this.refreshToken = refreshToken?.trim() || undefined;
+    this.revision += 1;
+  }
+
   private rotate(): Promise<string> {
     if (!this.refreshInFlight) {
-      this.refreshInFlight = (async () => {
+      const revision = this.revision;
+      const source: Promise<string> = (async () => {
         const refreshToken = this.refreshToken;
         if (!refreshToken) {
-          throw new Error('评测访问凭据已过期，请重新登录后再启动评测');
+          throw new EvaluationAuthenticationError('评测访问凭据已过期，请重新登录后再启动评测');
         }
-        const result = await this.refresh(refreshToken);
+        let result: RefreshResult | null;
+        try {
+          result = await this.refresh(refreshToken);
+        } catch (error) {
+          if (this.revision !== revision) return this.accessToken;
+          throw error;
+        }
         if (!result?.token || !result.refreshToken) {
-          throw new Error('评测登录续期已失效，请重新登录后再启动评测');
+          if (this.revision !== revision) return this.accessToken;
+          throw new EvaluationAuthenticationError('评测登录续期已失效，请重新登录后再启动评测');
         }
-        this.accessToken = result.token;
-        this.refreshToken = result.refreshToken;
+        // A browser re-login may replace the credentials while refresh is in flight.
+        // Never let the older refresh response overwrite that newer login session.
+        if (this.revision === revision) {
+          this.accessToken = result.token;
+          this.refreshToken = result.refreshToken;
+          this.revision += 1;
+        }
         return this.accessToken;
-      })().finally(() => {
-        this.refreshInFlight = undefined;
+      })();
+      let rotation!: Promise<string>;
+      rotation = source.finally(() => {
+        if (this.refreshInFlight === rotation) this.refreshInFlight = undefined;
       });
+      this.refreshInFlight = rotation;
     }
     return this.refreshInFlight;
   }

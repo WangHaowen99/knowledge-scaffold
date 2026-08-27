@@ -16,3 +16,11 @@ test('主导航不再提供独立打开知识包工作区入口', () => {
   assert.doesNotMatch(tourSource, /生成后从右上角进入/);
   assert.doesNotMatch(tourSource, /data-tour="package-workspace"/);
 });
+
+test('导入已有知识包后直接进入新工作台 Studio', () => {
+  assert.match(source, /导入已有知识包/);
+  assert.match(source, /window\.location\.assign\(importedPackageStudioUrl\(result\.project\.id\)\)/);
+  assert.match(source, /workbench\.html\?project=/);
+  assert.match(source, /studioView=graph/);
+  assert.match(source, /kind === 'modeling' \|\| runtime === 'agent'/);
+});

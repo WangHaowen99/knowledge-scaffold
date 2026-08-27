@@ -456,6 +456,6 @@ test('恢复旧包创建新修订但不创建包版本', async (t) => {
     .get(projectId) as any).count, 2);
   const latest = (await store.history(projectId))[0];
   assert.equal(latest.cause, 'restore');
-  assert.equal(latest.packageVersion, undefined);
+  assert.equal(latest.packageVersion, '1.0.0');
   assert.ok((await store.diff(projectId, second.revision.oid, restored.revision.oid)).files.length > 0);
 });

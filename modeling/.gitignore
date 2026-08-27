@@ -11,3 +11,4 @@ frontend-dist/
 # 但它们是用完即删的产物，不该被 git add -A 扫进提交。
 .scratch/
 frontend/public/.scratch/
+frontend/.smoke/

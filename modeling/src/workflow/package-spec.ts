@@ -1,4 +1,5 @@
 import type { PackageSpec } from '../types.js';
+import { normalizeObjectFieldAliases } from './field-alias.js';
 
 const FLOW_STEP_ORDINAL = /^(?:(?:第\s*\d+\s*步(?:骤)?\s*)|(?:[（(]\s*\d+\s*[)）]\s*)|(?:\d+\s*、\s*)|(?:\d+\s*[.)）:：-]\s+))/u;
 
@@ -16,6 +17,7 @@ export function normalizeOperationFlowStep(value: string): string {
 export function canonicalizePackageSpec(spec: PackageSpec): PackageSpec {
   return {
     ...spec,
+    objects: spec.objects.map(normalizeObjectFieldAliases),
     operations: spec.operations.map((operation) => ({
       ...operation,
       flow: (operation.flow ?? []).map(normalizeOperationFlowStep),

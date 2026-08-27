@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EvaluationAuthSession } from '../src/evaluation/auth-session.js';
+import { BackgroundAuthSessionRegistry } from '../src/auth/background-session.js';
+import {
+  EvaluationAuthenticationError,
+  EvaluationAuthSession,
+} from '../src/evaluation/auth-session.js';
 
 function unsignedJwt(expiresAtSeconds: number): string {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -33,6 +37,41 @@ test('长任务收到 401 且没有续签凭据时给出可操作错误', async 
   const session = new EvaluationAuthSession({ accessToken: 'access-only' });
   await assert.rejects(
     session.refreshAfterUnauthorized(),
-    /重新登录后再启动评测/,
+    (error) => error instanceof EvaluationAuthenticationError
+      && /重新登录后再启动评测/u.test(error.message),
   );
+});
+
+test('重新登录不会被较早发起的续期响应覆盖', async () => {
+  const now = 1_800_000_000_000;
+  const expiring = unsignedJwt(Math.floor(now / 1000) + 10);
+  const reLoginAccess = unsignedJwt(Math.floor(now / 1000) + 900);
+  let finishRefresh!: (value: { token: string; refreshToken: string }) => void;
+  const session = new EvaluationAuthSession({
+    accessToken: expiring,
+    refreshToken: 'refresh-before-login',
+    now: () => now,
+    refresh: () => new Promise((resolve) => { finishRefresh = resolve; }),
+  });
+
+  const refreshing = session.getAccessToken();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  session.updateCredentials(reLoginAccess, 'refresh-after-login');
+  finishRefresh({ token: 'stale-rotated-access', refreshToken: 'stale-rotated-refresh' });
+
+  assert.equal(await refreshing, reLoginAccess);
+  assert.equal(await session.getAccessToken(), reLoginAccess);
+});
+
+test('后台会话注册表原地更新对象，使运行中的任务看到重新登录凭据', async () => {
+  let now = 1_800_000_000_000;
+  const registry = new BackgroundAuthSessionRegistry(() => now, 10_000);
+  const session = registry.remember('modeler', 'access-before-login', 'refresh-before-login');
+
+  const updated = registry.remember('modeler', 'access-after-login', 'refresh-after-login');
+  assert.equal(updated, session);
+  assert.equal(await session.getAccessToken(), 'access-after-login');
+
+  now += 10_001;
+  assert.equal(registry.get('modeler'), undefined);
 });

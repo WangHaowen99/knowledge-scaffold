@@ -37,17 +37,18 @@ test('体检面板的重新检查入口由工作区统一执行', () => {
   assert.ok(packageCheckSource.includes('rechecking'));
 });
 
-test('修改与忽略都交给助手，面板里不再就地填理由', () => {
+test('错误的修改与暂缓交给助手，警告复核保留独立说明', () => {
   assert.ok(packageCheckSource.includes('reviewPackageCheckFinding'));
   assert.ok(packageCheckSource.includes('ignorePackageCheckFinding'));
-  // 两个填理由的表单已经移走：面板里不应再有输入框，也不应直接调写入接口
-  assert.ok(!packageCheckSource.includes('<textarea'));
-  assert.ok(!packageCheckSource.includes('acceptPackageWarnings'));
+  // 错误卡不在面板里填写暂缓理由；无错误后的警告复核仍需显式选择并说明依据。
+  assert.ok(packageCheckSource.includes('acceptPackageWarnings'));
+  assert.ok(packageCheckSource.includes('warningNote'));
   assert.ok(!packageCheckSource.includes('deferPackageValidationErrors'));
 });
 
-test('提示类发现不给忽略按钮——后端没有对应的忽略通道', () => {
-  assert.ok(packageCheckSource.includes("f.severity === '错误' || f.severity === '警告'"));
+test('知识包面板只展示和交接错误，不展示警告或提示', () => {
+  assert.ok(packageCheckSource.includes("const blockingFindings = check?.findings.filter((f) => f.severity === '错误')"));
+  assert.ok(packageCheckSource.includes('blockingFindings.map'));
 });
 
 test('自动修复的可用性仍由后端声明，不因为去掉手动检查而失效', () => {
@@ -60,7 +61,7 @@ test('自动修复的可用性仍由后端声明，不因为去掉手动检查�
   assert.ok(workspaceSource.includes('repair: repairAvailability'));
 });
 
-test('忽略待办要能在助手栏渲染，否则又是「后端说有待办、界面空白」的死路', async () => {
+test('暂缓待办要能在助手栏渲染，否则又是「后端说有待办、界面空白」的死路', async () => {
   const { isConstructionInteraction } = await import('../frontend/src/constructionInteraction.js');
   assert.equal(
     isConstructionInteraction({ type: 'question_batch', payload: { purpose: 'check_finding_ignore' } }),
@@ -68,10 +69,10 @@ test('忽略待办要能在助手栏渲染，否则又是「后端说有待办�
   );
 });
 
-test('忽略接口成功后立即使用返回待办，不等待下一轮 session 才恢复按钮', () => {
+test('暂缓接口成功后立即使用返回待办，不等待下一轮 session 才恢复按钮', () => {
   assert.match(packageCheckSource, /const result = await ignorePackageCheckFinding/);
   assert.match(packageCheckSource, /onInteractionOpened\?\.\(result\)/);
-  assert.match(packageCheckSource, /openedIgnore \? '前往助手处理' : '忽略'/);
+  assert.match(packageCheckSource, /openedIgnore \? '前往助手处理' : '暂缓并说明理由'/);
 });
 
 // ---- 动作可以指向具体文件 ----

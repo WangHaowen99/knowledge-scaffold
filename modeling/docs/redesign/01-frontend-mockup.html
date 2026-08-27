@@ -1,0 +1,1285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知识包建模工作台 · 前端设计草图</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --line:#e3e3e0; --line-soft:#efefec;
+  --ink:#191918; --ink-2:#3d3d3a; --muted:#75756f; --faint:#9a9a94;
+  --ok:#1f7a4d; --ok-bg:#eef7f1;
+  --wait:#a8690b; --wait-bg:#fdf6e9;
+  --stale:#b03a37; --stale-bg:#fcf0ef;
+  --draft:#8a8a84; --draft-bg:#f2f2f0;
+  --accent:#2f5fa8; --accent-bg:#eef3fa;
+  --agent:#5b4fa8; --agent-bg:#f2f0fb;
+  --add:#eaf6ee; --add-ink:#1f7a4d;
+  --del:#fdeeed; --del-ink:#b03a37;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font:13px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* ---------- 草图导航（非产品功能） ---------- */
+.proto{position:sticky;top:0;z-index:50;background:#22221f;color:#e8e8e4;padding:8px 16px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.proto b{font-weight:600;margin-right:10px;font-size:12px;letter-spacing:.02em}
+.proto span.hint{color:#9a9a92;font-size:11px;margin-left:auto}
+.proto button{
+  background:#33332f;border:1px solid #46463f;color:#d8d8d2;border-radius:5px;
+  padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit;
+}
+.proto button:hover{background:#3f3f39}
+.proto button.on{background:#e8e8e4;color:#22221f;border-color:#e8e8e4;font-weight:600}
+.screen{display:none;padding:14px 16px 40px}
+.screen.on{display:block}
+.screen > h2{font-size:14px;margin:0 0 2px;font-weight:600}
+.screen > p.sub{margin:0 0 12px;color:var(--muted);font-size:12px;max-width:900px}
+
+/* ---------- 应用外壳 ---------- */
+.app{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.topbar{display:flex;align-items:center;gap:14px;padding:8px 12px;border-bottom:1px solid var(--line);background:#fcfcfb;font-size:12px}
+.topbar .goal{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px}
+.topbar .sep{color:var(--line);}
+.topbar .meta{color:var(--muted);white-space:nowrap}
+.topbar .spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:5px;border-radius:20px;padding:2px 9px;font-size:11.5px;border:1px solid transparent;white-space:nowrap}
+.pill.run{background:var(--agent-bg);color:var(--agent);border-color:#ded9f4}
+.pill.wait{background:var(--wait-bg);color:var(--wait);border-color:#f0e3c6}
+.pill.ok{background:var(--ok-bg);color:var(--ok);border-color:#cfe7da}
+.pill.stale{background:var(--stale-bg);color:var(--stale);border-color:#f2d6d4}
+.dotpulse{width:6px;height:6px;border-radius:50%;background:currentColor;animation:p 1.4s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
+.ghostbtn{border:1px solid var(--line);background:#fff;border-radius:5px;padding:3px 9px;font-size:11.5px;color:var(--ink-2);cursor:pointer;font-family:inherit}
+.ghostbtn:hover{background:#f5f5f3}
+
+.body{display:grid;grid-template-columns:216px minmax(0,1fr) 380px;height:600px}
+.body.wide-center{grid-template-columns:216px minmax(0,1fr) 340px}
+.pane{overflow:auto;border-right:1px solid var(--line)}
+.pane:last-child{border-right:none}
+.pane-head{position:sticky;top:0;background:#fcfcfb;border-bottom:1px solid var(--line-soft);padding:6px 10px;font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:8px;z-index:5}
+.pane-head b{color:var(--ink-2);font-weight:600}
+.pane-head .spacer{flex:1}
+
+/* ---------- 左：目录树 ---------- */
+.tree{padding:6px 0 20px;font-size:12.5px}
+.tree .row{display:flex;align-items:center;gap:6px;padding:3px 10px 3px 0;cursor:default;white-space:nowrap}
+.tree .row:hover{background:#f6f6f4}
+.tree .row.sel{background:var(--accent-bg)}
+.tree .row.sel .nm{color:var(--accent);font-weight:600}
+.i0{padding-left:10px}.i1{padding-left:22px}.i2{padding-left:36px}.i3{padding-left:50px}
+.st{width:7px;height:7px;border-radius:50%;flex:none}
+.st.ok{background:var(--ok)} .st.draft{background:#c9c9c3}
+.st.wait{background:var(--wait)} .st.stale{background:var(--stale)}
+.st.new{background:var(--accent)}
+.tree .nm{overflow:hidden;text-overflow:ellipsis}
+.tree .cap{color:var(--faint);font-size:11px;margin-left:auto;padding-left:8px}
+.tree .grp{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:.03em;padding:10px 10px 3px;text-transform:none}
+.legend{border-top:1px solid var(--line-soft);padding:8px 10px;font-size:11px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px;position:sticky;bottom:0;background:#fcfcfb}
+.legend i{display:inline-flex;align-items:center;gap:5px;font-style:normal}
+
+/* ---------- 中：画布 ---------- */
+.canvas{padding:14px 16px 30px;min-height:100%}
+.focusbar{display:flex;align-items:center;gap:8px;font-size:11.5px;background:var(--agent-bg);border:1px solid #e2ddf6;color:var(--agent);
+  border-radius:6px;padding:5px 10px;margin-bottom:12px}
+.focusbar b{font-weight:600}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.tabs div{padding:5px 10px;font-size:12px;color:var(--muted);border-bottom:2px solid transparent;cursor:default}
+.tabs div.on{color:var(--ink);border-bottom-color:var(--ink);font-weight:600}
+
+/* 流程图（纯 CSS 示意 Mermaid 渲染结果） */
+.flow{display:flex;flex-direction:column;align-items:center;gap:0;padding:6px 0}
+.node{border:1px solid #cfcfc9;background:#fff;border-radius:6px;padding:7px 14px;font-size:12px;min-width:150px;text-align:center;position:relative}
+.node.start,.node.end{border-radius:20px;background:#f4f4f2}
+.node.dec{transform:rotate(45deg);width:104px;height:104px;min-width:0;display:flex;align-items:center;justify-content:center;padding:0;border-radius:8px}
+.node.dec span{transform:rotate(-45deg);display:block;width:120px;font-size:11.5px}
+.node.hl{border-color:var(--agent);box-shadow:0 0 0 3px var(--agent-bg);background:#fdfdff}
+.node.newn{border-color:var(--ok);background:var(--ok-bg)}
+.node .tag{position:absolute;top:-9px;right:-9px;background:var(--agent);color:#fff;font-size:10px;border-radius:9px;padding:1px 6px}
+.arrow{width:1px;height:20px;background:#c9c9c3;position:relative}
+.arrow::after{content:"";position:absolute;bottom:0;left:-3px;border:3.5px solid transparent;border-top-color:#c9c9c3}
+.arrow.lbl::before{content:attr(data-l);position:absolute;left:8px;top:2px;font-size:11px;color:var(--muted);white-space:nowrap}
+.branch{display:flex;gap:44px;align-items:flex-start}
+
+/* diff */
+.diff{border:1px solid var(--line);border-radius:6px;overflow:hidden;font-size:12px;margin-bottom:14px}
+.diff .fh{background:#fafaf8;border-bottom:1px solid var(--line);padding:6px 10px;display:flex;align-items:center;gap:8px;font-size:11.5px}
+.diff .fh .path{font-family:ui-monospace,Menlo,monospace;color:var(--ink-2)}
+.diff .fh .spacer{flex:1}
+.diff pre{margin:0;padding:0;font-size:11.5px;line-height:1.7;overflow-x:auto}
+.diff .l{padding:0 10px;white-space:pre;display:block}
+.diff .l.add{background:var(--add);color:var(--add-ink)}
+.diff .l.del{background:var(--del);color:var(--del-ink)}
+.diff .l.ctx{color:var(--ink-2)}
+.diff .l.hunk{background:#f4f4f2;color:var(--muted)}
+
+/* 通用表格 */
+table.grid{width:100%;border-collapse:collapse;font-size:12px}
+table.grid th{text-align:left;font-weight:600;color:var(--muted);font-size:11px;padding:6px 8px;border-bottom:1px solid var(--line);background:#fafaf8;position:sticky;top:0}
+table.grid td{padding:7px 8px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+table.grid tr:hover td{background:#fbfbf9}
+.k{font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.sm{font-size:11px;color:var(--muted)}
+
+/* 门禁 */
+.gate{display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid var(--line);border-radius:6px;margin-bottom:8px;background:#fff}
+.gate .gi{width:18px;height:18px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;margin-top:1px}
+.gate .gi.pass{background:var(--ok)} .gate .gi.fail{background:var(--stale)} .gate .gi.na{background:#c9c9c3}
+.gate .gt{font-weight:600;font-size:12.5px}
+.gate .gd{color:var(--muted);font-size:11.5px;margin-top:2px}
+.gate ul{margin:6px 0 0;padding-left:18px;color:var(--stale);font-size:11.5px}
+
+/* ---------- 右：对话流 ---------- */
+.stream{padding:12px 12px 4px;display:flex;flex-direction:column;gap:12px}
+.msg{font-size:12.5px}
+.msg .who{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--faint);margin-bottom:4px}
+.msg .who b{color:var(--muted);font-weight:600}
+.msg.user .bubble{background:#f3f3f1;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.msg .txt{color:var(--ink-2)}
+.block{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.block .bh{padding:6px 10px;font-size:11px;font-weight:600;color:var(--muted);background:#fafaf8;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:6px}
+.block .bh .spacer{flex:1}
+.block .bb{padding:9px 10px}
+.block.q{border-color:#ecd9ae;background:#fffdf7}
+.block.q .bh{background:var(--wait-bg);color:var(--wait);border-bottom-color:#f0e3c6}
+.block.cf{border-color:#c9dcf2}
+.block.cf .bh{background:var(--accent-bg);color:var(--accent);border-bottom-color:#d8e5f5}
+.block.warn{border-color:#f0d3d1}
+.block.warn .bh{background:var(--stale-bg);color:var(--stale)}
+.opt{display:block;width:100%;text-align:left;border:1px solid var(--line);background:#fff;border-radius:6px;padding:7px 9px;margin-bottom:5px;font-size:12px;cursor:pointer;font-family:inherit;color:var(--ink-2)}
+.opt:hover{border-color:var(--accent);background:var(--accent-bg)}
+.opt b{display:block;color:var(--ink);font-weight:600;font-size:12px}
+.opt s{display:block;text-decoration:none;color:var(--muted);font-size:11px;margin-top:1px}
+.freein{display:flex;gap:6px;margin-top:6px}
+.freein input{flex:1;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit}
+.plan{list-style:none;margin:0;padding:0;font-size:12px}
+.plan li{display:flex;gap:7px;padding:3px 0;color:var(--ink-2)}
+.plan li .bx{width:13px;flex:none;color:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.plan li.done{color:var(--faint);text-decoration:line-through}
+.plan li.now{color:var(--ink);font-weight:600}
+.plan li.now .bx{color:var(--agent)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.chip{border:1px solid var(--line);border-radius:5px;padding:3px 8px;font-size:11px;color:var(--muted);background:#fff;cursor:pointer}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.cta{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+.btn{border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--ink-2);font-family:inherit;font-weight:500}
+.btn:hover{background:#f5f5f3}
+.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+.btn.primary:hover{background:#000}
+.btn.danger{color:var(--stale);border-color:#f0d3d1}
+.grpitem{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.grpitem:last-child{border-bottom:none}
+.grpitem input{margin-top:2px}
+.grpitem .gtl{font-weight:600;font-size:12px}
+.grpitem .gmeta{color:var(--muted);font-size:11px;margin-top:2px}
+.composer{border-top:1px solid var(--line);background:#fcfcfb;padding:9px 12px;position:sticky;bottom:0}
+.composer .box{display:flex;align-items:flex-end;gap:7px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:7px 8px}
+.composer textarea{flex:1;border:none;outline:none;resize:none;font:12.5px/1.5 inherit;font-family:inherit;height:34px;color:var(--ink)}
+.composer .note{font-size:10.5px;color:var(--faint);margin-top:5px}
+
+/* 注释 */
+.ann{margin-top:12px;border:1px dashed #d6d6d0;border-radius:8px;background:#fcfcfa;padding:10px 14px}
+.ann h4{margin:0 0 6px;font-size:12px;color:var(--muted);font-weight:600}
+.ann ol{margin:0;padding-left:18px;font-size:12px;color:var(--ink-2)}
+.ann ol li{margin-bottom:3px}
+.ann ol li b{font-weight:600}
+.badge{display:inline-flex;width:15px;height:15px;border-radius:50%;background:var(--ink);color:#fff;font-size:10px;align-items:center;justify-content:center;margin-right:3px;vertical-align:1px}
+.drawer{position:relative;border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden}
+.trace{font-size:11.5px;font-family:ui-monospace,Menlo,monospace;padding:0}
+.trace .tr{display:flex;gap:8px;padding:4px 12px;border-bottom:1px solid var(--line-soft)}
+.trace .tr:hover{background:#fafaf8}
+.trace .t{color:var(--faint);width:52px;flex:none}
+.trace .a{width:120px;flex:none;color:var(--agent)}
+.trace .d{color:var(--ink-2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trace .r{color:var(--muted);flex:none}
+
+/* ---- 新增：活动行 / 热图 / 证据链 / 分诊 / 策略 / 上传 / 资料 ---- */
+.actline{display:flex;align-items:center;gap:8px;border:1px solid #ded9f4;background:var(--agent-bg);
+  border-radius:8px;padding:7px 10px;font-size:12px;color:var(--agent);margin:0 12px 10px}
+.actline .sp{width:11px;height:11px;border:2px solid var(--agent);border-right-color:transparent;border-radius:50%;
+  animation:spin .9s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.actline .txt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.actline .el{color:var(--muted);font-size:11px;flex:none}
+.actline .cv{cursor:pointer;color:var(--muted);flex:none;font-size:11px}
+.actsub{margin:-6px 12px 10px;border:1px solid var(--line);border-top:none;border-radius:0 0 8px 8px;
+  background:#fcfcfb;font-size:11px;font-family:ui-monospace,Menlo,monospace}
+.actsub div{padding:3px 10px;color:var(--muted);border-bottom:1px solid var(--line-soft)}
+.actsub div:last-child{border-bottom:none}
+.actsub .more{color:var(--accent);cursor:pointer;font-family:inherit}
+
+.tree .row.dim{opacity:.34}
+.tree .row.hit{background:var(--stale-bg)}
+.tree .row.fresh{background:var(--accent-bg)}
+.tabs2{display:flex;border-bottom:1px solid var(--line);background:#fcfcfb;position:sticky;top:0;z-index:6}
+.tabs2 div{flex:1;text-align:center;padding:6px 4px;font-size:11.5px;color:var(--muted);cursor:default;border-bottom:2px solid transparent}
+.tabs2 div.on{color:var(--ink);font-weight:600;border-bottom-color:var(--ink);background:#fff}
+
+.split{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.card2{border:1px solid var(--line);border-radius:8px;padding:12px}
+.card2.good{border-color:#cfe7da;background:var(--ok-bg)}
+.card2.todo{border-color:#f0e3c6;background:var(--wait-bg)}
+.card2 .big{font-size:26px;font-weight:600;line-height:1.1}
+.card2.good .big{color:var(--ok)} .card2.todo .big{color:var(--wait)}
+.card2 .lb{font-size:12px;color:var(--ink-2);margin-top:3px}
+.card2 ul{margin:8px 0 0;padding-left:16px;font-size:11.5px;color:var(--muted)}
+.card2 ol{margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--ink-2)}
+
+.chain{display:grid;grid-template-columns:1fr 26px 1fr;align-items:center;gap:0 6px;font-size:12px}
+.chain .cell{border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:#fff;margin-bottom:8px}
+.chain .cell.src{border-left:3px solid var(--accent)}
+.chain .cell.dst{border-left:3px solid var(--stale)}
+.chain .cell b{display:block;font-size:11.5px}
+.chain .cell s{display:block;text-decoration:none;color:var(--muted);font-size:11px;margin-top:2px}
+.chain .lnk{text-align:center;color:#c9c9c3;margin-bottom:8px;font-size:15px}
+
+.tier{border:1px solid var(--line);border-radius:7px;margin-bottom:7px;overflow:hidden}
+.tier .th{display:flex;align-items:center;gap:7px;padding:7px 9px;background:#fafaf8;font-size:11.5px;cursor:pointer}
+.tier .th .nm{font-weight:600;color:var(--ink)}
+.tier .th .ct{color:var(--muted)}
+.tier .th .sp{flex:1}
+.tier .th .cv{color:var(--muted);font-size:11px}
+.tier.open .th{border-bottom:1px solid var(--line-soft)}
+.tier .tb{padding:4px 9px 8px}
+.tier.hi .th{background:var(--wait-bg);color:var(--wait)}
+.tier.hi{border-color:#f0e3c6}
+.tier.lo .th{background:#f6f6f4;color:var(--faint)}
+
+.policy{border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-top:10px}
+.policy .ph{background:#fafaf8;padding:6px 9px;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--line-soft)}
+.prow{display:flex;align-items:center;gap:8px;padding:7px 9px;border-bottom:1px solid var(--line-soft);font-size:12px}
+.prow:last-child{border-bottom:none}
+.prow .pn{flex:1}
+.prow .pn s{display:block;text-decoration:none;color:var(--faint);font-size:10.5px;margin-top:1px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:5px;overflow:hidden;flex:none}
+.seg span{padding:3px 9px;font-size:11px;color:var(--muted);cursor:pointer;background:#fff}
+.seg span.on{background:var(--ink);color:#fff}
+.seg span.lock{background:#f2f2f0;color:var(--faint);cursor:not-allowed}
+.seg.fixed span.on{background:var(--wait);color:#fff}
+
+.drop{border:2px dashed #cfcfc9;border-radius:10px;padding:34px 20px;text-align:center;background:#fcfcfa;margin-bottom:14px}
+.drop .ic{font-size:26px;color:#c2c2bb}
+.drop .t1{font-size:14px;font-weight:600;margin-top:8px}
+.drop .t2{font-size:12px;color:var(--muted);margin-top:4px}
+.filerow{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px;font-size:12.5px;background:#fff}
+.filerow .fi{width:9px;height:9px;border-radius:50%;flex:none}
+.filerow .fn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filerow .fs{color:var(--muted);font-size:11px;flex:none}
+.bar{height:3px;background:var(--line-soft);border-radius:2px;overflow:hidden;width:70px;flex:none}
+.bar i{display:block;height:100%;background:var(--accent)}
+.matrow{display:flex;align-items:center;gap:7px;padding:6px 10px;font-size:12.5px;cursor:default}
+.matrow:hover{background:#f6f6f4}
+.matrow.sel{background:var(--accent-bg)}
+.matrow .mn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.matrow .mc{color:var(--faint);font-size:10.5px;flex:none}
+.hl{background:#fff4cc;border-bottom:1px solid #e8d189;padding:0 1px;cursor:pointer}
+.hl.on{background:#ffe08a}
+.doc{font-size:12.5px;line-height:1.9;color:var(--ink-2);border:1px solid var(--line);border-radius:7px;padding:14px 16px;background:#fff}
+.doc h5{margin:0 0 8px;font-size:13px}
+.backref{border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-bottom:10px}
+.backref .bh2{background:#fafaf8;padding:6px 9px;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--line-soft)}
+.backref a{display:block;padding:7px 9px;border-bottom:1px solid var(--line-soft);font-size:12px;color:var(--ink-2);text-decoration:none;cursor:pointer}
+.backref a:last-child{border-bottom:none}
+.backref a:hover{background:var(--accent-bg);color:var(--accent)}
+.backref a s{display:block;text-decoration:none;color:var(--faint);font-size:10.5px;margin-top:1px}
+</style>
+
+</head>
+<body>
+
+<div class="proto">
+  <b>建模工作台 · 前端设计草图</b>
+  <button class="on" data-s="s1">1 创建与上传</button>
+  <button data-s="s2">2 建模进行中</button>
+  <button data-s="s3">3 变更确认</button>
+  <button data-s="s4">4 资料与反查</button>
+  <button data-s="s5">5 增量建模</button>
+  <button data-s="s6">6 知识包融合</button>
+  <button data-s="s7">7 门禁与发布</button>
+  <button data-s="s8">8 过程抽屉</button>
+  <span class="hint">顶栏为草图导航，非产品功能 · 示例数据全部为合成数据</span>
+</div>
+
+<!-- ==== 屏 1 ==== -->
+<section id="s1" class="screen on">
+  <h2>屏 1 · 创建与上传（全屏，仅此一次）</h2>
+  <p class="sub">资料的第一个时间点。之后补资料一律在对话流里做，不再回到这个页面。上传即解析即反馈——扫描件这类问题在这一步暴露成本最低。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">新建建模项目</span><span class="sep">·</span>
+      <span class="meta">第 1 步，共 1 步</span>
+      <span class="spacer"></span>
+      <span class="meta">解析 5/6 完成</span>
+    </div>
+    <div style="padding:20px 24px 24px;max-width:820px;margin:0 auto">
+      <div style="margin-bottom:16px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:4px">项目名称</div>
+        <input style="width:100%;border:1px solid var(--line);border-radius:7px;padding:8px 10px;font-size:13px;font-family:inherit" value="备件库存与采购问答">
+      </div>
+      <div style="margin-bottom:18px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:4px">一句话说明这个知识包要解决什么问题（可以先粗略写，助手会带你确认）</div>
+        <textarea style="width:100%;border:1px solid var(--line);border-radius:7px;padding:8px 10px;font-size:13px;font-family:inherit;height:56px;resize:none">让一线人员能问「某个备件还能用多少」「要不要补货」，并给出可核对的依据。</textarea>
+      </div>
+
+      <div class="drop">
+        <div class="ic">⤓</div>
+        <div class="t1">把资料拖到这里</div>
+        <div class="t2">md / txt / pdf / word / excel · 也可以点击选择 · 现在没有也可以直接开始</div>
+      </div>
+
+      <div class="filerow"><span class="fi st ok"></span><span class="fn">作业手册.pdf</span><span class="fs">解析完成 · 42 页</span></div>
+      <div class="filerow"><span class="fi st ok"></span><span class="fn">库存字段说明表.xlsx</span><span class="fs">解析完成 · 3 张表 / 27 字段</span></div>
+      <div class="filerow"><span class="fi st ok"></span><span class="fn">安全库存管理办法.docx</span><span class="fs">解析完成</span></div>
+      <div class="filerow"><span class="fi st ok"></span><span class="fn">采购流程说明.md</span><span class="fs">解析完成</span></div>
+      <div class="filerow"><span class="fi st ok"></span><span class="fn">供应商台账.xlsx</span><span class="fs">解析完成 · 1 张表 / 12 字段</span></div>
+      <div class="filerow"><span class="fi st new"></span><span class="fn">质检记录扫描件.pdf</span><span class="bar"><i style="width:64%"></i></span><span class="fs">解析中</span></div>
+
+      <div class="block warn" style="margin-top:12px">
+        <div class="bh">1 份资料可能有问题</div>
+        <div class="bb">
+          <div style="font-size:12px"><code class="k">质检记录扫描件.pdf</code> 看起来是扫描版，没有可提取的文字层。</div>
+          <div class="cta"><button class="btn">换一个可复制文字的版本</button><button class="btn">先留着，我口头说明内容</button><button class="btn">移除</button></div>
+        </div>
+      </div>
+
+      <div class="cta" style="margin-top:18px">
+        <button class="btn primary" style="padding:9px 20px">开始建模</button>
+        <button class="btn">先存草稿</button>
+      </div>
+      <div class="sm" style="margin-top:8px">助手会先读完资料、和你确认建模目标，然后才动知识包正文。</div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>不问分类。</b>不让用户选"这是流程文档还是数据字典"——助手自己判断，判错了用户会说。多问一个问题就多一道摩擦。</li>
+      <li><b>传完立刻解析并反馈。</b>扫描版 PDF、加密文件、空表格这类问题在这一步暴露成本最低。等助手跑起来才发现，用户已经等了五分钟。</li>
+      <li><b>解析失败给三个出口</b>，其中「我口头说明内容」最重要——很多资料本来就不完整，堵死这条路用户只能放弃。</li>
+      <li><b>可以不传直接开始。</b>有些项目的知识全在专家脑子里。资料不是建模的前置条件。</li>
+      <li><b>这是唯一的全屏上传页。</b>之后补资料全部在对话流里完成，不回到这里——见屏 2。</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ==== 屏 2 ==== -->
+<section id="s2" class="screen">
+  <h2>屏 2 · 建模进行中（主界面）</h2>
+  <p class="sub">左＝产物，中＝助手指向的当前对象，右＝唯一一条对话流。新增两处：对话流底部的<b>活动行</b>，以及助手主动<b>要资料</b>的卡片。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">备件库存与采购问答</span><span class="sep">·</span>
+      <span class="meta k">0.4.0-draft</span><span class="sep">·</span>
+      <span class="pill wait">待确认 2</span>
+      <span class="pill run"><i class="dotpulse"></i>助手运行中</span>
+      <span class="spacer"></span>
+      <span class="meta">已确认 3 流程 / 12 对象 / 0 脚本</span>
+      <button class="ghostbtn">过程</button>
+    </div>
+
+    <div class="body">
+      <div class="pane">
+        <div class="tabs2"><div class="on">知识包</div><div>资料 6</div></div>
+        <div class="tree">
+          <div class="row i0"><span class="st ok"></span><span class="nm">manifest.yaml</span></div>
+          <div class="row i0"><span class="st ok"></span><span class="nm">index.md</span></div>
+          <div class="grp">diagrams/</div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">入库校验.mmd</span></div>
+          <div class="row i1 sel"><span class="st wait"></span><span class="nm">采购申请.mmd</span><span class="cap">讨论中</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">库存盘点.mmd</span></div>
+          <div class="grp">objects/</div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">备件.md</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">库存批次.md</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">采购申请单.md</span></div>
+          <div class="row i1"><span class="st draft"></span><span class="nm">供应商.md</span><span class="cap">草稿</span></div>
+          <div class="grp">operations/ · rules/ · metrics/</div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">查询可用库存.md</span></div>
+          <div class="row i1"><span class="st draft"></span><span class="nm">生成采购建议.md</span><span class="cap">草稿</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">rules/index.md</span><span class="cap">7</span></div>
+          <div class="grp">.modeling/</div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">goal.md</span></div>
+          <div class="row i1"><span class="st new"></span><span class="nm">plan.md</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">decisions/</span><span class="cap">9</span></div>
+        </div>
+        <div class="legend">
+          <i><span class="st ok"></span>已确认</i><i><span class="st draft"></span>草稿</i>
+          <i><span class="st wait"></span>待确认</i><i><span class="st stale"></span>已过时</i>
+        </div>
+      </div>
+
+      <div class="pane">
+        <div class="pane-head"><b>采购申请.mmd</b><span class="spacer"></span><span>渲染 / 源码 / 历史</span></div>
+        <div class="canvas">
+          <div class="focusbar"><b>助手正在讨论</b> 采购申请流程 · 判断节点 <code class="k">D2 安全库存判断</code>
+            <span style="flex:1"></span><button class="ghostbtn">取消跟随</button></div>
+          <div class="flow">
+            <div class="node start">领用申请提交</div><div class="arrow"></div>
+            <div class="node">校验备件编码</div><div class="arrow"></div>
+            <div class="node">查询可用库存</div><div class="arrow"></div>
+            <div class="node dec hl"><span>可用量 &lt; 安全库存？<span class="tag">D2</span></span></div>
+            <div class="arrow lbl" data-l="是"></div>
+            <div class="node newn">生成采购建议</div><div class="arrow"></div>
+            <div class="node end">通知采购负责人</div>
+          </div>
+          <p class="sm" style="text-align:center;margin-top:14px">节点 D2 的判断口径尚未确认 · 绿色节点为本轮新增</p>
+        </div>
+      </div>
+
+      <div class="pane" style="display:flex;flex-direction:column">
+        <div class="pane-head"><b>建模助手</b><span class="spacer"></span><button class="ghostbtn">回到上一确认点</button></div>
+        <div class="stream" style="flex:1">
+          <div class="msg">
+            <div class="who"><b>助手</b> · 14:02</div>
+            <div class="block">
+              <div class="bh">当前计划 · .modeling/plan.md</div>
+              <div class="bb">
+                <ul class="plan">
+                  <li class="done"><span class="bx">[x]</span>分析 6 份资料，记录证据引用</li>
+                  <li class="done"><span class="bx">[x]</span>确认建模目标与范围</li>
+                  <li class="done"><span class="bx">[x]</span>确认「入库校验」「库存盘点」流程</li>
+                  <li class="now"><span class="bx">[&gt;]</span>确认「采购申请」流程的判断口径</li>
+                  <li><span class="bx">[ ]</span>从 3 条流程抽取 operation 与对象</li>
+                  <li><span class="bx">[ ]</span>收尾待确认项 → 进入验证</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="who"><b>助手</b> · 14:03</div>
+            <div class="block q">
+              <div class="bh">需要你决定 · 业务口径<span class="spacer"></span>1 / 2</div>
+              <div class="bb">
+                <div style="margin-bottom:8px">D2「可用量低于安全库存」中的<b>可用量</b>怎么算？</div>
+                <button class="opt"><b>现有库存 − 已占用</b><s>依据：作业手册 §3.2</s></button>
+                <button class="opt"><b>现有库存 − 已占用 − 在途退货</b><s>依据：库存字段说明表，含 <code class="k">pending_return</code> 列</s></button>
+                <div class="freein"><input placeholder="或者直接说明你们的口径…"><button class="btn">提交</button></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="who"><b>助手</b> · 14:06</div>
+            <div class="block cf">
+              <div class="bh">需要补充资料</div>
+              <div class="bb">
+                <div style="margin-bottom:8px">现有资料里没有说明<b>安全库存本身是怎么定的</b>——是拍的、按历史消耗算的，还是按供货周期算的？这会影响 D2 之后所有分支。</div>
+                <div class="drop" style="padding:16px 12px;margin-bottom:8px">
+                  <div class="t2">把文件拖到这里，或点击选择</div>
+                </div>
+                <div class="cta">
+                  <button class="btn primary">我口述</button>
+                  <button class="btn">没有这方面资料，跳过</button>
+                  <button class="btn">让我先找找</button>
+                </div>
+                <div class="sm" style="margin-top:7px">口述的内容会记成一条证据（<code class="k">user-decision</code>），和文档证据同等对待。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="actline">
+          <i class="sp"></i>
+          <span class="txt">正在读《安全库存管理办法 v3》 · 第 3 / 6 份</span>
+          <span class="el">已 1分12秒</span>
+          <span class="cv">⌄</span>
+        </div>
+        <div class="actsub">
+          <div>14:06:41 · 搜索「安全库存 供货周期」，命中 9 段</div>
+          <div>14:06:28 · 读《作业手册》第 18–22 页</div>
+          <div>14:06:04 · 3 个资料分析并行中（2 完成）</div>
+          <div class="more">看全部 67 次调用 →</div>
+        </div>
+
+        <div class="composer">
+          <div class="box"><textarea placeholder="随时插话：提问、纠正、改主意、或者直接把文件拖进来…"></textarea><button class="btn primary">发送</button></div>
+          <div class="note">助手在服务端运行，关掉页面也会继续；你的话会在下一个工具边界插入。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>活动行说人话，不显示工具名。</b>「正在读《X》第 3/6 份」而不是 <code class="k">read_document(filename=...)</code>。这要求工具返回值带一个 <code class="k">display</code> 字段，不能让前端解析工具名拼文案。</li>
+      <li><b>活动行带耗时。</b>长任务里「已 1分12秒」比转圈有用得多——用户据此判断是不是卡了。</li>
+      <li><b>三级递进。</b>活动行 → 展开最近几条 → 「看全部」才进过程抽屉。日常只需要第一级。并行任务显示进度（「3 个并行中，2 完成」）而不是列三行。</li>
+      <li><b>活动行不进历史。</b>它是临时行，任务结束后折叠成一条正常消息（「分析了 6 份资料，3 处需要你决定」）。</li>
+      <li><b>助手可以主动要资料。</b>这是资料的第二个时间点，也是最高频的一个——建模过程中才知道缺什么。</li>
+      <li><b>「我口述」必须有。</b>很多领域知识只在专家脑子里，从来没有文档。缺这个出口，用户会卡在「我没有这个文件」然后放弃。口述记成 <code class="k">user-decision</code> 证据，与文档证据同等。</li>
+      <li><b>输入框接受拖放。</b>用户想补材料时最自然的位置就是他正在说话的地方。工作台任何位置拖入文件也都能传。</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ==== 屏 3 ==== -->
+<section id="s3" class="screen">
+  <h2>屏 3 · 变更确认（分诊 + 批量 + 常设策略）</h2>
+  <p class="sub">知识抽取阶段一次可能牵动十几个文件。核心不是折叠，是<b>按「需要你判断的程度」分诊</b>，让十几项在视觉上只剩两三条要看的。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">备件库存与采购问答</span><span class="sep">·</span>
+      <span class="meta k">候选 c-2f9a ← 0.4.0-draft</span><span class="sep">·</span>
+      <span class="pill wait">待你确认</span>
+      <span class="spacer"></span>
+      <span class="meta">17 个变更组 · 需要你看 <b>2</b></span>
+      <button class="ghostbtn">过程</button>
+    </div>
+    <div class="body">
+      <div class="pane">
+        <div class="pane-head"><b>本次变更</b><span class="spacer"></span><span>23 文件</span></div>
+        <div class="tree">
+          <div class="grp">需要你判断 · 2</div>
+          <div class="row i1 sel"><span class="st wait"></span><span class="nm">rules/安全库存判断.md</span><span class="cap">新增</span></div>
+          <div class="row i1"><span class="st wait"></span><span class="nm">metrics/周转率.md</span><span class="cap">改口径</span></div>
+          <div class="grp">结构变更 · 12</div>
+          <div class="row i1"><span class="st draft"></span><span class="nm">objects/备件.md</span><span class="cap">+3 −0</span></div>
+          <div class="row i1"><span class="st draft"></span><span class="nm">objects/库存批次.md</span><span class="cap">+5 −1</span></div>
+          <div class="row i1"><span class="st draft"></span><span class="nm">operations/…</span><span class="cap">+8</span></div>
+          <div class="row i1" style="color:var(--faint)"><span class="nm sm">…还有 9 项</span></div>
+          <div class="grp">索引同步 · 3（已设为自动）</div>
+          <div class="row i1 dim"><span class="st draft"></span><span class="nm">objects/index.md</span></div>
+          <div class="row i1 dim"><span class="st draft"></span><span class="nm">operations/index.md</span></div>
+          <div class="row i1 dim"><span class="st draft"></span><span class="nm">rules/index.md</span></div>
+        </div>
+      </div>
+
+      <div class="pane">
+        <div class="pane-head"><b>rules/安全库存判断.md</b><span class="spacer"></span><span>1 / 2 需要你判断的</span></div>
+        <div class="canvas">
+          <div class="tabs"><div class="on">Diff</div><div>渲染对照</div><div>它会影响谁</div></div>
+          <div class="diff">
+            <div class="fh"><span class="path">rules/安全库存判断.md</span><span class="spacer"></span><span class="sm">新增</span></div>
+            <pre>
+<span class="l add">+ ## 可用量口径</span>
+<span class="l add">+ 可用量 = 现有库存 − 已占用 − 在途退货</span>
+<span class="l add">+ 适用对象：库存批次</span>
+<span class="l add">+ 证据：user-decision:d-014（2026-08-22 你的裁决）</span>
+<span class="l add">+       material:库存字段说明表#pending_return</span>
+            </pre>
+          </div>
+          <div style="border:1px solid var(--line);border-radius:7px;padding:10px;background:#fafaf8">
+            <div style="font-weight:600;font-size:12px;margin-bottom:5px">接受后会影响</div>
+            <div class="sm"><code class="k">operations/生成采购建议.md</code> · <code class="k">diagrams/采购申请.mmd</code> 的 D2 注释</div>
+            <div class="sm" style="margin-top:3px">关联用例 <b>0</b> 条需重跑（尚未进入验证）</div>
+          </div>
+          <div class="cta" style="margin-top:12px">
+            <button class="btn primary">接受这条，看下一条</button>
+            <button class="btn">退回并说明原因</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane" style="display:flex;flex-direction:column">
+        <div class="pane-head"><b>建模助手</b></div>
+        <div class="stream" style="flex:1">
+          <div class="msg">
+            <div class="who"><b>助手</b> · 15:20</div>
+            <div class="txt">从 3 条流程抽完了。17 个变更组里，<b>只有 2 个涉及业务口径需要你判断</b>，其余是结构和索引。</div>
+          </div>
+
+          <div class="msg">
+            <div class="block cf">
+              <div class="bh">确认候选修订 c-2f9a<span class="spacer"></span>17 组 · 23 文件</div>
+              <div class="bb">
+
+                <div class="tier hi open">
+                  <div class="th"><input type="checkbox" checked><span class="nm">涉及业务口径</span><span class="ct">2 项</span><span class="sp"></span><span class="cv">收起 ⌃</span></div>
+                  <div class="tb">
+                    <div class="grpitem">
+                      <input type="checkbox" checked>
+                      <div>
+                        <div class="gtl">新增规则「安全库存判断」</div>
+                        <div class="gmeta">可用量 = 现有库存 − 已占用 − 在途退货</div>
+                        <div class="gmeta">证据 <code class="k">user-decision:d-014</code> · 影响 2 处</div>
+                      </div>
+                    </div>
+                    <div class="grpitem">
+                      <input type="checkbox" checked>
+                      <div>
+                        <div class="gtl">修改指标「周转率」口径</div>
+                        <div class="gmeta">粒度从 备件+仓库 改为 备件+仓库+批次</div>
+                        <div class="gmeta" style="color:var(--wait)">⚠ 这会改变已有查询结果</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="tier">
+                  <div class="th"><input type="checkbox" checked><span class="nm">结构变更</span><span class="ct">12 项 · 对象字段、operation 步骤</span><span class="sp"></span><span class="cv">展开 ⌄</span></div>
+                </div>
+
+                <div class="tier lo">
+                  <div class="th"><input type="checkbox" checked><span class="nm">索引同步</span><span class="ct">3 项 · 已设为自动</span><span class="sp"></span><span class="cv">展开 ⌄</span></div>
+                </div>
+
+                <div class="cta">
+                  <button class="btn primary">全部接受（17）</button>
+                  <button class="btn">逐条过（2）</button>
+                  <button class="btn">抽检 3 条</button>
+                  <button class="btn danger">全部退回</button>
+                </div>
+                <div class="sm" style="margin-top:6px">「抽检」会随机挑 3 条给你看，其余接受，并在审计记录里标明这次是抽检通过。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="policy">
+              <div class="ph">常设策略 · 对这个项目一直生效</div>
+              <div class="prow">
+                <div class="pn">索引同步<s>index.md、目录表格等无业务语义的更新</s></div>
+                <div class="seg"><span>问我</span><span class="on">不用问我</span></div>
+              </div>
+              <div class="prow">
+                <div class="pn">结构性修复<s>补引用路径、修 frontmatter、同步命名</s></div>
+                <div class="seg"><span>问我</span><span class="on">不用问我</span></div>
+              </div>
+              <div class="prow">
+                <div class="pn">结构变更<s>新增对象字段、operation 步骤</s></div>
+                <div class="seg"><span class="on">问我</span><span>不用问我</span></div>
+              </div>
+              <div class="prow">
+                <div class="pn">改口径<s>规则内容、指标口径、判断阈值</s></div>
+                <div class="seg fixed"><span class="on">必须问</span><span class="lock">不可关闭</span></div>
+              </div>
+              <div class="prow">
+                <div class="pn">脚本生成与绑定<s>受控代码，进沙箱执行</s></div>
+                <div class="seg fixed"><span class="on">必须问</span><span class="lock">不可关闭</span></div>
+              </div>
+            </div>
+            <div class="sm" style="margin-top:6px">策略随时可改，只影响之后的确认，不回溯已生效的记录。</div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="box"><textarea placeholder="不同意？直接说哪里不对…"></textarea><button class="btn primary">发送</button></div>
+          <div class="note">确认会记录：修订、你、角色、时间、复核方式，永久保留。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>源头限流优先于前端折叠。</b>Skill 里写死「一次 <code class="k">request_confirmation</code> 不超过 5 个变更组，超过就拆多轮」。前端做再好的分诊，也救不了一个 17 项的确认请求——这里演示的是兜底，不是常态。</li>
+      <li><b>按判断难度分诊，不按文件。</b>每个变更组带一个 <code class="k">tier</code> 字段（口径 / 结构 / 索引），由助手标注、服务端校验（改了 <code class="k">rules/</code> 却标 index 会被拒）。</li>
+      <li><b>三种批量模式。</b>「全部接受」给信任的；「逐条过」像 code review 的 file-by-file，给谨慎的；<b>「抽检 3 条」承认现实</b>——用户不可能真看 17 条，与其假装看了，不如随机抽检并把复核方式留痕。</li>
+      <li><b>常设策略是显式开关，不是隐藏偏好。</b>常驻在确认卡下方，用户随时看得见自己授权了什么。「改口径」和「脚本」两档标为不可关闭——那是写在核心里的硬约束，不是策略。</li>
+      <li><b>策略不回溯。</b>改了策略只影响之后的确认，已生效的确认记录不动。</li>
+      <li><b>每条口径变更都带影响提示。</b>「⚠ 这会改变已有查询结果」比 diff 本身更能让专家停下来看。</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ==== 屏 4 ==== -->
+<section id="s4" class="screen">
+  <h2>屏 4 · 资料与双向反查</h2>
+  <p class="sub">资料不入知识包，但它是证据的来源。这里最有价值的不是列表，是<b>双向反查</b>：从知识条目跳到资料原文，从资料段落看到谁引用了它。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">备件库存与采购问答</span><span class="sep">·</span>
+      <span class="meta">资料 6 份 · 引用 78 处</span>
+      <span class="spacer"></span>
+      <button class="ghostbtn">上传</button><button class="ghostbtn">全文搜索</button>
+    </div>
+    <div class="body">
+      <div class="pane">
+        <div class="tabs2"><div>知识包</div><div class="on">资料 6</div></div>
+        <div style="padding:6px 0">
+          <div class="matrow sel"><span class="st ok"></span><span class="mn">作业手册.pdf</span><span class="mc">v2 · 引用 14</span></div>
+          <div class="matrow"><span class="st ok"></span><span class="mn">库存字段说明表.xlsx</span><span class="mc">v1 · 引用 23</span></div>
+          <div class="matrow"><span class="st ok"></span><span class="mn">安全库存管理办法.docx</span><span class="mc">v3 · 引用 19</span></div>
+          <div class="matrow"><span class="st ok"></span><span class="mn">采购流程说明.md</span><span class="mc">v1 · 引用 11</span></div>
+          <div class="matrow"><span class="st ok"></span><span class="mn">供应商台账.xlsx</span><span class="mc">v1 · 引用 11</span></div>
+          <div class="matrow"><span class="st stale"></span><span class="mn">质检记录扫描件.pdf</span><span class="mc">无法解析</span></div>
+          <div style="padding:10px" class="sm">
+            口述证据 <b>4</b> 条<br>
+            <span style="color:var(--faint)">记在 .modeling/decisions/，与文档证据同等</span>
+          </div>
+        </div>
+        <div class="legend"><i>「引用 N」＝有多少知识条目以它为证据。删除前会提示。</i></div>
+      </div>
+
+      <div class="pane">
+        <div class="pane-head"><b>作业手册.pdf</b><span class="spacer"></span><span>v2 · 42 页 · 替换 / 历史 / 删除</span></div>
+        <div class="canvas">
+          <div class="tabs"><div class="on">原文</div><div>被引用 14</div><div>版本 2</div></div>
+          <div class="doc">
+            <h5>§3.2 可用量与占用</h5>
+            <p>仓库现有库存并不等于可以领用的数量。<span class="hl on">可用量指扣除已被工单占用之后、当前可以立即发放的部分</span>。已占用包含已审批未领取和在途调拨两种情况。</p>
+            <p>盘点期间库存冻结，冻结期内<span class="hl">所有可用量按盘点开始时刻的快照计算</span>，不随实时出入库变动。</p>
+            <h5>§3.3 安全库存</h5>
+            <p><span class="hl">安全库存由各仓库根据历史月均消耗量与供货周期自行设定</span>，报备后生效，原则上每季度复核一次。</p>
+          </div>
+          <div class="sm" style="margin-top:10px">黄色为被知识条目引用的段落，点击查看引用方。<b>选中任意段落</b>可以手动建立引用或让助手补一条知识。</div>
+        </div>
+      </div>
+
+      <div class="pane" style="display:flex;flex-direction:column">
+        <div class="pane-head"><b>这段被谁引用</b><span class="spacer"></span><span>3 条</span></div>
+        <div class="stream" style="flex:1">
+          <div class="sm" style="margin:-4px 0 4px">
+            <code class="k">material:作业手册.pdf#§3.2</code>
+          </div>
+          <div class="backref">
+            <div class="bh2">知识条目</div>
+            <a><b>rules/安全库存判断.md</b><s>可用量 = 现有库存 − 已占用 − 在途退货</s></a>
+            <a><b>objects/库存批次.md</b><s>字段 available_qty 的业务含义</s></a>
+            <a><b>operations/查询可用库存.md</b><s>步骤 2：扣减已占用</s></a>
+          </div>
+          <div class="block warn">
+            <div class="bh">这段和现行知识不完全一致</div>
+            <div class="bb">
+              <div class="sm">原文只说「扣除已占用」，没提在途退货；<code class="k">rules/安全库存判断.md</code> 多扣了一项，依据来自你 2026-08-22 的裁决。</div>
+              <div class="cta"><button class="btn">看那次裁决</button><button class="btn">让助手复核</button></div>
+            </div>
+          </div>
+          <div class="block">
+            <div class="bh">这份资料</div>
+            <div class="bb">
+              <div class="sm">v2 · 上传于 2026-08-14 · 被 14 条知识引用</div>
+              <div class="cta">
+                <button class="btn">上传新版本</button>
+                <button class="btn">在资料内搜索</button>
+                <button class="btn danger">删除</button>
+              </div>
+              <div class="sm" style="margin-top:6px;color:var(--stale)">删除会让 14 条知识失去证据，需要逐条重新指认或标为待补。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>双向反查是这一屏的全部理由。</b>知识条目 → 点 evidence → 跳资料原文并高亮；资料段落 → 看到引用它的知识条目。这让 evidence 从「一个字符串」变成可验证的东西。</li>
+      <li><b>「引用 N」是最重要的元数据。</b>它让用户知道哪份资料是核心、删了会炸。删除前必须提示引用数并给出后续处理。</li>
+      <li><b>口述证据和文档证据同列。</b>专家口述记在 <code class="k">.modeling/decisions/</code>，在这里作为一类证据来源展示，不藏起来。</li>
+      <li><b>范围克制。</b>只做列表、原文查看、替换、删除、搜索。<b>不做</b>重命名、打标签、分组、文件夹、独立权限——资料量级是几份到几十份，不是文档库。</li>
+      <li><b>作为左栏第二个 tab，不是独立页面。</b>唯一的例外是项目创建时的全屏上传（屏 1），那时候要一次整理十几份。</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ==== 屏 5 ==== -->
+<section id="s5" class="screen">
+  <h2>屏 5 · 增量建模（主视觉：先说什么没变）</h2>
+  <p class="sub">用户对增量最大的恐惧是「会不会把我确认过的推翻」。所以<b>「保持有效」必须占主视觉</b>，受影响的做成待办。左栏同时变成影响热图。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">备件库存与采购问答</span><span class="sep">·</span>
+      <span class="meta k">1.2.0 · 已发布</span><span class="sep">·</span>
+      <span class="pill ok">11 项保持有效</span>
+      <span class="pill stale">4 项需处理</span>
+      <span class="spacer"></span>
+      <span class="meta">新增资料 2 份</span>
+      <button class="ghostbtn">过程</button>
+    </div>
+    <div class="body">
+      <div class="pane">
+        <div class="pane-head"><b>影响热图</b><span class="spacer"></span><span>红＝受影响</span></div>
+        <div class="tree">
+          <div class="grp">diagrams/</div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">入库校验.mmd</span></div>
+          <div class="row i1 hit"><span class="st stale"></span><span class="nm">采购申请.mmd</span></div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">库存盘点.mmd</span></div>
+          <div class="grp">objects/</div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">备件.md</span></div>
+          <div class="row i1 hit"><span class="st stale"></span><span class="nm">库存批次.md</span></div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">采购申请单.md</span></div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">供应商.md</span></div>
+          <div class="grp">rules/ · metrics/</div>
+          <div class="row i1 hit"><span class="st stale"></span><span class="nm">安全库存判断.md</span></div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">入库质检规则.md</span></div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">周转率.md</span></div>
+          <div class="grp">operations/</div>
+          <div class="row i1 hit"><span class="st stale"></span><span class="nm">生成采购建议.md</span></div>
+          <div class="row i1 dim"><span class="st ok"></span><span class="nm">查询可用库存.md</span></div>
+          <div class="grp">新资料</div>
+          <div class="row i1 fresh"><span class="st new"></span><span class="nm">安全库存管理办法 v3</span></div>
+          <div class="row i1 fresh"><span class="st new"></span><span class="nm">仓库分级表</span></div>
+        </div>
+      </div>
+
+      <div class="pane">
+        <div class="pane-head"><b>影响分析</b><span class="spacer"></span><span>证据链 / 清单</span></div>
+        <div class="canvas">
+          <div class="split">
+            <div class="card2 good">
+              <div class="big">11</div>
+              <div class="lb">项保持有效，不会被改动</div>
+              <ul>
+                <li>入库校验、库存盘点 2 条流程</li>
+                <li>备件、采购申请单、供应商 3 个对象</li>
+                <li>入库质检规则、周转率等 6 项</li>
+              </ul>
+            </div>
+            <div class="card2 todo">
+              <div class="big">4</div>
+              <div class="lb">项需要处理（其中 2 项要你裁决）</div>
+              <ol>
+                <li><b>可用量口径</b>与 v3 冲突 · 需裁决</li>
+                <li><b>仓库分级</b>引入新分支 · 需裁决</li>
+                <li>库存批次字段说明 · 可自动</li>
+                <li>采购申请 D2 注释 · 可自动</li>
+              </ol>
+            </div>
+          </div>
+
+          <div style="font-weight:600;font-size:12px;margin-bottom:8px">为什么受影响 · 证据链</div>
+          <div class="chain">
+            <div class="cell src"><b>《安全库存管理办法 v3》§2.1</b><s>可用量不再扣减在途退货</s></div>
+            <div class="lnk">→</div>
+            <div class="cell dst"><b>rules/安全库存判断.md</b><s>口径被直接覆盖 · 需裁决</s></div>
+
+            <div class="cell src"><b>同上（间接）</b><s>经 rules/安全库存判断.md 传播</s></div>
+            <div class="lnk">→</div>
+            <div class="cell dst"><b>objects/库存批次.md</b><s>字段 pending_return 说明失效 · 可自动</s></div>
+
+            <div class="cell src"><b>《仓库分级表》全表</b><s>引入 A/B/C 三级仓，安全库存按级别不同</s></div>
+            <div class="lnk">→</div>
+            <div class="cell dst"><b>operations/生成采购建议.md</b><s>新增分支未覆盖 · 需裁决</s></div>
+          </div>
+          <p class="sm" style="margin-top:10px">点任一条链可以左右展开：左边看资料原文，右边看知识条目当前内容。</p>
+        </div>
+      </div>
+
+      <div class="pane" style="display:flex;flex-direction:column">
+        <div class="pane-head"><b>建模助手</b><span class="spacer"></span><span class="pill wait">增量会话</span></div>
+        <div class="stream" style="flex:1">
+          <div class="msg">
+            <div class="who"><b>助手</b> · 09:31</div>
+            <div class="txt">两份新资料读完了。<b>11 项保持有效，我不会去动它们。</b>4 项受影响，其中 2 项要你裁决。</div>
+          </div>
+          <div class="msg">
+            <div class="block warn">
+              <div class="bh">裁决 1 / 2</div>
+              <div class="bb">
+                <div style="margin-bottom:7px"><b>可用量是否扣减在途退货？</b></div>
+                <div class="sm" style="margin-bottom:7px">
+                  现行（v1.2.0，你 2026-08-22 裁决）：扣减<br>
+                  新资料《管理办法 v3》§2.1：不扣减
+                </div>
+                <button class="opt"><b>采用新资料，v3 生效</b><s>失效 1 条规则 + 3 处引用，生成变更方案</s></button>
+                <button class="opt"><b>保留现行口径</b><s>记为「已知与 v3 不一致」，写入 decisions 留痕</s></button>
+                <button class="opt"><b>按生效日期分段</b><s>会追问生效日期字段来源</s></button>
+                <div class="freein"><input placeholder="其他处理方式…"><button class="btn">提交</button></div>
+              </div>
+            </div>
+          </div>
+          <div class="msg">
+            <div class="block">
+              <div class="bh">增量方案预览 · 待裁决后生成</div>
+              <div class="bb">
+                <div class="sm">新增 <b>1</b> 规则 · 修改 <b>3</b> 文件 · 失效 <b>0</b> 已发布用例 · 需重跑 <b>4</b> 例</div>
+                <div class="cta"><button class="btn" disabled>生成候选修订</button><button class="btn">只看不改</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="box"><textarea placeholder="也可以让助手换个范围：只处理某一条流程…"></textarea><button class="btn primary">发送</button></div>
+          <div class="note">1.2.0 仍是当前发布版本，直到你确认新修订。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>主视觉翻转。</b>原来的表格把「受影响」做成主体、「保持有效」挤在最后一行，恰好放大了用户的恐惧。现在两栏对照，绿色的 11 在左，待办的 4 在右——情绪从「完了要重做」扭到「处理这 4 个」。顶栏也先报「11 项保持有效」。</li>
+      <li><b>左栏变影响热图。</b>目录树是用户熟悉的空间地图，重着色即可：受影响标红、未受影响变淡、新资料高亮。扫一眼就知道范围，不用读表。</li>
+      <li><b>证据链回答「为什么」，清单回答「哪些」。</b>三列连线：资料段落 → 传播路径 → 知识条目。清单作为第二个 tab 保留给要逐条处理的人。</li>
+      <li><b>直接/间接要分开标。</b>「同上（间接）」让用户明白这一项不是新冲突，是连带失效，心理负担完全不同。</li>
+      <li><b>「保留现行口径」也要留痕。</b>不是静默忽略，写进 decisions 并在发布摘要里列为已知不一致。</li>
+    </ol>
+  </div>
+</section>
+<!-- ==== 屏 4 ==== -->
+<section id="s6" class="screen">
+  <h2>屏 6 · 知识包融合（导入其他知识包）</h2>
+  <p class="sub">把另一个知识包并入当前包。难点全在冲突：同 key 不同定义、别名撞车、规则互斥、mapping 指向不同数据源。融合走的是和增量一样的机制，只是差量来源从"资料"换成"另一个包"。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">备件库存与采购问答</span>
+      <span class="sep">·</span>
+      <span class="meta k">1.2.0 ← 融合 库存盘点包 0.9.0</span>
+      <span class="spacer"></span>
+      <span class="pill stale">冲突 5</span>
+      <span class="pill ok">可自动合并 23</span>
+      <button class="ghostbtn">过程</button>
+    </div>
+    <div class="body">
+      <div class="pane">
+        <div class="pane-head"><b>融合范围</b><span class="spacer"></span><span>选择性导入</span></div>
+        <div class="tree">
+          <div class="grp">来源包 · 库存盘点包 0.9.0</div>
+          <div class="row i1"><input type="checkbox" checked style="margin:0"><span class="nm">objects/</span><span class="cap">9</span></div>
+          <div class="row i2"><span class="st stale"></span><span class="nm">库存批次</span><span class="cap">冲突</span></div>
+          <div class="row i2"><span class="st stale"></span><span class="nm">备件</span><span class="cap">冲突</span></div>
+          <div class="row i2"><span class="st new"></span><span class="nm">盘点单</span><span class="cap">新增</span></div>
+          <div class="row i2"><span class="st new"></span><span class="nm">盘点差异</span><span class="cap">新增</span></div>
+          <div class="row i1"><input type="checkbox" checked style="margin:0"><span class="nm">operations/</span><span class="cap">6</span></div>
+          <div class="row i2"><span class="st stale"></span><span class="nm">查询可用库存</span><span class="cap">冲突</span></div>
+          <div class="row i2"><span class="st new"></span><span class="nm">发起盘点</span><span class="cap">新增</span></div>
+          <div class="row i1"><input type="checkbox" checked style="margin:0"><span class="nm">rules/</span><span class="cap">8</span></div>
+          <div class="row i2"><span class="st stale"></span><span class="nm">可用量口径</span><span class="cap">冲突</span></div>
+          <div class="row i1"><input type="checkbox" checked style="margin:0"><span class="nm">diagrams/</span><span class="cap">2</span></div>
+          <div class="row i1"><input type="checkbox" style="margin:0"><span class="nm">scripts/</span><span class="cap">1 · 未选</span></div>
+          <div class="row i1"><input type="checkbox" style="margin:0"><span class="nm">mappings/</span><span class="cap">4 · 未选</span></div>
+          <div class="row i1" style="padding-top:8px"><span class="nm sm">未勾选的内容不会进入融合，也不会产生冲突。</span></div>
+        </div>
+      </div>
+
+      <div class="pane">
+        <div class="pane-head"><b>冲突清单</b><span class="spacer"></span><span>5 项待裁决 · 23 项可自动</span></div>
+        <div class="canvas">
+          <div class="tabs"><div class="on">冲突（5）</div><div>自动合并（23）</div><div>命名空间</div><div>融合后引用解析</div></div>
+          <table class="grid">
+            <thead><tr><th style="width:118px">条目</th><th style="width:52px">类型</th><th>当前包</th><th>来源包</th><th style="width:120px">处置</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><code class="k">object:库存批次</code></td><td>定义</td>
+                <td>7 字段，绑定 <code class="k">Sheet:库存明细</code></td>
+                <td>11 字段，绑定 <code class="k">Sheet:批次台账</code><div class="sm">多 4 个盘点相关字段</div></td>
+                <td><select style="width:100%;font-size:11.5px;padding:3px"><option>合并字段（推荐）</option><option>保留当前</option><option>采用来源</option><option>重命名共存</option></select></td>
+              </tr>
+              <tr>
+                <td><code class="k">rule:可用量口径</code></td><td>互斥</td>
+                <td>现有 − 已占用 − 在途退货</td>
+                <td>现有 − 已占用</td>
+                <td><select style="width:100%;font-size:11.5px;padding:3px"><option>需人工裁决</option><option>保留当前</option><option>采用来源</option></select></td>
+              </tr>
+              <tr>
+                <td><code class="k">object:备件</code></td><td>别名</td>
+                <td>别名含「物料」</td>
+                <td>别名含「物料」，指向不同对象</td>
+                <td><select style="width:100%;font-size:11.5px;padding:3px"><option>需人工裁决</option><option>去掉来源别名</option><option>加前缀区分</option></select></td>
+              </tr>
+              <tr>
+                <td><code class="k">op:查询可用库存</code></td><td>重叠</td>
+                <td>3 步，含占用扣减</td>
+                <td>2 步，不含占用扣减</td>
+                <td><select style="width:100%;font-size:11.5px;padding:3px"><option>保留当前（推荐）</option><option>采用来源</option><option>重命名共存</option></select></td>
+              </tr>
+              <tr>
+                <td><code class="k">metric:周转率</code></td><td>口径</td>
+                <td>粒度 备件+仓库</td>
+                <td>粒度 备件+仓库+批次</td>
+                <td><select style="width:100%;font-size:11.5px;padding:3px"><option>重命名共存（推荐）</option><option>需人工裁决</option></select></td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="margin-top:14px;border:1px solid var(--line);border-radius:6px;padding:10px;background:#fafaf8">
+            <div style="font-weight:600;font-size:12px;margin-bottom:5px">融合后引用解析（预演，未写入）</div>
+            <div class="sm" style="color:var(--ok)">✓ key 唯一（写入安全强制）· ✓ 23 条引用可解析</div>
+            <div class="sm" style="color:var(--stale);margin-top:2px">✗ 别名冲突 1 处（object:备件 ↔ 来源 object:备件）—— 裁决后重算</div>
+            <div class="sm" style="margin-top:5px">来源标记：融合进来的每一条都会带 <code class="k">provenance: pkg:库存盘点包@0.9.0</code>，证据链保留原包引用。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane" style="display:flex;flex-direction:column">
+        <div class="pane-head"><b>建模助手</b><span class="spacer"></span><span class="pill wait">融合会话</span></div>
+        <div class="stream" style="flex:1">
+          <div class="msg">
+            <div class="who"><b>助手</b> · 10:12</div>
+            <div class="txt">来源包解析完成，28 条知识条目里 23 条能直接合并，5 条冲突。我按类型给了建议，但<b>互斥规则和别名撞车必须你来定</b>，我不会替你选。</div>
+          </div>
+          <div class="msg">
+            <div class="block cf">
+              <div class="bh">融合策略</div>
+              <div class="bb">
+                <div style="font-size:12px;margin-bottom:5px">同名不同义时的默认处理：</div>
+                <div class="chips">
+                  <span class="chip on">重命名共存</span><span class="chip">保留当前</span><span class="chip">逐条问我</span>
+                </div>
+                <div style="font-size:12px;margin:9px 0 5px">来源包命名空间：</div>
+                <div class="chips">
+                  <span class="chip on">不加前缀，冲突时才重命名</span><span class="chip">全部加前缀 inv_</span>
+                </div>
+                <div class="sm" style="margin-top:8px">加前缀最安全但会产生大量近义对象，用户提问时容易命中错的那个。默认建议不加。</div>
+              </div>
+            </div>
+          </div>
+          <div class="msg">
+            <div class="block warn">
+              <div class="bh">冲突 2 · 互斥规则</div>
+              <div class="bb">
+                <div style="margin-bottom:6px"><b>可用量口径</b>两个包结论相反。这不是合并问题，是业务口径问题。</div>
+                <button class="opt"><b>以当前包为准</b><s>来源包相关 operation 会按当前口径改写（2 处）</s></button>
+                <button class="opt"><b>以来源包为准</b><s>会失效当前 4 处引用，等价于一次增量变更</s></button>
+                <button class="opt"><b>按仓库类型分段共存</b><s>需要你说明哪类仓库用哪个口径</s></button>
+                <div class="freein"><input placeholder="说明你们的口径…"><button class="btn">提交</button></div>
+              </div>
+            </div>
+          </div>
+          <div class="msg">
+            <div class="block">
+              <div class="bh">融合执行</div>
+              <div class="bb">
+                <div class="sm">裁决 2/5 完成 · 全部裁决后生成候选修订并重算引用解析</div>
+                <div class="cta"><button class="btn" disabled>生成融合候选</button><button class="btn">导出冲突清单</button><button class="btn danger">放弃融合</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="box"><textarea placeholder="也可以说：只融合盘点相关的对象和流程，其余不要…"></textarea><button class="btn primary">发送</button></div>
+          <div class="note">融合是一次候选修订，可整体退回；来源包不被修改。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>融合 = 差量的另一种来源。</b>复用增量建模的全部机制（冲突裁决 → 候选修订 → 确认），不新建一套流程。</li>
+      <li><b>冲突分类是确定性的</b>（key 撞、别名撞、引用断、mapping 指向不同源），由融合自带的引用解析算出，不依赖通用校验器；只有"两个业务口径哪个对"需要模型解释、用户裁决。</li>
+      <li><b>选择性导入放在左栏。</b>先缩小范围再谈冲突，能把 5 个冲突降到 2 个的操作，比让用户裁决 5 次更有价值。</li>
+      <li><b>provenance 必须保留。</b>融合进来的条目带来源包和版本，将来来源包升级时能再算一次增量。</li>
+      <li><b>命名空间前缀是有代价的选择</b>，界面要说出代价（近义对象会让检索命中错误），而不是默认加前缀了事。</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ==== 屏 5 ==== -->
+<section id="s7" class="screen">
+  <h2>屏 7 · 门禁与发布</h2>
+  <p class="sub">门禁是确定性谓词，不是流程节点。助手可以随时去撞门禁，界面只回答"过没过、卡在哪"。这里也是评测失败 → 修复回路的入口。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">备件库存与采购问答</span>
+      <span class="sep">·</span>
+      <span class="meta k">1.3.0-rc.2</span>
+      <span class="spacer"></span>
+      <span class="pill stale">发布门禁未通过</span>
+      <span class="meta">用例 11/13 通过</span>
+      <button class="ghostbtn">过程</button>
+    </div>
+    <div class="body">
+      <div class="pane">
+        <div class="pane-head"><b>门禁</b></div>
+        <div class="tree">
+          <div class="row i0"><span class="st ok"></span><span class="nm">资料就绪</span></div>
+          <div class="row i0"><span class="st ok"></span><span class="nm">建模目标确认</span></div>
+          <div class="row i0"><span class="st ok"></span><span class="nm">业务流程确认</span></div>
+          <div class="row i0"><span class="st ok"></span><span class="nm">知识结构确认</span></div>
+          <div class="row i0"><span class="st ok"></span><span class="nm">确定性能力确认</span></div>
+          <div class="row i0"><span class="st ok"></span><span class="nm">建模完成确认</span></div>
+          <div class="row i0"><span class="st ok"></span><span class="nm">进入验证</span></div>
+          <div class="row i0 sel"><span class="st stale"></span><span class="nm">正式发布</span><span class="cap">2 阻断</span></div>
+        </div>
+      </div>
+      <div class="pane">
+        <div class="pane-head"><b>正式发布门禁</b><span class="spacer"></span><span>纯谓词 · 每次点开实时重算</span></div>
+        <div class="canvas">
+          <div class="gate">
+            <div class="gi pass">✓</div>
+            <div style="flex:1"><div class="gt">脚本沙箱测试全通过</div><div class="gd">3 个脚本、11 个用例，11:04 在修订 <code class="k">r-88c1</code> 上运行</div></div>
+          </div>
+          <div class="gate">
+            <div class="gi pass">✓</div>
+            <div style="flex:1"><div class="gt">无待确认候选修订</div><div class="gd">当前修订即已确认修订</div></div>
+          </div>
+          <div class="gate">
+            <div class="gi fail">✕</div>
+            <div style="flex:1">
+              <div class="gt">全部评测用例通过</div>
+              <div class="gd">13 例已执行完成，11 通过、1 部分通过、1 失败</div>
+              <ul>
+                <li>用例 #7「跨仓库可用量汇总」— partial，Judge 理由：漏算在途</li>
+                <li>用例 #12「安全库存预警阈值」— fail，Judge 理由：阈值取错仓库级别</li>
+              </ul>
+              <div class="cta"><button class="btn">看失败诊断</button><button class="btn primary">让助手修</button><button class="btn">人工改判</button></div>
+            </div>
+          </div>
+          <div class="gate">
+            <div class="gi fail">✕</div>
+            <div style="flex:1">
+              <div class="gt">用例覆盖已确认</div>
+              <div class="gd">项目负责人尚未确认当前 13 条用例覆盖了核心业务问题</div>
+              <ul>
+                <li>「库存盘点」流程目前只有 1 条用例</li>
+                <li>3 处计算逻辑以规则文字描述实现，没有对应用例</li>
+              </ul>
+              <div class="cta"><button class="btn">逐条复核覆盖</button><button class="btn">补用例</button></div>
+            </div>
+          </div>
+          <div class="gate">
+            <div class="gi na">–</div>
+            <div style="flex:1"><div class="gt">版本号确认</div><div class="gd">助手建议 <code class="k">1.3.0</code>（新增能力，向后兼容）· 待项目负责人确认</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="pane" style="display:flex;flex-direction:column">
+        <div class="pane-head"><b>建模助手</b></div>
+        <div class="stream" style="flex:1">
+          <div class="msg">
+            <div class="who"><b>助手</b> · 11:05</div>
+            <div class="txt">两个用例没过，都指向同一个根因：仓库分级引入后，安全库存阈值应该按仓库级别取，但 <code class="k">rules/安全库存判断.md</code> 还是单一阈值。修这一处应该能同时解决 #7 和 #12。</div>
+          </div>
+          <div class="msg">
+            <div class="block cf">
+              <div class="bh">修复方案 · 待你同意</div>
+              <div class="bb">
+                <div class="sm" style="margin-bottom:6px">
+                  改 <code class="k">rules/安全库存判断.md</code> 1 处 · 改 <code class="k">operations/生成采购建议.md</code> 1 处<br>
+                  预期修复用例 #7 #12 · 已通过用例风险：#3 #9（同样引用该规则，将重跑）
+                </div>
+                <div class="cta"><button class="btn primary">生成候选修订</button><button class="btn">先看诊断详情</button><button class="btn">我自己改</button></div>
+              </div>
+            </div>
+          </div>
+          <div class="msg">
+            <div class="who"><b>助手</b> · 11:06</div>
+            <div class="txt">另外，「库存盘点」只有 1 条用例。v1 没有静态校验器，用例覆盖就是唯一的质量抓手——这一条我不能替你确认，需要项目负责人过一遍，或者先补几条再发布。</div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="box"><textarea placeholder="…"></textarea><button class="btn primary">发送</button></div>
+          <div class="note">发布需要项目负责人角色；确认记录绑定修订并永久保留。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>门禁面板每次实时重算</b>，不缓存状态位。助手做了什么导致门禁变化，用户刷新就能看到。</li>
+      <li><b>每条阻断项都带一个可执行出口</b>（看诊断 / 让助手修 / 人工改判 / 逐条复核），不是只给一个红叉。</li>
+      <li><b>「已通过用例风险」必须显示。</b>修复会动到别的用例引用的规则，提前说出来比事后回归失败好。</li>
+      <li><b>助手不能替用户确认覆盖</b>，也不能替用户定版本号。界面上这两处的按钮只对项目负责人角色可用。</li>
+      <li><b>v1 没有静态校验器</b>，门禁全部建立在真实执行结果上：沙箱测试跑过、评测跑过、候选被确认过。「用例覆盖已确认」因此成为最重要的一道人工闸门——它替代了原来那一整层规则检查。</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ==== 屏 6 ==== -->
+<section id="s8" class="screen">
+  <h2>屏 8 · 过程抽屉（审计与排障）</h2>
+  <p class="sub">agent 的实际执行轨迹、子 agent、工具调用、检查点。日常路径看不到它，审计和排障时从顶栏「过程」打开。这是把可审计性和日常界面解耦的地方。</p>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="goal">备件库存与采购问答</span><span class="sep">·</span>
+      <span class="meta">过程 · run <code class="k">r-2026-0822-1401</code></span>
+      <span class="spacer"></span>
+      <span class="meta">67 次工具调用 · 4 个子 agent · 12 个检查点</span>
+      <button class="ghostbtn">导出建模审计包</button>
+      <button class="ghostbtn">关闭</button>
+    </div>
+    <div class="body wide-center">
+      <div class="pane">
+        <div class="pane-head"><b>执行单元</b></div>
+        <div class="tree">
+          <div class="row i0 sel"><span class="st new"></span><span class="nm">Leader（主循环）</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">资料分析 ×3</span><span class="cap">并行</span></div>
+          <div class="row i2"><span class="st ok"></span><span class="nm">作业手册.pdf</span></div>
+          <div class="row i2"><span class="st ok"></span><span class="nm">字段说明表.xlsx</span></div>
+          <div class="row i2"><span class="st ok"></span><span class="nm">管理办法 v3.docx</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">知识抽取 ×1</span></div>
+          <div class="row i1"><span class="st draft"></span><span class="nm">脚本沙箱测试</span><span class="cap">未触发</span></div>
+          <div class="grp">检查点</div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">cp-011 目标确认</span></div>
+          <div class="row i1"><span class="st ok"></span><span class="nm">cp-012 流程确认</span></div>
+          <div class="row i1"><span class="st new"></span><span class="nm">cp-013 当前</span></div>
+        </div>
+      </div>
+      <div class="pane">
+        <div class="pane-head"><b>轨迹</b><span class="spacer"></span><span>工具调用 · 可按 agent 过滤</span></div>
+        <div class="drawer" style="margin:12px 14px">
+          <div class="trace">
+            <div class="tr"><span class="t">14:01:07</span><span class="a">leader</span><span class="d">get_project_state()</span><span class="r">目标确认</span></div>
+            <div class="tr"><span class="t">14:01:08</span><span class="a">leader</span><span class="d">list_documents()</span><span class="r">6 项</span></div>
+            <div class="tr"><span class="t">14:01:09</span><span class="a">leader</span><span class="d">spawn(资料分析 ×3)</span><span class="r">→ 3 子</span></div>
+            <div class="tr"><span class="t">14:01:22</span><span class="a">sub:doc-1</span><span class="d">search_documents("安全库存 可用量")</span><span class="r">14 段</span></div>
+            <div class="tr"><span class="t">14:01:31</span><span class="a">sub:doc-1</span><span class="d">read_document(作业手册.pdf, off=8200)</span><span class="r">3.4 KB</span></div>
+            <div class="tr"><span class="t">14:01:44</span><span class="a">sub:doc-2</span><span class="d">describe_table(库存明细)</span><span class="r">11 列</span></div>
+            <div class="tr"><span class="t">14:01:52</span><span class="a">sub:doc-2</span><span class="d">read_table_rows(库存明细, 0, 50)</span><span class="r">50 行</span></div>
+            <div class="tr"><span class="t">14:02:10</span><span class="a">sub:doc-1</span><span class="d">write_file(.modeling/analysis/作业手册.md)</span><span class="r">候选 c-2f97</span></div>
+            <div class="tr"><span class="t">14:02:35</span><span class="a">leader</span><span class="d">← 3 子完成，摘要 18 行</span><span class="r">上下文 +2%</span></div>
+            <div class="tr"><span class="t">14:02:40</span><span class="a">leader</span><span class="d">write_file(diagrams/采购申请.mmd)</span><span class="r">候选 c-2f9a</span></div>
+            <div class="tr"><span class="t">14:02:41</span><span class="a">leader</span><span class="d">who_references(rules/安全库存判断.md)</span><span class="r">3 处引用</span></div>
+            <div class="tr" style="background:var(--wait-bg)"><span class="t">14:03:02</span><span class="a">leader</span><span class="d">ask("D2 可用量口径？")</span><span class="r">挂起 · cp-013</span></div>
+            <div class="tr"><span class="t">14:05:11</span><span class="a">leader</span><span class="d">← 用户插话（非应答），继续挂起</span><span class="r">—</span></div>
+            <div class="tr"><span class="t">14:05:12</span><span class="a">leader</span><span class="d">read_table_rows(库存明细, filter=pending_return)</span><span class="r">1204 行</span></div>
+          </div>
+        </div>
+        <div style="margin:0 14px 14px" class="sm">
+          每个检查点是一次可恢复点：进程重启后从 <code class="k">cp-013</code> 续跑，不重放前面的 67 次调用。
+          <br>轨迹不保存模型私有思维链、密钥和完整文档正文。
+        </div>
+      </div>
+      <div class="pane" style="display:flex;flex-direction:column">
+        <div class="pane-head"><b>检查点 cp-013</b></div>
+        <div class="stream" style="flex:1">
+          <div class="block">
+            <div class="bh">状态</div>
+            <div class="bb sm">
+              挂起原因：<code class="k">ask</code>（等待用户裁决）<br>
+              基线修订：<code class="k">r-88be</code><br>
+              候选修订：<code class="k">c-2f9a</code>（7 文件，未确认）<br>
+              上下文占用：38% · 已压缩 0 次<br>
+              项目状态：<code class="k">goal:waiting</code> · revision 18（更新于 14:02）
+            </div>
+          </div>
+          <div class="block">
+            <div class="bh">操作</div>
+            <div class="bb">
+              <div class="cta">
+                <button class="btn">从此检查点重跑</button>
+                <button class="btn">回退到 cp-012</button>
+                <button class="btn danger">终止 run</button>
+              </div>
+              <div class="sm" style="margin-top:7px">回退会从目标检查点建新修订，不删除现有历史。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ann">
+    <h4>设计要点</h4>
+    <ol>
+      <li><b>可审计 ≠ 常驻界面。</b>任务图、工具轨迹、子 agent 全部收进抽屉，主界面回到产物和决策。</li>
+      <li><b>检查点是恢复单位，也是回退单位。</b>与 openJiuwen 的 session checkpoint 一一对应，同时绑定知识包修订。</li>
+      <li><b>轨迹里能看到上下文占用</b>，这是排查"助手为什么突然忘了前面的事"的第一手证据。</li>
+      <li><b>脱敏在这一层强制</b>：不落模型思维链、密钥、完整文档正文；导出审计包需要更高权限。</li>
+    </ol>
+  </div>
+</section>
+<script>
+document.querySelectorAll('.proto button').forEach(function(b){
+  b.addEventListener('click', function(){
+    document.querySelectorAll('.proto button').forEach(function(x){x.classList.remove('on')});
+    document.querySelectorAll('.screen').forEach(function(x){x.classList.remove('on')});
+    b.classList.add('on');
+    document.getElementById(b.dataset.s).classList.add('on');
+    window.scrollTo(0,0);
+  });
+});
+</script>
+</body>
+</html>

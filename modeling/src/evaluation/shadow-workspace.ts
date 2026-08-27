@@ -1,4 +1,5 @@
 import { consumerFetch, provisionShadowWorkspace } from '../consumer/client.js';
+import { config } from '../config.js';
 import { normalizeEvaluationWorkspaceId } from './data-source.js';
 
 export type ConsumerRequest = (
@@ -62,7 +63,13 @@ export async function ensureEvaluationWorkspace({
   const defaultId = shadowWorkspaceId(projectId);
   const id = workspaceId ? normalizeEvaluationWorkspaceId(workspaceId) : defaultId;
   if (id === defaultId && owner && request === consumerFetch) {
-    const provisioned = await provisionShadowWorkspace(projectId, owner, { signal });
+    const provisioned = await provisionShadowWorkspace(projectId, owner, {
+      signal,
+      modelProfileRef: config.evaluationModelProfileRef,
+      managedModelProfile: config.evaluationModelProfileRef
+        ? undefined
+        : config.evaluationManagedModelProfile,
+    });
     if (provisioned.workspace.id !== id || provisioned.workspace.owner !== owner) {
       throw new Error('影子工作区 provisioning 返回了不匹配的 id 或 owner');
     }

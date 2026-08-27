@@ -13,7 +13,11 @@ import {
   findObjectAliasConflicts,
 } from './object-alias-validation.js';
 
-export const normalizeCompetencyQuestion = (value: string) => value.trim().replace(/\s+/g, '').replace(/[？?。！!]$/g, '');
+export const normalizeCompetencyQuestion = (value: string) => value
+  .normalize('NFKC')
+  .trim()
+  .replace(/\s+/g, '')
+  .replace(/[？?。！!]$/g, '');
 
 export const questionsMatch = (operationQuestion: string | undefined, question: string) =>
   !!operationQuestion && normalizeCompetencyQuestion(operationQuestion) === normalizeCompetencyQuestion(question);
@@ -21,6 +25,8 @@ export const questionsMatch = (operationQuestion: string | undefined, question: 
 export interface CompetencyQuestionRef {
   id: string;
   question: string;
+  requiresRule?: boolean;
+  requiresMetric?: boolean;
 }
 
 export interface BoundOperationBatch {
@@ -83,9 +89,7 @@ function findDuplicates(keys: string[]): string[] {
 type ObjectCandidate = AnalysisResult['candidateObjects'][number];
 export type ObjectCandidateRef = ObjectCandidate & { id: string };
 
-/**
- * 分析候选是建模建议，不是强制生成清单。这里只拒绝认领当前批次之外的 ID。
- */
+/** 进入对象生成计划的逻辑候选必须逐项认领，不能再被模型静默省略。 */
 export function validateObjectBatch(
   candidates: ObjectCandidateRef[],
   objects: SpecObject[],
@@ -98,6 +102,10 @@ export function validateObjectBatch(
       issues.push(`对象「${object.title || object.key}」认领了当前批次不存在的候选 ID ${object.candidateId}`);
     }
   }
+  const claimed = new Set(objects.map((object) => object.candidateId).filter(Boolean));
+  for (const candidate of candidates) {
+    if (!claimed.has(candidate.id)) issues.push(`对象候选「${candidate.name}」未生成，也没有进入专家处理`);
+  }
   const submittedKeys = new Set(objects.map((object) => object.key));
   for (const conflict of findObjectAliasConflicts([...existingObjects, ...objects])) {
     const involvesSubmittedObject = conflict.kind === 'shared_alias'
@@ -107,6 +115,74 @@ export function validateObjectBatch(
     if (involvesSubmittedObject) issues.push(describeObjectAliasConflict(conflict));
   }
   return issues;
+}
+
+export interface KnowledgeBatchValidation {
+  issues: string[];
+  invalidReferenceCount: number;
+}
+
+/**
+ * 规则和指标在并入整包前即时检查 key 与对象引用。
+ * 这一步只校验知识生成产物，不读取或重新计算上游资料分析结果。
+ */
+export function validateKnowledgeBatch(
+  batch: { rules: SpecRule[]; metrics: SpecMetric[] },
+  available: { objects: SpecObject[]; rules: SpecRule[]; metrics: SpecMetric[] },
+): KnowledgeBatchValidation {
+  const issues: string[] = [];
+  const objectKeys = new Set(available.objects.map((item) => normalizeKey(item.key)));
+  const existingRuleKeys = new Set(available.rules.map((item) => normalizeKey(item.key)));
+  const existingMetricKeys = new Set(available.metrics.map((item) => normalizeKey(item.key)));
+  const ruleKeys = batch.rules.map((item) => normalizeKey(item.key));
+  const metricKeys = batch.metrics.map((item) => normalizeKey(item.key));
+  let invalidReferenceCount = 0;
+
+  for (const key of findDuplicates(ruleKeys)) issues.push(`规则 key 重复：${key}`);
+  for (const key of findDuplicates(metricKeys)) issues.push(`指标 key 重复：${key}`);
+  for (const rule of batch.rules) {
+    if (!rule.title.trim()) issues.push('规则缺少标题');
+    if (!rule.content.trim()) issues.push(`规则 ${rule.key} 缺少完整规则内容`);
+    if (existingRuleKeys.has(normalizeKey(rule.key))) issues.push(`规则 key 重复：${rule.key}`);
+    for (const objectKey of rule.appliesToObjects ?? []) {
+      if (objectKeys.has(normalizeKey(objectKey))) continue;
+      invalidReferenceCount += 1;
+      issues.push(`规则 ${rule.key} 引用了不存在的对象 ${objectKey}`);
+    }
+  }
+  for (const metric of batch.metrics) {
+    if (!metric.title.trim()) issues.push('指标缺少标题');
+    if (!metric.caliber.trim()) issues.push(`指标 ${metric.key} 缺少业务口径或公式`);
+    if (!metric.boundaries?.length) issues.push(`指标 ${metric.key} 缺少计算边界`);
+    if (existingMetricKeys.has(normalizeKey(metric.key))) issues.push(`指标 key 重复：${metric.key}`);
+    for (const objectKey of metric.usesObjects ?? []) {
+      if (objectKeys.has(normalizeKey(objectKey))) continue;
+      invalidReferenceCount += 1;
+      issues.push(`指标 ${metric.key} 引用了不存在的对象 ${objectKey}`);
+    }
+  }
+  return { issues, invalidReferenceCount };
+}
+
+/** 并发批次完成后的全局冲突检查；仅冲突单元需要重试或交给专家。 */
+export function validateKnowledgeOutputs(
+  batches: Array<{ rules: SpecRule[]; metrics: SpecMetric[] }>,
+  objects: SpecObject[],
+): string[] {
+  const rules: SpecRule[] = [];
+  const metrics: SpecMetric[] = [];
+  const issues: string[] = [];
+  for (const batch of batches) {
+    issues.push(...validateKnowledgeBatch(batch, { objects, rules, metrics }).issues);
+    rules.push(...batch.rules);
+    metrics.push(...batch.metrics);
+  }
+  return issues;
+}
+
+export function validateOperationOutputs(operations: SpecOperation[]): string[] {
+  return findDuplicates(operations.map((operation) => normalizeKey(operation.key)))
+    .map((key) => `操作 key 重复：${key}`);
 }
 
 export interface OperationBatchValidation {
@@ -127,6 +203,18 @@ export function validateOperationBatch(
     .map((question) => question.question);
   const expectedQuestionIds = new Set(questions.map((question) => question.id));
   for (const operation of operations) {
+    if (!operation.title.trim()) issues.push('操作缺少标题');
+    if (!operation.description.trim()) issues.push(`操作 ${operation.key} 缺少业务描述`);
+    if (!operation.flow?.some((step) => step.trim())) issues.push(`操作 ${operation.key} 缺少可执行流程步骤`);
+    const claimedQuestion = operation.competencyQuestionId
+      ? questions.find((question) => question.id === operation.competencyQuestionId)
+      : undefined;
+    if (claimedQuestion?.requiresRule && !(operation.usesRules ?? []).length) {
+      issues.push(`操作 ${operation.key} 对应判断/匹配步骤，但没有引用任何规则`);
+    }
+    if (claimedQuestion?.requiresMetric && !(operation.usesMetrics ?? []).length) {
+      issues.push(`操作 ${operation.key} 对应计算/评估步骤，但没有引用任何指标`);
+    }
     if (!operation.competencyQuestionId || !expectedQuestionIds.has(operation.competencyQuestionId)) {
       issues.push(`操作 ${operation.key} 未按 ID 认领当前批次的领域问题`);
     }
@@ -137,6 +225,14 @@ export function validateOperationBatch(
   const metricKeys = new Set(available.metrics.map((item) => normalizeKey(item.key)));
   let invalidReferenceCount = 0;
   for (const operation of operations) {
+    if (operation.script?.key) {
+      invalidReferenceCount += 1;
+      issues.push(`操作 ${operation.key} 在业务操作提取阶段引用了尚未生成的脚本 ${operation.script.key}；请移除 script，脚本将在后续确定性阶段单独生成`);
+    }
+    if ((operation.flow ?? []).some((step) => /\bscript\s*:/i.test(step))) {
+      invalidReferenceCount += 1;
+      issues.push(`操作 ${operation.key} 在业务操作提取阶段的 flow 中引用了尚未生成的脚本；请移除 script:<key>，脚本将在后续确定性阶段单独生成`);
+    }
     for (const objectKey of operation.relatedObjects ?? []) {
       if (objectKeys.has(normalizeKey(objectKey))) continue;
       invalidReferenceCount += 1;
@@ -256,6 +352,9 @@ export function validateSpecIntegrity(
   for (const rule of spec.rules ?? []) {
     for (const objectKey of rule.appliesToObjects ?? []) {
       if (!objectKeys.has(normalizeKey(objectKey))) errors.push(`规则 ${rule.key} 引用了不存在的对象 ${objectKey}`);
+    }
+    for (const operationKey of rule.appliesToOperations ?? []) {
+      if (!operationKeys.has(normalizeKey(operationKey))) errors.push(`规则 ${rule.key} 引用了不存在的操作 ${operationKey}`);
     }
   }
 

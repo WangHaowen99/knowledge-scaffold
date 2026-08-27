@@ -4,13 +4,15 @@ import { AiConstructionTaskGraph } from '../ai-construction/task-graph.js';
 import type { PackageArtifactStore } from '../artifacts/package-store.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { listDocuments } from '../documents/repo.js';
-import type { Project } from '../types.js';
+import type { PackageSpec, Project } from '../types.js';
 import {
   packageChatApply,
+  PackageCandidateRejectedError,
   type ChangePlan,
   type ChatApplyResult,
 } from '../workflow/package-chat.js';
 import { PiAuthoringAdapter } from './pi-adapter.js';
+import { startJobHeartbeat } from './job-observability.js';
 import { AuthoringState, getAuthoringState } from './state.js';
 import type { AuthoringInteraction, JsonObject } from './types.js';
 
@@ -74,6 +76,26 @@ function planFromInteraction(interaction: AuthoringInteraction, response: JsonOb
     changes: changes as ChangePlan['changes'],
     risks: Array.isArray(payload.risks) ? payload.risks.map(String) : [],
   };
+}
+
+function allowedRepairPaths(plan: ChangePlan, before: PackageSpec, after: PackageSpec): string[] {
+  const paths = new Set(['manifest.yaml', 'index.md']);
+  const directory = {
+    object: 'objects', operation: 'operations', rule: 'rules', metric: 'metrics', script: 'scripts',
+  } as const;
+  for (const change of plan.changes) {
+    const dir = directory[change.targetKind];
+    paths.add(`${dir}/index.md`);
+    paths.add(`${dir}/${change.targetKey}.md`);
+    if (change.targetKind === 'object') paths.add('mappings/object-data-mappings.json');
+    if (change.targetKind === 'script') {
+      for (const spec of [before, after]) {
+        const entrypoint = spec.scripts?.find((script) => script.key === change.targetKey)?.entrypoint;
+        if (entrypoint) paths.add(`scripts/${entrypoint}`);
+      }
+    }
+  }
+  return [...paths];
 }
 
 /**
@@ -233,6 +255,23 @@ export class ControlledRepairController {
       inputRevisionOid: inputRevision,
       messageKey: `repair.apply.${interaction.id}`,
     });
+    const observableJob = this.adapter.start(project.id, '应用知识包修复方案', inputRevision, {
+      purpose: 'controlled_repair_apply',
+      repairAttemptId: attemptId,
+      interactionId: interaction.id,
+      phase: '方案应用',
+      currentStep: '按确认方案修改知识文件',
+      progress: 10,
+      retryCount: 0,
+      eta: { minMinutes: 5, maxMinutes: 30, confidence: 'low' },
+      recoveryAction: 'repair_knowledge_structure',
+    }).run;
+    const stopHeartbeat = startJobHeartbeat(
+      this.adapter,
+      project.id,
+      observableJob.id,
+      { phase: '方案应用', currentStep: '按确认方案修改知识文件', progress: 10 },
+    );
     let applied: ChatApplyResult;
     try {
       applied = await this.applyPlan(
@@ -241,13 +280,58 @@ export class ControlledRepairController {
         String(interaction.payload.message ?? ''),
         plan,
         context.tables,
+        {
+          // 受控修复候选仍须通过严格的结构与来源映射校验；首次候选把摄取
+          // 元数据误当成物理列时，把精确缺列反馈交回模型修正，而不是直接 500。
+          maxCandidateAttempts: 3,
+          emitRevisionEvent: false,
+          validateCandidate: (candidate) => this.runner.assessApprovedPlanCandidate(
+            project,
+            context,
+            attemptId,
+            candidate,
+            allowedRepairPaths(plan, current.spec, candidate.spec),
+          ),
+          onProgress: (progress) => {
+            this.adapter.progress(project.id, observableJob.id, {
+              phase: progress.phase === 'validating' ? '候选质量校验' : '方案应用',
+              currentStep: progress.summary,
+              progress: progress.percent,
+              retryCount: Math.max(0, Number(progress.attempt ?? 1) - 1),
+              eta: { minMinutes: 1, maxMinutes: 20, confidence: 'low' },
+              recoveryAction: 'repair_knowledge_structure',
+            });
+          },
+        },
       );
+      this.adapter.progress(project.id, observableJob.id, {
+        phase: '修复后校验',
+        currentStep: '重新执行知识包格式、引用、来源映射和规则检查',
+        progress: 75,
+        retryCount: 0,
+        eta: { minMinutes: 1, maxMinutes: 8, confidence: 'medium' },
+        recoveryAction: 'repair_knowledge_structure',
+      });
       const completed = await this.runner.completeApprovedPlan(project, context, attemptId);
       const answered = this.adapter.respond(project.id, interaction.id, requestId, response);
       const run = this.adapter.complete(project.id, answered.run.id, {
         ...(applied.version ? { version: applied.version } : {}),
         revision: completed.current.revision.oid,
       }).run;
+      this.adapter.complete(project.id, observableJob.id, {
+        revision: completed.current.revision.oid,
+        validationErrors: completed.validation.errors,
+      });
+      this.state.apply({
+        kind: 'publish_event',
+        projectId: project.id,
+        type: 'package.revision.created',
+        payload: {
+          revisionId: completed.current.revision.oid,
+          cause: 'agent_update',
+          packageVersion: completed.current.packageVersion,
+        },
+      });
       return {
         interaction: answered.interaction,
         run,
@@ -261,7 +345,19 @@ export class ControlledRepairController {
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      try {
+        this.adapter.fail(project.id, observableJob.id, reason, {
+          phase: '方案应用失败',
+          currentStep: '知识包修复方案未完成',
+          errorCode: 'CONTROLLED_REPAIR_APPLY_FAILED',
+          recoveryAction: 'repair_knowledge_structure',
+        });
+      } catch { /* 保留原始修复错误 */ }
       const latest = await this.packages.current(project.id).catch(() => null);
+      if (error instanceof PackageCandidateRejectedError) {
+        this.runner.failPlan(project.id, attemptId, error.feedback, false);
+        throw error;
+      }
       if (latest && latest.revision.oid !== inputRevision) {
         try { this.adapter.respond(project.id, interaction.id, requestId, response); } catch { /* 已收敛 */ }
         try { this.adapter.fail(project.id, interaction.runId, reason); } catch { /* 已收敛 */ }
@@ -270,6 +366,8 @@ export class ControlledRepairController {
         this.runner.failPlan(project.id, attemptId, reason);
       }
       throw error;
+    } finally {
+      stopHeartbeat();
     }
   }
 }

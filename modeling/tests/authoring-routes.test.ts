@@ -14,12 +14,14 @@ const [
   { createProject },
   { getDb },
   { PackageCandidateRejectedError },
+  { getPackageArtifactStore },
 ] = await Promise.all([
   import('../src/authoring/routes.js'),
   import('../src/authoring/state.js'),
   import('../src/projects/repo.js'),
   import('../src/db/index.js'),
   import('../src/workflow/package-chat.js'),
+  import('../src/artifacts/index.js'),
 ]);
 
 function routeApp(t: test.TestContext, username = 'alice', options: Record<string, unknown> = {}) {
@@ -61,6 +63,269 @@ test('会话快照、任务图命令和事件回放保持同一游标', async (t
     [1, 'ai_construction.graph.updated'],
   ]);
   assert.equal(replay.json().events[0].payload.command, 'start_task');
+});
+
+test('阶段回退接口先预览影响并恢复知识包后重开目标阶段', async (t) => {
+  const project = createProject({ owner: 'alice', kind: 'package', name: '阶段回退接口' });
+  const packages = getPackageArtifactStore();
+  const initialized = await packages.initializeDraftPackage(project.id, {
+    id: 'package-rollback-api', name: '阶段回退接口', description: '回退接口测试',
+  });
+  const graphModule = await import('../src/ai-construction/task-graph.js');
+  const graph = new graphModule.AiConstructionTaskGraph(getDb());
+  let snapshot = graph.snapshot(project.id)!;
+  const materialsTask = snapshot.tasks[0];
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: materialsTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'materials_ready', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'modeling_brief', milestoneId: 'goal_confirmed', title: '确认建模目标',
+      goal: '确认目标', required: true, inputRevisionOid: initialized.revision.oid,
+      dependsOn: [materialsTask.id],
+    },
+  });
+  const goalTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: goalTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'process_interview', milestoneId: 'process_confirmed', title: '业务流程访谈',
+      goal: '确认核心流程', required: true, inputRevisionOid: initialized.revision.oid,
+      dependsOn: [goalTask.id],
+    },
+  });
+  const processTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: processTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'process_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  await packages.saveFiles(project.id, {
+    expectedRevision: initialized.revision.oid,
+    files: { 'package/notes/after-process.md': '# 后续阶段产物\n' },
+    action: {
+      cause: 'test_downstream_output', summary: '生成后续阶段产物',
+      actorKind: 'agent', actorName: 'test-agent',
+    },
+  });
+
+  const app = routeApp(t);
+  const previewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback-preview`,
+  });
+  assert.equal(previewResponse.statusCode, 200, previewResponse.body);
+  const preview = previewResponse.json().preview;
+  assert.equal(preview.allowed, true);
+  assert.match(preview.preservedOutputs.join('、'), /资料分析结论/);
+
+  const beforePackage = await packages.current(project.id);
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: beforePackage!.revision.oid,
+      requestId: 'rollback-process-api',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().aiConstruction.progress.currentMilestoneId, 'process_confirmed');
+  assert.equal(response.json().aiConstruction.tasks.find((task: any) => (
+    task.id === processTask.id
+  )).status, 'waiting_user');
+  assert.equal(response.json().rollback.reason, '用户选择重新处理该阶段');
+  assert.notEqual(response.json().rollback.restoredPackageRevisionOid, beforePackage!.revision.oid);
+  const continuation = getDb().prepare(`SELECT message_key, seq, blocks_json
+    FROM ai_construction_messages WHERE project_id = ?
+      AND message_key = ?`).get(
+    project.id,
+    `milestone.rollback.resume.${response.json().rollback.id}`,
+  ) as { message_key: string; seq: number; blocks_json: string } | undefined;
+  assert.ok(continuation, '回退后必须追加当前阶段的可见继续卡');
+  assert.equal(response.json().message.key, continuation.message_key);
+  assert.equal(response.json().interaction?.type, 'question_batch');
+  assert.equal(
+    response.json().interaction?.baseRevision,
+    response.json().rollback.restoredPackageRevisionOid,
+    '回退后新待办必须绑定恢复修订，不能继续绑定历史确认修订',
+  );
+  const latestMessage = getDb().prepare(`SELECT message_key FROM ai_construction_messages
+    WHERE project_id = ? ORDER BY seq DESC LIMIT 1`).get(project.id) as { message_key: string };
+  assert.equal(latestMessage.message_key, continuation.message_key);
+
+  // 兼容修复部署前已经生成的待办：它仍绑定历史确认修订，但该修订与当前恢复修订
+  // 属于同一条已完成回退记录，选择候选时不能被当作真正的知识包并发修改拦截。
+  getDb().prepare(`UPDATE authoring_interactions SET base_revision = ? WHERE id = ?`).run(
+    initialized.revision.oid,
+    response.json().interaction.id,
+  );
+  const legacySelection = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${response.json().interaction.id}/respond`,
+    payload: {
+      requestId: 'rollback-process-legacy-selection',
+      response: { answers: [
+        { questionId: 'process_title', other: '授信审批' },
+        { questionId: 'trigger', other: '客户提交申请' },
+        { questionId: 'actors', other: '客户经理；审批人' },
+        { questionId: 'outputs', other: '审批结论' },
+      ] },
+    },
+  });
+  assert.equal(legacySelection.statusCode, 200, legacySelection.body);
+  assert.equal(legacySelection.json().nextInteraction?.payload?.stage, 'details');
+
+  // 模拟项目在旧版本完成回退：只有回退记录和任务图，没有本次回退的继续卡。
+  // 重新进入工作台时必须幂等补卡，线上存量项目才能在部署后直接恢复。
+  getDb().prepare(`DELETE FROM ai_construction_messages
+    WHERE project_id = ? AND message_key = ?`).run(project.id, continuation.message_key);
+  const reconciled = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/session/advance`,
+  });
+  assert.equal(reconciled.statusCode, 200, reconciled.body);
+  assert.ok(reconciled.json().aiConstructionMessages.some((message: any) => (
+    message.key === continuation.message_key
+  )), '进入工作台时应补出当前阶段继续卡');
+  assert.ok(reconciled.json().authoring.pendingInteractions.some((interaction: any) => (
+    interaction.type === 'question_batch'
+      && interaction.payload?.purpose === 'process_interview'
+  )), '流程阶段应同时恢复可操作的访谈待办卡');
+
+  const replay = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: beforePackage!.revision.oid,
+      requestId: 'rollback-process-api',
+    },
+  });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json().rollback.id, response.json().rollback.id);
+  const continuationCount = getDb().prepare(`SELECT COUNT(*) AS count
+    FROM ai_construction_messages WHERE project_id = ? AND message_key = ?`).get(
+    project.id,
+    continuation.message_key,
+  ) as { count: number };
+  assert.equal(continuationCount.count, 1, '相同回退请求重放不能重复创建继续卡');
+
+  const goalPreviewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback-preview`,
+  });
+  assert.equal(goalPreviewResponse.statusCode, 200, goalPreviewResponse.body);
+  const goalPreview = goalPreviewResponse.json().preview;
+  assert.equal(goalPreview.allowed, true);
+  assert.equal(goalPreview.restoreRevisionOid, initialized.revision.oid,
+    '首个建模目标阶段必须恢复其确认修订，不能退到没有知识包的项目创建提交');
+
+  const currentAfterFirstRollback = await packages.current(project.id);
+  const goalRollback = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: replay.json().aiConstruction.revision,
+      expectedPackageRevision: currentAfterFirstRollback!.revision.oid,
+      requestId: 'rollback-goal-after-process',
+      reason: '重新确认建模目标',
+    },
+  });
+  assert.equal(goalRollback.statusCode, 200, goalRollback.body);
+  assert.equal(goalRollback.json().aiConstruction.progress.currentMilestoneId, 'goal_confirmed');
+  assert.equal(goalRollback.json().aiConstruction.tasks.find((task: any) => (
+    task.id === goalTask.id
+  )).status, 'waiting_user');
+});
+
+test('新项目首阶段回退使用目标确认修订并可修复旧预览留下的 prepared 请求', async (t) => {
+  const project = createProject({ owner: 'alice', name: '首阶段连续回退' });
+  const packages = getPackageArtifactStore();
+  const initialized = await packages.initializeDraftPackage(project.id, {
+    id: 'package-first-milestone', name: '首阶段回退', description: '首阶段回退测试',
+  });
+  const graphModule = await import('../src/ai-construction/task-graph.js');
+  const graph = new graphModule.AiConstructionTaskGraph(getDb());
+  let snapshot = graph.snapshot(project.id)!;
+  const goalTask = snapshot.tasks[0];
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: goalTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'material_analysis', milestoneId: 'materials_ready', title: '围绕目标分析资料',
+      goal: '分析资料', required: true, dependsOn: [goalTask.id],
+    },
+  });
+
+  const app = routeApp(t);
+  const previewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback-preview`,
+  });
+  assert.equal(previewResponse.statusCode, 200, previewResponse.body);
+  const preview = previewResponse.json().preview;
+  assert.equal(preview.restoreRevisionOid, initialized.revision.oid);
+
+  const projectCreated = getDb().prepare(`SELECT oid FROM artifact_revisions
+    WHERE project_id = ? ORDER BY sequence LIMIT 1`).get(project.id) as { oid: string };
+  const stalePreview = { ...preview, restoreRevisionOid: projectCreated.oid };
+  getDb().prepare(`INSERT INTO ai_construction_milestone_rollbacks (
+    id, project_id, request_id, target_milestone_id, graph_revision_before,
+    base_package_revision_oid, current_package_revision_oid, actor_username,
+    reason, impact_json, status, created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,'prepared',?)`).run(
+    'rollback_stale_preview', project.id, 'rollback-goal-stale-preview', 'goal_confirmed',
+    snapshot.revision, projectCreated.oid, initialized.revision.oid, 'alice',
+    '重新确认建模目标', JSON.stringify(stalePreview), new Date().toISOString(),
+  );
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: initialized.revision.oid,
+      requestId: 'rollback-goal-stale-preview',
+      reason: '重新确认建模目标',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().aiConstruction.progress.currentMilestoneId, 'goal_confirmed');
+  assert.equal(response.json().aiConstruction.tasks.find((task: any) => (
+    task.id === goalTask.id
+  )).status, 'waiting_user');
+  const audit = getDb().prepare(`SELECT base_package_revision_oid, status
+    FROM ai_construction_milestone_rollbacks WHERE id = 'rollback_stale_preview'`).get() as any;
+  assert.equal(audit.base_package_revision_oid, initialized.revision.oid);
+  assert.equal(audit.status, 'completed');
 });
 
 test('通用待办接口不能绕过场景审核专用闭环', async (t) => {
@@ -412,6 +677,146 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
     WHERE interaction_id = ?`).get(pending.interaction.id)?.status, 'completed');
 });
 
+test('Mermaid 导入先预览不写入，确认后追加新流程并保留来源信息', async (t) => {
+  const project = createProject({ owner: 'operator_a', name: 'Mermaid 导入测试' });
+  const state = getAuthoringState();
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认业务流程', baseRevision: 'pkg-mermaid',
+  });
+  assert.equal(run.kind, 'run');
+  if (run.kind !== 'run') throw new Error('未创建流程图任务');
+  const pending = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: run.run.id,
+    type: 'flowchart_review', baseRevision: 'pkg-mermaid',
+    payload: { purpose: 'process_review', taskId: 'task-mermaid', diagrams: [] },
+  });
+  assert.equal(pending.kind, 'interaction');
+  if (pending.kind !== 'interaction') throw new Error('未创建流程图待办');
+
+  let currentRevision = 'pkg-mermaid';
+  let currentFiles: Record<string, string> = {
+    'diagrams/processes.json': JSON.stringify({ diagrams: [] }),
+  };
+  let savedFiles: Record<string, string> | undefined;
+  let processConfirmed = false;
+  let generatedFlowchart: any;
+  let markGenerated: () => void = () => {};
+  const generationStarted = new Promise<void>((resolve) => { markGenerated = resolve; });
+  const app = routeApp(t, 'operator_a', {
+    graph: {
+      snapshot: () => ({
+        confirmations: processConfirmed
+          ? [{ milestoneId: 'process_confirmed', packageRevisionOid: currentRevision }]
+          : [],
+      }),
+      initialize: () => ({ confirmations: [] }),
+    },
+    packages: {
+      async current() {
+        return { revision: { oid: currentRevision }, packageVersion: '0.1.0', spec: {}, files: [] };
+      },
+      async readPackageFiles() {
+        return {
+          revision: { oid: currentRevision }, spec: {}, coverage: {}, files: currentFiles,
+        };
+      },
+      async saveFiles(_projectId: string, input: any) {
+        savedFiles = input.files;
+        currentFiles = Object.fromEntries(Object.entries(input.files).map(([path, content]) => [
+          path.replace(/^package\//u, ''), content as string,
+        ]));
+        currentRevision = 'pkg-mermaid-saved';
+        return {
+          revision: { oid: currentRevision }, packageVersion: '0.1.0', spec: {},
+          files: Object.keys(input.files),
+        };
+      },
+    },
+    orchestrator: {
+      latestMaterialAnalysis: () => null,
+      latestConfirmedModelingBrief: () => null,
+      completeProcessReview: () => {
+        processConfirmed = true;
+        return { aiConstruction: { revision: 2 }, message: { id: 'message-mermaid' } };
+      },
+      failKnowledgeStructure: () => undefined,
+    },
+    knowledgeRunner: {
+      async run(_project: any, _context: any, flowchart: any) {
+        generatedFlowchart = flowchart;
+        markGenerated();
+        return { revisionId: 'pkg-knowledge', version: '0.1.1' };
+      },
+    },
+  });
+  const base = `/api/projects/${project.id}/interactions/${pending.interaction.id}`;
+  const initial = await app.inject({ method: 'GET', url: `${base}/flowchart-draft` });
+  assert.equal(initial.statusCode, 200, initial.body);
+  assert.equal(initial.json().draftRevision, 1);
+
+  const preview = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/mermaid-import/preview`,
+    payload: {
+      expectedRevision: 1,
+      title: '订单处理流程',
+      filename: 'order-flow.mmd',
+      source: 'flowchart TD\n  start([收到订单]) --> finish([完成处理])',
+    },
+  });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.json().summary.nodeCount, 2);
+  assert.equal(preview.json().diagram.title, '订单处理流程');
+  assert.equal((await app.inject({ method: 'GET', url: `${base}/flowchart-draft` })).json().draftRevision, 1);
+
+  const imported = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/diagrams`,
+    payload: {
+      expectedRevision: 1,
+      mode: 'mermaid',
+      title: '订单处理流程',
+      filename: 'order-flow.mmd',
+      source: 'flowchart TD\n  start([收到订单]) --> finish([完成处理])',
+    },
+  });
+  assert.equal(imported.statusCode, 200, imported.body);
+  assert.equal(imported.json().draftRevision, 2);
+  assert.equal(imported.json().document.diagrams.length, 1);
+  assert.deepEqual(imported.json().document.diagrams[0].importSource, {
+    kind: 'mermaid', diagramType: 'flowchart', filename: 'order-flow.mmd',
+  });
+
+  const rejected = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/mermaid-import/preview`,
+    payload: { expectedRevision: 2, title: '坏流程', source: 'sequenceDiagram\n  A->>B: hi' },
+  });
+  assert.equal(rejected.statusCode, 400, rejected.body);
+  assert.equal(rejected.json().code, 'MERMAID_DIAGRAM_TYPE_UNSUPPORTED');
+  assert.equal(rejected.json().diagnostic.category, '图表类型不支持');
+  assert.equal(rejected.json().diagnostic.line, 1);
+
+  const confirmed = await app.inject({
+    method: 'POST', url: `${base}/respond`,
+    payload: {
+      requestId: 'confirm-mermaid-flow',
+      response: { action: 'accept', draftRevision: 2, acknowledgeWarnings: true },
+    },
+  });
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  assert.match(savedFiles?.['package/diagrams/processes.json'] || '', /订单处理流程/u);
+  assert.match(savedFiles?.['package/diagrams/订单处理流程.mmd'] || '', /^flowchart TD/mu);
+  assert.match(savedFiles?.['package/diagrams/processes.json'] || '', /"kind": "mermaid"/u);
+
+  const generation = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/generate`, payload: {},
+  });
+  assert.equal(generation.statusCode, 202, generation.body);
+  await generationStarted;
+  assert.equal(generatedFlowchart.diagrams[0].title, '订单处理流程');
+  assert.deepEqual(generatedFlowchart.diagrams[0].importSource, {
+    kind: 'mermaid', diagramType: 'flowchart', filename: 'order-flow.mmd',
+  });
+});
+
 test('建模目标待办回答后完成目标任务而不是只关闭待办', async (t) => {
   const project = createProject({ owner: 'alice', name: '建模目标续跑' });
   const state = getAuthoringState();
@@ -662,6 +1067,153 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
   assert.equal(plannedOptions.metadata.contractInteractionId, contractInteraction.id);
 });
 
+test('脚本变更方案支持沿用原契约直接调整', async (t) => {
+  const project = createProject({ owner: 'alice', name: '脚本方案原位调整' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '生成脚本方案', baseRevision: 'pkg-script-revise',
+  });
+  if (started.kind !== 'run') throw new Error('未创建脚本方案运行');
+  const payload = {
+    purpose: 'script_generation',
+    summary: '生成核算脚本',
+    message: '原始脚本契约：输入 x，输出 y，测试 x=1 时 y=2',
+    history: [],
+    scriptTaskId: 'task-script-revise',
+    scriptCount: 1,
+    contractInteractionId: 'contract-script-revise',
+    risks: ['缺失值不得按 0 处理'],
+    changes: [{
+      id: 'script-change', targetKind: 'script', targetKey: 'calculate_y', action: 'add',
+      description: '生成确定性核算脚本',
+    }],
+  };
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'change_plan', baseRevision: 'pkg-script-revise', payload,
+  });
+  if (opened.kind !== 'interaction') throw new Error('未创建脚本方案待办');
+
+  let plannedMessage = '';
+  let plannedOptions: any;
+  let startedCount = 0;
+  let markReady: () => void;
+  const ready = new Promise<void>((resolve) => { markReady = resolve; });
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-script-revise' }, packageVersion: '1.0.0-rc.1', spec: { objects: [], operations: [] } };
+      },
+    },
+    orchestrator: {
+      startScriptGeneration: () => {
+        startedCount += 1;
+        return { aiConstruction: { revision: 2 } };
+      },
+      waitForScriptApproval: () => {
+        markReady();
+        return { aiConstruction: { revision: 3 } };
+      },
+    },
+    packageChatPlan: async (_project: any, _history: any[], message: string, options: any) => {
+      plannedMessage = message;
+      plannedOptions = options;
+      return {
+        plan: {
+          summary: '调整后的核算脚本',
+          changes: [{ targetKind: 'script', targetKey: 'calculate_y', action: 'add', description: '按意见修订' }],
+        },
+        interaction: { id: 'script-plan-revised', runId: 'run-script-plan-revised', baseRevision: 'pkg-script-revise' },
+      };
+    },
+  });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'script-plan-revise',
+      response: { action: 'revise', note: '缺失输入时返回 null，不得按 0 计算' },
+    },
+  });
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
+  assert.equal(response.json().run.status, 'running');
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+
+  await ready;
+  assert.equal(startedCount, 1);
+  assert.match(plannedMessage, /原始脚本契约：输入 x，输出 y/);
+  assert.match(plannedMessage, /缺失输入时返回 null，不得按 0 计算/);
+  assert.match(plannedMessage, /完整保留未被意见否定的脚本契约/);
+  assert.equal(plannedOptions.purpose, 'script_generation');
+  assert.equal(plannedOptions.intent, '调整确定性脚本方案');
+  assert.equal(plannedOptions.interactionTitle, '确认调整后的确定性脚本方案');
+  assert.equal(plannedOptions.metadata.scriptTaskId, 'task-script-revise');
+  assert.equal(plannedOptions.metadata.contractInteractionId, 'contract-script-revise');
+  assert.equal(plannedOptions.metadata.previousInteractionId, opened.interaction.id);
+});
+
+test('脚本方案调整失败后恢复原方案并保持可继续调整', async (t) => {
+  const project = createProject({ owner: 'alice', name: '脚本方案调整失败恢复' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '生成脚本方案', baseRevision: 'pkg-script-revive',
+  });
+  if (started.kind !== 'run') throw new Error('未创建脚本方案运行');
+  const payload = {
+    purpose: 'script_generation', summary: '生成脚本', message: '原始契约', history: [],
+    changes: [{ id: 'c1', targetKind: 'script', targetKey: 'calculate', action: 'add', description: '生成脚本' }],
+  };
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'change_plan', baseRevision: 'pkg-script-revive', payload,
+  });
+  if (opened.kind !== 'interaction') throw new Error('未创建脚本方案待办');
+
+  let waitingCount = 0;
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-script-revive' }, packageVersion: '1.0.0-rc.1', spec: { objects: [], operations: [] } };
+      },
+    },
+    orchestrator: {
+      startScriptGeneration: () => ({ aiConstruction: { revision: 2 } }),
+      waitForScriptApproval: () => {
+        waitingCount += 1;
+        return { aiConstruction: { revision: 3 } };
+      },
+    },
+    packageChatPlan: async () => { throw new Error('模型暂时不可用'); },
+  });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'script-plan-revise-fails',
+      response: { action: 'revise', note: '修正空值契约' },
+    },
+  });
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+
+  const deadline = Date.now() + 5_000;
+  let revived: any;
+  for (;;) {
+    revived = state.snapshot(project.id).pendingInteractions.find((item) => (
+      item.type === 'change_plan' && item.id !== opened.interaction.id
+    ));
+    if (revived && waitingCount > 0) break;
+    if (Date.now() > deadline) throw new Error('调整失败后没有恢复可修改的脚本方案');
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+  assert.equal(revived.payload.purpose, 'script_generation');
+  assert.equal(revived.payload.changes[0].targetKey, 'calculate');
+  assert.equal(waitingCount, 1);
+});
+
 test('脚本变更在保存前必须通过格式、规则和语义候选校验', async (t) => {
   const project = createProject({ owner: 'alice', name: '脚本候选保存前校验' });
   const state = getAuthoringState();
@@ -746,7 +1298,7 @@ test('脚本变更在保存前必须通过格式、规则和语义候选校验',
   assert.equal(response.statusCode, 500, response.body);
   assert.equal(validationDecision.accepted, false);
   assert.equal(validationDecision.disposition, 'rejected');
-  assert.match(validationDecision.feedback, /阻断错误/);
+  assert.match(validationDecision.feedback, /必须修复的问题/);
   assert.match(failedReason, /候选未通过/);
   assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'pending');
 });
@@ -1149,6 +1701,17 @@ test('存在必须修复的错误时拦截并给出修缮与暂缓两条出路',
   ]);
 });
 
+test('只有警告和提示时可以直接完成 AI 辅助建模', async (t) => {
+  const project = createProject({ owner: 'alice', name: '完成-非阻断发现' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'w1', source: 'rule', severity: '警告', category: '命名建议', target: 'objects/o1', message: '建议统一命名' } as any,
+    { id: 'h1', source: 'rule', severity: '提示', category: '可读性', target: 'objects/o1', message: '可以补充说明' } as any,
+  ], 'pkg-draft');
+  const response = await confirmCompletion(completionApp(t, project.id), project.id);
+  assert.equal(response.statusCode, 200, response.body);
+});
+
 test('缺证据时把明细和文件入口一起返回', async (t) => {
   const project = createProject({ owner: 'alice', name: '拦截-缺证据' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
@@ -1238,6 +1801,7 @@ test('脚本生成受理后待办立即变已回答，刷新不会再冒出来',
       await planStalled;
       return { interaction: { id: 'plan-async', runId: 'r', baseRevision: 'pkg-async' } };
     },
+    jobHeartbeatIntervalMs: 5,
   });
 
   const accepted = await app.inject({
@@ -1257,6 +1821,13 @@ test('脚本生成受理后待办立即变已回答，刷新不会再冒出来',
   const stillPending = state.snapshot(project.id).pendingInteractions
     .some((item) => item.id === opened.interaction.id);
   assert.equal(stillPending, false, '受理后不该还挂在待办列表里');
+  const running = state.snapshot(project.id).activeRuns.find((item) => item.id === run.run.id);
+  assert.equal(running?.state.currentStep, '正在根据已确认契约形成受控变更计划');
+  const heartbeatAt = String(running?.state.lastHeartbeatAt ?? '');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const heartbeatAfter = String(state.snapshot(project.id).activeRuns
+    .find((item) => item.id === run.run.id)?.state.lastHeartbeatAt ?? '');
+  assert.ok(Date.parse(heartbeatAfter) > Date.parse(heartbeatAt), '脚本生成期间应持续刷新运行心跳');
 
   releasePlan();
 });
@@ -1573,43 +2144,22 @@ test('target 是语义目标时也把目标交给前端解析到具体文件', a
   assert.equal(actions[1].path, 'ipo_detail_info');
 });
 
-test('「忽略」只是开一条待办收理由，不会当场落审计记录', async (t) => {
+test('AI 辅助建模中的警告不再创建忽略待办', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-忽略警告' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
-  const { getPackageWarningReview } = await import('../src/workflow/warning-acceptance.js');
   saveCheck(project.id, '0.1.0', [{
     id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
     target: 'objects/index.md', message: '命名不一致',
   } as any], 'pkg-draft');
 
   const app = findingApp(t);
-  const opened = await handOff(app, project.id, 'ignore', 'w1');
-  assert.equal(opened.statusCode, 200, opened.body);
-  const interaction = opened.json().interaction;
-  assert.equal(interaction.payload.purpose, 'check_finding_ignore');
-  assert.equal(interaction.payload.scope, 'warning');
-  // 点了忽略还没落库——理由填完提交才算数
-  assert.equal(
-    getPackageWarningReview(project.id, 'pkg-draft').items.every((item: any) => !item.accepted),
-    true,
-  );
-
-  const answered = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
-    payload: {
-      requestId: 'ignore-w1',
-      response: { answers: [{ questionId: 'ignore_reason', other: '命名在下一版统一调整' }] },
-    },
-  });
-  assert.equal(answered.statusCode, 200, answered.body);
-  const accepted = getPackageWarningReview(project.id, 'pkg-draft').items
-    .filter((item: any) => item.accepted);
-  assert.equal(accepted.length, 1);
-  assert.equal(accepted[0].finding.id, 'w1');
+  const response = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 0);
 });
 
-test('知识包修订变化后旧告警放行待办失效，刷新可基于最新检查重新发起', async (t) => {
+test('警告不再支持旧的放行待办流程', async (t) => {
   const project = createProject({ owner: 'alice', name: '告警放行修订冲突恢复' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   const finding = {
@@ -1630,37 +2180,10 @@ test('知识包修订变化后旧告警放行待办失效，刷新可基于最�
     } as any,
   });
 
-  const opened = await handOff(app, project.id, 'ignore', finding.id);
-  assert.equal(opened.statusCode, 200, opened.body);
-  const staleInteraction = opened.json().interaction;
-  assert.equal(staleInteraction.baseRevision, 'pkg-before');
-
-  currentRevision = 'pkg-after';
-  saveCheck(project.id, '0.1.1', [finding], currentRevision);
-  const staleAnswer = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/interactions/${staleInteraction.id}/respond`,
-    payload: {
-      requestId: 'ignore-stale-answer',
-      response: { answers: [{ questionId: 'ignore_reason', other: '下一版本统一调整命名' }] },
-    },
-  });
-  assert.equal(staleAnswer.statusCode, 409, staleAnswer.body);
-  assert.equal(staleAnswer.json().code, 'CHECK_FINDING_REVIEW_STALE');
-  assert.deepEqual(staleAnswer.json().nextActions.map((item: any) => item.id), [
-    'view_validation', 'run_package_check',
-  ]);
-  assert.equal(getAuthoringState().interaction(project.id, staleInteraction.id)?.status, 'cancelled');
-  assert.equal(
-    getAuthoringState().snapshot(project.id).pendingInteractions
-      .some((item) => item.id === staleInteraction.id),
-    false,
-  );
-
-  const reopened = await handOff(app, project.id, 'ignore', finding.id);
-  assert.equal(reopened.statusCode, 200, reopened.body);
-  assert.notEqual(reopened.json().interaction.id, staleInteraction.id);
-  assert.equal(reopened.json().interaction.baseRevision, 'pkg-after');
+  const response = await handOff(app, project.id, 'ignore', finding.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 0);
 });
 
 test('读取项目会话会自动取消旧修订的告警放行待办', async (t) => {
@@ -1685,10 +2208,19 @@ test('读取项目会话会自动取消旧修订的告警放行待办', async (t
   };
   const app = routeApp(t, 'alice', { packages });
 
-  const opened = await handOff(app, project.id, 'ignore', finding.id);
-  assert.equal(opened.statusCode, 200, opened.body);
-  const staleInteraction = opened.json().interaction;
-  assert.equal(staleInteraction.baseRevision, 'pkg-session-before');
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '旧告警放行',
+    baseRevision: 'pkg-session-before', state: { purpose: 'check_finding_ignore' },
+  });
+  if (started.kind !== 'run') throw new Error('运行创建失败');
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'question_batch', baseRevision: 'pkg-session-before',
+    payload: { purpose: 'check_finding_ignore', scope: 'warning', findingId: finding.id, title: '旧告警' },
+  });
+  if (opened.kind !== 'interaction') throw new Error('待办创建失败');
+  const staleInteraction = opened.interaction;
 
   currentRevision = 'pkg-session-after';
   saveCheck(project.id, '0.1.1', [], currentRevision);
@@ -1710,11 +2242,7 @@ test('读取项目会话会自动取消旧修订的告警放行待办', async (t
   const run = getDb().prepare('SELECT status, result_json FROM authoring_runs WHERE id = ?')
     .get(staleInteraction.runId) as { status: string; result_json: string };
   assert.equal(run.status, 'cancelled');
-  assert.deepEqual(JSON.parse(run.result_json), {
-    currentRevision: 'pkg-session-after',
-    purpose: 'check_finding_ignore',
-    supersededBy: 'package_revision_changed',
-  });
+  assert.equal(JSON.parse(run.result_json).disposition, 'archived_non_blocking_finding');
 });
 
 test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开的那一条', async (t) => {
@@ -1733,7 +2261,7 @@ test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开�
   assert.match(String(payload.description), /全部 2 个必须修复的错误/);
 });
 
-test('理由太短不放行，待办仍然停在原地等人重填', async (t) => {
+test('警告不再创建理由待办，因此不存在警告理由校验阻塞', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-理由不足' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [{
@@ -1742,18 +2270,12 @@ test('理由太短不放行，待办仍然停在原地等人重填', async (t) =
   } as any], 'pkg-draft');
 
   const app = findingApp(t);
-  const interaction = (await handOff(app, project.id, 'ignore', 'w1')).json().interaction;
-  const answered = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
-    payload: { requestId: 'ignore-short', response: { answers: [{ questionId: 'ignore_reason', other: '略' }] } },
-  });
-  assert.equal(answered.statusCode, 400, answered.body);
-  assert.equal(answered.json().code, 'INVALID_INPUT');
-  assert.equal(getAuthoringState().interaction(project.id, interaction.id)?.status, 'pending');
+  const response = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
 });
 
-test('提示类发现不给忽略通道', async (t) => {
+test('提示类发现不给 AI 辅助建模忽略通道', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-提示' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [{
@@ -1763,7 +2285,7 @@ test('提示类发现不给忽略通道', async (t) => {
 
   const response = await handOff(findingApp(t), project.id, 'ignore', 'h1');
   assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().code, 'CHECK_FINDING_NOT_IGNORABLE');
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
 });
 
 test('开场先说「已就绪」再进入建模目标确认，而不是倒着来', async (t) => {
@@ -1786,7 +2308,7 @@ test('开场先说「已就绪」再进入建模目标确认，而不是倒着�
   assert.ok(welcome < goal, `欢迎语应排在建模目标确认之前，实际顺序：${JSON.stringify(titles)}`);
 });
 
-test('已有待办未处理时不开忽略表单——否则它会被挡住，用户点了没反应', async (t) => {
+test('已有待办不改变警告的非阻断语义', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-待办冲突' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [{
@@ -1807,12 +2329,10 @@ test('已有待办未处理时不开忽略表单——否则它会被挡住，�
 
   const response = await handOff(findingApp(t), project.id, 'ignore', 'w1');
   assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().code, 'PENDING_INTERACTION_FIRST');
-  // 报错要指名道姓，否则用户不知道该去处理哪一条
-  assert.match(response.json().error, /请先确认建模目标/);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
 });
 
-test('已有另一条暂缓待办时也不开新表单', async (t) => {
+test('多条警告都不会创建暂缓待办', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-暂缓互斥' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [
@@ -1822,9 +2342,10 @@ test('已有另一条暂缓待办时也不开新表单', async (t) => {
   const app = findingApp(t);
 
   const first = await handOff(app, project.id, 'ignore', 'w1');
-  assert.equal(first.statusCode, 200, first.body);
   const second = await handOff(app, project.id, 'ignore', 'w2');
+  assert.equal(first.statusCode, 409, first.body);
   assert.equal(second.statusCode, 409, second.body);
-  assert.equal(second.json().code, 'PENDING_INTERACTION_FIRST');
-  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 1);
+  assert.equal(first.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(second.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 0);
 });

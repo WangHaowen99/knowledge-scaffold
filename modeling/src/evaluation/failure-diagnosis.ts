@@ -416,7 +416,7 @@ async function semanticDiagnoses(
   });
   const evidenceTools = buildTools({
     tables: input.tables ?? [], documents: input.documents ?? [], captured: {},
-  }).filter((tool) => tool.name !== 'submit_analysis');
+  });
   const agent = makeAgent(llm, system, [...evidenceTools, submit] as any);
   await runAgentCaptured(
     agent,

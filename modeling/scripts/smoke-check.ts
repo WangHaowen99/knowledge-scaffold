@@ -1,8 +1,7 @@
 /**
  * 包体检 + 两段式修缮冒烟（faux）：
  * ① 规则引擎：对刻意做坏的规格断言各类发现（悬空引用/典型问题重复认领/未覆盖/主键失配…）
- * ② 语义检查（faux）：submit_findings 回路
- * ③ 修缮对话：咨询→文字回复；修改→计划→应用→新版本；删除计划→数量收缩被计划豁免；
+ * ② 修缮对话：咨询→文字回复；修改→计划→应用→新版本；删除计划→数量收缩被计划豁免；
  *    计划外丢失→拒绝入库
  */
 import * as XLSX from 'xlsx';
@@ -10,7 +9,7 @@ import { parseDocument } from '../src/documents/parser.js';
 import { createProject, getProject } from '../src/projects/repo.js';
 import { getPackageVersion, listPackageVersions } from '../src/workflow/m2-repo.js';
 import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
-import { runRuleChecks, runSemanticCheck } from '../src/workflow/package-check.js';
+import { runRuleChecks } from '../src/workflow/package-check.js';
 import {
   PackageCandidateRejectedError,
   packageChatPlan,
@@ -164,12 +163,8 @@ async function main() {
   const cited = extractCitedKeys('本次通过 OP-A 查询，并参考对象 STRUCTURE_LIST 的字段；OP-Z 未出现', BAD);
   ok(cited.includes('OP-A') && cited.includes('STRUCTURE_LIST') && !cited.includes('OP-B'), `执行痕迹提取：${cited.join(',')}`);
 
-  // ② 语义检查（faux 回路）
+  // ② 两段式修缮
   const project = createProject({ owner: 'smoke', name: '体检演示', domain: 'DOMAIN', background: 'x' });
-  const sem = await runSemanticCheck(getProject(project.id)!, BAD);
-  ok(sem.length >= 1 && sem[0].source === 'semantic' && !!sem[0].suggestion, `语义检查（faux）产出 ${sem.length} 条发现且带修复建议`);
-
-  // ③ 两段式修缮
   const artifacts = getPackageArtifactStore();
   const initialRevision = await artifacts.ensureProject(project.id);
   await artifacts.savePackageVersion(project.id, {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, FolderOpen } from 'lucide-react';
 
 import PackageWorkspace from './PackageWorkspace.jsx';
 import { IngestView, ProjectSetupView } from './PreparationPanels.jsx';
@@ -80,6 +81,7 @@ export default function AiConstructionWorkbench({ projectId, session, onProjectC
   const [selectedStepId, setSelectedStepId] = useState(() => initialAiConstructionStepId(steps));
   const [workspaceFocus, setWorkspaceFocus] = useState('');
   const [collapsed, setCollapsed] = useState(false);
+  const [materialsOpen, setMaterialsOpen] = useState(false);
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const reportWorkspaceDirty = useCallback((dirty) => {
     setWorkspaceDirty(dirty);
@@ -114,6 +116,7 @@ export default function AiConstructionWorkbench({ projectId, session, onProjectC
       currentStepId: selectedStepId,
       refresh: onProjectChanged,
       select: (nextStepId) => {
+        setMaterialsOpen(false);
         reportWorkspaceDirty(false);
         setSelectedStepId(nextStepId);
         setWorkspaceFocus(target.workspaceFocus);
@@ -151,6 +154,7 @@ export default function AiConstructionWorkbench({ projectId, session, onProjectC
             onSelect={(step) => {
               if (step.id === selectedStepId || confirmUnsavedNavigation(workspaceDirty)) {
                 if (step.id !== selectedStepId) reportWorkspaceDirty(false);
+                setMaterialsOpen(false);
                 setWorkspaceFocus('');
                 setSelectedStepId(step.id);
               }
@@ -159,19 +163,36 @@ export default function AiConstructionWorkbench({ projectId, session, onProjectC
         </div>
       </aside>
       <main className="acw-stage">
-        <header className="acw-stage-head"><strong>{title}</strong></header>
+        <header className="acw-stage-head">
+          <strong>{materialsOpen ? '建模资料' : title}</strong>
+          <button type="button" className="btn acw-materials-button"
+            title={materialsOpen ? '返回当前建模步骤' : '查看、下载或补充建模资料'}
+            onClick={() => {
+              if (!materialsOpen && !confirmUnsavedNavigation(workspaceDirty)) return;
+              if (!materialsOpen) reportWorkspaceDirty(false);
+              setMaterialsOpen((value) => !value);
+            }}>
+            {materialsOpen
+              ? <><ArrowLeft size={14} aria-hidden="true" />返回当前步骤</>
+              : <><FolderOpen size={14} aria-hidden="true" />建模资料 {session.documents?.length ?? 0}</>}
+          </button>
+        </header>
         <div className={`acw-stage-body focus-${focus}`}>
-          {focus === 'project_setup' && (
-            <ProjectSetupView project={session.project} onChanged={onProjectChanged} />
-          )}
-          {focus === 'ingest' && (
+          {materialsOpen ? (
             <IngestView
               project={session.project}
               documents={session.documents ?? []}
               onChanged={onProjectChanged}
             />
-          )}
-          {!['project_setup', 'ingest'].includes(focus) && (
+          ) : focus === 'project_setup' ? (
+            <ProjectSetupView project={session.project} onChanged={onProjectChanged} />
+          ) : focus === 'ingest' ? (
+            <IngestView
+              project={session.project}
+              documents={session.documents ?? []}
+              onChanged={onProjectChanged}
+            />
+          ) : (
             <PackageWorkspace
               projectId={projectId}
               initialSession={session}

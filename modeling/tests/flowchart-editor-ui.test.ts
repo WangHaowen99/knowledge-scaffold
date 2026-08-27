@@ -6,6 +6,7 @@ import {
   AddFlowchartCard,
   FlowchartAddDialog,
   FlowchartEditor,
+  MermaidImportErrorDetails,
 } from '../frontend/src/flowchart-editor/index.js';
 
 const frontendRequire = createRequire(new URL('../frontend/package.json', import.meta.url));
@@ -16,13 +17,16 @@ test('流程列表末尾卡片同时提供 AI 推荐和空白新建入口', () =
   const html = renderToStaticMarkup(React.createElement(AddFlowchartCard, {
     onRecommend: () => {},
     onCreateBlank: () => {},
+    onImportMermaid: () => {},
   }));
 
   assert.match(html, /继续添加流程图/);
   assert.match(html, /AI 推荐新流程/);
   assert.match(html, /新建空白流程/);
+  assert.match(html, /导入 Mermaid/);
   assert.match(html, /aria-label="AI 推荐新流程"/);
   assert.match(html, /aria-label="新建空白流程"/);
+  assert.match(html, /aria-label="导入 Mermaid 流程"/);
 });
 
 test('流程图有未保存修改时继续添加卡片说明禁用原因', () => {
@@ -53,6 +57,42 @@ test('继续添加弹窗同时展示目标、资料候选和 AI 自定义入口'
   assert.match(html, /data-candidate-id="process_candidate_1"/);
   assert.match(html, /data-candidate-id="process_candidate_2"/);
   assert.match(html, /AI 生成新流程/);
+  assert.match(html, /导入 Mermaid/);
+});
+
+test('Mermaid 导入弹窗要求流程名称并支持文件、粘贴和拖拽', () => {
+  const html = renderToStaticMarkup(React.createElement(FlowchartAddDialog, {
+    open: true,
+    initialMode: 'mermaid',
+    onPreviewMermaid: async () => ({}),
+    onImportMermaid: async () => ({}),
+  }));
+
+  assert.match(html, /新流程名称/);
+  assert.match(html, /拖拽 \.mmd\/\.mermaid 文件到这里/);
+  assert.match(html, /Mermaid 源码/);
+  assert.match(html, /仅支持 flowchart\/graph/);
+  assert.match(html, /校验并预览/);
+  assert.match(html, /accept="\.mmd,\.mermaid,text\/plain"/);
+});
+
+test('Mermaid 导入错误展示类别、行列、源码位置和修复建议', () => {
+  const html = renderToStaticMarkup(React.createElement(MermaidImportErrorDetails, {
+    diagnostic: {
+      category: 'Mermaid 语法错误',
+      message: '节点 start 的形状没有闭合',
+      suggestion: '请在节点文字后补充 ]。',
+      line: 3,
+      column: 8,
+      sourceLine: '  start[开始',
+    },
+  }));
+
+  assert.match(html, /Mermaid 语法错误/);
+  assert.match(html, /第 3 行，第 8 列/);
+  assert.match(html, /start\[开始/);
+  assert.match(html, /\^/);
+  assert.match(html, /修复建议：请在节点文字后补充/);
 });
 
 test('A 方案同时显示流程列表、编辑画布、工具栏和属性栏', () => {
@@ -112,4 +152,17 @@ test('提交流程图期间锁定列表、工具栏和属性输入', () => {
   assert.match(html, /<input disabled="" value="审批流程"/);
   assert.match(html, /aria-label="新增业务步骤" disabled=""/);
   assert.match(html, /flowchart-editor-rail__item[^>]*disabled=""/);
+});
+
+test('流程图编辑器允许鼠标选择节点和连线后编辑属性', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../frontend/src/flowchart-editor/FlowchartEditor.jsx', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /const onNodeClick = useCallback/);
+  assert.match(source, /const onEdgeClick = useCallback/);
+  assert.match(source, /onNodeClick=\{onNodeClick\} onEdgeClick=\{onEdgeClick\}/);
+  assert.match(source, /selection: \{ type: 'node', diagramId: activeDiagram\.id, id: node\.id \}/);
+  assert.match(source, /selection: \{ type: 'edge', diagramId: activeDiagram\.id, id: edge\.id \}/);
+  assert.match(source, /onClick=\{\(event\) => \{/);
+  assert.match(source, /data\.onSelect\?\.\(id\)/);
 });

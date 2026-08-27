@@ -92,6 +92,10 @@ export function blockingPendingInteractions(
 ): BlockingPendingInteraction[] {
   return pending
     .filter((interaction) => !isStaleRevisionBoundInteraction(interaction, currentRevision))
+    .filter((interaction) => !(
+      interaction.payload?.purpose === 'check_finding_ignore'
+      && String(interaction.payload?.scope ?? '') !== 'errors'
+    ))
     .map((interaction) => ({
       id: interaction.id,
       type: interaction.type,

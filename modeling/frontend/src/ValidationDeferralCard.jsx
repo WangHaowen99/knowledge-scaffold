@@ -7,10 +7,10 @@ export default function ValidationDeferralCard({ errorCount = 0, busy = false, o
     <section className="validation-deferral-card" aria-label="暂缓知识包错误修复">
       <header>
         <div><span>验证策略</span><strong>暂缓知识包错误修复</strong></div>
-        <em>{errorCount} 个阻断错误</em>
+        <em>{errorCount} 个必须修复的问题</em>
       </header>
       <div className="validation-deferral-warning">
-        当前修订将保留 {errorCount} 个阻断错误并进入验证和改进；正式发布前仍必须消除这些错误。
+        当前修订将保留 {errorCount} 个必须修复的问题并进入验证和改进；正式发布前仍必须解决这些问题。
       </div>
       <label>
         <span>说明暂缓原因</span>

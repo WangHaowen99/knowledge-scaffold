@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from 'xlsx';
+import { config } from '../src/config.js';
 import { parseExcel } from '../src/documents/parser.js';
 import {
   importEvaluationDatabaseExcel,
@@ -321,6 +322,31 @@ test('项目评测库：通过 EVAL_DB_URL 幂等创建固定 Scene 数据库', 
   assert.equal(calls.filter((call) => call.sql.startsWith('CREATE DATABASE')).length, 1);
   assert.match(calls[1].sql, /CREATE DATABASE IF NOT EXISTS `mv_shadow_pj_a_b`/);
   assert.deepEqual(calls[0].values, ['mv_shadow_pj_a_b']);
+});
+
+test('项目评测库：默认建库使用独立管理员连接而不是日常评测连接', async () => {
+  const previousAdminUrl = config.evalDbAdminUrl;
+  const previousRuntimeUrl = config.evalDbUrl;
+  config.evalDbAdminUrl = 'mysql://provisioner:admin-secret@mysql.local:3306';
+  config.evalDbUrl = 'mysql://runtime:runtime-secret@mysql.local:3306';
+  let target: EvaluationDatabaseTarget | undefined;
+  try {
+    await createProjectEvaluationDatabase({ projectId: 'pj_admin_connection' }, {
+      connectAdmin: async (value) => {
+        target = value;
+        return {
+          query: async (sql: string) => (sql.startsWith('SELECT') ? [{ exists: true }] : []),
+          close: async () => undefined,
+        };
+      },
+    });
+  } finally {
+    config.evalDbAdminUrl = previousAdminUrl;
+    config.evalDbUrl = previousRuntimeUrl;
+  }
+
+  assert.equal(target?.connectionUrl, 'mysql://provisioner:admin-secret@mysql.local:3306/');
+  assert.equal(target?.database, 'mv_shadow_pj_admin_connection');
 });
 
 test('项目评测库：创建失败时关闭连接且不泄露 EVAL_DB_URL', async () => {

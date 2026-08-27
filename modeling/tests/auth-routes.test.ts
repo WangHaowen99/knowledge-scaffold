@@ -83,6 +83,9 @@ before(async () => {
   process.env.AUTH_JWT_ISSUER = ISS;
   process.env.AUTH_JWT_AUDIENCE = AUD;
   process.env.CONSUMER_API_URL = upstreamBaseUrl;
+  process.env.MODELING_SERVICE_TOKEN = 'route-test-modeling-service-token';
+  process.env.MODELING_EVAL_BINDING_URL = 'http://nl2sql.default:8080';
+  process.env.MODELING_EVAL_BINDING_TOKEN = 'quick-import-secret';
   process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'mtool-route-test-'));
   process.env.EVAL_DB_URL = 'mysql://root:eval-secret@mysql.local:3306';
 
@@ -278,6 +281,8 @@ test('login：缺参 → 400', async () => {
 });
 
 test('login 成功 → 200 {token, user, refresh_token, expires_in}', async () => {
+  const { backgroundAuthSessions } = await import('../src/auth/background-session.js');
+  backgroundAuthSessions.forget('alice');
   const token = await signToken();
   routes.set('POST /token', {
     status: 200,
@@ -288,6 +293,7 @@ test('login 成功 → 200 {token, user, refresh_token, expires_in}', async () =
   const body = res.json();
   assert.deepEqual(Object.keys(body).sort(), ['expires_in', 'refresh_token', 'token', 'user']);
   assert.deepEqual(body.user, { username: 'alice', role: 'user' });
+  assert.equal(await backgroundAuthSessions.get('alice')?.getAccessToken(), token);
 });
 
 test('login：invalid_grant → 401 登录失败', async () => {
@@ -318,6 +324,7 @@ test('login：强制改密用户 → 403 PASSWORD_CHANGE_REQUIRED', async () => 
 // ---------------- /auth/refresh ----------------
 
 test('refresh：缺参 → 400；上游拒绝 → 401；上游 5xx → 503；成功 → 200 字段名正确', async () => {
+  const { backgroundAuthSessions } = await import('../src/auth/background-session.js');
   let res = await app.inject({ method: 'POST', url: '/auth/refresh', payload: {} });
   assert.equal(res.statusCode, 400);
 
@@ -330,13 +337,15 @@ test('refresh：缺参 → 400；上游拒绝 → 401；上游 5xx → 503；成
   res = await app.inject({ method: 'POST', url: '/auth/refresh', payload: { refresh_token: 'rt' } });
   assert.equal(res.statusCode, 503);
 
+  const refreshedToken = await signToken();
   routes.set('POST /token', {
     status: 200,
-    body: JSON.stringify({ access_token: 'at-2', refresh_token: 'rt-2', token_type: 'Bearer', expires_in: 900 }),
+    body: JSON.stringify({ access_token: refreshedToken, refresh_token: 'rt-2', token_type: 'Bearer', expires_in: 900 }),
   });
   res = await app.inject({ method: 'POST', url: '/auth/refresh', payload: { refresh_token: 'rt-1' } });
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.json(), { token: 'at-2', refresh_token: 'rt-2', expires_in: 900 });
+  assert.deepEqual(res.json(), { token: refreshedToken, refresh_token: 'rt-2', expires_in: 900 });
+  assert.equal(await backgroundAuthSessions.get('alice')?.getAccessToken(), refreshedToken);
 });
 
 // ---------------- 注册代理 ----------------
@@ -401,6 +410,35 @@ test('过期 token 访问不存在项目只返回一次 401，后续请求仍可
   assert.deepEqual(health.json(), { status: 'ok' });
 });
 
+test('Agent 运行时模型配置同时要求用户身份和服务令牌', async () => {
+  let response = await app.inject({
+    method: 'GET',
+    url: '/internal/agent/llm-config',
+    headers: { 'x-modeling-service-token': process.env.MODELING_SERVICE_TOKEN! },
+  });
+  assert.equal(response.statusCode, 401);
+
+  const token = await signToken({}, 'agent-config-user');
+  response = await app.inject({
+    method: 'GET',
+    url: '/internal/agent/llm-config',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.statusCode, 403);
+
+  response = await app.inject({
+    method: 'GET',
+    url: '/internal/agent/llm-config',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'x-modeling-service-token': process.env.MODELING_SERVICE_TOKEN!,
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json().code, 'LLM_NOT_CONFIGURED');
+  assert.equal(response.headers['cache-control'], 'no-store');
+});
+
 test('平台 LLM 默认配置 API 同时要求登录和 admin 角色', async () => {
   let response = await app.inject({ method: 'GET', url: '/api/admin/llm-defaults' });
   assert.equal(response.statusCode, 401);
@@ -421,7 +459,7 @@ test('平台 LLM 默认配置 API 同时要求登录和 admin 角色', async () 
   assert.deepEqual(response.json().defaults, { main: null, task: null });
 });
 
-test('新注册用户初始化当时的默认快照，老用户与既有快照不受 admin 后续修改影响', async () => {
+test('admin 平台默认对新老账号即时生效，注册快照保留为删除默认后的兜底', async () => {
   const adminToken = await signToken({ role: 'admin' }, 'registration-platform-admin');
   const adminHeaders = { authorization: `Bearer ${adminToken}` };
   const configured = await app.inject({
@@ -453,15 +491,15 @@ test('新注册用户初始化当时的默认快照，老用户与既有快照�
     const firstSnapshot = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
     assert.equal(firstSnapshot.json().llm.model, 'registration-default-v1');
     assert.equal(firstSnapshot.json().llm.maxTokens, 5000);
-    assert.equal(firstSnapshot.json().llm.source, 'default_snapshot');
+    assert.equal(firstSnapshot.json().llm.source, 'platform_default');
 
     const existingToken = await signToken({}, 'existing_without_default_snapshot');
     const existing = await app.inject({
       method: 'GET', url: '/api/settings',
       headers: { authorization: `Bearer ${existingToken}` },
     });
-    assert.equal(existing.json().llm.source, 'env');
-    assert.notEqual(existing.json().llm.model, 'registration-default-v1');
+    assert.equal(existing.json().llm.source, 'platform_default');
+    assert.equal(existing.json().llm.model, 'registration-default-v1');
 
     const updated = await app.inject({
       method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
@@ -473,9 +511,9 @@ test('新注册用户初始化当时的默认快照，老用户与既有快照�
     assert.equal(updated.statusCode, 200, updated.body);
     revision = updated.json().defaults.main.revision;
 
-    const firstStillV1 = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
-    assert.equal(firstStillV1.json().llm.model, 'registration-default-v1');
-    assert.equal(firstStillV1.json().llm.maxTokens, 5000);
+    const firstUsesV2 = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
+    assert.equal(firstUsesV2.json().llm.model, 'registration-default-v2');
+    assert.equal(firstUsesV2.json().llm.maxTokens, 6000);
 
     routes.set('POST /register', {
       status: 200,
@@ -538,7 +576,7 @@ test('注册成功会清理同名旧账号的 Modeling LLM 配置，注册失败
   const configured = await app.inject({
     method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
     payload: {
-      purpose: 'main', baseUrl: 'faux', model: 'future-default-must-not-fallback',
+      purpose: 'main', baseUrl: 'faux', model: 'future-unified-default',
       maxTokens: 4096, expectedRevision: 0,
     },
   });
@@ -548,8 +586,8 @@ test('注册成功会清理同名旧账号的 Modeling LLM 配置，注册失败
     const settings = await app.inject({
       method: 'GET', url: '/api/settings', headers: { authorization: `Bearer ${userToken}` },
     });
-    assert.equal(settings.json().llm.source, 'env');
-    assert.notEqual(settings.json().llm.model, 'future-default-must-not-fallback');
+    assert.equal(settings.json().llm.source, 'platform_default');
+    assert.equal(settings.json().llm.model, 'future-unified-default');
   } finally {
     await app.inject({
       method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
@@ -721,8 +759,8 @@ test('主模型与后台任务模型可分别同步平台默认，任务默认�
     });
     assert.equal(response.statusCode, 200, response.body);
     let settings = await app.inject({ method: 'GET', url: '/api/settings', headers: userHeaders });
-    assert.equal(settings.json().llm.source, 'env');
-    assert.equal(settings.json().taskLlm.source, 'default_snapshot');
+    assert.equal(settings.json().llm.source, 'platform_default');
+    assert.equal(settings.json().taskLlm.source, 'platform_default');
     assert.equal(settings.json().taskLlm.model, 'purpose-main-default');
 
     const taskDefault = await app.inject({
@@ -742,7 +780,7 @@ test('主模型与后台任务模型可分别同步平台默认，任务默认�
     assert.equal(response.statusCode, 200, response.body);
     settings = await app.inject({ method: 'GET', url: '/api/settings', headers: userHeaders });
     assert.equal(settings.json().llm.model, 'purpose-main-default');
-    assert.equal(settings.json().taskLlm.model, 'purpose-main-default');
+    assert.equal(settings.json().taskLlm.model, 'purpose-task-default');
 
     response = await app.inject({
       method: 'POST', url: '/api/settings/llm/sync-default', headers: userHeaders,
@@ -765,7 +803,7 @@ test('主模型与后台任务模型可分别同步平台默认，任务默认�
   }
 });
 
-test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不会自动追写', async () => {
+test('使用平台默认会清除个人覆盖，admin 后续修改立即生效', async () => {
   const adminToken = await signToken({ role: 'admin' }, 'sync-platform-admin');
   const userAToken = await signToken({}, 'sync_user_a');
   const userBToken = await signToken({}, 'sync_user_b');
@@ -820,7 +858,7 @@ test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不
     const userB = await app.inject({ method: 'GET', url: '/api/settings', headers: userBHeaders });
     assert.deepEqual(userA.json().llm, {
       baseUrl: 'faux', model: 'platform-default-model', maxTokens: 7777, contextWindow: 1000000,
-      apiKeySet: false, personalApiKeySet: false, source: 'default_snapshot', userIsolated: true,
+      apiKeySet: false, personalApiKeySet: false, source: 'platform_default', userIsolated: true,
       platformDefaultAvailable: true,
     });
     assert.equal(userB.json().llm.model, 'personal-model-b');
@@ -838,9 +876,9 @@ test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不
     assert.equal(updated.statusCode, 200, updated.body);
     revision = updated.json().defaults.main.revision;
 
-    const userAStillV1 = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
-    assert.equal(userAStillV1.json().llm.model, 'platform-default-model');
-    assert.equal(userAStillV1.json().llm.maxTokens, 7777);
+    const userAUsesV2 = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
+    assert.equal(userAUsesV2.json().llm.model, 'platform-default-model-v2');
+    assert.equal(userAUsesV2.json().llm.maxTokens, 8888);
     const userBAfterAdminUpdate = await app.inject({ method: 'GET', url: '/api/settings', headers: userBHeaders });
     assert.equal(userBAfterAdminUpdate.json().llm.model, 'personal-model-b');
 
@@ -904,7 +942,7 @@ test('编辑默认快照的端点/模型做连接测试时不会把快照 Key �
   }
 });
 
-test('知识包工作区：导入 ZIP 后建立仅编辑项目、版本索引和原始文件快照', async () => {
+test('知识包工作区：导入 ZIP 后建立 Agent 增量基线和原始文件快照', async () => {
   const token = await signToken();
   const authorization = `Bearer ${token}`;
   const spec: PackageSpec = {
@@ -925,17 +963,99 @@ test('知识包工作区：导入 ZIP 后建立仅编辑项目、版本索引和
 
   assert.equal(imported.statusCode, 201, imported.body);
   assert.equal(imported.json().project.kind, 'package');
+  assert.equal(imported.json().project.runtime, 'agent');
   assert.equal(imported.json().project.stage, 'review');
   assert.equal(imported.json().version, '1.0.0');
   assert.ok(imported.json().revision);
+  assert.equal(imported.json().aiConstruction, undefined);
 
   const projectId = imported.json().project.id;
+  const { getDb } = await import('../src/db/index.js');
+  const baselineEvent = getDb().prepare(`SELECT event_type, payload_json, delivered_at
+    FROM agent_project_event_outbox WHERE project_id = ?`).get(projectId) as any;
+  assert.equal(baselineEvent.event_type, 'package_import');
+  assert.equal(baselineEvent.delivered_at, null);
+  assert.equal(JSON.parse(baselineEvent.payload_json).baselineRevision, imported.json().revision);
+  const legacyGraphCount = getDb().prepare(`SELECT COUNT(*) AS count
+    FROM ai_construction_graphs WHERE project_id = ?`).get(projectId) as { count: number };
+  assert.equal(legacyGraphCount.count, 0);
+
   const pkg = await app.inject({
     method: 'GET', url: `/api/projects/${projectId}/package`, headers: { authorization },
   });
   assert.equal(pkg.statusCode, 200, pkg.body);
   assert.equal(pkg.json().version, '1.0.0');
   assert.ok(pkg.json().files.includes('operations/answer_demo.md'));
+
+  const snapshot = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/agent/snapshot`,
+    headers: { authorization },
+  });
+  assert.equal(snapshot.statusCode, 200, snapshot.body);
+  assert.equal(snapshot.json().project.runtime, 'agent');
+  assert.equal(snapshot.json().revision, imported.json().revision);
+
+  const [legacyChat, legacyIncrement] = await Promise.all([
+    app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/package/chat`, headers: { authorization },
+      payload: { message: '请生成增量修改方案' },
+    }),
+    app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/ai-construction/increment/start`,
+      headers: { authorization }, payload: {},
+    }),
+  ]);
+  assert.equal(legacyChat.statusCode, 410, legacyChat.body);
+  assert.equal(legacyChat.json().code, 'UNIFIED_AGENT_RUNTIME_REQUIRED');
+  assert.equal(legacyIncrement.statusCode, 410, legacyIncrement.body);
+  assert.equal(legacyIncrement.json().code, 'UNIFIED_AGENT_RUNTIME_REQUIRED');
+  const graphAfterLegacyRequests = getDb().prepare(`SELECT COUNT(*) AS count
+    FROM ai_construction_graphs WHERE project_id = ?`).get(projectId) as { count: number };
+  assert.equal(graphAfterLegacyRequests.count, 0);
+});
+
+test('知识包工作区：导入旧式包装脚本后仍可读取文件树和原始脚本', async () => {
+  const token = await signToken();
+  const authorization = `Bearer ${token}`;
+  const spec: PackageSpec = {
+    id: 'legacy-script-import', name: '旧式脚本导入', description: '验证导入基线只读兼容',
+    version: '1.1.8', language: 'zh-CN', status: 'draft', defaultProviderAlias: 'default',
+    objects: [],
+    operations: [{
+      key: 'energy_cost', title: '计算能耗', description: '计算装置能源成本',
+      inputs: [], outputs: [], flow: ['调用公共阶段函数。'], relatedObjects: [],
+      script: { key: 'energy_cost_script', required: true },
+    }],
+    scripts: [{
+      key: 'energy_cost_script', title: '能耗核算脚本', description: '沿用公共阶段入口。',
+      boundOperation: 'energy_cost', runtime: 'python', entrypoint: 'energy_cost.py',
+      timeoutSeconds: 300, parameters: [], outputs: [], boundaries: [],
+      sourceCode: 'from operation_stage_common import main\n\nmain("energy_cost")\n',
+    }],
+  };
+  const files = renderPackage(spec, { validateScripts: false });
+  const upload = multipartZip('legacy-script.zip', Buffer.from(zipPackage(files, spec.id)));
+  const imported = await app.inject({
+    method: 'POST', url: '/api/package-workspaces/import',
+    headers: { authorization, ...upload.headers }, payload: upload.payload,
+  });
+  assert.equal(imported.statusCode, 201, imported.body);
+
+  const projectId = imported.json().project.id;
+  const pkg = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package`, headers: { authorization },
+  });
+  assert.equal(pkg.statusCode, 200, pkg.body);
+  assert.ok(pkg.json().files.includes('scripts/energy_cost.py'));
+
+  const script = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/package/file?path=${encodeURIComponent('scripts/energy_cost.py')}`,
+    headers: { authorization },
+  });
+  assert.equal(script.statusCode, 200, script.body);
+  assert.match(script.json().content, /operation_stage_common/);
 });
 
 test('项目删除 API：要求明确确认、校验 owner、阻止运行任务并完成删除', async () => {
@@ -1056,6 +1176,42 @@ async function waitForMaterialTask(
     if (Date.now() > deadline) {
       throw new Error(`资料分析任务未在 ${timeoutMs}ms 内进入 ${statuses.join('/')}，当前=${task?.status}`);
     }
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+}
+
+async function waitForUploadedDocument(
+  projectId: string,
+  documentId: string,
+  headers: Record<string, string>,
+  timeoutMs = 5_000,
+): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+    assert.equal(response.statusCode, 200, response.body);
+    const document = response.json().documents.find((item: any) => item.id === documentId);
+    if (document && document.parseStatus !== 'pending') return document;
+    if (Date.now() > deadline) throw new Error(`资料 ${documentId} 未在 ${timeoutMs}ms 内完成解析`);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+}
+
+async function waitForMaterialImpact(
+  projectId: string,
+  documentId: string,
+  headers: Record<string, string>,
+  timeoutMs = 5_000,
+): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await app.inject({
+      method: 'GET', url: `/api/projects/${projectId}/documents/revisions`, headers,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const impact = response.json().impacts.find((item: any) => item.currentDocumentId === documentId);
+    if (impact) return impact;
+    if (Date.now() > deadline) throw new Error(`资料 ${documentId} 的影响分析未在 ${timeoutMs}ms 内完成`);
     await new Promise((resolve) => { setTimeout(resolve, 20); });
   }
 }
@@ -1275,6 +1431,116 @@ test('版本汇总 API：按工件修订关联评测并单列未版本化的当�
   )), false);
 });
 
+test('手动复检通过后续接知识校验任务并关闭旧修复步骤', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '手动复检续接项目' },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const projectId = created.json().project.id;
+  const [
+    { getPackageArtifactStore },
+    { getDb },
+    { AiConstructionTaskGraph },
+    { AiConstructionOrchestrator },
+  ] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/db/index.js'),
+    import('../src/ai-construction/task-graph.js'),
+    import('../src/ai-construction/orchestrator.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'manual-recheck-package',
+      name: '手动复检知识包',
+      description: '验证手动复检通过后续接 AI 构建任务图',
+      version: '1.0.0-rc.1',
+      language: 'zh-CN', status: 'review', defaultProviderAlias: 'data',
+      objects: [], operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '生成待复检知识包',
+    action: {
+      cause: 'generation', summary: '生成待复检知识包',
+      actorKind: 'agent', actorName: '助手',
+    },
+  });
+
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE ai_construction_milestones SET
+    status = CASE
+      WHEN milestone_id IN ('goal_confirmed', 'materials_ready', 'process_confirmed') THEN 'confirmed'
+      WHEN milestone_id = 'knowledge_confirmed' THEN 'active'
+      ELSE 'pending'
+    END,
+    updated_at = ? WHERE project_id = ?`).run(now, projectId);
+  db.prepare(`UPDATE ai_construction_graphs SET revision = revision + 1, updated_at = ?
+    WHERE project_id = ?`).run(now, projectId);
+
+  const graph = new AiConstructionTaskGraph(db);
+  const orchestrator = new AiConstructionOrchestrator({ db });
+  let snapshot = graph.snapshot(projectId)!;
+  for (const task of [
+    { kind: 'operation_extraction' as const, title: '生成业务操作' },
+    { kind: 'knowledge_extraction' as const, title: '生成知识结构' },
+    { kind: 'package_validation' as const, title: '校验知识结构草案' },
+  ]) {
+    snapshot = graph.apply(projectId, {
+      type: 'plan_task', expectedRevision: snapshot.revision,
+      task: {
+        kind: task.kind, milestoneId: 'knowledge_confirmed', title: task.title,
+        goal: task.title, required: true, dependsOn: [],
+      },
+    });
+  }
+  const failed = orchestrator.completeKnowledgeStructure(projectId, {
+    packageRevisionOid: generated.revision.oid,
+    messageKey: `knowledge.failed.${projectId}`,
+    version: generated.packageVersion,
+    counts: { operations: 0, objects: 0, relations: 0, rules: 0, metrics: 0 },
+    validation: { errors: 1, warnings: 0, hints: 0 },
+  });
+  snapshot = graph.apply(projectId, {
+    type: 'plan_task', expectedRevision: failed.aiConstruction.revision,
+    task: {
+      kind: 'package_repair', milestoneId: 'knowledge_confirmed',
+      title: '逐项修复知识包校验问题', goal: '修复当前错误',
+      required: false, dependsOn: [],
+    },
+  });
+  const repairTask = snapshot.tasks.find((item) => item.kind === 'package_repair')!;
+  snapshot = graph.apply(projectId, {
+    type: 'start_task', expectedRevision: snapshot.revision, taskId: repairTask.id,
+  });
+  graph.apply(projectId, {
+    type: 'fail_task', expectedRevision: snapshot.revision, taskId: repairTask.id,
+    reason: '旧修复尝试失败',
+  });
+
+  const checked = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/check`, headers, payload: {},
+  });
+  assert.equal(checked.statusCode, 200, checked.body);
+  assert.equal(checked.json().counts['错误'], 0);
+  assert.deepEqual(
+    checked.json().aiConstructionMessages[0].blocks.at(-1).actions.map((item: any) => item.id),
+    ['confirm_knowledge', 'review_knowledge_files'],
+  );
+  const reconciled = graph.snapshot(projectId)!;
+  assert.equal(reconciled.tasks.find((item) => item.kind === 'package_validation')?.status, 'completed');
+  assert.equal(
+    reconciled.tasks.find((item) => item.kind === 'package_validation')?.outputRevisionOid,
+    generated.revision.oid,
+  );
+  assert.equal(reconciled.tasks.find((item) => item.kind === 'package_repair')?.status, 'skipped');
+});
+
 test('知识包检查查询隐藏旧修订发现并声明当前修订需要重检', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
@@ -1313,6 +1579,18 @@ test('知识包检查查询隐藏旧修订发现并声明当前修订需要重�
     id: 'old-finding', source: 'rule', severity: '错误', category: '旧问题',
     target: 'package/index.md', message: '只属于旧修订的问题',
   }], checkedRevision.revision.oid);
+
+  const actionable = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/check`, headers,
+  });
+  assert.equal(actionable.statusCode, 200, actionable.body);
+  assert.equal(actionable.json().packageRepair.blockingCount, 1);
+  assert.equal(actionable.json().currentStep.status, 'ready');
+  assert.equal(actionable.json().currentStep.revision, checkedRevision.revision.oid);
+  assert.deepEqual(actionable.json().pendingQueue, []);
+  assert.equal(actionable.json().nextActions[0].id, 'repair_knowledge_structure');
+  assert.equal(actionable.json().repair.available, true);
+  assert.doesNotMatch(String(actionable.json().repair.reason ?? ''), /人工编辑草稿/);
 
   const indexFile = await store.readFile(projectId, 'package/index.md');
   const current = await store.saveFile(projectId, {
@@ -1778,18 +2056,26 @@ test('资料上传 API 保留不可变修订，仅格式变化不传播失效', 
     method: 'POST', url: `/api/projects/${projectId}/documents`,
     headers: { ...headers, ...firstForm.headers }, payload: firstForm.payload,
   });
-  const nextForm = multipartFile('policy.md', Buffer.from('  规则 A  \r\n\r\n 阈值   10  '));
+
+  assert.equal(first.statusCode, 202, first.body);
+  assert.equal(first.json().document.parseStatus, 'pending');
+  await waitForUploadedDocument(projectId, first.json().document.id, headers);
+
+  const nextForm = multipartFile('policy-v2.md', Buffer.from('  规则 A  \r\n\r\n 阈值   10  '));
   const next = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/documents`,
+    method: 'POST',
+    url: `/api/projects/${projectId}/documents?replacementOf=${encodeURIComponent(first.json().document.id)}`,
     headers: { ...headers, ...nextForm.headers }, payload: nextForm.payload,
   });
 
-  assert.equal(first.statusCode, 201, first.body);
-  assert.equal(next.statusCode, 201, next.body);
+  assert.equal(next.statusCode, 202, next.body);
+  assert.equal(next.json().document.parseStatus, 'pending');
   assert.equal(next.json().document.revisionNo, 2);
-  assert.equal(next.json().materialRevision.changeKind, 'format_only');
-  assert.equal(next.json().materialRevision.semanticChanged, false);
-  assert.deepEqual(next.json().materialImpact.affectedResources, []);
+  assert.equal(next.json().document.sourceKey, first.json().document.sourceKey);
+  assert.equal(next.json().document.filename, 'policy-v2.md');
+  const parsedNext = await waitForUploadedDocument(projectId, next.json().document.id, headers);
+  assert.equal(parsedNext.parseStatus, 'parsed');
+  const impact = await waitForMaterialImpact(projectId, next.json().document.id, headers);
 
   const history = await app.inject({
     method: 'GET',
@@ -1800,6 +2086,34 @@ test('资料上传 API 保留不可变修订，仅格式变化不传播失效', 
   assert.deepEqual(history.json().revisions.map((item: any) => [item.revisionNo, item.lifecycleStatus]), [
     [2, 'active'], [1, 'superseded'],
   ]);
+  assert.equal(history.json().revisions[0].semanticHash, history.json().revisions[1].semanticHash);
+  assert.notEqual(history.json().revisions[0].contentHash, history.json().revisions[1].contentHash);
+  assert.equal(impact.changeKind, 'format_only');
+  assert.equal(impact.semanticChanged, false);
+  assert.deepEqual(impact.affectedResources, []);
+
+  const downloaded = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/documents/${next.json().document.id}/download`,
+    headers,
+  });
+  assert.equal(downloaded.statusCode, 200, downloaded.body);
+  assert.equal(downloaded.headers['x-material-export-mode'], 'original');
+  assert.equal(downloaded.rawPayload.toString('utf8'), '  规则 A  \r\n\r\n 阈值   10  ');
+  const staleReplacementForm = multipartFile('policy-v3.md', Buffer.from('规则 A\n阈值 12'));
+  const staleReplacement = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/documents?replacementOf=${encodeURIComponent(first.json().document.id)}`,
+    headers: { ...headers, ...staleReplacementForm.headers }, payload: staleReplacementForm.payload,
+  });
+  assert.equal(staleReplacement.statusCode, 409, staleReplacement.body);
+  const foreignToken = await signToken({}, 'bob');
+  const forbidden = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/documents/${next.json().document.id}/download`,
+    headers: { authorization: `Bearer ${foreignToken}` },
+  });
+  assert.equal(forbidden.statusCode, 404, forbidden.body);
 
   const removed = await app.inject({
     method: 'DELETE', url: `/api/projects/${projectId}/documents/${next.json().document.id}`, headers,
@@ -1810,6 +2124,42 @@ test('资料上传 API 保留不可变修订，仅格式变化不传播失效', 
     method: 'GET', url: `/api/projects/${projectId}/documents/revisions`, headers,
   });
   assert.equal(retiredHistory.json().revisions[0].lifecycleStatus, 'deleted');
+});
+
+test('同一项目可以并发接收多份新增资料', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers, payload: { name: '并发资料上传项目', runtime: 'agent' },
+  });
+  const projectId = created.json().project.id;
+  const files = Array.from({ length: 6 }, (_, index) => ({
+    filename: `material-${index + 1}.md`,
+    content: Buffer.from(`# 资料 ${index + 1}\n业务内容 ${index + 1}`),
+  }));
+
+  const responses = await Promise.all(files.map(({ filename, content }) => {
+    const form = multipartFile(filename, content);
+    return app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/documents`,
+      headers: { ...headers, ...form.headers }, payload: form.payload,
+    });
+  }));
+
+  assert.deepEqual(responses.map((response) => response.statusCode), Array(6).fill(202));
+  assert.deepEqual(
+    responses.map((response) => response.json().document.filename).sort(),
+    files.map((file) => file.filename).sort(),
+  );
+  const revisions = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/documents/revisions`, headers,
+  });
+  assert.equal(revisions.statusCode, 200, revisions.body);
+  assert.deepEqual(
+    revisions.json().revisions.filter((item: any) => item.lifecycleStatus === 'active')
+      .map((item: any) => item.filename).sort(),
+    files.map((file) => file.filename).sort(),
+  );
 });
 
 test('包修缮运行期间人工草稿只读，所有写接口统一返回 409', async () => {
@@ -1945,11 +2295,12 @@ test('主建模聊天把全部资料清单与当前文本材料分别交给 pack
       [
         {
           id: spreadsheet.id, filename: 'dataset.xlsx', kind: 'excel', parseStatus: 'parsed',
-          textLength: 0, tableCount: 1,
+          textLength: 0, tableCount: 1, purpose: 'auto', readingMode: 'on_demand',
         },
         {
           id: document.id, filename: '营销产品手册.docx', kind: 'word', parseStatus: 'parsed',
           textLength: '第一章 产品准入条件'.length, tableCount: 0,
+          purpose: 'auto', readingMode: 'on_demand',
         },
       ].sort((left, right) => left.filename.localeCompare(right.filename)),
     );
@@ -2209,6 +2560,38 @@ test('NL2SQL 评测库 API：使用 EVAL_DB_URL 建库并按已保存 Scene 导�
   });
   assert.ok(evaluationDatabaseQueries.some((sql) => sql.startsWith('CREATE TABLE `')));
   assert.doesNotMatch(raw.public_config_json, /eval-secret|project-secret|import-secret/);
+
+  const quickProject = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: 'Excel 一键导入项目' },
+  });
+  const quickProjectId = quickProject.json().project.id;
+  insertPackageVersion(quickProjectId, '1.0.0', {
+    id: 'quick-import-api', name: 'Excel 一键导入项目', description: '测试一键导入',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'default', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+  const quickForm = multipartExcel('quick.xlsx', excel);
+  const quickImported = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${quickProjectId}/evaluation-database/quick-import`,
+    headers: { authorization: `Bearer ${token}`, ...quickForm.headers },
+    payload: quickForm.payload,
+  });
+  assert.equal(quickImported.statusCode, 202, quickImported.body);
+  const quickBody = quickImported.json();
+  assert.equal(quickBody.run.status, 'running');
+  assert.equal(quickBody.dataSource.provider, 'nl2sql_template');
+  assert.equal(quickBody.dataSource.config.url, 'http://nl2sql.default:8080');
+  assert.equal(quickBody.dataSource.config.scene, projectEvaluationDatabaseName(quickProjectId));
+  assert.equal(quickBody.dataSource.config.has_token, true);
+  assert.doesNotMatch(quickImported.body, /quick-import-secret|eval-secret/);
+  assert.equal(evaluationDatabaseImportTasks.length, 1);
+  await evaluationDatabaseImportTasks.shift()!();
+  const quickRuns = await app.inject({
+    method: 'GET', url: `/api/projects/${quickProjectId}/evaluation-database/imports`, headers,
+  });
+  assert.equal(quickRuns.json().imports[0].status, 'done');
+  assert.equal(quickRuns.json().imports[0].tableCount, 1);
 });
 
 test('评测用例 API：手工新增和修改均推进项目阶段', async () => {
@@ -2240,112 +2623,37 @@ test('评测用例 API：手工新增和修改均推进项目阶段', async () =
   assert.equal(project.json().project.stage, 'testcases');
 });
 
-test('评测用例 API：新增和编辑会去除首尾空白，空白问题会被拒绝且不推进阶段', async () => {
+test('Agent 工作台只写评测事实，不推进 legacy 项目阶段', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
   const created = await app.inject({
     method: 'POST', url: '/api/projects', headers,
-    payload: { name: '评测用例空白校验项目' },
+    payload: { name: 'Agent 评测事实隔离项目' },
   });
   const projectId = created.json().project.id;
   const { setStage } = await import('../src/projects/repo.js');
+  setStage(projectId, 'review');
 
-  const blankAdded = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/testcases`, headers,
-    payload: { question: '   ', groundTruth: '  答案  ' },
+  const source = await app.inject({
+    method: 'PUT', url: `/api/projects/${projectId}/data-source?workflow=agent`, headers,
+    payload: { mode: 'none' },
   });
-  assert.equal(blankAdded.statusCode, 400, blankAdded.body);
-
+  assert.equal(source.statusCode, 200, source.body);
   const added = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/testcases`, headers,
-    payload: { question: '  真实问题  ', groundTruth: '  标准答案  ' },
+    method: 'POST', url: `/api/projects/${projectId}/testcases?workflow=agent`, headers,
+    payload: { question: '真实业务问题', groundTruth: '真实答案' },
   });
   assert.equal(added.statusCode, 200, added.body);
-  assert.deepEqual(added.json().testcase.question, '真实问题');
-  assert.deepEqual(added.json().testcase.groundTruth, '标准答案');
-
-  setStage(projectId, 'data_source');
-  const blankPatched = await app.inject({
+  const updated = await app.inject({
     method: 'PATCH',
-    url: `/api/projects/${projectId}/testcases/${added.json().testcase.id}`,
+    url: `/api/projects/${projectId}/testcases/${added.json().testcase.id}?workflow=agent`,
     headers,
-    payload: { question: '   ', groundTruth: '  不应保存  ' },
+    payload: { groundTruth: '复核后的真实答案' },
   });
-  assert.equal(blankPatched.statusCode, 400, blankPatched.body);
-  let project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
-  assert.equal(project.json().project.stage, 'data_source');
+  assert.equal(updated.statusCode, 200, updated.body);
 
-  const patched = await app.inject({
-    method: 'PATCH',
-    url: `/api/projects/${projectId}/testcases/${added.json().testcase.id}`,
-    headers,
-    payload: { question: '  修正问题  ', groundTruth: '  修正答案  ' },
-  });
-  assert.equal(patched.statusCode, 200, patched.body);
-  assert.deepEqual(patched.json().testcases.map((item: any) => [item.question, item.groundTruth]), [
-    ['修正问题', '修正答案'],
-  ]);
-  project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
-  assert.equal(project.json().project.stage, 'testcases');
-});
-
-test('评测用例 API：跨项目或不存在的用例不能被修改或删除', async () => {
-  const token = await signToken();
-  const headers = { authorization: `Bearer ${token}` };
-  const createdA = await app.inject({
-    method: 'POST', url: '/api/projects', headers,
-    payload: { name: '评测用例归属项目A' },
-  });
-  const createdB = await app.inject({
-    method: 'POST', url: '/api/projects', headers,
-    payload: { name: '评测用例归属项目B' },
-  });
-  const projectA = createdA.json().project.id;
-  const projectB = createdB.json().project.id;
-  const added = await app.inject({
-    method: 'POST', url: `/api/projects/${projectA}/testcases`, headers,
-    payload: { question: '项目A用例', groundTruth: '项目A答案' },
-  });
-  const testcaseId = added.json().testcase.id;
-
-  const crossPatch = await app.inject({
-    method: 'PATCH',
-    url: `/api/projects/${projectB}/testcases/${testcaseId}`,
-    headers,
-    payload: { groundTruth: '越权修改' },
-  });
-  assert.equal(crossPatch.statusCode, 404, crossPatch.body);
-
-  const missingPatch = await app.inject({
-    method: 'PATCH',
-    url: `/api/projects/${projectA}/testcases/tc_missing`,
-    headers,
-    payload: { groundTruth: '不存在' },
-  });
-  assert.equal(missingPatch.statusCode, 404, missingPatch.body);
-
-  const crossDelete = await app.inject({
-    method: 'DELETE',
-    url: `/api/projects/${projectB}/testcases/${testcaseId}`,
-    headers,
-  });
-  assert.equal(crossDelete.statusCode, 404, crossDelete.body);
-
-  const missingDelete = await app.inject({
-    method: 'DELETE',
-    url: `/api/projects/${projectA}/testcases/tc_missing`,
-    headers,
-  });
-  assert.equal(missingDelete.statusCode, 404, missingDelete.body);
-
-  const projectATestcases = await app.inject({
-    method: 'GET',
-    url: `/api/projects/${projectA}/testcases`,
-    headers,
-  });
-  assert.deepEqual(projectATestcases.json().testcases.map((item: any) => [item.id, item.question, item.groundTruth]), [
-    [testcaseId, '项目A用例', '项目A答案'],
-  ]);
+  const project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'review');
 });
 
 test('评测用例批量导入 API 去重并一次推进项目阶段', async () => {
@@ -2420,69 +2728,6 @@ test('专家处置只记录下一步提示且不会改写 legacy 工作流节点
   ]);
   assert.equal('staleSteps' in response.json(), false);
   assert.equal(getNode(legacyNode.id)?.status, 'done');
-});
-
-test('阻断型知识包诊断暂缓处理后仍不能回流建模修缮', async () => {
-  const token = await signToken();
-  const headers = { authorization: `Bearer ${token}` };
-  const created = await app.inject({
-    method: 'POST', url: '/api/projects', headers,
-    payload: { name: '阻断诊断暂缓后回流门禁' },
-  });
-  const projectId = created.json().project.id;
-  await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
-
-  const [{ getPackageArtifactStore }, m3repo, diagnosisRepo] = await Promise.all([
-    import('../src/artifacts/runtime.js'),
-    import('../src/workflow/m3-repo.js'),
-    import('../src/evaluation/failure-diagnosis-repo.js'),
-  ]);
-  const store = getPackageArtifactStore();
-  const initial = await store.ensureProject(projectId);
-  const generated = await store.savePackageVersion(projectId, {
-    expectedRevision: initial.oid,
-    spec: {
-      id: 'deferred-blocking-diagnosis-package',
-      name: '阻断诊断暂缓后回流门禁',
-      description: '验证 defer 不会绕过阻断',
-      version: '1.0.0',
-      language: 'zh-CN',
-      status: 'review',
-      defaultProviderAlias: 'data',
-      objects: [],
-      operations: [],
-    },
-    coverage: { covered: [], uncovered: [] },
-    note: '生成测试知识包',
-    action: { cause: 'generate', summary: '生成测试知识包', actorKind: 'agent', actorName: '助手' },
-  });
-  const round = m3repo.createRound(projectId, '1.0.0', 1, generated.revision.oid);
-  const [diagnosis] = diagnosisRepo.replaceFailureDiagnoses(
-    projectId, round.id, '1.0.0', generated.revision.oid, [{
-      category: 'data_gap', title: '字段口径待确认', summary: '当前字段缺少权威语义',
-      evidence: ['资料未说明字段定义'], confidence: 'high', blocking: true,
-      repairScope: 'package', packageOptimizable: false, resultIds: ['result-1'],
-      relatedQuestions: ['如何计算收益？'], suggestedAction: '请专家先确认字段口径。',
-    }],
-  );
-
-  const deferred = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${projectId}/optimize/diagnoses/${diagnosis.id}/resolve`,
-    headers,
-    payload: { action: 'defer', note: '等待业务口径确认后再处理' },
-  });
-  assert.equal(deferred.statusCode, 200, deferred.body);
-  assert.equal(deferred.json().diagnosis.resolutionStatus, 'deferred');
-  assert.equal(deferred.json().diagnosis.blocking, true);
-  assert.equal(deferred.json().canProposeOptimizations, false);
-
-  const planned = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
-    payload: { roundId: round.id, diagnosisIds: [diagnosis.id] },
-  });
-  assert.equal(planned.statusCode, 409, planned.body);
-  assert.equal(planned.json().code, 'BLOCKING_PACKAGE_DEFECT');
 });
 
 test('优化应用专家复核可由状态接口恢复，并支持带反馈重试或跳过', async () => {
@@ -2671,34 +2916,20 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
   const projectId = created.json().project.id;
   await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
 
-  const [{ getPackageArtifactStore }, m3repo, diagnosisRepo] = await Promise.all([
-    import('../src/artifacts/runtime.js'),
+  const [m3repo, diagnosisRepo, { getPackageArtifactStore }] = await Promise.all([
     import('../src/workflow/m3-repo.js'),
     import('../src/evaluation/failure-diagnosis-repo.js'),
+    import('../src/artifacts/runtime.js'),
   ]);
-  const store = getPackageArtifactStore();
-  const initial = await store.ensureProject(projectId);
-  const generated = await store.savePackageVersion(projectId, {
-    expectedRevision: initial.oid,
-    spec: {
+  const packageView = await getPackageArtifactStore().current(projectId)
+    ?? await getPackageArtifactStore().initializeDraftPackage(projectId, {
       id: 'evaluation-repair-package',
       name: '评测缺陷回建模',
-      description: '用于验证评测缺陷回流建模',
-      version: '0.1.0',
-      language: 'zh-CN',
-      status: 'review',
-      defaultProviderAlias: 'data',
-      objects: [],
-      operations: [],
-    },
-    coverage: { covered: [], uncovered: [] },
-    note: '生成回流建模基线',
-    action: {
-      cause: 'test_version', summary: '生成回流建模基线', actorKind: 'user', actorName: 'alice',
-    },
-  });
-  const round = m3repo.createRound(projectId, '0.1.0', 2, generated.revision.oid);
-  const stored = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', generated.revision.oid, [
+      description: '用于验证当前知识包修订上的评测缺陷回流。',
+    });
+  const packageRevision = packageView.revision.oid;
+  const round = m3repo.createRound(projectId, '0.1.0', 2, packageRevision);
+  const stored = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', packageRevision, [
     {
       category: 'knowledge_gap', title: '缺少分流适用条件', summary: '没有说明触发门槛',
       evidence: ['用例 3 回答与预期不符'], confidence: 'high', blocking: false,
@@ -2764,82 +2995,59 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
   );
 });
 
-test('评测缺陷回流建模会拒绝旧工件修订上的失败诊断', async () => {
+test('专家只能基于已确认根因新增和编辑待处理优化建议', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
   const created = await app.inject({
-    method: 'POST', url: '/api/projects', headers, payload: { name: '评测缺陷旧修订门禁' },
+    method: 'POST', url: '/api/projects', headers, payload: { name: '专家编辑优化建议' },
   });
   const projectId = created.json().project.id;
   await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
-
   const [{ getPackageArtifactStore }, m3repo, diagnosisRepo] = await Promise.all([
     import('../src/artifacts/runtime.js'),
     import('../src/workflow/m3-repo.js'),
     import('../src/evaluation/failure-diagnosis-repo.js'),
   ]);
-  const store = getPackageArtifactStore();
-  const initial = await store.ensureProject(projectId);
-  const revisionA = await store.savePackageVersion(projectId, {
+  const artifactStore = getPackageArtifactStore();
+  const initial = await artifactStore.ensureProject(projectId);
+  const current = await artifactStore.savePackageVersion(projectId, {
     expectedRevision: initial.oid,
     spec: {
-      id: 'stale-evaluation-repair-package',
-      name: '评测缺陷旧修订门禁',
-      description: '用于验证旧修订诊断不能回流当前建模任务',
-      version: '0.1.0',
-      language: 'zh-CN',
-      status: 'review',
-      defaultProviderAlias: 'data',
-      objects: [],
-      operations: [],
+      id: 'editable-optimization', name: '专家编辑优化建议', description: '测试优化建议编辑',
+      version: '0.1.0', status: 'review', language: 'zh-CN', defaultProviderAlias: 'data',
+      objects: [], operations: [],
     },
     coverage: { covered: [], uncovered: [] },
-    note: '生成旧修订基线',
-    action: {
-      cause: 'test_version', summary: '生成旧修订基线', actorKind: 'user', actorName: 'alice',
-    },
+    action: { cause: 'test', summary: '建立优化测试知识包', actorKind: 'user', actorName: 'alice' },
   });
-  const revisionB = await store.savePackageVersion(projectId, {
-    expectedRevision: revisionA.revision.oid,
-    spec: {
-      id: 'stale-evaluation-repair-package',
-      name: '评测缺陷旧修订门禁',
-      description: '当前知识包已演进到新修订',
-      version: '0.1.0',
-      language: 'zh-CN',
-      status: 'review',
-      defaultProviderAlias: 'data',
-      objects: [],
-      operations: [{
-        key: 'route_question',
-        title: '问题路由',
-        description: '用于占位，制造当前修订变化',
-        inputs: [],
-        outputs: [],
-        flow: ['读取问题', '分流'],
-      }],
-    },
-    coverage: { covered: [], uncovered: [] },
-    note: '生成当前修订',
-    action: {
-      cause: 'test_version', summary: '生成当前修订', actorKind: 'user', actorName: 'alice',
-    },
-  });
-  const round = m3repo.createRound(projectId, '0.1.0', 1, revisionA.revision.oid);
-  const [diagnosis] = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', revisionA.revision.oid, [{
-    category: 'knowledge_gap', title: '旧修订缺少规则', summary: '这是旧修订上的失败诊断', evidence: ['旧评测证据'],
-    confidence: 'high', blocking: false, repairScope: 'package', packageOptimizable: true,
-    resultIds: [], relatedQuestions: ['何时启用旧规则'], suggestedAction: '补充旧修订规则',
-  }]);
+  const round = m3repo.createRound(projectId, '0.1.0', 1, current.revision.oid);
+  m3repo.finishRound(round.id, 'done');
+  const [diagnosis] = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', current.revision.oid, [{
+    category: 'knowledge_gap', title: '缺少退款边界', summary: '规则没有覆盖退款场景',
+    evidence: ['失败用例：退款后额度如何计算'], confidence: 'high', blocking: false,
+    repairScope: 'package', packageOptimizable: true, resultIds: [],
+    relatedQuestions: ['退款后额度如何计算'], suggestedAction: '补充退款后的额度回补规则',
+  }] as any);
 
-  const response = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
-    payload: { roundId: round.id, diagnosisIds: [diagnosis.id] },
+  const unconfirmed = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/suggestions/manual`, headers,
+    payload: { roundId: round.id, title: '补充退款规则', detail: '覆盖退款后的额度回补', kind: 'modify_rule', diagnosisIds: [diagnosis.id] },
   });
-  assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().code, 'STALE_DIAGNOSIS_REVISION');
-  assert.match(response.json().error, /旧工件修订/);
+  assert.equal(unconfirmed.statusCode, 409, unconfirmed.body);
 
-  const current = await store.current(projectId);
-  assert.equal(current?.revision.oid, revisionB.revision.oid);
+  diagnosisRepo.markFailureDiagnosesForRepair({ projectId, diagnosisIds: [diagnosis.id], actor: 'alice' });
+  const added = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/suggestions/manual`, headers,
+    payload: { roundId: round.id, title: '补充退款规则', detail: '覆盖退款后的额度回补', kind: 'modify_rule', diagnosisIds: [diagnosis.id] },
+  });
+  assert.equal(added.statusCode, 200, added.body);
+  assert.equal(added.json().suggestion.title, '补充退款规则');
+
+  const updated = await app.inject({
+    method: 'PATCH', url: `/api/projects/${projectId}/optimize/suggestions/${added.json().suggestion.id}`, headers,
+    payload: { title: '完善退款与撤销规则', detail: '覆盖退款、撤销及重复回调', kind: 'modify_rule', diagnosisIds: [diagnosis.id], validationPlan: '重跑退款回归用例' },
+  });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.equal(updated.json().suggestion.title, '完善退款与撤销规则');
+  assert.equal(updated.json().suggestion.validationPlan, '重跑退款回归用例');
 });

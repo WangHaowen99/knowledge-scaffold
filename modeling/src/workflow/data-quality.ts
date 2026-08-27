@@ -177,7 +177,7 @@ export async function runGapAnalysis(
   ].join('\n');
 
   const { buildTools } = await import('./tools.js');
-  const base = buildTools({ tables, documents, captured: {} }).filter((t: any) => t.name !== 'submit_analysis');
+  const base = buildTools({ tables, documents, captured: {} });
   const agent = makeAgent(llmOverride ?? buildLlm(), sys, [...base, submitGaps] as any);
   await runAgentCaptured(agent, '请评估现有资料对构建知识包的充分性，并用 submit_quality_gaps 提交缺口清单。',
     () => cap.gaps !== undefined, '请调用 submit_quality_gaps 工具提交缺口清单（不要以正文形式输出）。');

@@ -1,0 +1,1030 @@
+/* 工作台共享状态。字段刻意保持扁平，方便 useStore 用稳定引用做选择器订阅。 */
+import { createStore } from './store.js';
+import * as F from './mock/fixtures.js';
+import {
+  answerAgent,
+  cancelAgent,
+  getAgentState,
+  getCandidateDiff,
+  getMaterial,
+  getMaterialReferrers,
+  getMaterialRevisions,
+  getPackageFile,
+  locateEvidence as getEvidenceLocation,
+  getSnapshot,
+  steerAgent,
+  updateConfirmPolicy,
+  updateMaterialDirectives,
+  uploadMaterial,
+  uploadPackageSource,
+} from './api.js';
+
+/** demo 场景：对应设计草图的各屏状态。接后端后由真实事件驱动，这里只是入口。 */
+export const SCENES = [
+  { id: 'modeling',  label: '建模进行中',  focus: { kind: 'flow' },    leftTab: 'pkg' },
+  { id: 'confirm',   label: '变更确认',    focus: { kind: 'diff' },    leftTab: 'pkg' },
+  { id: 'materials', label: '资料与反查',  focus: { kind: 'doc' },     leftTab: 'mat' },
+  { id: 'increment', label: '增量建模',    focus: { kind: 'impact' },  leftTab: 'pkg' },
+  { id: 'merge',     label: '知识包融合',  focus: { kind: 'conflict' },leftTab: 'pkg' },
+  { id: 'gates',     label: '门禁与发布',  focus: { kind: 'gates' },   leftTab: 'pkg' },
+];
+
+/** 支持 ?scene=confirm 直接定位到某个场景：便于评审、截图和 bug 复现。 */
+function sceneFromUrl() {
+  if (typeof window === 'undefined') return null;
+  const q = new URLSearchParams(window.location.search).get('scene');
+  return SCENES.some((s) => s.id === q) ? q : null;
+}
+const boot = SCENES.find((s) => s.id === sceneFromUrl()) || SCENES[0];
+const initialProjectId = projectFromUrl();
+
+const initial = {
+  demo: !initialProjectId,
+  projectId: initialProjectId,
+  project: null,
+  revision: null,
+  packageVersion: null,
+  packageStatus: null,
+  workflow: null,
+  files: [],
+  fileContents: {},
+  candidateDiff: [],
+  materials: [],
+  materialContents: {},
+  materialReferrers: {},
+  messages: [],
+  interaction: null,
+  run: null,
+  statusText: '',
+  loading: Boolean(initialProjectId),
+  error: '',
+  uploads: [],
+  trace: [],
+  lastSeq: 0,
+  replayUntilSeq: 0,
+  autoStartSent: false,
+  scene: boot.id,
+  leftTab: boot.leftTab,                // pkg | mat
+  focus: initialProjectId
+    ? { kind: 'empty', target: '' }
+    : { ...boot.focus, target: focusTargetFor(boot.focus.kind), node: boot.id === 'modeling' ? 'D2' : undefined },
+  follow: true,                         // 是否跟随助手的 focus
+  pendingFocus: null,                   // follow=false 时助手想去的地方，攒着等用户「跟上」
+  selectedPath: initialProjectId ? '' : 'diagrams/采购申请.mmd',
+  selectedMaterial: initialProjectId ? '' : 'm1',
+  activeAnchor: 0,                      // 资料原文里选中的高亮段
+  userMessages: [],
+  activity: null,                       // { text, progress, sub, startedAt } | null
+  activityOpen: false,
+  approved: Object.fromEntries(F.changeGroups.map((g) => [g.id, true])),
+  openTiers: { caliber: true, structural: false, index: false },
+  policy: F.policy,
+  confirmPolicy: [],
+  reviewMode: null,                     // full | sequential | sampled
+  widths: { left: 232, right: 384 },
+  drawerOpen: false,
+};
+
+export const store = createStore(initial);
+
+const UPLOAD_POLL_INTERVAL_MS = 800;
+const UPLOAD_POLL_TIMEOUT_MS = 11 * 60_000;
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+let optimisticSequence = 0;
+const optimisticId = (kind) => `optimistic-${kind}-${Date.now()}-${optimisticSequence += 1}`;
+const uploadStatus = (document) => document?.parseStatus === 'pending'
+  ? 'parsing'
+  : document?.parseStatus || 'failed';
+const mergeUploadMaterials = (materials, uploads) => [
+  ...materials.filter((material) => !uploads.some((item) => item.documentId === material.id)),
+  ...uploads.filter((item) => item.documentId).map((item) => ({
+    id: item.documentId,
+    filename: item.name,
+    kind: item.kind || 'unknown',
+    parseStatus: item.status === 'parsing' ? 'pending' : item.status,
+    textLength: 0,
+    tableCount: 0,
+    purpose: item.purpose || 'auto',
+    readingMode: item.readingMode || 'on_demand',
+  })),
+];
+
+export function packageUploadFollowUp(sources) {
+  if (!sources?.length) return '';
+  const names = sources.map((source) => `“${source.name}”${source.version ? ` ${source.version}` : ''}`).join('、');
+  return `我一次导入了 ${sources.length} 份来源知识包：${names}。请先让我选择各来源的融合范围，识别重复身份和跨包业务概念，再主动推进一次性融合。`;
+}
+
+function progressActivity(event, previous = null) {
+  const counters = event?.counters && typeof event.counters === 'object' ? event.counters : {};
+  const activityId = String(event?.activityId || `${event?.phase || 'activity'}:${event?.text || ''}`);
+  const elapsedSeconds = counters.elapsedSeconds === null || counters.elapsedSeconds === undefined
+    ? undefined
+    : Number(counters.elapsedSeconds);
+  const eventTime = Date.parse(String(event?.createdAt || ''));
+  const inferredStartedAt = Number.isFinite(elapsedSeconds)
+    ? Date.now() - Math.max(0, elapsedSeconds) * 1000
+    : Number.isFinite(eventTime) ? eventTime : Date.now();
+  const sameActivity = previous?.id === activityId;
+  return {
+    id: activityId,
+    text: event?.text || '助手正在处理',
+    detail: event?.detail || '',
+    phase: event?.phase || '',
+    progress: {
+      percent: counters.progress === null || counters.progress === undefined || !Number.isFinite(Number(counters.progress))
+        ? undefined : Number(counters.progress),
+      current: counters.current === null || counters.current === undefined || !Number.isFinite(Number(counters.current))
+        ? undefined : Number(counters.current),
+      total: counters.total === null || counters.total === undefined || !Number.isFinite(Number(counters.total))
+        ? undefined : Number(counters.total),
+      elapsedSeconds: Number.isFinite(elapsedSeconds) ? Math.max(0, elapsedSeconds) : undefined,
+      unit: counters.unit || '',
+    },
+    sub: sameActivity ? previous.sub || [] : [],
+    startedAt: sameActivity ? Math.min(previous.startedAt || inferredStartedAt, inferredStartedAt) : inferredStartedAt,
+    observedAt: Number.isFinite(eventTime) ? eventTime : Date.now(),
+  };
+}
+
+/* ---- actions ---- */
+export const actions = {
+  async bootstrap(projectId) {
+    store.set({ demo: false, projectId, loading: true, error: '' });
+    try {
+      const [snapshot, agent, candidate] = await Promise.all([
+        getSnapshot(projectId),
+        getAgentState(projectId),
+        getCandidateDiff(projectId),
+      ]);
+      const initialPath = snapshot.files.find((path) => path.endsWith('.mmd'))
+        || snapshot.files.find((path) => path.endsWith('.md'))
+        || snapshot.files[0]
+        || '';
+      const activity = agent.activity ? progressActivity(agent.activity) : null;
+      const restoredAgentFocus = agent.focus && availableFocusTarget(agent.focus, {
+        files: snapshot.files,
+        materials: snapshot.materials,
+        candidateDiff: candidate.files || [],
+      }) ? agent.focus : null;
+      const focus = resolveBootstrapFocus({
+        current: store.get().focus,
+        candidateFiles: candidate.files,
+        interaction: agent.interaction,
+        agentFocus: restoredAgentFocus,
+        initialPath,
+        routeFocus: studioFocusFromLocation(),
+      });
+      store.set({
+        project: snapshot.project,
+        revision: snapshot.revision,
+        packageVersion: snapshot.packageVersion || null,
+        packageStatus: snapshot.packageStatus || null,
+        workflow: agent.state || null,
+        files: snapshot.files,
+        materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
+        candidateDiff: candidate.files || [],
+        confirmPolicy: snapshot.confirmPolicy || [],
+        selectedMaterial: snapshot.materials[0]?.id || '',
+        run: agent.run,
+        interaction: agent.interaction,
+        activity,
+        loading: false,
+        selectedPath: ['flow', 'file', 'diff'].includes(focus.kind) ? focus.target : initialPath,
+        focus,
+        replayUntilSeq: Number(agent.lastSeq) || 0,
+      });
+      if (initialPath) void actions.loadFile(initialPath);
+      if (snapshot.materials[0]?.id) void actions.loadMaterial(snapshot.materials[0].id);
+      return { snapshot, agent };
+    } catch (error) {
+      store.set({ loading: false, error: error instanceof Error ? error.message : '工作台加载失败' });
+      throw error;
+    }
+  },
+  async refreshSnapshot() {
+    const { projectId } = store.get();
+    if (!projectId) return;
+    const [snapshot, candidate] = await Promise.all([
+      getSnapshot(projectId),
+      getCandidateDiff(projectId),
+    ]);
+    store.set({
+      project: snapshot.project,
+      revision: snapshot.revision,
+      packageVersion: snapshot.packageVersion || null,
+      packageStatus: snapshot.packageStatus || null,
+      files: snapshot.files,
+      materials: snapshot.materials,
+      candidateDiff: candidate.files || [],
+      confirmPolicy: snapshot.confirmPolicy || [],
+    });
+  },
+  async loadFile(path) {
+    const { projectId } = store.get();
+    if (!projectId || !path || path.endsWith('/')) return;
+    try {
+      const result = await getPackageFile(projectId, path);
+      store.set((state) => ({ fileContents: { ...state.fileContents, [path]: result.content } }));
+    } catch (error) {
+      store.set({ error: error instanceof Error ? error.message : `无法读取 ${path}` });
+    }
+  },
+  async loadMaterial(id) {
+    const { projectId } = store.get();
+    if (!projectId || !id) return;
+    try {
+      const [material, references] = await Promise.all([
+        getMaterial(projectId, id),
+        getMaterialReferrers(projectId, id),
+      ]);
+      store.set((state) => ({
+        materialContents: { ...state.materialContents, [id]: material },
+        materialReferrers: { ...state.materialReferrers, [id]: references.referrers || [] },
+      }));
+    } catch (error) {
+      store.set({ error: error instanceof Error ? error.message : '资料读取失败' });
+    }
+  },
+  async locateEvidence(reference) {
+    const { projectId } = store.get();
+    if (!projectId || !reference) return false;
+    try {
+      const location = await getEvidenceLocation(projectId, reference);
+      const material = store.get().materials.find((item) => item.id === location.documentId);
+      if (!material) throw new Error('这处依据对应的资料已不在当前项目中');
+      const [document, references] = await Promise.all([
+        getMaterial(projectId, material.id),
+        getMaterialReferrers(projectId, material.id, location.anchor || ''),
+      ]);
+      store.set((state) => ({
+        leftTab: 'mat',
+        selectedMaterial: material.id,
+        activeAnchor: {
+          anchor: location.anchor || '',
+          offset: Number(location.offset) || 0,
+          excerpt: location.excerpt || '',
+        },
+        focus: { kind: 'doc', target: material.filename },
+        follow: false,
+        pendingFocus: null,
+        error: '',
+        materialContents: { ...state.materialContents, [material.id]: document },
+        materialReferrers: { ...state.materialReferrers, [material.id]: references.referrers || [] },
+      }));
+      return true;
+    } catch (error) {
+      store.set({ error: error instanceof Error ? error.message : '暂时无法找到这处原文' });
+      return false;
+    }
+  },
+  handleEvent(event) {
+    if (!event || typeof event !== 'object') return;
+    const eventType = event.eventType || event.kind;
+    const seq = Number(event.seq) || 0;
+    if (seq && seq <= store.get().lastSeq) return;
+    const replaying = Boolean(seq && seq <= store.get().replayUntilSeq);
+    if (eventType === 'focus' && event.target && !replaying) {
+      actions.agentFocus(event.target);
+      if (event.target.kind === 'diff') void actions.refreshSnapshot();
+    }
+    if (eventType === 'state' && !replaying) store.set({ workflow: event });
+    if (eventType === 'progress' && !replaying) {
+      store.set({ activity: progressActivity(event, store.get().activity) });
+    }
+    if (eventType === 'tool') {
+      const createdAt = event.createdAt || new Date().toISOString();
+      const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
+      const terminal = ['completed', 'failed', 'blocked', 'rejected', 'waiting'].includes(event.phase);
+      store.set((state) => ({
+        // 刷新后的历史回放只重建轨迹，不能清空 state 接口恢复的最新活动。
+        activity: replaying
+          ? state.activity
+          : terminal
+            ? null
+            : state.activity
+              ? { ...state.activity, sub: [line, ...(state.activity.sub || [])].slice(0, 8) }
+              : state.activity,
+        trace: mergeToolTrace(state.trace, event, seq),
+      }));
+      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation'].includes(event.name)) {
+        void actions.refreshSnapshot();
+      }
+    }
+    if (eventType === 'message') {
+      const terminalDocumentIds = new Set((event.blocks || [])
+        .filter((block) => block.type === 'uploadResult')
+        .flatMap((block) => block.details || [])
+        .map((detail) => detail.documentId)
+        .filter(Boolean));
+      if (terminalDocumentIds.size) {
+        store.set((state) => ({
+          uploads: state.uploads.filter((item) => !terminalDocumentIds.has(item.documentId)),
+          messages: state.messages.map((message) => ({
+            ...message,
+            blocks: (message.blocks || []).flatMap((block) => {
+              if (block.type !== 'upload') return [block];
+              const files = (block.files || []).filter((file) => !terminalDocumentIds.has(file.documentId));
+              return files.length ? [{ ...block, files }] : [];
+            }),
+          })).filter((message) => message.blocks.length),
+        }));
+      }
+      actions.appendMessage({ ...event, id: `event-${seq}` });
+    }
+    if (eventType === 'message_delta' && event.messageId && event.delta) {
+      store.set((state) => {
+        const index = state.messages.findIndex((message) => message.id === event.messageId);
+        if (index < 0) {
+          return { messages: [...state.messages, {
+            id: event.messageId,
+            role: event.role || 'assistant',
+            createdAt: event.createdAt,
+            streaming: true,
+            blocks: [{ type: 'text', text: String(event.delta) }],
+          }] };
+        }
+        const messages = [...state.messages];
+        const message = messages[index];
+        const blocks = [...(message.blocks || [])];
+        const textIndex = blocks.findIndex((block) => block.type === 'text');
+        if (textIndex < 0) blocks.push({ type: 'text', text: String(event.delta) });
+        else blocks[textIndex] = { ...blocks[textIndex], text: `${blocks[textIndex].text || ''}${event.delta}` };
+        messages[index] = { ...message, streaming: true, blocks };
+        return { messages };
+      });
+    }
+    if (eventType === 'message_done' && event.messageId) {
+      store.set((state) => ({
+        messages: state.messages.map((message) => message.id === event.messageId
+          ? { ...message, streaming: false }
+          : message),
+      }));
+    }
+    if (eventType === 'reasoning_delta' && event.messageId && event.delta) {
+      store.set((state) => {
+        const index = state.messages.findIndex((message) => message.id === event.messageId);
+        if (index < 0) {
+          return { messages: [...state.messages, {
+            id: event.messageId,
+            role: event.role || 'assistant',
+            createdAt: event.createdAt,
+            blocks: [{
+              type: 'reasoning',
+              text: String(event.delta),
+              streaming: true,
+              truncated: Boolean(event.truncated),
+            }],
+          }] };
+        }
+        const messages = [...state.messages];
+        const message = messages[index];
+        const blocks = [...(message.blocks || [])];
+        const reasoningIndex = blocks.findIndex((block) => block.type === 'reasoning');
+        if (reasoningIndex < 0) {
+          blocks.push({
+            type: 'reasoning',
+            text: String(event.delta),
+            streaming: true,
+            truncated: Boolean(event.truncated),
+          });
+        } else {
+          const block = blocks[reasoningIndex];
+          blocks[reasoningIndex] = {
+            ...block,
+            text: `${block.text || ''}${event.delta}`,
+            streaming: true,
+            truncated: Boolean(block.truncated || event.truncated),
+          };
+        }
+        messages[index] = { ...message, blocks };
+        return { messages };
+      });
+    }
+    if (eventType === 'reasoning_done' && event.messageId) {
+      store.set((state) => ({
+        messages: state.messages.map((message) => message.id === event.messageId
+          ? {
+            ...message,
+            blocks: (message.blocks || []).map((block) => block.type === 'reasoning'
+              ? { ...block, streaming: false }
+              : block),
+          }
+          : message),
+      }));
+    }
+    if (eventType === 'interaction') {
+      if (event.status === 'answered') {
+        store.set((state) => ({
+          interaction: null,
+          messages: state.messages.map((message) => message.id === `interaction-${event.id}`
+            ? {
+              ...message,
+              blocks: message.blocks.map((block) => block.interaction
+                ? { ...block, interaction: { ...block.interaction, status: 'answered', answer: event.answer } }
+                : block),
+            }
+            : message),
+        }));
+      } else {
+        const interaction = {
+          id: event.id,
+          kind: event.kind || event.payload?.kind,
+          payload: event.payload || {},
+          status: event.status || 'pending',
+        };
+        store.set({
+          interaction,
+          ...(!replaying ? {
+            activity: null,
+            run: { ...(store.get().run || {}), status: 'waiting' },
+          } : {}),
+        });
+        actions.appendMessage({
+          id: `interaction-${event.id}`,
+          role: 'assistant',
+          createdAt: event.createdAt,
+          blocks: [{ type: interaction.kind === 'confirmation'
+            ? 'confirm'
+            : interaction.kind === 'release_confirmation' ? 'release' : 'ask', interaction }],
+        });
+      }
+    }
+    if (eventType === 'status' && !replaying) {
+      const inactive = ['waiting', 'suspended', 'completed', 'failed', 'cancelled'].includes(event.status);
+      const statusTime = Date.parse(String(event.createdAt || ''));
+      store.set({
+        run: {
+          ...(store.get().run || {}),
+          id: event.runId,
+          status: event.status,
+          updatedAt: Number.isFinite(statusTime) ? event.createdAt : null,
+        },
+        statusText: event.text || '',
+        ...(inactive ? { activity: null } : {}),
+      });
+    }
+    if (seq) store.set({
+      lastSeq: seq,
+      ...(seq >= store.get().replayUntilSeq ? { replayUntilSeq: 0 } : {}),
+    });
+  },
+  appendMessage(message) {
+    store.set((state) => {
+      const existingIndex = state.messages.findIndex((item) => item.id === message.id);
+      if (existingIndex >= 0) {
+        const messages = [...state.messages];
+        messages[existingIndex] = message;
+        return { messages };
+      }
+      const optimisticIndex = state.messages.findIndex((item) => item.optimistic
+        && item.role === message.role
+        && messageFingerprint(item) === messageFingerprint(message));
+      if (optimisticIndex < 0) return { messages: [...state.messages, message] };
+      const messages = [...state.messages];
+      messages[optimisticIndex] = message;
+      return { messages };
+    });
+  },
+  async send(text) {
+    const value = String(text || '').trim();
+    const { projectId } = store.get();
+    if (!projectId || !value) return;
+    const messageId = optimisticId('message');
+    actions.appendMessage({
+      id: messageId,
+      role: 'user',
+      createdAt: new Date().toISOString(),
+      optimistic: true,
+      blocks: [{ type: 'text', text: value }],
+    });
+    try {
+      const result = await steerAgent(projectId, value);
+      if (result.run) store.set({ run: result.run, error: '' });
+      return result;
+    } catch (error) {
+      store.set((state) => ({
+        messages: state.messages.filter((message) => message.id !== messageId),
+        error: error instanceof Error ? error.message : '消息发送失败',
+      }));
+      return null;
+    }
+  },
+  async answer(interactionId, answer) {
+    const { projectId, interaction } = store.get();
+    if (!projectId || !interactionId) return;
+    const submittedAnswer = enrichInteractionAnswer(interaction, answer);
+    const messageId = optimisticId('answer');
+    store.set((state) => ({
+      interaction: null,
+      messages: state.messages.map((message) => message.id === `interaction-${interactionId}`
+        ? {
+            ...message,
+            blocks: message.blocks.map((block) => block.interaction
+            ? { ...block, interaction: { ...block.interaction, status: 'answered', answer: submittedAnswer } }
+            : block),
+        }
+        : message).concat({
+          id: messageId,
+          role: 'user',
+          createdAt: new Date().toISOString(),
+          optimistic: true,
+          blocks: [{ type: 'answer', interactionId, answer: submittedAnswer }],
+        }),
+    }));
+    try {
+      const result = await answerAgent(projectId, interactionId, submittedAnswer);
+      store.set({ run: result.run, error: '' });
+      return result;
+    } catch (error) {
+      const failure = error instanceof Error ? error.message : '提交失败，请重试';
+      const restoredInteraction = interaction?.kind === 'confirmation'
+        ? {
+            ...interaction,
+            payload: { ...(interaction.payload || {}), lastSubmissionError: failure },
+          }
+        : interaction;
+      store.set((state) => ({
+        interaction: state.interaction || restoredInteraction,
+        messages: state.messages
+          .filter((message) => message.id !== messageId)
+          .map((message) => message.id === `interaction-${interactionId}`
+            ? {
+              ...message,
+              blocks: message.blocks.map((block) => block.interaction
+                ? {
+                    ...block,
+                    interaction: {
+                      ...block.interaction,
+                      status: 'pending',
+                      answer: undefined,
+                      ...(interaction?.kind === 'confirmation' ? {
+                        payload: { ...(block.interaction.payload || {}), lastSubmissionError: failure },
+                      } : {}),
+                    },
+                  }
+                : block),
+            }
+            : message),
+        error: interaction?.kind === 'confirmation' ? '' : failure,
+      }));
+      return null;
+    }
+  },
+  async upload(filesLike, options = {}) {
+    const { projectId } = store.get();
+    const files = [...(filesLike || [])].filter((file) => file instanceof File);
+    if (!projectId || !files.length) return;
+    const packageFiles = files.filter((file) => file.name.toLocaleLowerCase('zh-CN').endsWith('.zip'));
+    const materialFiles = files.filter((file) => !packageFiles.includes(file));
+    const packageResults = [];
+    for (const file of packageFiles) {
+      const result = await actions.uploadPackage(file, { followUp: false });
+      if (result?.source) packageResults.push(result.source);
+    }
+    if (packageResults.length && options.followUp !== false) {
+      void actions.send(packageUploadFollowUp(packageResults));
+    }
+    if (!materialFiles.length) return {
+      parsed: packageResults.length,
+      failed: packageFiles.length - packageResults.length,
+      details: packageResults,
+    };
+    const uploadBatchId = globalThis.crypto?.randomUUID?.()
+      || `upload-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const batch = materialFiles.map((file) => {
+      const directives = options.directivesByName?.[file.name] || {};
+      return {
+        id: `${Date.now()}-${file.name}`, name: file.name, status: 'uploading',
+        purpose: directives.purpose || options.purpose || 'auto',
+        readingMode: directives.readingMode || options.readingMode || 'on_demand',
+      };
+    });
+    store.set((state) => ({ uploads: [...state.uploads, ...batch] }));
+    const uploadMessageId = `upload-${batch[0].id}`;
+    actions.appendMessage({
+      id: uploadMessageId,
+      role: 'system',
+      createdAt: new Date().toISOString(),
+      blocks: [{ type: 'upload', files: batch }],
+    });
+    const publishBatch = () => store.set((state) => ({
+      uploads: state.uploads.map((item) => {
+        const detail = batch.find((candidate) => candidate.id === item.id);
+        return detail ? { ...item, ...detail } : item;
+      }),
+      materials: mergeUploadMaterials(state.materials, batch),
+      messages: state.messages.map((message) => message.id === uploadMessageId
+        ? { ...message, blocks: [{ type: 'upload', files: [...batch] }] }
+        : message),
+    }));
+    for (const [index, file] of materialFiles.entries()) {
+      let result;
+      try {
+        result = { status: 'fulfilled', value: await uploadMaterial(projectId, file, options.replacementOf, {
+          purpose: batch[index].purpose,
+          readingMode: batch[index].readingMode,
+          autoContinue: options.followUp !== false,
+          uploadBatchId,
+          uploadBatchSize: materialFiles.length,
+        }) };
+      } catch (reason) {
+        result = { status: 'rejected', reason };
+      }
+      batch[index] = {
+        ...batch[index],
+        status: result.status === 'fulfilled' ? uploadStatus(result.value?.document) : 'failed',
+        documentId: result.status === 'fulfilled' ? result.value?.document?.id : undefined,
+        kind: result.status === 'fulfilled' ? result.value?.document?.kind : undefined,
+        purpose: result.status === 'fulfilled' ? result.value?.document?.purpose : batch[index].purpose,
+        readingMode: result.status === 'fulfilled' ? result.value?.document?.readingMode : batch[index].readingMode,
+        error: result.status === 'rejected' ? result.reason?.message : result.value?.document?.parseError,
+      };
+      publishBatch();
+    }
+
+    const deadline = Date.now() + UPLOAD_POLL_TIMEOUT_MS;
+    while (batch.some((item) => item.status === 'parsing') && Date.now() < deadline) {
+      try {
+        const response = await getMaterialRevisions(projectId);
+        for (const item of batch) {
+          if (item.status !== 'parsing' || !item.documentId) continue;
+          const document = response.revisions?.find((candidate) => candidate.id === item.documentId);
+          if (!document || document.parseStatus === 'pending') continue;
+          item.status = uploadStatus(document);
+          item.error = document.parseError;
+        }
+        publishBatch();
+      } catch {
+        // 网络短暂中断时保留“后台解析中”；下一轮继续查询同一资料修订。
+      }
+      if (batch.some((item) => item.status === 'parsing')) await wait(UPLOAD_POLL_INTERVAL_MS);
+    }
+    for (const item of batch) {
+      if (item.status !== 'parsing') continue;
+      item.status = 'failed';
+      item.error = '长时间未收到解析结果，请刷新项目查看后台结果';
+    }
+    publishBatch();
+
+    const parsed = batch.filter((item) => item.status === 'parsed').length;
+    const failed = batch.length - parsed;
+    const details = batch.map((item) => ({ ...item }));
+    await actions.refreshSnapshot().catch((error) => {
+      store.set({ error: error instanceof Error ? error.message : '资料列表刷新失败' });
+    });
+    return {
+      parsed: parsed + packageResults.length,
+      failed: failed + packageFiles.length - packageResults.length,
+      details: [...packageResults, ...details],
+    };
+  },
+  async setMaterialDirectives(documentId, patch) {
+    const { projectId, materials, uploads, materialContents, messages } = store.get();
+    if (!projectId || !documentId) return null;
+    const current = materials.find((item) => item.id === documentId)
+      || uploads.find((item) => item.documentId === documentId);
+    if (!current) return null;
+    const next = {
+      purpose: patch.purpose || current.purpose || 'auto',
+      readingMode: patch.readingMode || current.readingMode || 'on_demand',
+      directiveRevision: Number(current.directiveRevision || 0) + 1,
+    };
+    const apply = (item) => item.id === documentId || item.documentId === documentId ? { ...item, ...next } : item;
+    store.set((state) => ({
+      materials: state.materials.map(apply),
+      uploads: state.uploads.map(apply),
+      materialContents: state.materialContents[documentId]
+        ? { ...state.materialContents, [documentId]: { ...state.materialContents[documentId], ...next } }
+        : state.materialContents,
+      messages: state.messages.map((message) => ({
+        ...message,
+        blocks: (message.blocks || []).map((block) => block.type === 'upload'
+          ? { ...block, files: (block.files || []).map(apply) }
+          : block),
+      })),
+    }));
+    try {
+      const result = await updateMaterialDirectives(projectId, documentId, {
+        purpose: next.purpose,
+        readingMode: next.readingMode,
+        expectedDirectiveRevision: Number(current.directiveRevision || 0),
+      });
+      store.set((state) => ({
+        materials: state.materials.map((item) => item.id === documentId ? { ...item, ...result.document } : item),
+        materialContents: state.materialContents[documentId]
+          ? { ...state.materialContents, [documentId]: { ...state.materialContents[documentId], ...result.document } }
+          : state.materialContents,
+      }));
+      if (current.parseStatus === 'parsed') {
+        const request = next.readingMode === 'full'
+          ? `请全文精读《${current.filename || current.name}》，并按“${materialPurposeLabel(next.purpose)}”使用；完成后主动更新受影响的建模阶段。`
+          : `请按需读取《${current.filename || current.name}》，并按“${materialPurposeLabel(next.purpose)}”使用后主动继续。`;
+        void actions.send(request);
+      }
+      return result.document;
+    } catch (error) {
+      store.set({ materials, uploads, materialContents, messages, error: error instanceof Error ? error.message : '资料设置保存失败' });
+      return null;
+    }
+  },
+  async cancel() {
+    const { projectId, run, activity } = store.get();
+    if (!projectId || !run || !['queued', 'running', 'suspended'].includes(run.status)) return null;
+    store.set({ run: { ...run, status: 'cancelled' }, activity: null, error: '' });
+    try {
+      const result = await cancelAgent(projectId);
+      store.set({ run: result.run, activity: null, statusText: '已停止，已完成内容保留' });
+      return result;
+    } catch (error) {
+      store.set({
+        run,
+        activity,
+        error: error instanceof Error ? error.message : '停止运行失败，请重试',
+      });
+      return null;
+    }
+  },
+  async uploadPackage(file, options = {}) {
+    const { projectId } = store.get();
+    if (!projectId || !(file instanceof File)) return null;
+    const item = { id: `${Date.now()}-${file.name}`, name: file.name, status: 'uploading', kind: 'package' };
+    const messageId = `upload-${item.id}`;
+    actions.appendMessage({
+      id: messageId,
+      role: 'system',
+      createdAt: new Date().toISOString(),
+      blocks: [{ type: 'upload', files: [item] }],
+    });
+    try {
+      const result = await uploadPackageSource(projectId, file);
+      item.status = 'parsed';
+      item.packageName = result.source?.name;
+      store.set((state) => ({
+        messages: state.messages.map((message) => message.id === messageId
+          ? { ...message, blocks: [{ type: 'upload', files: [{ ...item }] }] }
+          : message),
+      }));
+      if (options.followUp !== false) {
+        void actions.send(`我导入了来源知识包“${result.source?.name || file.name}”${result.source?.version ? ` ${result.source.version}` : ''}。请先让我选择融合范围，再计算冲突并主动继续。`);
+      }
+      return result;
+    } catch (error) {
+      item.status = 'failed';
+      item.error = error instanceof Error ? error.message : '来源知识包解析失败';
+      store.set((state) => ({
+        messages: state.messages.map((message) => message.id === messageId
+          ? { ...message, blocks: [{ type: 'upload', files: [{ ...item }] }] }
+          : message),
+        error: item.error,
+      }));
+      return null;
+    }
+  },
+  setScene(id) {
+    const s = SCENES.find((x) => x.id === id);
+    if (!s) return;
+    store.set({ scene: id, leftTab: s.leftTab, follow: true, pendingFocus: null, userMessages: [],
+      focus: { ...s.focus, target: focusTargetFor(s.focus.kind), node: id === 'modeling' ? 'D2' : undefined } });
+  },
+  setLeftTab: (leftTab) => store.set({ leftTab }),
+  setFollow(follow) {
+    store.set((s) => (follow && s.pendingFocus
+      ? { follow, focus: s.pendingFocus, pendingFocus: null }
+      : { follow }));
+  },
+  openEvaluation() {
+    store.set({ focus: { kind: 'evaluation', target: '正式评测' }, follow: false, pendingFocus: null });
+  },
+
+  /** 助手移动焦点。follow=false 时不抢用户的浏览位置，只攒起来提示。 */
+  agentFocus(focus) {
+    const current = store.get();
+    if (!availableFocusTarget(focus, current)) return;
+    const material = focus?.kind === 'doc'
+      ? current.materials.find((item) => item.id === focus.target || item.filename === focus.target)
+      : null;
+    store.set((s) => (s.follow
+      ? { focus, pendingFocus: null, ...(material ? { selectedMaterial: material.id } : {}) }
+      : { pendingFocus: focus }));
+    if (focus?.target && ['flow', 'file'].includes(focus.kind)) void actions.loadFile(focus.target);
+    if (material) void actions.loadMaterial(material.id);
+  },
+
+  /** 用户点消息上的定位入口：跳过去并重新开始跟随。 */
+  focusFrom(focus) {
+    if (!availableFocusTarget(focus, store.get())) return;
+    store.set({ focus, follow: true, pendingFocus: null });
+    if (focus?.target && ['flow', 'file'].includes(focus.kind)) void actions.loadFile(focus.target);
+  },
+  selectPath(path) {
+    store.set({ selectedPath: path, follow: false, pendingFocus: null, focus: focusForPath(path) });
+    void actions.loadFile(path);
+  },
+  selectMaterial(id) {
+    store.set({ selectedMaterial: id, activeAnchor: 0, focus: { kind: 'doc', target: id }, follow: false });
+    void actions.loadMaterial(id);
+  },
+  setAnchor: (i) => store.set({ activeAnchor: i }),
+  toggleTier: (tier) => store.set((s) => ({ openTiers: { ...s.openTiers, [tier]: !s.openTiers[tier] } })),
+  toggleGroup: (id) => store.set((s) => ({ approved: { ...s.approved, [id]: !s.approved[id] } })),
+  setTierApproved(tier, on) {
+    store.set((s) => {
+      const next = { ...s.approved };
+      F.changeGroups.filter((g) => g.tier === tier).forEach((g) => { next[g.id] = on; });
+      return { approved: next };
+    });
+  },
+  setPolicy(tier, mode) {
+    store.set((s) => ({ policy: s.policy.map((p) => (p.tier === tier && !p.locked ? { ...p, mode } : p)) }));
+  },
+  async setConfirmPolicy(tier, mode) {
+    const { projectId } = store.get();
+    if (!projectId) return;
+    const result = await updateConfirmPolicy(projectId, tier, mode);
+    store.set({ confirmPolicy: result.policy || [] });
+  },
+  setReviewMode: (reviewMode) => store.set({ reviewMode }),
+  setActivity: (activity) => store.set({ activity }),
+  clearError: () => store.set({ error: '' }),
+  toggleActivity: () => store.set((s) => ({ activityOpen: !s.activityOpen })),
+  setWidth(side, px) { store.set((s) => ({ widths: { ...s.widths, [side]: px } })); },
+  toggleDrawer: () => store.set((s) => ({ drawerOpen: !s.drawerOpen })),
+  pushMessage(msg) { store.set((s) => ({ userMessages: [...s.userMessages, { id: `u${s.userMessages.length + 1}`, ...msg }] })); },
+};
+
+export function mergeToolTrace(trace, event, seq) {
+  const toolCallId = String(event.toolCallId || '');
+  const createdAt = event.createdAt || new Date().toISOString();
+  const legacySubject = event.name === 'read_document'
+    ? String(event.summary || '').match(/《([^》]+)》/u)?.[1] || ''
+    : '';
+  const legacyStableRead = event.name === 'get_evaluation_results'
+    ? `legacy:${event.name}`
+    : '';
+  const traceGroupId = String(event.traceGroupId || (
+    legacySubject ? `legacy:${event.name}:${legacySubject}` : legacyStableRead
+  ));
+  const id = traceGroupId
+    ? `tool-group:${event.runId || ''}:${traceGroupId}`
+    : toolCallId
+    ? `tool:${event.runId || ''}:${toolCallId}`
+    : seq || `${Date.now()}-${event.name}`;
+  const entry = {
+    id,
+    seq,
+    runId: event.runId || '',
+    toolCallId,
+    createdAt,
+    at: timeOf(createdAt),
+    name: event.name,
+    phase: event.phase,
+    summary: event.summary,
+    code: event.code || '',
+    retryable: Boolean(event.retryable),
+    repairStopped: Boolean(event.repairStopped),
+    repairAttempt: event.repairAttempt ?? null,
+    repairRoundId: event.repairRoundId || '',
+    findingCount: Number(event.findingCount) || 0,
+    segmentCount: 1,
+    toolCallIds: toolCallId ? [toolCallId] : [],
+  };
+  if (!toolCallId && !traceGroupId) return [...trace, entry].slice(-300);
+  const index = trace.findIndex((item) => item.id === id);
+  if (index < 0) {
+    const legacyIndex = legacyRejectedTraceIndex(trace, event, seq, createdAt);
+    if (legacyIndex < 0) return [...trace, entry].slice(-300);
+    const merged = [...trace];
+    merged[legacyIndex] = {
+      ...merged[legacyIndex],
+      ...entry,
+      phase: 'rejected',
+      seq: merged[legacyIndex].seq || entry.seq,
+      createdAt: merged[legacyIndex].createdAt || entry.createdAt,
+      at: merged[legacyIndex].at || entry.at,
+    };
+    return merged.slice(-300);
+  }
+  const merged = [...trace];
+  const previousCallIds = merged[index].toolCallIds || [];
+  const nextCallIds = toolCallId && !previousCallIds.includes(toolCallId)
+    ? [...previousCallIds, toolCallId]
+    : previousCallIds;
+  merged[index] = {
+    ...merged[index],
+    ...entry,
+    seq: merged[index].seq || entry.seq,
+    createdAt: merged[index].createdAt || entry.createdAt,
+    at: merged[index].at || entry.at,
+    segmentCount: Math.max(1, nextCallIds.length || merged[index].segmentCount || 1),
+    toolCallIds: nextCallIds,
+  };
+  return merged.slice(-300);
+}
+
+function legacyRejectedTraceIndex(trace, event, seq, createdAt) {
+  if (event.phase !== 'failed' || !event.toolCallId || !event.runId || !seq) return -1;
+  const eventTime = Date.parse(createdAt);
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const item = trace[index];
+    if (item.phase !== 'rejected' || item.toolCallId) continue;
+    if (item.runId !== event.runId || item.name !== event.name || item.summary !== event.summary) continue;
+    if (Number(seq) - Number(item.seq) !== 1) continue;
+    const itemTime = Date.parse(String(item.createdAt || ''));
+    const elapsed = eventTime - itemTime;
+    if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 2_000) continue;
+    return index;
+  }
+  return -1;
+}
+
+function projectFromUrl() {
+  if (typeof window === 'undefined') return null;
+  return new URLSearchParams(window.location?.search || '').get('project');
+}
+
+function timeOf(value) {
+  const date = value ? new Date(value) : new Date();
+  return Number.isNaN(date.getTime())
+    ? ''
+    : `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+}
+
+function messageFingerprint(message) {
+  const block = message?.blocks?.[0] || {};
+  if (block.type === 'answer') return `answer:${block.interactionId || ''}:${stableJson(block.answer || {})}`;
+  return block.type === 'text' ? `text:${String(block.text || '').trim()}` : '';
+}
+
+function enrichInteractionAnswer(interaction, answer) {
+  if (!answer || typeof answer !== 'object' || typeof answer.approved === 'boolean' || answer.displayText) return answer;
+  const chosen = Array.isArray(answer.selected) && answer.selected.length
+    ? answer.selected
+    : answer.value ? [answer.value] : [];
+  const options = interaction?.payload?.options || [];
+  const labels = chosen.map((value) => options.find((option) => option.value === value)?.label).filter(Boolean);
+  return labels.length ? { ...answer, displayText: labels.join('、') } : answer;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function materialPurposeLabel(purpose) {
+  return ({
+    auto: '由助手判断',
+    goal: '建模目标依据',
+    schema: '数据 Schema',
+    evidence: '通用业务依据',
+  })[purpose] || '由助手判断';
+}
+
+function focusTargetFor(kind) {
+  return { flow: 'diagrams/采购申请.mmd', diff: 'rules/安全库存判断.md', doc: '作业手册.pdf',
+    impact: '影响分析', conflict: '冲突清单', gates: '正式发布门禁' }[kind];
+}
+
+/** 文件类型 → 中栏视图。这是「点左栏跳中栏」的唯一映射点。 */
+export function focusForPath(path) {
+  if (path.endsWith('.mmd')) return { kind: 'flow', target: path };
+  return { kind: 'file', target: path };
+}
+
+function availableFocusTarget(focus, state) {
+  if (focus?.kind === 'doc') {
+    return state.materials.some((item) => item.id === focus.target || item.filename === focus.target);
+  }
+  if (!focus?.target || !['flow', 'file', 'diff'].includes(focus.kind)) return true;
+  if (focus.kind === 'diff') {
+    return state.candidateDiff.some((item) => item.path === focus.target);
+  }
+  return state.files.includes(focus.target);
+}
+
+export function resolveBootstrapFocus({ current, candidateFiles = [], interaction, agentFocus, initialPath = '', routeFocus }) {
+  if (current?.kind && current.kind !== 'empty') return current;
+  if (routeFocus?.kind) return routeFocus;
+  if (interaction?.kind === 'confirmation' && candidateFiles[0]?.path) {
+    return { kind: 'diff', target: candidateFiles[0].path };
+  }
+  if (agentFocus?.kind) return agentFocus;
+  return initialPath ? focusForPath(initialPath) : { kind: 'empty', target: '' };
+}
+
+export function studioFocusFromLocation(location = globalThis.window?.location) {
+  if (!location?.href) return null;
+  const params = new URL(location.href).searchParams;
+  const view = params.get('studioView');
+  if (!['graph', 'table', 'entry'].includes(view)) return null;
+  const elementId = params.get('studioElement') || '';
+  return {
+    kind: 'studio',
+    target: '知识包 Studio',
+    view,
+    ...(elementId ? { elementId } : {}),
+  };
+}

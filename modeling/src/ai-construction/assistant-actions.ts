@@ -58,6 +58,8 @@ export const ASSISTANT_ACTION_KINDS: Record<string, AssistantActionKind> = {
   open_flowchart_editor: 'navigate',
   refresh_flowchart_draft: 'navigate',
   acknowledge_flowchart_warnings: 'navigate',
+  adjust_repair_plan: 'navigate',
+  open_model_settings: 'navigate',
 };
 
 export function assistantActionKind(id: string): AssistantActionKind | undefined {

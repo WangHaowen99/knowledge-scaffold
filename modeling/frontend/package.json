@@ -6,16 +6,19 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "smoke": "vite build --ssr src/workbench/_smoke.jsx --outDir .smoke --logLevel error && node .smoke/_smoke.js && rm -rf .smoke"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
     "@xyflow/react": "^12.11.2",
     "lucide-react": "^0.468.0",
+    "mermaid": "^11.17.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.0",

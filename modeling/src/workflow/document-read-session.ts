@@ -31,6 +31,28 @@ export interface DocumentReadPage {
   content: string;
 }
 
+/** 局部原文核对使用的无状态分页器；全文覆盖仍由持久化分析检查点负责。 */
+export function readDocumentPage(
+  document: ReadableDocument,
+  offset = 0,
+  chunkSize = DOCUMENT_READ_CHUNK_SIZE,
+): DocumentReadPage {
+  const body = document.textContent ?? '';
+  const normalizedOffset = Math.max(0, Math.min(body.length, Math.floor(Number.isFinite(offset) ? offset : 0)));
+  const normalizedSize = Math.max(1, Math.floor(Number.isFinite(chunkSize) ? chunkSize : DOCUMENT_READ_CHUNK_SIZE));
+  const endOffset = Math.min(body.length, normalizedOffset + normalizedSize);
+  const eof = endOffset >= body.length;
+  return {
+    filename: document.filename,
+    offset: normalizedOffset,
+    endOffset,
+    totalChars: body.length,
+    nextOffset: eof ? null : endOffset,
+    eof,
+    content: body.slice(normalizedOffset, endOffset),
+  };
+}
+
 export interface DocumentPageEvidence {
   offset: number;
   note: string;

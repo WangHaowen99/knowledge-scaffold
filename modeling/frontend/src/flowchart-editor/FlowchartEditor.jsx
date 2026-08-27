@@ -106,6 +106,10 @@ function FlowNode({ id, data, selected }) {
 
   return (
     <div className={`fc-node is-${data.kind || 'action'}${selected ? ' is-selected' : ''}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        data.onSelect?.(id);
+      }}
       onDoubleClick={(event) => {
         event.stopPropagation();
         if (!data.disabled) setDraft(data.label);
@@ -154,6 +158,7 @@ function graphElements(diagram, selection, handlers) {
         detail: node.detail || '',
         disabled: handlers.disabled,
         onRename: handlers.onRename,
+        onSelect: handlers.onSelect,
       },
     })),
     edges: diagram.edges
@@ -179,10 +184,16 @@ function nextNodePosition(diagram) {
     return { x: 160 + diagram.nodes.length * 24, y: 100 + diagram.nodes.length * 100 };
   }
   const direction = diagram.layout?.direction || 'TB';
-  if (direction === 'LR') {
+  if (direction === 'LR' || direction === 'RL') {
     return {
       x: Math.max(...positions.map((position) => position.x)) + NODE_WIDTH + 80,
       y: positions.reduce((sum, position) => sum + position.y, 0) / positions.length,
+    };
+  }
+  if (direction === 'BT') {
+    return {
+      x: positions.reduce((sum, position) => sum + position.x, 0) / positions.length,
+      y: Math.min(...positions.map((position) => position.y)) - NODE_HEIGHT - 80,
     };
   }
   return {
@@ -341,6 +352,7 @@ export default function FlowchartEditor({
   onSave,
   onStateChange,
   onRecommendDiagram,
+  onImportMermaid,
   onCreateBlankDiagram,
   disabled = false,
 }) {
@@ -349,6 +361,7 @@ export default function FlowchartEditor({
     null,
     () => createFlowchartEditorSession(document, { savedRevision, activeDiagramId: initialDiagramId }),
   );
+  const appliedInitialDiagramIdRef = useRef(initialDiagramId);
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
   const flowInstanceRef = useRef(null);
@@ -366,14 +379,28 @@ export default function FlowchartEditor({
     });
   }, [activeDiagram?.id]);
 
+  const selectNode = useCallback((nodeId) => {
+    if (!activeDiagram || !nodeId) return;
+    dispatch({
+      type: 'select-element',
+      selection: { type: 'node', diagramId: activeDiagram.id, id: nodeId },
+    });
+  }, [activeDiagram?.id]);
+
   const graph = useMemo(
-    () => graphElements(activeDiagram, session.selection, { disabled, onRename: renameNode }),
-    [activeDiagram, session.selection, disabled, renameNode],
+    () => graphElements(activeDiagram, session.selection, { disabled, onRename: renameNode, onSelect: selectNode }),
+    [activeDiagram, session.selection, disabled, renameNode, selectNode],
   );
 
   useEffect(() => {
     dispatch({ type: 'replace-document', document, savedRevision });
   }, [document, savedRevision]);
+
+  useEffect(() => {
+    if (!initialDiagramId || initialDiagramId === appliedInitialDiagramIdRef.current) return;
+    appliedInitialDiagramIdRef.current = initialDiagramId;
+    dispatch({ type: 'select-diagram', diagramId: initialDiagramId });
+  }, [document, initialDiagramId]);
 
   useEffect(() => {
     onStateChangeRef.current?.(stateSummary(session));
@@ -507,6 +534,24 @@ export default function FlowchartEditor({
     }
   }, [activeDiagram?.id, disabled]);
 
+  // React Flow 在拖动画布、节点手柄和可选元素重叠时，单纯依赖 change 通道
+  // 不能稳定覆盖鼠标单击。显式处理点击，保证用户无需键盘也能打开属性面板。
+  const onNodeClick = useCallback((_, node) => {
+    if (!activeDiagram || !node?.id) return;
+    dispatch({
+      type: 'select-element',
+      selection: { type: 'node', diagramId: activeDiagram.id, id: node.id },
+    });
+  }, [activeDiagram?.id]);
+
+  const onEdgeClick = useCallback((_, edge) => {
+    if (!activeDiagram || !edge?.id) return;
+    dispatch({
+      type: 'select-element',
+      selection: { type: 'edge', diagramId: activeDiagram.id, id: edge.id },
+    });
+  }, [activeDiagram?.id]);
+
   // 禁止自连和重复边；ConnectionMode.Loose 下任意手柄都可以作为起点或终点。
   const isValidConnection = useCallback((connection) => {
     if (!activeDiagram) return false;
@@ -589,7 +634,8 @@ export default function FlowchartEditor({
               : session.saveStatus === 'saving'
                 ? '草稿保存完成后可继续添加'
                 : disabled ? '当前流程图正在处理，请稍后再试' : ''}
-            onRecommend={onRecommendDiagram} onCreateBlank={createBlank} />
+            onRecommend={onRecommendDiagram} onImportMermaid={onImportMermaid}
+            onCreateBlank={createBlank} />
         </div>
       </nav>
 
@@ -629,6 +675,7 @@ export default function FlowchartEditor({
                 isValidConnection={isValidConnection}
                 onConnect={onConnect} onConnectEnd={onConnectEnd} onReconnect={onReconnect}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+                onNodeClick={onNodeClick} onEdgeClick={onEdgeClick}
                 onNodeDragStop={(_, node) => dispatch({
                   type: 'move-node', diagramId: activeDiagram.id, id: node.id, position: node.position,
                 })}

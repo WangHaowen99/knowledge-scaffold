@@ -209,7 +209,7 @@ Current commands for the consumer application:
 - Check the frontend entry dependency baseline: `cd consumer/frontend && npm run check:entry`
 - Run full-stack Docker Compose: `cd consumer && docker compose up --build`
 - Build full release package: `./deploy/build.sh <version> [amd|arm]`
-- Deploy full stack from extracted release package: `./deploy/deploy.sh`
+- Deploy full stack, including Modeling Workbench, from source or an extracted release package: `./deploy/deploy.sh`
 - Build consumer-only release package: `cd consumer && ./build.sh <version> [amd|arm]`
 - Build modeling-only release package: `cd modeling && ./build.sh <version> [amd|arm]`
 

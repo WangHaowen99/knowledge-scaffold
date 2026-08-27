@@ -17,29 +17,42 @@ import {
   getAiConstruction,
   repairAiConstructionKnowledge,
   previewAiConstructionTaskAdjustment,
+  previewAiConstructionMilestoneRollback,
   previewAiConstructionTaskEdit,
   respondToInteraction,
   retryAiConstructionScripts,
   reviseAiConstructionModelingBrief,
+  rollbackAiConstructionMilestone,
 } from './authoring-api.js';
 import { uploadModelingMaterials } from './modeling-material-upload.js';
 import { useElapsed } from './ui.jsx';
-import AiConstructionMessageCard from './AiConstructionMessageCard.jsx';
+import AiConstructionMessageCard, { milestonePosition } from './AiConstructionMessageCard.jsx';
 import PendingInteraction from './PendingInteraction.jsx';
 import PendingInteractionHint from './PendingInteractionHint.jsx';
+import PendingInteractionQueue from './PendingInteractionQueue.jsx';
 import TaskAdjustmentPreviewCard from './TaskAdjustmentPreviewCard.jsx';
+import MilestoneRollbackDialog from './MilestoneRollbackDialog.jsx';
 import TaskGraphEditDialog from './TaskGraphEditDialog.jsx';
 import ValidationDeferralCard from './ValidationDeferralCard.jsx';
 import MarkdownContent from './MarkdownContent.jsx';
 import { confirmFlowchartNavigation, confirmUploadDuringAnalysis } from './flowchartNavigationGuard.js';
 import { formatMessageTimestamp } from './messageTimestamp.js';
-import { NAVIGATION_TARGETS, assistantActionKind, isReadOnlyAction } from './assistantActions.js';
+import {
+  NAVIGATION_TARGETS,
+  assistantActionKind,
+  canonicalAssistantAction,
+  isReadOnlyAction,
+} from './assistantActions.js';
 import { completionBlockerMessage, markSurfacedAsBlocker } from './completionBlocker.js';
 import { repairTargetCandidatesFrom } from './repairTargetChoice.js';
-import { isPackageChatRunning } from './packageChatRun.js';
-import { activeRunLabel, activeRunOf } from './activeRun.js';
+import {
+  isPackageChatRunning,
+  waitingInteractionRecoveryDelay,
+  waitingInteractionTitle,
+  waitingPackageChatRun,
+} from './packageChatRun.js';
+import { activeRunLabel, activeRunObservability, activeRunOf, activeRunStatusLabel } from './activeRun.js';
 import { CANCEL_PENDING_HINT, cancellableOperationOf } from './cancellableOperation.js';
-import { stallHint, stalledForMs } from './taskStall.js';
 import { incrementEntryState } from './incrementEntry.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
@@ -68,6 +81,13 @@ const MILESTONE_CONFIRM_NOTE = {
   construction_completed: '确认完成 AI 辅助构建',
 };
 
+export function rollbackEligibleMilestones(aiConstruction) {
+  return [...(aiConstruction?.milestones ?? [])]
+    .filter((milestone) => milestone?.status === 'confirmed'
+      && milestone?.id !== 'increment_confirmed')
+    .sort((left, right) => Number(left.ordinal ?? 0) - Number(right.ordinal ?? 0));
+}
+
 export function shouldOpenWarningReview(error) {
   return error?.data?.code === 'PACKAGE_WARNINGS_UNREVIEWED';
 }
@@ -81,6 +101,13 @@ export function interactionBusyState(purpose) {
 
 export function interactionResponseChangedPackage(result) {
   return Boolean(result?.packageRevision || result?.revision || result?.result?.version);
+}
+
+export function repairRuntimeMessageId(messages = []) {
+  return [...messages].reverse().find((message) => (
+    (message?.blocks ?? []).some((block) => block?.type === 'status'
+      && /知识包.*修复.*(?:方案等待确认|等待专家决策)/u.test(String(block.title ?? '')))
+  ))?.id ?? '';
 }
 
 export function MaterialAnalysisStoppedNotice({ task, busy = false, onRetry }) {
@@ -107,11 +134,20 @@ function hasMaterialAnalysisFailureMessage(messages, taskId) {
       && /分析.*(?:停止|未完成)/u.test(String(block.title ?? ''))));
 }
 
-function etaText(eta) {
-  if (eta?.minMinutes == null || eta?.maxMinutes == null) return '剩余时长正在估算';
-  return eta.minMinutes === eta.maxMinutes
-    ? `预计剩余 ${eta.minMinutes} 分钟`
-    : `预计剩余 ${eta.minMinutes}–${eta.maxMinutes} 分钟`;
+function clampProgress(value) {
+  const progress = Number(value);
+  return Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : null;
+}
+
+export function taskRuntimeMessageId(messages = [], taskId = '') {
+  const candidates = [...messages].reverse().filter((message) => (
+    (!taskId || message?.taskId === taskId)
+    && (message?.blocks ?? []).some((block) => block?.type === 'status')
+  ));
+  return candidates.find((message) => String(message?.key ?? '').startsWith('progress.task.'))?.id
+    ?? candidates.find((message) => String(message?.key ?? '') === 'analysis.progress.current')?.id
+    ?? candidates[0]?.id
+    ?? '';
 }
 
 export default function PackageChat({
@@ -130,11 +166,13 @@ export default function PackageChat({
   // 后端正持有写租约时，待办要显示成「已提交，正在处理」而不是可点的表单
   activeOperation = null,
   pendingInteraction,
+  pendingInteractions = [],
   pendingInteractionAttentionKey = '',
   flowchartDraftState,
   candidateRevisionPanel,
   candidateRevisionAttentionKey = '',
   onPendingInteractionBusyChange,
+  onPendingInteractionSelect,
   confirmFlowchartMutation,
   onProjectChanged,
   onNavigate,
@@ -152,6 +190,8 @@ export default function PackageChat({
     if (!localBusy) localBusySince.current = '';
   }, [localBusy]);
   const [taskAdjustment, setTaskAdjustment] = useState(null);
+  const [milestoneRollback, setMilestoneRollback] = useState(null);
+  const [rollbackMenuOpen, setRollbackMenuOpen] = useState(false);
   const [taskEditConfig, setTaskEditConfig] = useState(null);
   const [validationDeferral, setValidationDeferral] = useState(null);
   const [completionBlocker, setCompletionBlocker] = useState(null);
@@ -162,12 +202,27 @@ export default function PackageChat({
   // 助手分析在服务端后台跑，本地 busy 只覆盖提交那一瞬；两者合成对外统一的忙碌态，
   // 这样刷新页面或换标签页也能继续看到“正在分析”。
   const chatRunning = useMemo(() => isPackageChatRunning(authoring), [authoring]);
+  const waitingRun = useMemo(() => waitingPackageChatRun(authoring), [authoring]);
+  const waitingCardMissing = Boolean(waitingRun && !(authoring?.pendingInteractions ?? []).some((interaction) => (
+    interaction.runId === waitingRun.id
+  )));
+  const waitingCardRecoveryKey = waitingRun
+    ? `${waitingRun.id ?? ''}:${waitingRun.updatedAt ?? waitingRun.createdAt ?? ''}`
+    : '';
+  const waitingCardRecoveryAttempt = useRef('');
+  const [waitingCardRecoveryBusy, setWaitingCardRecoveryBusy] = useState(false);
   // 服务端还在跑的运行。本地 busy 一刷新就没了，但后端没停——只认本地会让用户
   // 以为提交丢了。本地态优先（文案更贴合刚点的按钮），没有本地态时用服务端的。
-  const serverRun = useMemo(() => activeRunOf(authoring), [authoring]);
+  const defaultServerRun = useMemo(() => activeRunOf(authoring), [authoring]);
+  const controlledRepairRun = useMemo(() => (authoring?.activeRuns ?? []).find((run) => (
+    ['queued', 'running'].includes(run?.status)
+      && run?.state?.purpose === 'controlled_repair_apply'
+  )) ?? null, [authoring]);
+  const serverRun = controlledRepairRun ?? defaultServerRun;
   const busy = localBusy || (chatRunning ? 'plan' : '') || (serverRun ? 'server_run' : '');
   // 计时也走服务端开始时间，刷新后不会从 0 秒重新数
   const sec = useElapsed(!!busy, localBusy ? undefined : serverRun?.createdAt);
+  const serverJob = useMemo(() => activeRunObservability(serverRun, Date.now()), [serverRun, sec]);
   const bodyRef = useRef(null);
   const pendingInteractionRef = useRef(null);
   const loadingOlderRef = useRef(false);
@@ -180,9 +235,28 @@ export default function PackageChat({
     [aiConstruction],
   );
   useEffect(() => {
-    setTurns([]); setTaskAdjustment(null); setTaskEditConfig(null); setValidationDeferral(null);
+    setTurns([]); setTaskAdjustment(null); setMilestoneRollback(null); setRollbackMenuOpen(false);
+    setTaskEditConfig(null); setValidationDeferral(null);
     setCompletionBlocker(null);
+    waitingCardRecoveryAttempt.current = '';
+    setWaitingCardRecoveryBusy(false);
   }, [projectId]);
+
+  // waiting 代表后台已停下等待回答。题卡没有同步到当前快照时，30 秒后只补拉一次，
+  // 既避免假运行计时，也避免网络故障时形成无限轮询。
+  useEffect(() => {
+    if (!waitingCardMissing || !waitingCardRecoveryKey || !onProjectChanged) return undefined;
+    if (waitingCardRecoveryAttempt.current === waitingCardRecoveryKey) return undefined;
+    const delay = waitingInteractionRecoveryDelay(waitingRun);
+    const timer = window.setTimeout(() => {
+      if (waitingCardRecoveryAttempt.current === waitingCardRecoveryKey) return;
+      waitingCardRecoveryAttempt.current = waitingCardRecoveryKey;
+      setWaitingCardRecoveryBusy(true);
+      Promise.resolve(onProjectChanged({ advance: true }))
+        .finally(() => setWaitingCardRecoveryBusy(false));
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [onProjectChanged, waitingCardMissing, waitingCardRecoveryKey, waitingRun]);
 
   const latestValidationErrorCount = useMemo(() => {
     for (const message of [...structuredMessages].reverse()) {
@@ -257,12 +331,6 @@ export default function PackageChat({
     () => cancellableOperationOf({ busy, serverRun }),
     [busy, serverRun],
   );
-  // 「还在跑」和「已经挂了」原先长得一样。sec 每秒都变，顺带让这个判断持续刷新。
-  const stalledMs = useMemo(() => (busy ? stalledForMs({
-    messages: structuredMessages,
-    taskId: aiConstruction?.progress?.currentTaskId,
-    startedAt: localBusy ? localBusySince.current : serverRun?.createdAt,
-  }) : null), [busy, localBusy, sec, structuredMessages, aiConstruction, serverRun]);
   // 忙碌态结束就把「正在停止」清掉，否则下一轮任务的按钮会一直是禁用的
   useEffect(() => { if (!busy) setCancelling(''); }, [busy]);
 
@@ -280,8 +348,19 @@ export default function PackageChat({
     }
   };
 
-  const refreshConstruction = async () => {
-    await onProjectChanged?.();
+  const refreshConstruction = async (options) => {
+    await onProjectChanged?.(options);
+  };
+
+  const retryWaitingCard = async () => {
+    if (waitingCardRecoveryBusy || !onProjectChanged) return;
+    waitingCardRecoveryAttempt.current = waitingCardRecoveryKey;
+    setWaitingCardRecoveryBusy(true);
+    try {
+      await onProjectChanged({ advance: true });
+    } finally {
+      setWaitingCardRecoveryBusy(false);
+    }
   };
 
   // 导航类动作只切视图、不写数据，目标在 assistantActions 的注册表里声明
@@ -309,6 +388,12 @@ export default function PackageChat({
       window.dispatchEvent(new CustomEvent('mw-package-check-open', { detail: { projectId } }));
       return;
     }
+    if (target.openSettings) {
+      window.dispatchEvent(new CustomEvent('mw-settings-open', {
+        detail: { tab: target.openSettings },
+      }));
+      return;
+    }
     if (target.focus) {
       window.requestAnimationFrame?.(() => {
         bodyRef.current?.querySelector?.(target.focus)?.focus?.();
@@ -317,6 +402,7 @@ export default function PackageChat({
   };
 
   const handleStructuredAction = async (action) => {
+    action = canonicalAssistantAction(action);
     if (analysisRunning && ['analyze_materials', 'review_package'].includes(action.id)) return;
     if (flowchartDraftState?.dirty && !isReadOnlyAction(action)) {
       const allowed = confirmFlowchartMutation
@@ -524,15 +610,18 @@ export default function PackageChat({
             text: '已生成知识语义修复方案，请在右侧确认后再应用。',
           })]));
         } else if (repairing && result.status === 'stopped') {
+          const lastAttempt = result.attempts?.at?.(-1);
           setTurns((items) => items.concat([timedTurn({
             role: 'assistant',
-            text: '自动修复已达到重试上限，已停止并保留全部尝试记录。请检查知识文件或校验详情。',
+            text: ['regressed', 'unresolved'].includes(lastAttempt?.qualityOutcome)
+              ? '修复候选未通过复检，当前知识包没有改变。请查看复检差异后调整方案或人工修改。'
+              : '自动修复已达到重试上限，已停止并保留全部尝试记录。请检查知识文件或校验详情。',
           })]));
         } else if (result.validation?.errors > 0) {
           setTurns((items) => items.concat([timedTurn({
             role: 'assistant',
             text: repairing
-              ? `本轮逐项修复已完成，但仍有 ${result.validation.errors} 个错误，请继续处理。`
+              ? `本项已解决；知识包仍有 ${result.validation.errors} 个必须修复的问题，请继续处理。`
               : `知识结构已生成，但校验仍有 ${result.validation.errors} 个错误，请按右侧建议继续修复。`,
           })]));
         }
@@ -668,6 +757,21 @@ export default function PackageChat({
   const currentTask = aiConstruction?.tasks?.find(
     (task) => task.id === aiConstruction?.progress?.currentTaskId,
   );
+  const taskById = useMemo(
+    () => new Map((aiConstruction?.tasks ?? []).map((task) => [task.id, task])),
+    [aiConstruction?.tasks],
+  );
+  const stageProgressByMilestone = useMemo(() => {
+    const groups = new Map();
+    for (const task of effectiveTaskPlanTasks(aiConstruction?.tasks ?? [])) {
+      if (!task?.milestoneId) continue;
+      const progress = groups.get(task.milestoneId) ?? { completed: 0, total: 0 };
+      progress.total += 1;
+      if (['completed', 'skipped'].includes(task.status)) progress.completed += 1;
+      groups.set(task.milestoneId, progress);
+    }
+    return groups;
+  }, [aiConstruction?.tasks]);
   const currentTasks = aiConstruction?.tasks?.filter(
     (task) => task.milestoneId === aiConstruction?.progress?.currentMilestoneId,
   ) ?? [];
@@ -680,6 +784,51 @@ export default function PackageChat({
       && entry.item.taskId === currentTask.id
       && String(entry.item.key ?? '').startsWith('analysis.progress.')))
     : timeline;
+  const repairStatusMessageId = useMemo(
+    () => repairRuntimeMessageId(structuredMessages),
+    [structuredMessages],
+  );
+  const repairRuntimeActive = Boolean(
+    repairStatusMessageId
+      && (localBusy === 'repair_knowledge'
+        || controlledRepairRun
+        || /应用知识包修复方案/u.test(String(activeOperation?.operation ?? ''))),
+  );
+  const defaultRuntimeMessageId = useMemo(() => taskRuntimeMessageId(
+    structuredMessages,
+    String(currentTask?.id ?? serverRun?.state?.taskId ?? ''),
+  ), [currentTask?.id, serverRun?.state?.taskId, structuredMessages]);
+  const repairCardRuntime = repairRuntimeActive ? {
+    title: controlledRepairRun ? activeRunLabel(controlledRepairRun) : '正在应用知识包修复方案',
+    summary: '方案已确认，正在修改并重新校验当前知识包。完成后这里会自动更新，请勿重复提交。',
+    statusLabel: controlledRepairRun ? activeRunStatusLabel(controlledRepairRun) : '提交中',
+    job: controlledRepairRun ? serverJob : null,
+    stalledMessage: '',
+    cancelling: Boolean(cancelling),
+    onRefresh: () => { void onProjectChanged?.(); },
+    ...(cancellableOperation ? {
+      onCancel: () => { void cancelRunningOperation(cancellableOperation); },
+    } : {}),
+  } : null;
+  const taskCardRuntime = !repairCardRuntime && serverRun && serverJob && defaultRuntimeMessageId ? {
+    title: serverJob.currentStep || activeRunLabel(serverRun),
+    statusLabel: activeRunStatusLabel(serverRun),
+    job: serverJob,
+    stalledMessage: '',
+    cancelling: Boolean(cancelling),
+    onRefresh: () => { void onProjectChanged?.(); },
+    ...(cancellableOperation ? {
+      onCancel: () => { void cancelRunningOperation(cancellableOperation); },
+    } : {}),
+  } : null;
+  const activeRuntimeMessageId = repairCardRuntime ? repairStatusMessageId : defaultRuntimeMessageId;
+  const activeCardRuntime = repairCardRuntime ?? taskCardRuntime;
+  const overallProgress = clampProgress(aiConstruction?.progress?.percent);
+  const overallStage = milestonePosition(aiConstruction?.progress?.currentMilestoneId)
+    ?? (overallProgress === 100 ? {
+      index: Number(aiConstruction?.progress?.totalMilestones ?? 6),
+      total: Number(aiConstruction?.progress?.totalMilestones ?? 6),
+    } : null);
   const liveTaskPlanMessage = visibleTasks.length ? {
     id: 'live-task-plan', role: 'assistant', createdAt: aiConstruction?.updatedAt, blocks: [{
       type: 'task_plan', title: '当前动态任务', note: aiConstruction?.progress?.eta?.note,
@@ -691,6 +840,50 @@ export default function PackageChat({
       })),
     }],
   } : null;
+  const rollbackMilestones = rollbackEligibleMilestones(aiConstruction);
+
+  const previewMilestoneRollback = async (milestoneId) => {
+    if (busy) return;
+    setLocalBusy('rollback_preview');
+    try {
+      const result = await previewAiConstructionMilestoneRollback(projectId, milestoneId);
+      setMilestoneRollback({
+        ...result.preview,
+        requestId: globalThis.crypto?.randomUUID?.()
+          ?? `rollback-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      });
+      setRollbackMenuOpen(false);
+    } catch (error) {
+      setTurns((items) => items.concat([timedTurn({
+        role: 'assistant', text: `无法预览阶段回退：${error instanceof Error ? error.message : String(error)}`,
+      })]));
+    } finally { setLocalBusy(''); }
+  };
+
+  const confirmMilestoneRollback = async () => {
+    if (!milestoneRollback || busy) return;
+    setLocalBusy('milestone_rollback');
+    try {
+      await rollbackAiConstructionMilestone(
+        projectId,
+        milestoneRollback.targetMilestone.id,
+        {
+          expectedGraphRevision: milestoneRollback.graphRevision,
+          expectedPackageRevision: packageRevision,
+          requestId: milestoneRollback.requestId,
+        },
+      );
+      setMilestoneRollback(null);
+      window.dispatchEvent(new CustomEvent('mw-package-updated'));
+      await onProjectChanged?.();
+      await refreshConstruction();
+    } catch (error) {
+      setTurns((items) => items.concat([timedTurn({
+        role: 'assistant', text: `阶段回退失败：${error instanceof Error ? error.message : String(error)}`,
+      })]));
+      await refreshConstruction().catch(() => undefined);
+    } finally { setLocalBusy(''); }
+  };
 
   const confirmTaskAdjustment = async (reason) => {
     if (!taskAdjustment || busy) return;
@@ -748,23 +941,27 @@ export default function PackageChat({
   };
 
   const uploadMaterials = async (files) => {
-    if (!files?.length || busy) return;
+    if (!files?.length) return;
     if (!confirmUploadDuringAnalysis(analysisRunning)) return;
-    setLocalBusy('upload');
+    const filenames = [...files].map((file) => String(file?.name ?? '未命名资料'));
+    const requestId = globalThis.crypto?.randomUUID?.() ?? `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setTurns((items) => items.concat([timedTurn({
+      requestId,
+      role: 'assistant',
+      text: `正在上传 ${filenames.length} 份建模资料：${filenames.join('、')}。上传和解析在后台继续，你可以继续输入。`,
+    })]));
     try {
       const result = await uploadModelingMaterials({ projectId, files, uploadFile });
-      setTurns((items) => items.concat([timedTurn({
-        role: 'assistant',
-        text: `已上传 ${result.count} 份建模资料：${result.filenames.join('、')}。我正在刷新建模状态。`,
-      })]));
+      setTurns((items) => items.map((item) => item.requestId === requestId ? {
+        ...item,
+        text: `已上传 ${result.count} 份建模资料：${result.filenames.join('、')}。解析在后台继续，完成结果会回到消息流。`,
+      } : item));
       await onProjectChanged?.();
     } catch (error) {
-      setTurns((items) => items.concat([timedTurn({
-        role: 'assistant',
+      setTurns((items) => items.map((item) => item.requestId === requestId ? {
+        ...item,
         text: `资料上传失败：${error instanceof Error ? error.message : String(error)}`,
-      })]));
-    } finally {
-      setLocalBusy('');
+      } : item));
     }
   };
 
@@ -845,6 +1042,19 @@ export default function PackageChat({
             {incrementEntry.label}
           </button>
         )}
+        {overallProgress != null && (
+          <div className="pchat-overall-progress">
+            <div className="pchat-overall-progress__head">
+              <strong>AI 辅助建模总进度</strong>
+              <span>{overallStage ? `阶段 ${overallStage.index}/${overallStage.total} · ` : ''}{overallProgress}%</span>
+            </div>
+            <div className="pchat-overall-progress__bar" role="progressbar"
+              aria-label="AI 辅助建模总进度" aria-valuemin="0" aria-valuemax="100"
+              aria-valuenow={overallProgress}>
+              <span style={{ width: `${overallProgress}%` }} />
+            </div>
+          </div>
+        )}
         {liveTaskPlanMessage && (
           <div className="pchat-task-status">
             <button type="button" className="pchat-task-status__chip"
@@ -864,7 +1074,39 @@ export default function PackageChat({
             </div>
           </div>
         )}
+        {rollbackMilestones.length > 0 && (
+          <div className="pchat-milestone-rollback">
+            <button type="button" className="pchat-milestone-rollback__trigger"
+              disabled={Boolean(busy)} aria-haspopup="menu" aria-expanded={rollbackMenuOpen}
+              title="回到已确认的阶段重新处理；上游资料和历史版本会保留"
+              onClick={() => setRollbackMenuOpen((open) => !open)}>
+              选择阶段
+            </button>
+            {rollbackMenuOpen && <div className="pchat-milestone-rollback__menu" role="menu">
+              <strong>选择要重新处理的阶段</strong>
+              <p>这是流程回退，不是只切换页面。</p>
+              {rollbackMilestones.map((milestone) => (
+                <button type="button" role="menuitem" key={milestone.id}
+                  onClick={() => { void previewMilestoneRollback(milestone.id); }}>
+                  <span>{milestone.title}</span><small>保留此前阶段，作废此后派生结果</small>
+                </button>
+              ))}
+            </div>}
+          </div>
+        )}
       </header>
+      <PendingInteractionQueue
+        interactions={pendingInteractions}
+        activeInteractionId={pendingInteraction?.id ?? pendingInteractions[0]?.id ?? ''}
+        onSelect={(interaction) => {
+          onPendingInteractionSelect?.(interaction);
+          if (interaction?.type === 'scenario_review') return;
+          window.setTimeout(() => {
+            pendingInteractionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            pendingInteractionRef.current?.focus({ preventScroll: true });
+          }, 0);
+        }}
+      />
       <div className="pchat-body" ref={bodyRef}>
         {(hasOlderMessages || olderMessagesBusy || olderMessagesError) && (
           <div className="pchat-history-loader">
@@ -875,11 +1117,14 @@ export default function PackageChat({
             {olderMessagesError && <span role="alert">{olderMessagesError}</span>}
           </div>
         )}
-        {!structuredMessages.length && !turns.length && !pendingInteraction && (
+        {!structuredMessages.length && !turns.length && !pendingInteractions.length && (
           <div className="pchat-hint"><strong>你好，我是知识包建模助手。</strong><br />可以咨询当前知识包，也可以说明需要新增或调整的建模内容。</div>
         )}
         {visibleTimeline.map((entry) => entry.kind === 'structured' ? (
           <AiConstructionMessageCard key={`structured-${entry.item.id}`} message={entry.item} hideTaskPlan
+            task={taskById.get(entry.item.taskId) ?? null}
+            stageProgress={stageProgressByMilestone.get(taskById.get(entry.item.taskId)?.milestoneId) ?? null}
+            runtime={activeCardRuntime && entry.item.id === activeRuntimeMessageId ? activeCardRuntime : null}
             actionsEnabled={canUseStructuredMessageActions({
               busy: Boolean(busy),
               constructionStatus: aiConstruction?.status,
@@ -938,6 +1183,12 @@ export default function PackageChat({
           onConfirm={(reason) => { void confirmTaskAdjustment(reason); }}
           onCancel={() => setTaskAdjustment(null)}
         />}
+        {milestoneRollback && <MilestoneRollbackDialog
+          preview={milestoneRollback}
+          busy={busy === 'milestone_rollback'}
+          onConfirm={(reason) => { void confirmMilestoneRollback(reason); }}
+          onCancel={() => setMilestoneRollback(null)}
+        />}
         {validationDeferral && <ValidationDeferralCard
           errorCount={validationDeferral.errorCount}
           busy={busy === 'defer_validation'}
@@ -951,7 +1202,7 @@ export default function PackageChat({
           onApply={applyTaskEdit}
           onCancel={() => setTaskEditConfig(null)}
         />}
-        {pendingInteraction && (
+        {pendingInteraction && !repairRuntimeActive && (
           <div ref={pendingInteractionRef} className="ac-message-interaction" tabIndex={-1}>
             <PendingInteraction
               interaction={pendingInteraction}
@@ -962,42 +1213,25 @@ export default function PackageChat({
             />
           </div>
         )}
-        {busy && (
-          <div className="pchat-msg assistant">
-            <div className="bubble"><span className="spinner" /> {{
-              plan: '正在分析', apply: '正在修改', upload: '正在上传建模资料',
-              analyze: '正在分析建模资料', confirm: '正在确认当前阶段',
-              interaction: '正在提交建模回答',
-              generate_knowledge: `正在${currentTask?.title ?? '生成知识结构'} · ${etaText(aiConstruction?.progress?.eta)}`,
-              repair_knowledge: `正在${String(currentTask?.title ?? '修复知识包').replaceAll('受控修复', '逐项修复')} · ${etaText(aiConstruction?.progress?.eta)}`,
-              defer_validation: '正在记录暂缓决定并准备进入验证',
-              script_generation: `正在生成脚本变更方案 · ${etaText(aiConstruction?.progress?.eta)}`,
-              script_apply: `正在应用并校验确定性脚本 · ${etaText(aiConstruction?.progress?.eta)}`,
-              task_preview: '正在分析任务调整影响', task_adjustment: '正在应用任务调整',
-              task_edit: '正在应用任务图变更',
-              increment_start: '正在开始增量补充',
-              increment_propose: '正在生成增量修改方案',
-              server_run: activeRunLabel(serverRun),
-            }[busy] ?? '正在处理'} · {sec} 秒</div>
-            {cancellableOperation && (
-              <button type="button" className="pchat-cancel"
-                disabled={Boolean(cancelling)}
-                onClick={() => { void cancelRunningOperation(cancellableOperation); }}>
-                {cancelling ? '正在停止…' : '取消'}
+        {waitingCardMissing && !busy && (
+          <div className="pchat-msg assistant pchat-waiting-card-recovery" role="alert">
+            <div className="bubble">
+              <strong>{waitingInteractionTitle(waitingRun)}</strong>
+              <p>后台已进入等待回答，但当前页面没有加载到可操作题卡。</p>
+              <button type="button" className="btn btn-p" disabled={waitingCardRecoveryBusy}
+                onClick={() => { void retryWaitingCard(); }}>
+                {waitingCardRecoveryBusy ? '正在重新加载…' : '重新加载访谈题卡'}
               </button>
-            )}
+            </div>
           </div>
         )}
-        {cancelling && <div className="pchat-msg assistant"><div className="bubble muted">{CANCEL_PENDING_HINT}</div></div>}
-        {!cancelling && stalledMs != null && (
-          <div className="pchat-msg assistant"><div className="bubble muted">{stallHint(stalledMs)}</div></div>
-        )}
+        {cancelling && !repairCardRuntime && <div className="pchat-msg assistant"><div className="bubble muted">{CANCEL_PENDING_HINT}</div></div>}
       </div>
-      {pendingInteraction && (
+      {pendingInteraction && !repairRuntimeActive && (
         <PendingInteractionHint
           scrollRef={bodyRef}
           targetSelector=".ac-message-interaction"
-          label={`还有 1 项待确认：${String(pendingInteraction.payload?.title ?? '请处理待办').slice(0, 20)}`}
+          label={`还有 ${pendingInteractions.length || 1} 项待处理：${String(pendingInteraction.payload?.title ?? '请处理待办').slice(0, 20)}`}
         />
       )}
       <div className="pchat-input">

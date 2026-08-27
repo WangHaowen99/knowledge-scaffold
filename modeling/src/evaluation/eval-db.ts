@@ -126,6 +126,21 @@ function coerceValue(value: unknown, field: DataDictField): unknown {
   return content;
 }
 
+export function validateEvaluationDatabaseExcelContents(
+  filename: string,
+  buffer: Buffer,
+): void {
+  validateEvaluationDatabaseExcelUpload(filename, buffer);
+  const tables = parseExcel(buffer, { maxRows: null }).filter((table) => table.rows?.length);
+  if (!tables.length) throw new Error('Excel 中没有可导入的数据行');
+  for (const table of tables) {
+    validateTable(table);
+    for (const row of table.rows ?? []) {
+      table.fields.forEach((field, column) => coerceValue(row[column], field));
+    }
+  }
+}
+
 function insertSql(table: DataDictTable, rowCount: number, targetName = table.name): string {
   const rows = Array.from({ length: rowCount }, () => (
     `(${table.fields.map(() => '?').join(', ')})`

@@ -115,6 +115,8 @@ test('统一工作台直接嵌入 AI 辅助构建并提供可收缩流程栏', (
   assert.match(html, /AI辅助构建/);
   assert.match(html, /aria-label="收起建模流程"/);
   assert.match(html, /ai-construction-workbench/);
+  assert.match(html, /查看、下载或补充建模资料/);
+  assert.match(html, /建模资料 0/);
   assert.match(html, /package-workspace embedded/);
   assert.doesNotMatch(html, /打开知识包工作区/);
   assert.doesNotMatch(html, /渐进提取|胜任力问题|知识包生成/);

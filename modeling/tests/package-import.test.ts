@@ -30,6 +30,7 @@ function demoSpec(): PackageSpec {
     rules: [{
       key: 'active_customer', title: '有效客户', description: '客户必须有效',
       content: '客户状态必须为有效。', appliesToObjects: ['Customer'],
+      appliesToOperations: ['find_customer'],
     }],
     metrics: [{
       key: 'customer_count', title: '客户数', description: '有效客户数量',
@@ -86,7 +87,10 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
     primaryKey: ['customer_id'],
     fields: [['customer_id', '客户编号', 'string', true], ['name', '客户名称', 'string', false]],
   }]);
-  assert.deepEqual(imported.spec.rules?.map((rule) => rule.key), ['active_customer']);
+  assert.deepEqual(imported.spec.rules?.map((rule) => ({
+    key: rule.key,
+    appliesToOperations: rule.appliesToOperations,
+  })), [{ key: 'active_customer', appliesToOperations: ['find_customer'] }]);
   assert.deepEqual(imported.spec.metrics?.map((metric) => metric.key), ['customer_count']);
   assert.equal(imported.spec.scripts?.[0].parameters[1].defaultValue, 'standard');
   assert.deepEqual(imported.spec.operations.map((operation) => ({

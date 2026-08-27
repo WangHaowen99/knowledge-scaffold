@@ -128,6 +128,9 @@ test('版本列表、差异和 CAS 恢复形成闭环并发布项目事件', asy
   assert.equal(restored.statusCode, 200, restored.body);
   assert.notEqual(restored.json().currentRevision, first.revision.oid);
   assert.equal(restored.json().packageVersion, '1.0.0');
+  const afterRestore = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/revisions` });
+  assert.equal(afterRestore.statusCode, 200, afterRestore.body);
+  assert.equal(afterRestore.json().versions[0].packageVersion, '1.0.0');
   assert.deepEqual(getAuthoringState().replay(project.id).events.map((event) => event.type), [
     'package.revision.created',
   ]);

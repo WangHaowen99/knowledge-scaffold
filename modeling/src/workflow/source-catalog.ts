@@ -4,6 +4,7 @@ import type {
   DocumentSourceRef,
   SpecObject,
 } from '../types.js';
+import { normalizeObjectFieldAliases } from './field-alias.js';
 
 export type TableReferenceResolution =
   | { status: 'resolved'; tableName: string; matchedBy: 'exact' | 'display' | 'normalized' }
@@ -44,6 +45,9 @@ export function createSourceCatalog(
     if (!names.includes(tableName)) catalog.set(key, [...names, tableName]);
   };
   const normalize = (value: string) => String(value ?? '').trim();
+  const normalizeDocumentFilename = (value: string) => normalize(value)
+    .replace(/^[【《“「『]+/u, '')
+    .replace(/[】》”」』]+$/u, '');
   for (const table of tables) {
     add(exactNames, table.name, table.name);
     const displayName = `${table.name}（${table.rowCount} 行）`;
@@ -148,8 +152,16 @@ export function createSourceCatalog(
           });
           return source;
         }
-        const candidates = documentIdsByFilename.get(source.filename) ?? [];
-        if (candidates.length === 1) return { ...source, documentId: candidates[0] };
+        const exactCandidates = documentIdsByFilename.get(source.filename) ?? [];
+        const normalizedFilename = normalizeDocumentFilename(source.filename);
+        const normalizedCandidates = documents
+          .filter((document) => normalizeDocumentFilename(document.filename) === normalizedFilename)
+          .map((document) => document.id);
+        const candidates = exactCandidates.length ? exactCandidates : [...new Set(normalizedCandidates)];
+        if (candidates.length === 1) {
+          const document = documentsById.get(candidates[0]);
+          return { ...source, documentId: candidates[0], filename: document?.filename ?? source.filename };
+        }
         problems.push({
           owner: object.title || object.key,
           reference: source.filename,
@@ -161,7 +173,7 @@ export function createSourceCatalog(
         });
         return source;
       };
-      const value = objects.map((object) => ({
+      const value = objects.map((object) => normalizeObjectFieldAliases({
         ...object,
         ...(object.sourceTable
           ? { sourceTable: resolveObjectReference(object, object.sourceTable) }

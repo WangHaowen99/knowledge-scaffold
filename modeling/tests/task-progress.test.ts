@@ -6,13 +6,14 @@ import test from 'node:test';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'task-progress-'));
 
-const { remainingMinutesFromBatches, reportLongTaskProgress } =
+const { longTaskProgressMessageKey, remainingMinutesFromBatches, reportLongTaskProgress } =
   await import('../src/ai-construction/task-progress.js');
 const { AiConstructionTaskGraph } = await import('../src/ai-construction/task-graph.js');
 const { getDb } = await import('../src/db/index.js');
 const { createProject } = await import('../src/projects/repo.js');
-const { STALL_THRESHOLD_MS, lastProgressAt, stallHint, stalledForMs } =
+const { STALL_THRESHOLD_MS, lastProgressAt, stalledForMs } =
   await import('../frontend/src/taskStall.js');
+const { jobEtaFromProgress, jobHeartbeatStale, startJobHeartbeat } = await import('../src/authoring/job-observability.js');
 
 test('按实测批次速度推算剩余，比静态区间准得多', () => {
   // 5 批里跑完 2 批用了 10 分钟 → 剩 3 批约 15 分钟
@@ -49,6 +50,34 @@ test('进度写成可就地更新的消息，不会在时间线里堆几十条',
   // 留下的是最后一次的内容，且带上「已经产出什么」——用户真正关心的是这个
   assert.match(rows[0].blocks_json, /第 3\/5 批/);
   assert.match(rows[0].blocks_json, /已产出 12 个对象/);
+});
+
+test('知识生成重试产生当前可见的新进度卡，同一轮仍就地更新', () => {
+  const project = createProject({ owner: 'alice', name: '重试进度可见' });
+  const db = getDb();
+  const snapshot = new AiConstructionTaskGraph(db).snapshot(project.id)!;
+  const taskId = snapshot.tasks[0].id;
+  db.prepare(`UPDATE ai_construction_tasks
+    SET status = 'running', task_kind = 'knowledge_extraction' WHERE id = ?`).run(taskId);
+
+  reportLongTaskProgress(project.id, {
+    taskKinds: ['knowledge_extraction'], authoringRunId: 'run-first',
+    title: '第一次运行', done: 1, total: 5, elapsedMs: 60_000,
+  });
+  for (const done of [1, 2]) {
+    reportLongTaskProgress(project.id, {
+      taskKinds: ['knowledge_extraction'], authoringRunId: 'run-retry',
+      title: `重试第 ${done}/5 批`, done, total: 5, elapsedMs: done * 60_000,
+    });
+  }
+
+  const rows = db.prepare(`SELECT message_key, blocks_json
+    FROM ai_construction_messages WHERE project_id = ? AND message_key LIKE 'progress.task.%'
+    ORDER BY created_at ASC`).all(project.id) as Array<{ message_key: string; blocks_json: string }>;
+  assert.equal(rows.length, 2, '两次运行各有一张进度卡，而不是回写旧运行');
+  assert.equal(rows[0].message_key, longTaskProgressMessageKey(taskId, 'run-first'));
+  assert.equal(rows[1].message_key, longTaskProgressMessageKey(taskId, 'run-retry'));
+  assert.match(rows[1].blocks_json, /重试第 2\/5 批/);
 });
 
 test('没有正在执行的任务时不写垃圾消息', () => {
@@ -99,14 +128,6 @@ test('完全没有进度上报的任务，按开始时间也能判出停滞', ()
   assert.ok(stalledForMs({ messages: [], startedAt: ago(STALL_THRESHOLD_MS + 1_000), now: NOW }));
 });
 
-test('提示语说明可能仍在处理，并指向取消而不是判死刑', () => {
-  const hint = stallHint(9 * 60_000);
-  assert.match(hint, /9 分钟/);
-  assert.match(hint, /仍在处理/);
-  assert.match(hint, /取消/);
-  assert.match(hint, /已完成的部分会保留/);
-});
-
 test('刚启动的操作不会因为任务上有旧消息而被误报成停滞', () => {
   // 界面上同时出现「正在处理 · 1 秒」和「已经 43 分钟没有新进展」，就是这条没做对
   const messages = [{ taskId: 't1', createdAt: ago(43 * 60_000) }];
@@ -122,4 +143,34 @@ test('当前操作确实跑了很久且无进展时仍然提示', () => {
   assert.ok(stalledForMs({
     messages, taskId: 't1', startedAt: ago(STALL_THRESHOLD_MS + 60_000), now: NOW,
   }), '这才是真停滞');
+});
+
+test('统一 Job 心跳超过阈值才标记为可能中断', () => {
+  const now = Date.parse('2026-08-03T10:00:00.000Z');
+  assert.equal(jobHeartbeatStale('2026-08-03T09:59:30.000Z', now), false);
+  assert.equal(jobHeartbeatStale('2026-08-03T09:57:00.000Z', now), true);
+  assert.equal(jobHeartbeatStale(undefined, now), true);
+});
+
+test('统一 Job 定时心跳可以持续刷新并在任务收尾时停止', async () => {
+  let heartbeatCount = 0;
+  const stop = startJobHeartbeat({
+    heartbeat: () => { heartbeatCount += 1; },
+  } as any, 'project-heartbeat', 'run-heartbeat', {}, 5);
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.ok(heartbeatCount >= 2);
+  stop();
+  const stoppedAt = heartbeatCount;
+  await new Promise((resolve) => setTimeout(resolve, 18));
+  assert.equal(heartbeatCount, stoppedAt);
+});
+
+test('统一 Job 根据实际进度和耗时动态收窄剩余范围', () => {
+  assert.deepEqual(jobEtaFromProgress(50, 600), {
+    minMinutes: 8, maxMinutes: 14, confidence: 'medium',
+  });
+  assert.deepEqual(jobEtaFromProgress(0, 60), {
+    minMinutes: null, maxMinutes: null, confidence: 'low',
+  });
 });

@@ -13,6 +13,13 @@ import type {
   SpecRule,
   SpecScript,
 } from '../types.js';
+import {
+  PACKAGE_STATUSES,
+  packageManifestIssues,
+  parsePackageManifest,
+} from './package-contract.js';
+import { normalizeFieldAlias } from './field-alias.js';
+import { canonicalizePackageSpec } from './package-spec.js';
 
 const MAX_ZIP_BYTES = 50 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
@@ -252,7 +259,7 @@ function parseObject(path: string, markdown: string, mapping: any): SpecObject {
   const objectMapping = mapping?.objects?.[key];
   const fields: SpecField[] = tableRows(section(body, '字段')).map((row) => ({
     key: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || undefined,
-    required: required(row[3] ?? ''), note: row[4] || undefined, alias: row[5] || undefined,
+    required: required(row[3] ?? ''), note: row[4] || undefined, alias: normalizeFieldAlias(row[5]),
     valueBindingRef: optionalString(objectMapping?.fields?.[row[0] ?? '']?.value_binding_ref),
   })).filter((field) => field.key && field.key !== '—');
   const relations = tableRows(section(body, '关系')).map((row) => ({
@@ -333,6 +340,9 @@ function parseRule(path: string, markdown: string): SpecRule {
     description: data.description == null ? undefined : String(data.description),
     content: section(body, '规则内容'),
     ...(strings(data.applies_to?.objects).length ? { appliesToObjects: strings(data.applies_to.objects) } : {}),
+    ...(strings(data.applies_to?.operations).length
+      ? { appliesToOperations: strings(data.applies_to.operations) }
+      : {}),
     ...(conditions.length ? { conditions } : {}),
     ...(exceptions.length ? { exceptions } : {}),
     ...(evidence.length ? { evidence } : {}),
@@ -400,13 +410,9 @@ function parseParameterDefault(value: string): string | number | boolean {
 }
 
 function parseRenderedSpec(files: Record<string, string>): PackageSpec {
-  let manifest: any;
-  try {
-    manifest = parseYaml(files['manifest.yaml']);
-  } catch {
-    throw new Error('manifest.yaml 不是合法 YAML');
-  }
-  if (!manifest || manifest.kind !== 'ontology-package') throw new Error('manifest.yaml 不是知识包');
+  const manifest = parsePackageManifest(files['manifest.yaml']);
+  const manifestIssues = packageManifestIssues(manifest);
+  if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
   const mapping = parseJson<any>(files['mappings/object-data-mappings.json'], '数据映射') ?? {};
   const detailPaths = (folder: string) => Object.keys(files)
     .filter((path) => path.startsWith(`${folder}/`) && path.endsWith('.md') && path !== `${folder}/index.md`)
@@ -423,8 +429,8 @@ function parseRenderedSpec(files: Record<string, string>): PackageSpec {
     description: String(manifest.description ?? '').trim(),
     version: String(manifest.version ?? '').trim(),
     language: String(manifest.language ?? 'zh-CN').trim(),
-    status: ['draft', 'review', 'released', 'deprecated'].includes(String(manifest.status))
-      ? manifest.status
+    status: PACKAGE_STATUSES.includes(String(manifest.status) as typeof PACKAGE_STATUSES[number])
+      ? manifest.status as PackageSpec['status']
       : 'draft',
     defaultProviderAlias: String(mapping.default_provider_alias ?? 'default'),
     objects,
@@ -434,6 +440,14 @@ function parseRenderedSpec(files: Record<string, string>): PackageSpec {
     ...(scripts.length ? { scripts } : {}),
     ...(valueBindings ? { valueBindings } : {}),
   };
+}
+
+/**
+ * 从标准知识包目录重建结构化规格。Studio 与 ZIP 导入共用这一解析入口，
+ * 避免两套 Markdown 解释规则逐渐分叉。
+ */
+export function parseRenderedPackageFiles(files: Record<string, string>): PackageSpec {
+  return canonicalizePackageSpec(parseRenderedSpec(files));
 }
 
 function inferredCoverage(spec: PackageSpec): CoverageResult {
@@ -452,7 +466,9 @@ export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
   const embeddedCoverage = parseJson<CoverageResult>(allFiles[MODEL_COVERAGE_PATH], '知识包覆盖结果');
   const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => !path.startsWith('model/')));
   const rawFiles = Object.fromEntries(Object.entries(archive.rawFiles).filter(([path]) => !path.startsWith('model/')));
-  const spec = embeddedSpec ?? parseRenderedSpec(files);
+  const manifestIssues = packageManifestIssues(parsePackageManifest(files['manifest.yaml']));
+  if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
+  const spec = canonicalizePackageSpec(embeddedSpec ?? parseRenderedSpec(files));
   if (!spec.id || !spec.name || !spec.version || !spec.objects || !spec.operations) {
     throw new Error('知识包缺少 id、name、version、objects 或 operations');
   }

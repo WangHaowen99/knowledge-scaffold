@@ -3,8 +3,11 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
+import { updateManifestPlatformMetadata } from '../workflow/package-contract.js';
 import { renderPackage } from '../workflow/package-render.js';
+import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
+import { validateGeneratedScriptSafety } from '../workflow/script-safety.js';
 import {
   ArtifactRepositoryError,
   type ArtifactChange,
@@ -890,7 +893,7 @@ export class PackageArtifactStore {
       if (!target.files.some((file) => file.path === SPEC_PATH)) {
         throw new PackageArtifactStoreError('revision_has_no_package', '这个版本还没有知识包');
       }
-      this.viewFromSnapshot(target);
+      const targetView = this.viewFromSnapshot(target);
       const changedPaths = (await this.repository.diff(
         projectId,
         input.expectedRevision,
@@ -902,10 +905,32 @@ export class PackageArtifactStore {
         input.expectedRevision,
         gitMetadata(action),
       ), (savedRevision) => {
-        this.recordRevision(projectId, savedRevision, action, changedPaths);
+        this.recordRevision(projectId, savedRevision, action, changedPaths, targetView.packageVersion);
       });
       return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid));
     });
+  }
+
+  /** 当前确认版本改变后，仍基于旧版本的未处理方案不再可应用，但保留完整审计内容。 */
+  supersedePendingCandidateRevisions(
+    projectId: string,
+    actorName: string,
+    note = '阶段回退后候选方案的基线已经失效',
+  ): number {
+    const actor = requiredText(actorName, '操作人', 100);
+    const candidates = (this.db.prepare(`SELECT id FROM artifact_candidate_revisions
+      WHERE project_id = ? AND status = 'pending' ORDER BY created_at`)
+      .all(projectId) as Array<{ id: string }>);
+    for (const row of candidates) {
+      const candidate = this.candidateRevisionUnlocked(projectId, row.id);
+      this.decideCandidate(candidate, 'superseded', {
+        cause: 'candidate_superseded',
+        summary: '候选修订因阶段回退失效',
+        actorKind: 'user',
+        actorName: actor,
+      }, candidate.selectedGroupIds, note);
+    }
+    return candidates.length;
   }
 
   /**
@@ -1068,11 +1093,13 @@ export class PackageArtifactStore {
       }
 
       const currentView = this.viewFromSnapshot(current);
+      const currentRevision = this.revisions.get(projectId, current.revision.oid);
       let packageVersion: string;
       try {
         packageVersion = nextValidationCandidateVersion({
           currentVersion: currentView.packageVersion,
           currentStatus: currentView.spec.status ?? 'draft',
+          ...(currentRevision?.cause === 'package_import' ? { changeLevel: 'minor' as const } : {}),
         });
       } catch (cause) {
         throw new PackageArtifactStoreError(
@@ -1083,6 +1110,7 @@ export class PackageArtifactStore {
       const contentChanges = selectedCandidateChanges(candidate.groups, selection.selectedGroupIds);
       const candidateTarget = applyCandidateChanges(current, contentChanges);
       const candidateView = this.viewFromSnapshot(candidateTarget);
+      validateChangedCandidateScripts(currentView.spec, candidateView.spec, candidateTarget, contentChanges);
       if (![currentView.spec.version, packageVersion].includes(candidateView.spec.version)) {
         throw new PackageArtifactStoreError('invalid_input', '候选修订不能自行指定知识包版本');
       }
@@ -2011,12 +2039,13 @@ function packageFiles(
   coverage: CoverageResult,
   includeDraftTemplate = false,
 ): Map<string, Uint8Array> {
+  const normalizedSpec = canonicalizePackageSpec(spec);
   const encoder = new TextEncoder();
   const files = new Map<string, Uint8Array>([
-    [SPEC_PATH, encoder.encode(`${JSON.stringify(spec, null, 2)}\n`)],
+    [SPEC_PATH, encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`)],
     [COVERAGE_PATH, encoder.encode(`${JSON.stringify(coverage, null, 2)}\n`)],
   ]);
-  for (const [path, content] of Object.entries(renderPackage(spec, { includeDraftTemplate }))) {
+  for (const [path, content] of Object.entries(renderPackage(normalizedSpec, { includeDraftTemplate }))) {
     files.set(`${PACKAGE_PREFIX}${path}`, encoder.encode(content));
   }
   return files;
@@ -2051,6 +2080,7 @@ function importedPackageFiles(
   coverage: CoverageResult,
   imported: Readonly<Record<string, string | Uint8Array>>,
 ): Map<string, Uint8Array> {
+  const normalizedSpec = canonicalizePackageSpec(spec);
   const manifest = imported?.['manifest.yaml'];
   if (!imported || typeof imported !== 'object'
     || (typeof manifest !== 'string' && !(manifest instanceof Uint8Array))) {
@@ -2059,7 +2089,7 @@ function importedPackageFiles(
   if (manifest instanceof Uint8Array) decodeText(manifest);
   const encoder = new TextEncoder();
   const files = new Map<string, Uint8Array>([
-    [SPEC_PATH, encoder.encode(`${JSON.stringify(spec, null, 2)}\n`)],
+    [SPEC_PATH, encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`)],
     [COVERAGE_PATH, encoder.encode(`${JSON.stringify(coverage, null, 2)}\n`)],
   ]);
   for (const [relativePath, content] of Object.entries(imported)) {
@@ -2108,34 +2138,86 @@ function metadataChanges(current: readonly ArtifactFile[], spec: PackageSpec): A
   const manifest = current.find((file) => file.path === `${PACKAGE_PREFIX}manifest.yaml`);
   if (!manifest) throw new PackageArtifactStoreError('invalid_package', '知识包缺少 manifest.yaml');
   const encoder = new TextEncoder();
+  const normalizedSpec = canonicalizePackageSpec(spec);
   return [
-    { kind: 'write', path: SPEC_PATH, content: encoder.encode(`${JSON.stringify(spec, null, 2)}\n`) },
+    { kind: 'write', path: SPEC_PATH, content: encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`) },
     {
       kind: 'write',
       path: `${PACKAGE_PREFIX}manifest.yaml`,
-      content: encoder.encode(updateManifestMetadata(decodeText(manifest.content), spec)),
+      content: encoder.encode(updateManifestMetadata(decodeText(manifest.content), normalizedSpec)),
     },
   ];
 }
 
 function updateManifestMetadata(content: string, spec: PackageSpec): string {
-  const generated = renderPackage(spec)['manifest.yaml'];
-  const metadata = new Map(
-    generated.split('\n')
-      .filter((line) => /^(version|status):/.test(line))
-      .map((line) => [line.slice(0, line.indexOf(':')), line]),
-  );
-  let updated = content;
-  for (const key of ['version', 'status']) {
-    const replacement = metadata.get(key);
-    if (!replacement) continue;
-    const pattern = new RegExp(`^${key}:.*$`, 'm');
-    if (!pattern.test(updated)) {
-      throw new PackageArtifactStoreError('invalid_package', `manifest.yaml 缺少 ${key}`);
-    }
-    updated = updated.replace(pattern, replacement);
+  try {
+    return updateManifestPlatformMetadata(content, spec);
+  } catch (cause) {
+    throw new PackageArtifactStoreError(
+      'invalid_package',
+      cause instanceof Error ? cause.message : 'manifest.yaml 元数据不正确',
+    );
   }
-  return updated;
+}
+
+function validateChangedCandidateScripts(
+  currentSpec: PackageSpec,
+  candidateSpec: PackageSpec,
+  target: ArtifactSnapshot,
+  changes: readonly ArtifactChange[],
+): void {
+  const changedPaths = new Set(changes.map((change) => change.path));
+  const currentByKey = new Map((currentSpec.scripts ?? []).map((script) => [script.key, script]));
+  const targetFiles = new Map(target.files.map((file) => [file.path, file.content]));
+  const validatedEntrypoints = new Set<string>();
+
+  try {
+    for (const script of candidateSpec.scripts ?? []) {
+      const sourcePath = `${PACKAGE_PREFIX}scripts/${script.entrypoint}`;
+      const definitionPath = `${PACKAGE_PREFIX}scripts/${script.key}.md`;
+      const previous = currentByKey.get(script.key);
+      const definitionChanged = previous === undefined
+        || JSON.stringify(previous) !== JSON.stringify(script)
+        || changedPaths.has(definitionPath);
+      if (!definitionChanged && !changedPaths.has(sourcePath)) continue;
+
+      const source = changedPaths.has(sourcePath) ? targetFiles.get(sourcePath) : undefined;
+      validateGeneratedScriptSafety({
+        ...script,
+        ...(source ? { sourceCode: decodeText(source) } : {}),
+      });
+      validatedEntrypoints.add(sourcePath);
+    }
+
+    // Imported packages can contain executable attachments not represented in package-spec.json.
+    // Once a candidate changes one, it becomes new work and must meet the same execution contract.
+    for (const path of changedPaths) {
+      if (!path.startsWith(`${PACKAGE_PREFIX}scripts/`)
+        || !path.endsWith('.py')
+        || validatedEntrypoints.has(path)) continue;
+      const source = targetFiles.get(path);
+      if (!source) continue;
+      const entrypoint = path.slice(`${PACKAGE_PREFIX}scripts/`.length);
+      validateGeneratedScriptSafety({
+        key: entrypoint.slice(0, -3),
+        title: entrypoint,
+        description: '候选脚本',
+        boundOperation: '',
+        runtime: 'python',
+        entrypoint,
+        timeoutSeconds: 300,
+        parameters: [],
+        outputs: [],
+        boundaries: [],
+        sourceCode: decodeText(source),
+      });
+    }
+  } catch (error) {
+    throw new PackageArtifactStoreError(
+      'candidate_validation_failed',
+      error instanceof Error ? error.message : '候选脚本校验未通过',
+    );
+  }
 }
 
 function changesForManagedFiles(current: readonly ArtifactFile[], target: ReadonlyMap<string, Uint8Array>): ArtifactChange[] {
@@ -2156,7 +2238,7 @@ function changesForManagedFiles(current: readonly ArtifactFile[], target: Readon
 
 function parseSpec(value: string): PackageSpec {
   try {
-    const spec = JSON.parse(value) as PackageSpec;
+    const spec = canonicalizePackageSpec(JSON.parse(value) as PackageSpec);
     validatePackageSpec(spec);
     return spec;
   } catch (error) {

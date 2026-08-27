@@ -23,6 +23,7 @@ import {
 import DataSourceConnectionFields from './DataSourceConnectionFields.jsx';
 import EvaluationDatabaseUrlConfirmModal from './EvaluationDatabaseUrlConfirmModal.jsx';
 import EvaluationDatabaseImportPanel from './EvaluationDatabaseImportPanel.jsx';
+import QuickEvaluationDatabaseImport from './QuickEvaluationDatabaseImport.jsx';
 import GraphImportPanel from './GraphImportPanel.jsx';
 import { PACKAGE_DATA_SOURCE_DETAIL, PACKAGE_DATA_SOURCE_HELP } from './package-data-source.js';
 import Tour from './Tour.jsx';
@@ -102,7 +103,7 @@ function pairText(property, value) {
   return property && value ? `${property} = ${value}` : '未配置';
 }
 
-export default function DataSourcePanel({ projectId, onAdvance }) {
+export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRequest = saveDataSource, quickExcelImport = false }) {
   const [form, setForm] = useState(null);
   const [saved, setSaved] = useState(null);
   const [providerSelectionChanged, setProviderSelectionChanged] = useState(false);
@@ -241,7 +242,7 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       const outcome = await runGraphImportContextRequest({
         contextKey,
         isCurrent: (key) => projectContextRef.current === key,
-        request: () => saveDataSource(contextKey, dataSourceFormPayload(submittedForm)),
+        request: () => saveDataSourceRequest(contextKey, dataSourceFormPayload(submittedForm)),
       });
       if (outcome.kind === 'stale') return;
       const result = outcome.value;
@@ -264,6 +265,11 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
     <div>
       <Tour scene={DATA_SOURCE_TOUR_SCENE} steps={dataSourceTourSteps(form.provider)} autoStart={false} />
       {err && <div className="lerr">{err}</div>}
+      {quickExcelImport && <QuickEvaluationDatabaseImport projectId={projectId}
+        onConfigured={(dataSource) => {
+          setSaved(dataSource); setForm(dataSourceToForm(dataSource));
+          setProviderSelectionChanged(false); setMessage('已自动创建项目数据库并保存数据源连接');
+        }} onContinue={() => onAdvance?.(saved)} />}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
         <label className="ev-bind-toggle">
           <input type="checkbox" checked={form.mode === 'connection'}
@@ -313,7 +319,7 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
           </div>
         </>
       )}
-      {!providerSelectionChanged && saved?.mode === 'connection'
+      {!quickExcelImport && !providerSelectionChanged && saved?.mode === 'connection'
         && ['nl2sql_template', 'nl2sql_http'].includes(saved.provider) && (
         <EvaluationDatabaseImportPanel
           projectId={projectId}
