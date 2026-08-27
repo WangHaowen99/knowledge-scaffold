@@ -69,14 +69,28 @@ def test_root_release_dispatches_consumer_before_workbench(tmp_path: Path) -> No
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
+    backend_dir = tmp_path / "backend"
+    backend_dir.mkdir()
+    (backend_dir / ".env.example").write_text(
+        "MODELING_SERVICE_TOKEN=\n",
+        encoding="utf-8",
+    )
     calls_file = tmp_path / "calls.txt"
     _write_executable(
         deploy_dir / "deploy-consumer.sh",
-        'printf "consumer\\n" >> "$DEPLOY_CALLS_FILE"',
+        """
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+token="$(sed -n 's/^MODELING_SERVICE_TOKEN=//p' "${script_dir}/../backend/.env")"
+[[ "${token}" =~ ^[0-9a-f]{64}$ ]]
+printf "consumer:%s\\n" "${token}" >> "$DEPLOY_CALLS_FILE"
+""".strip(),
     )
     _write_executable(
         deploy_dir / "modeling" / "deploy.sh",
-        'printf "workbench\\n" >> "$DEPLOY_CALLS_FILE"',
+        """
+[[ "${MODELING_SERVICE_TOKEN:-}" =~ ^[0-9a-f]{64}$ ]]
+printf "workbench:%s\\n" "${MODELING_SERVICE_TOKEN}" >> "$DEPLOY_CALLS_FILE"
+""".strip(),
     )
 
     result = subprocess.run(
@@ -88,10 +102,34 @@ def test_root_release_dispatches_consumer_before_workbench(tmp_path: Path) -> No
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert calls_file.read_text(encoding="utf-8").splitlines() == [
-        "consumer",
-        "workbench",
-    ]
+    calls = calls_file.read_text(encoding="utf-8").splitlines()
+    assert [call.split(":", 1)[0] for call in calls] == ["consumer", "workbench"]
+    assert calls[0].split(":", 1)[1] == calls[1].split(":", 1)[1]
+    assert (backend_dir / ".env").stat().st_mode & 0o777 == 0o600
+
+
+def test_modeling_deploy_rejects_running_consumer_with_different_token() -> None:
+    script = MODELING_ROOT / "deploy" / "deploy.sh"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source <(sed \'/^if \\[ "\\$#" -gt 0 \\]; then/,$d\' "$MODELING_DEPLOY"); '
+            'MODELING_SERVICE_TOKEN="modeling-token-with-at-least-32-characters"; '
+            'consumer_container() { printf "onto-agent-backend\\n"; }; '
+            'docker() { printf "MODELING_SERVICE_TOKEN=consumer-token-with-at-least-32-characters\\n"; }; '
+            "verify_consumer_service_token",
+        ],
+        env={**os.environ, "MODELING_DEPLOY": str(script)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "does not use the configured MODELING_SERVICE_TOKEN" in result.stderr
+    assert "modeling-token" not in result.stdout + result.stderr
+    assert "consumer-token" not in result.stdout + result.stderr
 
 
 def test_workbench_agent_is_built_and_described_in_release_manifests() -> None:

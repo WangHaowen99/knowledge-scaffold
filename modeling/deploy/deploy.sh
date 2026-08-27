@@ -128,6 +128,17 @@ consumer_container() {
     docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)|^backend$' | head -n 1 || true
 }
 
+verify_consumer_service_token() {
+    local container configured
+    container="$(consumer_container)"
+    [ -n "${container}" ] || return 0
+    configured="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${container}" 2>/dev/null \
+        | sed -n 's/^MODELING_SERVICE_TOKEN=//p' | tail -n 1)"
+    if [ -z "${configured}" ] || [ "${configured}" != "${MODELING_SERVICE_TOKEN}" ]; then
+        die "Running consumer does not use the configured MODELING_SERVICE_TOKEN; redeploy or restart consumer before deploying Modeling"
+    fi
+}
+
 detect_consumer_network() {
     local container=""
     local network=""
@@ -235,6 +246,7 @@ deploy_release() {
 
     ensure_modeling_service_token "${bundle_root}/backend/.env"
     load_modeling_env "${bundle_root}/backend/.env" "${bundle_root}/.env"
+    verify_consumer_service_token
 
     network="$(detect_consumer_network)"
     [ -n "${network}" ] || die "Could not detect consumer Docker network; deploy consumer first or set CONSUMER_NETWORK"
@@ -273,6 +285,7 @@ deploy_source() {
 
     ensure_modeling_service_token "${repo_root}/consumer/backend/.env"
     load_modeling_env "${repo_root}/consumer/backend/.env" "${repo_root}/deploy/.env"
+    verify_consumer_service_token
 
     network="$(detect_consumer_network)"
     [ -n "${network}" ] || die "Could not detect consumer Docker network; deploy consumer first or set CONSUMER_NETWORK"
