@@ -16,7 +16,6 @@ import {
   Workflow,
   X,
 } from 'lucide-react';
-import { applyNodeChanges, Background, Controls, ReactFlow } from '@xyflow/react';
 
 import { store } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
@@ -36,7 +35,6 @@ import {
 } from './studio-api.js';
 import {
   applyStudioFocus,
-  filterStudioGraph,
   KIND_META,
   readStudioSession,
   restoreStudioHistory,
@@ -44,14 +42,15 @@ import {
   studioHistoryFromLocation,
   studioHistorySnapshot,
   studioHistoryUrl,
+  studioVisibleElementId,
   writeStudioSession,
 } from './studio-model.js';
+import StudioGraph from './StudioGraph.jsx';
 import './studio.css';
 
 const selProjectId = (state) => state.projectId;
 const selMaterials = (state) => state.materials;
 const KIND_ICON = { object: Boxes, operation: Workflow, rule: Scale, metric: Gauge, concept: Network };
-const NODE_TYPES = { studio: StudioNode };
 
 export default function StudioView({ focus }) {
   const projectId = useStore(store, selProjectId);
@@ -365,7 +364,15 @@ function StudioToolbar({ session, update, navigate, onRefresh }) {
             onChange={(event) => update({ query: event.target.value })} />
         </label>
         <StudioKindTabs kinds={session.schema?.kinds} elements={session.elements} value={session.kind}
-          onChange={(kind) => update({ kind, selectedIds: [] })} />
+          onChange={(kind) => update((current) => {
+            const visibleNodes = (current.graph?.nodes || []).filter((node) => !kind || node.kind === kind);
+            return {
+              ...current,
+              kind,
+              selectedIds: [],
+              selectedElementId: studioVisibleElementId(current.selectedElementId, visibleNodes),
+            };
+          })} />
       </>}
       <span className="spacer" />
       <span className="studio-count">{session.elements.length}/{session.total || session.elements.length} 项</span>
@@ -397,84 +404,6 @@ export function StudioKindTabs({ kinds = [], elements = [], value = '', onChange
           </button>
         );
       })}
-    </div>
-  );
-}
-
-function StudioGraph({ session, update, onOpen, focus }) {
-  const instanceRef = useRef(null);
-  const filtered = useMemo(
-    () => filterStudioGraph(session.graph, session.kind, session.query, session.elements),
-    [session.elements, session.graph, session.kind, session.query],
-  );
-  const projectedNodes = useMemo(() => filtered.nodes.map((node) => ({
-    id: node.id,
-    type: 'studio',
-    position: session.nodePositions[node.id] || { x: node.x, y: node.y },
-    data: { label: node.label, kind: node.kind, selected: node.id === session.selectedElementId },
-    ariaLabel: `${KIND_META[node.kind]?.label || node.kind}：${node.label}`,
-  })), [filtered.nodes, session.nodePositions, session.selectedElementId]);
-  const [nodes, setNodes] = useState(projectedNodes);
-  const edges = useMemo(() => filtered.edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    label: edge.label,
-    type: 'smoothstep',
-    style: { stroke: '#aeb8c7', strokeWidth: 1.2 },
-    labelStyle: { fill: '#6f7888', fontSize: 10 },
-  })), [filtered.edges]);
-
-  useEffect(() => setNodes(projectedNodes), [projectedNodes]);
-
-  useEffect(() => {
-    if (!focus?.elementId || focus.view !== 'graph') return;
-    const node = nodes.find((item) => item.id === focus.elementId);
-    if (node) instanceRef.current?.setCenter(node.position.x + 70, node.position.y + 28, { zoom: 1.25, duration: 420 });
-  }, [focus, nodes]);
-
-  if (!nodes.length) return <FilteredEmpty />;
-  return (
-    <div className="studio-graph" aria-label="知识包关系图">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={NODE_TYPES}
-        nodesDraggable
-        nodesConnectable={false}
-        elementsSelectable
-        minZoom={0.2}
-        maxZoom={2.2}
-        defaultViewport={session.graphViewport || { x: 0, y: 0, zoom: 0.8 }}
-        fitView={!session.graphViewport}
-        fitViewOptions={{ padding: 0.2, maxZoom: 1.1 }}
-        onInit={(instance) => { instanceRef.current = instance; }}
-        onMoveEnd={(_event, viewport) => update({ graphViewport: viewport })}
-        onNodesChange={(changes) => setNodes((current) => applyNodeChanges(changes, current))}
-        onNodeDragStop={(_event, node) => update((current) => ({
-          ...current,
-          nodePositions: { ...current.nodePositions, [node.id]: node.position },
-        }))}
-        onNodeClick={(_event, node) => onOpen(node.id, 'graph')}
-      >
-        <Background color="#dfe4ec" gap={24} size={1} />
-        <Controls showInteractive={false} position="bottom-right" />
-      </ReactFlow>
-      <div className="studio-graph-legend" aria-label="图例">
-        {Object.entries(KIND_META).map(([kind, meta]) => (
-          <span key={kind}><i className={`studio-swatch ${meta.className}`} />{meta.label}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function StudioNode({ data }) {
-  const Icon = KIND_ICON[data.kind] || Boxes;
-  return (
-    <div className={`studio-node ${KIND_META[data.kind]?.className || ''}${data.selected ? ' selected' : ''}`}>
-      <Icon size={14} />
-      <span>{data.label}</span>
     </div>
   );
 }
