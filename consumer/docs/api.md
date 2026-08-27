@@ -2246,10 +2246,13 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后的 `trace`，默认 `false`。当前公共 Trace schema 为 `5.0`：同一逻辑迭代只保留最后一份累计快照，工具调用嵌入对应 iteration，Agent 输出位于 `agent_output`，不返回模型原始思维链或 `reasoning_summaries`。
 
+`selected_ontology_id` 为可选参数。已存在的 session 会复用其锁定 ontology；新 session 未显式指定时，工作空间只有一个已启用 ontology 则自动选中，存在多个时返回 `MCP_ONTOLOGY_SELECTION_REQUIRED`，不会猜测。求解类操作成功后，`result.authoritative_solver_result` 返回经过脱敏的权威结果摘要和工件引用；其中 `summary.candidate_id` 是稳定内部标识，`summary.combination_no` 是面向业务展示的组合号，完整候选列表由 `candidate_results_artifact_ref` 标识。
+
 ```json
 {
   "query": "查询业务数据",
   "session_id": "optional-session-id",
+  "selected_ontology_id": "optional-ontology-id",
   "include_trace": true
 }
 ```

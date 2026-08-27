@@ -681,6 +681,90 @@ test('web search progress events are accumulated on the tool segment', () => {
   assert.equal(state.streamSegments[0].meta.input.query, '示例企业总部地址');
 });
 
+test('solver events resume by event_seq and retain only public authoritative fields', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+  state = applyPublicEvent(state, publicEvent('tool.started', {
+    tool_name: 'solve_synthetic_route_aaaaaaaa',
+    tool_call_id: 'call-solver',
+    input: { item_count: 2 },
+  }, 1));
+  const progress = {
+    tool_name: 'solve_synthetic_route_aaaaaaaa',
+    tool_call_id: 'call-solver',
+    run_id: 'run-synthetic',
+    job_id: 'job-synthetic',
+    attempt_id: 'attempt-synthetic',
+    event_seq: 2,
+    phase: 'solve',
+    message: '正在求解',
+    problem_ir: { must_not: 'persist' },
+  };
+  state = applyPublicEvent(state, publicEvent('solver.progress', progress, 2));
+  state = applyPublicEvent(state, publicEvent('solver.progress', progress, 3));
+  state = applyPublicEvent(state, publicEvent('solver.verification.completed', {
+    ...progress,
+    event_seq: 3,
+    phase: 'verify',
+    message: '独立校验完成',
+  }, 4));
+  state = applyPublicEvent(state, publicEvent('solver.result.authoritative', {
+    ...progress,
+    event_seq: 4,
+    status: 'completed',
+    authoritative: true,
+    feasibility: 'feasible',
+    optimality: 'not_proven',
+    proof_kind: 'constraint_recalculation',
+    summary: { candidate_id: 'ALL_0' },
+    result_artifact_ref: 'artifact://result-synthetic',
+    verification_evidence_ref: 'artifact://evidence-synthetic',
+    candidate_results_artifact_ref: 'artifact://candidate_results/synthetic',
+    candidate_results_artifact_digest: 'sha256:candidate-results-synthetic',
+    fact_snapshot_digest: 'sha256:synthetic',
+  }, 5));
+
+  const segment = state.streamSegments[0];
+  assert.equal(segment.meta.solver_events.length, 3);
+  assert.deepEqual(segment.meta.solver_events.map((event) => event.event_seq), [2, 3, 4]);
+  assert.equal(segment.meta.solver_result.authoritative, true);
+  assert.equal(segment.meta.solver_result.optimality, 'not_proven');
+  assert.equal(
+    segment.meta.solver_result.candidate_results_artifact_ref,
+    'artifact://candidate_results/synthetic',
+  );
+  assert.equal(
+    segment.meta.solver_result.candidate_results_artifact_digest,
+    'sha256:candidate-results-synthetic',
+  );
+  assert.equal('problem_ir' in segment.meta.solver_events[0], false);
+  assert.equal(JSON.stringify(segment).includes('must_not'), false);
+});
+
+test('solver progress without a tool start creates a canonical traced tool segment', () => {
+  const state = applyPublicEvent(
+    { streamSegments: [], status: 'running', isLoading: true },
+    publicEvent('solver.progress', {
+      tool_name: 'solve_synthetic_route_aaaaaaaa',
+      tool_call_id: 'call-solver-orphan',
+      job_id: 'job-synthetic-orphan',
+      event_seq: 1,
+      phase: 'solve',
+      message: 'Solving',
+    }, 2, {
+      span_key: 'tool:main:1:solve:call-solver-orphan',
+      parent_key: 'iteration:main:1',
+    }),
+  );
+
+  assert.equal(state.streamSegments.length, 1);
+  assert.equal(state.streamSegments[0].startTs, 1002);
+  assert.equal(
+    state.streamSegments[0].spanKey,
+    'tool:main:1:solve:call-solver-orphan',
+  );
+  assert.equal(state.streamSegments[0].parentKey, 'iteration:main:1');
+});
+
 test('turn finished appends final output after tool-only stream segments', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 

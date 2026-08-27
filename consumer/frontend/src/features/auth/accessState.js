@@ -15,5 +15,6 @@ export function canLoadWorkspaceData(
 export function requiresWorkspaceData(surface, observabilityView = 'session') {
   return surface === 'chat'
     || surface === 'kb'
+    || surface === 'solver'
     || (surface === 'observability' && observabilityView === 'session');
 }

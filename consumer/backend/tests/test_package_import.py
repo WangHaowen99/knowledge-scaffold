@@ -1,4 +1,4 @@
-"""Tests for the v0.1-only ontology import boundary."""
+"""Tests for the supported ontology import boundary."""
 
 from __future__ import annotations
 
@@ -136,8 +136,8 @@ def test_inspect_importable_package_accepts_v01(tmp_path):
     assert package.source_format == "v0.1"
 
 
-@pytest.mark.parametrize("schema_version", (None, "0.2", "9.9"))
-def test_inspect_importable_package_rejects_unsupported_v01_schema(tmp_path, schema_version):
+@pytest.mark.parametrize("schema_version", (None, "0.3", "9.9"))
+def test_inspect_importable_package_rejects_unsupported_schema(tmp_path, schema_version):
     _write_v01_package(tmp_path)
     manifest = V01_MANIFEST
     if schema_version is None:

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/solver-services/ortools/capabilities.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_versions", "service", "engine", "execution", "problem_types"],
+  "properties": {
+    "api_versions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "uniqueItems": true,
+      "items": {"const": "ortools.solver.v1"}
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "build"],
+      "properties": {
+        "name": {"const": "ortools-solver-service"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "build": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "ortools-cp-sat"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["async_jobs", "cancellation", "prefer_wait", "job_retention_seconds", "max_concurrent_jobs"],
+      "properties": {
+        "async_jobs": {"const": true},
+        "cancellation": {"type": "boolean"},
+        "prefer_wait": {"type": "boolean"},
+        "job_retention_seconds": {"type": "integer", "minimum": 1},
+        "max_concurrent_jobs": {"type": "integer", "minimum": 1}
+      }
+    },
+    "problem_types": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "versions", "features", "result_assurances", "limits"],
+        "properties": {
+          "name": {"const": "binary_ordered_route"},
+          "versions": {"type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true, "items": {"const": "1.0"}},
+          "features": {"type": "array", "uniqueItems": true, "items": {"enum": ["lexicographic_objective", "domain_candidate_evaluation"]}},
+          "result_assurances": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["feasible_solution", "best_bound", "gap"]}},
+          "limits": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["max_payload_bytes", "max_solve_time_ms", "max_search_workers"],
+            "properties": {
+              "max_payload_bytes": {"type": "integer", "minimum": 1},
+              "max_solve_time_ms": {"type": "integer", "minimum": 1},
+              "max_search_workers": {"const": 1}
+            }
+          }
+        }
+      }
+    }
+  }
+}

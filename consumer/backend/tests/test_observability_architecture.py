@@ -1,6 +1,8 @@
 import logging
+import sys
 import threading
 import time
+import types
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -14,6 +16,102 @@ def _reset_observability_provider_between_tests():
     shutdown_observer(timeout=1)
     yield
     shutdown_observer(timeout=1)
+
+
+def test_initialize_open_telemetry_instruments_fastapi_with_asgi_hook(
+    monkeypatch,
+):
+    from fastapi import FastAPI
+
+    from integration.observability import otel as otel_mod
+
+    calls = []
+
+    class FakeFastAPIInstrumentor:
+        @classmethod
+        def instrument_app(cls, application, **kwargs):
+            del cls
+            calls.append((application, kwargs))
+
+    instrumentation_module = types.ModuleType(
+        "opentelemetry.instrumentation.fastapi"
+    )
+    instrumentation_module.FastAPIInstrumentor = FakeFastAPIInstrumentor
+    monkeypatch.setitem(
+        sys.modules,
+        "opentelemetry.instrumentation.fastapi",
+        instrumentation_module,
+    )
+    monkeypatch.setattr(otel_mod, "_provider_initialized", True)
+    monkeypatch.setattr(otel_mod, "_meter_provider_initialized", True)
+    monkeypatch.setattr(
+        otel_mod,
+        "_client_instrumentation_initialized",
+        True,
+    )
+    monkeypatch.setattr(otel_mod, "_instrumented_apps", set())
+    opentelemetry_module = types.ModuleType("opentelemetry")
+    opentelemetry_module.__path__ = []
+    opentelemetry_module.metrics = object()
+    opentelemetry_module.trace = object()
+    instrumentation_package = types.ModuleType(
+        "opentelemetry.instrumentation"
+    )
+    instrumentation_package.__path__ = []
+    sdk_module = types.ModuleType("opentelemetry.sdk")
+    sdk_module.__path__ = []
+    sdk_metrics_module = types.ModuleType("opentelemetry.sdk.metrics")
+    sdk_metrics_module.MeterProvider = object
+    sdk_metrics_export_module = types.ModuleType(
+        "opentelemetry.sdk.metrics.export"
+    )
+    sdk_metrics_export_module.PeriodicExportingMetricReader = object
+    sdk_resources_module = types.ModuleType("opentelemetry.sdk.resources")
+
+    class FakeResource:
+        @staticmethod
+        def create(_attributes):
+            return object()
+
+    sdk_resources_module.Resource = FakeResource
+    sdk_trace_module = types.ModuleType("opentelemetry.sdk.trace")
+    sdk_trace_module.TracerProvider = object
+    sdk_trace_sampling_module = types.ModuleType(
+        "opentelemetry.sdk.trace.sampling"
+    )
+    sdk_trace_sampling_module.ALWAYS_ON = object()
+    sdk_trace_export_module = types.ModuleType(
+        "opentelemetry.sdk.trace.export"
+    )
+    sdk_trace_export_module.SimpleSpanProcessor = object
+    for name, module in (
+        ("opentelemetry", opentelemetry_module),
+        ("opentelemetry.instrumentation", instrumentation_package),
+        ("opentelemetry.sdk", sdk_module),
+        ("opentelemetry.sdk.metrics", sdk_metrics_module),
+        ("opentelemetry.sdk.metrics.export", sdk_metrics_export_module),
+        ("opentelemetry.sdk.resources", sdk_resources_module),
+        ("opentelemetry.sdk.trace", sdk_trace_module),
+        ("opentelemetry.sdk.trace.sampling", sdk_trace_sampling_module),
+        ("opentelemetry.sdk.trace.export", sdk_trace_export_module),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    application = FastAPI()
+    otel_mod.initialize_open_telemetry(application)
+
+    assert len(calls) == 1
+    assert calls[0][0] is application
+    request_hook = calls[0][1]["server_request_hook"]
+    span = Mock()
+    request_hook(
+        span,
+        {"headers": [(b"x-workspace-id", b"workspace-asgi")]},
+    )
+    span.set_attribute.assert_any_call(
+        "agent.workspace_id",
+        "workspace-asgi",
+    )
 
 
 def test_observability_bus_emit_does_not_wait_for_exporter():
@@ -1573,8 +1671,12 @@ def test_runtime_refresh_resets_observability_provider(monkeypatch):
             services = {"LLM_ROUTER": object()}
             runtime_container = None
 
-    def fake_build_runtime_services(previous_llm_router=None):
-        del previous_llm_router
+    def fake_build_runtime_services(
+        previous_llm_router=None,
+        *,
+        user_store_manager=None,
+    ):
+        del previous_llm_router, user_store_manager
         calls.append("build")
         return runtime
 
@@ -1614,7 +1716,7 @@ def test_runtime_refresh_does_not_restart_platform_manager(monkeypatch):
     monkeypatch.setattr(
         app_mod,
         "build_runtime_services",
-        lambda previous_llm_router=None: runtime,
+        lambda previous_llm_router=None, **_kwargs: runtime,
     )
     monkeypatch.setattr(app_mod, "update_runtime_dependencies", lambda *args, **kwargs: calls.append("update"))
     monkeypatch.setattr(app_mod, "reset_observer", lambda timeout=1.0: calls.append(("observer_reset", timeout)))

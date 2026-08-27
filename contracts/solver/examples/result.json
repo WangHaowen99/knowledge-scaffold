@@ -1,0 +1,18 @@
+{
+  "schema_version": "solver.result.v1",
+  "request_ref": "req_0123456789ABCDEFGHIJ",
+  "problem_family": "binary_ordered_route",
+  "family_version": "1.0",
+  "solve_outcome": "optimal",
+  "assignments": {
+    "candidate_id": "CANDIDATE_SYNTHETIC_0001",
+    "item_0001": "OPTION_1"
+  },
+  "objective_values": {"primary_score": 20, "candidate_rank": 1},
+  "assurance": {"best_bound": 20, "gap": "0", "certificate": null},
+  "engine": {
+    "name": "synthetic-engine",
+    "version": "1.0.0",
+    "connector_build": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  }
+}

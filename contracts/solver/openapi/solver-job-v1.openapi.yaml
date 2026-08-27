@@ -1,0 +1,125 @@
+openapi: 3.1.0
+info:
+  title: solver.job.v1
+  version: 1.0.0
+  description: Vendor-neutral asynchronous solver Connector contract.
+servers:
+  - url: https://solver.example.net
+paths:
+  /v1/health:
+    get:
+      operationId: health
+      responses:
+        '200':
+          description: Health status
+  /v1/capabilities:
+    get:
+      operationId: capabilities
+      responses:
+        '200':
+          description: Capability declaration
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/capabilities.schema.json'
+  /v1/solve-jobs:
+    post:
+      operationId: submitSolveJob
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/submit-request.schema.json'
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/job.schema.json'
+        '400':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+  /v1/solve-jobs/{job_id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      operationId: getSolveJob
+      responses:
+        '200':
+          description: Job state
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/job.schema.json'
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: cancelSolveJob
+      responses:
+        '200':
+          description: Cancellation state
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/job.schema.json'
+        '404':
+          $ref: '#/components/responses/Error'
+  /v1/solve-jobs/{job_id}/result:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      operationId: getSolveResult
+      responses:
+        '200':
+          description: Normalized solver result
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/result.schema.json'
+        '409':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 256
+    Traceparent:
+      name: traceparent
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$'
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^job_[A-Za-z0-9_-]{8,128}$'
+  responses:
+    Error:
+      description: Standard solver error
+      content:
+        application/json:
+          schema:
+            $ref: '../schemas/error.schema.json'

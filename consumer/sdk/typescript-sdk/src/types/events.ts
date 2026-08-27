@@ -35,6 +35,11 @@ export type NormalizedStreamEventKind =
   | 'tool.started'
   | 'tool.progress'
   | 'tool.finished'
+  | 'solver.input.awaiting_confirmation'
+  | 'solver.progress'
+  | 'solver.verification.completed'
+  | 'solver.verification.rejected'
+  | 'solver.result.authoritative'
   | 'subagent.started'
   | 'subagent.delta'
   | 'subagent.progress'
@@ -97,6 +102,11 @@ const normalizeEventKind = (eventType: string, payload: Record<string, unknown>)
     case 'tool.started':
     case 'tool.progress':
     case 'tool.finished':
+    case 'solver.input.awaiting_confirmation':
+    case 'solver.progress':
+    case 'solver.verification.completed':
+    case 'solver.verification.rejected':
+    case 'solver.result.authoritative':
     case 'subagent.started':
     case 'subagent.delta':
     case 'subagent.progress':

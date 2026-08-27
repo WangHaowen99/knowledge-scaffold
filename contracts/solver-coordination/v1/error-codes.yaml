@@ -1,0 +1,84 @@
+version: solver-coordination.v1
+
+# The registry is intentionally scenario-neutral.  Runtime adapters may add
+# private diagnostic details, but the wire-level code and retry policy are
+# stable and machine-readable.
+codes:
+  invalid_solver_input:
+    phase: input
+    http_status: 400
+    retryable: false
+    user_action: correct_request
+    allow_llm_fallback: false
+  validation_input_invalid:
+    phase: validation
+    http_status: 400
+    retryable: false
+    user_action: correct_request
+    allow_llm_fallback: false
+  candidate_not_found:
+    phase: validation
+    http_status: 404
+    retryable: false
+    user_action: request_new_candidate
+    allow_llm_fallback: false
+  candidate_digest_mismatch:
+    phase: validation
+    http_status: 409
+    retryable: false
+    user_action: create_derived_candidate
+    allow_llm_fallback: false
+  idempotency_conflict:
+    phase: validation
+    http_status: 409
+    retryable: false
+    user_action: use_original_request
+    allow_llm_fallback: false
+  validation_service_unavailable:
+    phase: validation
+    http_status: 503
+    retryable: true
+    user_action: retry_same_request
+    allow_llm_fallback: false
+  candidate_store_unavailable:
+    phase: persistence
+    http_status: 503
+    retryable: true
+    user_action: retry_same_request
+    allow_llm_fallback: false
+  validation_store_unavailable:
+    phase: persistence
+    http_status: 503
+    retryable: true
+    user_action: retry_same_request
+    allow_llm_fallback: false
+  verification_runtime_failed:
+    phase: verification
+    http_status: 503
+    retryable: true
+    user_action: retry_same_request
+    allow_llm_fallback: false
+  artifact_persist_failed:
+    phase: persistence
+    http_status: 503
+    retryable: true
+    user_action: retry_same_request
+    allow_llm_fallback: false
+  verification_divergence:
+    phase: verification
+    http_status: 409
+    retryable: false
+    user_action: inspect_evidence
+    allow_llm_fallback: false
+  validation_failed:
+    phase: validation
+    http_status: 200
+    retryable: false
+    user_action: inspect_candidate_results
+    allow_llm_fallback: false
+  run_not_found:
+    phase: runtime
+    http_status: 404
+    retryable: false
+    user_action: request_new_run
+    allow_llm_fallback: false

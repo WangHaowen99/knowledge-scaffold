@@ -62,6 +62,9 @@ class ToolContext:
     model_profile_id: Optional[str] = None
     observer: Any = None
     supports_user_interaction: bool = True
+    # Appended at the end to preserve positional compatibility for existing
+    # tool adapters while carrying the W3C context through solver calls.
+    traceparent: Optional[str] = None
 
 
 @dataclass

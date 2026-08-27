@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/solver-services/ortools/submit-request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "request_id", "problem", "options"],
+  "properties": {
+    "api_version": {"const": "ortools.solver.v1"},
+    "request_id": {"type": "string", "pattern": "^req_[A-Za-z0-9_-]{8,96}$"},
+    "problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "version", "data"],
+      "properties": {
+        "type": {"const": "binary_ordered_route"},
+        "version": {"const": "1.0"},
+        "data": {"type": "object"}
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_limit_ms", "search_workers"],
+      "properties": {
+        "time_limit_ms": {"type": "integer", "minimum": 1},
+        "search_workers": {"const": 1}
+      }
+    }
+  }
+}

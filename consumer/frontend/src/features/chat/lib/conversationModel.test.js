@@ -102,6 +102,43 @@ test('conversation blocks keep source segment order and add lifecycle last', () 
   assert.equal(turn.blocks.at(-1).status, 'finished');
 });
 
+test('solver tool segments project progress and authoritative result separately', () => {
+  const model = buildConversationViewModel([{
+    id: 'solver-message',
+    role: 'assistant',
+    runId: 'run-synthetic',
+    status: 'success',
+    streamSegments: [{
+      type: 'tool',
+      state: 'completed',
+      finished: true,
+      meta: {
+        tool_name: 'solve_synthetic_route_aaaaaaaa',
+        tool_call_id: 'call-solver',
+        solver_events: [
+          { type: 'solver.progress', event_seq: 2, phase: 'solve', message: '正在求解' },
+          { type: 'solver.verification.completed', event_seq: 3, phase: 'verify', message: '独立校验完成' },
+        ],
+        solver_result: {
+          authoritative: true,
+          feasibility: 'feasible',
+          optimality: 'not_proven',
+          proof_kind: 'constraint_recalculation',
+          summary: { candidate_id: 'ALL_0' },
+          result_artifact_ref: 'artifact://result-synthetic',
+          verification_evidence_ref: 'artifact://evidence-synthetic',
+        },
+      },
+    }],
+  }]);
+
+  const block = model.turns[0].blocks[0];
+  assert.equal(block.kind, 'solver');
+  assert.deepEqual(block.progress.map((item) => item.phase), ['solve', 'verify']);
+  assert.equal(block.solverResult.authoritative, true);
+  assert.equal(block.solverResult.optimality, 'not_proven');
+});
+
 test('deterministic artifact segments normalize download metadata', () => {
   const message = {
     ...assistantMessage,

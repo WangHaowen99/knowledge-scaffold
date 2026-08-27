@@ -1532,6 +1532,85 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
     assert state["final_output"] == "from restored history"
 
 
+def test_suppressed_solver_turn_removes_the_complete_solver_history_turn():
+    from agent.core.jiuwen_engine import _build_jiuwen_history_source_messages
+    from agent.core.shared.solver_route_guard import bind_solver_route_requirement
+
+    state = {
+        "user_request": "【合成测试数据】请统计资源负荷和容量校验结果。",
+        "user_context": bind_solver_route_requirement(
+            {},
+            None,
+            suppress_solver_tools=True,
+        ),
+        "messages": [
+            {"role": "system", "content": "historical system prompt"},
+            {"role": "user", "content": "【合成测试数据】请生成候选方案。"},
+            {
+                "role": "assistant",
+                "content": "正在调用求解工具。",
+                "tool_calls": [
+                    {
+                        "id": "solver-call",
+                        "type": "function",
+                        "function": {
+                            "name": "solve_synthetic_route_aaaaaaaa",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "solver-call",
+                "name": "solve_synthetic_route_aaaaaaaa",
+                "content": "synthetic authoritative result",
+            },
+            {"role": "assistant", "content": "合成结果摘要。"},
+            {"role": "user", "content": "Read ordinary synthetic data."},
+            {
+                "role": "assistant",
+                "content": "正在读取普通业务数据。",
+                "tool_calls": [
+                    {
+                        "id": "script-call",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_script",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "script-call",
+                "name": "execute_script",
+                "content": "synthetic script result",
+            },
+            {
+                "role": "user",
+                "content": "【合成测试数据】请统计资源负荷和容量校验结果。",
+            },
+        ],
+    }
+
+    history = _build_jiuwen_history_source_messages(state)
+
+    assert [message.get("name") for message in history] == [None, None, "execute_script"]
+    assert history[0]["content"] == "Read ordinary synthetic data."
+    assert all(message.get("tool_call_id") != "solver-call" for message in history)
+    assert all(
+        all(
+            call.get("function", {}).get("name")
+            != "solve_synthetic_route_aaaaaaaa"
+            for call in message.get("tool_calls", [])
+        )
+        for message in history
+    )
+    assert history[-1]["content"] == "synthetic script result"
+
+
 def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
@@ -1672,6 +1751,38 @@ def test_jiuwen_loop_engine_appends_current_date_after_selected_ontology_context
     assert query.index("<Ontology-Selection-Constraint>") < query.index("<system-reminder>")
     assert query.index("<Selected-Ontology>") < query.index("<system-reminder>")
     assert "Today's date is 2026/06/08." in query
+
+
+def test_suppressed_solver_turn_appends_current_turn_provenance_to_query(monkeypatch):
+    from agent.core.shared.solver_route_guard import bind_solver_route_requirement
+
+    monkeypatch.setattr(
+        "agent.core.shared.messages.current_utc8_date_text",
+        lambda: "2026/06/08",
+    )
+    engine = object.__new__(JiuwenReactLoopEngine)
+    engine._append_selected_ontology_context_to_query = (
+        lambda _state, query: query + "\n<Selected-Ontology>synthetic</Selected-Ontology>"
+    )
+    state = {
+        "session_id": "session-synthetic",
+        "user_request": "【合成测试数据】请统计资源负荷和容量校验结果。",
+        "user_context": bind_solver_route_requirement(
+            {},
+            None,
+            suppress_solver_tools=True,
+        ),
+    }
+
+    query = engine._build_inputs(state)["query"]
+
+    assert "<Current-Turn-Tool-Provenance>" in query
+    assert "Only the latest user message defines the active request." in query
+    assert "Do not mention unavailable or omitted tools" in query
+    assert "Solver tools are unavailable" not in query
+    assert query.index("<Current-Turn-Tool-Provenance>") < query.index(
+        "<system-reminder>"
+    )
 
 
 def test_jiuwen_loop_engine_injects_selected_ontology_context_into_inputs(monkeypatch):
@@ -4675,8 +4786,8 @@ def test_create_default_jiuwen_agent_lazy_loads_react_agent(monkeypatch):
         "client_provider": "OpenAI",
         "api_key": "key",
         "api_base": "https://llm.example/v1",
-        "timeout": 33.0,
-        "max_retries": 3,
+        "timeout": 180.0,
+        "max_retries": 1,
         "verify_ssl": False,
     }
     assert created["model_client_config"]["verify_ssl"] is False
@@ -5285,6 +5396,23 @@ def test_factory_default_context_max_rounds_is_ten(monkeypatch):
     assert cec.kwargs["max_context_message_num"] is None
 
 
+def test_create_default_jiuwen_agent_passes_required_tool_choice(monkeypatch):
+    created: dict = {}
+    _install_fake_jiuwen_modules(monkeypatch, created)
+
+    create_default_jiuwen_agent(
+        llm_config=_stub_llm_config(),
+        max_iterations=50,
+        system_prompt="system rules",
+        tool_choice="required",
+    )
+
+    assert created["model_request_config"]["tool_choice"] == "required"
+    assert "tool_choice" not in created["model_request_config"].get(
+        "extra_body", {}
+    )
+
+
 def test_create_agent_passes_context_max_rounds_from_agent_config(monkeypatch):
     captured = {}
 
@@ -5311,6 +5439,65 @@ def test_create_agent_passes_context_max_rounds_from_agent_config(monkeypatch):
     )
 
     assert captured["context_max_rounds"] == 7
+
+
+def test_create_agent_solver_route_requires_tool_choice(monkeypatch):
+    captured = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory
+    )
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True
+    )
+
+    engine = JiuwenReactLoopEngine(agent_config=_agent_config())
+    engine._create_agent(
+        max_iterations=10,
+        system_prompt="prompt",
+        state={
+            "user_context": {
+                "_required_solver_operation_key": "optimize_minus_one_route",
+                "_required_solver_tool_name": (
+                    "solve_optimize_minus_one_route_abcd1234"
+                ),
+            }
+        },
+        caller="main",
+        llm_config=_stub_llm_config(),
+    )
+
+    assert captured["tool_choice"] == "required"
+
+
+def test_create_agent_normal_turn_keeps_automatic_tool_choice(monkeypatch):
+    captured = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory
+    )
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True
+    )
+
+    engine = JiuwenReactLoopEngine(agent_config=_agent_config())
+    engine._create_agent(
+        max_iterations=10,
+        system_prompt="prompt",
+        state={"user_context": {}},
+        caller="main",
+        llm_config=_stub_llm_config(),
+    )
+
+    assert captured.get("tool_choice") is None
 
 
 def test_history_messages_uses_same_normalization_as_factory(monkeypatch):

@@ -61,6 +61,7 @@ STAGE_ROOT="${PROJECT_ROOT}/dist/release-${VERSION}-${RELEASE_ARCH}"
 BUNDLE_DIR="${STAGE_ROOT}/onto-agent"
 IMAGES_DIR="${BUNDLE_DIR}/images"
 OUTPUT_FILE="${PROJECT_ROOT}/dist/onto-agent-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
+REPOSITORY_ROOT="${PROJECT_ROOT}/.."
 
 cleanup() {
     if [ -n "${STAGE_ROOT:-}" ] && [ -d "${STAGE_ROOT}" ]; then
@@ -75,6 +76,11 @@ mkdir -p "${IMAGES_DIR}" "${BUNDLE_DIR}/backend" "${BUNDLE_DIR}/frontend" "${BUN
 
 echo "Building release ${VERSION} for ${PLATFORM}"
 
+[ -d "${REPOSITORY_ROOT}/contracts/solver_services/ortools" ] || {
+    echo "Error: OR-Tools Solver Service contract directory not found: ${REPOSITORY_ROOT}/contracts/solver_services/ortools" >&2
+    exit 1
+}
+
 if docker buildx version >/dev/null 2>&1; then
     BUILD_CMD="docker buildx build --platform ${PLATFORM} --load"
 else
@@ -84,7 +90,8 @@ fi
 
 ${BUILD_CMD} \
     -t "onto-agent-backend:${VERSION}" \
-    "${PROJECT_ROOT}/backend"
+    -f "${PROJECT_ROOT}/backend/Dockerfile" \
+    "${REPOSITORY_ROOT}"
 docker save -o "${IMAGES_DIR}/onto-agent-backend-${VERSION}.tar" "onto-agent-backend:${VERSION}"
 
 ${BUILD_CMD} \

@@ -944,15 +944,19 @@ def _build_script_env_overrides(
             ontology_id=ontology_id,
         )
         connection_config = dict(connection.config)
-        connection_config["workspace_id"] = str(workspace_id or "").strip()
-        connection_config["ontology_id"] = str(ontology_id or "").strip()
+        graph_workspace_id = str(
+            connection_config.get("workspace_value") or workspace_id or ""
+        ).strip()
+        graph_ontology_id = str(
+            connection_config.get("ontology_value") or ontology_id or ""
+        ).strip()
         effective_connection = build_effective_connection(connection)
         effective_connection = replace(
             effective_connection,
             options={
                 **effective_connection.options,
-                "workspace_id": connection_config["workspace_id"],
-                "ontology_id": connection_config["ontology_id"],
+                "workspace_id": graph_workspace_id,
+                "ontology_id": graph_ontology_id,
             },
         )
         return {
@@ -989,6 +993,7 @@ def handle_execute_script_path(
     workspace_id: Optional[str] = None,
     ontology_id: Optional[str] = None,
     ontology_dir: Optional[Path] = None,
+    data_access: str = "live",
     clean_env: bool = False,
     include_stderr_on_success: bool = True,
     stdout_limit_bytes: Optional[int] = None,
@@ -1010,6 +1015,8 @@ def handle_execute_script_path(
     so that scripts can import sibling packages (e.g., an ontology directory
     containing a ``scripts/`` package).
     """
+    if data_access not in {"live", "frozen_snapshot"}:
+        return "Error: Unsupported script data access mode"
     call_context = _format_call_context(
         tool_call_id=tool_call_id,
         caller=caller,
@@ -1163,6 +1170,8 @@ def handle_execute_script_path(
             }
         else:
             child_env = os.environ.copy()
+        if data_access == "frozen_snapshot":
+            child_env.pop(SCRIPT_BUSINESS_DATA_CONNECTION_ENV, None)
         pythonpath_parts: List[str] = [str(BACKEND_DIR)]
         if extra_pythonpath_dirs:
             for d in extra_pythonpath_dirs:
@@ -1179,7 +1188,7 @@ def handle_execute_script_path(
         # A generic/legacy script may later coexist with a locked deterministic
         # operation, so never let imports mutate the installed package tree.
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        if env_overrides:
+        if env_overrides and data_access == "live":
             child_env.update({str(key): str(value) for key, value in env_overrides.items()})
 
         logger.info(
@@ -2013,6 +2022,9 @@ def handle_execute_script(
     turn_id: Optional[int] = None,
     workspace_id: Optional[str] = None,
     runtime_context: Optional[Mapping[str, Any]] = None,
+    data_access: str = "live",
+    expected_script_path: Optional[Path] = None,
+    expected_script_digest: Optional[str] = None,
 ) -> str:
     manifest_kwargs = {"workspace_id": workspace_id}
     if str(ontology_version or "").strip():
@@ -2026,7 +2038,10 @@ def handle_execute_script(
     try:
         from ontology.operation_execution import is_deterministic_operation
 
-        if is_deterministic_operation(ontology_dir, operation_key):
+        if (
+            caller != "deterministic_service"
+            and is_deterministic_operation(ontology_dir, operation_key)
+        ):
             return "Error: deterministic_operation_protected"
     except Exception:
         logger.exception(
@@ -2055,6 +2070,15 @@ def handle_execute_script(
         return "Error: Registered script for operation '{}' is outside ontology scripts directory.".format(
             operation_key
         )
+    if data_access not in {"live", "frozen_snapshot"}:
+        return "Error: Unsupported script data access mode"
+    if expected_script_path is not None and resolved_script_path != Path(expected_script_path).resolve():
+        return "Error: Bound script identity changed for operation '{}'".format(operation_key)
+    if expected_script_digest:
+        import hashlib
+        actual_digest = "sha256:" + hashlib.sha256(resolved_script_path.read_bytes()).hexdigest()
+        if actual_digest != str(expected_script_digest).strip():
+            return "Error: Bound script digest changed for operation '{}'".format(operation_key)
     try:
         script_path = str(resolved_script_path.relative_to(project_root)).replace("\\", "/")
     except ValueError:
@@ -2105,6 +2129,7 @@ def handle_execute_script(
         workspace_id=workspace_id,
         ontology_id=ontology_id,
         ontology_dir=ontology_dir,
+        data_access=data_access,
         include_stderr_on_success=False,
     )
 

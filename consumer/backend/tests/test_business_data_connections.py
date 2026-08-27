@@ -233,6 +233,8 @@ def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch
     hugegraph_fields = {field["name"]: field for field in schemas["hugegraph"]["fields"]}
     assert neo4j_fields["password"]["secret"] is True
     assert neo4j_fields["workspace_property"]["default"] == "d2o_workspace_id"
+    assert neo4j_fields["workspace_value"]["default"] == ""
+    assert neo4j_fields["ontology_value"]["default"] == ""
     assert neo4j_fields["graph_connect_timeout_seconds"]["default"] == 10
     assert neo4j_fields["graph_query_timeout_seconds"]["default"] == 30
     assert neo4j_fields["graph_agent_timeout_seconds"]["default"] == 120

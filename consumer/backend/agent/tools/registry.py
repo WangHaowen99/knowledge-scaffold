@@ -66,7 +66,10 @@ def get_tool_specs_for_caller(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     include_interaction: bool = True,
+    include_solver: bool = True,
     workspace_id: Optional[str] = None,
+    selected_ontology_id: Optional[str] = None,
+    selected_ontology_version: Optional[str] = None,
 ) -> List[BaseTool]:
     specs: List[BaseTool] = []
     has_skills = _has_registered_skills(workspace_id=workspace_id)
@@ -84,6 +87,15 @@ def get_tool_specs_for_caller(
         if not include_interaction and spec.category == "interaction":
             continue
         specs.append(spec)
+    if include_solver:
+        solver_specs = get_solver_tool_specs_for_context(
+            selected_ontology_id=selected_ontology_id,
+            selected_ontology_version=selected_ontology_version,
+            workspace_id=workspace_id,
+        )
+        for spec in solver_specs:
+            if caller in spec.allowed_callers:
+                specs.append(spec)
     return specs
 
 
@@ -94,6 +106,7 @@ def get_tools_schema(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     include_interaction: bool = True,
+    include_solver: bool = True,
     selected_ontology_id: Optional[str] = None,
     selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -111,7 +124,10 @@ def get_tools_schema(
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
+            include_solver=include_solver,
             workspace_id=workspace_id,
+            selected_ontology_id=selected_ontology_id,
+            selected_ontology_version=selected_ontology_version,
         )
     ]
 
@@ -190,8 +206,44 @@ def _has_registered_skills(*, workspace_id: Optional[str] = None) -> bool:
 # ============================================================================
 
 
-def get_tool_spec(tool_name: str) -> Optional[BaseTool]:
-    return TOOL_SPECS.get(str(tool_name or ""))
+def get_solver_tool_specs_for_context(
+    *,
+    selected_ontology_id: Optional[str],
+    selected_ontology_version: Optional[str],
+    workspace_id: Optional[str],
+) -> Tuple[BaseTool, ...]:
+    from agent.tools.solver import get_solver_tool_specs_for_context as load_specs
+
+    return tuple(
+        load_specs(
+            selected_ontology_id=selected_ontology_id,
+            selected_ontology_version=selected_ontology_version,
+            workspace_id=workspace_id,
+        )
+    )
+
+
+def get_tool_spec(
+    tool_name: str,
+    *,
+    selected_ontology_id: Optional[str] = None,
+    selected_ontology_version: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> Optional[BaseTool]:
+    normalized_name = str(tool_name or "")
+    static = TOOL_SPECS.get(normalized_name)
+    if static is not None:
+        return static
+    matches: List[BaseTool] = []
+    solver_specs = get_solver_tool_specs_for_context(
+        selected_ontology_id=selected_ontology_id,
+        selected_ontology_version=selected_ontology_version,
+        workspace_id=workspace_id,
+    )
+    for spec in solver_specs:
+        if spec.name == normalized_name:
+            matches.append(spec)
+    return matches[0] if len(matches) == 1 else None
 
 
 def get_tool_schema(tool_name: str) -> Optional[Dict[str, Any]]:
@@ -324,6 +376,18 @@ def _example_value_for_property(field_name: str, prop_schema: Dict[str, Any]) ->
 
 def _validate_schema_value(value: Any, schema: Dict[str, Any], *, path: str) -> List[str]:
     errors: List[str] = []
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list):
+        branch_errors = [
+            _validate_schema_value(value, branch, path=path)
+            for branch in one_of
+            if isinstance(branch, dict)
+        ]
+        matching = sum(not branch for branch in branch_errors)
+        if matching != 1:
+            errors.append("{} must match exactly one oneOf branch".format(path))
+            return errors
+
     expected_type = schema.get("type")
     if expected_type and not _matches_json_type(value, str(expected_type)):
         return ["{} must be {}".format(path, expected_type)]
@@ -334,6 +398,17 @@ def _validate_schema_value(value: Any, schema: Dict[str, Any], *, path: str) -> 
             "{} must be one of {}".format(path, json.dumps(enum_values, ensure_ascii=False))
         )
         return errors
+
+    if "const" in schema and value != schema.get("const"):
+        return ["{} must equal the oneOf discriminator".format(path)]
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            errors.append("{} must be at least {}".format(path, minimum))
+        if isinstance(maximum, (int, float)) and value > maximum:
+            errors.append("{} must be at most {}".format(path, maximum))
 
     if isinstance(value, dict):
         properties = schema.get("properties") or {}

@@ -1,0 +1,57 @@
+# Optional production solver overlay.  Include this file only when the
+# independently deployed OR-Tools Solver Service is enabled:
+#
+#   docker compose -f docker-compose.release.yml \
+#     -f docker-compose.solver.release.yml --profile solver-ortools up -d
+
+services:
+  ortools-solver:
+    profiles: ["solver-ortools"]
+    image: ${ORTOOLS_SOLVER_IMAGE:?set ORTOOLS_SOLVER_IMAGE}
+    container_name: solver-ortools
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536M
+    expose:
+      - "8080"
+    environment:
+      - ORTOOLS_SOLVER_STATE_DIR=/var/lib/ortools-solver
+      - ORTOOLS_SOLVER_SERVICE_TOKEN_FILE=/run/secrets/ortools_solver_service_token
+    secrets:
+      - ortools_solver_service_token
+    volumes:
+      - ortools-solver-state:/var/lib/ortools-solver
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  backend:
+    environment:
+      - SOLVER_BINDING_REVISION_ID=${SOLVER_BINDING_REVISION_ID:-connector-binding-unconfigured}
+      - SOLVER_SERVICE_CREDENTIAL_REF=${SOLVER_SERVICE_CREDENTIAL_REF:-secret://solver/ortools-primary}
+      - SOLVER_SERVICE_TOKEN_FILE=/run/secrets/ortools_solver_service_token
+      - SOLVER_SERVICE_ALLOWED_HOSTS=ortools-solver
+      - SOLVER_SERVICE_ALLOWED_PORTS=8080
+      - SOLVER_SERVICE_ALLOW_HTTP=true
+      - SOLVER_SERVICE_ALLOW_LOCALHOST=false
+    secrets:
+      - ortools_solver_service_token
+
+volumes:
+  ortools-solver-state:
+
+secrets:
+  ortools_solver_service_token:
+    external: true
+    name: ${SOLVER_SERVICE_TOKEN_SECRET:?set SOLVER_SERVICE_TOKEN_SECRET}

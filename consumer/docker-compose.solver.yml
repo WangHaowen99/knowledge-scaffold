@@ -1,0 +1,67 @@
+# Optional solver deployment overlay.
+#
+# Use explicitly with the base Consumer Compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.solver.yml \
+#     --profile solver-ortools up -d --build
+#
+# Keeping this in a separate file is intentional.  Docker Compose evaluates
+# variable interpolation and top-level secrets before profile selection; a
+# solver overlay therefore must not be part of the ordinary Consumer startup
+# path.
+
+services:
+  ortools-solver:
+    profiles: ["solver-ortools"]
+    build:
+      context: ..
+      dockerfile: solvers/ortools/Dockerfile
+    image: ${ORTOOLS_SOLVER_IMAGE:-solver-ortools-service:${TAG:-latest}}
+    container_name: solver-ortools-${TAG:-latest}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536M
+    expose:
+      - "8080"
+    environment:
+      - ORTOOLS_SOLVER_STATE_DIR=/var/lib/ortools-solver
+      - ORTOOLS_SOLVER_SERVICE_TOKEN_FILE=/run/secrets/ortools_solver_service_token
+    secrets:
+      - ortools_solver_service_token
+    volumes:
+      - ortools-solver-state:/var/lib/ortools-solver
+    networks:
+      - onto-agent-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  backend:
+    environment:
+      - SOLVER_BINDING_REVISION_ID=${SOLVER_BINDING_REVISION_ID:-connector-binding-unconfigured}
+      - SOLVER_SERVICE_CREDENTIAL_REF=${SOLVER_SERVICE_CREDENTIAL_REF:-secret://solver/ortools-primary}
+      - SOLVER_SERVICE_TOKEN_FILE=/run/secrets/ortools_solver_service_token
+      - SOLVER_SERVICE_ALLOWED_HOSTS=ortools-solver
+      - SOLVER_SERVICE_ALLOWED_PORTS=8080
+      - SOLVER_SERVICE_ALLOW_HTTP=true
+      - SOLVER_SERVICE_ALLOW_LOCALHOST=false
+    secrets:
+      - ortools_solver_service_token
+
+volumes:
+  ortools-solver-state:
+
+secrets:
+  ortools_solver_service_token:
+    file: ${SOLVER_SERVICE_TOKEN_FILE:?set SOLVER_SERVICE_TOKEN_FILE}

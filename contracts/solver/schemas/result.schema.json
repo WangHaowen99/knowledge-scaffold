@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/solver/schemas/result.schema.json",
+  "title": "solver.result.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_ref", "problem_family", "family_version", "solve_outcome", "assignments", "objective_values", "assurance", "engine"],
+  "properties": {
+    "schema_version": {"const": "solver.result.v1"},
+    "request_ref": {"type": "string", "pattern": "^req_[A-Za-z0-9_-]{20,96}$"},
+    "problem_family": {"const": "binary_ordered_route"},
+    "family_version": {"const": "1.0"},
+    "solve_outcome": {"enum": ["optimal", "feasible", "infeasible", "unbounded", "unknown"]},
+    "assignments": {
+      "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1, "maxLength": 256},
+      "additionalProperties": {
+        "type": ["string", "integer", "boolean", "null", "array", "object"]
+      }
+    },
+    "objective_values": {
+      "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1, "maxLength": 256},
+      "additionalProperties": {"type": ["integer", "string", "null"]}
+    },
+    "assurance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["best_bound", "gap", "certificate"],
+      "properties": {
+        "best_bound": {"type": ["integer", "string", "null"]},
+        "gap": {"type": ["string", "null"], "pattern": "^(0|[0-9]+(?:\\.[0-9]+)?)$"},
+        "certificate": {"type": ["object", "null"]}
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "connector_build"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "connector_build": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

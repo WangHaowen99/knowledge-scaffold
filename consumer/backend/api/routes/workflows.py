@@ -85,6 +85,10 @@ def _get_stores():
     return get_request_stores()
 
 
+async def _resolve_stores(runtime: Any):
+    return await runtime.short_io.run(_get_stores)
+
+
 def _run_scope(username: str, workspace_id: str, action: str) -> RunScope:
     required = {
         "run": "agent:run",
@@ -713,6 +717,11 @@ def _sync_terminal_response(
     }
     if snapshot.error is not None and snapshot.error.message:
         body["error"] = snapshot.error.message
+        body["error_code"] = snapshot.error.error_code
+        body["retriable"] = snapshot.error.retriable
+        phase = str(snapshot.error.details.get("phase") or "").strip()
+        if phase:
+            body["phase"] = phase
     if snapshot.pending_interaction is not None:
         body["pending_user_interaction"] = dict(snapshot.pending_interaction)
     if execution_trace is not None:
@@ -782,7 +791,7 @@ async def create_run(
     if manager is None or runtime.short_io is None:
         return _error("RUNTIME_DRAINING", "runtime is unavailable", 503, retriable=True)
     scope = _run_scope(current_user.username, workspace_id, "run")
-    _chat_store, execution_store = _get_stores()
+    _chat_store, execution_store = await _resolve_stores(runtime)
     fingerprint = _request_fingerprint(
         username=current_user.username,
         workspace_id=workspace_id,
@@ -1130,7 +1139,7 @@ async def create_sync_run(
         workspace_id=workspace_id,
         scopes=("agent:run", "agent:read", "agent:cancel"),
     )
-    _chat_store, execution_store = _get_stores()
+    _chat_store, execution_store = await _resolve_stores(runtime)
     run_id = "agentic-{}".format(uuid.uuid4().hex)
     turn_id = 0
     turn_allocated = False
@@ -1350,7 +1359,7 @@ async def get_run(
         snapshot = await manager.get_run(run_id, scope)
         if snapshot is not None:
             return _snapshot_payload(snapshot)
-    _chat_store, execution_store = _get_stores()
+    _chat_store, execution_store = await _resolve_stores(runtime)
     try:
         _session_id, turn = await runtime.short_io.run(
             execution_store.find_turn_by_run_id,
@@ -1391,7 +1400,7 @@ async def stream_run_events(
         else None
     )
     if snapshot is None:
-        _chat_store, execution_store = _get_stores()
+        _chat_store, execution_store = await _resolve_stores(runtime)
         _session_id, turn = await runtime.short_io.run(
             execution_store.find_turn_by_run_id,
             run_id,
@@ -1441,9 +1450,10 @@ async def stream_run_events(
     async def generate():
         last_seq = cursor
         next_event: asyncio.Task[Any] | None = None
+        active_stream = event_stream
         try:
             yield "retry: 2000\n\n"
-            next_event = asyncio.create_task(anext(event_stream))
+            next_event = asyncio.create_task(anext(active_stream))
             while True:
                 done, _pending = await asyncio.wait(
                     {next_event},
@@ -1456,14 +1466,26 @@ async def stream_run_events(
                     event = next_event.result()
                 except StopAsyncIteration:
                     return
+                except EventSubscriberReservationError:
+                    # A terminal event can release the lazy reservation after
+                    # the response is returned but before first iteration.
+                    # Re-open from the last delivered cursor; terminal replay
+                    # does not consume subscriber capacity.
+                    await active_stream.aclose()
+                    active_stream = manager.event_bus.stream(
+                        run_id,
+                        after_seq=last_seq,
+                    )
+                    next_event = asyncio.create_task(anext(active_stream))
+                    continue
                 last_seq = int(event.seq)
                 yield _encode_event(event)
-                next_event = asyncio.create_task(anext(event_stream))
+                next_event = asyncio.create_task(anext(active_stream))
         finally:
             if next_event is not None and not next_event.done():
                 next_event.cancel()
                 await asyncio.gather(next_event, return_exceptions=True)
-            await event_stream.aclose()
+            await active_stream.aclose()
             await manager.event_bus.release_subscriber_reservation(
                 reservation_id
             )
@@ -1524,7 +1546,7 @@ async def submit_run_feedback(
     manager = runtime.manager
     scope = _run_scope(current_user.username, workspace_id, "read")
     live = await manager.get_run(run_id, scope) if manager is not None else None
-    _chat_store, execution_store = _get_stores()
+    _chat_store, execution_store = await _resolve_stores(runtime)
     session_id, turn = await runtime.short_io.run(
         execution_store.find_turn_by_run_id,
         run_id,

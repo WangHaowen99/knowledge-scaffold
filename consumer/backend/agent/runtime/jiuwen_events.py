@@ -20,6 +20,11 @@ _PROTOCOL_EVENT_TYPES = frozenset(
         "tool.started",
         "tool.progress",
         "tool.finished",
+        "solver.input.awaiting_confirmation",
+        "solver.progress",
+        "solver.verification.completed",
+        "solver.verification.rejected",
+        "solver.result.authoritative",
         "subagent.started",
         "subagent.delta",
         "subagent.progress",
@@ -29,6 +34,13 @@ _PROTOCOL_EVENT_TYPES = frozenset(
         "interaction.requested",
     }
 )
+_SOLVER_EVENT_STATUSES = {
+    "solver.input.awaiting_confirmation": "awaiting_input",
+    "solver.progress": "running",
+    "solver.verification.completed": "completed",
+    "solver.verification.rejected": "failed",
+    "solver.result.authoritative": "completed",
+}
 _ENGINE_EVENT_TYPES = frozenset(
     {
         "iteration.completed",
@@ -167,7 +179,10 @@ class JiuwenRuntimeEventBridge:
         if normalized_type not in _PROTOCOL_EVENT_TYPES:
             return
         normalized_payload = dict(payload or {})
-        if normalized_type == "interaction.requested":
+        if normalized_type in _SOLVER_EVENT_STATUSES:
+            status = _SOLVER_EVENT_STATUSES[normalized_type]
+            component = "solver"
+        elif normalized_type == "interaction.requested":
             status = "awaiting_input"
             component = "interaction"
         else:
@@ -182,13 +197,15 @@ class JiuwenRuntimeEventBridge:
             normalized_payload.get("tool_name") or normalized_payload.get("name") or "unknown_tool"
         ).strip() or "unknown_tool"
         tool_call_id = str(normalized_payload.get("tool_call_id") or "no_id").strip() or "no_id"
+        span_prefix = "solver" if component == "solver" else "tool"
         self._publish(
             self._event(
                 normalized_type,
                 status,
                 normalized_payload,
                 component=component,
-                span_key="tool:{}:{}:{}:{}".format(
+                span_key="{}:{}:{}:{}:{}".format(
+                    span_prefix,
                     caller,
                     iteration,
                     tool_name,

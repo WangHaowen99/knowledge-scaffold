@@ -184,7 +184,12 @@ def _build_tool_task(
     name = tool_call.name
     args = dict(tool_call.arguments)
     tool_call_id = tool_call.id
-    spec = get_tool_spec(name)
+    spec = get_tool_spec(
+        name,
+        selected_ontology_id=context.selected_ontology_id,
+        selected_ontology_version=context.selected_ontology_version,
+        workspace_id=context.workspace_id,
+    )
     safe_name = name or "unknown_tool"
 
     progress_message = _build_tool_progress_message(name=name, args=args) or "调用工具: {}".format(

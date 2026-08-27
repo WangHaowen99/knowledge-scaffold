@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ from agent.skill_evolution.registry import (
     init_skill_evolution_worker,
     reset_skill_evolution_singletons,
 )
+from agent.tools.solver import configure_solver_tool_service
 from api.auth.remote_auth import RemoteAuthBackend
 from api.exceptions import APIError, api_error_handler
 from api.middleware import install_http_middleware
@@ -35,21 +37,103 @@ from integration.platform.manager import (
     shutdown_platform_observer,
     start_platform_observer_if_enabled,
 )
+from integration.solver_coordination_runtime import (
+    SolverCoordinationRecoveryWorker,
+    build_solver_coordination_service,
+)
+from integration.solver_operation_runtime import ControlledScriptOperationRuntime
 from llm import LLMRouter, configure_llm_router
 from migrations.runner import run_startup_migrations
 from ontology.directory_replacement import recover_workspace_ontology_replacements
 from persistence.chat_store import ToolOutputLimits
+from solver_coordination.runtime import build_operation_validation_service
 from utils.logging import get_logger
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import get_workspaces_root
 
 
 logger = get_logger("app")
+_solver_recovery_worker_lock = threading.RLock()
+_runtime_refresh_lock = threading.RLock()
 
 
-def build_runtime_services(previous_llm_router=None) -> dict[str, Any]:
+def _install_solver_recovery_worker(app: FastAPI, solver_service):
+    """Replace the process-local solver recovery worker owned by the app."""
+
+    with _solver_recovery_worker_lock:
+        previous = getattr(app.state, "solver_recovery_worker", None)
+        stop = getattr(previous, "stop", None)
+        if callable(stop):
+            if stop() is not True:
+                raise RuntimeError(
+                    "solver recovery worker did not stop before replacement"
+                )
+        elif previous is not None:
+            raise RuntimeError(
+                "solver recovery worker cannot be stopped before replacement"
+            )
+        app.state.solver_recovery_worker = None
+        if solver_service is None:
+            return None
+
+        candidate = None
+        try:
+            candidate = SolverCoordinationRecoveryWorker(solver_service)
+            started = candidate.start()
+            worker = started if started is not None else candidate
+        except Exception:
+            candidate_stop = getattr(candidate, "stop", None)
+            if callable(candidate_stop):
+                try:
+                    candidate_stop()
+                except Exception:
+                    logger.exception(
+                        "Failed to stop rejected solver recovery worker"
+                    )
+            restart = getattr(previous, "start", None)
+            if callable(restart):
+                try:
+                    restored = restart()
+                    app.state.solver_recovery_worker = (
+                        restored if restored is not None else previous
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to restore previous solver recovery worker"
+                    )
+            raise
+        app.state.solver_recovery_worker = worker
+        return worker
+
+
+def _stop_solver_recovery_worker(
+    app: FastAPI,
+    *,
+    timeout_seconds: float,
+) -> None:
+    with _solver_recovery_worker_lock:
+        worker = getattr(app.state, "solver_recovery_worker", None)
+        if worker is None:
+            app.state.solver_recovery_worker = None
+            return
+        stop = getattr(worker, "stop", None)
+        if not callable(stop):
+            raise RuntimeError(
+                "solver recovery worker cannot be stopped during shutdown"
+            )
+        if stop(timeout_seconds=timeout_seconds) is not True:
+            raise RuntimeError(
+                "solver recovery worker did not stop during shutdown"
+            )
+        app.state.solver_recovery_worker = None
+
+
+def build_runtime_services(
+    previous_llm_router=None,
+    *,
+    user_store_manager: UserStoreManager | None = None,
+) -> dict[str, Any]:
     """Build synchronous configuration and storage services."""
-
     config = AppConfig.from_env()
     if not config.auth_server_url:
         raise RuntimeError("认证需要配置 AUTH_SERVER_URL（auth server 地址）")
@@ -59,17 +143,22 @@ def build_runtime_services(previous_llm_router=None) -> dict[str, Any]:
         agent_config=agent_config,
         previous_router=previous_llm_router,
     )
-    configure_llm_router(llm_router)
     auth_manager = RemoteAuthBackend(
         base_url=config.auth_server_url,
         admin_token=config.auth_server_admin_token,
         audience=config.auth_server_audience,
         issuer=config.auth_server_issuer,
     )
-    user_store_manager = UserStoreManager(
-        config.chat_storage_dir,
-        config.execution_storage_dir,
-        tool_output_limits=ToolOutputLimits.from_config(agent_config.limits),
+    if user_store_manager is None:
+        user_store_manager = UserStoreManager(
+            config.chat_storage_dir,
+            config.execution_storage_dir,
+            tool_output_limits=ToolOutputLimits.from_config(
+                agent_config.limits
+            ),
+        )
+    solver_coordination_service = build_solver_coordination_service(
+        runtime_root=getattr(config, "project_root", config.chat_storage_dir)
     )
     return {
         "config": config,
@@ -77,6 +166,10 @@ def build_runtime_services(previous_llm_router=None) -> dict[str, Any]:
         "llm_router": llm_router,
         "auth_manager": auth_manager,
         "user_store_manager": user_store_manager,
+        "solver_validation_service": build_operation_validation_service(
+            operation_runtime=ControlledScriptOperationRuntime()
+        ),
+        "solver_coordination_service": solver_coordination_service,
     }
 
 
@@ -87,6 +180,12 @@ def _service_mapping(runtime: dict[str, Any]) -> dict[str, Any]:
         "LLM_ROUTER": runtime["llm_router"],
         "APP_CONFIG": runtime["config"],
         "AGENT_CONFIG": runtime["agent_config"],
+        "SOLVER_COORDINATION_VALIDATION_SERVICE": runtime.get(
+            "solver_validation_service"
+        ),
+        "SOLVER_COORDINATION_SERVICE": runtime.get(
+            "solver_coordination_service"
+        ),
         "REFRESH_RUNTIME_SERVICES": refresh_runtime_services,
         "REFRESH_PLATFORM_CONNECTOR": refresh_platform_connector,
     }
@@ -95,20 +194,72 @@ def _service_mapping(runtime: dict[str, Any]) -> dict[str, Any]:
 def refresh_runtime_services(app: FastAPI) -> dict[str, Any]:
     """Refresh mutable configuration without replacing the active Run owner."""
 
-    services = getattr(app.state, "services", {})
-    refreshed = build_runtime_services(
-        previous_llm_router=services.get("LLM_ROUTER")
-    )
-    app.state.services = _service_mapping(refreshed)
-    orchestrator = update_runtime_dependencies(
-        refreshed["user_store_manager"],
-        agent_config=refreshed["agent_config"],
-    )
-    container = getattr(app.state, "runtime_container", None)
-    if container is not None and container.runtime is not None:
-        container.runtime.agent_config = refreshed["agent_config"]
-    reset_observer(timeout=1.0)
-    return refreshed
+    with _runtime_refresh_lock:
+        previous_services = getattr(app.state, "services", {})
+        previous_manager = previous_services.get("USER_STORE_MANAGER")
+        previous_router = previous_services.get("LLM_ROUTER")
+        previous_agent_config = previous_services.get("AGENT_CONFIG")
+        previous_solver_service = previous_services.get(
+            "SOLVER_COORDINATION_SERVICE"
+        )
+        refreshed = build_runtime_services(
+            previous_llm_router=previous_router,
+            user_store_manager=previous_manager,
+        )
+        solver_service = refreshed.get("solver_coordination_service")
+        container = getattr(app.state, "runtime_container", None)
+        container_runtime = getattr(container, "runtime", None)
+        previous_container_agent_config = getattr(
+            container_runtime,
+            "agent_config",
+            None,
+        )
+        worker_replaced = False
+        try:
+            configure_llm_router(refreshed["llm_router"])
+            configure_solver_tool_service(solver_service)
+            update_runtime_dependencies(
+                refreshed["user_store_manager"],
+                agent_config=refreshed["agent_config"],
+            )
+            if container_runtime is not None:
+                container_runtime.agent_config = refreshed["agent_config"]
+            _install_solver_recovery_worker(app, solver_service)
+            worker_replaced = True
+            reset_observer(timeout=1.0)
+        except Exception:
+            logger.exception("Runtime service refresh failed; restoring previous services")
+            if previous_router is not None:
+                _safe_sync_step(
+                    "runtime-refresh-llm-rollback",
+                    configure_llm_router,
+                    previous_router,
+                )
+            _safe_sync_step(
+                "runtime-refresh-solver-tool-rollback",
+                configure_solver_tool_service,
+                previous_solver_service,
+            )
+            if previous_manager is not None:
+                _safe_sync_step(
+                    "runtime-refresh-dependencies-rollback",
+                    update_runtime_dependencies,
+                    previous_manager,
+                    agent_config=previous_agent_config,
+                )
+            if container_runtime is not None:
+                container_runtime.agent_config = previous_container_agent_config
+            if worker_replaced:
+                _safe_sync_step(
+                    "runtime-refresh-worker-rollback",
+                    _install_solver_recovery_worker,
+                    app,
+                    previous_solver_service,
+                )
+            app.state.services = previous_services
+            raise
+        app.state.services = _service_mapping(refreshed)
+        return refreshed
 
 
 def refresh_platform_connector() -> None:
@@ -142,8 +293,17 @@ def create_app() -> FastAPI:
             run_startup_migrations()
             recover_workspace_ontology_replacements(get_workspaces_root())
             services = build_runtime_services()
+            configure_llm_router(services["llm_router"])
             app.state.services = _service_mapping(services)
             services_installed = True
+            configure_solver_tool_service(
+                services.get("solver_coordination_service")
+            )
+            await asyncio.to_thread(
+                _install_solver_recovery_worker,
+                app,
+                services.get("solver_coordination_service"),
+            )
             orchestrator = initialize_runtime_dependencies(
                 services["user_store_manager"],
                 agent_config=services["agent_config"],
@@ -182,6 +342,19 @@ def create_app() -> FastAPI:
                 if runtime_container is not None
                 else 30.0
             )
+            try:
+                await asyncio.to_thread(
+                    _stop_solver_recovery_worker,
+                    app,
+                    timeout_seconds=min(
+                        5.0,
+                        max(0.0, deadline - loop.time()),
+                    ),
+                )
+            except Exception:
+                logger.exception("Solver recovery worker shutdown failed")
+                failed.append("solver-recovery")
+            configure_solver_tool_service(None)
             if operation_patcher is not None:
                 try:
                     if not await operation_patcher.close(deadline=deadline):
@@ -249,6 +422,7 @@ def create_app() -> FastAPI:
     )
     app.state.services = {}
     app.state.runtime_container = None
+    app.state.solver_recovery_worker = None
     install_http_middleware(app)
     app.add_exception_handler(APIError, api_error_handler)
     app.include_router(auth_router)

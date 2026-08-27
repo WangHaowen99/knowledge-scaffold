@@ -1,0 +1,4 @@
+Flask>=3.0,<4
+jsonschema>=4.21,<5
+ortools>=9.11,<10
+gunicorn>=22,<24

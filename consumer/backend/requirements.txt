@@ -4,6 +4,7 @@ uvicorn==0.51.0
 httpx==0.28.1
 python-multipart==0.0.22
 requests>=2.31.0
+jsonschema>=4.21,<5
 neo4j>=5.0.0
 openai>=1.0.0
 cryptography>=42.0.0
@@ -24,7 +25,6 @@ polars>=1.0.0
 python-dotenv>=1.2.2
 openjiuwen==0.1.14
 jsonschema-path>=0.3.4
-jsonschema>=4.18.0
 referencing>=0.28.4
 packaging>=23.0
 PyJWT>=2.12.0

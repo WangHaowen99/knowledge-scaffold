@@ -65,6 +65,27 @@ dist/onto-agent-<版本号>-linux-<架构>.tar.gz
 发布包内已包含所有部署、升级、回滚、重启脚本，无需额外文件。
 发布包**不包含** `.onto-runtime`；部署和升级时会保留目标机器现有的 `.onto-runtime` 目录，如不存在则创建空目录。聊天会话、执行记录和 awaiting-input checkpoint 的 release 默认兜底目录也固定落在 `.onto-runtime/data/` 下。
 
+求解器是可选的独立部署单元。普通 Consumer 启动不需要求解器 secrets；启用
+求解器时必须显式叠加 `docker-compose.solver.release.yml` 并启用
+`solver-ortools` profile：
+
+```bash
+docker compose -f docker-compose.release.yml \
+  -f docker-compose.solver.release.yml \
+  --profile solver-ortools up -d
+```
+
+首期该 overlay 只挂载 Solver Service token，并在 Docker 私网内通过
+`http://ortools-solver:8080` 调用；不启动 Nginx 或 TLS sidecar，不需要证书、
+私钥或 CA secret。构建与 secret 配置详见
+[`solvers/ortools/README.md`](../../solvers/ortools/README.md)。
+
+平台仍要求管理员显式配置精确的 `ortools-solver:8080` allowlist 和
+`SOLVER_SERVICE_ALLOW_HTTP=true`；知识包和用户请求不能打开 HTTP 或提供
+endpoint。首期求解器服务使用 `ORTOOLS_SOLVER_*`，Consumer 出站配置使用
+`SOLVER_SERVICE_*`，不兼容旧 Connector 环境变量。后续跨主机或强化安全部署
+可再配置 CA 和 HTTPS Binding；Nginx/TLS sidecar 不属于首期启动链路。
+
 ## 首次部署
 
 1. 将发布压缩包（如 `onto-agent-v1.2.0-linux-arm64.tar.gz`）拷贝到目标机器

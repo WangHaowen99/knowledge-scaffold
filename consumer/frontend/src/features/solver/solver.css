@@ -1,0 +1,86 @@
+.mwr .solver-workbench { height: 100%; overflow: auto; padding: 26px 30px 34px; }
+.mwr .solver-workbench > .ui-page-header, .mwr .solver-history-shell, .mwr .solver-history-error { width: min(1240px, 100%); margin-inline: auto; }
+.mwr .solver-workbench .ui-eyebrow { letter-spacing: 0; }
+.mwr .solver-history-shell { overflow: hidden; border: 1px solid var(--border-default); border-radius: 8px; background: var(--surface-card); animation: solver-history-enter var(--motion-normal) both; }
+.mwr .solver-history-heading { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 14px; border-bottom: 1px solid var(--border-subtle); }
+.mwr .solver-history-heading > div, .mwr .solver-history-heading > span { display: inline-flex; align-items: center; gap: 7px; }
+.mwr .solver-history-heading > div { color: var(--ink); }
+.mwr .solver-history-heading h3 { margin: 0; font-size: 14px; letter-spacing: 0; }
+.mwr .solver-history-heading > span { color: var(--muted); font-size: 10.5px; }
+.mwr .solver-history-heading > span svg { color: var(--good); }
+.mwr .solver-history-table-wrap { max-width: 100%; overflow: auto; }
+.mwr .solver-history-table { min-width: 900px; margin: 0; }
+.mwr .solver-history-table th { padding: 8px 12px; color: var(--muted); font-size: 10.5px; }
+.mwr .solver-history-table td { padding: 10px 12px; vertical-align: top; }
+.mwr .solver-history-table tbody tr { transition: background-color var(--motion-fast); }
+.mwr .solver-history-table tbody tr:hover { background: var(--surface-subtle); }
+.mwr .solver-history-time, .mwr .solver-history-revision, .mwr .solver-history-muted { display: block; color: var(--muted); font-size: 10.5px; }
+.mwr .solver-history-operation, .mwr .solver-history-semantic { display: block; margin-bottom: 3px; color: var(--ink2); font-size: 11.5px; }
+.mwr .solver-history-revision { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .solver-history-id { display: block; max-width: 210px; overflow: hidden; color: var(--ink2); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .solver-history-evidence > summary { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--blue-d); font-size: 10.5px; }
+.mwr .solver-history-evidence dl { width: min(360px, 70vw); display: grid; gap: 6px; margin: 8px 0 0; }
+.mwr .solver-history-evidence dl > div { display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 6px; }
+.mwr .solver-history-evidence dt { color: var(--muted); font-size: 10px; }
+.mwr .solver-history-evidence dd { min-width: 0; margin: 0; }
+.mwr .solver-history-evidence code { display: block; overflow: hidden; color: var(--ink2); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .solver-history-evidence-state { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 10.5px; }
+.mwr .solver-history-evidence-state.is-error { color: var(--crit); }
+.mwr .solver-history-loading { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 11.5px; }
+.mwr .solver-history-error { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--crit) 34%, var(--border-default)); border-radius: 8px; color: var(--crit); background: color-mix(in srgb, var(--crit) 7%, var(--surface-card)); font-size: 11.5px; }
+.mwr .solver-candidate-results { min-width: 0; border-top: 1px solid var(--border-subtle); }
+.mwr .solver-candidate-heading { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+.mwr .solver-candidate-heading > span { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-size: 11.5px; font-weight: 700; }
+.mwr .solver-candidate-heading > span svg { color: var(--blue-d); }
+.mwr .solver-candidate-heading small { margin-left: auto; color: var(--muted); font-size: 10px; }
+.mwr .solver-candidate-state { min-height: 48px; display: flex; align-items: center; gap: 7px; padding: 9px 10px 11px; color: var(--muted); font-size: 11px; }
+.mwr .solver-candidate-state.is-error { color: var(--crit); }
+.mwr .solver-candidate-state button { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; margin-left: auto; padding: 0; border: 0; border-radius: 6px; background: transparent; color: currentColor; }
+.mwr .solver-candidate-state button:hover { background: var(--surface-subtle); }
+.mwr .solver-candidate-table-wrap { width: 100%; max-width: 100%; overflow-x: auto; border-top: 1px solid var(--border-subtle); }
+.mwr .solver-candidate-table { width: max-content; min-width: 100%; table-layout: auto; border-collapse: collapse; color: var(--ink2); font-size: 10.5px; line-height: 1.45; }
+.mwr .solver-candidate-col-number { width: 112px; }
+.mwr .solver-candidate-col-route { width: 164px; }
+.mwr .solver-candidate-col-sequence { width: auto; }
+.mwr .solver-candidate-table th { padding: 8px 9px; border-bottom: 1px solid var(--border-default); background: var(--surface-subtle); color: var(--muted); font-weight: 650; text-align: left; vertical-align: middle; }
+.mwr .solver-candidate-table th + th, .mwr .solver-candidate-table td + td { border-left: 1px solid var(--border-subtle); }
+.mwr .solver-candidate-table td { padding: 8px 9px; border-bottom: 1px solid var(--border-subtle); vertical-align: top; overflow-wrap: normal; }
+.mwr .solver-candidate-table tbody tr:last-child td { border-bottom: 0; }
+.mwr .solver-candidate-row { background: var(--surface-card); }
+.mwr .solver-candidate-row:hover { background: var(--surface-subtle); }
+.mwr .solver-candidate-row.is-selected { font-weight: 700; background: color-mix(in srgb, var(--good) 7%, var(--surface-card)); }
+.mwr .solver-combination-number { display: inline-block; min-width: 18px; color: var(--ink); font-size: 11.5px; }
+.mwr .solver-winner-label { display: inline-flex; align-items: center; gap: 3px; margin-left: 5px; color: var(--good); font-size: 9.5px; white-space: nowrap; }
+.mwr .solver-route-swatch { width: 8px; height: 8px; display: inline-block; margin-right: 5px; border-radius: 2px; vertical-align: 0; }
+.mwr .solver-route-swatch.is-option-0 { background: var(--blue); }
+.mwr .solver-route-swatch.is-option-1 { background: #7655a6; }
+.mwr .solver-route-batches.is-option-0, .mwr .solver-route-sequence .is-option-0 { color: var(--blue-d); }
+.mwr .solver-route-batches.is-option-1, .mwr .solver-route-sequence .is-option-1 { color: #64438f; }
+.mwr .solver-route-batches { white-space: nowrap; }
+.mwr .solver-route-sequence { min-width: max-content; display: flex; align-items: center; flex-wrap: nowrap; gap: 2px 4px; white-space: nowrap; }
+.mwr .solver-route-sequence span { white-space: nowrap; }
+.mwr .solver-route-sequence b { color: var(--muted); font-weight: 400; }
+.mwr .solver-candidate-technical { margin-top: 4px; font-weight: 400; }
+.mwr .solver-candidate-technical > summary { cursor: pointer; color: var(--muted); font-size: 9.5px; }
+.mwr .solver-candidate-technical dl { display: grid; gap: 4px; margin: 5px 0 0; }
+.mwr .solver-candidate-technical dl > div { min-width: 0; }
+.mwr .solver-candidate-technical dt { color: var(--muted); font-size: 9px; }
+.mwr .solver-candidate-technical dd { min-width: 0; margin: 1px 0 0; }
+.mwr .solver-candidate-technical code { display: block; overflow: hidden; color: var(--ink2); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes solver-history-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (max-width: 900px) {
+  .mwr .solver-workbench { padding: 20px; }
+  .mwr .solver-history-heading { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 600px) {
+  .mwr .solver-workbench { padding: 14px 12px 24px; }
+  .mwr .solver-history-heading { padding: 10px 11px; }
+  .mwr .solver-candidate-heading { align-items: flex-start; flex-direction: column; }
+  .mwr .solver-candidate-heading small { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mwr .solver-history-shell { animation: none; }
+}

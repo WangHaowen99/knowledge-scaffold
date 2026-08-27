@@ -29,6 +29,7 @@ test('workspace data waits for a loaded and valid workspace selection', () => {
 test('workspace-scoped surfaces stay blocked while global surfaces remain available', () => {
   assert.equal(requiresWorkspaceData('chat'), true);
   assert.equal(requiresWorkspaceData('kb'), true);
+  assert.equal(requiresWorkspaceData('solver'), true);
   assert.equal(requiresWorkspaceData('observability', 'session'), true);
   assert.equal(requiresWorkspaceData('observability', 'global'), false);
   assert.equal(requiresWorkspaceData('config'), false);
