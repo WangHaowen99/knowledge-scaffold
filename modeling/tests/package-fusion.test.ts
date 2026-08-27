@@ -17,14 +17,18 @@ interface RenderedMappingDocument {
 }
 
 interface RenderedFlowDocument {
-  diagrams: Array<{ id: string; nodes: Array<{ id: string }> }>;
+  diagrams: Array<{ id: string; title: string; nodes: Array<{ id: string }> }>;
 }
 
-function source(sourceId: string, objectKey: string): PackageFusionInput {
+function source(
+  sourceId: string,
+  objectKey: string,
+  options: { packageName?: string; diagramTitle?: string } = {},
+): PackageFusionInput {
   const operationKey = 'inspect';
   const spec: PackageSpec = {
     id: `source-${sourceId}`,
-    name: `来源包 ${sourceId}`,
+    name: options.packageName ?? `来源包 ${sourceId}`,
     description: `${sourceId} 场景知识包`,
     version: '1.0.0',
     language: 'zh-CN',
@@ -79,7 +83,7 @@ function source(sourceId: string, objectKey: string): PackageFusionInput {
   const diagrams = renderDiagramFiles({
     diagrams: [{
       id: 'process_1',
-      title: '共享检查流程',
+      title: options.diagramTitle ?? '共享检查流程',
       nodes: [
         { id: 'start:process_1', label: '开始', kind: 'start' },
         { id: 'step:process_1:step_1', label: '检查', kind: 'action' },
@@ -163,6 +167,48 @@ test('批量融合无损改写大小写 key、引用、流程 ID、provider 和�
   assert.equal(roundTrip.spec.scripts?.length, 2);
   assert.equal(result.ledger.resources.length, 12);
   assert.equal(result.ledger.concepts[0].members.length, 2);
+});
+
+test('融合流程图保留业务名称并仅在重名时使用来源包名称消歧', () => {
+  const distinct = fuseKnowledgePackages([
+    source('src-aaaaaaaaaaaaaaaaaaaa', 'Alpha', {
+      packageName: '线路治理方案', diagramTitle: '线路问题处理流程',
+    }),
+    source('src-bbbbbbbbbbbbbbbbbbbb', 'Beta', {
+      packageName: '变电站改造方案', diagramTitle: '变电站新出线流程',
+    }),
+  ], {
+    id: 'distinct-diagrams', name: '融合知识包', description: '验证流程图名称', version: '1.0.0',
+  });
+  const distinctProcesses = JSON.parse(
+    String(distinct.files['diagrams/processes.json']),
+  ) as RenderedFlowDocument;
+  assert.deepEqual(
+    distinctProcesses.diagrams.map((diagram) => diagram.title).sort(),
+    ['变电站新出线流程', '线路问题处理流程'],
+  );
+
+  const duplicated = fuseKnowledgePackages([
+    source('src-aaaaaaaaaaaaaaaaaaaa', 'Alpha', {
+      packageName: '线路治理方案', diagramTitle: '问题处理流程',
+    }),
+    source('src-bbbbbbbbbbbbbbbbbbbb', 'Beta', {
+      packageName: '变电站改造方案', diagramTitle: '问题处理流程',
+    }),
+  ], {
+    id: 'duplicate-diagrams', name: '融合知识包', description: '验证流程图重名消歧', version: '1.0.0',
+  });
+  const duplicatedProcesses = JSON.parse(
+    String(duplicated.files['diagrams/processes.json']),
+  ) as RenderedFlowDocument;
+  assert.deepEqual(
+    duplicatedProcesses.diagrams.map((diagram) => diagram.title).sort(),
+    ['问题处理流程 - 变电站改造方案', '问题处理流程 - 线路治理方案'],
+  );
+  assert.ok(duplicatedProcesses.diagrams.every((diagram) => !diagram.title.includes('src-')));
+  assert.ok(Object.keys(duplicated.files)
+    .filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd'))
+    .every((path) => !path.includes('src-')));
 });
 
 test('语义概念成员不存在时阻断融合，不生成猜测关系', () => {
