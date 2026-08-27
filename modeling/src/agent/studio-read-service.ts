@@ -170,7 +170,10 @@ export const STUDIO_SCHEMA = {
         { key: 'evidence', label: '知识证据', type: 'evidence_list', required: true, readOnly: true },
       ],
       tableColumns: COMMON_COLUMNS,
-      legalRelations: [{ kind: 'applies_to_object', targetKinds: ['object'] }],
+      legalRelations: [
+        { kind: 'applies_to_object', targetKinds: ['object'] },
+        { kind: 'applies_to_operation', targetKinds: ['operation'] },
+      ],
       bulkEditableFields: ['description'],
     },
     {
@@ -532,6 +535,9 @@ function relationsOf(seed: ElementSeed, sourceId: string, knownIds: Set<string>)
   } else if (seed.kind === 'rule') {
     inputs.push(...((seed.spec as SpecRule).appliesToObjects ?? []).map((key) => ({
       kind: 'applies_to_object', label: '适用于对象', targetKind: 'object' as const, targetKey: key,
+    })));
+    inputs.push(...((seed.spec as SpecRule).appliesToOperations ?? []).map((key) => ({
+      kind: 'applies_to_operation', label: '适用于操作', targetKind: 'operation' as const, targetKey: key,
     })));
   } else {
     inputs.push(...((seed.spec as SpecMetric).usesObjects ?? []).map((key) => ({

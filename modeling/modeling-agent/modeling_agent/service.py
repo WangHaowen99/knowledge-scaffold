@@ -74,7 +74,11 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "analyze_material_impact",
     "stage_tabular_dataset",
     "write_file",
+    "upsert_object",
     "delete_file",
+    "upsert_rule",
+    "upsert_operation",
+    "bind_object_source",
     "discard_rejected_candidate_changes",
     "regroup_changes",
     "create_package_fusion_plan",
@@ -113,6 +117,8 @@ class LiveRun:
     reasoning_truncated: bool = False
     package_contract: dict[str, Any] = field(default_factory=dict)
     validation_repair: CandidateValidationRepairState = field(default_factory=CandidateValidationRepairState)
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    inflight_core_calls: set[asyncio.Task[Any]] = field(default_factory=set)
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -412,6 +418,7 @@ class AgentService:
                 or bool(intent_required_tools)
                 or _autonomous_work_requested(prompt)
             ),
+            validation_repair=self._validation_repair_state(run_id),
         )
         self._live[run_id] = live
         state_snapshot = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
@@ -928,7 +935,8 @@ class AgentService:
             if confirmation_result.get("error"):
                 reason = str(confirmation_result.get("reason") or "待修改内容没有成功结算")
                 error_code = str(confirmation_result.get("error") or "CONFIRMATION_FAILED")
-                if approved and error_code == "CANDIDATE_REVALIDATION_REQUIRED":
+                if error_code in {"CANDIDATE_REVALIDATION_REQUIRED", "STALE_CONFIRMATION"}:
+                    decision = "接受" if approved else "退回"
                     superseded_answer = {
                         "approved": False,
                         "action": "superseded",
@@ -945,7 +953,7 @@ class AgentService:
                         "role": "system",
                         "blocks": [{
                             "type": "text",
-                            "text": "刚才的待确认内容已变化，接受操作未生效；助手正在重新校验，新的内容需要再次确认。",
+                            "text": f"刚才的待确认内容已变化，{decision}操作未生效；助手正在重新校验，新的内容需要再次确认。",
                         }],
                     })
                     return await self._resume(
@@ -955,9 +963,9 @@ class AgentService:
                             "action": "settled_confirmation",
                             "result": confirmation_result,
                             "continuation": (
-                                "旧确认卡已经作废，用户的接受没有应用到任何候选。"
+                                f"旧确认卡已经作废，用户的{decision}没有应用到任何候选。"
                                 "立即重新执行完整预检；若有 findings，自动修正后重新预检。"
-                                "只有通过后才能展示新的确认卡，绝不能沿用刚才的接受结果。"
+                                "只有通过后才能展示新的确认卡，绝不能沿用刚才的决定。"
                             ),
                         }},
                         autonomous_seed=True,
@@ -1301,9 +1309,32 @@ class AgentService:
         if run is None:
             raise AgentRuntimeError("RUN_NOT_ACTIVE", "当前没有运行中的 Agent", status=409)
         live = self._live.get(run.id)
-        if live and live.task and not live.task.done():
-            live.task.cancel()
+        if live:
+            live.cancel_event.set()
         updated = self.store.update_run(run.id, status=RUN_CANCELLED, error="用户已停止运行")
+        try:
+            await asyncio.wait_for(
+                self._gateway.call(
+                    project_id=project_id,
+                    run_id=run.id,
+                    token=live.token if live else "",
+                    tool="cancel_evaluation",
+                    arguments={},
+                ),
+                timeout=30,
+            )
+        except Exception as error:  # noqa: BLE001 - local cancellation must still complete
+            logger.warning("Could not cancel core evaluation for run %s: %s", run.id, error)
+        tasks: list[asyncio.Task[Any]] = []
+        if live:
+            tasks.extend(live.inflight_core_calls)
+            if live.task and not live.task.done():
+                tasks.append(live.task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._publish_state(project_id, run.id)
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
         return self._run_public(updated, self.store.project_state(project_id))
@@ -1351,6 +1382,7 @@ class AgentService:
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
+            validation_repair=self._validation_repair_state(run.id),
         )
         if steering:
             await live.steering.put(steering)
@@ -1390,6 +1422,7 @@ class AgentService:
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
+            validation_repair=self._validation_repair_state(run.id),
         )
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
@@ -1425,6 +1458,14 @@ class AgentService:
             if issued:
                 self.store.update_run(run_id, run_credential=issued)
         return claimed
+
+    def _validation_repair_state(self, run_id: str) -> CandidateValidationRepairState:
+        return CandidateValidationRepairState.from_snapshot(
+            self.store.validation_repair_state(run_id),
+            on_change=lambda snapshot: self.store.save_validation_repair_state(
+                run_id, snapshot,
+            ),
+        )
 
     async def _execute(self, live: LiveRun, query: Any) -> None:
         from openjiuwen.core.runner.runner import Runner
@@ -1493,6 +1534,8 @@ class AgentService:
                     release_declined=live.release_declined,
                     validation_repair=live.validation_repair,
                     package_contract=live.package_contract,
+                    cancel_event=live.cancel_event,
+                    inflight_core_calls=live.inflight_core_calls,
                 )
                 live.bundle = build_agent(
                     self.settings,

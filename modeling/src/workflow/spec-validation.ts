@@ -353,6 +353,9 @@ export function validateSpecIntegrity(
     for (const objectKey of rule.appliesToObjects ?? []) {
       if (!objectKeys.has(normalizeKey(objectKey))) errors.push(`规则 ${rule.key} 引用了不存在的对象 ${objectKey}`);
     }
+    for (const operationKey of rule.appliesToOperations ?? []) {
+      if (!operationKeys.has(normalizeKey(operationKey))) errors.push(`规则 ${rule.key} 引用了不存在的操作 ${operationKey}`);
+    }
   }
 
   for (const metric of spec.metrics ?? []) {

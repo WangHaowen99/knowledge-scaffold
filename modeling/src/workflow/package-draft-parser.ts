@@ -443,7 +443,7 @@ function parseRule(path: string, content: string, base: SpecRule, baseContent: s
   assertReadonlyFrontmatter(path, parsed, baseParsed, 'evidence', 'frontmatter.evidence');
   assertReadonlySection(path, parsed, baseParsed, '知识证据');
   const appliesTo = asMap(path, parsed.frontmatter.applies_to, 'frontmatter.applies_to');
-  if (appliesTo) assertKeys(path, appliesTo, ['objects'], 'frontmatter.applies_to ');
+  if (appliesTo) assertKeys(path, appliesTo, ['objects', 'operations'], 'frontmatter.applies_to ');
   const conditionLines = sectionLines(path, parsed, '判断条件', false);
   const exceptionLines = sectionLines(path, parsed, '例外', false);
   return {
@@ -451,6 +451,7 @@ function parseRule(path: string, content: string, base: SpecRule, baseContent: s
     title: asString(path, parsed.frontmatter.title, 'frontmatter.title'),
     description: optionalString(path, parsed.frontmatter.description, 'frontmatter.description'),
     appliesToObjects: stringList(path, appliesTo?.objects, 'frontmatter.applies_to.objects'),
+    appliesToOperations: stringList(path, appliesTo?.operations, 'frontmatter.applies_to.operations'),
     content: sectionText(path, parsed, '规则内容'),
     conditions: conditionLines.length ? tableRows(path, conditionLines, ['条件', '结论']).map((row) => {
       if (!row[0] || !row[1]) fail(path, '判断条件和结论不能为空');

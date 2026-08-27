@@ -1195,6 +1195,7 @@ function applyRelations(
     item.usesMetrics = relationTargets(relations, 'uses_metric');
   } else if (kind === 'rule') {
     item.appliesToObjects = relationTargets(relations, 'applies_to_object');
+    item.appliesToOperations = relationTargets(relations, 'applies_to_operation');
   } else {
     item.usesObjects = relationTargets(relations, 'uses_object');
   }
@@ -1300,7 +1301,10 @@ function incomingReferences(spec: PackageSpec, deleted: Set<string>): StudioDele
     add('operation', item, '使用规则', 'rule', item.usesRules);
     add('operation', item, '使用指标', 'metric', item.usesMetrics);
   }
-  for (const item of spec.rules ?? []) add('rule', item, '适用对象', 'object', item.appliesToObjects);
+  for (const item of spec.rules ?? []) {
+    add('rule', item, '适用对象', 'object', item.appliesToObjects);
+    add('rule', item, '适用操作', 'operation', item.appliesToOperations);
+  }
   for (const item of spec.metrics ?? []) add('metric', item, '使用对象', 'object', item.usesObjects);
   return references.sort((a, b) => (
     `${a.sourceId}\0${a.field}\0${a.targetId}`.localeCompare(`${b.sourceId}\0${b.field}\0${b.targetId}`)
@@ -1321,7 +1325,10 @@ function removeIncomingReferences(spec: PackageSpec, deleted: Set<string>): void
     item.usesRules = kept('rule', item.usesRules);
     item.usesMetrics = kept('metric', item.usesMetrics);
   }
-  for (const item of spec.rules ?? []) item.appliesToObjects = kept('object', item.appliesToObjects);
+  for (const item of spec.rules ?? []) {
+    item.appliesToObjects = kept('object', item.appliesToObjects);
+    item.appliesToOperations = kept('operation', item.appliesToOperations);
+  }
   for (const item of spec.metrics ?? []) item.usesObjects = kept('object', item.usesObjects);
 }
 

@@ -171,6 +171,7 @@ def _ensure_validation_report(
     result = dict(raw)
     fallback_message = str(result.get("reason") or result.get("error") or "确定性校验未通过")
     raw_findings = result.get("findings")
+    external_report = bool(str(result.get("validationReportId") or "").strip())
     findings: list[dict[str, Any]] = []
     for raw_finding in raw_findings if isinstance(raw_findings, list) else []:
         source = dict(raw_finding) if isinstance(raw_finding, Mapping) else {}
@@ -182,7 +183,7 @@ def _ensure_validation_report(
             "suggestion": str(source.get("suggestion") or suggestion),
         }
         findings.append(normalized)
-    if not findings:
+    if not findings and not external_report:
         findings = [_finding(
             rule_id,
             path,
@@ -191,17 +192,24 @@ def _ensure_validation_report(
         )]
     raw_retryable = result.get("retryable")
     effective_retryable = raw_retryable if isinstance(raw_retryable, bool) else retryable
+    try:
+        reported_count = max(0, int(result.get("findingCount") or 0))
+    except (TypeError, ValueError):
+        reported_count = 0
     result.update({
         "retryable": effective_retryable,
         "validatorVersion": str(result.get("validatorVersion") or validator_version),
         "repairScope": str(result.get("repairScope") or repair_scope),
-        "findingCount": len(findings),
-        "findings": findings,
+        "findingCount": max(reported_count, len(findings)),
         "tracePhase": str(
             result.get("tracePhase")
             or ("repairing" if effective_retryable else "blocked")
         ),
     })
+    if findings:
+        result["findings"] = findings
+    else:
+        result.pop("findings", None)
     return result
 
 
@@ -220,6 +228,7 @@ class WriteSafetyRail(AgentRail):
     priority = 100
     WRITE_TOOLS = frozenset({
         "write_file", "delete_file", "import_zip", "stage_package_merge",
+        "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "compile_package_fusion_plan", "discard_rejected_candidate_changes",
     })
     RECOVERY_TOOLS = frozenset({"delete_file", "discard_rejected_candidate_changes"})
@@ -406,6 +415,7 @@ class InterjectionSafetyRail(AgentRail):
     priority = 110
     MUTATING_TOOLS = frozenset({
         "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_plan",
+        "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "discard_rejected_candidate_changes",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
         "update_project_context", "transition_project_state",
@@ -749,7 +759,9 @@ class ConfirmationRail(BaseInterruptRail):
                 if preflight.get("retryable") is True:
                     preflight = self._context.validation_repair.decorate(preflight)
                 return self.reject(tool_result=json.dumps(preflight, ensure_ascii=False))
-            self._context.validation_repair.reset()
+            self._context.validation_repair.scope_candidate_revision(
+                str(preflight.get("candidate_revision") or "")
+            )
             validation_receipt = preflight.get("validation_receipt")
             receipt_arguments = {
                 "expected_candidate_revision": preflight.get("candidate_revision"),
@@ -801,6 +813,7 @@ class ConfirmationRail(BaseInterruptRail):
                         "kind": "confirmation",
                         "summary": arguments.get("summary"),
                         "changeGroups": groups,
+                        "atomicSelection": preflight.get("atomic_selection") is True,
                         "candidateRevision": preflight.get("candidate_revision"),
                         "validationReceipt": validation_receipt,
                     },
@@ -833,6 +846,8 @@ class ConfirmationRail(BaseInterruptRail):
                     retryable=False,
                     repair_scope="interaction",
                 )
+            else:
+                self._context.validation_repair.reset()
             return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
         if answer.get("action") == "interject":
             # 自由输入是对确认问题的插话，不是拒绝。候选仍然冻结，

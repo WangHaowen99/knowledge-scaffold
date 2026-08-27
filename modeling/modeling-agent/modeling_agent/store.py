@@ -150,6 +150,14 @@ CREATE TABLE IF NOT EXISTS agent_tool_receipts (
   completed_at TEXT NOT NULL,
   PRIMARY KEY (run_id, tool_call_id)
 );
+
+-- 自动修复是候选级状态，而不是 Python 进程内的临时计数器。服务重启或 checkpoint
+-- 恢复后必须继续沿用相同轮次、finding 指纹和停止条件。
+CREATE TABLE IF NOT EXISTS agent_validation_repair_state (
+  run_id TEXT PRIMARY KEY REFERENCES agent_runs(id) ON DELETE CASCADE,
+  state_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 
@@ -513,6 +521,29 @@ class RuntimeStore:
                     _json(result),
                     now_iso(),
                 ),
+            )
+
+    def validation_repair_state(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT state_json FROM agent_validation_repair_state WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return _object(row["state_json"]) if row else {}
+
+    def save_validation_repair_state(
+        self,
+        run_id: str,
+        state: dict[str, Any],
+    ) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO agent_validation_repair_state(run_id, state_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                  state_json = excluded.state_json,
+                  updated_at = excluded.updated_at""",
+                (run_id, _json(state), now_iso()),
             )
 
     def create_interaction(self, interaction: InteractionRecord) -> InteractionRecord:

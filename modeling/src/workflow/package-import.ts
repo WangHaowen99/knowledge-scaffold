@@ -340,6 +340,9 @@ function parseRule(path: string, markdown: string): SpecRule {
     description: data.description == null ? undefined : String(data.description),
     content: section(body, '规则内容'),
     ...(strings(data.applies_to?.objects).length ? { appliesToObjects: strings(data.applies_to.objects) } : {}),
+    ...(strings(data.applies_to?.operations).length
+      ? { appliesToOperations: strings(data.applies_to.operations) }
+      : {}),
     ...(conditions.length ? { conditions } : {}),
     ...(exceptions.length ? { exceptions } : {}),
     ...(evidence.length ? { evidence } : {}),

@@ -344,6 +344,69 @@ async def test_candidate_validation_repair_stops_on_repeated_round_and_recovery_
     assert state.current_round_id == "model-3"
 
 
+async def test_successful_candidate_write_does_not_reset_validation_episode() -> None:
+    state = CandidateValidationRepairState()
+    state.begin_round("model-1")
+    state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:first",
+        "validationReportId": "report-1",
+        "findingCount": 12,
+        "findingsTruncated": True,
+    })
+    state.begin_round("model-2")
+    assert state.attempts == 1
+
+    state.record_success("write_file")
+    state.begin_round("model-3")
+
+    assert state.attempts == 1
+    assert state.last_fingerprint == "sha256:first"
+    assert state.current_round_id == "model-3"
+    assert state.stopped is False
+
+
+async def test_compact_validation_report_without_inline_findings_enters_repair_state() -> None:
+    gateway = FakeGateway({
+        "write_file": {
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-v1",
+            "findingFingerprint": "sha256:compact",
+            "validationReportId": "report-compact",
+            "findingCount": 24,
+            "findingsTruncated": True,
+            "findingSummary": {
+                "paths": [{"path": "objects/index.md", "count": 24}],
+            },
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+
+    result = json.loads(await CoreTool(spec, context).invoke({
+        "path": "objects/index.md",
+        "content": "# index",
+        "change_group": "objects",
+        "evidence": [],
+    }))
+
+    assert result["validationReportId"] == "report-compact"
+    assert result["findingFingerprint"] == "sha256:compact"
+    assert result["findingCount"] == 24
+    assert "findings" not in result
+    assert result["repairAttempt"] == 1
+    assert "get_validation_findings" in result["instruction"]
+
+
 async def test_tool_context_applies_repair_policy_from_package_contract() -> None:
     context = ToolContext(
         project_id="project_demo",
@@ -1391,7 +1454,24 @@ async def test_restored_confirmation_accepts_the_same_frozen_candidate(settings)
         await runtime.shutdown()
 
 
-async def test_legacy_confirmation_without_receipt_is_retired_and_revalidated_before_new_card(settings) -> None:
+@pytest.mark.parametrize(
+    ("error_code", "reason"),
+    [
+        (
+            "CANDIDATE_REVALIDATION_REQUIRED",
+            "待确认候选或校验规则已经变化，原确认不能继续提交",
+        ),
+        (
+            "STALE_CONFIRMATION",
+            "待确认内容已经变化，不能把旧卡片的决定用于新候选",
+        ),
+    ],
+)
+async def test_stale_confirmation_is_retired_and_revalidated_before_new_card(
+    settings,
+    error_code: str,
+    reason: str,
+) -> None:
     groups = [{"id": "knowledge", "tier": "structural", "title": "确认知识修改", "impact": []}]
     model = ScriptedModel([
         [ToolTurn("request_confirmation", {"summary": "确认旧候选"})],
@@ -1400,8 +1480,8 @@ async def test_legacy_confirmation_without_receipt_is_retired_and_revalidated_be
     gateway = FakeGateway({
         "prepare_confirmation_groups": {"change_groups": groups},
         "request_confirmation": {
-            "error": "CANDIDATE_REVALIDATION_REQUIRED",
-            "reason": "待确认候选或校验规则已经变化，原确认不能继续提交",
+            "error": error_code,
+            "reason": reason,
             "retryable": False,
             "next": ["重新执行完整候选预检，并基于新的确认卡再次决定"],
         },
@@ -1627,6 +1707,55 @@ async def test_normal_confirmation_core_failure_keeps_interaction_pending(settin
             and event.payload.get("payload", {}).get("lastSubmissionError") == "候选写入失败"
             for event in runtime.store.events_after("project_confirmation_failure", 0)
         )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(settings) -> None:
+    class BlockingEvaluationGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.evaluation_started = asyncio.Event()
+            self.evaluation_cancelled = asyncio.Event()
+
+        async def call(self, **kwargs):
+            tool = kwargs["tool"]
+            if tool == "run_evaluation":
+                self.calls.append(kwargs)
+                self.evaluation_started.set()
+                await self.evaluation_cancelled.wait()
+                return {
+                    "error": "EVALUATION_RUN_FAILED",
+                    "reason": "评测运行失败，本轮已停止",
+                }
+            if tool == "cancel_evaluation":
+                self.calls.append(kwargs)
+                self.evaluation_cancelled.set()
+                return {"cancelled": True, "roundId": "round-1", "status": "failed"}
+            return await super().call(**kwargs)
+
+    gateway = BlockingEvaluationGateway()
+    model = ScriptedModel(
+        [[ToolTurn("run_evaluation", {})], [ToolTurn("run_evaluation", {})]],
+        final="继续重试评测。",
+    )
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_cancel_evaluation",
+            token="token_1",
+            message="运行评测",
+        )
+        await asyncio.wait_for(gateway.evaluation_started.wait(), timeout=5)
+
+        cancelled = await runtime.cancel(project_id="project_cancel_evaluation")
+        await asyncio.sleep(0.05)
+
+        assert cancelled["status"] == "cancelled"
+        assert runtime.store.require_run(started["id"]).status == "cancelled"
+        assert [call["tool"] for call in gateway.calls].count("cancel_evaluation") == 1
+        assert [call["tool"] for call in gateway.calls].count("run_evaluation") == 1
     finally:
         await runtime.shutdown()
 
@@ -2213,6 +2342,7 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         gateway=gateway,
         emit=lambda kind, payload: events.append((kind, payload)),
     )
+    context.validation_repair.attempts = 2
     rail = ConfirmationRail(context)
     tool_call = type("Call", (), {
         "arguments": '{"summary":"确认目标"}',
@@ -2227,9 +2357,20 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         "candidateHash": "sha256:goal",
         "validatorVersion": "package-contract-v2",
     }
+    assert context.validation_repair.candidate_revision == "candidate_goal"
+    assert context.validation_repair.attempts == 2
     assert events == [
         ("focus", {"target": {"kind": "diff", "target": ".modeling/goal.md"}}),
     ]
+
+    settled = await rail.resolve_interrupt(  # type: ignore[arg-type]
+        None,
+        tool_call,
+        {"action": "settled_confirmation", "result": {"ok": True, "accepted": True}},
+    )
+    assert json.loads(settled.tool_result)["accepted"] is True
+    assert context.validation_repair.candidate_revision == ""
+    assert context.validation_repair.attempts == 0
 
 
 async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_result() -> None:

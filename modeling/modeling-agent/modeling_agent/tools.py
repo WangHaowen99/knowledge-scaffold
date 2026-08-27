@@ -21,6 +21,7 @@ AfterCoreTool = Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]]
 ConfirmationGuard = Callable[[], bool]
 ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
+ValidationRepairSave = Callable[[dict[str, Any]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
 LEADER_TABLE_SAMPLE_ROWS = 5
@@ -29,19 +30,28 @@ TABLE_SAMPLE_VALUE_CHARS = 120
 
 VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "write_file",
+    "upsert_object",
+    "upsert_rule",
+    "upsert_operation",
+    "bind_object_source",
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
 })
 VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "write_file",
+    "delete_file",
+    "upsert_object",
+    "upsert_rule",
+    "upsert_operation",
+    "bind_object_source",
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
 })
 VALIDATION_REPAIR_RESET_TOOLS = frozenset({
-    "delete_file",
     "discard_rejected_candidate_changes",
+    "request_confirmation",
 })
 
 TOOL_WORK_DETAILS = {
@@ -100,6 +110,8 @@ class ToolContext:
     decision_card_requested: bool = False
     validation_repair: CandidateValidationRepairState = field(default_factory=lambda: CandidateValidationRepairState())
     package_contract: dict[str, Any] = field(default_factory=dict)
+    cancel_event: asyncio.Event | None = None
+    inflight_core_calls: set[asyncio.Task[Any]] | None = None
 
     def __post_init__(self) -> None:
         confirmation = self.package_contract.get("confirmation")
@@ -114,10 +126,12 @@ class ToolContext:
         stop_on_repeated = confirmation.get("stopOnRepeatedFindingFingerprint")  # NOSONAR
         if isinstance(stop_on_repeated, bool):
             self.validation_repair.stop_on_repeated_fingerprint = stop_on_repeated
+        self.validation_repair._notify_change()
 
 
 @dataclass
 class CandidateValidationRepairState:
+    candidate_revision: str = ""
     attempts: int = 0
     last_fingerprint: str = ""
     repeated_findings: bool = False
@@ -129,6 +143,57 @@ class CandidateValidationRepairState:
     stop_notice_emitted: bool = False
     max_attempts: int = 3
     stop_on_repeated_fingerprint: bool = True
+    on_change: ValidationRepairSave | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: Mapping[str, Any] | None,
+        *,
+        on_change: ValidationRepairSave | None = None,
+    ) -> CandidateValidationRepairState:
+        raw = snapshot if isinstance(snapshot, Mapping) else {}
+        state = cls(
+            candidate_revision=str(raw.get("candidateRevision") or ""),
+            attempts=_non_negative_int(raw.get("attempts")),
+            last_fingerprint=str(raw.get("lastFingerprint") or ""),
+            repeated_findings=bool(raw.get("repeatedFindings")),
+            stopped=bool(raw.get("stopped")),
+            last_report=_mapping_dict(raw.get("lastReport")),
+            current_round_id=str(raw.get("currentRoundId") or ""),
+            current_reports=[
+                dict(item) for item in raw.get("currentReports", [])
+                if isinstance(item, Mapping)
+            ],
+            current_round_progress=bool(raw.get("currentRoundProgress")),
+            stop_notice_emitted=bool(raw.get("stopNoticeEmitted")),
+            max_attempts=max(1, _positive_int(raw.get("maxAttempts"), 3)),
+            stop_on_repeated_fingerprint=bool(
+                raw.get("stopOnRepeatedFindingFingerprint", True)
+            ),
+            on_change=on_change,
+        )
+        return state
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "candidateRevision": self.candidate_revision,
+            "attempts": self.attempts,
+            "lastFingerprint": self.last_fingerprint,
+            "repeatedFindings": self.repeated_findings,
+            "stopped": self.stopped,
+            "lastReport": self.last_report,
+            "currentRoundId": self.current_round_id,
+            "currentReports": self.current_reports,
+            "currentRoundProgress": self.current_round_progress,
+            "stopNoticeEmitted": self.stop_notice_emitted,
+            "maxAttempts": self.max_attempts,
+            "stopOnRepeatedFindingFingerprint": self.stop_on_repeated_fingerprint,
+        }
+
+    def _notify_change(self) -> None:
+        if self.on_change is not None:
+            self.on_change(self.snapshot())
 
     def begin_round(self, round_id: str) -> None:
         normalized = str(round_id or "").strip() or "unscoped"
@@ -136,6 +201,16 @@ class CandidateValidationRepairState:
             return
         self._finalize_round()
         self.current_round_id = normalized
+        self._notify_change()
+
+    def scope_candidate_revision(self, candidate_revision: str) -> None:
+        normalized = str(candidate_revision or "").strip()
+        if not normalized or normalized == self.candidate_revision:
+            return
+        if self.candidate_revision:
+            self._reset_episode(preserve_round=False)
+        self.candidate_revision = normalized
+        self._notify_change()
 
     def _finalize_round(self) -> None:
         if self.current_reports:
@@ -164,10 +239,9 @@ class CandidateValidationRepairState:
                     f"{self.max_attempts} 轮上限。"
                     "保留完整 findings，并等待用户决定是调整范围还是撤销候选。"
                 )
-        elif self.current_round_progress and self.attempts:
-            self._reset_episode(preserve_round=True)
         self.current_reports = []
         self.current_round_progress = False
+        self._notify_change()
 
     def record(self, report: Mapping[str, Any]) -> dict[str, Any]:
         if not self.current_round_id:
@@ -184,6 +258,7 @@ class CandidateValidationRepairState:
         normalized = dict(report)
         self.current_reports.append(normalized)
         fingerprint = _validation_report_fingerprint(normalized)
+        self._notify_change()
         return {
             "repairAttempt": self.attempts + 1,
             "repairRoundId": self.current_round_id,
@@ -206,12 +281,16 @@ class CandidateValidationRepairState:
         self.current_reports = []
         self.current_round_progress = False
         self.stop_notice_emitted = False
+        if not preserve_round:
+            self.candidate_revision = ""
+        self._notify_change()
 
     def record_success(self, tool_name: str) -> None:
         if tool_name in VALIDATION_REPAIR_RESET_TOOLS:
             self._reset_episode(preserve_round=True)
         elif tool_name in VALIDATION_REPAIR_PROGRESS_TOOLS:
             self.current_round_progress = True
+            self._notify_change()
 
     def blocked_result(self) -> dict[str, Any]:
         report = dict(self.last_report)
@@ -226,7 +305,7 @@ class CandidateValidationRepairState:
             "repairStopped": True,
             "tracePhase": "blocked",
             "instruction": (
-                "自动修正已停止。保留完整 findings；可以读取、删除或撤销候选，"
+                "自动修正已停止。完整校验报告仍由 core 保留；可以读取、删除或撤销候选，"
                 "但不要继续生成新的候选文件，直到用户决定下一步。"
             ),
             "display": {"text": "候选自动修正已停止，需要检查校验明细"},
@@ -236,6 +315,7 @@ class CandidateValidationRepairState:
         if self.stop_notice_emitted:
             return False
         self.stop_notice_emitted = True
+        self._notify_change()
         return True
 
     def decorate(self, report: Mapping[str, Any]) -> dict[str, Any]:
@@ -245,8 +325,11 @@ class CandidateValidationRepairState:
         decorated = {**report, **repair}
         existing_instruction = str(report.get("instruction") or "").strip()
         repair_instruction = (
-            "这是可自动修正的确定性校验失败。完整处理 findings 中每一项；"
-            "同一 repairRoundId 下多个文件只算一轮，修正后重新校验。"
+            "这是可自动修正的确定性校验失败。完整处理 findings 中每一项；若返回"
+            " validationReportId，先按"
+            " findingSummary 确定范围，再用 get_validation_findings 每次读取一页并逐项修正；"
+            "不要把整份报告重新读入同一轮上下文。同一 repairRoundId 下多个文件只算一轮，"
+            "修正后重新校验。"
         )
         decorated["instruction"] = " ".join(
             item for item in (existing_instruction, repair_instruction) if item
@@ -256,6 +339,9 @@ class CandidateValidationRepairState:
 
 
 def _validation_report_fingerprint(report: Mapping[str, Any]) -> str:
+    supplied = str(report.get("findingFingerprint") or "").strip()
+    if supplied:
+        return supplied
     findings = report.get("findings")
     fingerprint_source: Any = {
         "validatorVersion": report.get("validatorVersion"),
@@ -269,12 +355,42 @@ def _validation_report_fingerprint(report: Mapping[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
+def _fingerprint_values(values: list[str]) -> str:
+    normalized = sorted({str(value).strip() for value in values if str(value).strip()})
+    if len(normalized) == 1:
+        return normalized[0]
+    encoded = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _mapping_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _non_negative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _positive_int(value: Any, fallback: int) -> int:
+    try:
+        return max(1, int(value or fallback))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _aggregate_validation_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
     errors: list[str] = []
     reasons: list[str] = []
     versions: list[str] = []
     next_steps: list[str] = []
     findings_by_key: dict[str, dict[str, Any]] = {}
+    report_ids: list[str] = []
+    report_fingerprints: list[str] = []
+    summarized_finding_count = 0
+    findings_truncated = False
     for report in reports:
         error = str(report.get("error") or "CANDIDATE_VALIDATION_FAILED")
         reason = str(report.get("reason") or "").strip()
@@ -285,6 +401,17 @@ def _aggregate_validation_reports(reports: list[Mapping[str, Any]]) -> dict[str,
             reasons.append(reason)
         if version and version not in versions:
             versions.append(version)
+        report_id = str(report.get("validationReportId") or "").strip()
+        if report_id and report_id not in report_ids:
+            report_ids.append(report_id)
+        report_fingerprint = _validation_report_fingerprint(report)
+        if report_fingerprint not in report_fingerprints:
+            report_fingerprints.append(report_fingerprint)
+        try:
+            summarized_finding_count += max(0, int(report.get("findingCount") or 0))
+        except (TypeError, ValueError):
+            pass
+        findings_truncated = findings_truncated or bool(report.get("findingsTruncated"))
         for step in report.get("next") or []:
             normalized_step = str(step).strip()
             if normalized_step and normalized_step not in next_steps:
@@ -303,16 +430,20 @@ def _aggregate_validation_reports(reports: list[Mapping[str, Any]]) -> dict[str,
             str(item.get("message") or ""),
         ),
     )
-    return {
+    result = {
         "error": errors[0] if len(errors) == 1 else "CANDIDATE_VALIDATION_FAILED",
         "errors": errors,
         "reason": "；".join(reasons) or "候选确定性校验未通过",
         "retryable": True,
         "validatorVersion": versions[0] if len(versions) == 1 else "+".join(sorted(versions)),
-        "findingCount": len(findings),
+        "findingCount": max(len(findings), summarized_finding_count),
         "findings": findings,
         "next": next_steps,
+        "validationReportIds": report_ids,
+        "findingsTruncated": findings_truncated,
     }
+    result["findingFingerprint"] = _fingerprint_values(report_fingerprints)
+    return result
 
 
 STRING = {"type": "string"}
@@ -376,7 +507,7 @@ CORE_TOOL_SPECS = (
     ToolSpec("read_file", "读取知识包文件。", {"path": PATH}, ("path",), display="正在读取知识文件"),
     ToolSpec(
         "write_file",
-        "写入候选修订，不改变已确认版本。change_group 是本轮确认的最小单位。",
+        "写入非受管候选文件，不改变已确认版本。规则、操作和对象数据映射优先使用领域工具；change_group 是本轮确认的最小单位。",
         {
             "path": PATH,
             "content": STRING,
@@ -386,6 +517,160 @@ CORE_TOOL_SPECS = (
         ("path", "content", "change_group", "evidence"),
         False,
         "正在整理待确认的修改",
+    ),
+    ToolSpec(
+        "upsert_object",
+        "创建或完整替换一个业务对象，并可在同一次调用中绑定真实数据表。核心确定性生成对象详情、对象索引、数据映射和内部语义规格；不要再手写这些文件。",
+        {
+            "key": STRING, "title": STRING, "description": STRING,
+            "aliases": {"type": "array", "items": STRING},
+            "query_boundary": STRING,
+            "fields": {"type": "array", "minItems": 1, "items": {
+                "type": "object",
+                "properties": {"key": STRING, "cn_name": STRING, "type": STRING,
+                               "required": {"type": "boolean"}, "note": STRING, "alias": STRING},
+                "required": ["key", "type", "required"], "additionalProperties": False,
+            }},
+            "relations": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"relation": STRING, "target": STRING, "note": STRING,
+                               "evidence": {"type": "array", "items": STRING}},
+                "required": ["relation", "target"], "additionalProperties": False,
+            }},
+            "source": {"type": "object", "properties": {
+                "document_id": STRING, "table": STRING,
+                "field_bindings": {"type": "array", "minItems": 1, "items": {
+                    "type": "object",
+                    "properties": {"field_key": STRING, "source_column": STRING},
+                    "required": ["field_key", "source_column"], "additionalProperties": False,
+                }},
+                "primary_key": {"type": "array", "minItems": 1, "items": STRING},
+            }, "required": ["document_id", "table", "field_bindings", "primary_key"],
+               "additionalProperties": False},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+            "change_group": CHANGE_GROUP,
+        },
+        ("key", "title", "description", "fields", "evidence", "change_group"),
+        False,
+        "正在编译业务对象",
+    ),
+    ToolSpec(
+        "upsert_rule",
+        "创建或完整替换一条业务规则。核心校验对象/操作引用，并确定性生成规则详情、规则索引和内部语义规格；不要再手写这些文件。",
+        {
+            "key": STRING,
+            "title": STRING,
+            "description": STRING,
+            "applies_to": {
+                "type": "object",
+                "properties": {
+                    "objects": {"type": "array", "items": STRING},
+                    "operations": {"type": "array", "items": STRING},
+                },
+                "required": ["objects", "operations"],
+                "additionalProperties": False,
+            },
+            "conditions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {"condition": STRING, "conclusion": STRING},
+                    "required": ["condition", "conclusion"],
+                    "additionalProperties": False,
+                },
+            },
+            "conclusion": STRING,
+            "exceptions": {"type": "array", "items": STRING},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+            "change_group": CHANGE_GROUP,
+        },
+        ("key", "title", "applies_to", "conditions", "conclusion", "evidence", "change_group"),
+        False,
+        "正在编译业务规则",
+    ),
+    ToolSpec(
+        "upsert_operation",
+        "创建或完整替换一个业务操作。核心校验所有引用，并确定性生成操作详情、操作索引和内部语义规格；不要再手写这些文件。",
+        {
+            "key": STRING,
+            "title": STRING,
+            "description": STRING,
+            "inputs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "param": STRING, "cn_name": STRING, "type": STRING,
+                        "required": {"type": "boolean"}, "note": STRING,
+                    },
+                    "required": ["param", "type", "required"],
+                    "additionalProperties": False,
+                },
+            },
+            "outputs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"field": STRING, "cn_name": STRING, "type": STRING, "note": STRING},
+                    "required": ["field", "type"],
+                    "additionalProperties": False,
+                },
+            },
+            "flow": {"type": "array", "minItems": 1, "items": STRING},
+            "related_objects": {"type": "array", "minItems": 1, "items": STRING},
+            "uses_rules": {"type": "array", "items": STRING},
+            "uses_metrics": {"type": "array", "items": STRING},
+            "notes": {"type": "array", "items": STRING},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+            "change_group": CHANGE_GROUP,
+        },
+        ("key", "title", "description", "inputs", "outputs", "flow", "related_objects", "evidence", "change_group"),
+        False,
+        "正在编译业务操作",
+    ),
+    ToolSpec(
+        "bind_object_source",
+        "把一个现有对象完整绑定到一张已解析数据表。必须提交对象全部字段到真实列的一一映射和主键；核心确定性重建对象来源、索引、数据映射和内部语义规格。",
+        {
+            "key": STRING,
+            "document_id": STRING,
+            "table": STRING,
+            "field_bindings": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {"field_key": STRING, "source_column": STRING},
+                    "required": ["field_key", "source_column"],
+                    "additionalProperties": False,
+                },
+            },
+            "primary_key": {"type": "array", "minItems": 1, "items": STRING},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+            "change_group": CHANGE_GROUP,
+        },
+        ("key", "document_id", "table", "field_bindings", "primary_key", "evidence", "change_group"),
+        False,
+        "正在编译对象数据绑定",
+    ),
+    ToolSpec(
+        "get_validation_summary",
+        "按校验失败返回的 report_id 读取稳定摘要和指纹，不返回全部明细。",
+        {"report_id": STRING},
+        ("report_id",),
+        display="正在读取校验摘要",
+    ),
+    ToolSpec(
+        "get_validation_findings",
+        "分页读取一份校验报告的原始 findings。每页最多 50 项；修复一页后再读取下一页，禁止反复读取已处理页。",
+        {
+            "report_id": STRING,
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
+        ("report_id",),
+        display="正在分页读取校验明细",
     ),
     ToolSpec(
         "delete_file",
@@ -730,6 +1015,8 @@ class CoreTool(Tool):
         self.context = context
 
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
+        if self.context.cancel_event is not None and self.context.cancel_event.is_set():
+            raise asyncio.CancelledError
         arguments = input_dict(inputs)
         arguments = _bounded_source_arguments(self.spec.name, arguments)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -750,9 +1037,13 @@ class CoreTool(Tool):
             tool=self.spec.name,
             arguments=arguments,
         ))
+        if self.context.inflight_core_calls is not None:
+            self.context.inflight_core_calls.add(call)
         started = time.monotonic()
         try:
             while True:
+                if self.context.cancel_event is not None and self.context.cancel_event.is_set():
+                    raise asyncio.CancelledError
                 done, _pending = await asyncio.wait({call}, timeout=FULL_READ_PROGRESS_INTERVAL_SECONDS)
                 if done:
                     result = call.result()
@@ -798,7 +1089,11 @@ class CoreTool(Tool):
                     })
         except BaseException:
             call.cancel()
+            await asyncio.gather(call, return_exceptions=True)
             raise
+        finally:
+            if self.context.inflight_core_calls is not None:
+                self.context.inflight_core_calls.discard(call)
         if _is_retryable_validation_failure(self.spec.name, result):
             result = self.context.validation_repair.decorate(result)
         elif not result.get("error"):
@@ -828,7 +1123,10 @@ def _is_retryable_validation_failure(name: str, result: Mapping[str, Any]) -> bo
     if name not in VALIDATION_REPAIR_ERROR_TOOLS:
         return False
     has_retryable_error = bool(result.get("error")) and result.get("retryable") is True
-    return has_retryable_error and isinstance(result.get("findings"), list)
+    has_report = bool(str(result.get("validationReportId") or "").strip())
+    return has_retryable_error and (
+        isinstance(result.get("findings"), list) or has_report
+    )
 
 
 def _bounded_positive_integer(value: Any, maximum: int) -> int:

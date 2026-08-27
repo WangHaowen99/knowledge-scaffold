@@ -598,6 +598,7 @@ export function packageFusionScopeDependencyGraph(
   }
   for (const rule of source.spec.rules ?? []) {
     need('rules', `rules/${rule.key}`, 'objects', rule.appliesToObjects);
+    need('rules', `rules/${rule.key}`, 'operations', rule.appliesToOperations);
   }
   for (const metric of source.spec.metrics ?? []) {
     need('metrics', `metrics/${metric.key}`, 'objects', metric.usesObjects);
@@ -679,6 +680,7 @@ function assertDispositionClosure(
     for (const rule of source.spec.rules ?? []) {
       if (action(source.id, 'rule', rule.key) === 'preserve') {
         need(source, 'rule', rule.key, 'object', rule.appliesToObjects);
+        need(source, 'rule', rule.key, 'operation', rule.appliesToOperations);
       }
     }
     for (const metric of source.spec.metrics ?? []) {

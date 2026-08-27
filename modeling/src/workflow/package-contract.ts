@@ -7,8 +7,8 @@ import {
 } from './knowledge-markdown-contract.js';
 import { MERMAID_SOURCE_VALIDATOR_VERSION } from './mermaid-source-contract.js';
 
-export const PACKAGE_CONTRACT_VERSION = 'package-contract-v4';
-export const PACKAGE_FORMAT_VALIDATOR_VERSION = 'package-format-v3';
+export const PACKAGE_CONTRACT_VERSION = 'package-contract-v5';
+export const PACKAGE_FORMAT_VALIDATOR_VERSION = 'package-format-v4';
 export const PACKAGE_MANIFEST_KIND = 'ontology-package';
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = '0.1';
 export const PACKAGE_STATUSES = ['draft', 'review', 'released', 'deprecated'] as const;
@@ -19,7 +19,13 @@ export const MANIFEST_PLATFORM_MANAGED_FIELDS = [
   'kind', 'schema_version', 'id', 'version', 'status',
 ] as const;
 export const MANIFEST_AGENT_MUTABLE_FIELDS = ['description', 'resources'] as const;
-export const PACKAGE_REQUIRED_FILES = ['manifest.yaml', 'index.md', 'objects/index.md', 'operations/index.md'] as const;
+export const PACKAGE_REQUIRED_FILES = [
+  'manifest.yaml',
+  'index.md',
+  'objects/index.md',
+  'operations/index.md',
+  'mappings/object-data-mappings.json',
+] as const;
 export const PACKAGE_INDEX_RESOURCES: Record<string, string> = {
   'index.md': 'root',
   'objects/index.md': 'object_index',
@@ -90,6 +96,8 @@ export function packageGenerationContract() {
       },
       mappings: {
         path: 'mappings/object-data-mappings.json',
+        required: true,
+        allowEmptyObjects: true,
         requiredFields: ['schema_version', 'default_provider_alias', 'objects'],
       },
       scripts: {
@@ -106,6 +114,21 @@ export function packageGenerationContract() {
     },
     markdown: knowledgeMarkdownGenerationContract(),
     authoring: {
+      managedResources: {
+        deterministicTools: {
+          rules: 'upsert_rule',
+          operations: 'upsert_operation',
+          objectDataMappings: 'bind_object_source',
+        },
+        enforcedPaths: ['mappings/object-data-mappings.json'],
+        deprecatedDirectWritePatterns: ['rules/*.md', 'operations/*.md'],
+        derivedFiles: [
+          'rules/index.md',
+          'operations/index.md',
+          'objects/index.md',
+          'mappings/object-data-mappings.json',
+        ],
+      },
       goalEvidence: {
         path: '.modeling/goal.md',
         invariants: [
@@ -134,6 +157,16 @@ export function packageGenerationContract() {
       stopOnRepeatedFindingFingerprint: true,
       repairRoundBoundary: 'model_call',
       aggregateParallelFindings: true,
+      resetRepairStateOnlyAfterValidationPassOrCandidateDiscard: true,
+      validationReports: {
+        storage: 'lossless',
+        inlineFindingLimit: 5,
+        inlineFindingCharLimit: 12_000,
+        inlineReasonCharLimit: 2_000,
+        pageSize: 20,
+        maxPageSize: 50,
+      },
+      domainCompiledSelection: 'all_or_nothing',
       recoveryToolsRemainAvailable: ['delete_file', 'discard_rejected_candidate_changes'],
       rule: '候选必须通过完整确定性预检并保存校验回执后才能冻结并展示给用户确认',
     },

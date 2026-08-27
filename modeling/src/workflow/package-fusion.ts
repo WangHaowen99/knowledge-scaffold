@@ -377,6 +377,7 @@ function validateDecisionClosure(
     for (const rule of source.archive.spec.rules ?? []) {
       if (rowByIdentity.get(resourceIdentity(source.sourceId, 'rule', rule.key))?.decision.action !== 'preserve') continue;
       requireTargets(source, 'rule', rule.key, 'object', rule.appliesToObjects);
+      requireTargets(source, 'rule', rule.key, 'operation', rule.appliesToOperations);
     }
     for (const metric of source.archive.spec.metrics ?? []) {
       if (rowByIdentity.get(resourceIdentity(source.sourceId, 'metric', metric.key))?.decision.action !== 'preserve') continue;
@@ -440,6 +441,7 @@ function rewriteSpec(
     ...item,
     key: row('rule', item.key).fusedKey,
     appliesToObjects: item.appliesToObjects?.map((key) => mappedKey(maps, source.sourceId, 'object', key)),
+    appliesToOperations: item.appliesToOperations?.map((key) => mappedKey(maps, source.sourceId, 'operation', key)),
     evidence: rewriteEvidence(item.evidence, nodeMap),
   }));
   const metrics = (source.archive.spec.metrics ?? []).filter((item) => row('metric', item.key).decision.action === 'preserve').map((item): SpecMetric => ({
