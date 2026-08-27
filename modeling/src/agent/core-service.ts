@@ -3181,6 +3181,12 @@ export class AgentCoreService {
       }
       const focusPath = candidate.groups.flatMap((group) => group.changes)
         .find((change) => change.path.startsWith('package/'))?.path;
+      const candidateChanges = candidate.groups.flatMap((group) => group.changes).map((change) => ({
+        path: publicPath(change.path),
+        kind: change.kind,
+        content: change.kind === 'write' ? change.content : null,
+      }));
+      this.assertScriptCandidatesTested(workspace, candidateChanges);
       await this.assertFrozenCandidateValid(workspace, candidate);
       const validationReceipt = this.recordCandidateValidationReceipt(candidate);
       return {
@@ -4232,7 +4238,7 @@ export class AgentCoreService {
       }
       return item as Record<string, unknown>;
     });
-    const source = (await this.readFile(workspace, { path: script })).content;
+    const source = await this.scriptSourceForTest(workspace, script);
     const result = await runScriptCasesInJiuwenbox({
         runId: workspace.run_id,
         source,
@@ -4277,6 +4283,23 @@ export class AgentCoreService {
     };
   }
 
+  private async scriptSourceForTest(workspace: WorkspaceRow, script: string): Promise<string> {
+    if (workspace.candidate_id) {
+      const candidate = await this.artifacts.getCandidateRevision(
+        workspace.project_id,
+        workspace.candidate_id,
+      );
+      if (candidate.status === 'pending') {
+        const preview = await this.artifacts.previewCandidateRevision(
+          workspace.project_id,
+          candidate.id,
+        );
+        if (script in preview.files) return preview.files[script];
+      }
+    }
+    return (await this.readFile(workspace, { path: script })).content;
+  }
+
   private assertScriptCandidatesTested(
     workspace: WorkspaceRow,
     changes: Array<{ path: string; kind: 'write' | 'delete'; content: string | Uint8Array | null }>,
@@ -4298,7 +4321,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'SCRIPT_TEST_REQUIRED',
         '脚本候选尚未在隔离环境通过当前版本测试',
-        ['隔离环境恢复后重新运行脚本测试，再发起确认'],
+        ['对 blockers 中的每个脚本运行隔离测试；全部通过后重新执行候选预检并发起确认'],
         409,
         { blockers },
       );
