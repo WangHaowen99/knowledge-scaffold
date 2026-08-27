@@ -114,6 +114,21 @@ export function packageGenerationContract() {
     },
     markdown: knowledgeMarkdownGenerationContract(),
     authoring: {
+      managedResources: {
+        deterministicTools: {
+          rules: 'upsert_rule',
+          operations: 'upsert_operation',
+          objectDataMappings: 'bind_object_source',
+        },
+        enforcedPaths: ['mappings/object-data-mappings.json'],
+        deprecatedDirectWritePatterns: ['rules/*.md', 'operations/*.md'],
+        derivedFiles: [
+          'rules/index.md',
+          'operations/index.md',
+          'objects/index.md',
+          'mappings/object-data-mappings.json',
+        ],
+      },
       goalEvidence: {
         path: '.modeling/goal.md',
         invariants: [
@@ -142,6 +157,16 @@ export function packageGenerationContract() {
       stopOnRepeatedFindingFingerprint: true,
       repairRoundBoundary: 'model_call',
       aggregateParallelFindings: true,
+      resetRepairStateOnlyAfterValidationPassOrCandidateDiscard: true,
+      validationReports: {
+        storage: 'lossless',
+        inlineFindingLimit: 5,
+        inlineFindingCharLimit: 12_000,
+        inlineReasonCharLimit: 2_000,
+        pageSize: 20,
+        maxPageSize: 50,
+      },
+      domainCompiledSelection: 'all_or_nothing',
       recoveryToolsRemainAvailable: ['delete_file', 'discard_rejected_candidate_changes'],
       rule: '候选必须通过完整确定性预检并保存校验回执后才能冻结并展示给用户确认',
     },

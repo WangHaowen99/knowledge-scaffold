@@ -211,7 +211,10 @@ function rulesIndex(rules: SpecRule[]): string {
 function ruleMd(r: SpecRule): string {
   const fm = frontmatter({
     resource: 'rule', key: r.key, title: r.title, description: r.description,
-    applies_to: { objects: r.appliesToObjects?.length ? r.appliesToObjects : undefined },
+    applies_to: {
+      objects: r.appliesToObjects?.length ? r.appliesToObjects : undefined,
+      operations: r.appliesToOperations?.length ? r.appliesToOperations : undefined,
+    },
     evidence: r.evidence,
   });
   const conditions = (r.conditions ?? []).map((c) => `| ${cell(c.condition)} | ${cell(c.conclusion)} |`);

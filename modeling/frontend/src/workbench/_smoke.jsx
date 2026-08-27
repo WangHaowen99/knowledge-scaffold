@@ -728,12 +728,16 @@ store.set({
   messages: [],
   interaction: {
     id: 'restored-confirm-smoke', kind: 'confirmation', status: 'pending',
-    payload: { changeGroups: [{ id: 'flow', tier: 'caliber', title: '业务流程确认' }] },
+    payload: {
+      atomicSelection: true,
+      changeGroups: [{ id: 'flow', tier: 'caliber', title: '业务流程确认' }],
+    },
   },
 });
 try {
   const html = renderToString(<RightPane />);
-  if (!html.includes('确认待修改内容') || !html.includes('业务流程确认') || !html.includes('接受已选')) {
+  if (!html.includes('确认待修改内容') || !html.includes('业务流程确认')
+    || !html.includes('接受已选') || !html.includes('disabled=""')) {
     throw new Error('刷新恢复的待确认状态没有直接渲染确认卡');
   }
   console.log('✓ 刷新时直接恢复待确认卡');

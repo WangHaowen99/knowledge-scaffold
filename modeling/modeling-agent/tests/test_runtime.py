@@ -298,6 +298,69 @@ async def test_candidate_validation_repair_stops_on_repeated_round_and_recovery_
     assert state.current_round_id == "model-3"
 
 
+async def test_successful_candidate_write_does_not_reset_validation_episode() -> None:
+    state = CandidateValidationRepairState()
+    state.begin_round("model-1")
+    state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:first",
+        "validationReportId": "report-1",
+        "findingCount": 12,
+        "findingsTruncated": True,
+    })
+    state.begin_round("model-2")
+    assert state.attempts == 1
+
+    state.record_success("write_file")
+    state.begin_round("model-3")
+
+    assert state.attempts == 1
+    assert state.last_fingerprint == "sha256:first"
+    assert state.current_round_id == "model-3"
+    assert state.stopped is False
+
+
+async def test_compact_validation_report_without_inline_findings_enters_repair_state() -> None:
+    gateway = FakeGateway({
+        "write_file": {
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "reason": "候选格式校验未通过",
+            "retryable": True,
+            "validatorVersion": "package-v1",
+            "findingFingerprint": "sha256:compact",
+            "validationReportId": "report-compact",
+            "findingCount": 24,
+            "findingsTruncated": True,
+            "findingSummary": {
+                "paths": [{"path": "objects/index.md", "count": 24}],
+            },
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+
+    result = json.loads(await CoreTool(spec, context).invoke({
+        "path": "objects/index.md",
+        "content": "# index",
+        "change_group": "objects",
+        "evidence": [],
+    }))
+
+    assert result["validationReportId"] == "report-compact"
+    assert result["findingFingerprint"] == "sha256:compact"
+    assert result["findingCount"] == 24
+    assert "findings" not in result
+    assert result["repairAttempt"] == 1
+    assert "get_validation_findings" in result["instruction"]
+
+
 async def test_tool_context_applies_repair_policy_from_package_contract() -> None:
     context = ToolContext(
         project_id="project_demo",

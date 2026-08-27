@@ -172,6 +172,7 @@ function LiveConfirm({ interaction }) {
   const policy = useStore(store, (state) => state.confirmPolicy);
   const payload = interaction.payload || {};
   const groups = payload.changeGroups || [];
+  const atomicSelection = payload.atomicSelection === true;
   const selectable = groups.filter((group) => !group.autoApproved);
   const [selected, setSelected] = useState(() => selectable.map((group) => group.id));
   const [returning, setReturning] = useState(false);
@@ -195,8 +196,8 @@ function LiveConfirm({ interaction }) {
         {groups.map((group) => {
           const impact = (group.impact || []).filter(Boolean);
           return <label className={`wb-grp ${group.autoApproved ? 'dim' : ''}`} key={group.id}>
-            <input type="checkbox" disabled={group.autoApproved || sending}
-              checked={group.autoApproved || selected.includes(group.id)}
+            <input type="checkbox" disabled={group.autoApproved || atomicSelection || sending}
+              checked={group.autoApproved || atomicSelection || selected.includes(group.id)}
               onChange={() => setSelected((items) => items.includes(group.id)
                 ? items.filter((id) => id !== group.id) : [...items, group.id])} />
             <span><b>{userFacingText(group.title)}</b><span className="gm">{group.tier === 'caliber' ? '业务口径' : group.tier === 'structural' ? '结构变更' : group.tier === 'script' ? '脚本' : '自动同步'}{group.warning ? ` · ${userFacingText(group.warning)}` : ''}</span>

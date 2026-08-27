@@ -189,6 +189,7 @@ export function runRuleChecks(
       id: fid(), source: 'rule', severity, category, target, message, suggestion,
     }));
   const objKeys = new Set(spec.objects.map((o) => o.key));
+  const opKeys = new Set(spec.operations.map((operation) => operation.key));
   const ruleKeys = new Set((spec.rules ?? []).map((r) => r.key));
   const metricKeys = new Set((spec.metrics ?? []).map((m) => m.key));
 
@@ -279,6 +280,9 @@ export function runRuleChecks(
     if (!(r.content ?? '').trim()) add('错误', '规则不完整', r.key, `规则「${r.title || r.key}」缺少规则内容（content）`, `为规则 ${r.key} 补充完整的判断口径`);
     for (const ok of r.appliesToObjects ?? []) {
       if (!objKeys.has(ok)) add('警告', '悬空引用', r.key, `规则「${r.title || r.key}」的适用对象 ${ok} 不存在`, `修正规则 ${r.key} 的适用对象`);
+    }
+    for (const operationKey of r.appliesToOperations ?? []) {
+      if (!opKeys.has(operationKey)) add('错误', '悬空引用', r.key, `规则「${r.title || r.key}」的适用操作 ${operationKey} 不存在`, `修正规则 ${r.key} 的适用操作`);
     }
   }
   for (const m of spec.metrics ?? []) {

@@ -389,6 +389,7 @@ export interface SpecRule {
   title: string;
   description?: string;
   appliesToObjects?: string[]; // frontmatter applies_to.objects
+  appliesToOperations?: string[]; // frontmatter applies_to.operations
   content: string;             // 「# 规则内容」（必需）
   conditions?: { condition: string; conclusion: string }[]; // 「# 判断条件」表（推荐）
   exceptions?: string[];       // 「# 例外」列表（推荐）

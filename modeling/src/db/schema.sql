@@ -612,6 +612,39 @@ CREATE TABLE IF NOT EXISTS agent_candidate_validation_receipts (
 CREATE INDEX IF NOT EXISTS idx_agent_candidate_validation_receipts_project
   ON agent_candidate_validation_receipts(project_id, validated_at DESC);
 
+-- 校验报告采用“完整事实 + 上下文摘要”双层存储。Agent 工具结果只携带摘要和
+-- report id；逐条 finding 在需要修复时分页读取，避免同一大报告反复进入模型上下文。
+CREATE TABLE IF NOT EXISTS agent_validation_reports (
+  id                   TEXT PRIMARY KEY,
+  project_id           TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id               TEXT NOT NULL,
+  tool_name             TEXT NOT NULL,
+  error_code            TEXT NOT NULL,
+  validator_version     TEXT NOT NULL,
+  finding_fingerprint   TEXT NOT NULL,
+  finding_count         INTEGER NOT NULL CHECK (finding_count >= 0),
+  summary_json          TEXT NOT NULL,
+  report_json           TEXT NOT NULL,
+  created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_validation_reports_run
+  ON agent_validation_reports(project_id, run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_validation_reports_fingerprint
+  ON agent_validation_reports(project_id, finding_fingerprint, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_validation_findings (
+  report_id          TEXT NOT NULL REFERENCES agent_validation_reports(id) ON DELETE CASCADE,
+  ordinal            INTEGER NOT NULL CHECK (ordinal >= 0),
+  rule_id            TEXT NOT NULL,
+  path               TEXT NOT NULL,
+  message            TEXT NOT NULL,
+  suggestion         TEXT NOT NULL,
+  finding_json       TEXT NOT NULL,
+  PRIMARY KEY (report_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_validation_findings_path
+  ON agent_validation_findings(report_id, path, ordinal);
+
 CREATE TABLE IF NOT EXISTS agent_confirmations (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -87,7 +87,7 @@ export function knowledgeMarkdownGenerationContract() {
     ),
     references: {
       operation: { uses: ['objects', 'rules', 'metrics'], nestedObjectRequired: true },
-      rule: { applies_to: ['objects'], nestedObjectRequired: true },
+      rule: { applies_to: ['objects', 'operations'], nestedObjectRequired: true },
       metric: { uses: ['objects'], nestedObjectRequired: true },
       referencedKeysMustExist: true,
       operationBodyMustMatchFrontmatter: ['uses.rules', 'uses.metrics'],
@@ -249,7 +249,7 @@ function validateDetail(
   }
   if (kind === 'rule') {
     if (parsed.sections.has('判断条件')) validateTable(path, parsed.sections.get('判断条件'), ['条件', '结论'], issues);
-    validateNestedLists(path, parsed.frontmatter.applies_to, 'applies_to', ['objects'], issues);
+    validateNestedLists(path, parsed.frontmatter.applies_to, 'applies_to', ['objects', 'operations'], issues);
   }
   if (kind === 'metric') {
     if (!/^[-*]\s+.+/mu.test(parsed.sections.get('计算边界') ?? '')) issues.push(`${path} 的计算边界必须使用项目列表`);
@@ -289,7 +289,8 @@ function validateReferences(
         ['rule', nested(parsed.frontmatter.uses, 'rules'), 'uses.rules'],
         ['metric', nested(parsed.frontmatter.uses, 'metrics'), 'uses.metrics']]
       : path.startsWith('rules/')
-        ? [['object', nested(parsed.frontmatter.applies_to, 'objects'), 'applies_to.objects']]
+        ? [['object', nested(parsed.frontmatter.applies_to, 'objects'), 'applies_to.objects'],
+          ['operation', nested(parsed.frontmatter.applies_to, 'operations'), 'applies_to.operations']]
         : path.startsWith('metrics/')
           ? [['object', nested(parsed.frontmatter.uses, 'objects'), 'uses.objects']]
           : [];

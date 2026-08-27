@@ -65,6 +65,7 @@ export function validateSpecKeys(spec: PackageSpec): PackageSpec {
     ...r,
     key: validateKey(r.key, '规则'),
     appliesToObjects: r.appliesToObjects?.map(normalizeKey),
+    appliesToOperations: r.appliesToOperations?.map(normalizeKey),
   }));
   const metrics = spec.metrics?.map((m) => ({
     ...m,

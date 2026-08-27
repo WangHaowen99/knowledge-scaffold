@@ -40,6 +40,7 @@ function packageSpec(version: string): PackageSpec {
       title: '有效订单',
       description: '判断订单是否有效',
       appliesToObjects: ['Order'],
+      appliesToOperations: ['query_order'],
       content: '订单状态为有效时属于有效订单。',
       conditions: [{ condition: '状态为有效', conclusion: '有效订单' }],
       exceptions: ['已删除订单除外'],
@@ -90,6 +91,7 @@ test('package draft parser: round-trips every editable detail format without cha
   assert.deepEqual(renderPackage(parsed), rendered);
   assert.equal(parsed.objects[0].fields[0].sourceColumn, 'order_id');
   assert.deepEqual(parsed.objects[0].primaryKey, ['id']);
+  assert.deepEqual(parsed.rules?.[0].appliesToOperations, ['query_order']);
 });
 
 test('package draft: creates one active draft from the latest package version and restores it', async () => {

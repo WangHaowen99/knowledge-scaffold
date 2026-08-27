@@ -13,7 +13,7 @@ from modeling_agent.events import EventHub
 from modeling_agent.rails import ActivityRail, ToolBoundaryRail, WriteSafetyRail, _phase_write_problem, check_write_safety
 from modeling_agent.schemas import InteractionRecord, RUN_QUEUED, RUN_RUNNING, RunRecord
 from modeling_agent.store import RuntimeStore
-from modeling_agent.tools import ToolContext
+from modeling_agent.tools import CandidateValidationRepairState, ToolContext
 from conftest import FakeGateway, ScriptedModel, service
 
 
@@ -81,6 +81,42 @@ def test_completed_tool_receipt_survives_restart_and_replays_once(tmp_path: Path
             "write_file",
             {"path": "objects/unit.md", "content": "# Unit"},
         ) == result
+    finally:
+        reopened.close()
+
+
+def test_validation_repair_state_survives_runtime_store_restart(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_repair"))
+    state = CandidateValidationRepairState.from_snapshot(
+        store.validation_repair_state("run_repair"),
+        on_change=lambda snapshot: store.save_validation_repair_state(
+            "run_repair", snapshot,
+        ),
+    )
+    state.begin_round("model-1")
+    state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:persisted",
+        "validationReportId": "report-persisted",
+        "findingCount": 18,
+        "findingsTruncated": True,
+    })
+    state.begin_round("model-2")
+    store.close()
+
+    reopened = RuntimeStore(path)
+    try:
+        restored = CandidateValidationRepairState.from_snapshot(
+            reopened.validation_repair_state("run_repair"),
+        )
+        assert restored.attempts == 1
+        assert restored.last_fingerprint == "sha256:persisted"
+        assert restored.current_round_id == "model-2"
+        assert restored.last_report["validationReportIds"] == ["report-persisted"]
+        assert restored.last_report["findingCount"] == 18
     finally:
         reopened.close()
 

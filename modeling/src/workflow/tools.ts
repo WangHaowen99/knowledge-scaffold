@@ -327,6 +327,7 @@ export const specRuleSchema = () => Type.Object({
   key: KeyString(), title: Type.String(),
   description: Type.Optional(Type.String()),
   appliesToObjects: Type.Optional(Type.Array(Type.String({ description: '适用对象 key' }))),
+  appliesToOperations: Type.Optional(Type.Array(Type.String({ description: '适用操作 key' }))),
   content: Type.String({ description: '规则内容：完整的业务判断口径' }),
   conditions: Type.Optional(Type.Array(Type.Object({ condition: Type.String(), conclusion: Type.String() }))),
   exceptions: Type.Optional(Type.Array(Type.String())),

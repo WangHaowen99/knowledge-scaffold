@@ -23,7 +23,14 @@ import { redactEvaluationDatabaseError, resolveEvaluationDatabaseTarget } from '
 import { startCurrentEvaluation, startEvaluation, waitForEvaluation } from '../evaluation/engine.js';
 import { projectEvaluationDatabaseName } from '../evaluation/project-evaluation-database.js';
 import { advanceStage, getProject } from '../projects/repo.js';
-import type { DataDictTable, Project } from '../types.js';
+import type {
+  DataDictTable,
+  PackageSpec,
+  Project,
+  SpecObject,
+  SpecOperation,
+  SpecRule,
+} from '../types.js';
 import {
   KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
   validateKnowledgeMarkdownFile,
@@ -37,6 +44,9 @@ import {
   packageGenerationContract,
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
+import { renderPackage } from '../workflow/package-render.js';
+import { validateKey, validateSpecKeys } from '../workflow/keys.js';
+import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import {
   MERMAID_SOURCE_VALIDATOR_VERSION,
   validateMermaidSource,
@@ -71,11 +81,14 @@ import {
   type PackageMergeSource,
 } from './package-merge.js';
 import type { ImportedPackageArchive } from '../workflow/package-import.js';
+import { ValidationReportStore } from './validation-report-store.js';
 
 const WORKSPACE_LEASE_MS = 30 * 60 * 1000;
 const RUNTIME_GROUP = 'runtime_context';
 const LEGACY_RUNTIME_GROUP = '__runtime_context';
+const COMPILED_RESOURCES_GROUP = 'compiled_resources';
 const MAX_FILE_CHARS = 1_000_000;
+const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
 const PACKAGE_REQUIRED_FILE_SET: ReadonlySet<string> = new Set(PACKAGE_REQUIRED_FILES);
 const AGENT_REQUIRED_FILES: ReadonlySet<string> = new Set([
   '.modeling/goal.md',
@@ -153,10 +166,12 @@ export class AgentCoreService {
   private readonly db: DatabaseSync;
   private readonly artifacts = getPackageArtifactStore();
   private readonly packageFusion: PackageFusionService;
+  private readonly validationReports: ValidationReportStore;
 
   constructor(db: DatabaseSync = getDb()) {
     this.db = db;
     this.packageFusion = new PackageFusionService(db, this.artifacts);
+    this.validationReports = new ValidationReportStore(db);
   }
 
   async workbenchSnapshot(project: Project, username: string) {
@@ -371,6 +386,36 @@ export class AgentCoreService {
   }
 
   async invoke(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
+    try {
+      return await this.invokeRaw(context, tool, args);
+    } catch (error) {
+      if (!(error instanceof AgentCoreError)
+        || error.details.retryable !== true
+        || !Array.isArray(error.details.findings)) {
+        throw error;
+      }
+      const stored = this.validationReports.record(
+        context.project.id,
+        context.runId,
+        tool,
+        {
+          code: error.code,
+          reason: error.message,
+          next: error.next,
+          details: error.details,
+        },
+      );
+      throw new AgentCoreError(
+        stored.code,
+        stored.reason,
+        stored.next,
+        error.statusCode,
+        stored.details,
+      );
+    }
+  }
+
+  private async invokeRaw(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
     if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
@@ -387,6 +432,11 @@ export class AgentCoreService {
       case 'stage_tabular_dataset': return this.stageTabularDataset(workspace, context, args);
       case 'list_dir': return this.listDir(workspace, args);
       case 'read_file': return this.readFile(workspace, args);
+      case 'get_validation_summary': return this.validationSummary(context, args);
+      case 'get_validation_findings': return this.validationFindings(context, args);
+      case 'upsert_rule': return this.upsertRule(workspace, context, args);
+      case 'upsert_operation': return this.upsertOperation(workspace, context, args);
+      case 'bind_object_source': return this.bindObjectSource(workspace, context, args);
       case 'write_file': return this.writeFile(workspace, context, args);
       case 'delete_file': return this.deleteFile(workspace, context, args);
       case 'discard_rejected_candidate_changes': return this.discardRejectedCandidateChanges(workspace);
@@ -430,6 +480,42 @@ export class AgentCoreService {
       case 'query_eval_db': return this.queryEvaluationDatabase(context.project.id, args);
       default:
         throw new AgentCoreError('TOOL_NOT_FOUND', `未知 Agent 工具：${tool}`, [], 404);
+    }
+  }
+
+  private validationSummary(context: AgentToolContext, args: Record<string, unknown>) {
+    const reportId = text(args.report_id, 'report_id');
+    try {
+      return this.validationReports.summary(context.project.id, context.runId, reportId);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'VALIDATION_REPORT_NOT_FOUND') {
+        throw new AgentCoreError(
+          'VALIDATION_REPORT_NOT_FOUND',
+          '当前运行中不存在这份校验报告',
+          ['使用校验失败返回的 validationReportId'],
+          404,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private validationFindings(context: AgentToolContext, args: Record<string, unknown>) {
+    const reportId = text(args.report_id, 'report_id');
+    const offset = Number(args.offset ?? 0);
+    const limit = Number(args.limit ?? 20);
+    try {
+      return this.validationReports.findings(context.project.id, context.runId, reportId, offset, limit);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'VALIDATION_REPORT_NOT_FOUND') {
+        throw new AgentCoreError(
+          'VALIDATION_REPORT_NOT_FOUND',
+          '当前运行中不存在这份校验报告',
+          ['使用校验失败返回的 validationReportId'],
+          404,
+        );
+      }
+      throw error;
     }
   }
 
@@ -712,11 +798,27 @@ export class AgentCoreService {
   ): Promise<PackageArtifactFiles & { files: Record<string, string> }> {
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
     const files = { ...base.files };
+    let spec = base.spec;
     for (const change of changes) {
+      if (change.path === INTERNAL_SPEC_CHANGE_PATH) {
+        if (change.kind === 'write') {
+          try {
+            spec = JSON.parse(change.content ?? '') as PackageSpec;
+          } catch {
+            throw new AgentCoreError(
+              'COMPILED_SPEC_INVALID',
+              '候选中的内部语义规格无法解析',
+              ['放弃当前候选后重新使用领域工具生成'],
+              409,
+            );
+          }
+        }
+        continue;
+      }
       if (change.kind === 'delete') delete files[change.path];
       else files[change.path] = change.content ?? '';
     }
-    return { ...base, files };
+    return { ...base, spec, files };
   }
 
   private listDocuments(projectId: string) {
@@ -1182,11 +1284,346 @@ export class AgentCoreService {
       display: { text: `正在读取《${path}》` } };
   }
 
+  private async upsertRule(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const current = await this.overlay(workspace);
+    const key = domainKey(args.key, '规则');
+    const title = text(args.title, 'title');
+    const appliesTo = object(args.applies_to);
+    const appliesToObjects = requiredStringArray(appliesTo.objects, 'applies_to.objects', true);
+    const appliesToOperations = requiredStringArray(appliesTo.operations, 'applies_to.operations', true);
+    if (!appliesToObjects.length && !appliesToOperations.length) {
+      throw new AgentCoreError(
+        'INVALID_DOMAIN_PAYLOAD',
+        '规则至少要绑定一个对象或操作',
+        ['补充 applies_to.objects 或 applies_to.operations 后重试'],
+        400,
+      );
+    }
+    assertReferences('对象', appliesToObjects, current.spec.objects.map((item) => item.key));
+    assertReferences('操作', appliesToOperations, current.spec.operations.map((item) => item.key));
+    const conditions = requiredObjectArray(args.conditions, 'conditions').map((raw, index) => ({
+      condition: text(raw.condition, `conditions[${index}].condition`),
+      conclusion: text(raw.conclusion, `conditions[${index}].conclusion`),
+    }));
+    if (!conditions.length) {
+      throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '规则至少要包含一个判断条件', [], 400);
+    }
+    const evidence = requiredStringArray(args.evidence, 'evidence');
+    const existing = (current.spec.rules ?? []).find((item) => item.key === key);
+    const rule: SpecRule = {
+      key,
+      title,
+      ...(optionalInputText(args.description) ? { description: optionalInputText(args.description) } : {}),
+      appliesToObjects,
+      appliesToOperations,
+      content: text(args.conclusion, 'conclusion'),
+      conditions,
+      ...(stringArray(args.exceptions).length ? { exceptions: stringArray(args.exceptions) } : {}),
+      evidence,
+    };
+    const rules = [...(current.spec.rules ?? [])];
+    const index = rules.findIndex((item) => item.key === key);
+    if (index >= 0) rules[index] = rule;
+    else rules.push(rule);
+    const nextSpec = { ...current.spec, rules };
+    const renderedPaths = [`rules/${key}.md`, 'rules/index.md'];
+    await this.stageCompiledSpec(
+      workspace,
+      context,
+      nextSpec,
+      renderedPaths,
+      changeGroupId(args.change_group, 'change_group'),
+      evidence,
+      `规则 ${key} 的结构化定义`,
+    );
+    return {
+      ok: true,
+      action: existing ? 'updated' : 'created',
+      element: { kind: 'rule', key },
+      renderedPaths,
+      deterministic: true,
+      display: { text: `${existing ? '已更新' : '已创建'}规则《${title}》及其索引` },
+    };
+  }
+
+  private async upsertOperation(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const current = await this.overlay(workspace);
+    const key = domainKey(args.key, '操作');
+    const title = text(args.title, 'title');
+    const relatedObjects = requiredStringArray(args.related_objects, 'related_objects');
+    const usesRules = requiredStringArray(args.uses_rules, 'uses_rules', true);
+    const usesMetrics = requiredStringArray(args.uses_metrics, 'uses_metrics', true);
+    assertReferences('对象', relatedObjects, current.spec.objects.map((item) => item.key));
+    assertReferences('规则', usesRules, (current.spec.rules ?? []).map((item) => item.key));
+    assertReferences('指标', usesMetrics, (current.spec.metrics ?? []).map((item) => item.key));
+    const inputs = requiredObjectArray(args.inputs, 'inputs').map((raw, index) => {
+      if (typeof raw.required !== 'boolean') {
+        throw new AgentCoreError(
+          'INVALID_DOMAIN_PAYLOAD',
+          `inputs[${index}].required 必须是布尔值`,
+          [],
+          400,
+        );
+      }
+      return {
+        param: text(raw.param, `inputs[${index}].param`),
+        ...(optionalInputText(raw.cn_name) ? { cnName: optionalInputText(raw.cn_name) } : {}),
+        type: text(raw.type, `inputs[${index}].type`),
+        required: raw.required,
+        ...(optionalInputText(raw.note) ? { note: optionalInputText(raw.note) } : {}),
+      };
+    });
+    assertUniqueDomainKeys(inputs.map((item) => item.param), '输入参数');
+    const outputs = requiredObjectArray(args.outputs, 'outputs').map((raw, index) => ({
+      field: text(raw.field, `outputs[${index}].field`),
+      ...(optionalInputText(raw.cn_name) ? { cnName: optionalInputText(raw.cn_name) } : {}),
+      type: text(raw.type, `outputs[${index}].type`),
+      ...(optionalInputText(raw.note) ? { note: optionalInputText(raw.note) } : {}),
+    }));
+    assertUniqueDomainKeys(outputs.map((item) => item.field), '输出字段');
+    const flow = requiredStringArray(args.flow, 'flow');
+    const evidence = requiredStringArray(args.evidence, 'evidence');
+    const existing = current.spec.operations.find((item) => item.key === key);
+    const operation: SpecOperation = {
+      key,
+      title,
+      description: text(args.description, 'description'),
+      inputs,
+      outputs,
+      flow,
+      relatedObjects,
+      ...(usesRules.length ? { usesRules } : {}),
+      ...(usesMetrics.length ? { usesMetrics } : {}),
+      ...(stringArray(args.notes).length ? { notes: stringArray(args.notes) } : {}),
+      ...(existing?.script ? { script: existing.script } : {}),
+      ...(existing?.competencyQuestionId
+        ? { competencyQuestionId: existing.competencyQuestionId }
+        : {}),
+      ...(existing?.competencyQuestion
+        ? { competencyQuestion: existing.competencyQuestion }
+        : {}),
+      evidence,
+    };
+    const operations = [...current.spec.operations];
+    const index = operations.findIndex((item) => item.key === key);
+    if (index >= 0) operations[index] = operation;
+    else operations.push(operation);
+    const nextSpec = { ...current.spec, operations };
+    const renderedPaths = [`operations/${key}.md`, 'operations/index.md'];
+    await this.stageCompiledSpec(
+      workspace,
+      context,
+      nextSpec,
+      renderedPaths,
+      changeGroupId(args.change_group, 'change_group'),
+      evidence,
+      `操作 ${key} 的结构化定义`,
+    );
+    return {
+      ok: true,
+      action: existing ? 'updated' : 'created',
+      element: { kind: 'operation', key },
+      renderedPaths,
+      deterministic: true,
+      display: { text: `${existing ? '已更新' : '已创建'}操作《${title}》及其索引` },
+    };
+  }
+
+  private async bindObjectSource(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const current = await this.overlay(workspace);
+    const key = domainKey(args.key, '对象');
+    const objectIndex = current.spec.objects.findIndex((item) => item.key === key);
+    if (objectIndex < 0) {
+      throw new AgentCoreError('OBJECT_NOT_FOUND', `对象不存在：${key}`, ['先核对对象目录'], 404);
+    }
+    const documentId = text(args.document_id, 'document_id');
+    const tableName = text(args.table, 'table');
+    const document = listDocuments(workspace.project_id).find((item) => item.id === documentId);
+    const table = document?.tables?.find((item) => item.name === tableName);
+    if (!document || document.parseStatus !== 'parsed' || !table) {
+      throw new AgentCoreError(
+        'TABLE_NOT_FOUND',
+        `资料 ${documentId} 中不存在已解析的数据表《${tableName}》`,
+        ['调用 list_tables 核对资料 ID 和表名'],
+        404,
+      );
+    }
+    const targetObject = current.spec.objects[objectIndex];
+    const bindings = requiredObjectArray(args.field_bindings, 'field_bindings').map((raw, index) => ({
+      fieldKey: text(raw.field_key, `field_bindings[${index}].field_key`),
+      sourceColumn: text(raw.source_column, `field_bindings[${index}].source_column`),
+    }));
+    assertUniqueDomainKeys(bindings.map((item) => item.fieldKey), '对象字段绑定');
+    assertUniqueDomainKeys(bindings.map((item) => item.sourceColumn), '来源字段绑定');
+    const objectFieldKeys = new Set(targetObject.fields.map((field) => field.key));
+    const unknownFields = bindings.filter((item) => !objectFieldKeys.has(item.fieldKey));
+    const missingFields = targetObject.fields.filter((field) => (
+      !bindings.some((binding) => binding.fieldKey === field.key)
+    ));
+    const tableColumns = new Set(table.fields.map((field) => field.name));
+    const unknownColumns = bindings.filter((item) => !tableColumns.has(item.sourceColumn));
+    if (unknownFields.length || missingFields.length || unknownColumns.length) {
+      throw new AgentCoreError(
+        'INVALID_OBJECT_SOURCE_BINDING',
+        '对象字段与来源表字段没有形成完整的一一绑定',
+        ['按对象全部字段重新提交 field_bindings，并使用 describe_table 返回的真实字段名'],
+        400,
+        {
+          unknownFields: unknownFields.map((item) => item.fieldKey),
+          missingFields: missingFields.map((item) => item.key),
+          unknownColumns: unknownColumns.map((item) => item.sourceColumn),
+        },
+      );
+    }
+    const primaryKey = requiredStringArray(args.primary_key, 'primary_key');
+    assertReferences('对象字段', primaryKey, targetObject.fields.map((field) => field.key));
+    const evidence = requiredStringArray(args.evidence, 'evidence');
+    const sourceColumnByField = new Map(bindings.map((item) => [item.fieldKey, item.sourceColumn]));
+    const preservedSources = (targetObject.sourceRefs ?? []).filter((source) => source.kind !== 'table');
+    const nextObject: SpecObject = {
+      ...targetObject,
+      sourceTable: undefined,
+      sourceRefs: [
+        ...preservedSources,
+        {
+          kind: 'table',
+          documentId: document.id,
+          table: table.name,
+          columns: bindings.map((item) => item.sourceColumn),
+        },
+      ],
+      primaryKey,
+      fields: targetObject.fields.map((field) => ({
+        ...field,
+        sourceColumn: sourceColumnByField.get(field.key),
+      })),
+    };
+    const objects = [...current.spec.objects];
+    objects[objectIndex] = nextObject;
+    const nextSpec = { ...current.spec, objects };
+    const renderedPaths = [
+      `objects/${key}.md`,
+      'objects/index.md',
+      'mappings/object-data-mappings.json',
+    ];
+    await this.stageCompiledSpec(
+      workspace,
+      context,
+      nextSpec,
+      renderedPaths,
+      changeGroupId(args.change_group, 'change_group'),
+      evidence,
+      `对象 ${key} 的数据源绑定`,
+    );
+    return {
+      ok: true,
+      element: { kind: 'object', key },
+      source: { documentId: document.id, table: table.name },
+      boundFields: bindings.length,
+      renderedPaths,
+      deterministic: true,
+      display: { text: `已绑定对象《${targetObject.title}》与数据表《${table.name}》` },
+    };
+  }
+
+  private async stageCompiledSpec(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    spec: PackageSpec,
+    renderedPaths: string[],
+    changeGroup: string,
+    evidence: string[],
+    reason: string,
+  ) {
+    assertMaterialEvidenceReferences(workspace.project_id, evidence);
+    const detailPath = renderedPaths.find((path) => !path.endsWith('/index.md')
+      && path !== 'mappings/object-data-mappings.json');
+    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
+    let compiledSpec: PackageSpec;
+    let rendered: Record<string, string>;
+    try {
+      compiledSpec = validateSpecKeys(canonicalizePackageSpec(spec));
+      rendered = renderPackage(compiledSpec);
+    } catch (error) {
+      throw new AgentCoreError(
+        'INVALID_DOMAIN_PAYLOAD',
+        error instanceof Error ? error.message : '结构化知识无法编译',
+        ['修正领域工具参数中的 key、引用或内容后重试'],
+        400,
+      );
+    }
+    await this.discardFrozenCandidate(workspace, context, '领域结构继续修改，旧确认请求已失效');
+    this.db.exec('SAVEPOINT agent_domain_compile');
+    try {
+      for (const path of renderedPaths) {
+        const content = rendered[path];
+        if (content === undefined) {
+          throw new AgentCoreError(
+            'DOMAIN_COMPILER_OUTPUT_MISSING',
+            `确定性编译没有生成预期文件：${path}`,
+            ['核对结构化资源类型和 key 后重试'],
+            500,
+          );
+        }
+        this.upsertChange(workspace, {
+          path,
+          kind: 'write',
+          content,
+          groupId: path === detailPath ? changeGroup : COMPILED_RESOURCES_GROUP,
+          evidence,
+          reason,
+        });
+      }
+      this.upsertChange(workspace, {
+        path: INTERNAL_SPEC_CHANGE_PATH,
+        kind: 'write',
+        content: `${JSON.stringify(compiledSpec, null, 2)}\n`,
+        groupId: COMPILED_RESOURCES_GROUP,
+        evidence: [],
+        reason: '领域工具确定性编译的语义规格',
+      });
+      this.db.exec('RELEASE SAVEPOINT agent_domain_compile');
+    } catch (error) {
+      this.db.exec('ROLLBACK TO SAVEPOINT agent_domain_compile');
+      this.db.exec('RELEASE SAVEPOINT agent_domain_compile');
+      throw error;
+    }
+  }
+
   private async writeFile(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
     const path = packagePath(text(args.path, 'path'));
     let content = text(args.content, 'content', true);
     const evidence = stringArray(args.evidence);
     let manifestNormalization: { ignoredFields: string[] } | undefined;
+    if (path === INTERNAL_SPEC_CHANGE_PATH) {
+      throw new AgentCoreError(
+        'INTERNAL_FILE_WRITE_FORBIDDEN',
+        '内部语义规格只能由领域工具生成',
+        ['使用 upsert_rule、upsert_operation 或 bind_object_source'],
+        400,
+      );
+    }
+    if (path === 'mappings/object-data-mappings.json') {
+      throw new AgentCoreError(
+        'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+        '对象数据映射是受管文件，不能直接写入',
+        ['使用 bind_object_source 提交对象、来源表、字段绑定和主键，由核心重新生成映射'],
+        409,
+        { managedPath: path, requiredTool: 'bind_object_source' },
+      );
+    }
     if (path.startsWith('knowledge/')) {
       throw new AgentCoreError(
         'INVALID_KNOWLEDGE_PATH',
@@ -1295,13 +1732,28 @@ export class AgentCoreService {
       path, kind: 'write', content, groupId,
       evidence, reason: null,
     });
+    const managedWriteWarning = /^(?:operations|rules)\/.+\.md$/u.test(path)
+      ? {
+        code: 'MANAGED_WRITE_DEPRECATED',
+        message: `${path} 已进入领域工具灰度管理；请改用 ${path.startsWith('rules/') ? 'upsert_rule' : 'upsert_operation'}`,
+      }
+      : undefined;
     return { ok: true, path, changeGroup: groupId, candidate: true,
       ...(manifestNormalization ? { manifestNormalization } : {}),
+      ...(managedWriteWarning ? { warning: managedWriteWarning } : {}),
       display: { text: `已写入候选文件《${path}》` } };
   }
 
   private async deleteFile(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
     const path = packagePath(text(args.path, 'path'));
+    if (path === INTERNAL_SPEC_CHANGE_PATH) {
+      throw new AgentCoreError(
+        'INTERNAL_FILE_DELETE_FORBIDDEN',
+        '内部语义规格不能单独删除',
+        ['需要撤销整批候选时使用 discard_rejected_candidate_changes'],
+        409,
+      );
+    }
     const groupId = path.startsWith('.modeling/') && path !== '.modeling/goal.md'
       ? RUNTIME_GROUP
       : changeGroupId(args.change_group, 'change_group');
@@ -1358,7 +1810,7 @@ export class AgentCoreService {
   }
 
   private async regroupChanges(workspace: WorkspaceRow, context: AgentToolContext, _args: Record<string, unknown>) {
-    const changes = this.changes(workspace).filter((change) => change.group_id !== RUNTIME_GROUP);
+    const changes = this.changes(workspace).filter((change) => !isHiddenCandidateGroup(change.group_id));
     if (!changes.length) {
       throw new AgentCoreError('NO_CANDIDATE', '没有可重组的业务候选', ['先用 write_file 写入业务候选']);
     }
@@ -1390,14 +1842,14 @@ export class AgentCoreService {
       if (candidate.status === 'pending') {
         return {
           candidate_revision: candidate.id,
-          change_groups: this.candidateGroups(candidate.id).filter((group) => group.id !== RUNTIME_GROUP),
+          change_groups: this.candidateGroups(candidate.id).filter((group) => !isHiddenCandidateGroup(group.id)),
           frozen: true,
           display: { text: '已恢复原待确认内容' },
         };
       }
     }
     const changes = this.changes(workspace).filter((change) => (
-      change.group_id !== RUNTIME_GROUP && change.group_id !== LEGACY_RUNTIME_GROUP
+      !isHiddenCandidateGroup(change.group_id)
     ));
     if (!changes.length) {
       throw new AgentCoreError('NO_CANDIDATE', '没有需要专家确认的业务候选', ['先完成候选内容，再发起确认']);
@@ -2026,7 +2478,10 @@ export class AgentCoreService {
       files = (await this.artifacts.diff(workspace.project_id, revA, revB)).files;
     }
     const scope = String(args.scope ?? '').trim();
-    const filtered = files.filter((file) => !scope || publicPath(file.path).startsWith(scope));
+    const filtered = files.filter((file) => (
+      file.path !== 'model/package-spec.json'
+      && (!scope || publicPath(file.path).startsWith(scope))
+    ));
     return {
       from: revA,
       to: revB || 'candidate',
@@ -2041,10 +2496,10 @@ export class AgentCoreService {
       WHERE project_id = ? AND run_id = ? AND group_id = ?`)
       .run(RUNTIME_GROUP, workspace.project_id, workspace.run_id, LEGACY_RUNTIME_GROUP);
     const changes = this.changes(workspace);
-    const businessIds = [...new Set(changes.map((item) => item.group_id).filter((id) => id !== RUNTIME_GROUP))];
+    const businessIds = [...new Set(changes.map((item) => item.group_id).filter((id) => !isHiddenCandidateGroup(id)))];
     if (!businessIds.length && workspace.candidate_id) {
       const candidate = await this.artifacts.getCandidateRevision(workspace.project_id, workspace.candidate_id);
-      const groups = this.candidateGroups(candidate.id).filter((group) => group.id !== RUNTIME_GROUP);
+      const groups = this.candidateGroups(candidate.id).filter((group) => !isHiddenCandidateGroup(group.id));
       if (candidate.status !== 'pending' || !groups.length) {
         throw new AgentCoreError(
           'NO_CANDIDATE',
@@ -2074,6 +2529,7 @@ export class AgentCoreService {
         validation_receipt: validationReceipt,
         change_groups: groups.map((group) => ({ ...group, autoApproved: false })),
         auto_approved: false,
+        atomic_selection: candidate.groups.some((group) => group.id === COMPILED_RESOURCES_GROUP),
         ...(focusPath ? { focus: { kind: 'diff', target: publicPath(focusPath) } } : {}),
         display: { text: '多来源融合会整体替换当前知识包，需要确认后才会生效' },
       };
@@ -2126,6 +2582,14 @@ export class AgentCoreService {
           impact: [],
         });
       }
+      if (changes.some((item) => item.group_id === COMPILED_RESOURCES_GROUP)) {
+        byId.set(COMPILED_RESOURCES_GROUP, {
+          id: COMPILED_RESOURCES_GROUP,
+          tier: 'index',
+          title: '同步确定性编译产物',
+          impact: [],
+        });
+      }
       const nonIndexIds = [...byId.values()].filter((item) => item.tier !== 'index').map((item) => item.id);
       candidate = await this.artifacts.createCandidateRevision(workspace.project_id, {
         expectedRevision: workspace.base_revision_oid,
@@ -2164,18 +2628,20 @@ export class AgentCoreService {
       workspace.candidate_id = candidate.id;
     }
 
-    const publicGroups = this.candidateGroups(candidate.id).filter((group) => group.id !== RUNTIME_GROUP);
+    const publicGroups = this.candidateGroups(candidate.id).filter((group) => !isHiddenCandidateGroup(group.id));
     const askGroups = publicGroups.filter((group) => !this.autoPolicy(workspace.project_id, group.tier));
     const focusPath = candidate.groups
-      .filter((group) => group.id !== RUNTIME_GROUP)
+      .filter((group) => !isHiddenCandidateGroup(group.id))
       .flatMap((group) => group.changes)
       .map((change) => publicPath(change.path))[0];
     const validationReceipt = this.recordCandidateValidationReceipt(candidate);
+    const atomicSelection = candidate.groups.some((group) => group.id === COMPILED_RESOURCES_GROUP);
     return {
       candidate_revision: candidate.id,
       validation_receipt: validationReceipt,
       change_groups: publicGroups.map((group) => ({ ...group, autoApproved: !askGroups.some((item) => item.id === group.id) })),
       auto_approved: askGroups.length === 0,
+      atomic_selection: atomicSelection,
       ...(focusPath ? { focus: { kind: 'diff', target: focusPath } } : {}),
       display: { text: askGroups.length ? `有 ${askGroups.length} 组变更需要确认` : '候选变更符合项目自动确认策略' },
     };
@@ -2351,7 +2817,34 @@ export class AgentCoreService {
     const groups = this.candidateGroups(workspace.candidate_id);
     const requested = stringArray(review.selected_groups);
     const automatic = groups.filter((group) => this.autoPolicy(workspace.project_id, group.tier)).map((group) => group.id);
-    const selected = [...new Set([...(requested.length ? requested : groups.map((group) => group.id)), ...automatic, RUNTIME_GROUP])]
+    const publicGroupIds = groups.filter((group) => !isHiddenCandidateGroup(group.id)).map((group) => group.id);
+    const requestedBusinessGroups = new Set([
+      ...(requested.length ? requested : publicGroupIds),
+      ...automatic,
+    ]);
+    if (groups.some((group) => group.id === COMPILED_RESOURCES_GROUP)) {
+      const missing = publicGroupIds.filter((id) => !requestedBusinessGroups.has(id));
+      if (missing.length) {
+        throw new AgentCoreError(
+          'DOMAIN_CANDIDATE_PARTIAL_SELECTION_FORBIDDEN',
+          '领域工具生成的语义规格和派生文件必须与本批业务修改一起确认',
+          ['接受全部业务组，或退回整批候选后按需要重新生成'],
+          409,
+          {
+            retryable: false,
+            atomicSelection: true,
+            missing,
+            requiredGroups: publicGroupIds,
+          },
+        );
+      }
+    }
+    const selected = [...new Set([
+      ...(requested.length ? requested : groups.map((group) => group.id)),
+      ...automatic,
+      RUNTIME_GROUP,
+      COMPILED_RESOURCES_GROUP,
+    ])]
       .filter((id) => groups.some((group) => group.id === id));
     const reviewMode = normalizeReviewMode(review.review_mode, requested.length === 0 && automatic.length === groups.length);
     const selectedIds = new Set(selected);
@@ -3335,6 +3828,76 @@ function object(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
 }
 
+function optionalInputText(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '可选文本字段必须是字符串', [], 400);
+  }
+  return value.trim() || undefined;
+}
+
+function requiredObjectArray(value: unknown, field: string): Array<Record<string, any>> {
+  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是对象数组`, [], 400);
+  }
+  return value as Array<Record<string, any>>;
+}
+
+function requiredStringArray(value: unknown, field: string, allowEmpty = false): string[] {
+  if (value === undefined && allowEmpty) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是非空字符串数组`, [], 400);
+  }
+  const result = value.map((item) => item.trim());
+  if (!allowEmpty && !result.length) {
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 至少包含一项`, [], 400);
+  }
+  assertUniqueDomainKeys(result, field);
+  return result;
+}
+
+function domainKey(value: unknown, label: string): string {
+  try {
+    return validateKey(text(value, 'key'), label);
+  } catch (error) {
+    if (error instanceof AgentCoreError) throw error;
+    throw new AgentCoreError(
+      'INVALID_DOMAIN_PAYLOAD',
+      error instanceof Error ? error.message : `${label} key 不合法`,
+      ['使用稳定且不含路径字符的资源 key'],
+      400,
+    );
+  }
+}
+
+function assertUniqueDomainKeys(values: string[], label: string): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) {
+      throw new AgentCoreError(
+        'INVALID_DOMAIN_PAYLOAD',
+        `${label}包含重复值：${value}`,
+        ['删除重复项后重试'],
+        400,
+      );
+    }
+    seen.add(value);
+  }
+}
+
+function assertReferences(label: string, requested: string[], available: string[]): void {
+  const existing = new Set(available);
+  const missing = requested.filter((key) => !existing.has(key));
+  if (!missing.length) return;
+  throw new AgentCoreError(
+    'DOMAIN_REFERENCE_NOT_FOUND',
+    `${label}引用不存在：${missing.join('、')}`,
+    [`使用当前知识包中已存在的${label} key，或先创建被引用资源`],
+    400,
+    { missing, available: available.slice(0, 100), availableCount: available.length },
+  );
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 }
@@ -3385,6 +3948,14 @@ function changeGroupId(value: unknown, field: string): string {
       400,
     );
   }
+  if (isHiddenCandidateGroup(id)) {
+    throw new AgentCoreError(
+      'RESERVED_CHANGE_GROUP_ID',
+      `${field} 使用了平台保留标识`,
+      ['换一个描述业务修改范围的简短英文标识'],
+      400,
+    );
+  }
   return id;
 }
 
@@ -3394,6 +3965,12 @@ function expectedTier(path: string): Tier | null {
   if (path.startsWith('scripts/')) return 'script';
   if (path.startsWith('objects/') || path.startsWith('operations/') || path.startsWith('metrics/')) return 'structural';
   return null;
+}
+
+function isHiddenCandidateGroup(groupId: string): boolean {
+  return groupId === RUNTIME_GROUP
+    || groupId === LEGACY_RUNTIME_GROUP
+    || groupId === COMPILED_RESOURCES_GROUP;
 }
 
 function suggestChangeGroupAssignments(changes: ChangeRow[]) {
@@ -3477,7 +4054,9 @@ function confirmationTierTitle(tier: Tier) {
 }
 
 function toArtifactChange(change: ChangeRow): ArtifactChange {
-  const path = `package/${change.path}`;
+  const path = change.path === INTERNAL_SPEC_CHANGE_PATH
+    ? 'model/package-spec.json'
+    : `package/${change.path}`;
   return change.kind === 'delete'
     ? { kind: 'delete', path }
     : { kind: 'write', path, content: change.content ?? '' };
@@ -3495,6 +4074,7 @@ function candidateDiff(base: Record<string, string>, changes: ChangeRow[]): Arti
   const encoder = new TextEncoder();
   const result: ArtifactFileDiff[] = [];
   for (const change of changes) {
+    if (change.path === INTERNAL_SPEC_CHANGE_PATH) continue;
     const before = base[change.path];
     if (change.kind === 'delete') {
       if (before !== undefined) {

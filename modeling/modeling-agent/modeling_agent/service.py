@@ -75,6 +75,9 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "stage_tabular_dataset",
     "write_file",
     "delete_file",
+    "upsert_rule",
+    "upsert_operation",
+    "bind_object_source",
     "discard_rejected_candidate_changes",
     "regroup_changes",
     "create_package_fusion_plan",
@@ -411,6 +414,7 @@ class AgentService:
                 or bool(intent_required_tools)
                 or _autonomous_work_requested(prompt)
             ),
+            validation_repair=self._validation_repair_state(run_id),
         )
         self._live[run_id] = live
         state_snapshot = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
@@ -1348,6 +1352,7 @@ class AgentService:
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
+            validation_repair=self._validation_repair_state(run.id),
         )
         if steering:
             await live.steering.put(steering)
@@ -1387,6 +1392,7 @@ class AgentService:
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
+            validation_repair=self._validation_repair_state(run.id),
         )
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
@@ -1422,6 +1428,14 @@ class AgentService:
             if issued:
                 self.store.update_run(run_id, run_credential=issued)
         return claimed
+
+    def _validation_repair_state(self, run_id: str) -> CandidateValidationRepairState:
+        return CandidateValidationRepairState.from_snapshot(
+            self.store.validation_repair_state(run_id),
+            on_change=lambda snapshot: self.store.save_validation_repair_state(
+                run_id, snapshot,
+            ),
+        )
 
     async def _execute(self, live: LiveRun, query: Any) -> None:
         from openjiuwen.core.runner.runner import Runner
