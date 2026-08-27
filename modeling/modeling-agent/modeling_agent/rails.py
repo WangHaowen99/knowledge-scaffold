@@ -228,7 +228,7 @@ class WriteSafetyRail(AgentRail):
     priority = 100
     WRITE_TOOLS = frozenset({
         "write_file", "delete_file", "import_zip", "stage_package_merge",
-        "upsert_rule", "upsert_operation", "bind_object_source",
+        "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "compile_package_fusion_plan", "discard_rejected_candidate_changes",
     })
     RECOVERY_TOOLS = frozenset({"delete_file", "discard_rejected_candidate_changes"})
@@ -415,7 +415,7 @@ class InterjectionSafetyRail(AgentRail):
     priority = 110
     MUTATING_TOOLS = frozenset({
         "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_plan",
-        "upsert_rule", "upsert_operation", "bind_object_source",
+        "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "discard_rejected_candidate_changes",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
         "update_project_context", "transition_project_state",
@@ -759,7 +759,9 @@ class ConfirmationRail(BaseInterruptRail):
                 if preflight.get("retryable") is True:
                     preflight = self._context.validation_repair.decorate(preflight)
                 return self.reject(tool_result=json.dumps(preflight, ensure_ascii=False))
-            self._context.validation_repair.reset()
+            self._context.validation_repair.scope_candidate_revision(
+                str(preflight.get("candidate_revision") or "")
+            )
             validation_receipt = preflight.get("validation_receipt")
             receipt_arguments = {
                 "expected_candidate_revision": preflight.get("candidate_revision"),
@@ -844,6 +846,8 @@ class ConfirmationRail(BaseInterruptRail):
                     retryable=False,
                     repair_scope="interaction",
                 )
+            else:
+                self._context.validation_repair.reset()
             return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
         if answer.get("action") == "interject":
             # 自由输入是对确认问题的插话，不是拒绝。候选仍然冻结，

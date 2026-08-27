@@ -1257,6 +1257,96 @@ test('领域工具原子编译操作、规则和对象数据映射并随候选�
   ]) assert.equal(current.files[path], rendered[path]);
 });
 
+test('upsert_object 原子生成对象详情、索引、语义规格和数据绑定', async (t) => {
+  const project = createProject({ owner: 'alice', name: '对象领域工具编译', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: 'object-domain-tool-package',
+    name: '对象领域工具编译',
+    description: '验证对象语义与数据绑定一次生成。',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: { ...initial.spec, version: '0.2.0', dataSourceType: 'nl2sql' },
+    coverage: { covered: [], uncovered: [] },
+    action: { cause: 'test_setup', summary: '建立对象领域工具基线', actorKind: 'user', actorName: 'alice' },
+  });
+  const material = insertDocumentRevision({
+    projectId: project.id,
+    filename: 'leads.csv',
+    kind: 'csv',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'lead_rows',
+      rowCount: 1,
+      fields: [
+        { name: 'lead_id', inferredType: 'string', sampleValues: ['L-1'], distinctRatio: 1 },
+        { name: 'lead_name', inferredType: 'string', sampleValues: ['示例线索'], distinctRatio: 1 },
+      ],
+      rows: [['L-1', '示例线索']],
+    }],
+  }).document;
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+  const group = { id: 'lead-object', tier: 'structural', title: '营销线索对象' };
+  const upserted = await tool(app, project.id, 'upsert_object', {
+    key: 'marketing_lead',
+    title: '营销线索',
+    description: '表示一条待跟进的营销线索。',
+    aliases: ['销售线索'],
+    query_boundary: '仅查询已登记的线索字段。',
+    fields: [
+      { key: 'id', cn_name: '线索编号', type: 'string', required: true },
+      { key: 'name', cn_name: '线索名称', type: 'string', required: true },
+    ],
+    relations: [],
+    source: {
+      document_id: material.id,
+      table: 'lead_rows',
+      field_bindings: [
+        { field_key: 'id', source_column: 'lead_id' },
+        { field_key: 'name', source_column: 'lead_name' },
+      ],
+      primary_key: ['id'],
+    },
+    evidence: [`material:${material.id}`],
+    change_group: group.id,
+  }, runId);
+  assert.equal(upserted.statusCode, 200, upserted.body);
+  assert.deepEqual(upserted.json().renderedPaths, [
+    'objects/marketing_lead.md',
+    'objects/index.md',
+    'mappings/object-data-mappings.json',
+  ]);
+
+  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(preflight.statusCode, 200, preflight.body);
+  const accepted = await tool(app, project.id, 'request_confirmation', {
+    summary: group.title,
+    change_groups: [group],
+    ...confirmationReceipt(preflight),
+    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
+  }, runId);
+  assert.equal(accepted.statusCode, 200, accepted.body);
+
+  const current = await artifacts.readPackageFiles(project.id);
+  const storedObject = current.spec.objects.find((item) => item.key === 'marketing_lead');
+  assert.equal(storedObject?.fields[0].sourceColumn, 'lead_id');
+  assert.equal(storedObject?.fields[1].sourceColumn, 'lead_name');
+  assert.deepEqual(storedObject?.primaryKey, ['id']);
+  const mappings = JSON.parse(current.files['mappings/object-data-mappings.json']);
+  assert.equal(mappings.objects.marketing_lead.resource, 'lead_rows');
+  const rendered = renderPackage(current.spec);
+  for (const path of upserted.json().renderedPaths) {
+    assert.equal(current.files[path], rendered[path]);
+  }
+});
+
 test('退回并放弃领域候选会同时清除隐藏编译规格', async (t) => {
   const project = createProject({ owner: 'alice', name: '撤销领域编译', runtime: 'agent' });
   const artifacts = getPackageArtifactStore();

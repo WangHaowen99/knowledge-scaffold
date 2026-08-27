@@ -30,6 +30,7 @@ TABLE_SAMPLE_VALUE_CHARS = 120
 
 VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "write_file",
+    "upsert_object",
     "upsert_rule",
     "upsert_operation",
     "bind_object_source",
@@ -40,6 +41,7 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
 VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "write_file",
     "delete_file",
+    "upsert_object",
     "upsert_rule",
     "upsert_operation",
     "bind_object_source",
@@ -49,6 +51,7 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
 })
 VALIDATION_REPAIR_RESET_TOOLS = frozenset({
     "discard_rejected_candidate_changes",
+    "request_confirmation",
 })
 
 TOOL_WORK_DETAILS = {
@@ -128,6 +131,7 @@ class ToolContext:
 
 @dataclass
 class CandidateValidationRepairState:
+    candidate_revision: str = ""
     attempts: int = 0
     last_fingerprint: str = ""
     repeated_findings: bool = False
@@ -150,6 +154,7 @@ class CandidateValidationRepairState:
     ) -> CandidateValidationRepairState:
         raw = snapshot if isinstance(snapshot, Mapping) else {}
         state = cls(
+            candidate_revision=str(raw.get("candidateRevision") or ""),
             attempts=_non_negative_int(raw.get("attempts")),
             last_fingerprint=str(raw.get("lastFingerprint") or ""),
             repeated_findings=bool(raw.get("repeatedFindings")),
@@ -172,6 +177,7 @@ class CandidateValidationRepairState:
 
     def snapshot(self) -> dict[str, Any]:
         return {
+            "candidateRevision": self.candidate_revision,
             "attempts": self.attempts,
             "lastFingerprint": self.last_fingerprint,
             "repeatedFindings": self.repeated_findings,
@@ -195,6 +201,15 @@ class CandidateValidationRepairState:
             return
         self._finalize_round()
         self.current_round_id = normalized
+        self._notify_change()
+
+    def scope_candidate_revision(self, candidate_revision: str) -> None:
+        normalized = str(candidate_revision or "").strip()
+        if not normalized or normalized == self.candidate_revision:
+            return
+        if self.candidate_revision:
+            self._reset_episode(preserve_round=False)
+        self.candidate_revision = normalized
         self._notify_change()
 
     def _finalize_round(self) -> None:
@@ -266,6 +281,8 @@ class CandidateValidationRepairState:
         self.current_reports = []
         self.current_round_progress = False
         self.stop_notice_emitted = False
+        if not preserve_round:
+            self.candidate_revision = ""
         self._notify_change()
 
     def record_success(self, tool_name: str) -> None:
@@ -500,6 +517,42 @@ CORE_TOOL_SPECS = (
         ("path", "content", "change_group", "evidence"),
         False,
         "正在整理待确认的修改",
+    ),
+    ToolSpec(
+        "upsert_object",
+        "创建或完整替换一个业务对象，并可在同一次调用中绑定真实数据表。核心确定性生成对象详情、对象索引、数据映射和内部语义规格；不要再手写这些文件。",
+        {
+            "key": STRING, "title": STRING, "description": STRING,
+            "aliases": {"type": "array", "items": STRING},
+            "query_boundary": STRING,
+            "fields": {"type": "array", "minItems": 1, "items": {
+                "type": "object",
+                "properties": {"key": STRING, "cn_name": STRING, "type": STRING,
+                               "required": {"type": "boolean"}, "note": STRING, "alias": STRING},
+                "required": ["key", "type", "required"], "additionalProperties": False,
+            }},
+            "relations": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"relation": STRING, "target": STRING, "note": STRING,
+                               "evidence": {"type": "array", "items": STRING}},
+                "required": ["relation", "target"], "additionalProperties": False,
+            }},
+            "source": {"type": "object", "properties": {
+                "document_id": STRING, "table": STRING,
+                "field_bindings": {"type": "array", "minItems": 1, "items": {
+                    "type": "object",
+                    "properties": {"field_key": STRING, "source_column": STRING},
+                    "required": ["field_key", "source_column"], "additionalProperties": False,
+                }},
+                "primary_key": {"type": "array", "minItems": 1, "items": STRING},
+            }, "required": ["document_id", "table", "field_bindings", "primary_key"],
+               "additionalProperties": False},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+            "change_group": CHANGE_GROUP,
+        },
+        ("key", "title", "description", "fields", "evidence", "change_group"),
+        False,
+        "正在编译业务对象",
     ),
     ToolSpec(
         "upsert_rule",

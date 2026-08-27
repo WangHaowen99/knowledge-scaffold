@@ -2342,6 +2342,7 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         gateway=gateway,
         emit=lambda kind, payload: events.append((kind, payload)),
     )
+    context.validation_repair.attempts = 2
     rail = ConfirmationRail(context)
     tool_call = type("Call", (), {
         "arguments": '{"summary":"确认目标"}',
@@ -2356,9 +2357,20 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         "candidateHash": "sha256:goal",
         "validatorVersion": "package-contract-v2",
     }
+    assert context.validation_repair.candidate_revision == "candidate_goal"
+    assert context.validation_repair.attempts == 2
     assert events == [
         ("focus", {"target": {"kind": "diff", "target": ".modeling/goal.md"}}),
     ]
+
+    settled = await rail.resolve_interrupt(  # type: ignore[arg-type]
+        None,
+        tool_call,
+        {"action": "settled_confirmation", "result": {"ok": True, "accepted": True}},
+    )
+    assert json.loads(settled.tool_result)["accepted"] is True
+    assert context.validation_repair.candidate_revision == ""
+    assert context.validation_repair.attempts == 0
 
 
 async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_result() -> None:

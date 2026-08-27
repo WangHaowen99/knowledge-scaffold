@@ -52,6 +52,7 @@ _TOKEN_LABELS = {
     "list_dir": "查看知识包目录",
     "read_file": "读取知识内容",
     "write_file": "整理待确认修改",
+    "upsert_object": "整理业务对象",
     "delete_file": "整理候选删除",
     "upsert_rule": "整理业务规则",
     "upsert_operation": "整理业务操作",

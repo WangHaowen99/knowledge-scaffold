@@ -38,6 +38,7 @@ import type {
   DataDictTable,
   PackageSpec,
   Project,
+  SpecField,
   SpecObject,
   SpecOperation,
   SpecRule,
@@ -448,6 +449,7 @@ export class AgentCoreService {
       case 'read_file': return this.readFile(workspace, args);
       case 'get_validation_summary': return this.validationSummary(context, args);
       case 'get_validation_findings': return this.validationFindings(context, args);
+      case 'upsert_object': return this.upsertObject(workspace, context, args);
       case 'upsert_rule': return this.upsertRule(workspace, context, args);
       case 'upsert_operation': return this.upsertOperation(workspace, context, args);
       case 'bind_object_source': return this.bindObjectSource(workspace, context, args);
@@ -1298,6 +1300,109 @@ export class AgentCoreService {
       display: { text: `正在读取《${path}》` } };
   }
 
+  private async upsertObject(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const current = await this.overlay(workspace);
+    const key = domainKey(args.key, '对象');
+    const title = text(args.title, 'title');
+    const fields: SpecField[] = requiredObjectArray(args.fields, 'fields').map((raw, index) => {
+      if (typeof raw.required !== 'boolean') {
+        throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `fields[${index}].required 必须是布尔值`, [], 400);
+      }
+      return {
+        key: domainKey(raw.key, `对象字段 fields[${index}]`),
+        ...(optionalInputText(raw.cn_name) ? { cnName: optionalInputText(raw.cn_name) } : {}),
+        type: text(raw.type, `fields[${index}].type`),
+        required: raw.required,
+        ...(optionalInputText(raw.note) ? { note: optionalInputText(raw.note) } : {}),
+        ...(optionalInputText(raw.alias) ? { alias: optionalInputText(raw.alias) } : {}),
+      };
+    });
+    if (!fields.length) throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '对象至少要包含一个字段', [], 400);
+    assertUniqueDomainKeys(fields.map((field) => field.key), '对象字段');
+    const relations = requiredObjectArray(args.relations ?? [], 'relations').map((raw, index) => ({
+      relation: text(raw.relation, `relations[${index}].relation`),
+      target: domainKey(raw.target, `关系目标 relations[${index}]`),
+      ...(optionalInputText(raw.note) ? { note: optionalInputText(raw.note) } : {}),
+      ...(stringArray(raw.evidence).length ? { evidence: stringArray(raw.evidence) } : {}),
+    }));
+    assertReferences(
+      '关系目标对象',
+      relations.map((item) => item.target),
+      [...current.spec.objects.map((item) => item.key), key],
+    );
+    const evidence = requiredStringArray(args.evidence, 'evidence');
+    const compiledEvidence = [...new Set([
+      ...evidence,
+      ...relations.flatMap((relation) => relation.evidence ?? []),
+    ])];
+    const source = args.source === undefined ? undefined : object(args.source);
+    let sourceRefs: SpecObject['sourceRefs'];
+    let primaryKey: string[] | undefined;
+    if (source) {
+      const documentId = text(source.document_id, 'source.document_id');
+      const tableName = text(source.table, 'source.table');
+      const document = listDocuments(workspace.project_id).find((item) => item.id === documentId);
+      const table = document?.tables?.find((item) => item.name === tableName);
+      if (!document || document.parseStatus !== 'parsed' || !table) {
+        throw new AgentCoreError('TABLE_NOT_FOUND', `资料 ${documentId} 中不存在已解析的数据表《${tableName}》`, ['调用 list_tables 核对资料 ID 和表名'], 404);
+      }
+      const bindings = requiredObjectArray(source.field_bindings, 'source.field_bindings').map((raw, index) => ({
+        fieldKey: text(raw.field_key, `source.field_bindings[${index}].field_key`),
+        sourceColumn: text(raw.source_column, `source.field_bindings[${index}].source_column`),
+      }));
+      assertUniqueDomainKeys(bindings.map((item) => item.fieldKey), '对象字段绑定');
+      assertUniqueDomainKeys(bindings.map((item) => item.sourceColumn), '来源字段绑定');
+      assertReferences('对象字段', bindings.map((item) => item.fieldKey), fields.map((field) => field.key));
+      assertReferences('来源字段', bindings.map((item) => item.sourceColumn), table.fields.map((field) => field.name));
+      const missingFields = fields.filter((field) => !bindings.some((binding) => binding.fieldKey === field.key));
+      if (missingFields.length) {
+        throw new AgentCoreError('INVALID_OBJECT_SOURCE_BINDING', '对象字段与来源表字段没有形成完整的一一绑定', ['为对象全部字段补充 source.field_bindings'], 400, { missingFields: missingFields.map((field) => field.key) });
+      }
+      primaryKey = requiredStringArray(source.primary_key, 'source.primary_key');
+      assertReferences('对象字段', primaryKey, fields.map((field) => field.key));
+      const sourceColumnByField = new Map(bindings.map((item) => [item.fieldKey, item.sourceColumn]));
+      for (const field of fields) field.sourceColumn = sourceColumnByField.get(field.key);
+      sourceRefs = [{ kind: 'table', documentId: document.id, table: table.name, columns: bindings.map((item) => item.sourceColumn) }];
+    }
+    const existing = current.spec.objects.find((item) => item.key === key);
+    const nextObject: SpecObject = {
+      key,
+      title,
+      description: text(args.description, 'description'),
+      fields,
+      ...(stringArray(args.aliases).length ? { aliases: stringArray(args.aliases) } : {}),
+      ...(optionalInputText(args.query_boundary) ? { queryBoundary: optionalInputText(args.query_boundary) } : {}),
+      ...(relations.length ? { relations } : {}),
+      ...(sourceRefs ? { sourceRefs, primaryKey } : {}),
+    };
+    const objects = [...current.spec.objects];
+    const objectIndex = objects.findIndex((item) => item.key === key);
+    if (objectIndex >= 0) objects[objectIndex] = nextObject;
+    else objects.push(nextObject);
+    const renderedPaths = [`objects/${key}.md`, 'objects/index.md', 'mappings/object-data-mappings.json'];
+    await this.stageCompiledSpec(
+      workspace,
+      context,
+      { ...current.spec, objects },
+      renderedPaths,
+      changeGroupId(args.change_group, 'change_group'),
+      compiledEvidence,
+      `对象 ${key} 的结构化定义${source ? '和数据源绑定' : ''}`,
+    );
+    return {
+      ok: true,
+      action: existing ? 'updated' : 'created',
+      element: { kind: 'object', key },
+      renderedPaths,
+      deterministic: true,
+      display: { text: `${existing ? '已更新' : '已创建'}对象《${title}》${source ? '并完成数据绑定' : ''}` },
+    };
+  }
+
   private async upsertRule(
     workspace: WorkspaceRow,
     context: AgentToolContext,
@@ -1625,7 +1730,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'INTERNAL_FILE_WRITE_FORBIDDEN',
         '内部语义规格只能由领域工具生成',
-        ['使用 upsert_rule、upsert_operation 或 bind_object_source'],
+        ['使用 upsert_object、upsert_rule、upsert_operation 或 bind_object_source'],
         400,
       );
     }
@@ -1633,7 +1738,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
         '对象数据映射是受管文件，不能直接写入',
-        ['使用 bind_object_source 提交对象、来源表、字段绑定和主键，由核心重新生成映射'],
+        ['创建对象时使用 upsert_object；已有对象重绑时使用 bind_object_source，由核心重新生成映射'],
         409,
         { managedPath: path, requiredTool: 'bind_object_source' },
       );
@@ -1746,10 +1851,10 @@ export class AgentCoreService {
       path, kind: 'write', content, groupId,
       evidence, reason: null,
     });
-    const managedWriteWarning = /^(?:operations|rules)\/.+\.md$/u.test(path)
+    const managedWriteWarning = /^(?:objects|operations|rules)\/.+\.md$/u.test(path)
       ? {
         code: 'MANAGED_WRITE_DEPRECATED',
-        message: `${path} 已进入领域工具灰度管理；请改用 ${path.startsWith('rules/') ? 'upsert_rule' : 'upsert_operation'}`,
+        message: `${path} 已进入领域工具灰度管理；请改用 ${path.startsWith('objects/') ? 'upsert_object' : path.startsWith('rules/') ? 'upsert_rule' : 'upsert_operation'}`,
       }
       : undefined;
     return { ok: true, path, changeGroup: groupId, candidate: true,

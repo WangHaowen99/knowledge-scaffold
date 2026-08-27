@@ -74,6 +74,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "analyze_material_impact",
     "stage_tabular_dataset",
     "write_file",
+    "upsert_object",
     "delete_file",
     "upsert_rule",
     "upsert_operation",

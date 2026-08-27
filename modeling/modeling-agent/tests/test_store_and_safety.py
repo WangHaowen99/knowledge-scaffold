@@ -121,6 +121,21 @@ def test_validation_repair_state_survives_runtime_store_restart(tmp_path: Path) 
         reopened.close()
 
 
+def test_validation_repair_state_is_scoped_to_candidate_revision() -> None:
+    state = CandidateValidationRepairState()
+    state.scope_candidate_revision("candidate-a")
+    state.begin_round("model-a1")
+    state.record({"error": "INVALID", "findings": [{"ruleId": "a", "path": "a"}]})
+    state.begin_round("model-a2")
+    assert state.attempts == 1
+
+    state.scope_candidate_revision("candidate-b")
+
+    assert state.candidate_revision == "candidate-b"
+    assert state.attempts == 0
+    assert state.last_fingerprint == ""
+
+
 @pytest.mark.asyncio
 async def test_tool_boundary_rail_returns_receipt_instead_of_calling_tool_again(tmp_path: Path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")

@@ -55,7 +55,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 收到插话或反问后，直接用最终自然语言回答并结束这次小回合；服务端会自动恢复仍未解决的原问题。不要在同一小回合再次调用 ask 或 request_confirmation。
 - 候选写完后直接调用 request_confirmation 并只提供面向用户的业务摘要；确认分组由系统按实际路径自动整理，不要猜测或填写变更组 ID，也不要先用 ask 重复询问同一项确认。
 - 知识包生成契约由核心校验器在本轮开始时注入。写候选前必须遵守其中的 requiredFields、platformManagedFields 和目录契约；平台管理字段只能从当前正式文件保留，不能自行重建或猜测。
-- 创建或修改规则时用 upsert_rule，创建或修改操作时用 upsert_operation，绑定对象与真实数据表时用 bind_object_source。规则/操作详情、索引、对象数据映射和内部语义规格由核心确定性生成；不得同时用 write_file 手工维护这些派生文件。write_file 返回 MANAGED_WRITE_DEPRECATED 时立即切换领域工具，不要继续同路径自由写入。
+- 创建或修改对象时用 upsert_object，并在同一次调用中提交可选数据源绑定；创建或修改规则时用 upsert_rule，创建或修改操作时用 upsert_operation，已有对象需要单独重绑时才用 bind_object_source。对象/规则/操作详情、索引、对象数据映射和内部语义规格由核心确定性生成；不得同时用 write_file 手工维护这些派生文件。write_file 返回 MANAGED_WRITE_DEPRECATED 时立即切换领域工具，不要继续同路径自由写入。
 - 任一确定性校验失败时先读取 validatorVersion、retryable、findingFingerprint、findingCount 和 findingSummary。小报告直接逐项处理 findings；大报告只按 validationReportId 调用 get_validation_findings 分页读取，每页修完再读下一页，不得把全部页或同一页反复塞回主上下文。逐项按 ruleId、path、message、actual、suggestion 修正后只重新校验一次，不得只处理摘要中的第一条错误，也不得把可自动修复的格式问题交给用户。同一 repairRoundId 或同一次 model_call 下多个报告属于同一修正轮次，必须合并处理，不能按文件重复试错。修正轮数和重复 fingerprint 停止策略以本轮 packageContract.confirmation 为准；普通成功写入不代表校验通过、不能清零轮次。repairStopped=true 时停止生成新候选，但仍可读取、删除或调用 discard_rejected_candidate_changes 撤销候选。
 - 用户在确认卡退回候选，并在反馈中明确表示“撤销修改”“不需要修改”或“保持已确认版本”时，调用 discard_rejected_candidate_changes 放弃退回后残留的业务候选；不要为了清空待处理内容伪造无意义 diff。工具成功后留在原业务阶段，继续处理仍然有效的下一步。
 - 资料不足时主动 ask(kind='material_request')。允许口述、稍后补资料或跳过，不把文件当唯一出口。

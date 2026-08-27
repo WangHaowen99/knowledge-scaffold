@@ -8,7 +8,7 @@
 - Python 进程在 `project_agent_state` 中为每个项目只保存一份当前状态；阶段与执行状态合并为一个 `state` 值。
 - Node modeling core 持有项目鉴权、资料、候选工作区、Git 修订、确认审计和确定性门禁。
 - Agent 没有宿主文件系统和 shell 工具；知识包写入只能经过 core 的候选 API。
-- 规则、操作和对象数据绑定通过领域工具更新结构化规格，由 core 确定性生成详情、索引和映射。
+- 对象、规则、操作和对象数据绑定通过领域工具更新结构化规格，由 core 确定性生成详情、索引和映射；`upsert_object` 可在创建对象时一次完成数据绑定。
 - 大型校验报告完整保存在 core，Agent 主上下文只接收有界摘要并按需分页读取 findings。
 
 运行时使用 `create_deep_agent`，并通过 openJiuwen 扩展点实现：

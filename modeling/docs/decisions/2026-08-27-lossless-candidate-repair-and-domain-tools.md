@@ -16,7 +16,8 @@
 - 同一 run 的修复状态持久化在运行时 SQLite 中，服务重启和 checkpoint 恢复后继续使用。
 - 一个 model call 内的并行校验失败合并为一轮。
 - 成功执行 `write_file`、`delete_file` 或领域工具只记录“有修复进展”，不清零轮次。
-- 只有完整候选预检通过，或整批候选被明确放弃，才清零修复状态。
+- 修复状态绑定冻结候选 revision；切换到另一个 revision 时开启新的修复周期。
+- 候选预检通过只记录 revision；只有确认结算成功，或整批候选被明确放弃，才清零修复状态。
 - 相同 finding 指纹再次出现，或达到契约规定的最大轮数时，停止自动生成新候选。
 - 停止后仍允许读取、删除和整体放弃；删除单个文件不会伪装成整包已经恢复。
 
@@ -41,8 +42,9 @@ findings 计算，重复检测也不依赖摘要，因此不会把两个不同�
 
 ### 结构化知识通过领域工具编译
 
-新增三类领域写工具：
+新增四类领域写工具：
 
+- `upsert_object`：接收对象字段、关系、查询边界、证据和可选的完整数据源绑定；
 - `upsert_rule`：接收规则 key、适用对象/操作、条件、结论、例外和证据；
 - `upsert_operation`：接收操作输入、输出、流程、对象/规则/指标引用和证据；
 - `bind_object_source`：接收对象、资料 ID、表、完整字段绑定和主键。
@@ -59,10 +61,9 @@ findings 计算，重复检测也不依赖摘要，因此不会把两个不同�
 
 ## 受管写入灰度
 
-- `mappings/object-data-mappings.json` 立即禁止直接写入，只能由 `bind_object_source` 生成。
-- `rules/*.md` 和 `operations/*.md` 当前返回弃用警告，Agent 提示词要求立即改用领域工具。
+- `mappings/object-data-mappings.json` 立即禁止直接写入，只能由 `upsert_object` 或 `bind_object_source` 生成。
+- `objects/*.md`、`rules/*.md` 和 `operations/*.md` 当前返回弃用警告，Agent 提示词要求立即改用领域工具。
 - 保留短期直接写兼容是为了让旧 checkpoint 能完成或被撤销；后续契约版本可把警告升级为拒绝。
-- 对象详情尚未纳入通用 `upsert_object`，因此本次不扩大对象创建语义。
 
 ## 不变量
 
