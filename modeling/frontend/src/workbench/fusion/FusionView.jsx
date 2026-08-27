@@ -206,7 +206,14 @@ export default function FusionView() {
   );
 }
 
+export function packageFilesFromSelection(filesLike) {
+  return [...(filesLike || [])]
+    .filter((file) => file.name.toLocaleLowerCase('zh-CN').endsWith('.zip'));
+}
+
 export function FusionBuilder({ sources, selected, setSelected, sourceScopes, setSourceScopes, output, setOutput, plans, baselineReady, busy, error, onCreate, onOpenPlan }) {
+  const packageInput = useRef(null);
+  const [uploadingPackages, setUploadingPackages] = useState(false);
   const selectedSet = new Set(selected);
   const scopesReady = selected.every((sourceId) => (sourceScopes[sourceId] || []).length > 0);
   const duplicatePackageIds = duplicateFusionPackageIds(sources.filter((source) => selectedSet.has(source.id)));
@@ -221,6 +228,16 @@ export function FusionBuilder({ sources, selected, setSelected, sourceScopes, se
     const next = current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope];
     if (!next.length) return;
     setSourceScopes({ ...sourceScopes, [source.id]: next });
+  };
+  const uploadPackages = async (filesLike) => {
+    const files = packageFilesFromSelection(filesLike);
+    if (!files.length) return;
+    setUploadingPackages(true);
+    try {
+      await actions.upload(files);
+    } finally {
+      setUploadingPackages(false);
+    }
   };
   return (
     <div className="fusion" aria-busy={Boolean(busy)}>
@@ -263,11 +280,24 @@ export function FusionBuilder({ sources, selected, setSelected, sourceScopes, se
             ))}
           </div>
         ) : (
-          <div className="fusion-empty">
-            <Icon name="upload" size={18} />
-            <b>还没有可用的来源包</b>
-            <span>把知识包 ZIP 拖到工作台任意位置；解析结果会回到消息流，你仍可继续输入。</span>
-          </div>
+          <>
+            <input ref={packageInput} type="file" multiple hidden accept=".zip,application/zip"
+              aria-label="选择多个来源知识包"
+              onChange={(event) => {
+                // FileList 是实时对象，清空 input 前必须先复制，否则选择结果会同步变空。
+                const files = packageFilesFromSelection(event.target.files);
+                event.target.value = '';
+                void uploadPackages(files);
+              }} />
+            <button type="button" className="fusion-empty fusion-package-upload"
+              disabled={uploadingPackages} onClick={() => packageInput.current?.click()}>
+              <Icon name="upload" size={18} />
+              <b>{uploadingPackages ? '正在上传来源包' : '还没有可用的来源包'}</b>
+              <span>{uploadingPackages
+                ? '正在解析所选知识包，完成后会自动刷新来源列表。'
+                : '点击从资源管理器选择多个知识包 ZIP，也可以把文件拖到工作台任意位置。'}</span>
+            </button>
+          </>
         )}
       </section>
 

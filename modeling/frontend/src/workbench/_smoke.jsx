@@ -75,7 +75,12 @@ import {
   qualityRows,
   unresolvedEntries,
 } from './fusion/fusion-model.js';
-import { DecisionControl, FusionBuilder, FusionPlan } from './fusion/FusionView.jsx';
+import {
+  DecisionControl,
+  FusionBuilder,
+  FusionPlan,
+  packageFilesFromSelection,
+} from './fusion/FusionView.jsx';
 import { StudioAccessBanner, StudioKindTabs, studioFieldEditable } from './studio/StudioView.jsx';
 
 let bad = 0;
@@ -1389,6 +1394,25 @@ try {
     onCreate={() => {}}
     onOpenPlan={() => {}}
   />);
+  const emptyBuilder = renderToString(<FusionBuilder
+    sources={[]}
+    selected={[]}
+    setSelected={() => {}}
+    sourceScopes={{}}
+    setSourceScopes={() => {}}
+    output={{ id: 'fusion-ui', name: '融合结果', description: '融合说明', version: '1.0.0' }}
+    setOutput={() => {}}
+    plans={[]}
+    baselineReady
+    busy=""
+    error=""
+    onCreate={() => {}}
+    onOpenPlan={() => {}}
+  />);
+  let liveFiles = [{ name: 'source-a.zip' }, { name: 'notes.txt' }, { name: 'SOURCE-B.ZIP' }];
+  const liveSelection = { [Symbol.iterator]: () => liveFiles[Symbol.iterator]() };
+  const selectedPackages = packageFilesFromSelection(liveSelection);
+  liveFiles = [];
   const decision = renderToString(<DecisionControl
     entry={{ sourceId: 'source-a', kind: 'object', sourceKey: '设备', decision: null, included: true }}
     entries={[
@@ -1403,6 +1427,9 @@ try {
   const builderText = builder.replaceAll('<!-- -->', '');
   if (!builderText.includes('纳入范围') || !builderText.includes('脚本 0/1') || builderText.includes('流程图')
     || !builderText.includes('相同 package id') || !builderText.includes('当前范围会留下 1 处依赖缺口')
+    || !emptyBuilder.includes('选择多个来源知识包') || !emptyBuilder.includes('multiple=""')
+    || !emptyBuilder.includes('.zip,application/zip') || !emptyBuilder.includes('fusion-package-upload')
+    || selectedPackages.map((file) => file.name).join(',') !== 'source-a.zip,SOURCE-B.ZIP'
     || !decision.includes('独立保留') || !decision.includes('归并为同一项') || !decision.includes('不纳入结果')
     || />[^<]*(source-a|exclude_scope)[^<]*</u.test(builder + decision)) {
     throw new Error('范围选择或三种互斥业务去向没有形成可用界面');
