@@ -13,6 +13,7 @@ import type {
   GraphImportValueBindingSchema,
 } from './types.js';
 import { assertGraphLabel } from './graph-label.js';
+import { GraphImportNoObjectMappingError } from './errors.js';
 
 type PackageFiles = Record<string, string>;
 
@@ -153,9 +154,16 @@ export function extractGraphImportSchema(spec: PackageSpec, files: PackageFiles)
   try { parsed = JSON.parse(rawMappings); } catch { throw new Error('object-data-mappings.json 不是合法 JSON'); }
   const mappings = asRecord(parsed.objects, 'object-data-mappings.json objects');
   const objects = objectSchema(spec, mappings, parseObjectIndex(rawObjectIndex));
+  if (!objects.length) {
+    throw new GraphImportNoObjectMappingError(spec.objects.map((object) => ({
+      key: object.key,
+      title: object.title,
+    })));
+  }
   const mappedObjectKeys = new Set(objects.map((object) => object.key));
   return {
     packageVersion: spec.version,
+    packageObjectCount: spec.objects.length,
     objects,
     valueBindings: valueBindings(parsed),
     relations: relations(spec, files).filter((relation) => (

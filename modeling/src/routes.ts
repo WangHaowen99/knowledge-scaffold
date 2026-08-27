@@ -134,6 +134,7 @@ import {
   type GraphImportExecutionDependencies,
 } from './graph-import/service.js';
 import { GraphIsolationDataExistsError } from './graph-import/neo4j-writer.js';
+import { GraphImportInputError } from './graph-import/errors.js';
 import {
   applyOptimizations,
   normalizeOptimizationSuggestionTargets,
@@ -2193,6 +2194,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           });
           return reply.code(201).send({ upload });
         } catch (error) {
+          if (error instanceof GraphImportInputError) {
+            return reply.code(400).send({
+              code: error.code,
+              error: error.message,
+              details: error.details,
+            });
+          }
           return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
         }
       });
@@ -2220,6 +2228,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             error: error.message,
             uploadRevision: error.uploadRevision,
             currentRevision: error.currentRevision,
+          });
+        }
+        if (error instanceof GraphImportInputError) {
+          return reply.code(400).send({
+            code: error.code,
+            error: error.message,
+            details: error.details,
           });
         }
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
@@ -2265,6 +2280,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
               error: error.message,
               uploadRevision: error.uploadRevision,
               currentRevision: error.currentRevision,
+            });
+          }
+          if (error instanceof GraphImportInputError) {
+            return reply.code(400).send({
+              code: error.code,
+              error: error.message,
+              details: error.details,
             });
           }
           return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });

@@ -3,6 +3,10 @@ import { assertGraphIdentifier } from '../evaluation/data-source.js';
 import type { GraphImportValidation } from './types.js';
 import { quoteGraphLabel } from './graph-label.js';
 import { neo4jEntityRows } from './neo4j-values.js';
+import {
+  assertGraphImportPlanNotEmpty,
+  assertGraphImportWriteResult,
+} from './errors.js';
 
 const BATCH_SIZE = 500;
 const USER_ID_PROPERTY = 'd2o_user_id';
@@ -170,6 +174,7 @@ export async function writeGraphImport(
   driverFactory: Neo4jDriverFactory = defaultDriverFactory,
 ): Promise<{ nodeCount: number; relationshipCount: number }> {
   throwIfAborted(options.signal);
+  assertGraphImportPlanNotEmpty(plan);
   validateConnection(connection);
 
   const workspaceProperty = quoteIdentifier(connection.workspaceProperty, 'Workspace 隔离字段');
@@ -200,6 +205,7 @@ export async function writeGraphImport(
 
   const driver = await driverFactory(connection);
   let session: SessionLike | undefined;
+  let result: GraphIsolationCounts | undefined;
   const closeForAbort = () => {
     void Promise.resolve(session?.close()).catch(() => undefined);
     void Promise.resolve(driver.close()).catch(() => undefined);
@@ -208,7 +214,7 @@ export async function writeGraphImport(
   try {
     throwIfAborted(options.signal);
     session = driver.session({ database: connection.database });
-    await session.executeWrite(async (transaction) => {
+    result = await session.executeWrite(async (transaction) => {
       throwIfAborted(options.signal);
       const isolationParams = {
         workspaceValue: connection.workspaceValue,
@@ -307,6 +313,14 @@ export async function writeGraphImport(
           throwIfAborted(options.signal);
         }
       }
+      const actual = await readGraphIsolationCounts(
+        transaction,
+        workspaceProperty,
+        ontologyProperty,
+        connection,
+      );
+      assertGraphImportWriteResult(plan, actual);
+      return actual;
     });
     throwIfAborted(options.signal);
   } finally {
@@ -318,8 +332,5 @@ export async function writeGraphImport(
     }
   }
 
-  return {
-    nodeCount: plan.entities.reduce((total, entity) => total + entity.rows.length, 0),
-    relationshipCount: plan.relations.reduce((total, relation) => total + relation.pairs.length, 0),
-  };
+  return result!;
 }
