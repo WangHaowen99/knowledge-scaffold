@@ -371,6 +371,42 @@ export default function useKbBrowser() {
     }
   }, [pkgId, loadPackages]);
 
+  const setBusinessCheckpointEnabled = useCallback(async (enabled) => {
+    if (!pkgId) return;
+    const requestScope = scopeRef.current;
+    const expectedRevision = String(pkg?.business_checkpoint?.revision || '');
+    setOpBusy('businessCheckpoint');
+    setOpNotice('');
+    try {
+      const res = await authFetch(
+        `/agentic/ontologies/${encodeURIComponent(pkgId)}/capabilities/business-checkpoint`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled, expected_revision: expectedRevision }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (requestScope !== scopeRef.current) return;
+      if (!res.ok) {
+        if (res.status === 409) {
+          await loadPackages();
+          if (requestScope !== scopeRef.current) return;
+        }
+        setOpNotice(`操作失败：${data.error || data.detail || res.status}`);
+        return;
+      }
+      setOpNotice(enabled ? '业务阶段 CheckPoint 已开启' : '业务阶段 CheckPoint 已关闭');
+      await loadPackages();
+    } catch (error) {
+      if (requestScope === scopeRef.current) {
+        setOpNotice(friendlyRequestError(error, 'CheckPoint 状态更新失败'));
+      }
+    } finally {
+      if (requestScope === scopeRef.current) setOpBusy('');
+    }
+  }, [pkg, pkgId, loadPackages]);
+
   const activateVersion = useCallback(async () => {
     if (!pkgId || !viewVersion) return;
     const requestScope = scopeRef.current;
@@ -492,7 +528,7 @@ export default function useKbBrowser() {
     importPreview: importFlow.result?.preview || null, clearImportPreview, reloadTree,
     knowledgeRevision, refreshKnowledge,
     viewVersion, viewingActive, versionOverride, selectVersion, selectPackageVersion,
-    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
+    setPkgEnabled, setBusinessCheckpointEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
     clearOperationNotice, opBusy, opNotice,
   };
 }

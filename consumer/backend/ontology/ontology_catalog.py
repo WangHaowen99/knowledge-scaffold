@@ -2591,6 +2591,12 @@ def format_root_payload_compact(
         "script_catalog:",
         *_format_script_catalog(root_payload.get("script_catalog")),
     ])
+    if "assets_catalog" in root_payload:
+        lines.extend([
+            "",
+            "assets_catalog:",
+            *_format_catalog(root_payload.get("assets_catalog")),
+        ])
     if "solver_catalog" in root_payload:
         lines.extend(
             [

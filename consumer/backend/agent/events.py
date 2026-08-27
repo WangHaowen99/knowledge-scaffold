@@ -14,6 +14,7 @@ AgentEventType = Literal[
     "tool.started",
     "tool.progress",
     "tool.finished",
+    "business.checkpoint",
     "solver.input.awaiting_confirmation",
     "solver.progress",
     "solver.verification.completed",
@@ -106,6 +107,26 @@ class ToolFinishedPayload(TypedDict, total=False):
     elapsed_ms: int
 
 
+class BusinessCheckpointPayload(TypedDict, total=False):
+    schema_version: int
+    tool_call_id: str
+    tool_name: str
+    stage: str
+    stage_title: str
+    phase: str
+    phase_title: str
+    summary: str
+    render_intent: Literal[
+        "text_summary",
+        "table",
+        "section_tables",
+        "impact_tree",
+        "metric_cards",
+    ]
+    entity_refs: list[str]
+    data: Dict[str, Any]
+
+
 class SubagentStartedPayload(TypedDict, total=False):
     subagent_id: str
     agent_type: str
@@ -195,6 +216,7 @@ AgentEventPayload = Union[
     ToolStartedPayload,
     ToolProgressPayload,
     ToolFinishedPayload,
+    BusinessCheckpointPayload,
     SubagentStartedPayload,
     SubagentDeltaPayload,
     SubagentProgressPayload,

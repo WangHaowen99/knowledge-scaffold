@@ -44,6 +44,16 @@ from ontology.ontology_catalog import (
     read_required_asset_text,
     supported_asset_formats_text,
 )
+from ontology.capabilities import (
+    OntologyCapabilityRevisionConflictError,
+    OntologyCapabilityStoreError,
+    delete_ontology_capabilities,
+    get_business_checkpoint_capabilities,
+    get_business_checkpoint_capability,
+    inspect_business_checkpoint_template,
+    reset_business_checkpoint_capability,
+    set_business_checkpoint_capability,
+)
 from ontology.package_browser import (
     EXCLUDED_DIRECTORY_NAMES,
     PackageBrowserError,
@@ -543,8 +553,30 @@ def list_ontologies(
         registry = get_ontology_registry(workspace_id=workspace_id)
         registry.refresh()
 
+        try:
+            checkpoint_capabilities = get_business_checkpoint_capabilities(
+                registry.ontologies.keys(),
+                workspace_id=workspace_id,
+            )
+        except OntologyCapabilityStoreError:
+            logger.warning(
+                "Failed to read business CheckPoint capabilities: workspace_id=%s",
+                workspace_id,
+                exc_info=True,
+            )
+            checkpoint_capabilities = {}
+
         ontologies = []
         for ontology_id, ontology in registry.ontologies.items():
+            checkpoint = checkpoint_capabilities.get(
+                ontology_id,
+                {"enabled": False, "revision": "", "updated_at": ""},
+            )
+            template = inspect_business_checkpoint_template(
+                ontology.id,
+                ontology_version=ontology.active_version,
+                workspace_id=workspace_id,
+            )
             ontologies.append(
                 {
                     "id": ontology.id,
@@ -555,6 +587,11 @@ def list_ontologies(
                     "versions": ontology.versions,
                     "language": ontology.language,
                     "enabled": ontology.enabled,
+                    "business_checkpoint": {
+                        **checkpoint,
+                        "template_available": template["available"],
+                        "template_error": template["error"],
+                    },
                     "manifest_path": ontology.manifest_path,
                     "index_path": ontology.index_path,
                     "business_data": build_ontology_business_data_summary(
@@ -566,6 +603,82 @@ def list_ontologies(
 
         ontologies.sort(key=lambda item: item["id"])
         return JSONResponse(content={"ontologies": ontologies})
+
+
+@ontologies_router.get("/ontologies/{ontology_id}/capabilities/business-checkpoint")
+def get_ontology_business_checkpoint(
+    ontology_id: str,
+    workspace_id: str = Depends(require_workspace_id),
+):
+    with workspace_scope(workspace_id):
+        ontology_dir = _resolve_ontology_dir(ontology_id)
+        if ontology_dir is None:
+            return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
+        try:
+            capability = get_business_checkpoint_capability(
+                ontology_id,
+                workspace_id=workspace_id,
+            )
+            template = inspect_business_checkpoint_template(
+                ontology_id,
+                workspace_id=workspace_id,
+            )
+        except OntologyCapabilityStoreError as exc:
+            return JSONResponse(content={"error": str(exc)}, status_code=500)
+        return JSONResponse(content={
+            "ontology_id": ontology_id,
+            **capability,
+            "template_available": template["available"],
+            "template_error": template["error"],
+        })
+
+
+@ontologies_router.put("/ontologies/{ontology_id}/capabilities/business-checkpoint")
+def update_ontology_business_checkpoint(
+    ontology_id: str,
+    data: dict = Depends(_owner_json_payload),
+    workspace_id: str = Depends(require_workspace_owner_or_admin_id),
+):
+    if not isinstance(data.get("enabled"), bool):
+        return JSONResponse(
+            content={"error": "`enabled` must be a boolean"},
+            status_code=400,
+        )
+    expected_revision = str(data.get("expected_revision") or "").strip()
+
+    with workspace_scope(workspace_id):
+        ontology_dir = _resolve_ontology_dir(ontology_id)
+        if ontology_dir is None:
+            return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
+        if data["enabled"]:
+            template = inspect_business_checkpoint_template(
+                ontology_id,
+                workspace_id=workspace_id,
+            )
+            if not template["available"]:
+                return JSONResponse(
+                    content={
+                        "error": "Knowledge package is missing a readable assets/business-checkpoint-template.md",
+                        "detail": template["error"],
+                    },
+                    status_code=409,
+                )
+        try:
+            capability = set_business_checkpoint_capability(
+                ontology_id,
+                enabled=data["enabled"],
+                expected_revision=expected_revision,
+                workspace_id=workspace_id,
+            )
+        except OntologyCapabilityRevisionConflictError as exc:
+            return JSONResponse(content={"error": str(exc)}, status_code=409)
+        except OntologyCapabilityStoreError as exc:
+            return JSONResponse(content={"error": str(exc)}, status_code=400)
+        return JSONResponse(content={
+            "success": True,
+            "ontology_id": ontology_id,
+            **capability,
+        })
 
 
 @ontologies_router.put("/ontologies/{ontology_id}/status")
@@ -678,6 +791,15 @@ def delete_ontology(
             return JSONResponse(content={"error": "Failed to delete ontology"}, status_code=500)
 
         clear_ontology_data_source_on_delete(ontology_id, workspace_id=workspace_id)
+        try:
+            delete_ontology_capabilities(ontology_id, workspace_id=workspace_id)
+        except OntologyCapabilityStoreError:
+            logger.warning(
+                "Failed to delete ontology capabilities: workspace_id=%s ontology_id=%s",
+                workspace_id,
+                ontology_id,
+                exc_info=True,
+            )
 
         registry = get_ontology_registry(workspace_id=workspace_id)
         registry.refresh()
@@ -2221,6 +2343,7 @@ def import_ontology_zip_with_auto_create(
                     "version": target_version,
                 }, status_code=409)
 
+            checkpoint_reset_for_import = False
             try:
                 # Process v0.1 conformant package
                 with tempfile.TemporaryDirectory(
@@ -2267,6 +2390,22 @@ def import_ontology_zip_with_auto_create(
                     warnings["object_aliases"] = list(alias_validation.warnings)
                     warnings["field_aliases"] = list(field_alias_validation.warnings)
                     preview = _build_import_preview(source_root, normalization.root)
+                    try:
+                        reset_business_checkpoint_capability(
+                            ontology_id,
+                            workspace_id=workspace_id,
+                        )
+                        checkpoint_reset_for_import = True
+                    except OntologyCapabilityStoreError:
+                        logger.exception(
+                            "Failed to reset business CheckPoint capability before import: workspace_id=%s ontology_id=%s",
+                            workspace_id,
+                            ontology_id,
+                        )
+                        return JSONResponse(
+                            content={"error": "Failed to initialize CheckPoint capability"},
+                            status_code=500,
+                        )
                     version_dir = _install_ontology_version_package(
                         source_root=normalization.root,
                         ontology_dir=ontology_dir,
@@ -2305,6 +2444,16 @@ def import_ontology_zip_with_auto_create(
                     ),
                 )
             except Exception:
+                if checkpoint_reset_for_import and not existed:
+                    try:
+                        delete_ontology_capabilities(ontology_id, workspace_id=workspace_id)
+                    except OntologyCapabilityStoreError:
+                        logger.warning(
+                            "Failed to clean up CheckPoint capability after new ontology import failure: workspace_id=%s ontology_id=%s",
+                            workspace_id,
+                            ontology_id,
+                            exc_info=True,
+                        )
                 logger.exception(
                     "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s source_root=%s import_mode=%s",
                     workspace_id,

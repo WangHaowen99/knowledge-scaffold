@@ -20,6 +20,7 @@ _PROTOCOL_EVENT_TYPES = frozenset(
         "tool.started",
         "tool.progress",
         "tool.finished",
+        "business.checkpoint",
         "solver.input.awaiting_confirmation",
         "solver.progress",
         "solver.verification.completed",

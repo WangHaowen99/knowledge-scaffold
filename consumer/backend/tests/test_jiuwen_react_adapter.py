@@ -2098,6 +2098,82 @@ def test_jiuwen_loop_engine_falls_back_to_sole_enabled_ontology(monkeypatch):
     assert "selected_ontology_id" not in state["user_context"]
 
 
+def test_jiuwen_checkpoint_tool_requires_explicit_ontology_selection(monkeypatch):
+    from agent.core.shared.tool_context import build_tool_context
+    from agent.tools.registry import TOOL_SPECS
+
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
+        lambda workspace_id=None: "sole-ontology",
+    )
+    monkeypatch.setattr(
+        "ontology.capabilities.is_business_checkpoint_available",
+        lambda *_args, **_kwargs: True,
+    )
+    engine = JiuwenReactLoopEngine(agent_config=_agent_config())
+
+    def tool_names(state):
+        schema_names = {
+            item["function"]["name"]
+            for item in engine._tools_schema_for_state(state, caller="main")
+        }
+        jiuwen_names = {
+            item["name"]
+            for item in engine._jiuwen_tool_infos_for_state(state, caller="main")
+        }
+        return schema_names, jiuwen_names
+
+    fallback_state = {"workspace_id": "demo", "user_context": {}}
+    schema_names, jiuwen_names = tool_names(fallback_state)
+    assert "report_business_checkpoint" not in schema_names
+    assert "report_business_checkpoint" not in jiuwen_names
+
+    fallback_context = build_tool_context(
+        fallback_state,
+        memory_manager=None,
+        agent_config=_agent_config(),
+        caller="main",
+        agent_iteration=1,
+        workspace_id="demo",
+        project_root="",
+    )
+    assert fallback_context.selected_ontology_id == "sole-ontology"
+    assert fallback_context.selected_ontology_is_explicit is False
+    cached_outcome = TOOL_SPECS["report_business_checkpoint"].execute(
+        args={
+            "stage": "synthetic_stage",
+            "stage_title": "Synthetic stage",
+            "phase": "synthetic_stage.started",
+            "phase_title": "Synthetic stage started",
+            "summary": "Synthetic checkpoint payload.",
+        },
+        context=fallback_context,
+        tool_call_id="cached-checkpoint-tool",
+    )
+    assert "disabled" in cached_outcome.content
+
+    selected_state = {
+        "workspace_id": "demo",
+        "user_context": {"selected_ontology_id": "sole-ontology"},
+    }
+    schema_names, jiuwen_names = tool_names(selected_state)
+    assert "report_business_checkpoint" in schema_names
+    assert "report_business_checkpoint" in jiuwen_names
+
+    selected_context = build_tool_context(
+        selected_state,
+        memory_manager=None,
+        agent_config=_agent_config(),
+        caller="main",
+        agent_iteration=1,
+        workspace_id="demo",
+        project_root="",
+    )
+    assert selected_context.selected_ontology_id == "sole-ontology"
+    assert selected_context.selected_ontology_is_explicit is True
+
+
 def test_jiuwen_loop_engine_no_fallback_with_multiple_ontologies(monkeypatch):
     """No explicit selection + multiple (or zero) enabled ontologies → the
     query is returned unchanged."""

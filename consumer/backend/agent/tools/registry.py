@@ -13,6 +13,7 @@ from agent.tools.execute_script import ExecuteScriptTool, build_execute_script_t
 from agent.tools.memory import MemoryTool
 from agent.tools.ontology_context import OntologyContextTool
 from agent.tools.request_user_interaction import RequestUserInteractionTool
+from agent.tools.report_business_checkpoint import ReportBusinessCheckpointTool
 from agent.tools.skill import SkillTool
 from agent.tools.spawn_sub_agent import SpawnSubAgentTool
 from agent.tools.web_search_tool import WebSearchTool
@@ -45,6 +46,7 @@ TOOL_SPECS: Dict[str, BaseTool] = _build_tool_registry([
     WebSearchTool(),
     ExecuteScriptTool(),
     RequestUserInteractionTool(),
+    ReportBusinessCheckpointTool(),
     MemoryTool(),
     SpawnSubAgentTool(),
 ])
@@ -66,6 +68,7 @@ def get_tool_specs_for_caller(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     include_interaction: bool = True,
+    include_business_checkpoint: bool = True,
     include_solver: bool = True,
     workspace_id: Optional[str] = None,
     selected_ontology_id: Optional[str] = None,
@@ -86,6 +89,19 @@ def get_tool_specs_for_caller(
             continue
         if not include_interaction and spec.category == "interaction":
             continue
+        if spec.category == "business_checkpoint":
+            from ontology.capabilities import is_business_checkpoint_available
+
+            if (
+                not include_business_checkpoint
+                or not selected_ontology_id
+                or not is_business_checkpoint_available(
+                    selected_ontology_id,
+                    ontology_version=selected_ontology_version,
+                    workspace_id=workspace_id,
+                )
+            ):
+                continue
         specs.append(spec)
     if include_solver:
         solver_specs = get_solver_tool_specs_for_context(
@@ -106,6 +122,7 @@ def get_tools_schema(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     include_interaction: bool = True,
+    include_business_checkpoint: bool = True,
     include_solver: bool = True,
     selected_ontology_id: Optional[str] = None,
     selected_ontology_version: Optional[str] = None,
@@ -124,6 +141,7 @@ def get_tools_schema(
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
+            include_business_checkpoint=include_business_checkpoint,
             include_solver=include_solver,
             workspace_id=workspace_id,
             selected_ontology_id=selected_ontology_id,
