@@ -54,7 +54,7 @@ ROUTERS = (
     mcp_router,
     acp_router,
     skill_evolution_router,
-evidence_router,
+    evidence_router,
     solver_coordination_router,
     solver_coordination_public_router,
 )

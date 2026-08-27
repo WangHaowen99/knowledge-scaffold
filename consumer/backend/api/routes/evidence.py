@@ -1,12 +1,8 @@
 """Workspace-scoped ontology evidence lookup and management APIs.
 
-Dual registration:
-- ``evidence_router`` is the production FastAPI router mounted by
-  ``api.routes.register_routers`` on the ASGI skeleton.
-- ``evidence_bp`` is a legacy Flask blueprint kept solely for the Flask route
-  fixture in ``tests/test_evidence_routes.py``; it is not mounted on the
-  FastAPI application.  Both re-export the same framework-agnostic core
-  handlers, so business logic is defined exactly once.
+``evidence_router`` is the FastAPI router mounted by
+``api.routes.register_routers`` on the ASGI skeleton; it delegates to
+framework-agnostic core handlers so business logic is defined exactly once.
 """
 
 from __future__ import annotations
@@ -19,15 +15,13 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
-from functools import wraps
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from flask import Blueprint, current_app, jsonify, request as flask_request
 
-from api.auth.auth import current_user_scope, get_current_user
+from api.auth.auth import get_current_user
 from api.dependencies import (
     require_admin_workspace_id,
     require_workspace_id,
@@ -55,52 +49,12 @@ from workspace.workspaces import get_workspace_paths, resolve_workspace_id, work
 
 logger = logging.getLogger("routes.evidence")
 evidence_router = APIRouter(prefix="/agentic")
-evidence_bp = Blueprint("evidence", __name__, url_prefix="/agentic")
 
 STATIC_MIN_RETENTION_DAYS = 7
 RUNTIME_FACT_MIN_RETENTION_DAYS = 30
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[^\x00-\x1f\x7f]{8,128}$")
 _ONTOLOGY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-
-
-def _flask_auth_manager():
-    return current_app.config.get("AUTH_MANAGER")
-
-
-def _flask_require_auth(roles=None):
-    """Legacy Flask auth decorator kept for the evidence_bp route fixture.
-
-    ``api.auth.auth.require_auth`` was removed by the FastAPI migration; the
-    production FastAPI routes enforce auth through ``api.dependencies``
-    Depends instead.  This local replica restores the same bearer-token/roles
-    checks for the Flask-only test harness and binds the resolved principal to
-    the current_user ContextVar so get_current_user() keeps working.
-    """
-    roles_set = set(roles) if roles else None
-
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            if flask_request.method == "OPTIONS":
-                return "", 204
-            auth_manager = _flask_auth_manager()
-            if not auth_manager:
-                return jsonify({"error": "Auth not configured"}), 500
-            auth_header = flask_request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
-                return jsonify({"error": "Unauthorized"}), 401
-            token = auth_header.split(" ", 1)[1].strip()
-            user = auth_manager.verify_token(token)
-            if not user:
-                return jsonify({"error": "Unauthorized"}), 401
-            if roles_set and user.role not in roles_set:
-                return jsonify({"error": "Forbidden"}), 403
-            with current_user_scope(user):
-                return fn(*args, **kwargs)
-        return wrapper
-
-    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -214,15 +168,8 @@ def _coded_error(request, exc: Exception):
 
 
 def _query_params_empty(request) -> bool:
-    """True when the request carries no query parameters.
-
-    Flask exposes MultiDict ``request.args`` while Starlette exposes
-    ``request.query_params``; the shared cores must check either surface.
-    """
-    query = getattr(request, "query_params", None)
-    if query is not None:
-        return len(query) == 0
-    return len(request.args) == 0
+    """True when the request carries no query parameters."""
+    return len(request.query_params) == 0
 
 
 def _lookup_evidence_core(request, evidence_id: str):
@@ -706,58 +653,6 @@ def _empty_static_cleanup(workspace_id: str, dry_run: bool) -> dict[str, Any]:
         },
         "items": [],
     }
-
-
-# ---------------------------------------------------------------------------
-# Legacy Flask blueprint (tests/test_evidence_routes.py fixture)
-# ---------------------------------------------------------------------------
-
-
-@evidence_bp.route("/evidence/<evidence_id>", methods=["GET"])
-@_flask_require_auth()
-def lookup_evidence_flask(evidence_id: str):
-    result, status = _lookup_evidence_core(flask_request, evidence_id)
-    return jsonify(result), status
-
-
-@evidence_bp.route("/ontologies/<ontology_id>/evidence-index/status", methods=["GET"])
-@_flask_require_auth()
-def evidence_index_status_flask(ontology_id: str):
-    result, status = _evidence_index_status_core(flask_request, ontology_id)
-    return jsonify(result), status
-
-
-@evidence_bp.route("/ontologies/<ontology_id>/evidence-index/rebuild", methods=["POST"])
-@_flask_require_auth(roles=["admin"])
-def rebuild_evidence_index_flask(ontology_id: str):
-    result, status = _rebuild_evidence_index_core(
-        flask_request,
-        ontology_id,
-        flask_request.get_json(silent=True),
-    )
-    return jsonify(result), status
-
-
-@evidence_bp.route("/ontology-evidence/cleanup", methods=["POST"])
-@_flask_require_auth(roles=["admin"])
-def cleanup_static_evidence_flask():
-    result, status = _cleanup_core(
-        flask_request,
-        kind="static",
-        payload=flask_request.get_json(silent=True),
-    )
-    return jsonify(result), status
-
-
-@evidence_bp.route("/runtime-facts/cleanup", methods=["POST"])
-@_flask_require_auth(roles=["admin"])
-def cleanup_runtime_facts_flask():
-    result, status = _cleanup_core(
-        flask_request,
-        kind="runtime",
-        payload=flask_request.get_json(silent=True),
-    )
-    return jsonify(result), status
 
 
 # ---------------------------------------------------------------------------

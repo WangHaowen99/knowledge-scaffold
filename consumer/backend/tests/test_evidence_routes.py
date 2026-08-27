@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Flask
+from fastapi.testclient import TestClient
 
 from api.auth.auth import AuthManager
-from api.routes.evidence import evidence_bp
+from api.routes.evidence import evidence_router
+from api.testing import TestApplication
 from config.evidence_config import EvidenceConfig
 from ontology.evidence.manager import EvidenceIndexManager
 from ontology.evidence.worker import EvidenceIndexWorker
@@ -16,8 +17,8 @@ from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 def _client(tmp_path: Path):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
     auth = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
@@ -27,10 +28,11 @@ def _client(tmp_path: Path):
             "TestBootstrap#2026",
             "RootStrong123!",
         )
-    app.config["AUTH_MANAGER"] = auth
-    app.register_blueprint(evidence_bp)
+    app.state.services["AUTH_MANAGER"] = auth
+    app.include_router(evidence_router)
+    client = TestClient(app)
     token = auth.issue_token(user)
-    return app.test_client(), {"Authorization": "Bearer " + token}
+    return client, {"Authorization": "Bearer " + token}
 
 
 def _workspace(tmp_path: Path, monkeypatch):
@@ -89,9 +91,9 @@ def test_status_is_read_only_when_feature_is_disabled(tmp_path: Path, monkeypatc
     response = client.get("/agentic/ontologies/eco/evidence-index/status", headers=headers)
 
     assert response.status_code == 200
-    assert response.get_json()["status"] == "disabled"
-    assert "performance_degraded" not in response.get_json()["feature"]
-    assert "degraded_reasons" not in response.get_json()["feature"]
+    assert response.json()["status"] == "disabled"
+    assert "performance_degraded" not in response.json()["feature"]
+    assert "degraded_reasons" not in response.json()["feature"]
     assert not (paths.runtime_dir / "ontology-evidence").exists()
 
 
@@ -113,23 +115,23 @@ def test_rebuild_is_durable_idempotent_and_lookup_is_workspace_scoped(tmp_path: 
     )
 
     assert queued.status_code == 202
-    assert queued.get_json()["status"] == "queued"
+    assert queued.json()["status"] == "queued"
     assert duplicate.status_code == 200
-    assert duplicate.get_json()["job_id"] == queued.get_json()["job_id"]
-    assert duplicate.get_json()["duplicate"] is True
+    assert duplicate.json()["job_id"] == queued.json()["job_id"]
+    assert duplicate.json()["duplicate"] is True
 
     stats = EvidenceIndexWorker().run_once()
     assert stats["build_succeeded"] == 1
     status = client.get("/agentic/ontologies/eco/evidence-index/status", headers=headers)
-    assert status.get_json()["status"] == "ready"
-    assert status.get_json()["counts"]["chunks"] > 0
+    assert status.json()["status"] == "ready"
+    assert status.json()["counts"]["chunks"] > 0
 
     index = EvidenceIndexManager(paths.runtime_dir).open_active("eco")
     evidence_id = next(iter(index.iter_chunks()))["evidence_id"]
     lookup = client.get("/agentic/evidence/" + evidence_id, headers=headers)
     assert lookup.status_code == 200
-    assert lookup.get_json()["contract"] == "EvidenceLookup/v1"
-    assert lookup.get_json()["validity"]["active"] is True
+    assert lookup.json()["contract"] == "EvidenceLookup/v1"
+    assert lookup.json()["validity"]["active"] is True
 
 
 def test_runtime_cleanup_validates_and_replays_idempotent_result(tmp_path: Path, monkeypatch):
@@ -185,6 +187,6 @@ def test_runtime_cleanup_validates_and_replays_idempotent_result(tmp_path: Path,
         },
     )
     assert first.status_code == 200
-    assert first.get_json()["summary"]["deleted_items"] == 1
-    assert second.get_json()["duplicate"] is True
+    assert first.json()["summary"]["deleted_items"] == 1
+    assert second.json()["duplicate"] is True
     assert store.lookup(workspace_id="evidence-ws", evidence_id=record["evidence_id"]) is None
