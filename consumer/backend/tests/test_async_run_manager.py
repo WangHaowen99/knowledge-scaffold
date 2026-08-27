@@ -13,6 +13,7 @@ from agent.runtime.contracts import (
     RunScope,
     RunSnapshot,
     RunStatus,
+    RuntimeErrorInfo,
     RuntimeInvocationContext,
     RuntimeResult,
 )
@@ -1617,6 +1618,76 @@ def test_terminal_projection_failure_preserves_completed_public_state(tmp_path):
         assert turn["status"] == "success"
         assert [event.status for event in terminal_events] == ["completed"]
         assert orchestrator.chat_store.get_active_run("session_demo") is None
+
+    asyncio.run(run_test())
+
+
+def test_truncated_terminal_projection_persists_partial_output(tmp_path):
+    async def run_test():
+        class _SyntheticOrchestrator:
+            def __init__(self):
+                self.chat_store = ChatStore(str(tmp_path / "chat"))
+                self.execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+            def _get_stores(self, username, workspace_id):
+                assert username == "operator_a"
+                assert workspace_id == "workspace_demo"
+                return self.chat_store, self.execution_store
+
+        class _TruncatedRuntime:
+            async def astream(self, context):
+                error = RuntimeErrorInfo(
+                    error_code="MODEL_OUTPUT_TRUNCATED",
+                    message="回答达到输出上限，内容尚未完成",
+                    retriable=True,
+                    source="model",
+                )
+                yield RuntimeEvent(
+                    event_type="turn.finished",
+                    status="failed",
+                    run_id=context.run_id,
+                    session_id=context.session_id,
+                    turn_id=context.turn_id,
+                    payload={
+                        "status": "failed",
+                        "content": "synthetic partial answer",
+                        "error": error.model_dump(mode="json"),
+                    },
+                )
+
+            async def cancel(self, run_id, reason):
+                del run_id, reason
+                return True
+
+        orchestrator = _SyntheticOrchestrator()
+        service = AsyncExecutionService(
+            _TruncatedRuntime(),
+            session_adapter=OrchestratorSessionAdapter(lambda: orchestrator),
+        )
+        manager = AsyncRunManager(service)
+        await manager.create_run(_context("run_truncated_projection"), _scope())
+
+        failed = await _wait_for_status(
+            manager,
+            "run_truncated_projection",
+            RunStatus.FAILED,
+        )
+        reloaded_store = ExecutionStore(str(tmp_path / "executions"))
+        turn = reloaded_store.get_turn(
+            "session_demo",
+            1,
+            run_id="run_truncated_projection",
+        )
+
+        assert failed.result.content == "synthetic partial answer"
+        assert failed.error.error_code == "MODEL_OUTPUT_TRUNCATED"
+        assert turn["status"] == "failed"
+        assert turn["error_code"] == "MODEL_OUTPUT_TRUNCATED"
+        assert turn["final_output"]["text"] == "synthetic partial answer"
+        assert (
+            turn["final_output"]["error"]["error_code"]
+            == "MODEL_OUTPUT_TRUNCATED"
+        )
 
     asyncio.run(run_test())
 

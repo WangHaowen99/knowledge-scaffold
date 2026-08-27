@@ -16,7 +16,7 @@ from agent.runtime import (
 )
 from agent.runtime.mock import ListRuntimeEventSink
 from agent.runtime.async_utils import run_sync_compat
-from agent.exceptions import ModelInvocationError
+from agent.exceptions import ModelInvocationError, ModelOutputTruncatedError
 from agent.runtime.lifecycle import JiuwenRuntimeLifecycleError
 
 
@@ -488,6 +488,35 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.content, "answer")
         self.assertEqual(result.usage, {"input_tokens": 10, "output_tokens": 2})
         self.assertEqual(sink.events[-1].event_type, "turn.finished")
+
+    async def test_truncated_model_output_is_failed_and_preserves_partial_content(self):
+        class TruncatedEngine:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def arun(self, state, **kwargs):
+                del state, kwargs
+                raise ModelOutputTruncatedError(
+                    "synthetic partial answer",
+                    finish_reason="length",
+                )
+
+        runtime = JiuwenAsyncAgentRuntime(
+            agent_config=SimpleNamespace(),
+            engine_factory=TruncatedEngine,
+        )
+        sink = ListRuntimeEventSink()
+
+        result = await runtime.arun(_context("run-truncated-output"), sink)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.content, "synthetic partial answer")
+        self.assertEqual(result.error.error_code, "MODEL_OUTPUT_TRUNCATED")
+        self.assertEqual(result.error.source, "model")
+        self.assertTrue(result.error.retriable)
+        terminal = sink.events[-1]
+        self.assertEqual(terminal.status, "failed")
+        self.assertEqual(terminal.payload["content"], "synthetic partial answer")
 
     async def test_runtime_result_keeps_long_content_while_sanitizing_secrets(self):
         long_content = "x" * 5000 + " token=content-secret"

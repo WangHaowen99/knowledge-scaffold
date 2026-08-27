@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from utils.security.secrets import (
     SecretEncryptionError,
@@ -64,9 +64,17 @@ PROFILE_DEFAULTS: dict[str, Any] = {
     "model": "",
     "api_key": "",
     "timeout": 600,
-    "max_tokens": 4096,
+    "max_tokens": 32768,
     "temperature": 0.7,
     "enabled": True,
+}
+
+# Legacy task_llm used 4096 as its implicit default. Keep that value only
+# while interpreting the removed section so default-only legacy documents and
+# configured task models retain their original behavior during migration.
+LEGACY_TASK_DEFAULTS: dict[str, Any] = {
+    **PROFILE_DEFAULTS,
+    "max_tokens": 4096,
 }
 
 SECRET_LOCATIONS = (
@@ -332,20 +340,30 @@ def _normalize_model_semantics(
     secret_context: str,
     runtime_root: Path,
     object_id: str,
+    defaults: Optional[Mapping[str, Any]] = None,
 ) -> tuple[dict[str, Any], Optional[MigrationProblem]]:
+    effective_defaults = PROFILE_DEFAULTS if defaults is None else defaults
     try:
-        provider = _normalize_provider(payload.get("provider", PROFILE_DEFAULTS["provider"]))
-        base_url = _coerce_text(payload.get("base_url", PROFILE_DEFAULTS["base_url"]))
-        model = _coerce_text(payload.get("model", PROFILE_DEFAULTS["model"]))
-        raw_secret = payload.get("api_key", PROFILE_DEFAULTS["api_key"])
+        provider = _normalize_provider(
+            payload.get("provider", effective_defaults["provider"])
+        )
+        base_url = _coerce_text(
+            payload.get("base_url", effective_defaults["base_url"])
+        )
+        model = _coerce_text(payload.get("model", effective_defaults["model"]))
+        raw_secret = payload.get("api_key", effective_defaults["api_key"])
         if not isinstance(raw_secret, str):
             raise TypeError("api_key must be a string")
-        timeout = _coerce_int(payload.get("timeout", PROFILE_DEFAULTS["timeout"]))
-        max_tokens = _coerce_int(payload.get("max_tokens", PROFILE_DEFAULTS["max_tokens"]))
-        temperature = _coerce_float(
-            payload.get("temperature", PROFILE_DEFAULTS["temperature"])
+        timeout = _coerce_int(
+            payload.get("timeout", effective_defaults["timeout"])
         )
-        enabled_value = payload.get("enabled", PROFILE_DEFAULTS["enabled"])
+        max_tokens = _coerce_int(
+            payload.get("max_tokens", effective_defaults["max_tokens"])
+        )
+        temperature = _coerce_float(
+            payload.get("temperature", effective_defaults["temperature"])
+        )
+        enabled_value = payload.get("enabled", effective_defaults["enabled"])
         if not isinstance(enabled_value, bool):
             raise TypeError("enabled must be a boolean")
     except (TypeError, ValueError, OverflowError):
@@ -510,12 +528,14 @@ def _profile_from_legacy(
     source_context: str,
     runtime_root: Path,
     object_id: str,
+    defaults: Optional[Mapping[str, Any]] = None,
 ) -> tuple[dict[str, Any], Optional[MigrationProblem]]:
     semantics, problem = _normalize_model_semantics(
         payload,
         secret_context=source_context,
         runtime_root=runtime_root,
         object_id=object_id,
+        defaults=defaults,
     )
     if problem:
         return {}, problem
@@ -554,12 +574,15 @@ def _profiles_are_semantically_equal(
     right_context: str,
     runtime_root: Path,
     object_id: str,
+    left_defaults: Optional[Mapping[str, Any]] = None,
+    right_defaults: Optional[Mapping[str, Any]] = None,
 ) -> tuple[bool, Optional[MigrationProblem]]:
     left_values, problem = _normalize_model_semantics(
         left,
         secret_context=left_context,
         runtime_root=runtime_root,
         object_id=object_id,
+        defaults=left_defaults,
     )
     if problem:
         return False, problem
@@ -568,6 +591,7 @@ def _profiles_are_semantically_equal(
         secret_context=right_context,
         runtime_root=runtime_root,
         object_id=object_id,
+        defaults=right_defaults,
     )
     if problem:
         return False, problem
@@ -692,6 +716,7 @@ def plan_model_document(
             secret_context=LEGACY_TASK_SECRET_CONTEXT,
             runtime_root=runtime_root,
             object_id=object_id,
+            defaults=LEGACY_TASK_DEFAULTS,
         )
         if task_problem:
             problems.append(task_problem)
@@ -701,11 +726,11 @@ def plan_model_document(
                 task_semantics["base_url"]
                 or task_semantics["model"]
                 or task_semantics["api_key"]
-                or task_semantics["provider"] != PROFILE_DEFAULTS["provider"]
-                or task_semantics["timeout"] != PROFILE_DEFAULTS["timeout"]
-                or task_semantics["max_tokens"] != PROFILE_DEFAULTS["max_tokens"]
-                or task_semantics["temperature"] != PROFILE_DEFAULTS["temperature"]
-                or task_semantics["enabled"] != PROFILE_DEFAULTS["enabled"]
+                or task_semantics["provider"] != LEGACY_TASK_DEFAULTS["provider"]
+                or task_semantics["timeout"] != LEGACY_TASK_DEFAULTS["timeout"]
+                or task_semantics["max_tokens"] != LEGACY_TASK_DEFAULTS["max_tokens"]
+                or task_semantics["temperature"] != LEGACY_TASK_DEFAULTS["temperature"]
+                or task_semantics["enabled"] != LEGACY_TASK_DEFAULTS["enabled"]
             )
             if partially_configured and not configured:
                 problems.append(
@@ -734,6 +759,7 @@ def plan_model_document(
                             right_context=PROFILE_SECRET_CONTEXT,
                             runtime_root=runtime_root,
                             object_id=object_id,
+                            left_defaults=LEGACY_TASK_DEFAULTS,
                         )
                         if problem:
                             problems.append(problem)
@@ -755,6 +781,7 @@ def plan_model_document(
                             right_context=PROFILE_SECRET_CONTEXT,
                             runtime_root=runtime_root,
                             object_id=object_id,
+                            left_defaults=LEGACY_TASK_DEFAULTS,
                         )
                         if problem:
                             problems.append(problem)
@@ -774,6 +801,7 @@ def plan_model_document(
                             source_context=LEGACY_TASK_SECRET_CONTEXT,
                             runtime_root=runtime_root,
                             object_id=object_id,
+                            defaults=LEGACY_TASK_DEFAULTS,
                         )
                         if problem:
                             problems.append(problem)

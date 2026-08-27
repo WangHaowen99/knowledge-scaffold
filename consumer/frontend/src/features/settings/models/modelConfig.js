@@ -3,7 +3,7 @@ export const MODEL_PROFILE_DEFAULTS = Object.freeze({
   base_url: '',
   model: '',
   timeout: 60,
-  max_tokens: 8192,
+  max_tokens: 32768,
   temperature: 0.7,
   enabled: true,
 });

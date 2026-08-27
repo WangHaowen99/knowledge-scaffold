@@ -432,6 +432,9 @@ const extractTurnFinishedOutput = (payload = {}, publicStatus = 'completed') => 
   let messageType = 'text';
   let interaction = null;
   let artifacts = [];
+  const errorCode = typeof payload?.error === 'object' && payload.error
+    ? String(payload.error.error_code ?? payload.error.code ?? '').trim()
+    : '';
 
   if (typeof result === 'string') {
     content = result;
@@ -466,6 +469,7 @@ const extractTurnFinishedOutput = (payload = {}, publicStatus = 'completed') => 
     error: hasPublicErrorValue(payload.error)
       ? publicErrorMessage(payload.error, '运行失败')
       : null,
+    errorCode,
     cancelReason: payload.cancel_reason || null,
   };
 };
@@ -554,6 +558,9 @@ const finalizeTurnState = (next, publicStatus, payload, eventTs) => {
   if (terminal.messageType) next.messageType = terminal.messageType;
   if (terminal.error) {
     next.meta = { ...(next.meta || {}), error: terminal.error };
+  }
+  if (terminal.errorCode) {
+    next.meta = { ...(next.meta || {}), error_code: terminal.errorCode };
   }
   if (terminal.cancelReason) {
     next.meta = { ...(next.meta || {}), cancel_reason: terminal.cancelReason };

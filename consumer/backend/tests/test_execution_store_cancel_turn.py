@@ -56,6 +56,56 @@ def test_fail_turn_does_not_overwrite_cancelled_terminal(tmp_path):
     assert turn["final_output"] == {"cancel_reason": "user_stop"}
 
 
+def test_failed_terminal_reconcile_persists_partial_model_output(tmp_path):
+    store = ExecutionStore(str(tmp_path))
+    store.start_turn(
+        session_id="session_truncated",
+        turn_id=1,
+        run_id="run_truncated",
+        user_request="synthetic request",
+    )
+    store.fail_turn(
+        "session_truncated",
+        1,
+        {"error": "回答达到输出上限，内容尚未完成"},
+        run_id="run_truncated",
+    )
+    canonical_output = {
+        "text": "synthetic partial answer",
+        "error": {
+            "error_code": "MODEL_OUTPUT_TRUNCATED",
+            "message": "回答达到输出上限，内容尚未完成",
+            "retriable": True,
+            "source": "model",
+            "details": {},
+        },
+    }
+
+    changed = store.reconcile_canonical_terminal(
+        "session_truncated",
+        1,
+        run_id="run_truncated",
+        status="failed",
+        final_output=canonical_output,
+        error_code="MODEL_OUTPUT_TRUNCATED",
+    )
+
+    assert changed is True
+    reloaded = ExecutionStore(str(tmp_path))
+    turn = reloaded.get_turn("session_truncated", 1, run_id="run_truncated")
+    assert turn["status"] == "failed"
+    assert turn["error_code"] == "MODEL_OUTPUT_TRUNCATED"
+    assert turn["final_output"] == canonical_output
+    assert reloaded.reconcile_canonical_terminal(
+        "session_truncated",
+        1,
+        run_id="run_truncated",
+        status="failed",
+        final_output=canonical_output,
+        error_code="MODEL_OUTPUT_TRUNCATED",
+    ) is False
+
+
 def test_execution_store_atomic_replace_syncs_parent_directory(tmp_path, monkeypatch):
     synced_directories = []
     monkeypatch.setattr(

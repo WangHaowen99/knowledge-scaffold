@@ -156,7 +156,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `LLM_MODEL` | 主模型 ID | 空 |
 | `LLM_API_KEY` | 主模型 API key | 无 |
 | `LLM_TIMEOUT` | 主模型超时时间，单位秒 | `600` |
-| `LLM_MAX_TOKENS` | 主模型最大输出 token | `8192` |
+| `LLM_MAX_TOKENS` | 主模型最大输出 token | `32768` |
 | `LLM_TEMPERATURE` | 主模型 temperature | `0.7` |
 | `TASK_LLM_BASE_URL` | 可选轻量任务模型地址，用于标题和推理摘要 | 回退到 `LLM_BASE_URL` |
 | `TASK_LLM_MODEL` | 可选轻量任务模型 ID | 回退到 `LLM_MODEL` |

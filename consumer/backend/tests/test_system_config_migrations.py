@@ -216,6 +216,7 @@ def test_two_migrations_apply_with_independent_backups_markers_and_contexts(
         allow_key_creation=False,
         runtime_root=runtime_root,
     ) == "task-secret"
+    assert task_profile["max_tokens"] == 4096
     assert migrated["observability"] == original["observability"]
     assert migrated["future_section"] == original["future_section"]
     assert "main-secret" not in _config_path(runtime_root).read_text(encoding="utf-8")
@@ -669,6 +670,37 @@ def test_default_only_legacy_task_section_is_safely_removed(tmp_path, monkeypatc
     assert "task_llm" not in json.loads(
         _config_path(runtime_root).read_text(encoding="utf-8")
     )
+
+
+def test_legacy_main_without_max_tokens_migrates_to_current_default(
+    tmp_path,
+    monkeypatch,
+):
+    runtime_root = _configure_runtime(tmp_path, monkeypatch, with_key=False)
+    _write_document(
+        runtime_root,
+        {
+            "llm": {
+                "base_url": "https://main.example/v1",
+                "model": "synthetic-main-model",
+            },
+            "task_llm": {
+                "max_tokens": 4096,
+            },
+        },
+    )
+
+    code, report = _execute_model(runtime_root, dry_run=False)
+
+    assert code == 0
+    assert report["status"] == "applied"
+    migrated = json.loads(_config_path(runtime_root).read_text(encoding="utf-8"))
+    main_profile = next(
+        profile
+        for profile in migrated["llm_profiles"]["profiles"]
+        if profile["id"] == "default"
+    )
+    assert main_profile["max_tokens"] == 32768
 
 
 def test_plaintext_encrypted_and_mixed_secrets_are_fully_validated_and_encrypted(

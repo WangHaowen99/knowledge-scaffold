@@ -1568,7 +1568,7 @@ class ExecutionStore:
                 )
                 nested_error = output.get("error")
                 error_code = (
-                    nested_error.get("code")
+                    nested_error.get("error_code") or nested_error.get("code")
                     if isinstance(nested_error, dict)
                     else output.get("error_code")
                 )
@@ -1640,7 +1640,15 @@ class ExecutionStore:
             turn = self._turn_for_update(history, turn_id, run_id)
             if turn is None:
                 raise TurnOwnershipError("canonical terminal turn is missing")
-            if str(turn.get("status") or "") == status:
+            existing_error_code = str(turn.get("error_code") or "")
+            target_error_code = (
+                str(error_code or "RUNTIME_FAILED") if status == "failed" else ""
+            )
+            if (
+                str(turn.get("status") or "") == status
+                and turn.get("final_output") == final_output
+                and existing_error_code == target_error_code
+            ):
                 return False
 
             turn["end_time"] = datetime.now().isoformat()

@@ -426,6 +426,7 @@ export default function ChatWorkspace({
   const runProgress = resolveRunProgressView(streamState);
   const isSubmitting = isBlankChatSubmitting(currentChatId, firstSendPending);
   const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
+  const latestTurnErrorCode = conversationModel.turns.at(-1)?.errorCode || '';
   const displayedStreamStatus = streamState.status === 'awaiting' && latestTurnStatus === 'cancelled'
     ? 'cancelled'
     : streamState.status;
@@ -442,7 +443,7 @@ export default function ChatWorkspace({
   const liveStatusLabel = streamStatusLabel || ({
     finished: '本轮回答已完成',
     cancelled: '本轮运行已停止',
-    error: '本轮运行失败',
+    error: latestTurnErrorCode === 'MODEL_OUTPUT_TRUNCATED' ? '本轮回答未完成' : '本轮运行失败',
     awaiting: '本轮正在等待输入',
   }[latestTurnStatus] || '');
   const resizeTraceByKeyboard = (event) => {

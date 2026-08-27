@@ -33,6 +33,7 @@ def patch_jiuwen_openai_reasoning_alias(openai_client_module: Any) -> None:
     if callable(original_parse_response):
         async def patched_parse_response(self: Any, response: Any, parser: Optional[Any] = None) -> Any:
             parsed = await original_parse_response(self, response, parser)
+            parsed = _with_jiuwen_finish_reason(parsed, response)
             parsed = _with_jiuwen_usage_cache_tokens(
                 parsed,
                 read_field(response, "usage"),
@@ -57,6 +58,14 @@ def _extract_jiuwen_reasoning_alias_from_response(response: Any) -> str:
     choice = _first_jiuwen_choice(response)
     message = read_field(choice, "message")
     return str(read_field(message, "reasoning") or "")
+
+
+def _with_jiuwen_finish_reason(message: Any, response: Any) -> Any:
+    choice = _first_jiuwen_choice(response)
+    finish_reason = read_field(choice, "finish_reason")
+    if message is None or finish_reason is None:
+        return message
+    return _copy_or_set_jiuwen_field(message, "finish_reason", finish_reason)
 
 
 def _first_jiuwen_choice(payload: Any) -> Any:
