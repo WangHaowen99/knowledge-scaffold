@@ -829,7 +829,11 @@ def _validate_deterministic_operations(
         if execution_owner != _DETERMINISTIC_EXECUTION_OWNER:
             continue
         execution = frontmatter.get("execution")
-        assert isinstance(execution, Mapping)
+        if not isinstance(execution, Mapping):
+            raise DeterministicPackageError(
+                "execution_declaration_invalid",
+                "Operation '{}' execution must be a mapping.".format(operation_path.name),
+            )
         unknown = sorted(set(execution) - _EXECUTION_FIELDS)
         if unknown:
             raise DeterministicPackageError(
