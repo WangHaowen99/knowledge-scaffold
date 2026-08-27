@@ -63,6 +63,8 @@ import {
   MERMAID_SOURCE_VALIDATOR_VERSION,
   validateMermaidSource,
 } from '../workflow/mermaid-source-contract.js';
+import { previewOntologyObjectMutation } from '../workflow/ontology-object-model-mutation.js';
+import { parseRenderedPackageFiles } from '../workflow/package-import.js';
 import {
   isReleaseCandidateVersion,
   nextValidationCandidateVersion,
@@ -79,6 +81,13 @@ import {
 } from '../workflow/m3-repo.js';
 import { issueAgentRunCredential } from './run-credential.js';
 import { runScriptCasesInJiuwenbox } from './sandbox.js';
+import {
+  StudioReadError,
+  StudioReadService,
+  type StudioElement,
+} from './studio-read-service.js';
+import { StudioReviewService } from './studio-review-service.js';
+import { StudioWriteError, StudioWriteService } from './studio-write-service.js';
 import {
   packageFusionScopeDependencyGraph,
   PackageFusionService,
@@ -178,6 +187,8 @@ export class AgentCoreService {
   private readonly artifacts = getPackageArtifactStore();
   private readonly packageFusion: PackageFusionService;
   private readonly validationReports: ValidationReportStore;
+  private readonly studioWrites: StudioWriteService;
+  private readonly studioReviews: StudioReviewService;
 
   constructor(
     db: DatabaseSync = getDb(),
@@ -186,6 +197,8 @@ export class AgentCoreService {
     this.db = db;
     this.packageFusion = new PackageFusionService(db, this.artifacts);
     this.validationReports = new ValidationReportStore(db);
+    this.studioWrites = new StudioWriteService(db, this.artifacts);
+    this.studioReviews = new StudioReviewService(db, this.artifacts);
   }
 
   async workbenchSnapshot(project: Project, username: string) {
@@ -434,6 +447,14 @@ export class AgentCoreService {
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
     if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id);
+    switch (tool) {
+      case 'list_ontology_objects': return this.listOntologyObjects(context, args);
+      case 'get_ontology_object': return this.getOntologyObject(context, args);
+      case 'get_ontology_object_review_status': return this.getOntologyObjectReviewStatus(context, args);
+      case 'list_ontology_object_audit_records': return this.listOntologyObjectAuditRecords(context, args);
+      case 'validate_ontology_object_patch': return this.validateOntologyObjectPatch(context, args);
+      default: break;
+    }
     const workspace = await this.ensureWorkspace(context);
     switch (tool) {
       case 'list_documents': return this.listDocuments(context.project.id);
@@ -444,6 +465,8 @@ export class AgentCoreService {
       case 'list_tables': return this.listTables(context.project.id);
       case 'describe_table': return this.describeTable(context.project.id, args);
       case 'read_table_rows': return this.readTableRows(context.project.id, args);
+      case 'apply_ontology_object_patch': return this.applyOntologyObjectPatch(context, args);
+      case 'submit_ontology_object_review': return this.submitOntologyObjectReview(context, args);
       case 'stage_tabular_dataset': return this.stageTabularDataset(workspace, context, args);
       case 'list_dir': return this.listDir(workspace, args);
       case 'read_file': return this.readFile(workspace, args);
@@ -610,6 +633,523 @@ export class AgentCoreService {
         unit: '个处理检查点',
       },
     };
+  }
+
+  private async listOntologyObjects(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+      const studio = new StudioReadService(workingPackage);
+      const requestedRevision = String(
+        args.working_revision ?? args.workingRevision ?? args.expected_revision ?? args.expectedRevision ?? '',
+      ).trim();
+      if (requestedRevision) studio.assertRevision(requestedRevision);
+      const response = studio.list({
+        kind: 'object',
+        query: args.query,
+        sort: args.sort,
+        order: args.order,
+        cursor: args.cursor,
+        limit: args.limit,
+      });
+      return {
+        working_revision: response.workingRevision,
+        items: response.items.map((item) => ({ ...item, object_id: item.id })),
+        total: response.total,
+        next_cursor: response.nextCursor,
+        display: {
+          text: response.total
+            ? `已返回 ${response.items.length}/${response.total} 个对象`
+            : '当前知识包还没有对象',
+        },
+      };
+    } catch (error) {
+      throw normalizeStudioAgentError(error);
+    }
+  }
+
+  private async getOntologyObject(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const { workingPackage, element } = await this.loadOntologyObjectContext(context, args, false);
+      return {
+        working_revision: workingPackage.workingRevision,
+        object: ontologyObjectPayload(element),
+        display: { text: `已返回对象《${element.title}》的当前模型` },
+      };
+    } catch (error) {
+      throw normalizeStudioAgentError(error);
+    }
+  }
+
+  private async validateOntologyObjectPatch(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const { workingPackage, element, objectId } = await this.loadOntologyObjectContext(context, args, true);
+      const preview = previewOntologyObjectMutation(
+        parseRenderedPackageFiles(workingPackage.files),
+        element.key,
+        {
+          metadata: args.metadata,
+          field_ops: args.field_ops,
+          relation_ops: args.relation_ops,
+        },
+        { tables: this.projectTables(context.project.id) },
+      );
+      return {
+        working_revision: workingPackage.workingRevision,
+        object_id: objectId,
+        ok: preview.ok,
+        errors: preview.issues,
+        fieldErrors: preview.fieldErrors,
+        warnings: preview.warnings,
+        impact_summary: preview.impactSummary,
+        normalized_mutation: preview.normalizedMutation,
+        patch_changes: preview.patchChanges,
+        next_object: preview.nextObject,
+        review_recommendation: preview.reviewRecommendation,
+        display: { text: preview.ok ? '对象模型修改校验通过' : '对象模型修改未通过校验' },
+      };
+    } catch (error) {
+      throw normalizeStudioAgentError(error);
+    }
+  }
+
+  private async applyOntologyObjectPatch(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const { workingPackage, objectId, element } = await this.loadOntologyObjectContext(context, args, true);
+      const preview = previewOntologyObjectMutation(
+        parseRenderedPackageFiles(workingPackage.files),
+        element.key,
+        {
+          metadata: args.metadata,
+          field_ops: args.field_ops,
+          relation_ops: args.relation_ops,
+        },
+        { tables: this.projectTables(context.project.id) },
+      );
+      if (!preview.ok) {
+        throw new AgentCoreError(
+          'ONTOLOGY_OBJECT_INVALID',
+          '对象模型修改未通过校验',
+          ['根据 fieldErrors 修正后，重新调用 validate_ontology_object_patch 或 apply_ontology_object_patch'],
+          422,
+          {
+            fieldErrors: preview.fieldErrors,
+            errors: preview.issues,
+            warnings: preview.warnings,
+            impact_summary: preview.impactSummary,
+            normalized_mutation: preview.normalizedMutation,
+            next_object: preview.nextObject,
+          },
+        );
+      }
+      const clientMutationId = text(args.client_mutation_id ?? args.clientMutationId, 'client_mutation_id');
+      const editSessionId = String(args.edit_session_id ?? args.editSessionId ?? '').trim();
+      const response = await this.studioWrites.patchObjectModel(
+        context.project,
+        context.username,
+        objectId,
+        {
+          expectedRevision: workingPackage.workingRevision,
+          clientMutationId,
+          ...(editSessionId ? { editSessionId } : {}),
+          changes: preview.patchChanges,
+        },
+      );
+      return {
+        working_revision: response.workingRevision,
+        client_mutation_id: response.clientMutationId,
+        ...(response.editSessionId ? { edit_session_id: response.editSessionId } : {}),
+        candidate: response.candidate,
+        ...(response.replayed ? { replayed: true } : {}),
+        change_group: response.changeGroup,
+        changed_paths: response.changedPaths,
+        object: response.element ? ontologyObjectPayload(response.element) : null,
+        elements: response.elements.map((item) => ontologyObjectPayload(item)),
+        warnings: response.warnings,
+        historical_problem_count: response.historicalProblemCount,
+        impact_summary: preview.impactSummary,
+        normalized_mutation: preview.normalizedMutation,
+        review_recommendation: preview.reviewRecommendation,
+        display: response.display,
+      };
+    } catch (error) {
+      throw normalizeStudioAgentError(error);
+    }
+  }
+
+  private async submitOntologyObjectReview(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const expectedRevision = text(args.expected_revision ?? args.expectedRevision, 'expected_revision');
+      const clientMutationId = text(args.client_mutation_id ?? args.clientMutationId, 'client_mutation_id');
+      const response = await this.studioReviews.requestReview(context.project, context.username, {
+        expectedRevision,
+        clientMutationId,
+      });
+      return {
+        working_revision: response.workingRevision,
+        client_mutation_id: response.clientMutationId,
+        review_requested: response.reviewRequested,
+        ...(response.replayed ? { replayed: true } : {}),
+        changed_paths: response.changedPaths,
+        element_ids: response.elementIds,
+        next: [
+          '复核完成后，如需人工确认生效，继续调用 prepare_confirmation_groups、request_confirmation_preflight、request_confirmation',
+        ],
+        display: response.display,
+      };
+    } catch (error) {
+      throw normalizeStudioAgentError(error);
+    }
+  }
+
+  private async getOntologyObjectReviewStatus(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const { objectId, element } = await this.loadOntologyObjectContext(context, args, false);
+      const objectPath = ontologyObjectPath(element.key);
+      const workspace = this.workspace(context.project.id);
+      const current = await this.currentOntologyObjectReviewState(context, objectId, objectPath, workspace);
+      const latest = this.readOntologyObjectAuditPage(context.project.id, objectId, objectPath, {
+        limit: 1,
+      }).items[0] ?? null;
+      const stage = String(current?.stage ?? latest?.status ?? 'idle');
+      return {
+        object_id: objectId,
+        object_key: element.key,
+        stage,
+        current: current ?? {
+          stage,
+          base_revision: latest?.base_revision ?? '',
+          candidate_revision: latest?.candidate_revision ?? null,
+          accepted_revision: latest?.accepted_revision ?? null,
+        },
+        latest_record: latest,
+        pending_candidate_count: Number((this.db.prepare(`SELECT COUNT(*) AS count FROM artifact_candidate_revisions
+          WHERE project_id = ? AND status = 'pending'`).get(context.project.id) as any)?.count ?? 0),
+        display: {
+          text: stage === 'idle'
+            ? `对象《${element.title}》当前没有待处理的复核记录`
+            : `对象《${element.title}》当前状态：${ontologyReviewStageLabel(stage)}`,
+        },
+      };
+    } catch (error) {
+      throw normalizeStudioAgentError(error);
+    }
+  }
+
+  private async listOntologyObjectAuditRecords(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const { objectId, element } = await this.loadOntologyObjectContext(context, args, false);
+      const objectPath = ontologyObjectPath(element.key);
+      const page = this.readOntologyObjectAuditPage(context.project.id, objectId, objectPath, {
+        status: candidateStatusArg(args.status),
+        cursor: auditCursorArg(args.cursor),
+        limit: integer(args.limit, 20, 1, 100),
+      });
+      return {
+        object_id: objectId,
+        object_key: element.key,
+        items: page.items,
+        next_cursor: page.nextCursor,
+        display: {
+          text: page.items.length
+            ? `已返回对象《${element.title}》的 ${page.items.length} 条审计记录`
+            : `对象《${element.title}》还没有审计记录`,
+        },
+      };
+    } catch (error) {
+      throw normalizeStudioAgentError(error);
+    }
+  }
+
+  private async currentOntologyObjectReviewState(
+    context: AgentToolContext,
+    objectId: string,
+    objectPath: string,
+    workspace: WorkspaceRow | null,
+  ): Promise<Record<string, unknown> | null> {
+    if (!workspace) return null;
+    if (workspace.candidate_id) {
+      try {
+        const candidate = await this.artifacts.getCandidateRevision(context.project.id, workspace.candidate_id);
+        const record = this.auditRecordFromCandidateRow(
+          context.project.id,
+          objectId,
+          objectPath,
+          this.db.prepare(`SELECT id, project_id, base_revision_oid, status, cause, summary, actor_kind, actor_name,
+            groups_json, selected_group_ids_json, accepted_revision_oid,
+            decision_cause, decision_summary, decision_actor_kind, decision_actor_name, decision_note,
+            created_at, decided_at
+            FROM artifact_candidate_revisions WHERE id = ? AND project_id = ?`).get(
+            candidate.id,
+            context.project.id,
+          ) as Record<string, unknown> | undefined,
+        );
+        if (record) {
+          return {
+            stage: record.status === 'pending' ? 'awaiting_confirmation' : record.status,
+            workspace_owner: workspace.owner,
+            base_revision: candidate.baseRevision,
+            candidate_revision: candidate.id,
+            change_groups: record.groups,
+            changed_paths: record.changed_paths,
+            review: record.review,
+            created_at: record.created_at,
+            validation_receipt: this.candidateValidationReceiptView(candidate.id),
+          };
+        }
+      } catch {
+        // 候选被并发处理后按最新历史记录回落。
+      }
+    }
+
+    const allChanges = this.changes(workspace);
+    const changeGroups = workspaceObjectChangeGroups(allChanges, objectPath);
+    if (!changeGroups.length) return null;
+    const workingPackage = await this.overlay(workspace, allChanges);
+    const workingRevision = allChanges.length
+      ? workingContentRevision(workspace.base_revision_oid, workingPackage.files)
+      : workspace.base_revision_oid;
+    const reviewEvent = this.latestOntologyObjectReviewEvent(
+      context.project.id,
+      objectPath,
+      workingRevision,
+    );
+    const stage = reviewEvent
+      ? 'review_requested'
+      : workspace.owner === context.username ? 'draft' : 'draft_locked';
+    return {
+      stage,
+      workspace_owner: workspace.owner,
+      base_revision: workspace.base_revision_oid,
+      working_revision: workingRevision,
+      changed_paths: [...new Set(changeGroups.flatMap((group) => group.impact))].sort(),
+      change_groups: changeGroups,
+      ...(reviewEvent ? {
+        review_request: {
+          event_id: reviewEvent.eventId,
+          client_mutation_id: reviewEvent.clientMutationId,
+          delivery_status: reviewEvent.deliveredAt ? 'delivered' : 'pending',
+          requested_at: reviewEvent.createdAt,
+          delivered_at: reviewEvent.deliveredAt,
+        },
+      } : {}),
+    };
+  }
+
+  private latestOntologyObjectReviewEvent(projectId: string, objectPath: string, workingRevision: string): {
+    eventId: string;
+    clientMutationId: string;
+    createdAt: string;
+    deliveredAt: string | null;
+  } | null {
+    const rows = this.db.prepare(`SELECT id, payload_json, created_at, delivered_at
+      FROM agent_project_event_outbox
+      WHERE project_id = ? AND event_type = 'studio_review'
+      ORDER BY created_at DESC, rowid DESC LIMIT 50`).all(projectId) as Array<{
+      id: string;
+      payload_json: string;
+      created_at: string;
+      delivered_at: string | null;
+    }>;
+    for (const row of rows) {
+      const payload = object(safeJsonParse(row.payload_json));
+      const changedPaths = stringArray(payload.changedPaths);
+      if (!changedPaths.includes(objectPath)) continue;
+      if (workingRevision && String(payload.workingRevision ?? '').trim() !== workingRevision) continue;
+      return {
+        eventId: row.id,
+        clientMutationId: String(payload.clientMutationId ?? '').trim(),
+        createdAt: row.created_at,
+        deliveredAt: row.delivered_at ?? null,
+      };
+    }
+    return null;
+  }
+
+  private readOntologyObjectAuditPage(
+    projectId: string,
+    objectId: string,
+    objectPath: string,
+    options: {
+      status?: string;
+      cursor?: { createdAt: string; candidateId: string } | null;
+      limit: number;
+    },
+  ): {
+    items: Array<Record<string, unknown>>;
+    nextCursor: string;
+  } {
+    const items: Array<Record<string, unknown>> = [];
+    let cursor = options.cursor ?? null;
+    let lastReturnedCursor: { createdAt: string; candidateId: string } | null = null;
+    const batchSize = Math.max(20, Math.min(100, options.limit * 4));
+
+    while (items.length < options.limit + 1) {
+      const where = ['project_id = ?'];
+      const params: Array<string | number> = [projectId];
+      if (options.status) {
+        where.push('status = ?');
+        params.push(options.status);
+      }
+      if (cursor) {
+        where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+        params.push(cursor.createdAt, cursor.createdAt, cursor.candidateId);
+      }
+      params.push(batchSize);
+      const rows = this.db.prepare(`SELECT id, project_id, base_revision_oid, status, cause, summary, actor_kind,
+          actor_name, groups_json, selected_group_ids_json, accepted_revision_oid,
+          decision_cause, decision_summary, decision_actor_kind, decision_actor_name, decision_note,
+          created_at, decided_at
+        FROM artifact_candidate_revisions
+        WHERE ${where.join(' AND ')}
+        ORDER BY created_at DESC, id DESC LIMIT ?`).all(...params) as Array<Record<string, unknown>>;
+      if (!rows.length) break;
+
+      for (const row of rows) {
+        const record = this.auditRecordFromCandidateRow(projectId, objectId, objectPath, row);
+        cursor = {
+          createdAt: String(row.created_at ?? ''),
+          candidateId: String(row.id ?? ''),
+        };
+        if (!record) continue;
+        items.push(record);
+        if (items.length === options.limit) lastReturnedCursor = cursor;
+        if (items.length >= options.limit + 1) break;
+      }
+      if (rows.length < batchSize) break;
+    }
+
+    return {
+      items: items.slice(0, options.limit),
+      nextCursor: items.length > options.limit && lastReturnedCursor ? encodeAuditCursor(lastReturnedCursor) : '',
+    };
+  }
+
+  private auditRecordFromCandidateRow(
+    projectId: string,
+    objectId: string,
+    objectPath: string,
+    row: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | null {
+    if (!row) return null;
+    const groups = parseObjects(row.groups_json);
+    const matching = groups.filter((group) => candidateGroupTouchesPath(group, objectPath));
+    if (!matching.length) return null;
+
+    const selected = new Set(parseArray(row.selected_group_ids_json));
+    const metadataById = new Map(this.candidateGroups(String(row.id ?? '')).map((group) => [group.id, group]));
+    const confirmation = this.db.prepare(`SELECT actor_username, review_mode, selected_groups_json,
+        sampled_groups_json, created_at
+      FROM agent_confirmations WHERE project_id = ? AND candidate_id = ?
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+      .get(projectId, String(row.id ?? '')) as
+      | { actor_username: string; review_mode: string; selected_groups_json: string; sampled_groups_json: string; created_at: string }
+      | undefined;
+
+    const changedPaths = [...new Set(matching.flatMap(candidateGroupChangedPaths))].sort();
+    return {
+      record_id: `candidate:${String(row.id ?? '')}`,
+      object_id: objectId,
+      candidate_revision: String(row.id ?? ''),
+      base_revision: String(row.base_revision_oid ?? ''),
+      status: String(row.status ?? ''),
+      created_at: String(row.created_at ?? ''),
+      decided_at: row.decided_at ? String(row.decided_at) : null,
+      accepted_revision: row.accepted_revision_oid ? String(row.accepted_revision_oid) : null,
+      summary: String(row.summary ?? ''),
+      actor: {
+        kind: String(row.actor_kind ?? ''),
+        name: String(row.actor_name ?? ''),
+      },
+      decision: row.decided_at
+        ? {
+          cause: String(row.decision_cause ?? ''),
+          summary: String(row.decision_summary ?? ''),
+          actor_kind: String(row.decision_actor_kind ?? ''),
+          actor_name: String(row.decision_actor_name ?? ''),
+          note: row.decision_note ? String(row.decision_note) : '',
+          decided_at: String(row.decided_at ?? ''),
+        }
+        : null,
+      review: confirmation
+        ? {
+          actor_username: confirmation.actor_username,
+          review_mode: confirmation.review_mode,
+          selected_groups: parseArray(confirmation.selected_groups_json),
+          sampled_groups: parseArray(confirmation.sampled_groups_json),
+          confirmed_at: confirmation.created_at,
+        }
+        : null,
+      groups: matching.map((group) => {
+        const groupId = String(group.id ?? '');
+        const metadata = metadataById.get(groupId);
+        return {
+          id: groupId,
+          tier: metadata?.tier ?? 'structural',
+          title: metadata?.title ?? String(group.summary ?? ''),
+          impact: metadata?.impact ?? candidateGroupChangedPaths(group),
+          warning: metadata?.warning ?? '',
+          selected: selected.has(groupId),
+          applied: String(row.status ?? '') === 'accepted' ? selected.has(groupId) : null,
+        };
+      }),
+      changed_paths: changedPaths,
+      display: {
+        text: `对象 ${objectId} 在候选 ${String(row.id ?? '')} 中状态为 ${ontologyReviewStageLabel(String(row.status ?? ''))}`,
+      },
+    };
+  }
+
+  private candidateValidationReceiptView(candidateId: string): Record<string, unknown> | null {
+    const row = this.db.prepare(`SELECT base_revision_oid, candidate_hash, validator_version, validated_at
+      FROM agent_candidate_validation_receipts WHERE candidate_id = ?`).get(candidateId) as
+      | { base_revision_oid: string; candidate_hash: string; validator_version: string; validated_at: string }
+      | undefined;
+    if (!row) return null;
+    return {
+      base_revision: row.base_revision_oid,
+      candidate_hash: row.candidate_hash,
+      validator_version: row.validator_version,
+      validated_at: row.validated_at,
+    };
+  }
+
+  private async loadOntologyObjectContext(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+    requireExpectedRevision: boolean,
+  ): Promise<{
+    workingPackage: Awaited<ReturnType<AgentCoreService['workbenchStudioFiles']>>;
+    objectId: string;
+    element: StudioElement;
+  }> {
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const studio = new StudioReadService(workingPackage);
+    const requestedRevision = requireExpectedRevision
+      ? text(args.expected_revision ?? args.expectedRevision, 'expected_revision')
+      : String(
+        args.working_revision ?? args.workingRevision ?? args.expected_revision ?? args.expectedRevision ?? '',
+      ).trim();
+    if (requestedRevision) studio.assertRevision(requestedRevision);
+    const objectId = objectIdArg(args.object_id ?? args.objectId ?? args.element_id ?? args.elementId);
+    const detail = studio.detail(objectId);
+    if (detail.element.kind !== 'object') {
+      throw new AgentCoreError(
+        'INVALID_INPUT',
+        '当前接口只支持 object 类型',
+        ['传入 list_ontology_objects 或 get_ontology_object 返回的 object_id'],
+        400,
+        { object_id: objectId },
+      );
+    }
+    return {
+      workingPackage,
+      objectId,
+      element: detail.element,
+    };
+  }
+
+  private projectTables(projectId: string): DataDictTable[] {
+    return listDocuments(projectId).flatMap((document) => document.tables ?? []);
   }
 
   private async claimCandidateWorkspace(context: AgentToolContext) {
@@ -2787,7 +3327,9 @@ export class AgentCoreService {
     const baselineErrors = runFormatChecks(base.spec, baseFiles)
       .filter((finding) => finding.severity === '错误');
     const baselineIdentities = new Set(baselineErrors.map(formatFindingIdentity));
-    const introduced = runFormatChecks(candidate.spec, candidateFiles)
+    let candidateSpec = candidate.spec;
+    try { candidateSpec = parseRenderedPackageFiles(candidateFiles); } catch { /* fallback to current spec */ }
+    const introduced = runFormatChecks(candidateSpec, candidateFiles)
       .filter((finding) => finding.severity === '错误')
       .filter((finding) => (
         (finding.category === '必选文件缺失' && PACKAGE_REQUIRED_FILE_SET.has(finding.target))
@@ -3823,6 +4365,111 @@ export class AgentCoreService {
   }
 }
 
+function ontologyObjectPath(key: string): string {
+  return `objects/${String(key ?? '').trim()}.md`;
+}
+
+function candidateStatusArg(value: unknown): string {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return '';
+  if (['pending', 'accepted', 'revision_requested', 'rejected', 'superseded'].includes(normalized)) {
+    return normalized;
+  }
+  throw new AgentCoreError(
+    'INVALID_INPUT',
+    'status 只支持 pending、accepted、revision_requested、rejected、superseded',
+    [],
+    400,
+  );
+}
+
+function auditCursorArg(value: unknown): { createdAt: string; candidateId: string } | null {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(normalized, 'base64url').toString('utf8')) as Record<string, unknown>;
+    const createdAt = String(decoded.createdAt ?? '').trim();
+    const candidateId = String(decoded.candidateId ?? '').trim();
+    if (!createdAt || !candidateId) throw new Error('cursor fields missing');
+    return { createdAt, candidateId };
+  } catch {
+    throw new AgentCoreError('INVALID_INPUT', 'cursor 不合法', ['使用上一次返回的 next_cursor'], 400);
+  }
+}
+
+function encodeAuditCursor(value: { createdAt: string; candidateId: string }): string {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+}
+
+function safeJsonParse(value: unknown): unknown {
+  try { return JSON.parse(String(value ?? 'null')); } catch { return null; }
+}
+
+function candidateGroupChangedPaths(group: Record<string, unknown>): string[] {
+  const changes = Array.isArray(group.changes) ? group.changes : [];
+  return changes
+    .filter((item) => item && typeof item === 'object' && 'path' in item)
+    .map((item) => publicPath(String((item as Record<string, unknown>).path ?? '')))
+    .filter(Boolean);
+}
+
+function workspaceObjectChangeGroups(
+  changes: ChangeRow[],
+  objectPath: string,
+): Array<{ id: string; tier: Tier; title: string; impact: string[] }> {
+  const groupIds = [...new Set(changes
+    .filter((change) => change.path === objectPath)
+    .map((change) => change.group_id))];
+  return groupIds.map((groupId) => {
+    const impact = [...new Set(changes
+      .filter((change) => change.group_id === groupId)
+      .map((change) => change.path)
+      .filter(Boolean))]
+      .sort();
+    return {
+      id: groupId,
+      tier: workspaceGroupTier(impact),
+      title: workspaceGroupTitle(groupId, impact),
+      impact,
+    };
+  });
+}
+
+function candidateGroupTouchesPath(group: Record<string, unknown>, path: string): boolean {
+  return candidateGroupChangedPaths(group).includes(path);
+}
+
+function workspaceGroupTier(paths: string[]): Tier {
+  if (paths.some((path) => path.startsWith('rules/'))) return 'caliber';
+  if (paths.some((path) => path.startsWith('scripts/'))) return 'script';
+  if (paths.every((path) => path.startsWith('mappings/'))) return 'index';
+  return 'structural';
+}
+
+function workspaceGroupTitle(groupId: string, paths: string[]): string {
+  if (groupId.startsWith('studio-')) {
+    if (paths.some((path) => path.startsWith('rules/'))) return 'Studio 规则草稿';
+    if (paths.some((path) => path.startsWith('objects/'))) return 'Studio 对象草稿';
+    if (paths.some((path) => path.startsWith('operations/'))) return 'Studio 操作草稿';
+    if (paths.some((path) => path.startsWith('metrics/'))) return 'Studio 指标草稿';
+    return 'Studio 草稿';
+  }
+  return `草稿变更 ${groupId}`;
+}
+
+function ontologyReviewStageLabel(stage: string): string {
+  const normalized = String(stage ?? '').trim();
+  if (normalized === 'draft') return '草稿待提交';
+  if (normalized === 'review_requested') return '已提交复核';
+  if (normalized === 'draft_locked') return '他人草稿占用';
+  if (normalized === 'awaiting_confirmation' || normalized === 'pending') return '待确认';
+  if (normalized === 'accepted') return '已确认';
+  if (normalized === 'rejected') return '已退回';
+  if (normalized === 'revision_requested') return '要求调整';
+  if (normalized === 'superseded') return '已失效';
+  return '空闲';
+}
+
 function impactResources(value: unknown): AffectedKnowledgeResource[] {
   if (!Array.isArray(value)) {
     throw new AgentCoreError(
@@ -3942,6 +4589,60 @@ function packagePath(value: string): string {
     throw new AgentCoreError('WRITE_UNSAFE', '知识包路径必须是安全的包内相对路径', ['改用不含空段、反斜杠或 .. 的相对路径'], 400);
   }
   return path;
+}
+
+function ontologyObjectPayload(element: StudioElement) {
+  const values = object(element.values);
+  return {
+    id: element.id,
+    key: element.key,
+    title: element.title,
+    description: element.description,
+    source_path: element.sourcePath,
+    relation_count: element.relationCount,
+    metadata: {
+      title: element.title,
+      description: element.description,
+      aliases: Array.isArray(values.aliases) ? values.aliases.map(String) : [],
+      queryBoundary: String(values.queryBoundary ?? ''),
+    },
+    fields: Array.isArray(values.fields) ? values.fields : [],
+    sources: Array.isArray(values.sources) ? values.sources : [],
+    relations: element.relations.map((relation) => ({
+      id: relation.id,
+      kind: relation.kind,
+      label: relation.label,
+      target_id: relation.targetId,
+      target_kind: relation.targetKind,
+      target_key: relation.targetKey,
+      target_exists: relation.targetExists,
+      ...(relation.description ? { description: relation.description } : {}),
+    })),
+  };
+}
+
+function objectIdArg(value: unknown): string {
+  const normalized = String(value ?? '').trim();
+  if (/^object:[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$/u.test(normalized)) return normalized;
+  throw new AgentCoreError(
+    'INVALID_INPUT',
+    'object_id 必须是 object:key',
+    ['使用 list_ontology_objects 或 get_ontology_object 返回的 object_id'],
+    400,
+  );
+}
+
+function normalizeStudioAgentError(error: unknown): AgentCoreError {
+  if (error instanceof AgentCoreError) return error;
+  if (error instanceof StudioReadError || error instanceof StudioWriteError) {
+    return new AgentCoreError(error.code, error.message, [], error.statusCode, error.details);
+  }
+  return new AgentCoreError(
+    'INTERNAL_ERROR',
+    error instanceof Error ? error.message : String(error),
+    [],
+    500,
+  );
 }
 
 function text(value: unknown, field: string, allowEmpty = false): string {

@@ -82,3 +82,27 @@ test('admin LLM 默认配置的测试与保存按钮等宽并右对齐', async (
   assert.match(styles, /\.admin-llm-primary-actions \{[^}]*grid-template-columns: repeat\(2, 112px\);[^}]*margin-left: auto;/s);
   assert.match(styles, /\.admin-llm-primary-actions \.btn \{[^}]*width: 100%;[^}]*justify-content: center;/s);
 });
+
+test('settings modal: 项目上下文会暴露 MCP 接入 tab 并接线到项目级 API', async () => {
+  const { readFileSync } = await import('node:fs');
+  const app = readFileSync(new URL('../frontend/src/App.jsx', import.meta.url), 'utf8');
+  const settings = readFileSync(new URL('../frontend/src/SettingsModal.jsx', import.meta.url), 'utf8');
+  const api = readFileSync(new URL('../frontend/src/api.js', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(app, /<SettingsModal user=\{user\} projectId=\{projectId\} tab=\{settingsTab\}/);
+  assert.match(settings, /projectId, tab: tabProp = 'llm'/);
+  assert.match(settings, /\{projectId && <button className=\{tab === 'mcp' \? 'on' : ''\} onClick=\{\(\) => setTab\('mcp'\)\}>MCP 接入<\/button>\}/);
+  assert.match(settings, /getProjectMcpRuntimeStatus\(projectId\)/);
+  assert.match(settings, /listProjectMcpTokens\(projectId\)/);
+  assert.match(settings, /createProjectMcpToken\(projectId, draft\)/);
+  assert.match(settings, /revokeProjectMcpToken\(projectId, tokenId\)/);
+  assert.match(settings, /MODELING_MCP_PUBLIC_BASE_URL/);
+  assert.match(settings, /key=\{`\$\{item\.toolset\}:\$\{item\.transport\}`\}/);
+  assert.match(api, /export const getProjectMcpRuntimeStatus = \(id\) => api\(`\$\{P\(id\)\}\/mcp\/runtime\/status`\)/);
+  assert.match(api, /export const listProjectMcpTokens = \(id\) => api\(`\$\{P\(id\)\}\/mcp\/tokens`\)/);
+  assert.match(api, /export const createProjectMcpToken = \(id, draft\) => api\(`\$\{P\(id\)\}\/mcp\/tokens`/);
+  assert.match(api, /export const revokeProjectMcpToken = \(id, tokenId\) => api\(`\$\{P\(id\)\}\/mcp\/tokens\/\$\{encodeURIComponent\(tokenId\)\}`/);
+  assert.match(styles, /\.cfg-mcp \{ display: grid; gap: 14px; \}/);
+  assert.match(styles, /\.cfg-mcp-token-row \{/);
+});

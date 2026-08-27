@@ -223,7 +223,7 @@ export default function App() {
           : <ProjectList onOpen={openProject} />}
       </div>
       {!projectId && <Tour scene="projects" steps={PROJECT_STEPS} />}
-      {settingsOpen && <SettingsModal user={user} tab={settingsTab} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal user={user} projectId={projectId} tab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

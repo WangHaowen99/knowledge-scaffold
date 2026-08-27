@@ -251,6 +251,31 @@ CREATE TABLE IF NOT EXISTS agent_project_event_outbox (
 CREATE INDEX IF NOT EXISTS idx_agent_project_event_outbox_pending
   ON agent_project_event_outbox(project_id, delivered_at, created_at);
 
+CREATE TABLE IF NOT EXISTS project_mcp_endpoints (
+  project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  endpoint_id   TEXT NOT NULL UNIQUE,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_mcp_tokens (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  token_name    TEXT NOT NULL,
+  subject_username TEXT NOT NULL,
+  issued_by     TEXT NOT NULL,
+  scopes_json   TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  last_used_at  TEXT,
+  revoked_at    TEXT,
+  revoked_by    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_project_mcp_tokens_project
+  ON project_mcp_tokens(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_project_mcp_tokens_subject
+  ON project_mcp_tokens(subject_username, project_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS wf_nodes (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
