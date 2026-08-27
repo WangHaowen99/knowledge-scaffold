@@ -318,3 +318,12 @@ export const testAdminLlmDefault = (draft) => api('/api/admin/llm-defaults/test'
   method: 'POST', body: JSON.stringify(draft),
 });
 export const testConsumer = (url) => api('/api/settings/consumer/test', { method: 'POST', body: JSON.stringify({ url }) });
+export const getProjectMcpRuntimeStatus = (id) => api(`${P(id)}/mcp/runtime/status`);
+export const listProjectMcpTokens = (id) => api(`${P(id)}/mcp/tokens`);
+export const createProjectMcpToken = (id, draft) => api(`${P(id)}/mcp/tokens`, {
+  method: 'POST',
+  body: JSON.stringify(draft || {}),
+});
+export const revokeProjectMcpToken = (id, tokenId) => api(`${P(id)}/mcp/tokens/${encodeURIComponent(tokenId)}`, {
+  method: 'DELETE',
+});

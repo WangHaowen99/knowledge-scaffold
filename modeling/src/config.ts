@@ -14,6 +14,13 @@ function positiveIntegerEnv(key: string, fallback: number): number {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+function normalizeMcpTransportEnv(key: string, fallback: 'both' | 'streamable-http' | 'sse'): 'both' | 'streamable-http' | 'sse' {
+  const value = env(key, fallback).trim().toLowerCase();
+  if (value === 'http') return 'streamable-http';
+  if (value === 'both' || value === 'streamable-http' || value === 'sse') return value;
+  return fallback;
+}
+
 const evaluationLlmModel = env('MODELING_EVALUATION_LLM_MODEL');
 
 export const config = {
@@ -66,6 +73,19 @@ export const config = {
     url: env('MODELING_EVAL_BINDING_URL'),
     token: env('MODELING_EVAL_BINDING_TOKEN'),
     scene: env('MODELING_EVAL_BINDING_SCENE'),
+  },
+  mcp: {
+    host: env('MODELING_MCP_HOST', '0.0.0.0'),
+    port: Number(env('MODELING_MCP_PORT', '5188')),
+    transport: normalizeMcpTransportEnv('MODELING_MCP_TRANSPORT', 'both'),
+    publicBaseUrl: env('MODELING_MCP_PUBLIC_BASE_URL').replace(/\/+$/, ''),
+    tokenSecret: env('MODELING_MCP_TOKEN_SECRET'),
+    tokenIssuer: env('MODELING_MCP_TOKEN_ISSUER', 'knowledge-scaffold-modeling'),
+    tokenAudience: env('MODELING_MCP_TOKEN_AUDIENCE', 'knowledge-scaffold-modeling-mcp'),
+    defaultTokenTtlSeconds: positiveIntegerEnv('MODELING_MCP_TOKEN_TTL_SECONDS', 86_400),
+    maxTokenTtlSeconds: positiveIntegerEnv('MODELING_MCP_TOKEN_MAX_TTL_SECONDS', 2_592_000),
+    protocolVersion: env('MODELING_MCP_PROTOCOL_VERSION', '2026-07-28'),
+    legacyProtocolVersion: env('MODELING_MCP_LEGACY_PROTOCOL_VERSION', '2025-11-25'),
   },
 };
 

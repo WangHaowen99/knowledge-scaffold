@@ -198,6 +198,7 @@ import { registerAgentCoreRoutes } from './agent/core-routes.js';
 import { registerAgentLlmConfigRoutes } from './agent/llm-config-routes.js';
 import { registerPackageFusionRoutes } from './agent/package-fusion-routes.js';
 import { registerAgentProxyRoutes } from './agent/proxy-routes.js';
+import { registerProjectMcpManagementRoutes } from './mcp/routes.js';
 import {
   deliverAgentProjectEvents,
   enqueueMaterialParseProjectEvent,
@@ -577,6 +578,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.addHook('preHandler', requireAuth);
 
     registerAgentLlmConfigRoutes(r);
+    registerProjectMcpManagementRoutes(r);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
 

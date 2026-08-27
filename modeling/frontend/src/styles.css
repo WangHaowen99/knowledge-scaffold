@@ -1266,12 +1266,68 @@ body { background: #f2f4f8; overflow: hidden; }
 }
 .mwr .cfg-sync-help:hover::after, .mwr .cfg-sync-help:focus-visible::after { opacity: 1; visibility: visible; }
 .mwr .cfg-raw { margin: 6px 0 0; background: #171d26; color: #ffb4ab; border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.6; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.mwr .cfg-mcp { display: grid; gap: 14px; }
+.mwr .cfg-mcp-head, .mwr .cfg-mcp-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mwr .cfg-mcp-title { font-size: 14px; font-weight: 750; color: var(--ink); }
+.mwr .cfg-mcp-title-sm { font-size: 13px; font-weight: 700; color: var(--ink2); }
+.mwr .cfg-mcp-sub, .mwr .cfg-mcp-meta { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.mwr .cfg-mcp-section { display: grid; gap: 10px; }
+.mwr .cfg-mcp-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.mwr .cfg-mcp-url-list, .mwr .cfg-mcp-token-list, .mwr .cfg-mcp-scopes { display: grid; gap: 10px; }
+.mwr .cfg-mcp-url-item, .mwr .cfg-mcp-token-row {
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: #fafbfc;
+  padding: 11px 12px;
+}
+.mwr .cfg-mcp-url-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.mwr .cfg-mcp-copy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.mwr .cfg-mcp-copy-row > input { min-width: 0; }
+.mwr .cfg-mcp-copy-row > .btn, .mwr .cfg-mcp-token-actions > .btn, .mwr .cfg-llm-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.mwr .cfg-mcp-note {
+  border: 1px solid #e4ebf5;
+  border-radius: 8px;
+  background: #f6f9fd;
+  color: #445066;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.mwr .cfg-mcp-scope-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid #e5e9f1;
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 10px;
+}
+.mwr .cfg-mcp-scope-item > span { display: grid; gap: 3px; }
+.mwr .cfg-mcp-scope-item strong { font-size: 12.5px; color: var(--ink); }
+.mwr .cfg-mcp-scope-item small { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+.mwr .cfg-mcp-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+.mwr .cfg-mcp-token-main { display: grid; gap: 4px; min-width: 0; }
+.mwr .cfg-mcp-token-name { font-size: 13px; font-weight: 700; color: var(--ink); }
+.mwr .cfg-mcp-token-scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
 
 @media (max-width: 600px) {
   .mwr .admin-llm-grid { grid-template-columns: minmax(0, 1fr); }
   .mwr .admin-llm-wide { grid-column: auto; }
   .mwr .admin-llm-primary-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
   .mwr .admin-llm-actions .btn { min-width: 0; }
+  .mwr .cfg-mcp-copy-row, .mwr .cfg-mcp-token-row { grid-template-columns: minmax(0, 1fr); }
+  .mwr .cfg-mcp-head, .mwr .cfg-mcp-title-row { display: grid; }
 }
 
 /* ---- 修缮计划卡（两段式确认） ---- */

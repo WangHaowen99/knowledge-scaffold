@@ -15,9 +15,19 @@ import type {
   SpecRule,
 } from '../types.js';
 import { validateKey } from '../workflow/keys.js';
+import {
+  applyValidationIssues,
+  introducedSpecIntegrityProblems,
+  listSpecIntegrityProblems,
+  normalizeObjectFieldsTable,
+  normalizeStudioRelations,
+  toSpecObjectRelations,
+  validateOntologyRelationTargets,
+  type NormalizedOntologyRelation,
+  type OntologyStudioKind,
+} from '../workflow/ontology-model-validation.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
 import { renderPackage } from '../workflow/package-render.js';
-import { validateSpecIntegrity } from '../workflow/spec-validation.js';
 import {
   STUDIO_SCHEMA,
   StudioReadService,
@@ -78,12 +88,8 @@ interface MutationPlan {
   isBatch: boolean;
 }
 
-interface NormalizedRelation {
-  kind: string;
-  targetKind: StudioKind;
-  targetKey: string;
-  label?: string;
-  description?: string;
+interface MutationOptions {
+  allowObjectFieldWrite?: boolean;
 }
 
 interface PreparedCreate extends CreateAction {
@@ -179,6 +185,22 @@ export class StudioWriteService {
       username,
       parsePatchPlan(elementId, rawBody),
       requestHash(`patch:${elementId}`, rawBody),
+      {},
+    ));
+  }
+
+  patchObjectModel(
+    project: Project,
+    username: string,
+    elementId: string,
+    rawBody: unknown,
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parsePatchPlan(elementId, rawBody),
+      requestHash(`object-model-patch:${elementId}`, rawBody),
+      { allowObjectFieldWrite: true },
     ));
   }
 
@@ -245,6 +267,7 @@ export class StudioWriteService {
     username: string,
     plan: MutationPlan,
     hash: string,
+    options: MutationOptions = {},
   ): Promise<StudioMutationResponse> {
     await this.artifacts.ensureProject(project.id);
     let current = await this.artifacts.current(project.id);
@@ -318,7 +341,7 @@ export class StudioWriteService {
         throw revisionConflict(plan.envelope.expectedRevision, actualRevision);
       }
 
-      const mutation = applyMutation(workingFiles, plan, project.id);
+      const mutation = applyMutation(workingFiles, plan, project.id, options);
       const changedPaths = [...new Set([...Object.keys(workingFiles), ...Object.keys(mutation.files)])]
         .filter((path) => mutation.files[path] !== workingFiles[path])
         .sort();
@@ -683,6 +706,7 @@ function applyMutation(
   workingFiles: Record<string, string>,
   plan: MutationPlan,
   projectId: string,
+  options: MutationOptions = {},
 ): {
   files: Record<string, string>;
   elementIds: string[];
@@ -700,7 +724,7 @@ function applyMutation(
       409,
     );
   }
-  const previousIntegrityProblems = specIntegrityProblems(spec);
+  const previousIntegrityProblems = listSpecIntegrityProblems(spec);
 
   const errors: Record<string, string> = {};
   const deletedPaths: string[] = [];
@@ -757,7 +781,7 @@ function applyMutation(
       action.values,
       valuesPath,
       errors,
-      { allowEvidence: true, projectId },
+      { allowEvidence: true, projectId, allowObjectFieldWrite: options.allowObjectFieldWrite === true },
     );
     const requiredEvidence = schemaFor(action.kind).fields.some((field) => (
       field.type === 'evidence_list' && field.required
@@ -795,7 +819,7 @@ function applyMutation(
       action.changes,
       fieldPath(action.path, 'changes'),
       errors,
-      { allowEvidence: false, projectId },
+      { allowEvidence: false, projectId, allowObjectFieldWrite: options.allowObjectFieldWrite === true },
     );
     preparedPatches.push({ ...action, ...parsed, normalizedChanges });
   }
@@ -829,15 +853,11 @@ function applyMutation(
     applyValues(action.kind, item, action.normalizedChanges);
   }
 
-  const finalIds = specElementIds(spec);
-  validateRelations(spec, finalIds, errors, preparedCreates, preparedPatches);
+  validateRelations(spec, errors, preparedCreates, preparedPatches);
   if (Object.keys(errors).length) throw fieldError(errors);
 
-  const currentIntegrityProblems = specIntegrityProblems(spec);
-  const addedIntegrityProblems = multisetDifference(
-    currentIntegrityProblems,
-    previousIntegrityProblems,
-  );
+  const currentIntegrityProblems = listSpecIntegrityProblems(spec);
+  const addedIntegrityProblems = introducedSpecIntegrityProblems(spec, previousIntegrityProblems);
   if (addedIntegrityProblems.length) {
     throw fieldError({
       _batch: `本次修改新增或恶化了知识包完整性问题：${addedIntegrityProblems.join('；')}`,
@@ -864,34 +884,6 @@ function applyMutation(
   };
 }
 
-function specIntegrityProblems(spec: PackageSpec): string[] {
-  try {
-    validateSpecIntegrity(spec, [], undefined, { validateScriptExecutionContract: false });
-    return [];
-  } catch (error) {
-    const message = errorMessage(error).trim();
-    const marker = '知识包规格不完整：';
-    const detail = message.startsWith(marker) ? message.slice(marker.length) : message;
-    const problems = detail.split('\n')
-      .map((line) => line.trim().replace(/^-\s*/u, ''))
-      .filter(Boolean);
-    return (problems.length ? problems : [message]).sort();
-  }
-}
-
-function multisetDifference(current: string[], previous: string[]): string[] {
-  const previousCounts = new Map<string, number>();
-  for (const problem of previous) {
-    previousCounts.set(problem, (previousCounts.get(problem) ?? 0) + 1);
-  }
-  return current.filter((problem) => {
-    const remaining = previousCounts.get(problem) ?? 0;
-    if (!remaining) return true;
-    previousCounts.set(problem, remaining - 1);
-    return false;
-  });
-}
-
 function limitValidationWarnings(problems: string[]): string[] {
   return problems.slice(0, MAX_VALIDATION_WARNINGS);
 }
@@ -901,7 +893,7 @@ function normalizeValues(
   raw: Record<string, unknown>,
   path: string,
   errors: Record<string, string>,
-  options: { allowEvidence: boolean; projectId: string },
+  options: { allowEvidence: boolean; projectId: string; allowObjectFieldWrite?: boolean },
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const schema = schemaFor(kind);
@@ -914,8 +906,21 @@ function normalizeValues(
       continue;
     }
     if (key === 'relations') {
-      const normalized = normalizeRelations(kind, value, `${path}.relations`, errors);
-      if (normalized) result.relations = normalized;
+      const normalized = normalizeStudioRelations(
+        kind as OntologyStudioKind,
+        value,
+        `${path}.relations`,
+        schemaFor(kind).legalRelations,
+        { maxListItems: MAX_LIST_ITEMS },
+      );
+      applyValidationIssues(errors, normalized.issues);
+      if (normalized.relations) result.relations = normalized.relations;
+      continue;
+    }
+    if (kind === 'object' && key === 'fields' && options.allowObjectFieldWrite === true) {
+      const normalized = normalizeObjectFieldsTable(value, `${path}.fields`, { maxListItems: MAX_LIST_ITEMS });
+      applyValidationIssues(errors, normalized.issues);
+      if (normalized.fields) result.fields = normalized.fields;
       continue;
     }
     const field = fields.get(key);
@@ -1072,61 +1077,6 @@ function normalizeStringArray(
   return result;
 }
 
-function normalizeRelations(
-  sourceKind: StudioKind,
-  value: unknown,
-  path: string,
-  errors: Record<string, string>,
-): NormalizedRelation[] | undefined {
-  if (!Array.isArray(value)) {
-    errors[path] = 'relations 必须是数组';
-    return undefined;
-  }
-  if (value.length > MAX_LIST_ITEMS) errors[path] = `最多包含 ${MAX_LIST_ITEMS} 项`;
-  const legal = new Map<string, readonly StudioKind[]>(
-    schemaFor(sourceKind).legalRelations.map((item) => [item.kind, item.targetKinds]),
-  );
-  const result: NormalizedRelation[] = [];
-  value.forEach((item, index) => {
-    if (!isRecord(item)) {
-      errors[`${path}[${index}]`] = '必须是对象';
-      return;
-    }
-    const kind = String(item.kind ?? '').trim();
-    const targetId = String(item.targetId ?? '').trim();
-    const parsed = parseElementId(targetId);
-    const allowedTargets = legal.get(kind);
-    if (!allowedTargets) errors[`${path}[${index}].kind`] = '不支持的关系类型';
-    if (!parsed) errors[`${path}[${index}].targetId`] = 'targetId 必须是 kind:key';
-    else if (allowedTargets && !(allowedTargets as readonly string[]).includes(parsed.kind)) {
-      errors[`${path}[${index}].targetId`] = '目标知识类型与关系类型不匹配';
-    }
-    if (item.label !== undefined && typeof item.label !== 'string') {
-      errors[`${path}[${index}].label`] = '必须是文本';
-    }
-    if (item.description !== undefined && typeof item.description !== 'string') {
-      errors[`${path}[${index}].description`] = '必须是文本';
-    }
-    for (const key of Object.keys(item)) {
-      if (!['kind', 'targetId', 'label', 'description'].includes(key)) {
-        errors[`${path}[${index}].${key}`] = '未知字段';
-      }
-    }
-    if (parsed && allowedTargets) {
-      result.push({
-        kind,
-        targetKind: parsed.kind,
-        targetKey: parsed.key,
-        ...(typeof item.label === 'string' && item.label.trim() ? { label: item.label.trim() } : {}),
-        ...(typeof item.description === 'string' && item.description.trim()
-          ? { description: item.description.trim() }
-          : {}),
-      });
-    }
-  });
-  return result;
-}
-
 function minimalSpec(
   kind: StudioKind,
   key: string,
@@ -1169,7 +1119,7 @@ function applyValues(
 ): void {
   for (const [field, value] of Object.entries(values)) {
     if (field === 'relations') {
-      applyRelations(kind, item, value as NormalizedRelation[]);
+      applyRelations(kind, item, value as NormalizedOntologyRelation[]);
     } else if (kind === 'operation' && field === 'intentExamples') {
       item.competencyQuestion = (value as string[])[0] || undefined;
     } else {
@@ -1181,14 +1131,16 @@ function applyValues(
 function applyRelations(
   kind: StudioKind,
   item: Record<string, unknown>,
-  relations: NormalizedRelation[],
+  relations: NormalizedOntologyRelation[],
 ): void {
   if (kind === 'object') {
-    item.relations = relations.map((relation): SpecRelation => ({
-      relation: relation.label || '关联',
-      target: relation.targetKey,
-      ...(relation.description ? { note: relation.description } : {}),
-    }));
+    const existing = Array.isArray(item.relations) ? item.relations as SpecRelation[] : [];
+    item.relations = toSpecObjectRelations(relations).map((relation) => {
+      const preserved = existing.find((current) => (
+        current.target === relation.target || `object:${current.target}` === `object:${relation.target}`
+      ));
+      return preserved?.evidence?.length ? { ...relation, evidence: preserved.evidence } : relation;
+    });
   } else if (kind === 'operation') {
     item.relatedObjects = relationTargets(relations, 'uses_object');
     item.usesRules = relationTargets(relations, 'uses_rule');
@@ -1201,32 +1153,27 @@ function applyRelations(
   }
 }
 
-function relationTargets(relations: NormalizedRelation[], kind: string): string[] {
+function relationTargets(relations: NormalizedOntologyRelation[], kind: string): string[] {
   return [...new Set(relations.filter((relation) => relation.kind === kind).map((relation) => relation.targetKey))];
 }
 
 function validateRelations(
   spec: PackageSpec,
-  ids: Set<string>,
   errors: Record<string, string>,
   creates: PreparedCreate[],
   patches: PreparedPatch[],
 ): void {
+  const pending = [];
   for (const action of [...creates, ...patches]) {
     const values = 'normalizedValues' in action ? action.normalizedValues : action.normalizedChanges;
-    const relations = values.relations as NormalizedRelation[] | undefined;
+    const relations = values.relations as NormalizedOntologyRelation[] | undefined;
     if (!relations) continue;
     const base = 'normalizedValues' in action
       ? fieldPath(action.path, 'values.relations')
       : fieldPath(action.path, 'changes.relations');
-    relations.forEach((relation, index) => {
-      if (!ids.has(elementId(relation.targetKind, relation.targetKey))) {
-        errors[`${base}[${index}].targetId`] = '关系目标不存在';
-      }
-    });
+    pending.push({ path: base, relations });
   }
-  // 防御性使用 spec，确保未来增加隐式关系字段时仍经过完整规格校验。
-  void spec;
+  applyValidationIssues(errors, validateOntologyRelationTargets(spec, pending));
 }
 
 function schemaFor(kind: StudioKind) {
