@@ -55,6 +55,24 @@ const jwtWithExpiry = (expiresAtSeconds) => {
   return `header.${payload}.signature`;
 };
 
+test('credential locking never enters the origin-wide Web Locks namespace', async () => {
+  const target = installWindow();
+  let lockCalls = 0;
+  target.navigator = {
+    locks: {
+      request: async (_name, callback) => {
+        lockCalls += 1;
+        return callback();
+      },
+    },
+  };
+
+  await setAuthToken('window-scoped-access', 'window-scoped-refresh');
+
+  assert.equal(lockCalls, 0);
+  assert.equal(getAuthToken(), 'window-scoped-access');
+});
+
 test('an expiring access token refreshes before the protected request', async () => {
   installWindow();
   await setAuthToken(jwtWithExpiry(Math.floor(Date.now() / 1000) - 1), 'old-refresh');

@@ -20,6 +20,14 @@ def test_universal_prompt_contains_top_level_sections_and_language_policy():
     assert "Respond in the same language as the user's latest request." in prompt
 
 
+def test_universal_prompt_requires_evidence_grounding_without_restricting_questions():
+    prompt = build_universal_system_prompt()
+
+    assert "use it as the default discovery step before calling `ontology_context`" in prompt
+    assert "must not narrow which questions the user is allowed to ask" in prompt
+    assert "preserve the returned `runtime_evidence.evidence_id`" in prompt
+
+
 def test_universal_prompt_has_no_router_artifacts():
     prompt = build_universal_system_prompt()
 

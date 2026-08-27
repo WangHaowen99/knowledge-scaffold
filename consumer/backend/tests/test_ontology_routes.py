@@ -2510,6 +2510,73 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
     assert Path(ontology.ontology_dir) == version2
 
 
+def test_combined_prepared_steps_roll_back_the_in_progress_filesystem_step(
+    tmp_path,
+    monkeypatch,
+):
+    original_replace = ontologies_module.os.replace
+
+    for fail_at in (1, 2, 3):
+        case_root = tmp_path / "fault-{}".format(fail_at)
+        version_dir = case_root / "2.0.0"
+        version_dir.mkdir(parents=True)
+        (version_dir / "content.md").write_text("version-two", encoding="utf-8")
+        manifest_path = case_root / "manifest.yaml"
+        manifest_path.write_text("versions: [1.0.0, 2.0.0]\n", encoding="utf-8")
+
+        directory_step = ontologies_module._prepare_atomic_directory_delete(version_dir)
+        manifest_step = ontologies_module._prepare_atomic_bytes_replace(
+            manifest_path,
+            b"versions: [1.0.0]\n",
+        )
+        commit, rollback, finalize = ontologies_module._combine_prepared_steps(
+            directory_step,
+            manifest_step,
+        )
+        replace_calls = 0
+
+        def fail_one_replace(source, target):
+            nonlocal replace_calls
+            replace_calls += 1
+            if replace_calls == fail_at:
+                raise OSError("synthetic replace failure")
+            return original_replace(source, target)
+
+        monkeypatch.setattr(ontologies_module.os, "replace", fail_one_replace)
+        try:
+            commit()
+        except OSError as exc:
+            assert "synthetic replace failure" in str(exc)
+        else:
+            raise AssertionError("fault injection must interrupt the prepared mutation")
+
+        rollback()
+        finalize()
+
+        assert (version_dir / "content.md").read_text(encoding="utf-8") == "version-two"
+        assert manifest_path.read_text(encoding="utf-8") == "versions: [1.0.0, 2.0.0]\n"
+        assert not list(case_root.glob(".*.backup"))
+        assert not list(case_root.glob(".*.mutation"))
+        assert not list(case_root.glob(".*.deleted"))
+
+
+def test_uncertain_mutation_preserves_staging_recovery_data(tmp_path):
+    staging_root = tmp_path / ".eco-mutation-recovery"
+    backup_dir = staging_root / "eco.backup"
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "manifest.yaml").write_text("id: eco\n", encoding="utf-8")
+
+    ontologies_module._cleanup_mutation_staging_root(
+        staging_root,
+        ontologies_module.OntologyMutationError(
+            "MUTATION_COMMIT_STATE_UNCERTAIN",
+            "rollback failed",
+        ),
+    )
+
+    assert (backup_dir / "manifest.yaml").read_text(encoding="utf-8") == "id: eco\n"
+
+
 def test_delete_ontology_version_removes_only_target_version(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -2600,6 +2667,47 @@ def test_delete_active_ontology_version_returns_409(tmp_path, monkeypatch):
     manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
     assert manifest["active_version"] == "1.0.0"
     assert manifest["versions"] == ["1.0.0", "2.0.0"]
+
+
+def test_prepared_directory_replace_restores_existing_dir_when_switch_fails(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = tmp_path / "source-demo"
+    staged_dir = tmp_path / "staged-source-demo"
+    backup_dir = tmp_path / "source-demo.backup"
+    ontology_dir.mkdir(parents=True)
+    staged_dir.mkdir(parents=True)
+    (ontology_dir / "old.md").write_text("old\n", encoding="utf-8")
+    (staged_dir / "new.md").write_text("new\n", encoding="utf-8")
+
+    original_replace = ontologies_module.os.replace
+
+    def fake_replace(source, target):
+        if Path(source).resolve() == staged_dir.resolve():
+            raise PermissionError("staged dir is busy")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(ontologies_module.os, "replace", fake_replace)
+    commit, rollback, finalize = ontologies_module._prepare_atomic_directory_replace(
+        staged_dir,
+        ontology_dir,
+        backup_dir,
+    )
+
+    try:
+        commit()
+    except PermissionError as exc:
+        assert str(exc) == "staged dir is busy"
+        rollback()
+    else:
+        raise AssertionError("expected replace failure")
+    finally:
+        finalize()
+
+    assert (ontology_dir / "old.md").read_text(encoding="utf-8") == "old\n"
+    assert not (ontology_dir / "new.md").exists()
+    assert (staged_dir / "new.md").read_text(encoding="utf-8") == "new\n"
 
 
 def test_replace_ontology_dir_keeps_existing_dir_when_atomic_exchange_fails(
@@ -2708,6 +2816,7 @@ def test_concurrent_version_installs_are_serialized_without_lost_updates(
     tmp_path,
     monkeypatch,
 ):
+    _create_demo_workspace(tmp_path, monkeypatch, workspace_id="demo")
     ontology_dir = tmp_path / "ontologies" / "demo"
     version1 = ontology_dir / "versions" / "1.0.0"
     version1.mkdir(parents=True)
@@ -2762,6 +2871,7 @@ def test_concurrent_version_installs_are_serialized_without_lost_updates(
                 ontology_description="",
                 target_version=version,
                 existed=True,
+                workspace_id="demo",
             )
         except Exception as exc:  # surfaced in the assertion below
             errors.append(exc)
@@ -2786,6 +2896,7 @@ def test_concurrent_version_installs_are_serialized_without_lost_updates(
 
 
 def test_install_and_status_mutation_share_one_ontology_lock(tmp_path, monkeypatch):
+    _create_demo_workspace(tmp_path, monkeypatch, workspace_id="demo")
     ontology_dir = tmp_path / "ontologies" / "demo"
     version1 = ontology_dir / "versions" / "1.0.0"
     version1.mkdir(parents=True)
@@ -2826,6 +2937,7 @@ def test_install_and_status_mutation_share_one_ontology_lock(tmp_path, monkeypat
                 ontology_description="",
                 target_version="2.0.0",
                 existed=True,
+                workspace_id="demo",
             )
         except Exception as exc:
             errors.append(exc)

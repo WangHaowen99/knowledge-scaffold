@@ -42,12 +42,33 @@ def _create_workspace_with_operation(
     *,
     workspace_id: str,
     operation_content: str,
+    ontology_id: str = "example",
+    versioned: bool = False,
 ):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Workspace {}".format(workspace_id), workspace_id=workspace_id)
     paths = get_workspace_paths(workspace_id)
-    op_dir = paths.ontologies_dir / "example" / "operations"
+    ontology_dir = paths.ontologies_dir / ontology_id
+    op_dir = (
+        ontology_dir / "versions" / "1.0.0" / "operations"
+        if versioned
+        else ontology_dir / "operations"
+    )
     op_dir.mkdir(parents=True, exist_ok=True)
+    if versioned:
+        (ontology_dir / "manifest.yaml").write_text(
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            f"id: {ontology_id}\n"
+            f"name: {ontology_id.title()}\n"
+            "description: test\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions: [1.0.0]\n"
+            "language: zh-CN\n"
+            "enabled: true\n",
+            encoding="utf-8",
+        )
     op_path = op_dir / "OP_A.md"
     op_path.write_text(operation_content, encoding="utf-8")
     return op_path
@@ -59,14 +80,20 @@ def _headers_for_workspace(base_headers, workspace_id: str):
     return headers
 
 
-def _write_staged(op_path: Path, *, original_content: str, staged_content: str) -> None:
+def _write_staged(
+    op_path: Path,
+    *,
+    original_content: str,
+    staged_content: str,
+    ontology_id: str = "example",
+) -> None:
     staged_path = op_path.with_suffix(op_path.suffix + ".staged")
     meta_path = staged_path.with_suffix(staged_path.suffix + ".meta.json")
     staged_path.write_text(staged_content, encoding="utf-8")
     meta_path.write_text(
         json.dumps(
             {
-                "ontology_id": "example",
+                "ontology_id": ontology_id,
                 "operation_key": "OP_A",
                 "fingerprints": ["fp-1"],
                 "original_sha": hashlib.sha256(original_content.encode("utf-8")).hexdigest(),
@@ -123,6 +150,60 @@ def test_apply_staged_rejects_operation_over_char_limit(monkeypatch, tmp_path):
     assert response.status_code == 400
     assert "单个逻辑长度超过上限" in response.json()["error"]
     assert op_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_staged_emits_mutation_and_revokes_evidence_pointer(monkeypatch, tmp_path):
+    reset_operation_patcher()
+    reset_proposal_buffer()
+    client, headers = _build_test_client(tmp_path)
+    original = "# OP_A\n\n原始内容"
+    staged = "# OP_A\n\n已审批的新内容"
+    op_path = _create_workspace_with_operation(
+        tmp_path,
+        monkeypatch,
+        workspace_id="demo",
+        operation_content=original,
+        ontology_id="aviation",
+        versioned=True,
+    )
+    _write_staged(
+        op_path,
+        original_content=original,
+        staged_content=staged,
+        ontology_id="aviation",
+    )
+
+    response = client.post(
+        "/agentic/operations/aviation/OP_A/staged/apply",
+        headers={
+            **_headers_for_workspace(headers, "demo"),
+            "X-Request-Id": "req-operation-apply",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["mutation_revision"] == 1
+    assert op_path.read_text(encoding="utf-8") == staged
+
+    from ontology.mutations import OntologyMutationCoordinator
+
+    coordinator = OntologyMutationCoordinator(get_workspace_paths("demo").runtime_dir)
+    state = coordinator.store.get_state(workspace_id="demo", ontology_id="aviation")
+    assert state is not None
+    assert state["mutation_revision"] == 1
+    outbox = coordinator.store.list_outbox(status="pending")
+    assert len(outbox) == 1
+    event = json.loads(outbox[0]["payload_json"])
+    assert event["mutation_type"] == "ONTOLOGY_FILE_CHANGED"
+    assert event["known_file_digests"]["entries"] == {
+        "operations/OP_A.md": {
+            "sha256": hashlib.sha256(staged.encode("utf-8")).hexdigest(),
+            "size_bytes": len(staged.encode("utf-8")),
+        }
+    }
+    assert event["operator"] == {"type": "user", "id": "admin"}
+    assert event["request_id"] == "req-operation-apply"
+    assert event["trigger"] == "admin"
 
 
 def test_apply_staged_rejects_in_place_deterministic_operation(monkeypatch, tmp_path):

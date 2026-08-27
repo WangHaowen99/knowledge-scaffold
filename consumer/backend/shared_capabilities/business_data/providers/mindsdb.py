@@ -35,9 +35,9 @@ class MindsDBProvider:
             elif event.type == "error":
                 error = event.result or ProviderResult(success=False, error=event.content)
         return error or final or ProviderResult(
-            success=True,
-            data="",
-            message="Query successful",
+            success=False,
+            error="MindsDB agent returned no final answer",
+            metadata={"error_code": "missing_final"},
         )
 
     def query_sql(self, sql: str) -> ProviderResult:
@@ -102,7 +102,27 @@ class MindsDBProvider:
             return
         with response:
             for chunk in iter_sse_data(response.iter_lines(decode_unicode=True)):
-                yield from _chunk_events(chunk)
+                for event in _chunk_events(chunk):
+                    if event.type != "error":
+                        yield event
+                        continue
+                    detail = sanitize_public_text(
+                        event.content,
+                        self.connection.endpoint,
+                        self.connection.auth.token,
+                        self.connection.auth.password,
+                        self._auth_token,
+                    ).strip()[:500]
+                    message = detail or "MindsDB agent query failed"
+                    yield ProviderEvent(
+                        type="error",
+                        content=message,
+                        result=ProviderResult(
+                            success=False,
+                            error=message,
+                            metadata={"error_code": "query_error"},
+                        ),
+                    )
 
     def probe(self, timeout_seconds: float | None = None) -> ProviderResult:
         endpoint = self.connection.endpoint.rstrip("/")
@@ -391,6 +411,17 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
 
     chunk_type = str(chunk.get("type") or "").strip().lower()
 
+    if chunk_type == "error" or "error" in chunk:
+        detail = next(
+            (
+                chunk.get(field)
+                for field in ("error", "error_message", "message", "content")
+                if chunk.get(field) not in (None, "")
+            ),
+            "MindsDB agent query failed",
+        )
+        return [{"type": "error", "content": str(detail).strip()}]
+
     if chunk_type == "start":
         content = str(chunk.get("prompt") or "").strip() or _collect_messages_text(
             chunk.get("messages")
@@ -410,7 +441,12 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
         return [{"type": "intermediate", "content": context}]
 
     if chunk_type == "data":
-        data = _extract_final_content(_collect_chunk_text(chunk))
+        # MindsDB 2026.7 emits the final Agent answer in ``text`` while older
+        # versions used ``content``. Accept both shapes so a successful remote
+        # completion is not silently projected as an empty answer.
+        data = _extract_final_content(
+            str(chunk.get("text") or "").strip() or _collect_chunk_text(chunk)
+        )
         if not data:
             return []
         return [{"type": "final", "content": data}]

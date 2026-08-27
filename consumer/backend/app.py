@@ -45,6 +45,7 @@ from integration.solver_operation_runtime import ControlledScriptOperationRuntim
 from llm import LLMRouter, configure_llm_router
 from migrations.runner import run_startup_migrations
 from ontology.directory_replacement import recover_workspace_ontology_replacements
+from ontology.evidence.worker import refresh_evidence_index_worker
 from persistence.chat_store import ToolOutputLimits
 from solver_coordination.runtime import build_operation_validation_service
 from utils.logging import get_logger
@@ -227,6 +228,7 @@ def refresh_runtime_services(app: FastAPI) -> dict[str, Any]:
             _install_solver_recovery_worker(app, solver_service)
             worker_replaced = True
             reset_observer(timeout=1.0)
+            refresh_evidence_index_worker()
         except Exception:
             logger.exception("Runtime service refresh failed; restoring previous services")
             if previous_router is not None:
@@ -330,6 +332,9 @@ def create_app() -> FastAPI:
                 await operation_patcher.start()
             init_skill_evolution_worker()
             skill_worker_started = True
+            # Evidence index worker follows the same master-switch lifecycle
+            # (no-op when the ontology evidence feature is disabled).
+            refresh_evidence_index_worker()
             start_platform_observer_if_enabled()
             platform_started = True
             started = True

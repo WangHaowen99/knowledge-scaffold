@@ -7,6 +7,7 @@ export const SYSTEM_SETTINGS_PANEL_SECTIONS = Object.freeze([
   'web_search',
   'direct_execution',
   'skill_evolution',
+  'ontology_evidence',
 ]);
 
 export const SYSTEM_SETTINGS_SECTION_META = Object.freeze({
@@ -33,6 +34,10 @@ export const SYSTEM_SETTINGS_SECTION_META = Object.freeze({
   skill_evolution: {
     title: '技能进化',
     description: '配置 skill-evolver 服务、轮询节奏与任务执行上限。',
+  },
+  ontology_evidence: {
+    title: '本体证据',
+    description: '控制证据检索、业务数据 Grounding、运行事实写入与性能保护。',
   },
 });
 
@@ -142,6 +147,47 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
     number('poll_interval_seconds', '轮询间隔（秒）', { min: 1 }),
     number('task_timeout_seconds', '任务超时（秒）', { min: 60 }),
     number('max_iterations', '最大迭代次数', { min: 1, max: 30 }),
+  ],
+  ontology_evidence: [
+    toggle('enabled', '启用本体证据能力'),
+    {
+      name: 'rollout_mode',
+      label: '发布模式',
+      type: 'select',
+      options: [
+        { value: 'off', label: '关闭' },
+        { value: 'shadow', label: '影子运行' },
+        { value: 'allowlist', label: '工作空间白名单' },
+        { value: 'all', label: '全部工作空间' },
+      ],
+    },
+    text('rollout_workspace_ids', '发布工作空间', { hint: 'allowlist 模式下使用，逗号分隔 workspace_id' }),
+    toggle('search_enabled', '启用证据检索'),
+    {
+      name: 'tool_exposure_mode',
+      label: '检索工具暴露方式',
+      type: 'select',
+      options: [
+        { value: 'adaptive', label: '仅索引就绪时暴露' },
+        { value: 'always', label: '始终暴露' },
+      ],
+    },
+    toggle('auto_build_enabled', '本体变更后自动构建索引'),
+    toggle('structured_context_enabled', '启用结构化本体上下文'),
+    toggle('auto_ground_business_data', '自动补齐业务查询本体依据', {
+      hint: '对应 ONTOLOGY_EVIDENCE_AUTO_GROUND_BUSINESS_DATA；关闭可消除业务查询冷路径 Grounding 开销，但运行证据可能没有 ONT 派生关系',
+    }),
+    {
+      name: 'runtime_fact_write_mode',
+      label: '运行事实写入方式',
+      type: 'select',
+      options: [
+        { value: 'sync', label: '同步写入' },
+        { value: 'batched', label: '批量异步写入' },
+        { value: 'off', label: '关闭写入' },
+      ],
+    },
+    toggle('graph_enabled', '启用图关系扩展召回'),
   ],
 });
 

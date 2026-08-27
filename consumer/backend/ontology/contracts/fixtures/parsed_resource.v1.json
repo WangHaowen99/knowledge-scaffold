@@ -1,0 +1,43 @@
+{
+  "parser_version": "resource-parser/1",
+  "ontology_id": "eco",
+  "ontology_version": "1.0.0",
+  "resource": "object",
+  "key": "eco",
+  "canonical_key": "eco",
+  "title": "ECO",
+  "source_path": "objects/eco.md",
+  "source_content_sha256": "458e6b19cded086ba562175abcb2dfcc8de13c4d1753593e5cba96e5f03c703b",
+  "media_type": "text/markdown",
+  "display_text": "---\nkey: eco\ntitle: ECO\n---\n# ECO\n## 字段\n编号。\n",
+  "frontmatter": {"key": "eco", "title": "ECO"},
+  "evidence_metadata": {
+    "key": "eco",
+    "canonical_key": "eco",
+    "title": "ECO",
+    "aliases": [],
+    "tags": [],
+    "intent_examples": []
+  },
+  "body_text": "# ECO\n## 字段\n编号。",
+  "sections": [
+    {
+      "section_anchor": "eco/字段",
+      "heading_path": ["ECO", "字段"],
+      "heading_level": 2,
+      "title": "字段",
+      "ordinal": 0,
+      "text": "## 字段\n编号。",
+      "plain_text": "字段 编号。",
+      "start_line": 6,
+      "end_line": 7,
+      "tables": [],
+      "links": [],
+      "content_hash": "299dba006fa479d96567ae9ca2403f478074048808ce85297e0438356b96fd50",
+      "contract": "ResourceSection/v1"
+    }
+  ],
+  "document_links": [],
+  "warnings": [],
+  "contract": "ParsedResource/v1"
+}

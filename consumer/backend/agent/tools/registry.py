@@ -11,7 +11,11 @@ from agent.tools.base import BaseTool, ToolBatchResult, ToolCaller, ToolContext,
 from agent.tools.business_data_search import BusinessDataSearchTool
 from agent.tools.execute_script import ExecuteScriptTool, build_execute_script_tool_schema
 from agent.tools.memory import MemoryTool
-from agent.tools.ontology_context import OntologyContextTool
+from agent.tools.ontology_context import OntologyContextTool, get_ontology_context_schema
+from agent.tools.ontology_evidence_search import (
+    OntologyEvidenceSearchTool,
+    is_ontology_evidence_search_visible,
+)
 from agent.tools.request_user_interaction import RequestUserInteractionTool
 from agent.tools.report_business_checkpoint import ReportBusinessCheckpointTool
 from agent.tools.skill import SkillTool
@@ -41,6 +45,7 @@ def _build_tool_registry(tools: Iterable[BaseTool]) -> Dict[str, BaseTool]:
 
 TOOL_SPECS: Dict[str, BaseTool] = _build_tool_registry([
     OntologyContextTool(),
+    OntologyEvidenceSearchTool(),
     SkillTool(),
     BusinessDataSearchTool(),
     WebSearchTool(),
@@ -57,8 +62,21 @@ TOOL_SPECS: Dict[str, BaseTool] = _build_tool_registry([
 # ============================================================================
 
 
-def get_all_tools_schema() -> List[Dict[str, Any]]:
-    return [spec.schema for spec in TOOL_SPECS.values()]
+def get_all_tools_schema(
+    *,
+    workspace_id: Optional[str] = None,
+    selected_ontology_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    evidence_visible = _evidence_visible(workspace_id, selected_ontology_id)
+    return [
+        get_tool_schema_for_context(
+            spec,
+            selected_ontology_id=selected_ontology_id,
+            workspace_id=workspace_id,
+        )
+        for spec in TOOL_SPECS.values()
+        if spec.name != "ontology_evidence_search" or evidence_visible
+    ]
 
 
 def get_tool_specs_for_caller(
@@ -76,6 +94,7 @@ def get_tool_specs_for_caller(
 ) -> List[BaseTool]:
     specs: List[BaseTool] = []
     has_skills = _has_registered_skills(workspace_id=workspace_id)
+    evidence_visible = _evidence_visible(workspace_id, selected_ontology_id)
     for spec in TOOL_SPECS.values():
         if caller not in spec.allowed_callers:
             continue
@@ -88,6 +107,8 @@ def get_tool_specs_for_caller(
         if not include_web_search and spec.category == "web_search":
             continue
         if not include_interaction and spec.category == "interaction":
+            continue
+        if spec.name == "ontology_evidence_search" and not evidence_visible:
             continue
         if spec.category == "business_checkpoint":
             from ontology.capabilities import is_business_checkpoint_available
@@ -163,6 +184,10 @@ def get_tool_schema_for_context(
             selected_ontology_version=selected_ontology_version,
             workspace_id=workspace_id,
         )
+    if spec.name == "ontology_context":
+        return get_ontology_context_schema(
+            structured_enabled=_evidence_visible(workspace_id, selected_ontology_id)
+        )
     return spec.schema
 
 
@@ -171,9 +196,11 @@ def get_regular_tools_schema(
     include_memory: bool = False,
     include_web_search: bool = False,
     workspace_id: Optional[str] = None,
+    selected_ontology_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     schemas = []
     has_skills = _has_registered_skills(workspace_id=workspace_id)
+    evidence_visible = _evidence_visible(workspace_id, selected_ontology_id)
     for spec in TOOL_SPECS.values():
         if spec.category not in {"regular", "business_data_search", "web_search"}:
             continue
@@ -181,7 +208,15 @@ def get_regular_tools_schema(
             continue
         if spec.category == "web_search" and not include_web_search:
             continue
-        schemas.append(spec.schema)
+        if spec.name == "ontology_evidence_search" and not evidence_visible:
+            continue
+        schemas.append(
+            get_tool_schema_for_context(
+                spec,
+                selected_ontology_id=selected_ontology_id,
+                workspace_id=workspace_id,
+            )
+        )
     if include_memory:
         schemas.extend(spec.schema for spec in TOOL_SPECS.values() if spec.category == "memory")
     return schemas
@@ -193,6 +228,7 @@ def get_universal_tools_schema(
     include_web_search: bool = False,
     include_interaction: bool = True,
     workspace_id: Optional[str] = None,
+    selected_ontology_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     return get_tools_schema(
         "main",
@@ -200,6 +236,14 @@ def get_universal_tools_schema(
         include_web_search=include_web_search,
         include_interaction=include_interaction,
         workspace_id=workspace_id,
+        selected_ontology_id=selected_ontology_id,
+    )
+
+
+def _evidence_visible(workspace_id: Optional[str], selected_ontology_id: Optional[str]) -> bool:
+    return is_ontology_evidence_search_visible(
+        workspace_id=workspace_id,
+        selected_ontology_id=selected_ontology_id,
     )
 
 
@@ -320,6 +364,18 @@ def validate_tool_arguments(
     properties = parameters.get("properties") or {}
     required_fields = list(parameters.get("required") or [])
     payload = dict(args or {})
+
+    # ontology_context 'asset' is validated by the tool handler (checkpoint key
+    # constraint); the request-visible text schema deliberately strips it from
+    # the resource enum in evidence-off mode, so exempt it from enum
+    # enforcement here to keep the legacy asset resource callable.
+    if (
+        tool_name == "ontology_context"
+        and str(payload.get("resource") or "").strip() == "asset"
+    ):
+        resource_schema = properties.get("resource")
+        if isinstance(resource_schema, dict):
+            resource_schema.pop("enum", None)
 
     parse_error = payload.get(_ARGUMENT_PARSE_ERROR_KEY)
     if parse_error is not None:

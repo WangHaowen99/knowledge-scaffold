@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:knowledge-scaffold:ontology:ParsedResource:v1",
+  "title": "ParsedResource/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "parser_version", "ontology_id", "ontology_version", "resource", "key", "canonical_key",
+    "title", "source_path", "source_content_sha256", "media_type", "display_text", "frontmatter",
+    "evidence_metadata", "body_text", "sections", "document_links", "warnings", "contract"
+  ],
+  "properties": {
+    "parser_version": {"const": "resource-parser/1"},
+    "ontology_id": {"type": "string", "minLength": 1},
+    "ontology_version": {"type": "string", "minLength": 1},
+    "resource": {"enum": ["root", "operation", "object", "rule", "metric", "script", "asset"]},
+    "key": {"type": "string", "minLength": 1},
+    "canonical_key": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "source_path": {"type": "string", "minLength": 1},
+    "source_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "media_type": {"type": "string", "minLength": 1},
+    "display_text": {"type": "string"},
+    "frontmatter": {"type": "object"},
+    "evidence_metadata": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "canonical_key", "title", "aliases", "tags", "intent_examples"],
+      "properties": {
+        "key": {"type": "string"}, "canonical_key": {"type": "string"}, "title": {"type": "string"},
+        "summary": {"type": "string"}, "description": {"type": "string"},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "intent_examples": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "body_text": {"type": "string"},
+    "sections": {"type": "array", "items": {"$ref": "#/$defs/resourceSection"}},
+    "document_links": {"type": "array", "items": {"$ref": "#/$defs/resourceLink"}},
+    "warnings": {"type": "array", "items": {"$ref": "#/$defs/parserWarning"}},
+    "contract": {"const": "ParsedResource/v1"}
+  },
+  "$defs": {
+    "resourceSection": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "section_anchor", "heading_path", "heading_level", "title", "ordinal", "text", "plain_text",
+        "start_line", "end_line", "tables", "links", "content_hash", "contract"
+      ],
+      "properties": {
+        "section_anchor": {"type": "string"},
+        "heading_path": {"type": "array", "items": {"type": "string"}},
+        "heading_level": {"type": ["integer", "null"], "minimum": 1, "maximum": 6},
+        "title": {"type": "string"}, "ordinal": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}, "plain_text": {"type": "string"},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "tables": {"type": "array", "items": {"$ref": "#/$defs/parsedTable"}},
+        "links": {"type": "array", "items": {"$ref": "#/$defs/resourceLink"}},
+        "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "contract": {"const": "ResourceSection/v1"}
+      }
+    },
+    "parsedTable": {
+      "type": "object", "additionalProperties": false,
+      "required": ["headers", "rows", "start_line", "end_line", "contract"],
+      "properties": {
+        "headers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "rows": {"type": "array", "items": {"type": "object", "additionalProperties": {"type": "string"}}},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "contract": {"const": "ParsedTable/v1"}
+      }
+    },
+    "resourceLink": {
+      "type": "object", "additionalProperties": false,
+      "required": ["resource", "key", "relation", "section_anchor", "source_line", "contract"],
+      "properties": {
+        "resource": {"enum": ["operation", "object", "rule", "metric", "script"]},
+        "key": {"type": "string"},
+        "relation": {"enum": ["uses", "applies_to", "references", "bound_operation"]},
+        "section_anchor": {"type": ["string", "null"]},
+        "source_line": {"type": "integer", "minimum": 1},
+        "contract": {"const": "ResourceLink/v1"}
+      }
+    },
+    "parserWarning": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "start_line", "end_line", "severity", "contract"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "start_line": {"type": ["integer", "null"], "minimum": 1},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "severity": {"enum": ["warning", "error"]},
+        "contract": {"const": "ParserWarning/v1"}
+      }
+    }
+  }
+}

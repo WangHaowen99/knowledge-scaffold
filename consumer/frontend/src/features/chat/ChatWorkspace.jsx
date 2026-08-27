@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUpRight, BrainCircuit, Check, ChevronDown, Gauge, GitBranch, PanelRightClose, PanelRightOpen, Sparkles } from 'lucide-react';
+import { ArrowDown, ArrowUpRight, BrainCircuit, Check, ChevronDown, Gauge, GitBranch, PanelRightClose, PanelRightOpen, ShieldCheck, Sparkles } from 'lucide-react';
 import { useAuthContext } from '../auth';
 import { packageDisplayLabel } from '../knowledge';
 import { authFetch } from '../../shared/api/auth';
 import { StatusTag } from '../../shared/ui/primitives';
 import ConversationView from './components/ConversationView';
 import ChatPromptInput from './components/ChatPromptInput';
+import EvidenceInspector from './components/EvidencePanel';
 import TracePanel from './components/TracePanel';
 import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
@@ -13,6 +14,7 @@ import { formatTime } from './lib/chatPresentation';
 import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
 import { isBlankChatSubmitting, scheduleBlankChatFocus } from './lib/firstSendCoordinator';
 import { applyInteractionCancellation, findPendingInteraction } from './lib/pendingInteraction';
+import { collectTurnEvidence } from './lib/ontologyEvidenceDisplay';
 import { createIdempotencyKey } from './lib/runAdmission';
 import {
   resolveSessionPreferences,
@@ -169,6 +171,9 @@ export default function ChatWorkspace({
   const [traceOpen, setTraceOpen] = useState(() => {
     try { return !window.matchMedia('(max-width: 900px)').matches; } catch { return true; }
   });
+  const [inspectorMode, setInspectorMode] = useState('trace');
+  const [selectedEvidenceTurnKey, setSelectedEvidenceTurnKey] = useState('');
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState('');
   const traceToggleLabel = traceOpen ? '收起运行轨迹' : '展开运行轨迹';
   // Agent 模式：quick(快速) / thinking(深度思考) / multi_agent(多智能体)。
   // 按 workspace 持久化到 localStorage，默认 quick。
@@ -256,6 +261,26 @@ export default function ChatWorkspace({
   );
   const conversationModel = useMemo(() => buildConversationViewModel(messages), [messages]);
   const traceModel = useMemo(() => buildTraceViewModel(conversationModel), [conversationModel]);
+  const evidenceTurns = useMemo(() => conversationModel.turns
+    .map((turn) => ({ ...turn, evidence: collectTurnEvidence(turn.blocks) }))
+    .filter((turn) => turn.evidence), [conversationModel]);
+  const evidenceByTurnKey = useMemo(() => Object.fromEntries(
+    evidenceTurns.map((turn) => [turn.key, turn.evidence]),
+  ), [evidenceTurns]);
+  const activeEvidenceTurn = evidenceTurns.find((turn) => turn.key === selectedEvidenceTurnKey)
+    || evidenceTurns.at(-1)
+    || null;
+  const selectedEvidence = activeEvidenceTurn?.evidence?.all.find(
+    (hit) => hit.evidence_id === selectedEvidenceId,
+  ) || activeEvidenceTurn?.evidence?.ontology?.[0]
+    || activeEvidenceTurn?.evidence?.runtime?.[0]
+    || null;
+  const openEvidence = useCallback((hit, turnKey) => {
+    setSelectedEvidenceTurnKey(turnKey || '');
+    setSelectedEvidenceId(hit?.evidence_id || '');
+    setInspectorMode('evidence');
+    setTraceOpen(true);
+  }, []);
   const {
     containerRef: bodyRef,
     isFollowing: isFollowingMessages,
@@ -528,13 +553,26 @@ export default function ChatWorkspace({
             onClick={() => onOpenObservability?.('session')}>
             <Gauge size={15} />
           </button>
+          <button className={`evidence-toggle ${inspectorMode === 'evidence' && traceOpen ? 'on' : ''}`}
+            type="button" title="查看回答证据" aria-label={`查看回答证据，共 ${activeEvidenceTurn?.evidence?.all.length || 0} 条`}
+            onClick={() => {
+              if (traceOpen && inspectorMode === 'evidence') setTraceOpen(false);
+              else { setInspectorMode('evidence'); setTraceOpen(true); }
+            }}>
+            <ShieldCheck size={14} /><span>证据 {activeEvidenceTurn?.evidence?.all.length || 0}</span>
+          </button>
           <button className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}
-            onClick={() => setTraceOpen((v) => !v)}>
+            onClick={() => {
+              if (traceOpen && inspectorMode === 'trace') setTraceOpen(false);
+              else { setInspectorMode('trace'); setTraceOpen(true); }
+            }}>
             {traceOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
           </button>
         </div>
         <div className="th-body" ref={bodyRef} onScroll={handleMessageScroll}>
-          <ConversationView model={conversationModel} sessionId={currentChatId} runState={streamState} />
+          <ConversationView model={conversationModel} sessionId={currentChatId}
+            runState={streamState} evidenceByTurnKey={evidenceByTurnKey}
+            onEvidenceSelect={openEvidence} />
           {!messages.length && !streamState.isLoading && (
             <div className="chat-empty">
               <div className="chat-empty-visual" aria-hidden="true">
@@ -622,7 +660,22 @@ export default function ChatWorkspace({
             role="separator" tabIndex={0} aria-label="调整运行轨迹宽度" aria-orientation="vertical"
             aria-valuemin={TRACE_MIN_W} aria-valuemax={Math.round(traceMaxWidth)} aria-valuenow={Math.round(traceWidth)}
             title="拖拽或使用方向键调整 Trace 宽度" />
-          <TracePanel model={traceModel} sessionId={currentChatId} width={traceWidth} />
+          {inspectorMode === 'evidence' ? (
+            <EvidenceInspector
+              evidenceTurns={evidenceTurns}
+              activeTurn={activeEvidenceTurn}
+              selectedEvidence={selectedEvidence}
+              width={traceWidth}
+              onTurnChange={(turnKey) => {
+                setSelectedEvidenceTurnKey(turnKey);
+                setSelectedEvidenceId('');
+              }}
+              onEvidenceSelect={(hit) => setSelectedEvidenceId(hit?.evidence_id || '')}
+              onClose={() => setTraceOpen(false)}
+            />
+          ) : (
+            <TracePanel model={traceModel} sessionId={currentChatId} width={traceWidth} />
+          )}
         </>
       )}
     </div>

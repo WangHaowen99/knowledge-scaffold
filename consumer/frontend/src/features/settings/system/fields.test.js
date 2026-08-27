@@ -19,6 +19,7 @@ test('default panel owns all non-model-pool backend sections and no removed sect
     'web_search',
     'direct_execution',
     'skill_evolution',
+    'ontology_evidence',
   ]);
   assert.equal('llm' in SYSTEM_CONFIG_FIELDS, false);
   assert.equal('storage' in SYSTEM_CONFIG_FIELDS, false);
@@ -54,6 +55,18 @@ test('field schemas cover the backend agent and auth contracts', () => {
     'evolution_sweep_interval_sec',
     'execute_script_timeout',
   ]);
+  assert.equal(
+    SYSTEM_CONFIG_FIELDS.ontology_evidence.some((field) => field.name === 'auto_ground_business_data'),
+    true,
+  );
+  assert.equal(
+    SYSTEM_CONFIG_FIELDS.ontology_evidence.some((field) => field.name === 'epoch_compute_mode'),
+    false,
+  );
+  assert.equal(
+    SYSTEM_CONFIG_FIELDS.ontology_evidence.some((field) => field.name === 'perf_guard_enabled'),
+    false,
+  );
 });
 
 test('payload builder removes public secret flags and preserves saved secrets when inputs are blank', () => {
@@ -127,9 +140,9 @@ test('tab and panel ids stay paired while module instances only reset after an i
 });
 
 test('tab keyboard navigation wraps and supports Home and End', () => {
-  assert.equal(nextSystemSettingsTab('auth', 'ArrowLeft'), 'skill_evolution');
-  assert.equal(nextSystemSettingsTab('skill_evolution', 'ArrowRight'), 'auth');
+  assert.equal(nextSystemSettingsTab('auth', 'ArrowLeft'), 'ontology_evidence');
+  assert.equal(nextSystemSettingsTab('ontology_evidence', 'ArrowRight'), 'auth');
   assert.equal(nextSystemSettingsTab('agent', 'Home'), 'auth');
-  assert.equal(nextSystemSettingsTab('agent', 'End'), 'skill_evolution');
+  assert.equal(nextSystemSettingsTab('agent', 'End'), 'ontology_evidence');
   assert.equal(nextSystemSettingsTab('agent', 'Enter'), 'agent');
 });

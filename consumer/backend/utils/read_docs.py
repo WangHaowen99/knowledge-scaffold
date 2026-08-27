@@ -7,8 +7,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from ontology.hash_contract import field_h, field_s, hash_frames
+
 RECENT_PATHS_LIMIT = 64
 ACTIVE_OBJECT_DOCS_LIMIT = 24
+GROUNDING_SUBJECT_LIMIT = 32
 
 
 def normalize_read_path(file_path: str) -> str:
@@ -76,8 +79,10 @@ def merge_read_documents_registry(
         if not normalized_path:
             continue
 
+        raw_bindings = raw_record.get("_grounding_bindings") or []
+        public_record = {key: value for key, value in raw_record.items() if not str(key).startswith("_")}
         previous = dict(by_path.get(normalized_path) or {})
-        merged = {**previous, **raw_record, "path": normalized_path, "normalized_path": normalized_path}
+        merged = {**previous, **public_record, "path": normalized_path, "normalized_path": normalized_path}
 
         previous_source = str(previous.get("source") or "")
         next_source = str(merged.get("source") or "")
@@ -97,10 +102,14 @@ def merge_read_documents_registry(
                 limit=ACTIVE_OBJECT_DOCS_LIMIT,
             )
 
+        for raw_binding in raw_bindings if isinstance(raw_bindings, list) else []:
+            _merge_grounding_binding(registry, raw_binding, normalized_path=normalized_path)
+
     return {
         "by_path": by_path,
         "recent_paths": recent_paths,
         "active_object_docs": active_object_docs,
+        "grounding_index": registry["grounding_index"],
     }
 
 
@@ -119,7 +128,29 @@ def normalize_read_documents_registry(value: Optional[Dict[str, Any]]) -> Dict[s
             payload.get("active_object_docs"),
             limit=ACTIVE_OBJECT_DOCS_LIMIT,
         ),
+        "grounding_index": _normalize_grounding_index(payload.get("grounding_index")),
     }
+
+
+def build_grounding_subject_key(
+    *,
+    workspace_id: str,
+    ontology_id: str,
+    ontology_epoch: str,
+    resource: str,
+    resource_key: str,
+) -> str:
+    digest = hash_frames(
+        "grounding_subject/v1",
+        [
+            field_s("workspace_id", workspace_id),
+            field_s("ontology_id", ontology_id),
+            field_h("ontology_epoch", ontology_epoch.removeprefix("sha256:")),
+            field_s("resource", resource),
+            field_s("resource_key", resource_key),
+        ],
+    )
+    return "sha256:" + digest
 
 
 def get_registered_object_docs(read_documents: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -145,6 +176,46 @@ def _normalize_path_list(value: Any, *, limit: int) -> List[str]:
     if len(result) > limit:
         result = result[-limit:]
     return result
+
+
+def _normalize_grounding_index(value: Any) -> Dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    raw_by_id = payload.get("by_evidence_id") if isinstance(payload.get("by_evidence_id"), dict) else {}
+    by_id = {
+        str(evidence_id): dict(binding)
+        for evidence_id, binding in raw_by_id.items()
+        if str(evidence_id).startswith("ont_ev_") and isinstance(binding, dict)
+    }
+    raw_by_subject = payload.get("by_subject") if isinstance(payload.get("by_subject"), dict) else {}
+    by_subject: Dict[str, List[str]] = {}
+    for subject_key, evidence_ids in raw_by_subject.items():
+        if not str(subject_key).startswith("sha256:") or not isinstance(evidence_ids, list):
+            continue
+        values: List[str] = []
+        for evidence_id in evidence_ids:
+            normalized_id = str(evidence_id)
+            if normalized_id in by_id and normalized_id not in values:
+                values.append(normalized_id)
+        by_subject[str(subject_key)] = values[-GROUNDING_SUBJECT_LIMIT:]
+    return {"by_evidence_id": by_id, "by_subject": by_subject}
+
+
+def _merge_grounding_binding(registry: Dict[str, Any], raw_binding: Any, *, normalized_path: str) -> None:
+    if not isinstance(raw_binding, dict):
+        return
+    evidence_id = str(raw_binding.get("evidence_id") or "")
+    subject_key = str(raw_binding.get("subject_key") or "")
+    if not evidence_id.startswith("ont_ev_") or not subject_key.startswith("sha256:"):
+        return
+    binding = {key: value for key, value in raw_binding.items() if key != "evidence_id"}
+    binding["normalized_path"] = normalized_path
+    grounding = registry["grounding_index"]
+    previous = dict(grounding["by_evidence_id"].get(evidence_id) or {})
+    binding["read_count"] = max(1, int(previous.get("read_count") or 0) + 1)
+    grounding["by_evidence_id"][evidence_id] = binding
+    current = [value for value in grounding["by_subject"].get(subject_key, []) if value != evidence_id]
+    current.append(evidence_id)
+    grounding["by_subject"][subject_key] = current[-GROUNDING_SUBJECT_LIMIT:]
 
 
 def _move_to_tail(items: List[str], value: str, *, limit: int) -> List[str]:

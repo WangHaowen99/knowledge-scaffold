@@ -2624,16 +2624,17 @@ class ExecuteScriptTool:
             "session_id": context.session_id,
             "run_id": context.run_id,
             "turn_id": str(context.turn_id),
-            "user_id": context.user_id,
+            "user_id": getattr(context, "user_id", None),
             "workspace_id": context.workspace_id,
             "selected_ontology_id": context.selected_ontology_id,
             "ontology_id": context.selected_ontology_id,
         }
-        if context.selected_ontology_version:
-            call_args["runtime_context"]["selected_ontology_version"] = context.selected_ontology_version
-            call_args["runtime_context"]["ontology_version"] = context.selected_ontology_version
+        selected_ontology_version = getattr(context, "selected_ontology_version", None)
+        if selected_ontology_version:
+            call_args["runtime_context"]["selected_ontology_version"] = selected_ontology_version
+            call_args["runtime_context"]["ontology_version"] = selected_ontology_version
         if context.selected_ontology_id and context.selected_ontology_id == str(call_args.get("ontology_id") or "").strip():
-            call_args["ontology_version"] = context.selected_ontology_version
+            call_args["ontology_version"] = selected_ontology_version
         logger.info(
             (
                 "execute_script tool invoked: tool_call_id=%s caller=%s "

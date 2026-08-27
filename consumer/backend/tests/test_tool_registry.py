@@ -1070,12 +1070,13 @@ def test_single_tool_uses_request_scoped_schema_for_server_validation(monkeypatc
         _make_context(
             workspace_id="workspace-a",
             selected_ontology_id="ontology-a",
+            selected_ontology_version="1.0.0",
         ),
         None,
     )
 
     assert executed == []
-    assert observed_scope == [(spec, "ontology-a", None, "workspace-a")]
+    assert observed_scope == [(spec, "ontology-a", "1.0.0", "workspace-a")]
     assert "unexpected field(s): forged" in output["outcome"].content
 
 
@@ -3083,6 +3084,7 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
     assert "rule returns rule content by key" in ontology_resource_description
     assert "metric returns metric content by key" in ontology_resource_description
     assert "script returns registered script description by key" in ontology_resource_description
+    assert "asset is accepted only" in ontology_resource_description
     assert ontology_schema["parameters"]["properties"]["resource"]["enum"] == [
         "root",
         "operation",
@@ -3091,6 +3093,10 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
         "metric",
         "script",
         "asset",
+    ]
+    assert ontology_schema["parameters"]["properties"]["response_format"]["enum"] == [
+        "text",
+        "structured",
     ]
     assert (
         "asset returns only business-checkpoint-template.md when CheckPoint is enabled"

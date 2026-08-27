@@ -1,0 +1,20 @@
+{
+  "contract": "OntologyEvidenceEpochState/v1",
+  "workspace_id": "workspace-a",
+  "ontology_id": "eco",
+  "active_version": "1.0.0",
+  "mutation_revision": 2,
+  "last_event_id": "01JZP7M4H0R6F5T8X2C9K3NQWA",
+  "digest_basis": "raw_file_bytes_v1",
+  "semantic_manifest_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "file_set_digest": "89dd7afcd8e4456a950a5eafc8377e6347c35aac2d35601532c25dc9e3724342",
+  "file_digests": {
+    "objects/eco.md": {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 12
+    }
+  },
+  "ontology_epoch": "90e88c51fae6e5c6eafc84dddc695f5f01215f5d99ae4320ed14ab086840c2c7",
+  "epoch_state_digest": "b21bdf0cbb0aae18b5993b5b8dc74a35a20ee1a1884b5d85e1eb50e2afb8f6e3",
+  "updated_at": "2026-07-15T14:21:31+08:00"
+}
