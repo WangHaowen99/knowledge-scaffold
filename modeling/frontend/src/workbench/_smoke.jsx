@@ -39,10 +39,29 @@ import {
   createStudioSession,
   filterStudioGraph,
   restoreStudioHistory,
+  studioGraphChain,
+  studioGraphEdgeStyle,
+  studioGraphNeighborhood,
   studioHistoryFromLocation,
   studioHistorySnapshot,
   studioHistoryUrl,
+  studioSummaryVisible,
+  studioVisibleElementId,
 } from './studio/studio-model.js';
+import {
+  buildStudioRoutePresentation,
+  separateStudioReciprocalRoutes,
+  studioLabelPosition,
+  studioRoundedPath,
+  studioRouteHandles,
+  studioRouteForNodePositions,
+  studioRoutePoints,
+} from './studio/studio-graph-geometry.js';
+import { studioLayerBound, studioLayoutOptions } from './studio/studio-graph-layout.js';
+import {
+  STUDIO_NODE_CLICK_DISTANCE,
+  STUDIO_NODE_DRAG_THRESHOLD,
+} from './studio/StudioGraph.jsx';
 import {
   defaultFusionOutput,
   dispositionFor,
@@ -60,6 +79,186 @@ import { DecisionControl, FusionBuilder, FusionPlan } from './fusion/FusionView.
 import { StudioAccessBanner, StudioKindTabs, studioFieldEditable } from './studio/StudioView.jsx';
 
 let bad = 0;
+try {
+  const graph = {
+    nodes: [
+      { id: 'operation:a', kind: 'operation', label: '操作 A' },
+      { id: 'rule:a', kind: 'rule', label: '规则 A' },
+      { id: 'metric:a', kind: 'metric', label: '指标 A' },
+      { id: 'object:a', kind: 'object', label: '对象 A' },
+    ],
+    edges: [
+      { id: 'e1', source: 'operation:a', target: 'rule:a', kind: 'uses_rule' },
+      { id: 'e2', source: 'operation:a', target: 'metric:a', kind: 'uses_metric' },
+      { id: 'e3', source: 'metric:a', target: 'object:a', kind: 'uses_object' },
+    ],
+  };
+  const filtered = filterStudioGraph(graph, '', '', [], ['rule']);
+  const neighborhood = studioGraphNeighborhood('metric:a', graph.edges);
+  const metricChain = studioGraphChain('metric', graph.nodes, graph.edges);
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const metricStyle = studioGraphEdgeStyle(graph.edges[2], byId);
+  const unknownStyle = studioGraphEdgeStyle({ kind: 'unknown_relation' }, byId);
+  const objectNodes = filterStudioGraph(graph, 'object', '').nodes;
+  const searched = filterStudioGraph(graph, '', '操作 A');
+  if (filtered.nodes.some((node) => node.kind === 'rule') || filtered.edges.some((edge) => edge.id === 'e1')
+    || neighborhood.edges.size !== 2 || metricChain.edges.size !== 2
+    || metricStyle.color !== '#8879bd' || metricStyle.dash
+    || unknownStyle.color !== '#98a2b1'
+    || searched.nodes.length !== 3 || searched.edges.length !== 2
+    || searched.nodes.some((node) => node.id === 'object:a')
+    || searched.edges.some((edge) => edge.id === 'e3')
+    || !studioSummaryVisible('object:a', '')
+    || studioSummaryVisible('object:a', 'object:a')
+    || !studioSummaryVisible('object:b', 'object:a')
+    || studioVisibleElementId('operation:a', objectNodes) !== ''
+    || studioVisibleElementId('object:a', objectNodes) !== 'object:a'
+    || STUDIO_NODE_CLICK_DISTANCE < 4
+    || STUDIO_NODE_DRAG_THRESHOLD < STUDIO_NODE_CLICK_DISTANCE) {
+    throw new Error('Studio 图谱过滤、链路或关系颜色语义不一致');
+  }
+  console.log('✓ Studio 图谱过滤、链路与关系颜色');
+} catch (e) { console.log('✗ Studio 图谱派生状态:', e.message); bad++; }
+
+try {
+  const compactOptions = studioLayoutOptions(8);
+  const largeOptions = studioLayoutOptions(49);
+  if (compactOptions['elk.layered.layering.coffmanGraham.layerBound'] !== undefined
+    || compactOptions['elk.aspectRatio'] !== '1.8'
+    || compactOptions['elk.spacing.componentComponent'] !== '80'
+    || studioLayerBound(10) !== null
+    || studioLayerBound(11) !== 4
+    || studioLayerBound(49) !== 4
+    || largeOptions['elk.layered.layering.strategy'] !== 'COFFMAN_GRAHAM'
+    || largeOptions['elk.layered.layering.coffmanGraham.layerBound'] !== '4') {
+    throw new Error('横向分量装箱或大图动态分栏参数不一致');
+  }
+  console.log('✓ Studio 分量横向装箱与大图动态分栏');
+} catch (e) { console.log('✗ Studio 自适应布局:', e.message); bad++; }
+
+try {
+  const routes = {
+    a: [{ x: 0, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 50 }, { x: 120, y: 50 }],
+    b: [{ x: 0, y: 0 }, { x: 60, y: 0 }, { x: 60, y: -50 }, { x: 120, y: -50 }],
+  };
+  const presentation = buildStudioRoutePresentation(routes);
+  const rounded = studioRoundedPath(routes.a);
+  if (!presentation.sharedEdges.a.includes('b') || !presentation.labelAnchors.a || !presentation.labelAnchors.b
+    || !rounded.includes(' Q ')) {
+    throw new Error('共享路由没有生成分支标签锚点或圆角路径');
+  }
+  console.log('✓ Studio 共享路由标签与圆角边');
+} catch (e) { console.log('✗ Studio 路由几何:', e.message); bad++; }
+
+try {
+  const routes = {
+    'edge:a': [{ x: 100, y: 40 }, { x: 200, y: 40 }],
+    'edge:b': [{ x: 200, y: 41 }, { x: 100, y: 41 }],
+  };
+  const presentation = buildStudioRoutePresentation(routes, {
+    'edge:a': '合成关系 A',
+    'edge:b': '合成关系 B',
+  });
+  const firstLabel = studioLabelPosition(routes['edge:a'], presentation.labelAnchors['edge:a']);
+  const secondLabel = studioLabelPosition(routes['edge:b'], presentation.labelAnchors['edge:b']);
+  const reverseHandles = studioRouteHandles(routes['edge:b'], {
+    position: { x: 200, y: 0 }, width: 160,
+  }, {
+    position: { x: -60, y: 0 }, width: 160,
+  });
+  if (Math.abs(firstLabel.y - secondLabel.y) < 25
+    || reverseHandles.sourceHandle !== 'source-left'
+    || reverseHandles.targetHandle !== 'target-right') {
+    throw new Error('相邻标签未分轨，或反向关系未使用左侧 source / 右侧 target');
+  }
+  console.log('✓ Studio 相邻标签避让与反向关系端点');
+} catch (e) { console.log('✗ Studio 标签与端点几何:', e.message); bad++; }
+
+try {
+  const moved = studioRouteForNodePositions(
+    [{ x: 100, y: 40 }, { x: 220, y: 40 }],
+    { position: { x: 0, y: 0 } },
+    { position: { x: 220, y: 0 } },
+    { x: 20, y: 30 },
+    { x: 220, y: 0 },
+  );
+  const orthogonal = moved.slice(0, -1).every((point, index) => (
+    point.x === moved[index + 1].x || point.y === moved[index + 1].y
+  ));
+  if (moved[0].x !== 120 || moved[0].y !== 70
+    || moved[moved.length - 1].x !== 220 || moved[moved.length - 1].y !== 40
+    || !orthogonal) {
+    throw new Error('节点位移没有同步到关系端点，或变形后的关系不再正交');
+  }
+  console.log('✓ Studio 节点拖动实时带动正交关系路由');
+} catch (e) { console.log('✗ Studio 拖动关系路由:', e.message); bad++; }
+
+try {
+  const reciprocal = separateStudioReciprocalRoutes({
+    'edge:a': [{ x: 100, y: 45 }, { x: 220, y: 45 }],
+    'edge:b': [{ x: 220, y: 45 }, { x: 100, y: 45 }],
+  }, [
+    { id: 'edge:a', source: 'object:a', target: 'object:b' },
+    { id: 'edge:b', source: 'object:b', target: 'object:a' },
+  ]);
+  const renderedFirst = studioRoutePoints(reciprocal['edge:a'], 100, 45, 220, 45);
+  const renderedSecond = studioRoutePoints(reciprocal['edge:b'], 220, 45, 100, 45);
+  const labelRoute = [{ x: 0, y: 100 }, { x: 240, y: 100 }];
+  const labels = buildStudioRoutePresentation({ label: labelRoute }, { label: '合成指标关系' }, [{
+    id: 'operation:a', position: { x: 80, y: 72 }, width: 160, height: 58,
+  }]);
+  const labelPosition = studioLabelPosition(labelRoute, labels.labelAnchors.label);
+  if (renderedFirst[0].y === renderedSecond[0].y
+    || (labelPosition.x >= 72 && labelPosition.x <= 248
+      && labelPosition.y >= 64 && labelPosition.y <= 138)) {
+    throw new Error('互为反向的关系仍然共线，或关系标签仍被节点遮挡');
+  }
+  console.log('✓ Studio 互为反向关系分轨且标签避开节点');
+} catch (e) { console.log('✗ Studio 反向关系与节点避让:', e.message); bad++; }
+
+try {
+  const routes = {
+    label: [{ x: 0, y: 100 }, { x: 240, y: 100 }],
+    crossing: [{ x: 120, y: 60 }, { x: 120, y: 140 }],
+  };
+  const presentation = buildStudioRoutePresentation(routes, { label: '合成操作关系' });
+  const position = studioLabelPosition(routes.label, presentation.labelAnchors.label);
+  if (position.x >= 75 && position.x <= 165 && position.y >= 55 && position.y <= 145) {
+    throw new Error('关系标签仍然落在其他操作关系线的穿越区域');
+  }
+  console.log('✓ Studio 关系标签沿自身路径换位并避开其他关系线');
+} catch (e) { console.log('✗ Studio 标签与关系线避让:', e.message); bad++; }
+
+try {
+  const routes = {
+    own: [{ x: 0, y: 100 }, { x: 240, y: 100 }],
+    nearby: [{ x: 0, y: 124 }, { x: 240, y: 124 }],
+  };
+  const presentation = buildStudioRoutePresentation(routes, { own: '合成关系标签' });
+  const position = studioLabelPosition(routes.own, presentation.labelAnchors.own);
+  const ownDistance = Math.abs(position.y - 100);
+  const nearbyDistance = Math.abs(position.y - 124);
+  if (ownDistance + 4 > nearbyDistance || ownDistance > 26) {
+    throw new Error('关系标签没有保持最近于所属线，或仍使用过远偏移轨道');
+  }
+  console.log('✓ Studio 标签保持最近于所属关系线');
+} catch (e) { console.log('✗ Studio 标签归属约束:', e.message); bad++; }
+
+try {
+  const route = [{ x: 100, y: 100 }, { x: 240, y: 100 }];
+  const presentation = buildStudioRoutePresentation({ relation: route }, {
+    relation: '较长的合成关系标签文本',
+  }, [
+    { id: 'object:a', position: { x: 0, y: 60 }, width: 100, height: 80 },
+    { id: 'object:b', position: { x: 240, y: 60 }, width: 100, height: 80 },
+  ]);
+  const position = studioLabelPosition(route, presentation.labelAnchors.relation);
+  if (Math.abs(position.y - 100) > 38) {
+    throw new Error('两端节点之间的关系标签偏离自身关系线过远');
+  }
+  console.log('✓ Studio 端点间长标签保持在自身关系线近距离轨道');
+} catch (e) { console.log('✗ Studio 标签距离约束:', e.message); bad++; }
+
 try {
   const html = renderToString(<StudioKindTabs value="operation" kinds={[
     { kind: 'object', label: '对象' },
