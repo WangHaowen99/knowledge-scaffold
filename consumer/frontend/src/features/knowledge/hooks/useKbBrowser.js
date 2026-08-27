@@ -21,7 +21,7 @@ import {
 } from '../lib/browserInterop';
 import { useAuthContext } from '../../auth';
 
-// 知识包浏览的共享状态：侧边栏目录树（AppShell 内）与工作台内容区共用。
+// 知识包工作台的浏览状态：知识包、版本、目录和文件选择统一由右侧工作台消费。
 // 数据源：/agentic/ontologies + /tree（整包结构，后端已排除 origin_data/datasets）+ /raw-file。
 // 管理操作走既有本体端点：启用/禁用 PUT /status、激活版本 PUT /active-version、
 // 删除版本 DELETE /versions/<v>、下载 GET /download（均支持 version 参数按版本操作）。
@@ -193,6 +193,11 @@ export default function useKbBrowser() {
     selectionEpochRef.current += 1;
     setPkgId(id);
     setVersionOverride(null);
+    setTree([]);
+    setTreeError('');
+    setTreeLoading(Boolean(id));
+    setSel({ dir: 'objects', file: null });
+    setTreeReloadKey((value) => value + 1);
     setOpNotice('');
   }, []);
   const selectDir = useCallback((dirPath) => { setSel({ dir: dirPath, file: null }); }, []);
@@ -203,14 +208,6 @@ export default function useKbBrowser() {
   const selectVersion = useCallback((version) => {
     setVersionOverride(version === activeVersion ? null : version);
   }, [activeVersion]);
-  const selectPackageVersion = useCallback((id, version) => {
-    const targetPackage = packages.find((candidate) => candidate.id === id);
-    const targetActiveVersion = targetPackage?.active_version || targetPackage?.version || '';
-    selectionEpochRef.current += 1;
-    setPkgId(id);
-    setVersionOverride(version === targetActiveVersion ? null : version);
-    setOpNotice('');
-  }, [packages]);
   const reloadTree = useCallback(() => setTreeReloadKey((value) => value + 1), []);
 
   // 所有会改变知识包文件内容的入口共用这一刷新边界。revision 让已选中的
@@ -527,7 +524,7 @@ export default function useKbBrowser() {
     cancelImportSelection: cancelImport,
     importPreview: importFlow.result?.preview || null, clearImportPreview, reloadTree,
     knowledgeRevision, refreshKnowledge,
-    viewVersion, viewingActive, versionOverride, selectVersion, selectPackageVersion,
+    viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, setBusinessCheckpointEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
     clearOperationNotice, opBusy, opNotice,
   };
