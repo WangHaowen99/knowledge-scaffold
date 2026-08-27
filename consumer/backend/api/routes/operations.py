@@ -43,6 +43,21 @@ from api.dependencies import (
     run_in_runtime_pool,
 )
 from api.request_parsing import read_optional_json_object
+from api.auth.auth import get_current_user
+from api.routes.ontologies import (
+    _file_content_precondition,
+    _manifest_state,
+    _mutation_base_revision,
+    _mutation_coordinator,
+    _prepare_atomic_bytes_replace,
+)
+from ontology.change_events import build_digest_hints
+from ontology.mutations import (
+    OntologyMutationConflictError,
+    PreparedOntologyMutation,
+)
+from ontology.ontologies import get_ontology_version_dir
+from workspace.workspaces import get_workspace_paths
 from utils.logging import get_logger
 
 logger = get_logger("routes.operations")
@@ -445,7 +460,7 @@ def _archive_original(op_path: Path) -> Path:
     archive_dir = op_path.parent / "applied"
     archive_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%dT%H%M%S")
-    target = archive_dir / "{}-{}.md".format(op_path.stem, ts)
+    target = archive_dir / "{}-{}-{}.md".format(op_path.stem, ts, time.time_ns())
     shutil.copy2(op_path, target)
     return target
 
@@ -454,6 +469,7 @@ def _archive_original(op_path: Path) -> Path:
 def apply_staged(
     ontology_id: str,
     operation_key: str,
+    request: Request,
     workspace_id: str = Depends(require_admin_workspace_id),
 ):
     """Promote staged → live `.md`. Admin only. Archives previous `.md` and
@@ -487,8 +503,11 @@ def apply_staged(
     expected_sha = str(meta.get("original_sha") or "").strip()
 
     archived_to: Optional[Path] = None
+    mutation_revision: Optional[int] = None
     try:
+        base_revision = _mutation_base_revision(workspace_id, ontology_id)
         current_content = op_path.read_text(encoding="utf-8")
+        current_bytes = op_path.read_bytes()
         if expected_sha and _sha256_text(current_content) != expected_sha:
             return JSONResponse(
                 {
@@ -510,9 +529,93 @@ def apply_staged(
                 },
                 status_code=400,
             )
-        archived_to = _archive_original(op_path)
-        op_path.write_text(new_content, encoding="utf-8")
+
+        ontology_dir = get_workspace_paths(workspace_id).ontologies_dir / ontology_id
+        _manifest, active_version, enabled = _manifest_state(ontology_dir)
+        active_version_dir = get_ontology_version_dir(
+            ontology_dir,
+            active_version,
+            create=False,
+        )
+        if active_version_dir is None:
+            return JSONResponse(
+                {"error": "Ontology active version directory not found"},
+                status_code=409,
+            )
+        try:
+            source_path = (
+                op_path.resolve().relative_to(active_version_dir.resolve()).as_posix()
+            )
+        except ValueError:
+            return JSONResponse(
+                {"error": "Operation is not part of the active ontology version"},
+                status_code=409,
+            )
+
+        content_bytes = new_content.encode("utf-8")
+        file_commit, file_rollback, finalize = _prepare_atomic_bytes_replace(
+            op_path, content_bytes
+        )
+        precondition = _file_content_precondition(op_path, current_bytes)
+
+        def commit() -> None:
+            nonlocal archived_to
+            archived_to = _archive_original(op_path)
+            file_commit()
+
+        def rollback() -> None:
+            file_rollback()
+            if archived_to is not None:
+                archived_to.unlink(missing_ok=True)
+
+        request_id = str(request.headers.get("X-Request-Id") or "").strip() or None
+        user = get_current_user()
+        digest_hints = build_digest_hints(
+            scope_version=active_version,
+            completeness="partial",
+            mutation_revision=1,
+            entries={
+                source_path: {
+                    "sha256": hashlib.sha256(content_bytes).hexdigest(),
+                    "size_bytes": len(content_bytes),
+                }
+            },
+        )
+        mutation_result = _mutation_coordinator(workspace_id).commit(
+            PreparedOntologyMutation(
+                workspace_id=workspace_id,
+                ontology_id=ontology_id,
+                mutation_type="ONTOLOGY_FILE_CHANGED",
+                before_version=active_version,
+                after_version=active_version,
+                before_enabled=enabled,
+                after_enabled=enabled,
+                commit=commit,
+                rollback=rollback,
+                precondition=precondition,
+                finalize=finalize,
+                digest_hints=digest_hints,
+                operator=(
+                    {"type": "user", "id": user.username}
+                    if user is not None
+                    else None
+                ),
+                request_id=request_id[:128] if request_id else None,
+                trigger="admin",
+                base_mutation_revision=base_revision,
+            )
+        )
+        mutation_revision = mutation_result.mutation_revision
+    except OntologyMutationConflictError as exc:
+        if archived_to is not None:
+            archived_to.unlink(missing_ok=True)
+        return JSONResponse(
+            {"error": str(exc), "code": exc.code},
+            status_code=409,
+        )
     except Exception as exc:
+        if archived_to is not None:
+            archived_to.unlink(missing_ok=True)
         logger.exception("apply_staged failed for %s/%s", ontology_id, operation_key)
         return JSONResponse(
             {"error": "Apply failed: {}".format(exc)},
@@ -543,6 +646,7 @@ def apply_staged(
         "applied": True,
         "archived_to": str(archived_to) if archived_to else None,
         "fingerprints_applied": fingerprints,
+        "mutation_revision": mutation_revision,
     }
 
 

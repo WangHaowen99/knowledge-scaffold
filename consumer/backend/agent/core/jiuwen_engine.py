@@ -1792,6 +1792,7 @@ class JiuwenReactLoopEngine:
         )
 
         schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
+        workspace_id = str(state.get("workspace_id") or "").strip() or _resolve_current_workspace_id()
         include_memory = _memory_tool_requested_in_state(state)
         schemas = get_tools_schema(
             schema_caller,
@@ -1801,9 +1802,9 @@ class JiuwenReactLoopEngine:
             include_interaction=include_interaction,
             include_business_checkpoint=bool(_selected_ontology_id_from_state(state)),
             include_solver=not solver_tools_suppressed_from_state(state),
+            workspace_id=workspace_id,
             selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
-            workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
         return restrict_tools_for_solver_route(
             schemas,
@@ -1818,6 +1819,7 @@ class JiuwenReactLoopEngine:
         )
 
         schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
+        workspace_id = str(state.get("workspace_id") or "").strip() or _resolve_current_workspace_id()
         include_memory = _memory_tool_requested_in_state(state)
         infos = get_jiuwen_tool_infos(
             schema_caller,
@@ -1827,9 +1829,9 @@ class JiuwenReactLoopEngine:
             include_interaction=include_interaction,
             include_business_checkpoint=bool(_selected_ontology_id_from_state(state)),
             include_solver=not solver_tools_suppressed_from_state(state),
+            workspace_id=workspace_id,
             selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
-            workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
         return restrict_tools_for_solver_route(
             infos,

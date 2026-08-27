@@ -30,6 +30,7 @@ from api.routes.mcp import mcp_router
 from api.routes.errors import workspace_not_found_response
 from api.protocols.acp.server import acp_router
 from api.routes.skill_evolution import skill_evolution_router
+from api.routes.evidence import evidence_router
 from api.routes.solver_coordination import (
     solver_coordination_public_router,
     solver_coordination_router,
@@ -53,6 +54,7 @@ ROUTERS = (
     mcp_router,
     acp_router,
     skill_evolution_router,
+evidence_router,
     solver_coordination_router,
     solver_coordination_public_router,
 )

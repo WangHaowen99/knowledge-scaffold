@@ -1,0 +1,27 @@
+{
+  "contract": "OntologyChanged/v1",
+  "event_id": "01JZP7M4H0R6F5T8X2C9K3NQWA",
+  "occurred_at": "2026-07-15T14:20:00+08:00",
+  "workspace_id": "workspace-a",
+  "ontology_id": "eco",
+  "mutation_type": "ONTOLOGY_FILE_CHANGED",
+  "mutation_revision": 2,
+  "before_version": "1.0.0",
+  "after_version": "1.0.0",
+  "known_file_digests": {
+    "algorithm": "sha256",
+    "digest_basis": "raw_file_bytes_v1",
+    "scope_version": "1.0.0",
+    "completeness": "partial",
+    "base_mutation_revision": 1,
+    "semantic_manifest_digest": null,
+    "entries": {
+      "objects/eco.md": {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 12
+      }
+    }
+  },
+  "deleted_paths": [],
+  "trigger": "api"
+}

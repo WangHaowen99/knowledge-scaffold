@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:knowledge-scaffold:ontology:OntologyChanged:v1",
+  "title": "OntologyChanged/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract", "event_id", "occurred_at", "workspace_id", "ontology_id",
+    "mutation_type", "mutation_revision", "before_version", "after_version",
+    "known_file_digests", "deleted_paths"
+  ],
+  "properties": {
+    "contract": {"const": "OntologyChanged/v1"},
+    "event_id": {"type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "workspace_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "ontology_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "mutation_type": {
+      "enum": [
+        "ACTIVE_VERSION_CHANGED", "ONTOLOGY_VISIBILITY_CHANGED", "ONTOLOGY_FILE_CHANGED",
+        "ONTOLOGY_IMPORTED", "ONTOLOGY_VERSION_DELETED", "ONTOLOGY_DELETED",
+        "EXTERNAL_DRIFT_DETECTED"
+      ]
+    },
+    "mutation_revision": {"type": "integer", "minimum": 1},
+    "before_version": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "after_version": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "known_file_digests": {"$ref": "#/$defs/knownFileDigests"},
+    "deleted_paths": {
+      "type": "array", "uniqueItems": true,
+      "items": {"$ref": "#/$defs/relativePath"}
+    },
+    "operator": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"enum": ["user", "service", "system"]},
+        "id": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "request_id": {"type": ["string", "null"], "maxLength": 128},
+    "trigger": {
+      "type": ["string", "null"],
+      "enum": ["api", "upload", "import", "startup_recovery", "sweeper", "admin", null]
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "relativePath": {
+      "type": "string", "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//).+$"
+    },
+    "digestEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sha256", "size_bytes"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "knownFileDigests": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "algorithm", "digest_basis", "scope_version", "completeness",
+        "base_mutation_revision", "semantic_manifest_digest", "entries"
+      ],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "digest_basis": {"const": "raw_file_bytes_v1"},
+        "scope_version": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+        "completeness": {"enum": ["none", "partial", "complete"]},
+        "base_mutation_revision": {"type": ["integer", "null"], "minimum": 0},
+        "semantic_manifest_digest": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "entries": {
+          "type": "object", "maxProperties": 5000,
+          "propertyNames": {"$ref": "#/$defs/relativePath"},
+          "additionalProperties": {"$ref": "#/$defs/digestEntry"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"completeness": {"const": "none"}}},
+          "then": {"properties": {
+            "base_mutation_revision": {"type": "null"},
+            "semantic_manifest_digest": {"type": "null"},
+            "entries": {"maxProperties": 0}
+          }}
+        },
+        {
+          "if": {"properties": {"completeness": {"const": "partial"}}},
+          "then": {"properties": {
+            "scope_version": {"type": "string"},
+            "base_mutation_revision": {"type": "integer", "minimum": 0}
+          }}
+        },
+        {
+          "if": {"properties": {"completeness": {"const": "complete"}}},
+          "then": {"properties": {
+            "scope_version": {"type": "string"},
+            "base_mutation_revision": {"type": "null"},
+            "semantic_manifest_digest": {"$ref": "#/$defs/sha256"}
+          }}
+        }
+      ]
+    }
+  }
+}

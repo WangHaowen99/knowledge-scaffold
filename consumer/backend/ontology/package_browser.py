@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -119,6 +120,7 @@ def read_package_text(
     max_bytes: int = MAX_VIEW_BYTES,
     allow_hidden_file: bool = False,
     trusted_root: Optional[Path] = None,
+    include_sha256: bool = False,
 ) -> dict[str, Any]:
     """Read one bounded UTF-8 text file from an ontology package."""
     file_path = resolve_package_file(
@@ -150,12 +152,18 @@ def read_package_text(
         raise PackageBrowserError("not_viewable", "Binary file is not viewable")
 
     package_root = _validated_root(root, trusted_root=trusted_root)
-    return {
+    result = {
         "path": file_path.relative_to(package_root).as_posix(),
         "name": file_path.name,
         "size": size,
         "content": content,
     }
+    if include_sha256:
+        # Keep the digest tied to the exact bytes that were decoded.  Callers
+        # must not recreate it from text because BOM/newline handling can make
+        # a decoded-text round trip differ from the package artifact.
+        result["sha256"] = hashlib.sha256(raw).hexdigest()
+    return result
 
 
 def _validated_root(

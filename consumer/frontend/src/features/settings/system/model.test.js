@@ -23,6 +23,7 @@ test('legal sections match the backend contract and exclude removed observabilit
     'web_search',
     'direct_execution',
     'skill_evolution',
+    'ontology_evidence',
   ]);
   assert.equal(assertSystemConfigSection(' AGENT '), 'agent');
   assert.throws(() => assertSystemConfigSection('observability'), /不支持的系统配置 section/);

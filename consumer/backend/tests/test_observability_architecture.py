@@ -2498,7 +2498,6 @@ def test_tool_finished_keeps_full_output_only_in_trace_observer(monkeypatch):
         error="cancelled",
         elapsed_ms=20,
     )
-
     search_protocol_payload = protocol_events[0]["payload"]
     read_protocol_payload = protocol_events[1]["payload"]
     search_trace_payload = runtime_events[0].payload

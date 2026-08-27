@@ -441,6 +441,123 @@ def test_lookup_values_projection_counts_real_provider_requests():
     assert projection["error_count"] == 2
 
 
+def test_ontology_evidence_projection_keeps_bounded_search_hits():
+    raw_output = json.dumps({
+        "contract": "OntologyEvidenceSearch/v1",
+        "success": True,
+        "status": "resolved",
+        "result_code": "EVIDENCE_FOUND",
+        "ontology_id": "eco",
+        "ontology_version": "1.0.0",
+        "ontology_epoch": "epoch-1",
+        "index_generation": "generation-1",
+        "query": "ECO-001 详细信息",
+        "retrieval": {"mode": "lexical_graph", "degraded": False},
+        "hits": [
+            {
+                "evidence_id": "ont_ev_{}".format(index),
+                "resource": "object",
+                "key": "ECO变更单",
+                "title": "ECO变更单 {}".format(index),
+                "source_path": "objects/ECO变更单.md",
+                "snippet": "定义" * 500,
+                "relevance_score": 0.9 - index / 100,
+                "reason_codes": ["LEXICAL_MATCH"],
+                "next_action": {"tool": "ontology_context", "arguments": {"secret": "omit"}},
+            }
+            for index in range(7)
+        ],
+    }, ensure_ascii=False)
+
+    payload = build_tool_finished_payload(
+        tool_name="ontology_evidence_search",
+        tool_call_id="call-evidence",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=12,
+    )
+
+    projection = payload["output_projection"]
+    assert payload["output_truncated"] is True
+    assert projection["contract"] == "OntologyEvidenceSearch/v1"
+    assert projection["query"] == "ECO-001 详细信息"
+    assert projection["retrieval"]["mode"] == "lexical_graph"
+    assert len(projection["hits"]) == 5
+    assert projection["projection_truncated"] is True
+    assert len(projection["hits"][0]["snippet"]) == 240
+    assert "next_action" not in projection["hits"][0]
+
+
+def test_ontology_context_projection_keeps_source_evidence_after_long_content():
+    raw_output = json.dumps({
+        "contract": "OntologyContext/v2",
+        "success": True,
+        "ontology_id": "eco",
+        "resource": "object",
+        "key": "ECO变更单",
+        "section": "字段定义",
+        "content": "完整定义" * 2000,
+        "context_meta": {
+            "ontology_version": "1.0.0",
+            "mutation_revision": 8,
+            "ontology_epoch": "epoch-8",
+            "index_generation": "generation-8",
+            "source_path": "objects/ECO变更单.md",
+            "source_evidence_ids": ["ont_ev_one", "ont_ev_two"],
+            "grounding_recorded": True,
+        },
+    }, ensure_ascii=False)
+
+    payload = build_tool_finished_payload(
+        tool_name="ontology_context",
+        tool_call_id="call-context",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=15,
+    )
+
+    projection = payload["output_projection"]
+    assert payload["output_truncated"] is True
+    assert projection["key"] == "ECO变更单"
+    assert projection["context_meta"]["source_evidence_ids"] == ["ont_ev_one", "ont_ev_two"]
+    assert projection["context_meta"]["ontology_epoch"] == "epoch-8"
+    assert len(projection["content"]) == 480
+
+
+def test_business_data_projection_exposes_receipt_without_provider_rows():
+    raw_output = json.dumps({
+        "success": True,
+        "message": "业务数据查询成功。",
+        "rows": [{"eco_id": "ECO-001", "private_column": "must-not-project"}] * 500,
+        "runtime_evidence": {
+            "evidence_id": "ev_runtime_one",
+            "persistence_status": "persisted",
+            "grounding_status": "grounded",
+            "grounding_warnings": [],
+            "derived_from": ["ont_ev_one"],
+        },
+    }, ensure_ascii=False)
+
+    payload = build_tool_finished_payload(
+        tool_name="business_data_search",
+        tool_call_id="call-business",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=18,
+    )
+
+    projection = payload["output_projection"]
+    assert payload["output_truncated"] is True
+    assert projection["contract"] == "BusinessDataEvidenceProjection/v1"
+    assert projection["runtime_evidence"]["evidence_id"] == "ev_runtime_one"
+    assert projection["runtime_evidence"]["derived_from"] == ["ont_ev_one"]
+    assert "rows" not in projection
+    assert "must-not-project" not in json.dumps(projection, ensure_ascii=False)
+
+
 def test_execute_tool_batch_emits_v2_regular_tool_events():
     captured = []
 

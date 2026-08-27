@@ -388,7 +388,7 @@ def test_mindsdb_chunk_events_preserve_pre_refactor_branch_priority_and_content(
         assert actual == expected, chunk
 
 
-def test_mindsdb_query_without_final_preserves_baseline_empty_success():
+def test_mindsdb_query_without_final_is_not_reported_as_success():
     response = _Response({})
     response.iter_lines = lambda decode_unicode=True: iter(
         [
@@ -403,10 +403,45 @@ def test_mindsdb_query_without_final_preserves_baseline_empty_success():
     result = provider.query("question")
 
     assert result == ProviderResult(
-        success=True,
-        data="",
-        message="Query successful",
+        success=False,
+        error="MindsDB agent returned no final answer",
+        metadata={"error_code": "missing_final"},
     )
+
+
+def test_mindsdb_native_error_chunk_is_failure_and_redacts_secrets():
+    response = _Response({})
+    response.iter_lines = lambda decode_unicode=True: iter(
+        [
+            (
+                'data: {"error":"token-x and password-x rejected by '
+                'https://provider.example.com"}'
+            ),
+            "",
+            'data: {"type":"end"}',
+            "",
+        ]
+    )
+    provider = MindsDBProvider(
+        _connection(
+            "mindsdb",
+            auth=AuthSpec(
+                type="bearer",
+                token="token-x",
+                password="password-x",
+            ),
+        ),
+        session=_Session(response),
+    )
+
+    result = provider.query("question")
+
+    assert result.success is False
+    assert result.metadata["error_code"] == "query_error"
+    assert "token-x" not in result.error
+    assert "password-x" not in result.error
+    assert "https://provider.example.com" not in result.error
+    assert result.error.count("[REDACTED]") == 3
 
 
 def test_dataagent_builds_a2a_request_and_synthesizes_events():

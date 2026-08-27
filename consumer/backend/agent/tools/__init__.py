@@ -28,3 +28,18 @@ __all__ = [
     "handle_web_search", "WEB_SEARCH_TOOL_SCHEMA",
     "REPORT_BUSINESS_CHECKPOINT_TOOL_SCHEMA", "ReportBusinessCheckpointTool",
 ]
+
+# A cyclical import through the native-async runtime (agent.runtime.service
+# imports agent.tools.events) can leave these submodules cached in
+# sys.modules while this package is still initializing, so importlib skips
+# binding the package attribute (e.g. agent.tools.execute_script). Rebind the
+# affected submodules explicitly so dotted monkeypatch targets and attribute
+# access stay resolvable regardless of import order.
+import importlib as _importlib  # noqa: E402
+import sys as _sys  # noqa: E402
+for _submodule_name in ("business_data_search", "execute_script"):
+    _submodule = _importlib.import_module(
+        "{}.{}".format(__name__, _submodule_name)
+    )
+    _sys.modules[__name__].__dict__[_submodule_name] = _submodule
+del _submodule, _submodule_name, _importlib, _sys

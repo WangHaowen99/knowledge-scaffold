@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, FileText, GitBranch,
   Globe2, Loader2, Search, ShieldCheck, ShieldX, Workflow, Wrench,
@@ -8,6 +8,7 @@ import Markdown from '../../../shared/ui/Markdown';
 import { CandidateResultsPanel } from '../../solver/index.js';
 import { formatDurationMs, formatTime } from '../lib/chatPresentation';
 import { resolveRunProgressView } from '../lib/streamLifecycle';
+import { TurnEvidencePanel } from './EvidencePanel';
 import { CopyButton, RunFeedback } from './RunActions';
 import ToolOutput from './ToolOutput';
 
@@ -36,7 +37,13 @@ function BlockMeta({ status, durationMs }) {
   );
 }
 
-export default function ConversationView({ model, sessionId = '', runState = null }) {
+export default function ConversationView({
+  model,
+  sessionId = '',
+  runState = null,
+  evidenceByTurnKey = {},
+  onEvidenceSelect,
+}) {
   return (
     <div className="conversation-view" role="log" aria-live="off" aria-relevant="additions">
       {(model?.messages || []).map((message) => (
@@ -44,8 +51,12 @@ export default function ConversationView({ model, sessionId = '', runState = nul
           ? <UserMessage key={message.key} message={message} />
           : message.role === 'system'
             ? <SystemMessage key={message.key} message={message} />
-            : <AssistantTurn key={message.key} turn={message} sessionId={sessionId}
-                runState={message.isLoading ? runState : null} />
+            : (
+              <AssistantTurn key={message.key} turn={message} sessionId={sessionId}
+                runState={message.isLoading ? runState : null}
+                evidence={evidenceByTurnKey[message.key] || null}
+                onEvidenceSelect={(hit) => onEvidenceSelect?.(hit, message.key)} />
+            )
       ))}
     </div>
   );
@@ -70,7 +81,13 @@ export function SystemMessage({ message }) {
   );
 }
 
-export function AssistantTurn({ turn, sessionId = '', runState = null }) {
+export function AssistantTurn({
+  turn,
+  sessionId = '',
+  runState = null,
+  evidence = null,
+  onEvidenceSelect,
+}) {
   const answerText = (turn.blocks || [])
     .filter((block) => block.kind === 'content')
     .map((block) => block.text)
@@ -78,9 +95,10 @@ export function AssistantTurn({ turn, sessionId = '', runState = null }) {
     .trim() || turn.content;
   const hasVisibleBlock = (turn.blocks || []).some((block) => block.kind !== 'status');
   const hasLiveProgress = Boolean(turn.isLoading && runState?.isLoading);
-  const hasSolverResult = (turn.blocks || []).some(
+const hasSolverResult = (turn.blocks || []).some(
     (block) => block.kind === 'solver' && Boolean(block.solverResult),
   );
+  const firstContentIndex = (turn.blocks || []).findIndex((block) => block.kind === 'content');
 
   return (
     <article className={`msg a assistant-turn${hasSolverResult ? ' has-solver-result' : ''}`}
@@ -88,10 +106,18 @@ export function AssistantTurn({ turn, sessionId = '', runState = null }) {
       <div className="av">知</div>
       <div className="bubwrap">
         <div className={`bub assistant-turn-body status-${turn.status}`}>
-          {(turn.blocks || []).map((block) => (
-            <ConversationBlock key={block.key} block={block} turn={turn} answerText={answerText}
-              sessionId={sessionId} runState={runState} />
+          {(turn.blocks || []).map((block, index) => (
+            <Fragment key={block.key}>
+              {evidence && index === firstContentIndex && (
+                <TurnEvidencePanel evidence={evidence} onSelect={onEvidenceSelect} />
+              )}
+              <ConversationBlock block={block} turn={turn} answerText={answerText}
+                sessionId={sessionId} runState={runState} />
+            </Fragment>
           ))}
+          {evidence && firstContentIndex === -1 && (
+            <TurnEvidencePanel evidence={evidence} onSelect={onEvidenceSelect} />
+          )}
           {turn.isLoading && !hasVisibleBlock && !hasLiveProgress && (
             <span className="assistant-thinking"><span className="tdots"><span /><span /><span /></span>分析问题中…</span>
           )}

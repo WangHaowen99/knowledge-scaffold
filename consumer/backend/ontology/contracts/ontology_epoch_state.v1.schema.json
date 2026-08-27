@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:knowledge-scaffold:ontology:OntologyEvidenceEpochState:v1",
+  "title": "OntologyEvidenceEpochState/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract", "workspace_id", "ontology_id", "active_version", "mutation_revision",
+    "last_event_id", "digest_basis", "semantic_manifest_digest", "file_set_digest",
+    "file_digests", "ontology_epoch", "epoch_state_digest", "updated_at"
+  ],
+  "properties": {
+    "contract": {"const": "OntologyEvidenceEpochState/v1"},
+    "workspace_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "ontology_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "active_version": {"type": "string", "minLength": 1, "maxLength": 128},
+    "mutation_revision": {"type": "integer", "minimum": 0},
+    "last_event_id": {"type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"},
+    "digest_basis": {"const": "raw_file_bytes_v1"},
+    "semantic_manifest_digest": {"$ref": "#/$defs/sha256"},
+    "file_set_digest": {"$ref": "#/$defs/sha256"},
+    "file_digests": {
+      "type": "object", "maxProperties": 5000,
+      "propertyNames": {"$ref": "#/$defs/relativePath"},
+      "additionalProperties": {"$ref": "#/$defs/digestEntry"}
+    },
+    "ontology_epoch": {"$ref": "#/$defs/sha256"},
+    "epoch_state_digest": {"$ref": "#/$defs/sha256"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "relativePath": {
+      "type": "string", "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//).+$"
+    },
+    "digestEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sha256", "size_bytes"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

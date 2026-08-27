@@ -827,6 +827,26 @@ def test_approve_overwrite_replaces_active_version(tmp_path, monkeypatch):
     assert "step2" in foo
     # No new version dir created.
     assert not (onto_dir / "versions" / "evol-1").exists()
+    # Stable-version byte changes are still authoritative mutations: the
+    # coordinator must increment revision and persist a complete invalidation
+    # event so Evidence Index cannot keep serving the pre-approval snapshot.
+    from ontology.mutations import OntologyMutationCoordinator
+    from workspace.workspaces import get_workspace_paths
+
+    coordinator = OntologyMutationCoordinator(get_workspace_paths("ws1").runtime_dir)
+    state = coordinator.store.get_state(workspace_id="ws1", ontology_id="onto1")
+    assert state is not None
+    assert state["mutation_revision"] == 1
+    assert state["active_version"] == "1.0.0"
+    outbox = coordinator.store.list_outbox(status="pending")
+    assert len(outbox) == 1
+    event = json.loads(outbox[0]["payload_json"])
+    assert event["mutation_type"] == "ONTOLOGY_FILE_CHANGED"
+    assert event["before_version"] == event["after_version"] == "1.0.0"
+    assert event["known_file_digests"]["completeness"] == "complete"
+    assert event["operator"] == {"type": "user", "id": "admin"}
+    assert event["request_id"] == "run-fake-1"
+    assert event["trigger"] == "admin"
     # temp cleaned, history written.
     assert not store.temp_path("ws1", "t1").exists()
     assert store.get_history("ws1", "t1") is not None

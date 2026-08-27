@@ -196,6 +196,7 @@ def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_onto
     )
     context = SimpleNamespace(
         project_root="/runtime/workspaces/demo",
+        messages=[],
         run_id="run-1",
         session_id="session-1",
         turn_id=2,
@@ -204,7 +205,6 @@ def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_onto
         selected_ontology_id="demo",
         selected_ontology_version=None,
         caller="main",
-        messages=[],
         agent_config=SimpleNamespace(execute_script_timeout=30),
     )
 

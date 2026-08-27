@@ -156,6 +156,8 @@ Runtime argument source policy:
 ## Tool Usage Rules
 - Follow each tool's schema description for tool-specific requirements.
 - Use `skill` only for names listed in `<Available-Skills>`; use ontology ids only with ontology tools.
+- When `ontology_evidence_search` is available and the answer depends on an ontology definition, object, operation, rule, metric, or controlled asset, use it as the default discovery step before calling `ontology_context`. Convert the user's actual question into a concise evidence query, then follow the selected hit's `next_action`; this grounding step must not narrow which questions the user is allowed to ask. Script-backed execution remains governed by Step 3.
+- After `business_data_search`, preserve the returned `runtime_evidence.evidence_id` as the receipt for the observed business fact. Distinguish static ontology evidence from runtime evidence in the final answer and never invent either kind of ID.
 - When multiple tool calls have known inputs and no dependency on each other's outputs, batch them in the same response. If a tool call depends on another tool's output, wait for that result and call it in a later response.
 - Treat tool calls and tool results before the latest user message as historical context.
 - Never state that a tool ran for the current request unless it was called after the latest user message.

@@ -80,6 +80,7 @@ SECTION_KEYS = (
     "web_search",
     "direct_execution",
     "skill_evolution",
+    "ontology_evidence",
 )
 _LEGACY_IGNORED_TOP_LEVEL_KEYS = {"_status", "mindsdb", "nl2sql_http"}
 _LLM_PROFILES_SECTION = "llm_profiles"
@@ -186,6 +187,24 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "poll_interval_seconds": {"env": "SKILL_EVOLUTION_POLL_INTERVAL_SECONDS", "type": "int", "default": 10},
         "task_timeout_seconds": {"env": "SKILL_EVOLUTION_TASK_TIMEOUT_SECONDS", "type": "int", "default": 1800},
         "max_iterations": {"env": "SKILL_EVOLUTION_MAX_ITERATIONS", "type": "int", "default": 15},
+    },
+    "ontology_evidence": {
+        "enabled": {"env": "ONTOLOGY_EVIDENCE_ENABLED", "type": "bool", "default": False},
+        "rollout_mode": {"env": "ONTOLOGY_EVIDENCE_ROLLOUT_MODE", "type": "str", "default": "off"},
+        "rollout_workspace_ids": {"env": "ONTOLOGY_EVIDENCE_ROLLOUT_WORKSPACE_IDS", "type": "str", "default": ""},
+        "search_enabled": {"env": "ONTOLOGY_EVIDENCE_SEARCH_ENABLED", "type": "bool", "default": True},
+        "tool_exposure_mode": {"env": "ONTOLOGY_EVIDENCE_TOOL_EXPOSURE_MODE", "type": "str", "default": "adaptive"},
+        "auto_build_enabled": {"env": "ONTOLOGY_EVIDENCE_AUTO_BUILD_ENABLED", "type": "bool", "default": False},
+        "sweeper_enabled": {"env": "ONTOLOGY_EVIDENCE_SWEEPER_ENABLED", "type": "bool", "default": True},
+        "sweeper_interval_seconds": {"env": "ONTOLOGY_EVIDENCE_SWEEPER_INTERVAL_SECONDS", "type": "int", "default": 1800},
+        "structured_context_enabled": {"env": "ONTOLOGY_EVIDENCE_STRUCTURED_CONTEXT_ENABLED", "type": "bool", "default": True},
+        "auto_ground_business_data": {"env": "ONTOLOGY_EVIDENCE_AUTO_GROUND_BUSINESS_DATA", "type": "bool", "default": True},
+        "runtime_fact_write_mode": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_WRITE_MODE", "type": "str", "default": "sync"},
+        "runtime_fact_write_timeout_ms": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_WRITE_TIMEOUT_MS", "type": "int", "default": 50},
+        "runtime_fact_batch_size": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_BATCH_SIZE", "type": "int", "default": 10},
+        "runtime_fact_flush_interval_ms": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_FLUSH_INTERVAL_MS", "type": "int", "default": 100},
+        "semantic_mode": {"env": "ONTOLOGY_EVIDENCE_SEMANTIC_MODE", "type": "str", "default": "off"},
+        "graph_enabled": {"env": "ONTOLOGY_EVIDENCE_GRAPH_ENABLED", "type": "bool", "default": True},
     },
 }
 
@@ -1030,6 +1049,56 @@ def _normalize_skill_evolution_effective(section: dict[str, Any]) -> dict[str, A
     return normalized
 
 
+def _normalize_ontology_evidence_effective(section: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(section or {})
+    rollout_mode = _coerce_string(normalized.get("rollout_mode")).lower() or "off"
+    if rollout_mode not in {"off", "shadow", "allowlist", "all"}:
+        raise SystemConfigValidationError("ontology_evidence.rollout_mode 仅支持 off | shadow | allowlist | all")
+    tool_exposure_mode = _coerce_string(normalized.get("tool_exposure_mode")).lower() or "adaptive"
+    if tool_exposure_mode not in {"adaptive", "always"}:
+        raise SystemConfigValidationError("ontology_evidence.tool_exposure_mode 仅支持 adaptive | always")
+    runtime_fact_write_mode = _coerce_string(normalized.get("runtime_fact_write_mode")).lower() or "sync"
+    if runtime_fact_write_mode not in {"sync", "batched", "off"}:
+        raise SystemConfigValidationError("ontology_evidence.runtime_fact_write_mode 仅支持 sync | batched | off")
+    semantic_mode = _coerce_string(normalized.get("semantic_mode")).lower() or "off"
+    if semantic_mode not in {"off", "local", "external"}:
+        raise SystemConfigValidationError("ontology_evidence.semantic_mode 仅支持 off | local | external")
+
+    positive_fields = {
+        "sweeper_interval_seconds": 1,
+        "runtime_fact_write_timeout_ms": 1,
+        "runtime_fact_batch_size": 1,
+        "runtime_fact_flush_interval_ms": 1,
+    }
+    for field_name, minimum in positive_fields.items():
+        value = int(normalized.get(field_name) if normalized.get(field_name) is not None else minimum)
+        if value < minimum:
+            raise SystemConfigValidationError(f"ontology_evidence.{field_name} 必须大于等于 {minimum}")
+        normalized[field_name] = value
+    structured_enabled = bool(normalized.get("structured_context_enabled", True))
+    search_enabled = bool(normalized.get("search_enabled", True))
+    if search_enabled and not structured_enabled:
+        raise SystemConfigValidationError(
+            "ontology_evidence.search_enabled=true 要求 structured_context_enabled=true"
+        )
+    normalized.update(
+        {
+            "enabled": bool(normalized.get("enabled", False)),
+            "rollout_mode": rollout_mode,
+            "rollout_workspace_ids": _coerce_string(normalized.get("rollout_workspace_ids")),
+            "search_enabled": search_enabled,
+            "tool_exposure_mode": tool_exposure_mode,
+            "auto_build_enabled": bool(normalized.get("auto_build_enabled", False)),
+            "sweeper_enabled": bool(normalized.get("sweeper_enabled", True)),
+            "structured_context_enabled": structured_enabled,
+            "runtime_fact_write_mode": runtime_fact_write_mode,
+            "semantic_mode": semantic_mode,
+            "graph_enabled": bool(normalized.get("graph_enabled", True)),
+        }
+    )
+    return normalized
+
+
 def load_system_config() -> dict[str, dict[str, Any]]:
     with _CONFIG_LOCK:
         return _load_system_config_unlocked()
@@ -1055,6 +1124,8 @@ def _load_system_config_unlocked() -> dict[str, dict[str, Any]]:
                 effective[section] = _normalize_web_search_effective(effective[section])
             if section == "skill_evolution":
                 effective[section] = _normalize_skill_evolution_effective(effective[section])
+            if section == "ontology_evidence":
+                effective[section] = _normalize_ontology_evidence_effective(effective[section])
 
         # 特殊处理 llm_profiles
         effective[_LLM_PROFILES_SECTION] = _normalize_llm_profiles_section(
@@ -1180,6 +1251,8 @@ def _merge_section_update(
         merged = _normalize_web_search_effective(merged)
     if section == "skill_evolution":
         merged = _normalize_skill_evolution_effective(merged)
+    if section == "ontology_evidence":
+        merged = _normalize_ontology_evidence_effective(merged)
 
     return merged
 
@@ -1316,6 +1389,8 @@ def build_effective_section_config(section: str, data: dict[str, Any] | None = N
         next_effective = _normalize_web_search_effective(next_effective)
     if normalized_section == "skill_evolution":
         next_effective = _normalize_skill_evolution_effective(next_effective)
+    if normalized_section == "ontology_evidence":
+        next_effective = _normalize_ontology_evidence_effective(next_effective)
     return normalized_section, next_effective
 
 

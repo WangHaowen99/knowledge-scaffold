@@ -1,5 +1,6 @@
 """Ontology management endpoints: list, import, delete and file operations."""
 
+import hashlib
 import ctypes
 import errno
 import io
@@ -9,9 +10,10 @@ import shutil
 import stat
 import tempfile
 import unicodedata
+import uuid
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Mapping, Optional
 
 import yaml
 from fastapi import APIRouter, Depends, Request
@@ -25,6 +27,7 @@ from api.dependencies import (
     require_workspace_owner_or_admin_id,
 )
 from api.request_parsing import read_optional_json_object
+from api.auth.auth import get_current_user
 from utils.logging import get_logger
 from ontology.ontologies import (
     OntologyLoader,
@@ -37,7 +40,6 @@ from ontology.ontologies import (
     validate_ontology_manifest_schema,
     validate_ontology_version_revision,
     save_ontology_manifest_data,
-    set_ontology_active_version,
 )
 from ontology.ontology_catalog import (
     find_asset_file,
@@ -86,6 +88,16 @@ from agent.tools.business_data.ontology_sources_store import (
 )
 from persistence.chat_store import ChatStore
 from ontology.ontology_graph import build_ontology_graph
+from ontology.change_events import build_digest_hints, empty_digest_hints
+from ontology.evidence.identity import build_semantic_manifest_digest
+from ontology.evidence.source_reader import PackageSourceReader
+from ontology.mutations import (
+    OntologyMutationError,
+    OntologyMutationConflictError,
+    OntologyMutationCoordinator,
+    PreparedOntologyMutation,
+    read_mutation_state_snapshot,
+)
 from workspace.workspaces import (
     get_workspace_paths,
     get_workspace_ontologies_root,
@@ -144,6 +156,200 @@ def _read_limited_zip_upload(
 ONTOLOGY_VERSIONED_SKIP_NAMES = {"manifest.yaml", "versions"}
 class OntologyImportError(ValueError):
     """A stable client-visible import validation error."""
+
+
+def _mutation_coordinator(workspace_id: str) -> OntologyMutationCoordinator:
+    return OntologyMutationCoordinator(get_workspace_paths(workspace_id).runtime_dir)
+
+
+def _mutation_audit_fields(request: Optional[Request] = None) -> dict:
+    user = get_current_user()
+    request_id = None
+    if request is not None:
+        request_id = str(request.headers.get("X-Request-Id") or "").strip() or None
+    return {
+        "operator": {"type": "user", "id": user.username} if user is not None else None,
+        "request_id": request_id[:128] if request_id else None,
+    }
+
+
+def _manifest_state(ontology_dir: Path) -> tuple[dict, str, bool]:
+    manifest = load_ontology_manifest_data(ontology_dir)
+    active_version = str(manifest.get("active_version") or manifest.get("version") or "").strip()
+    raw_enabled = manifest.get("enabled", True)
+    if isinstance(raw_enabled, bool):
+        enabled = raw_enabled
+    else:
+        enabled = str(raw_enabled).strip().lower() not in {"false", "0", "no", "off", "disabled", "禁用"}
+    return manifest, active_version, enabled
+
+
+def _mutation_base_revision(workspace_id: str, ontology_id: str) -> int:
+    state = read_mutation_state_snapshot(
+        get_workspace_paths(workspace_id).runtime_dir,
+        workspace_id=workspace_id,
+        ontology_id=ontology_id,
+    )
+    return int((state or {}).get("mutation_revision") or 0)
+
+
+def _file_content_precondition(
+    target: Path,
+    expected_content: bytes | None,
+) -> Callable[[], None]:
+    """Validate the prepared file snapshot while the ontology mutation lock is held."""
+
+    def validate() -> None:
+        if expected_content is None:
+            unchanged = not target.exists()
+        else:
+            try:
+                unchanged = target.is_file() and target.read_bytes() == expected_content
+            except OSError:
+                unchanged = False
+        if not unchanged:
+            raise OntologyMutationConflictError(
+                "MUTATION_CONTENT_CONFLICT",
+                "ontology file changed after the mutation was prepared",
+            )
+
+    return validate
+
+
+def _prepare_atomic_bytes_replace(
+    target: Path,
+    content: bytes,
+) -> tuple[Callable[[], None], Callable[[], None], Callable[[], None]]:
+    """Prepare a same-filesystem replace with a reversible old-file backup."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    staged = target.with_name(f".{target.name}.{token}.mutation")
+    backup = target.with_name(f".{target.name}.{token}.backup")
+    staged.write_bytes(content)
+    existed = target.is_file()
+    backup_created = False
+    replacement_installed = False
+
+    def commit() -> None:
+        nonlocal backup_created, replacement_installed
+        if existed:
+            os.replace(target, backup)
+            backup_created = True
+        os.replace(staged, target)
+        replacement_installed = True
+
+    def rollback() -> None:
+        if replacement_installed and target.exists():
+            target.unlink()
+        if backup_created and backup.exists():
+            os.replace(backup, target)
+        staged.unlink(missing_ok=True)
+
+    def finalize() -> None:
+        backup.unlink(missing_ok=True)
+        staged.unlink(missing_ok=True)
+
+    return commit, rollback, finalize
+
+
+def _prepare_atomic_directory_delete(
+    target: Path,
+) -> tuple[Callable[[], None], Callable[[], None], Callable[[], None]]:
+    tombstone = target.with_name(f".{target.name}.{uuid.uuid4().hex}.deleted")
+
+    def commit() -> None:
+        os.replace(target, tombstone)
+
+    def rollback() -> None:
+        if tombstone.exists() and not target.exists():
+            os.replace(tombstone, target)
+
+    def finalize() -> None:
+        if tombstone.is_dir():
+            shutil.rmtree(tombstone)
+        else:
+            tombstone.unlink(missing_ok=True)
+
+    return commit, rollback, finalize
+
+
+def _prepare_atomic_directory_replace(
+    staged: Path,
+    target: Path,
+    backup: Path,
+) -> tuple[Callable[[], None], Callable[[], None], Callable[[], None]]:
+    """Prepare a reversible same-filesystem directory replacement."""
+    backup_created = False
+    replacement_installed = False
+
+    def commit() -> None:
+        nonlocal backup_created, replacement_installed
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            os.replace(target, backup)
+            backup_created = True
+        os.replace(staged, target)
+        replacement_installed = True
+
+    def rollback() -> None:
+        if replacement_installed and target.exists():
+            shutil.rmtree(target)
+        if backup_created and backup.exists():
+            os.replace(backup, target)
+
+    def finalize() -> None:
+        if backup.is_dir():
+            shutil.rmtree(backup)
+        else:
+            backup.unlink(missing_ok=True)
+
+    return commit, rollback, finalize
+
+
+def _combine_prepared_steps(
+    *steps: tuple[Callable[[], None], Callable[[], None], Callable[[], None]],
+) -> tuple[Callable[[], None], Callable[[], None], Callable[[], None]]:
+    attempted_count = 0
+
+    def commit() -> None:
+        nonlocal attempted_count
+        for index, (step_commit, _step_rollback, _step_finalize) in enumerate(steps):
+            # A step can mutate the filesystem and then fail (for example, the
+            # first os.replace succeeds while the second one fails). Include
+            # that in-progress step in rollback before invoking it.
+            attempted_count = index + 1
+            step_commit()
+
+    def rollback() -> None:
+        rollback_errors: list[BaseException] = []
+        for _step_commit, step_rollback, _step_finalize in reversed(steps[:attempted_count]):
+            try:
+                step_rollback()
+            except BaseException as exc:
+                rollback_errors.append(exc)
+        if rollback_errors:
+            raise rollback_errors[0]
+
+    def finalize() -> None:
+        for _step_commit, _step_rollback, step_finalize in steps:
+            step_finalize()
+
+    return commit, rollback, finalize
+
+
+def _cleanup_mutation_staging_root(staging_root: Path, error: BaseException) -> None:
+    """Remove ordinary staging debris while preserving uncertain-state recovery data."""
+    if (
+        isinstance(error, OntologyMutationError)
+        and error.code == "MUTATION_COMMIT_STATE_UNCERTAIN"
+    ):
+        logger.critical(
+            "Preserving ontology mutation recovery data after uncertain commit: path=%s",
+            staging_root,
+        )
+        return
+    if staging_root.exists():
+        shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def _is_safe_path(base_dir: Path, target_path: Path) -> bool:
@@ -684,6 +890,7 @@ def update_ontology_business_checkpoint(
 @ontologies_router.put("/ontologies/{ontology_id}/status")
 def update_ontology_status(
     ontology_id: str,
+    request: Request,
     data: dict = Depends(_owner_json_payload),
     workspace_id: str = Depends(require_workspace_owner_or_admin_id),
 ):
@@ -698,9 +905,41 @@ def update_ontology_status(
             return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
 
         try:
-            ontology = _set_ontology_enabled(ontology_dir, data["enabled"])
+            manifest, active_version, before_enabled = _manifest_state(ontology_dir)
+            if before_enabled != data["enabled"]:
+                updated_manifest = dict(manifest)
+                updated_manifest["enabled"] = data["enabled"]
+                commit, rollback, finalize = _prepare_atomic_bytes_replace(
+                    ontology_dir / "manifest.yaml",
+                    yaml.safe_dump(updated_manifest, allow_unicode=True, sort_keys=False).encode("utf-8"),
+                )
+                _mutation_coordinator(workspace_id).commit(
+                    PreparedOntologyMutation(
+                        workspace_id=workspace_id,
+                        ontology_id=ontology_id,
+                        mutation_type="ONTOLOGY_VISIBILITY_CHANGED",
+                        before_version=active_version or None,
+                        after_version=active_version or None,
+                        before_enabled=before_enabled,
+                        after_enabled=data["enabled"],
+                        commit=commit,
+                        rollback=rollback,
+                        finalize=finalize,
+                        digest_hints=empty_digest_hints(scope_version=active_version or None),
+                        trigger="api",
+                        **_mutation_audit_fields(request),
+                    )
+                )
+            ontology = OntologyLoader.load_ontology(ontology_dir)
+            if ontology is None:
+                raise ValueError("Failed to reload ontology manifest")
             registry = get_ontology_registry(workspace_id=workspace_id)
             registry.refresh()
+        except OntologyMutationConflictError as exc:
+            return JSONResponse(
+                content={"error": str(exc), "code": exc.code},
+                status_code=409,
+            )
         except Exception:
             logger.exception(
                 "Failed to update ontology status: workspace_id=%s ontology_id=%s",
@@ -720,6 +959,7 @@ def update_ontology_status(
 @ontologies_router.put("/ontologies/{ontology_id}/active-version")
 def update_ontology_active_version(
     ontology_id: str,
+    request: Request,
     data: dict = Depends(_owner_json_payload),
     workspace_id: str = Depends(require_workspace_owner_or_admin_id),
 ):
@@ -732,18 +972,51 @@ def update_ontology_active_version(
         if ontology_dir is None:
             return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
 
+        mutation_revision = None
         try:
             with _ontology_install_lock(ontology_dir):
-                if not ontology_dir.is_dir():
-                    return JSONResponse(
-                        content={"error": "Ontology not found"},
-                        status_code=404,
+                manifest = ensure_ontology_versions(ontology_dir)
+                before_version = str(manifest.get("active_version") or manifest.get("version") or "").strip()
+                versions = [str(item).strip() for item in (manifest.get("versions") or []) if str(item).strip()]
+                if version not in versions or get_ontology_version_dir(ontology_dir, version, create=False) is None:
+                    raise ValueError("Ontology version not found")
+                _manifest, _active, enabled = _manifest_state(ontology_dir)
+                if before_version != version:
+                    updated_manifest = dict(manifest)
+                    updated_manifest["active_version"] = version
+                    updated_manifest["version"] = version
+                    updated_manifest["versions"] = versions
+                    commit, rollback, finalize = _prepare_atomic_bytes_replace(
+                        ontology_dir / "manifest.yaml",
+                        yaml.safe_dump(updated_manifest, allow_unicode=True, sort_keys=False).encode("utf-8"),
                     )
-                ontology = set_ontology_active_version(ontology_dir, version)
+                    mutation_result = _mutation_coordinator(workspace_id).commit(
+                        PreparedOntologyMutation(
+                            workspace_id=workspace_id,
+                            ontology_id=ontology_id,
+                            mutation_type="ACTIVE_VERSION_CHANGED",
+                            before_version=before_version or None,
+                            after_version=version,
+                            before_enabled=enabled,
+                            after_enabled=enabled,
+                            commit=commit,
+                            rollback=rollback,
+                            finalize=finalize,
+                            digest_hints=empty_digest_hints(scope_version=version),
+                            trigger="api",
+                            **_mutation_audit_fields(request),
+                        )
+                    )
+                    mutation_revision = mutation_result.mutation_revision
+                ontology = OntologyLoader.load_ontology(ontology_dir)
+                if ontology is None:
+                    raise ValueError("Failed to reload ontology manifest")
             registry = get_ontology_registry(workspace_id=workspace_id)
             registry.refresh()
         except ValueError as exc:
             return JSONResponse(content={"error": str(exc)}, status_code=400)
+        except OntologyMutationConflictError as exc:
+            return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except Exception:
             logger.exception(
                 "Failed to update ontology active version: workspace_id=%s ontology_id=%s version=%s",
@@ -754,18 +1027,22 @@ def update_ontology_active_version(
             return JSONResponse(content={"error": "Failed to update ontology active version"}, status_code=500)
 
         export_ontology_snapshot_safely(workspace_id=workspace_id)
-        return JSONResponse(content={
+        response = {
             "success": True,
             "ontology_id": ontology.id,
             "active_version": ontology.active_version,
             "version": ontology.version,
             "versions": ontology.versions,
-        })
+        }
+        if mutation_revision is not None:
+            response["mutation_revision"] = mutation_revision
+        return JSONResponse(content=response)
 
 
 @ontologies_router.delete("/ontologies/{ontology_id}")
 def delete_ontology(
     ontology_id: str,
+    request: Request,
     workspace_id: str = Depends(require_workspace_owner_or_admin_id),
 ):
     with workspace_scope(workspace_id):
@@ -780,7 +1057,27 @@ def delete_ontology(
                         content={"error": "Ontology not found"},
                         status_code=404,
                     )
-                shutil.rmtree(ontology_dir)
+                _manifest, before_version, before_enabled = _manifest_state(ontology_dir)
+                commit, rollback, finalize = _prepare_atomic_directory_delete(ontology_dir)
+                mutation_result = _mutation_coordinator(workspace_id).commit(
+                    PreparedOntologyMutation(
+                        workspace_id=workspace_id,
+                        ontology_id=ontology_id,
+                        mutation_type="ONTOLOGY_DELETED",
+                        before_version=before_version or None,
+                        after_version=None,
+                        before_enabled=before_enabled,
+                        after_enabled=False,
+                        commit=commit,
+                        rollback=rollback,
+                        finalize=finalize,
+                        digest_hints=empty_digest_hints(scope_version=None),
+                        trigger="api",
+                        **_mutation_audit_fields(request),
+                    )
+                )
+        except OntologyMutationConflictError as exc:
+            return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except Exception:
             logger.exception(
                 "Failed to delete ontology: workspace_id=%s ontology_id=%s path=%s",
@@ -812,13 +1109,18 @@ def delete_ontology(
         )
 
         export_ontology_snapshot_safely(workspace_id=workspace_id)
-        return JSONResponse(content={"success": True, "ontology_id": ontology_id})
+        return JSONResponse(content={
+            "success": True,
+            "ontology_id": ontology_id,
+            "mutation_revision": mutation_result.mutation_revision,
+        })
 
 
 @ontologies_router.delete("/ontologies/{ontology_id}/versions/{version}")
 def delete_ontology_version(
     ontology_id: str,
     version: str,
+    request: Request,
     workspace_id: str = Depends(require_workspace_owner_or_admin_id),
 ):
     if not is_valid_ontology_version(version):
@@ -910,11 +1212,36 @@ def delete_ontology_version(
         updated_versions = [item for item in versions if item != version]
 
         try:
-            shutil.rmtree(version_dir)
-            manifest["version"] = active_version
-            manifest["active_version"] = active_version
-            manifest["versions"] = updated_versions
-            save_ontology_manifest_data(ontology_dir, manifest)
+            updated_manifest = dict(manifest)
+            updated_manifest["version"] = active_version
+            updated_manifest["active_version"] = active_version
+            updated_manifest["versions"] = updated_versions
+            _manifest, _active, enabled = _manifest_state(ontology_dir)
+            directory_step = _prepare_atomic_directory_delete(version_dir)
+            manifest_step = _prepare_atomic_bytes_replace(
+                ontology_dir / "manifest.yaml",
+                yaml.safe_dump(updated_manifest, allow_unicode=True, sort_keys=False).encode("utf-8"),
+            )
+            commit, rollback, finalize = _combine_prepared_steps(directory_step, manifest_step)
+            mutation_result = _mutation_coordinator(workspace_id).commit(
+                PreparedOntologyMutation(
+                    workspace_id=workspace_id,
+                    ontology_id=ontology_id,
+                    mutation_type="ONTOLOGY_VERSION_DELETED",
+                    before_version=active_version or None,
+                    after_version=active_version or None,
+                    before_enabled=enabled,
+                    after_enabled=enabled,
+                    commit=commit,
+                    rollback=rollback,
+                    finalize=finalize,
+                    digest_hints=empty_digest_hints(scope_version=active_version or None),
+                    trigger="api",
+                    **_mutation_audit_fields(request),
+                )
+            )
+        except OntologyMutationConflictError as exc:
+            return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except Exception:
             logger.exception(
                 "Failed to delete ontology version: workspace_id=%s ontology_id=%s version=%s path=%s",
@@ -943,6 +1270,7 @@ def delete_ontology_version(
             "deleted_version": version,
             "active_version": active_version,
             "versions": updated_versions,
+            "mutation_revision": mutation_result.mutation_revision,
         })
 
 
@@ -1249,6 +1577,7 @@ def get_ontology_file(
 @ontologies_router.put("/ontologies/{ontology_id}/file")
 def update_ontology_file(
     ontology_id: str,
+    request: Request,
     data: dict = Depends(_owner_json_payload),
     workspace_id: str = Depends(require_workspace_owner_or_admin_id),
 ):
@@ -1290,25 +1619,74 @@ def update_ontology_file(
         if not file_path.exists() or not file_path.is_file():
             return JSONResponse(content={"error": "File not found"}, status_code=404)
 
+        mutation_revision = None
         try:
-            _stage_and_commit_revision_file(
-                folder_path.parent,
-                file_path.relative_to(folder_path.parent),
-                content,
-            )
+            content_bytes = content.encode("utf-8")
+            current_bytes = file_path.read_bytes()
+            if current_bytes != content_bytes:
+                _stage_and_commit_revision_file(
+                    folder_path.parent,
+                    file_path.relative_to(folder_path.parent),
+                    content,
+                )
+                ontology_dir = _resolve_ontology_dir(ontology_id)
+                if ontology_dir is None:
+                    return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
+                _manifest, active_version, enabled = _manifest_state(ontology_dir)
+                target_version = version or active_version
+                if target_version == active_version:
+                    base_revision = _mutation_base_revision(workspace_id, ontology_id)
+                    digest_hints = build_digest_hints(
+                        scope_version=active_version,
+                        completeness="partial",
+                        mutation_revision=1,
+                        entries={
+                            f"{folder_key}/{safe_name}": {
+                                "sha256": hashlib.sha256(content_bytes).hexdigest(),
+                                "size_bytes": len(content_bytes),
+                            }
+                        },
+                    )
+                    mutation_result = _mutation_coordinator(workspace_id).commit(
+                        PreparedOntologyMutation(
+                            workspace_id=workspace_id,
+                            ontology_id=ontology_id,
+                            mutation_type="ONTOLOGY_FILE_CHANGED",
+                            before_version=active_version,
+                            after_version=active_version,
+                            before_enabled=enabled,
+                            after_enabled=enabled,
+                            # The staged revision write above already replaced the
+                            # file; the mutation only records the revision and
+                            # revokes the evidence index pointer so a worker can
+                            # rebuild the ontology revision.
+                            commit=lambda: None,
+                            rollback=lambda: None,
+                            digest_hints=digest_hints,
+                            trigger="api",
+                            base_mutation_revision=base_revision,
+                            **_mutation_audit_fields(request),
+                        )
+                    )
+                    mutation_revision = mutation_result.mutation_revision
+        except OntologyMutationConflictError as exc:
+            return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except ValueError as exc:
             return JSONResponse(content={"error": str(exc)}, status_code=400)
         except Exception:
             logger.exception("Failed to update ontology file: %s", file_path)
             return JSONResponse(content={"error": "Failed to save file"}, status_code=500)
 
-        return JSONResponse(content={
+        response = {
             "success": True,
             "folder": folder_key,
             "label": ONTOLOGY_FOLDER_LABELS[folder_key],
             "version": version,
             "name": safe_name,
-        })
+        }
+        if mutation_revision is not None:
+            response["mutation_revision"] = mutation_revision
+        return JSONResponse(content=response)
 
 
 @ontologies_router.post("/ontologies/{ontology_id}/upload")
@@ -1373,27 +1751,76 @@ def upload_ontology_file(
         if count_error:
             return JSONResponse(content={"error": count_error}, status_code=400)
         existed = target_path.exists()
+        mutation_revision = None
 
         try:
-            _stage_and_commit_revision_file(
-                folder_path.parent,
-                target_path.relative_to(folder_path.parent),
-                content,
-            )
+            existing_bytes = target_path.read_bytes() if target_path.is_file() else None
+            unchanged = existing_bytes is not None and existing_bytes == uploaded_bytes
+            if not unchanged:
+                _stage_and_commit_revision_file(
+                    folder_path.parent,
+                    target_path.relative_to(folder_path.parent),
+                    content,
+                )
+                ontology_dir = _resolve_ontology_dir(ontology_id)
+                if ontology_dir is None:
+                    return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
+                _manifest, active_version, enabled = _manifest_state(ontology_dir)
+                target_version = version or active_version
+                if target_version == active_version:
+                    base_revision = _mutation_base_revision(workspace_id, ontology_id)
+                    digest_hints = build_digest_hints(
+                        scope_version=active_version,
+                        completeness="partial",
+                        mutation_revision=1,
+                        entries={
+                            f"{folder_key}/{safe_name}": {
+                                "sha256": hashlib.sha256(uploaded_bytes).hexdigest(),
+                                "size_bytes": len(uploaded_bytes),
+                            }
+                        },
+                    )
+                    mutation_result = _mutation_coordinator(workspace_id).commit(
+                        PreparedOntologyMutation(
+                            workspace_id=workspace_id,
+                            ontology_id=ontology_id,
+                            mutation_type="ONTOLOGY_FILE_CHANGED",
+                            before_version=active_version,
+                            after_version=active_version,
+                            before_enabled=enabled,
+                            after_enabled=enabled,
+                            # The staged revision write above already replaced the
+                            # file; the mutation only records the revision and
+                            # revokes the evidence index pointer so a worker can
+                            # rebuild the ontology revision.
+                            commit=lambda: None,
+                            rollback=lambda: None,
+                            digest_hints=digest_hints,
+                            trigger="upload",
+                            base_mutation_revision=base_revision,
+                            **_mutation_audit_fields(request),
+                        )
+                    )
+                    mutation_revision = mutation_result.mutation_revision
+        except OntologyMutationConflictError as exc:
+            return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except ValueError as exc:
             return JSONResponse(content={"error": str(exc)}, status_code=400)
         except Exception:
             logger.exception("Failed to upload ontology file: %s", target_path)
             return JSONResponse(content={"error": "Failed to upload file"}, status_code=500)
 
-        return JSONResponse(content={
+        response = {
             "success": True,
             "folder": folder_key,
             "label": ONTOLOGY_FOLDER_LABELS[folder_key],
             "version": version,
             "name": safe_name,
             "overwritten": existed,
-        }, status_code=201)
+        }
+        if mutation_revision is not None:
+            response["mutation_revision"] = mutation_revision
+        return JSONResponse(content=response, status_code=201)
 
 
 def _find_skill_source_root(extract_root: Path) -> Optional[Path]:
@@ -2025,6 +2452,36 @@ def _copy_versioned_package_contents(source_root: Path, target_root: Path) -> No
         shutil.rmtree(staging_root, ignore_errors=True)
 
 
+def _build_complete_package_digest_hints(
+    *,
+    version_dir: Path,
+    ontology_id: str,
+    ontology_version: str,
+    manifest: Mapping[str, object],
+    mutation_revision: int,
+) -> dict[str, object]:
+    """Build the complete semantic digest set used by OntologyChanged/v1."""
+    package_sources = PackageSourceReader().read(
+        ontology_dir=version_dir,
+        ontology_id=ontology_id,
+        ontology_version=ontology_version,
+    )
+    entries: dict[str, dict[str, object]] = {}
+    for source in package_sources.sources:
+        raw_bytes = (version_dir / source.source_path).read_bytes()
+        entries[source.source_path] = {
+            "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            "size_bytes": len(raw_bytes),
+        }
+    return build_digest_hints(
+        scope_version=ontology_version,
+        completeness="complete",
+        mutation_revision=mutation_revision,
+        semantic_manifest_digest=build_semantic_manifest_digest(manifest),
+        entries=entries,
+    )
+
+
 def _prepare_shared_manifest(
     *,
     ontology_dir: Path,
@@ -2054,7 +2511,7 @@ def _prepare_shared_manifest(
     )
 
 
-def _install_ontology_version_package(
+def _install_ontology_version_package_in_place(
     *,
     source_root: Path,
     ontology_dir: Path,
@@ -2142,12 +2599,201 @@ def _deterministic_operation_immutable_response():
     )
 
 
+def _install_ontology_version_package(
+    *,
+    source_root: Path,
+    ontology_dir: Path,
+    ontology_id: str,
+    ontology_name: str,
+    ontology_description: str,
+    target_version: str,
+    existed: bool,
+    workspace_id: str,
+    request: Optional[Request] = None,
+    mutation_audit: Optional[Mapping[str, object]] = None,
+    mutation_trigger: str = "import",
+    allow_existing_target: bool = False,
+) -> tuple[Path, int]:
+    """Run the staged install and swap under the install lock (serializes
+    concurrent installs and other ontology mutations), recording the mutation
+    through the coordinator."""
+    ontology_dir.parent.mkdir(parents=True, exist_ok=True)
+    coordinator = _mutation_coordinator(workspace_id)
+
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=f".{ontology_id}-mutation-", dir=str(ontology_dir.parent))
+    )
+    staged_dir = staging_root / ontology_id
+    backup_dir = staging_root / f"{ontology_id}.backup"
+    try:
+        with _ontology_install_lock(ontology_dir):
+            # Re-read the authoritative state while holding the install lock so
+            # a stably-serialized concurrent install is not based on a stale
+            # mutation revision or before-state captured before lock acquisition.
+            state = coordinator.store.get_state(workspace_id=workspace_id, ontology_id=ontology_id)
+            base_revision = int(state["mutation_revision"]) if state is not None else 0
+            if existed:
+                _before_manifest, before_version, before_enabled = _manifest_state(ontology_dir)
+            else:
+                before_version, before_enabled = "", False
+            if existed:
+                shutil.copytree(ontology_dir, staged_dir)
+            version_dir = _install_ontology_version_package_in_place(
+                source_root=source_root,
+                ontology_dir=staged_dir,
+                ontology_id=ontology_id,
+                ontology_name=ontology_name,
+                ontology_description=ontology_description,
+                target_version=target_version,
+                existed=existed,
+                allow_existing_target=allow_existing_target,
+            )
+            staged_manifest, after_version, after_enabled = _manifest_state(staged_dir)
+            digest_hints = _build_complete_package_digest_hints(
+                version_dir=version_dir,
+                ontology_id=ontology_id,
+                ontology_version=after_version,
+                manifest=staged_manifest,
+                mutation_revision=base_revision + 1,
+            )
+
+            commit, rollback, finalize_swap = _prepare_atomic_directory_replace(
+                staged_dir,
+                ontology_dir,
+                backup_dir,
+            )
+
+            def finalize() -> None:
+                finalize_swap()
+                if staging_root.exists():
+                    shutil.rmtree(staging_root)
+
+            audit_fields = dict(mutation_audit) if mutation_audit is not None else _mutation_audit_fields(request)
+            mutation_result = coordinator.commit(
+                PreparedOntologyMutation(
+                    workspace_id=workspace_id,
+                    ontology_id=ontology_id,
+                    mutation_type="ONTOLOGY_IMPORTED",
+                    before_version=before_version or None,
+                    after_version=after_version,
+                    before_enabled=before_enabled,
+                    after_enabled=after_enabled,
+                    commit=commit,
+                    rollback=rollback,
+                    finalize=finalize,
+                    digest_hints=digest_hints,
+                    trigger=mutation_trigger,
+                    base_mutation_revision=base_revision,
+                    **audit_fields,
+                )
+            )
+        return ontology_dir / "versions" / target_version, mutation_result.mutation_revision
+    except Exception as exc:
+        _cleanup_mutation_staging_root(staging_root, exc)
+        raise
+
+
+def _overwrite_ontology_active_version_package(
+    *,
+    source_root: Path,
+    ontology_dir: Path,
+    ontology_id: str,
+    workspace_id: str,
+    request: Optional[Request] = None,
+    mutation_audit: Optional[Mapping[str, object]] = None,
+    mutation_trigger: str = "admin",
+) -> tuple[Path, int]:
+    """Atomically replace the active version and emit ONTOLOGY_FILE_CHANGED.
+
+    Skill evolution's overwrite mode keeps the public version number stable,
+    but it still changes the authoritative package bytes.  Routing the swap
+    through the mutation coordinator guarantees pointer revocation, revision
+    monotonicity and a durable OntologyChanged/v1 outbox event.
+    """
+    if not ontology_dir.is_dir():
+        raise ValueError("Ontology directory not found")
+
+    ontology_dir.parent.mkdir(parents=True, exist_ok=True)
+    coordinator = _mutation_coordinator(workspace_id)
+    state = coordinator.store.get_state(workspace_id=workspace_id, ontology_id=ontology_id)
+    base_revision = int(state["mutation_revision"]) if state is not None else 0
+    _before_manifest, active_version, enabled = _manifest_state(ontology_dir)
+    if not active_version:
+        raise ValueError("Ontology active version is missing")
+
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=f".{ontology_id}-mutation-", dir=str(ontology_dir.parent))
+    )
+    staged_dir = staging_root / ontology_id
+    backup_dir = staging_root / f"{ontology_id}.backup"
+    try:
+        shutil.copytree(ontology_dir, staged_dir)
+        staged_version_dir = get_ontology_version_dir(
+            staged_dir,
+            active_version,
+            create=False,
+        )
+        if staged_version_dir is None:
+            raise ValueError("Ontology active version directory not found")
+        _copy_versioned_package_contents(source_root, staged_version_dir)
+
+        staged_manifest, after_version, after_enabled = _manifest_state(staged_dir)
+        if after_version != active_version or after_enabled != enabled:
+            raise ValueError("Overwrite must not change ontology version or visibility")
+        digest_hints = _build_complete_package_digest_hints(
+            version_dir=staged_version_dir,
+            ontology_id=ontology_id,
+            ontology_version=active_version,
+            manifest=staged_manifest,
+            mutation_revision=base_revision + 1,
+        )
+
+        commit, rollback, finalize_swap = _prepare_atomic_directory_replace(
+            staged_dir,
+            ontology_dir,
+            backup_dir,
+        )
+
+        def finalize() -> None:
+            finalize_swap()
+            if staging_root.exists():
+                shutil.rmtree(staging_root)
+
+        audit_fields = dict(mutation_audit) if mutation_audit is not None else _mutation_audit_fields(request)
+        mutation_result = coordinator.commit(
+            PreparedOntologyMutation(
+                workspace_id=workspace_id,
+                ontology_id=ontology_id,
+                mutation_type="ONTOLOGY_FILE_CHANGED",
+                before_version=active_version,
+                after_version=active_version,
+                before_enabled=enabled,
+                after_enabled=enabled,
+                commit=commit,
+                rollback=rollback,
+                finalize=finalize,
+                digest_hints=digest_hints,
+                trigger=mutation_trigger,
+                base_mutation_revision=base_revision,
+                **audit_fields,
+            )
+        )
+        return (
+            ontology_dir / "versions" / active_version,
+            mutation_result.mutation_revision,
+        )
+    except Exception as exc:
+        _cleanup_mutation_staging_root(staging_root, exc)
+        raise
+
+
 def _optional_path_str(path: Path) -> Optional[str]:
     return str(path) if path.exists() else None
 
 
 @ontologies_router.post("/ontologies/import-zip")
 def import_ontology_zip_with_auto_create(
+    request: Request,
     form: FormData = Depends(_owner_multipart_form),
     workspace_id: str = Depends(require_workspace_owner_or_admin_id),
 ):
@@ -2376,7 +3022,7 @@ def import_ontology_zip_with_auto_create(
                                 )
                             )
                         )
-                    )
+)
                     if alias_errors:
                         logger.warning(
                             "Import rejected by alias validation: ontology_id=%s errors=%s",
@@ -2406,7 +3052,7 @@ def import_ontology_zip_with_auto_create(
                             content={"error": "Failed to initialize CheckPoint capability"},
                             status_code=500,
                         )
-                    version_dir = _install_ontology_version_package(
+                    version_dir, mutation_revision = _install_ontology_version_package(
                         source_root=normalization.root,
                         ontology_dir=ontology_dir,
                         ontology_id=ontology_id,
@@ -2414,6 +3060,7 @@ def import_ontology_zip_with_auto_create(
                         ontology_description=ontology_description,
                         target_version=target_version,
                         existed=existed,
+                        workspace_id=workspace_id,
                         allow_existing_target=overwritten,
                     )
                 objects_count = _count_markdown_files(version_dir / "objects")
@@ -2492,6 +3139,7 @@ def import_ontology_zip_with_auto_create(
             "ontology_name": ontology_name,
             "version": target_version,
             "active_version": target_version,
+            "mutation_revision": mutation_revision,
             "source_root": str(source_root),
             "objects_count": objects_count,
             "operations_count": operations_count,

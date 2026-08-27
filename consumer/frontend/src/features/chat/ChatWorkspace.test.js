@@ -103,6 +103,12 @@ test('agent stream ownership remains mounted while the chat surface changes', ()
   assert.equal(chatSource.includes('const { sendAgentic, resumeAgentic } = agenticStream;'), true);
 });
 
+test('trace and evidence panels have explicit accessible controls and keep the mobile backdrop close action', () => {
+  assert.equal(chatSource.includes("const [inspectorMode, setInspectorMode] = useState('trace');"), true);
+  assert.equal(chatSource.includes('className={`evidence-toggle ${inspectorMode === \'evidence\' && traceOpen ? \'on\' : \'\'}`}'), true);
+  assert.equal(chatSource.includes('title="查看回答证据"'), true);
+});
+
 test('live chat consumes PublicEvent while legacy decoding stays in hydration', () => {
   assert.equal(streamManagerSource.includes('decodePublicEventFrame'), true);
   assert.equal(streamManagerSource.includes('error instanceof PublicEventProtocolError'), true);
@@ -117,9 +123,9 @@ test('live chat consumes PublicEvent while legacy decoding stays in hydration', 
 test('trace panel has one accessible toggle and keeps the mobile backdrop close action', () => {
   assert.equal(chatSource.includes("const traceToggleLabel = traceOpen ? '收起运行轨迹' : '展开运行轨迹';"), true);
   assert.equal(chatSource.includes('className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}'), true);
-  assert.equal(chatSource.includes('onClick={() => setTraceOpen((v) => !v)}'), true);
+  assert.equal(chatSource.includes("else { setInspectorMode('trace'); setTraceOpen(true); }"), true);
   assert.equal(chatSource.includes('className="trace-backdrop"'), true);
-  assert.equal(chatSource.includes('onClose={() => setTraceOpen(false)}'), false);
+  assert.equal(chatSource.includes('onClose={() => setTraceOpen(false)}'), true);
   assert.equal(tracePanelSource.includes('onClose'), false);
   assert.equal(tracePanelSource.includes('trace-close'), false);
   assert.equal(chatCssSource.includes('trace-close'), false);

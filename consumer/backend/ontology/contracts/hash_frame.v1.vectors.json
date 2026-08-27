@@ -1,0 +1,37 @@
+{
+  "contract": "HashFrameVectors/v1",
+  "hash_contract": "HashFrame/v1",
+  "encoding": "UTF-8",
+  "vectors": [
+    {
+      "name": "concat-ab-c",
+      "domain": "test_concat/v1",
+      "fields": [{"name": "left", "type": "s", "value": "ab"}, {"name": "right", "type": "s", "value": "c"}],
+      "sha256": "cc49cb5bda0c596900a4afd46406e8e80f50a2f8edbf052b2bc85bd71571d461"
+    },
+    {
+      "name": "concat-a-bc",
+      "domain": "test_concat/v1",
+      "fields": [{"name": "left", "type": "s", "value": "a"}, {"name": "right", "type": "s", "value": "bc"}],
+      "sha256": "32f47e20aed926cdcd4e1fff04acc642549df811676f351c2a48926514dbb3ab"
+    },
+    {
+      "name": "empty-string",
+      "domain": "test_concat/v1",
+      "fields": [{"name": "value", "type": "s", "value": ""}],
+      "sha256": "f607c6760702a364615c05c9446de9695dd4c49787e42fb8599ca62c579aea47"
+    },
+    {
+      "name": "null",
+      "domain": "test_concat/v1",
+      "fields": [{"name": "value", "type": "n", "value": null}],
+      "sha256": "293f3e53ebb1ab835611b48c889cb65708fd612273cbf30d3b5794d3e219d9d0"
+    },
+    {
+      "name": "integer",
+      "domain": "test_concat/v1",
+      "fields": [{"name": "ordinal", "type": "i", "value": 12}],
+      "sha256": "62f237ca86a10a3c711392cf7f47fac1a65f17beaa654c50da60023dc6c8dbee"
+    }
+  ]
+}
