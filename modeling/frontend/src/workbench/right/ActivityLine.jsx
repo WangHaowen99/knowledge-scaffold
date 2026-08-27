@@ -38,20 +38,29 @@ export function traceRunActivity(trace, run, executionStart) {
   };
 }
 
+function isPostToolPlanningActivity(activity) {
+  return activity?.text === '正在根据处理结果判断下一步'
+    && (String(activity?.phase || '') === 'planning'
+      || String(activity?.id || '').startsWith('after-tool:'));
+}
+
 export function visibleRunActivity({ activity, run, interaction, streaming, trace }, now = Date.now()) {
   const status = String(run?.status || '');
   const active = ['queued', 'running'].includes(status);
   if (interaction && !active) return null;
   if (status && !['queued', 'running'].includes(status)) return null;
   const executionStart = executionStartedAt(run, now);
+  let currentActivity = null;
   if (activity) {
     const observedAt = Number(activity.observedAt);
     if (executionStart === undefined
-      || (Number.isFinite(observedAt) && observedAt >= executionStart - 1_000)) return activity;
+      || (Number.isFinite(observedAt) && observedAt >= executionStart - 1_000)) currentActivity = activity;
   }
-  if (!['queued', 'running'].includes(status)) return null;
+  if (currentActivity && !isPostToolPlanningActivity(currentActivity)) return currentActivity;
+  if (!['queued', 'running'].includes(status)) return currentActivity;
   const traceActivity = traceRunActivity(trace, run, executionStart);
   if (traceActivity) return traceActivity;
+  if (currentActivity) return currentActivity;
   return {
     id: `run:${run?.id || 'active'}`,
     text: status === 'queued'

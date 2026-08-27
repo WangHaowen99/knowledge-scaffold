@@ -374,7 +374,7 @@ async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
         "findingCount": 1,
     }), ("progress", {
         "activityId": "after-tool:call_goal_evidence",
-        "text": "正在根据处理结果判断下一步",
+        "text": "建模目标中的资料依据还不能打开原文",
         "detail": "当前操作已经结束，正在规划下一项可执行工作",
         "phase": "planning",
         "counters": {},
