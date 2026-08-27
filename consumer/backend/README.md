@@ -1,6 +1,6 @@
 # Agentic Backend
 
-Flask backend for the refactored agent runtime. It exposes authenticated REST endpoints, streams `agent.v2` SSE events, persists chat/execution state per user, and drives a tool-using agent loop.
+FastAPI backend for the refactored agent runtime. It exposes authenticated REST endpoints, streams typed public SSE events, persists chat/execution state per user, and drives a tool-using agent loop.
 
 Runtime ontology and skill assets now live under the `consumer/` application root `.onto-runtime/` directory:
 
@@ -41,100 +41,25 @@ Runtime ontology and skill assets now live under the `consumer/` application roo
 ## Project layout
 
 ```text
-agentic/
-├── app.py                    # Flask app factory, auth/login routes, health
-├── orchestrator.py           # Run lifecycle, persistence, cancellation
-├── exceptions.py             # Shared exception types
-├── workspaces.py             # Workspace resolution helpers
-├── loop/
-│   ├── jiuwen_adapter.py     # Jiuwen-backed main agent loop
-│   ├── jiuwen/               # Jiuwen support modules
-│   └── shared/               # Loop helpers shared by Jiuwen runtime code
-├── a2a/                      # Agent-to-Agent protocol
-│   ├── mapper.py             # A2A ↔ internal format mapping
-│   ├── models.py             # A2A data models
-│   └── service.py            # A2A service layer
-├── acp/                      # ACP protocol adapter and config
-├── business_data/            # Ontology-scoped data sources and provider adapters
-├── direct_execution/         # Script direct-execution guards and scoped runtime
-├── evolution/                # Operation evolution proposal/review services
-├── observability/            # Runtime event bus and exporters
-├── perf_analysis/            # Local performance JSONL analysis
-├── routes/
-│   ├── workflows.py          # /agentic/runs/*
-│   ├── sessions.py           # /agentic/sessions/*
-│   ├── ontologies.py         # /agentic/ontologies/*
-│   ├── skills.py             # /agentic/skills/*
-│   ├── business_data.py      # ontology data-source API and legacy retirement responses
-│   ├── operations.py         # /agentic/operations/*
-│   ├── performance.py        # /agentic/*/performance and /api/local-observability/*
-│   ├── workspaces.py         # /agentic/workspaces/*
-│   ├── a2a.py                # /a2a/* (Agent-to-Agent)
-│   └── system_config.py      # /api/system-config*
-├── tools/
-│   ├── registry.py           # Tool registry and schema lookup
-│   ├── executor.py           # Tool batch execution
-│   ├── base.py               # ToolSpec base definitions
-│   ├── events.py             # Tool event emission helpers
-│   ├── business_data_search.py
-│   ├── ontology_context.py
-│   ├── skill.py
-│   ├── memory.py
-│   ├── spawn_sub_agent.py
-│   └── execute_script.py
-├── sub_agents/
-│   ├── base.py               # SubAgent class
-│   └── manager.py            # SubAgentManager (fan-out/fan-in)
-├── memory/
-│   ├── factory.py            # Memory backend factory
-│   ├── manager.py            # OpenViking memory manager
-│   ├── filesystem_manager.py # Filesystem-backed memory manager
-│   ├── models.py             # Memory data models
-│   ├── protocol.py           # Memory manager protocol/interface
-│   └── utils.py              # Memory utilities
-├── models/
-│   ├── state.py              # AgenticState TypedDict
-│   └── events.py             # SSE event models
-├── stores/
-│   ├── chat_store.py         # Per-user chat session persistence
-│   ├── execution_store.py    # Per-user turn-level LLM context
-│   ├── run_store.py          # In-memory run lifecycle tracking
-│   └── user_store_manager.py # Per-user store instantiation
-├── services/
-│   ├── auth.py               # JWT auth and role checking
-│   ├── llm/                  # OpenAI-compatible LLM client and router
-│   ├── data_provider_client.py
-│   ├── mindsdb.py            # MindsDB HTTP client
-│   └── nl2sql.py             # NL2SQL HTTP client
-├── prompts/
-│   └── universal.py          # System prompt builder
-├── config/
-│   ├── settings.py           # LLM, App, Agent, RAG configs
-│   └── system_config.py      # Runtime system config API
-└── utils/
-    ├── logging.py
-    ├── streaming.py
-    ├── skills.py
-    ├── ontologies.py
-    ├── context_window.py     # Sliding context window logic
-    ├── json_utils.py         # JSON serialization helpers
-    ├── llm_request_mode.py   # LLM request mode selection
-    ├── read_docs.py          # Document reading utilities
-    └── reasoning_summary.py  # Reasoning summary extraction
-
-skill_parser/                 # Ontology skill file parser (top-level module)
-├── constants.py
-├── fs_utils.py
-├── mapping.py
-├── markdown_utils.py
-├── modeling_template.py
-├── models.py
-├── pipeline.py
-└── skill_ontology_parser.py
-
-tests/                        # pytest regression suite for routes, tools,
-                              # protocol adapters, observability, business data,
-                              # evolution, runtime config, and orchestration
+backend/
+├── app.py                    # FastAPI factory and ASGI lifespan
+├── run.py                    # Single-worker Uvicorn development entry point
+├── agent/
+│   ├── core/                 # Jiuwen ReAct engine and orchestration
+│   ├── runtime/              # RuntimeContainer, Manager, EventHub, Supervisor
+│   ├── tools/                # Tool registry, execution, business-data adapters
+│   ├── sub_agents/           # Sub-agent fan-out/fan-in
+│   └── memory/               # Memory backends and context construction
+├── api/
+│   ├── routes/               # FastAPI business routes
+│   ├── protocols/            # A2A, MCP, and ACP adapters
+│   └── auth/                 # Authentication and authorization
+├── persistence/              # Chat and Turn-checkpoint persistence
+├── integration/              # Observability, platform, and sandbox integrations
+├── workspace/                # Workspace resolution and ACL
+├── config/                   # Application, Agent, and system configuration
+├── migrations/               # Forward-only startup/deployment migrations
+└── tests/                    # pytest regression suite
 ```
 
 ## Run locally
@@ -170,7 +95,7 @@ The MCP service runs as a separate FastMCP process. Start it from `consumer/back
 PYTHONPATH=. python -m api.protocols.mcp.server --transport both --host 0.0.0.0 --port 7488
 ```
 
-Docker Compose deployment starts a separate `mcp` container that reuses the backend image and `.onto-runtime` mount. The Flask app exposes MCP management APIs under `/agentic/mcp/*`. Each workspace has one persistent random `mcp_endpoint_id`, and the standalone process exposes `/{mcp_endpoint_id}/search/mcp`, `/{mcp_endpoint_id}/chat/mcp`, `/{mcp_endpoint_id}/search/sse`, and `/{mcp_endpoint_id}/chat/sse`. Get the complete URLs from `GET /agentic/mcp/runtime/status`; the old fixed routes are not available. Search tools require an explicit `ontology_id` and execute graph tools without LLM calls. Chat revalidates the MCP token, workspace ACL, and the current request URL endpoint binding before entering the canonical Jiuwen workflow and admission queue. Each MCP transport session is pinned to its first endpoint and cannot be reused across workspace URLs. Streamable HTTP sessions expire after 30 idle minutes, SSE bindings are released on disconnect, and each service transport has a fixed 10000-session limit. Clients must initialize a new session after the MCP service restarts.
+Docker Compose deployment starts a separate `mcp` container that reuses the backend image and `.onto-runtime` mount. The FastAPI app exposes MCP management APIs under `/agentic/mcp/*`. Each workspace has one persistent random `mcp_endpoint_id`, and the standalone process exposes `/{mcp_endpoint_id}/search/mcp`, `/{mcp_endpoint_id}/chat/mcp`, `/{mcp_endpoint_id}/search/sse`, and `/{mcp_endpoint_id}/chat/sse`. Get the complete URLs from `GET /agentic/mcp/runtime/status`; the old fixed routes are not available. Search tools require an explicit `ontology_id` and execute graph tools without LLM calls. Chat revalidates the MCP token, workspace ACL, and the current request URL endpoint binding before entering the canonical Jiuwen workflow and admission queue. Each MCP transport session is pinned to its first endpoint and cannot be reused across workspace URLs. Streamable HTTP sessions expire after 30 idle minutes, SSE bindings are released on disconnect, and each service transport has a fixed 10000-session limit. Clients must initialize a new session after the MCP service restarts.
 
 ## Tests
 
@@ -192,13 +117,13 @@ Important variables:
 | `LLM_MODEL` | Main model id | empty |
 | `LLM_API_KEY` | Main model API key | none |
 | `LLM_TIMEOUT` | Main model timeout in seconds | `600` |
-| `LLM_MAX_TOKENS` | Main model max tokens | `4096` |
+| `LLM_MAX_TOKENS` | Main model max tokens | `32768` |
 | `LLM_TEMPERATURE` | Main model temperature | `0.7` |
 | `TASK_LLM_BASE_URL` | Optional lightweight endpoint for titles and reasoning summaries | falls back to `LLM_BASE_URL` |
 | `TASK_LLM_MODEL` | Optional lightweight model id for titles and reasoning summaries | falls back to `LLM_MODEL` |
 | `TASK_LLM_API_KEY` | Optional lightweight API key | falls back to `LLM_API_KEY` |
 | `TASK_LLM_TIMEOUT` | Lightweight model timeout in seconds | `600` |
-| `TASK_LLM_MAX_TOKENS` | Lightweight model max tokens | `4096` |
+| `TASK_LLM_MAX_TOKENS` | Lightweight model max tokens | falls back to the main model profile |
 | `TASK_LLM_TEMPERATURE` | Lightweight model temperature | `0.7` |
 | `SYSTEM_CONFIG_PATH` | Optional saved system config file path | `<consumer>/.onto-runtime/config/system_config.json` |
 | `CHAT_STORAGE_DIR` | Session JSON storage; release defaults resolve to `<PROJECT_ROOT>/data/chats` | `<PROJECT_ROOT>/data/chats` |
@@ -212,7 +137,7 @@ Important variables:
 | `AUTH_USERS_FILE` | User credential file | `<consumer>/.onto-runtime/users.json` |
 | `AUTH_SECRET` | JWT signing secret | `dev-secret-change` fallback if unset |
 | `AUTH_TOKEN_TTL` | JWT TTL in seconds | `43200` |
-| `MCP_SERVER_HOST` | Standalone MCP server host; Docker Compose overrides this to `mcp` in the Flask container for internal probing and to `0.0.0.0` in the MCP container for binding | `0.0.0.0` |
+| `MCP_SERVER_HOST` | Standalone MCP server host; Docker Compose overrides this to `mcp` in the Consumer backend container for internal probing and to `0.0.0.0` in the MCP container for binding | `0.0.0.0` |
 | `MCP_SERVER_PORT` | Standalone MCP server port; Docker Compose maps host `${MCP_SERVER_PORT:-7488}` to container `7488` | `7488` |
 | `MCP_PUBLIC_BASE_URL` | Externally reachable protocol, host, port, and optional gateway prefix. Workspace endpoint IDs and service paths are appended automatically | derived from host/port |
 | `MCP_TRANSPORT` | `both` exposes Streamable HTTP and SSE; a single transport may be selected explicitly | `both` |
@@ -252,8 +177,10 @@ Main route groups:
 - `POST /auth/login`
 - `GET /auth/me`
 - `GET /health`
-- `POST /agentic/runs/stream`
-- `GET /agentic/runs/<run_id>/status`
+- `POST /agentic/runs`
+- `POST /agentic/runs/sync`
+- `GET /agentic/runs/<run_id>`
+- `GET /agentic/runs/<run_id>/events`
 - `POST /agentic/runs/<run_id>/cancel`
 - `GET/POST/DELETE /agentic/sessions...`
 - `GET /agentic/sessions/<session_id>/performance`
@@ -279,14 +206,16 @@ Full request/response examples live in [`docs/api.md`](../docs/api.md).
 
 ## Stream protocol
 
-Workflow streaming uses:
+Each SSE record uses the typed public event name and the Run-local sequence:
 
 ```text
-event: agent.v2
-data: { ... }
+id: 1
+event: token.delta
+data: {"schema_version":"1.0","seq":1,"event_type":"token.delta",...}
 ```
 
-The JSON envelope uses protocol `agent-stream.v2`. Common event types:
+`data` is the persisted `PublicEvent`; there is no compatibility envelope.
+Common event types:
 
 - `turn.started`
 - `token.delta`

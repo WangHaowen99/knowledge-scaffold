@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/solver/schemas/submit-request.schema.json",
+  "title": "solver.job.v1 submit request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "request_ref", "problem", "requirements"],
+  "properties": {
+    "protocol_version": {"const": "solver.job.v1"},
+    "request_ref": {"type": "string", "pattern": "^req_[A-Za-z0-9_-]{20,96}$"},
+    "problem": {
+      "$ref": "../problem-families/binary_ordered_route.v1.schema.json"
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilities", "result_quality", "limits"],
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["lexicographic_objective"]}
+        },
+        "result_quality": {
+          "enum": ["optimal", "feasible", "any"]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["solve_time_ms", "workers"],
+          "properties": {
+            "solve_time_ms": {"type": "integer", "minimum": 1},
+            "workers": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    }
+  }
+}

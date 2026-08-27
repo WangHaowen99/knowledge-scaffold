@@ -2,8 +2,8 @@
 
 Design invariants (see plan section 8.1):
 
-- The worker is strictly fire-and-forget. It never blocks the SSE stream or the
-  next user turn.
+- The worker is owned by the runtime supervisor. It never blocks the SSE stream
+  or the next user turn.
 - Submissions take a snapshot of the turn state at submission time; subsequent
   session mutations cannot affect the in-flight reflection.
 - Per-user serialization ensures that two concurrent turns for the same user do
@@ -14,12 +14,10 @@ Design invariants (see plan section 8.1):
 
 from __future__ import annotations
 
-import copy
+import asyncio
 import json
 import re
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +27,8 @@ from llm import LLMPurpose, get_llm_router
 from utils.logging import get_logger
 from agent.evolution.proposal_writer import append_operation_proposal_with_relations
 from agent.evolution.registry import get_proposal_buffer
+from agent.runtime.async_utils import run_sync_compat
+from agent.runtime.supervisor import RunTaskSupervisor
 
 logger = get_logger("evolution.reflection")
 
@@ -323,55 +323,79 @@ def _format_execution_summary(summary: Optional[Dict[str, str]]) -> str:
 
 
 class ReflectionWorker:
-    """Background reflector. One instance per orchestrator.
-
-    Uses a shared thread pool for concurrency across users and a per-user lock to
-    serialize writes for any single user.
-    """
+    """Runtime-supervised reflector with per-user serialization."""
 
     def __init__(
         self,
         *,
         max_workers: int = 2,
     ) -> None:
-        self._executor = ThreadPoolExecutor(
-            max_workers=max(1, int(max_workers)),
-            thread_name_prefix="reflection",
-        )
-        self._user_locks: Dict[str, threading.Lock] = {}
-        self._locks_guard = threading.Lock()
+        # Concurrency is bounded by RuntimeContainer.tool_io. Keep the setting
+        # for configuration compatibility and expose it as an additional async
+        # admission limit.
+        self._capacity = asyncio.Semaphore(max(1, int(max_workers)))
+        self._user_locks: Dict[str, asyncio.Lock] = {}
+        self._supervisor: RunTaskSupervisor | None = None
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._closed = False
 
-    def submit(self, snapshot: ReflectionSnapshot) -> None:
-        """Fire-and-forget reflection submission. Never raises."""
+    def bind_supervisor(self, supervisor: RunTaskSupervisor) -> None:
+        if self._tasks:
+            raise RuntimeError("cannot rebind an active reflection worker")
+        self._supervisor = supervisor
 
-        if snapshot is None:
-            return
+    def submit(
+        self,
+        snapshot: ReflectionSnapshot,
+    ) -> asyncio.Task[Any] | None:
+        """Submit derived work to the canonical runtime supervisor."""
+
+        if snapshot is None or self._closed:
+            return None
+        if self._supervisor is None:
+            logger.warning(
+                "reflection skipped run=%s reason=runtime_supervisor_unbound",
+                snapshot.run_id,
+            )
+            return None
         try:
-            self._executor.submit(self._safe_run, snapshot)
+            task = self._supervisor.start_derived(
+                self.run(snapshot),
+                name="reflection-{}-{}".format(
+                    snapshot.run_id,
+                    snapshot.turn_id,
+                ),
+            )
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            return task
         except Exception:
             logger.exception(
                 "Failed to submit reflection for run=%s turn=%s",
                 snapshot.run_id,
                 snapshot.turn_id,
             )
+            return None
 
-    def shutdown(self, wait: bool = False) -> None:
-        try:
-            self._executor.shutdown(wait=wait, cancel_futures=True)
-        except TypeError:  # Python < 3.9
-            self._executor.shutdown(wait=wait)
-        except Exception:
-            logger.exception("reflection worker shutdown failed")
+    async def close(self, *, deadline: float) -> bool:
+        self._closed = True
+        tasks = [task for task in self._tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if not tasks:
+            return True
+        timeout = max(0.0, deadline - asyncio.get_running_loop().time())
+        _done, pending = await asyncio.wait(tasks, timeout=timeout)
+        return not pending
 
-    def _user_lock(self, user_id: str) -> threading.Lock:
-        with self._locks_guard:
-            lock = self._user_locks.get(user_id)
-            if lock is None:
-                lock = threading.Lock()
-                self._user_locks[user_id] = lock
-            return lock
+    def _user_lock(self, user_id: str) -> asyncio.Lock:
+        lock = self._user_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._user_locks[user_id] = lock
+        return lock
 
-    def _safe_run(self, snapshot: ReflectionSnapshot) -> None:
+    async def run(self, snapshot: ReflectionSnapshot) -> Dict[str, Any]:
         started = time.perf_counter()
         logger.info(
             "reflection started run=%s session=%s turn=%s user=%s workspace=%s ontology=%s operation_hint=%s status=%s",
@@ -385,8 +409,15 @@ class ReflectionWorker:
             snapshot.status,
         )
         try:
-            with self._user_lock(snapshot.user_id):
-                result = self._reflect_and_store(snapshot)
+            async with self._capacity:
+                async with self._user_lock(snapshot.user_id):
+                    result = await run_sync_compat(
+                        self._reflect_and_store,
+                        snapshot,
+                        run_id=snapshot.run_id or None,
+                        task_name="reflection",
+                        offload_kind="tool",
+                    )
             duration_ms = int((time.perf_counter() - started) * 1000)
             logger.info(
                 "reflection finished run=%s session=%s turn=%s outcome=%s written=%s duration_ms=%s",
@@ -397,6 +428,7 @@ class ReflectionWorker:
                 result.get("written"),
                 duration_ms,
             )
+            return result
         except Exception as exc:
             duration_ms = int((time.perf_counter() - started) * 1000)
             logger.exception(
@@ -412,6 +444,7 @@ class ReflectionWorker:
                 snapshot.turn_id,
                 duration_ms,
             )
+            return {"outcome": "error", "written": 0}
 
     def _reflect_and_store(self, snapshot: ReflectionSnapshot) -> Dict[str, Any]:
         try:

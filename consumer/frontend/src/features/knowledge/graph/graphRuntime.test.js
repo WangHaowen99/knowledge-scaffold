@@ -15,39 +15,6 @@ const graph = {
   ],
 };
 
-test('raw agent.v2 envelopes project running and completed graph hits', () => {
-  const messages = [
-    {
-      protocol: 'agent-stream.v2',
-      type: 'tool.finished',
-      run_id: 'run-old',
-      ts: '2026-07-01T00:00:00Z',
-      payload: {
-        tool_name: 'ontology_context',
-        tool_call_id: 'old-context',
-        input: { resource: 'operation', key: 'cost-check' },
-      },
-    },
-    {
-      protocol: 'agent-stream.v2',
-      type: 'tool.started',
-      run_id: 'run-live',
-      ts: '2026-07-15T10:00:00Z',
-      payload: {
-        tool_name: 'business_data_search',
-        tool_call_id: 'live-search',
-        input: { entity: 'TargetItem', query: '查询制造件' },
-      },
-    },
-  ];
-
-  const state = deriveGraphRuntimeState(graph, messages, { now: Date.parse('2026-07-15T10:00:10Z') });
-
-  assert.equal(state.nodes['operation:cost-check'].state, 'history');
-  assert.equal(state.nodes['object:TargetItem'].state, 'live');
-  assert.deepEqual(state.counts, { live: 1, recent: 0, history: 1 });
-});
-
 test('canonical messages keep latest terminal run recent and earlier runs historical', () => {
   const state = deriveGraphRuntimeState(graph, [
     {
@@ -106,7 +73,7 @@ test('a canonical stream segment can be projected without a message wrapper', ()
     state: 'running',
     finished: false,
     meta: {
-      tool_name: 'ontology_context',
+      name: 'ontology_context',
       input: { resource: 'operation', key: 'cost-check' },
     },
   }]);
@@ -178,27 +145,7 @@ test('a running parent does not turn an already finished stream tool back into a
   assert.equal(state.nodes['object:TargetItem'].state, 'recent');
 });
 
-test('a terminal agent envelope run overrides its earlier tool.started event', () => {
-  const state = deriveGraphRuntimeState(graph, [
-    {
-      type: 'tool.started',
-      run_id: 'finished-run',
-      payload: {
-        tool_call_id: 'call-1',
-        input: { resource: 'object', key: 'TargetItem' },
-      },
-    },
-    {
-      type: 'turn.finished',
-      run_id: 'finished-run',
-      payload: {},
-    },
-  ]);
-
-  assert.equal(state.nodes['object:TargetItem'].state, 'recent');
-});
-
-test('session ontology metadata scopes all legacy canonical trace blocks to the selected package', () => {
+test('session ontology metadata scopes canonical trace blocks to the selected package', () => {
   const trace = {
     metadata: { selected_ontology_id: 'onto-a' },
     messages: [{

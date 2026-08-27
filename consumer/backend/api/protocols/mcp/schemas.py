@@ -25,6 +25,7 @@ def error_result(
     detail: str,
     hint: str = "",
     retriable: bool = True,
+    phase: str = "",
 ) -> dict:
     error = {
         "type": error_type,
@@ -34,4 +35,6 @@ def error_result(
     }
     if hint:
         error["hint"] = hint
+    if phase:
+        error["phase"] = phase
     return {"ok": False, "error": error}

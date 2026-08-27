@@ -9,6 +9,7 @@ import json
 import pytest
 
 from agent.core.jiuwen.tools import get_jiuwen_tool_infos
+from agent.core.shared.solver_route_guard import bind_solver_route_requirement
 from agent.core.shared.tool_context import build_tool_context
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 import agent.tools.execute_script as execute_script_module
@@ -262,6 +263,61 @@ def test_jiuwen_and_token_schemas_use_selected_ontology_and_workspace(monkeypatc
 
     assert tool_info_parameters == token_parameters
     assert "workspace_input" in tool_info_parameters["properties"]["arguments"]["properties"]
+
+
+def test_suppressed_solver_state_hides_cards_from_both_jiuwen_tool_shapes(monkeypatch):
+    token_calls = []
+    info_calls = []
+    token_schema = {
+        "type": "function",
+        "function": {
+            "name": "execute_script",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    tool_info = {
+        "type": "function",
+        "name": "execute_script",
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+    def fake_get_tools_schema(_caller, **kwargs):
+        token_calls.append(kwargs)
+        return [token_schema]
+
+    def fake_get_jiuwen_tool_infos(_caller, **kwargs):
+        info_calls.append(kwargs)
+        return [tool_info]
+
+    monkeypatch.setattr(
+        "agent.tools.registry.get_tools_schema",
+        fake_get_tools_schema,
+    )
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.get_jiuwen_tool_infos",
+        fake_get_jiuwen_tool_infos,
+    )
+    engine = object.__new__(JiuwenReactLoopEngine)
+    engine.agent_config = SimpleNamespace(
+        web_search=SimpleNamespace(enabled=False),
+    )
+    state = {
+        "workspace_id": "workspace-synthetic",
+        "user_context": bind_solver_route_requirement(
+            {
+                "selected_ontology_id": "package-synthetic",
+                "selected_ontology_version": "revision-synthetic-1",
+                "agent_mode": "quick",
+            },
+            None,
+            suppress_solver_tools=True,
+        ),
+    }
+
+    assert engine._tools_schema_for_state(state, caller="main") == [token_schema]
+    assert engine._jiuwen_tool_infos_for_state(state, caller="main") == [tool_info]
+    assert token_calls[0]["include_solver"] is False
+    assert info_calls[0]["include_solver"] is False
 
 
 def test_dynamic_schema_is_isolated_by_workspace_under_concurrency(monkeypatch, tmp_path):
@@ -530,6 +586,136 @@ def test_handle_execute_script_rejects_script_outside_ontology_scripts(monkeypat
 
     assert result == "Error: Registered script for operation 'run' is outside ontology scripts directory."
     assert executed == []
+
+
+def test_handle_execute_script_fails_before_required_business_data_script(
+    monkeypatch,
+    tmp_path,
+):
+    ontology_dir = tmp_path / "ontology"
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "operation.py").write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        execute_script_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="knowledge_package_demo", ontology_dir=str(ontology_dir)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_script_catalog",
+        lambda _ontology_dir: [
+            {
+                "operation_key": "run",
+                "script_key": "run",
+                "_is_bound_operation": True,
+                "_script_path": "scripts/operation.py",
+                "arguments": [],
+                "parameters": [],
+                "data_access": "workspace_provider",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "resolve_business_data_source",
+        lambda **kwargs: (_ for _ in ()).throw(
+            execute_script_module.BusinessDataConnectionError(
+                "synthetic unavailable"
+            )
+        ),
+    )
+    executed = []
+    monkeypatch.setattr(
+        execute_script_module,
+        "handle_execute_script_path",
+        lambda **kwargs: executed.append(kwargs) or "unexpected",
+    )
+
+    result = handle_execute_script(
+        ontology_id="knowledge_package_demo",
+        operation_key="run",
+        arguments={},
+        base_path=tmp_path,
+        workspace_id="workspace_demo",
+    )
+
+    assert result == (
+        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] "
+        "Required business data connection is unavailable."
+    )
+    assert executed == []
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError, TimeoutError])
+def test_required_connection_error_preserves_internal_cause(monkeypatch, error_type):
+    root_error = error_type("synthetic connection failure")
+    monkeypatch.setattr(
+        execute_script_module,
+        "resolve_business_data_source",
+        lambda **_kwargs: (_ for _ in ()).throw(root_error),
+    )
+
+    with pytest.raises(execute_script_module.BusinessDataConnectionError) as exc:
+        execute_script_module._build_script_env_overrides(
+            workspace_id="workspace_demo",
+            ontology_id="knowledge_package_demo",
+            required=True,
+        )
+
+    assert str(exc.value) == "Required business data connection is unavailable."
+    assert exc.value.__cause__ is root_error
+    assert "synthetic connection failure" not in str(exc.value)
+
+
+def test_handle_execute_script_discards_success_stderr(monkeypatch, tmp_path):
+    ontology_dir = tmp_path / "ontology"
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "operation.py").write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        execute_script_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="knowledge_package_demo", ontology_dir=str(ontology_dir)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_script_catalog",
+        lambda _ontology_dir: [
+            {
+                "operation_key": "run",
+                "script_key": "run",
+                "_is_bound_operation": True,
+                "_script_path": "scripts/operation.py",
+                "arguments": [],
+                "parameters": [],
+                "data_access": "none",
+            }
+        ],
+    )
+    captured = {}
+    monkeypatch.setattr(
+        execute_script_module,
+        "handle_execute_script_path",
+        lambda **kwargs: captured.update(kwargs) or "ok",
+    )
+
+    result = handle_execute_script(
+        ontology_id="knowledge_package_demo",
+        operation_key="run",
+        arguments={},
+        base_path=tmp_path,
+        workspace_id="workspace_demo",
+    )
+
+    assert result == "ok"
+    assert captured["include_stderr_on_success"] is False
 
 
 @pytest.mark.parametrize(

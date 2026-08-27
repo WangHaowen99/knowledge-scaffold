@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+
 import json
 import threading
 from types import SimpleNamespace
 
 import pytest
-from flask import Flask
 
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.token_service import (
@@ -14,8 +17,9 @@ from integration.mcp.token_service import (
     verify_mcp_token,
 )
 from api.auth import user_deletion
-from api.auth.auth import AuthManager, AuthUser
-from api.routes.auth import auth_bp
+from auth_test_backend import AuthManager
+from api.auth.auth import AuthUser
+from api.routes.auth import auth_router
 from utils.identifiers import safe_user_storage_key
 from workspace.workspaces import (
     create_workspace,
@@ -65,11 +69,11 @@ def deletion_env(tmp_path, monkeypatch):
     login = auth_manager.login("admin", "RootStrong#2026")
     assert login is not None
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.config["APP_CONFIG"] = SimpleNamespace(auth_server_url="")
-    app.register_blueprint(auth_bp)
+    app = TestApplication()
+    app.state.services["TESTING"] = True
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.state.services["APP_CONFIG"] = SimpleNamespace(auth_server_url="")
+    app.include_router(auth_router)
 
     create_workspace(
         "Shared",
@@ -82,7 +86,7 @@ def deletion_env(tmp_path, monkeypatch):
         memory_root=memory_root,
         token_store_path=token_store_path,
         auth_manager=auth_manager,
-        client=app.test_client(),
+        client=TestClient(app),
         headers={"Authorization": "Bearer " + login.access_token},
     )
 
@@ -97,8 +101,8 @@ def test_delete_workspace_owner_requires_transfer(deletion_env):
     )
 
     assert response.status_code == 409
-    assert response.get_json()["code"] == "WORKSPACE_OWNER_TRANSFER_REQUIRED"
-    assert response.get_json()["workspace_ids"] == ["alice-space"]
+    assert response.json()["code"] == "WORKSPACE_OWNER_TRANSFER_REQUIRED"
+    assert response.json()["workspace_ids"] == ["alice-space"]
     assert deletion_env.auth_manager.get_user("alice") is not None
 
 
@@ -109,7 +113,7 @@ def test_delete_missing_user_does_not_reserve_username(deletion_env):
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {"error": "用户 missing-user 不存在"}
+    assert response.json() == {"error": "用户 missing-user 不存在"}
     assert user_deletion.list_user_deletion_reconciliations() == []
 
 
@@ -146,7 +150,7 @@ def test_delete_member_archives_data_revokes_mcp_and_prevents_reuse_inheritance(
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {"success": True}
+    assert response.json() == {"success": True}
     assert deletion_env.auth_manager.get_user("alice") is None
     assert get_workspace("private")["members"] == []
     assert not runtime_user_dir.exists()
@@ -194,7 +198,7 @@ def test_cleanup_failure_returns_202_and_records_reconciliation(
     )
 
     assert response.status_code == 202
-    payload = response.get_json()
+    payload = response.json()
     assert payload["success"] is True
     assert payload["reconciliation_required"] is True
     assert payload["reconciliation_id"]
@@ -213,7 +217,7 @@ def test_cleanup_failure_returns_202_and_records_reconciliation(
         json={"username": "alice", "password": STRONG_PASSWORD},
     )
     assert blocked_admin_create.status_code == 409
-    assert blocked_admin_create.get_json()["code"] == "USER_DELETION_RECONCILIATION_PENDING"
+    assert blocked_admin_create.json()["code"] == "USER_DELETION_RECONCILIATION_PENDING"
     blocked_open_register = deletion_env.client.post(
         "/auth/register",
         json={"username": "alice", "password": STRONG_PASSWORD},
@@ -261,7 +265,7 @@ def test_deletion_intent_is_durable_before_identity_delete_and_blocks_reuse(
     )
 
     assert response.status_code == 500
-    payload = response.get_json()
+    payload = response.json()
     assert payload["code"] == "USER_DELETION_RECONCILIATION_FAILED"
     assert payload["reconciliation_required"] is True
     assert payload["reconciliation_id"]
@@ -277,14 +281,14 @@ def test_deletion_intent_is_durable_before_identity_delete_and_blocks_reuse(
         json={"username": "alice", "password": STRONG_PASSWORD},
     )
     assert admin_create.status_code == 409
-    assert admin_create.get_json()["code"] == "USER_DELETION_RECONCILIATION_PENDING"
+    assert admin_create.json()["code"] == "USER_DELETION_RECONCILIATION_PENDING"
 
     open_register = deletion_env.client.post(
         "/auth/register",
         json={"username": " alice ", "password": STRONG_PASSWORD},
     )
     assert open_register.status_code == 409
-    assert open_register.get_json()["reconciliation_id"] == payload["reconciliation_id"]
+    assert open_register.json()["reconciliation_id"] == payload["reconciliation_id"]
 
 
 def test_creation_waits_until_delete_cleanup_finishes(deletion_env, monkeypatch):
@@ -366,7 +370,7 @@ def test_retry_holds_reuse_gate_for_entire_cleanup(deletion_env, monkeypatch):
         "/auth/users/alice",
         headers=deletion_env.headers,
     )
-    record_id = response.get_json()["reconciliation_id"]
+    record_id = response.json()["reconciliation_id"]
     monkeypatch.setattr(
         user_deletion,
         "remove_user_from_workspace_members",
@@ -446,7 +450,7 @@ def test_concurrent_retry_rechecks_record_after_waiting(deletion_env, monkeypatc
         "/auth/users/alice",
         headers=deletion_env.headers,
     )
-    record_id = response.get_json()["reconciliation_id"]
+    record_id = response.json()["reconciliation_id"]
     monkeypatch.setattr(
         user_deletion,
         "remove_user_from_workspace_members",

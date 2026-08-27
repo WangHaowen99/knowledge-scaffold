@@ -9,20 +9,22 @@ import {
 } from '../frontend/src/evaluationDefects.js';
 
 const defect = (overrides: Record<string, unknown> = {}) => ({
-  id: 'dg-1', repairScope: 'package', resolutionStatus: 'pending', ...overrides,
+  id: 'dg-1', repairScope: 'package', resolutionStatus: 'pending', basedRevisionOid: 'rev-current', ...overrides,
 });
 
 test('只有归因到知识包且未关闭的失败原因可以回流建模', () => {
-  assert.equal(canPlanEvaluationRepair(defect()), true);
-  assert.equal(canPlanEvaluationRepair(defect({ repairScope: 'data' })), false);
-  assert.equal(canPlanEvaluationRepair(defect({ repairScope: 'testcase' })), false);
-  assert.equal(canPlanEvaluationRepair(defect({ blocking: true })), false);
-  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'resolved' })), false);
-  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'irrelevant' })), false);
-  // 专家已确认或暂缓的知识包缺陷仍然可以回流
-  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'confirmed' })), true);
-  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'deferred' })), true);
-  assert.equal(canPlanEvaluationRepair(undefined), false);
+  assert.equal(canPlanEvaluationRepair(defect(), 'rev-current'), true);
+  assert.equal(canPlanEvaluationRepair(defect({ repairScope: 'data' }), 'rev-current'), false);
+  assert.equal(canPlanEvaluationRepair(defect({ repairScope: 'testcase' }), 'rev-current'), false);
+  assert.equal(canPlanEvaluationRepair(defect({ blocking: true }), 'rev-current'), false);
+  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'resolved' }), 'rev-current'), false);
+  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'irrelevant' }), 'rev-current'), false);
+  assert.equal(canPlanEvaluationRepair(defect({ basedRevisionOid: 'rev-old' }), 'rev-current'), false);
+  assert.equal(canPlanEvaluationRepair(defect(), ''), false);
+  // 专家已确认或暂缓的知识包缺陷仍然可以回流，但前提是它仍基于当前 revision
+  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'confirmed' }), 'rev-current'), true);
+  assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'deferred' }), 'rev-current'), true);
+  assert.equal(canPlanEvaluationRepair(undefined, 'rev-current'), false);
 });
 
 test('可选缺陷按范围过滤', () => {
@@ -30,8 +32,9 @@ test('可选缺陷按范围过滤', () => {
     defect({ id: 'a' }),
     defect({ id: 'b', repairScope: 'runtime' }),
     defect({ id: 'c' }),
+    defect({ id: 'd', basedRevisionOid: 'rev-old' }),
   ];
-  assert.deepEqual(selectableEvaluationDefects(diagnoses).map((item) => item.id), ['a', 'c']);
+  assert.deepEqual(selectableEvaluationDefects(diagnoses, 'rev-current').map((item) => item.id), ['a', 'c']);
 });
 
 test('勾选可反复切换', () => {
@@ -42,12 +45,16 @@ test('勾选可反复切换', () => {
 });
 
 test('提交前丢弃已失效或不可回流的选中项', () => {
-  const diagnoses = [defect({ id: 'a' }), defect({ id: 'b', repairScope: 'data' })];
+  const diagnoses = [
+    defect({ id: 'a' }),
+    defect({ id: 'b', repairScope: 'data' }),
+    defect({ id: 'd', basedRevisionOid: 'rev-old' }),
+  ];
   // 'c' 来自上一轮诊断，已经不在当前列表里
-  const selected = new Set(['a', 'b', 'c']);
-  assert.deepEqual(submittableEvaluationDefectIds(diagnoses, selected), ['a']);
+  const selected = new Set(['a', 'b', 'c', 'd']);
+  assert.deepEqual(submittableEvaluationDefectIds(diagnoses, selected, 'rev-current'), ['a']);
 });
 
 test('未勾选时没有可提交项', () => {
-  assert.deepEqual(submittableEvaluationDefectIds([defect()], new Set()), []);
+  assert.deepEqual(submittableEvaluationDefectIds([defect()], new Set(), 'rev-current'), []);
 });

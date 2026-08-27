@@ -35,6 +35,3 @@ def test_script_parameter_default_round_trips_into_execution_catalog():
     assert missing == []
     assert invalid == []
     assert args[-2:] == ["--mode", "standard"]
-
-
-

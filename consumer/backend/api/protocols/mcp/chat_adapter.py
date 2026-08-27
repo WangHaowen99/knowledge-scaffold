@@ -16,6 +16,8 @@ from integration.mcp.ontology_binding import (
 from .paths import MCP_INTERNAL_CHAT_PATH
 from .schemas import error_result
 
+_BACKEND_DEADLINE_RESPONSE_GRACE_SECONDS = 5
+
 
 def execute_chat_tool(
     args: Mapping[str, Any] | None,
@@ -60,6 +62,9 @@ def execute_chat_tool(
         "session_id": str(payload.get("session_id") or "").strip(),
         "context": dict(payload.get("context") or {}),
         "arguments": bound_arguments,
+        "requested_operation_key": str(
+            payload.get("requested_operation_key") or ""
+        ).strip(),
         "include_trace": payload.get("include_trace") is True,
     }
     model_profile_id = str(payload.get("model_profile_id") or "").strip()
@@ -82,7 +87,10 @@ def execute_chat_tool(
             ),
             headers=headers,
             json=request_payload,
-            timeout=max(1, int(cfg.http_timeout_seconds)),
+            timeout=(
+                max(1, int(cfg.http_timeout_seconds))
+                + _BACKEND_DEADLINE_RESPONSE_GRACE_SECONDS
+            ),
         )
     except requests.RequestException as exc:
         detail = str(exc).replace(scope.token, "***")
@@ -116,5 +124,6 @@ def execute_chat_tool(
             error_code=str(error.get("error_code") or "MCP_CHAT_BRIDGE_ERROR"),
             detail=str(error.get("detail") or body.get("detail") or "Backend workflow bridge 调用失败"),
             retriable=bool(error.get("retriable", response.status_code >= 500)),
+            phase=str(error.get("phase") or "").strip(),
         )
     return body

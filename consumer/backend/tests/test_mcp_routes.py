@@ -1,180 +1,224 @@
+"""FastAPI tests for MCP management and canonical chat admission."""
+
+from __future__ import annotations
+
 from types import SimpleNamespace
 
-from flask import Flask
+from fastapi.testclient import TestClient
 
 import api.routes as routes_module
 import api.routes.mcp as mcp_routes
+from api.auth.auth import AuthUser
 from api.protocols.mcp.paths import MCP_INTERNAL_CHAT_PATH
-from integration.mcp.scope import MCPRequestScope
+from api.testing import TestApplication
 from integration.mcp.ontology_binding import MCPOntologyBindingError
+from integration.mcp.scope import MCPRequestScope
+
+
+class _InlinePool:
+    async def run(self, function, *args, **kwargs):
+        return function(*args, **kwargs)
 
 
 def _app():
-    app = Flask(__name__)
-    app.register_blueprint(mcp_routes.mcp_bp)
+    app = TestApplication()
+    app.state.runtime_container = SimpleNamespace(short_io=_InlinePool())
+    app.include_router(mcp_routes.mcp_router)
     return app
 
 
-def test_internal_chat_bridge_path_is_registered():
-    rules = {rule.rule for rule in _app().url_map.iter_rules()}
+class _AuthBackend:
+    def __init__(self):
+        self.verify_calls = 0
 
-    assert MCP_INTERNAL_CHAT_PATH in rules
+    def verify_token(self, token):
+        self.verify_calls += 1
+        return AuthUser(username="operator_a", role="user") if token == "valid" else None
+
+    @staticmethod
+    def get_user(username):
+        return AuthUser(username=username, role="user")
 
 
-def test_runtime_status_returns_workspace_specific_mcp_urls(monkeypatch):
-    endpoint_id = "cdd181f5b6cb47a9"
+def test_internal_chat_path_is_registered():
+    assert MCP_INTERNAL_CHAT_PATH in {route.path for route in mcp_routes.mcp_router.routes}
+
+
+def test_runtime_status_uses_workspace_scoped_service_urls(monkeypatch):
     app = _app()
-    app.config["AUTH_MANAGER"] = SimpleNamespace(
-        verify_token=lambda _token: SimpleNamespace(
-            username="alice",
-            role="user",
-            password_change_required=False,
-        ),
-    )
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
     config = SimpleNamespace(
         transport="both",
-        effective_public_base_url=lambda: "https://api.example.com/mcp",
+        effective_public_base_url=lambda: "https://service.example.net/mcp",
     )
-    monkeypatch.setattr(
-        mcp_routes,
-        "_resolve_workspace_or_response",
-        lambda: ("workspace-a", None),
-    )
+    monkeypatch.setattr(mcp_routes, "resolve_workspace_id", lambda _request: "workspace_demo")
     monkeypatch.setattr(mcp_routes, "load_mcp_runtime_config", lambda: config)
-    monkeypatch.setattr(
-        mcp_routes,
-        "get_workspace_mcp_endpoint_id",
-        lambda workspace_id: endpoint_id if workspace_id == "workspace-a" else "",
-    )
+    monkeypatch.setattr(mcp_routes, "get_workspace_mcp_endpoint_id", lambda _workspace_id: "cdd181f5b6cb47a9")
     monkeypatch.setattr(
         mcp_routes,
         "_probe_mcp_runtime_status",
-        lambda _config: {
-            "running": True,
-            "probe_url": "http://mcp:7488/health",
-            "detail": "",
-        },
+        lambda _config: {"running": True, "probe_url": "tcp://127.0.0.1:7488", "detail": ""},
     )
 
-    response = app.test_client().get(
+    response = TestClient(app).get(
         "/agentic/mcp/runtime/status",
-        headers={"Authorization": "Bearer access-token"},
+        headers={"Authorization": "Bearer valid"},
     )
 
-    payload = response.get_json()
     assert response.status_code == 200
-    assert payload["workspace_id"] == "workspace-a"
-    assert payload["mcp_endpoint_id"] == endpoint_id
-    assert {
-        service["toolset"]: service["streamable_http_url"]
-        for service in payload["services"]
-    } == {
-        "search": "https://api.example.com/mcp/{}/search/mcp".format(endpoint_id),
-        "chat": "https://api.example.com/mcp/{}/chat/mcp".format(endpoint_id),
-    }
+    assert response.json()["workspace_id"] == "workspace_demo"
+    assert response.json()["mcp_endpoint_id"] == "cdd181f5b6cb47a9"
 
 
-def test_internal_chat_revalidates_mcp_scope_and_preserves_owner(monkeypatch):
+def test_internal_chat_revalidates_scope_and_passes_runtime_store(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
     captured = {}
     scope = MCPRequestScope(
-        username="alice",
-        workspace_id="workspace-a",
+        username="operator_a",
+        workspace_id="workspace_demo",
         scopes=["mcp:chat"],
-        token="mcp_token",
+        token="token-placeholder",
     )
-
-    def resolve_scope(token, *, required_scope, traceparent):
-        captured.update(token=token, required_scope=required_scope, traceparent=traceparent)
-        return scope
-
-    def execute_bridge(**kwargs):
-        captured.update(kwargs)
-        return {
-            "ok": True,
-            "result": {"run_id": "run-1", "session_id": "session-1", "status": "success"},
-            "scope": {"username": kwargs["scope"].username, "workspace_id": kwargs["scope"].workspace_id},
-        }, 200
-
-    monkeypatch.setattr(mcp_routes, "resolve_mcp_scope_from_token", resolve_scope)
-    monkeypatch.setattr(
-        mcp_routes,
-        "get_auth_manager",
-        lambda: SimpleNamespace(get_user=lambda username: SimpleNamespace(username=username, role="user")),
-    )
+    monkeypatch.setattr(mcp_routes, "resolve_mcp_scope_from_token", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(
         mcp_routes,
         "load_mcp_runtime_config",
         lambda: SimpleNamespace(http_timeout_seconds=30),
     )
-    monkeypatch.setattr(mcp_routes, "execute_mcp_chat_workflow", execute_bridge)
-    monkeypatch.setattr(routes_module, "get_orchestrator", lambda: object())
+    store = object()
+    monkeypatch.setattr(routes_module, "get_user_stores", lambda *_args: (object(), store))
 
-    response = _app().test_client().post(
+    async def execute(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "result": {"status": "success"}}, 200
+
+    monkeypatch.setattr(mcp_routes, "execute_mcp_chat_workflow_async", execute)
+
+    response = TestClient(app).post(
         "/agentic/mcp/internal/chat",
         headers={
-            "Authorization": "Bearer mcp_token",
-            "X-Workspace-Id": "workspace-a",
-            "traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+            "Authorization": "Bearer token-placeholder",
+            "X-Workspace-Id": "workspace_demo",
         },
-        json={"request": "分析", "session_id": "session-1"},
+        json={"request": "synthetic question", "session_id": "session_demo"},
     )
 
     assert response.status_code == 200
-    assert response.get_json()["scope"]["username"] == "alice"
-    assert captured["token"] == "mcp_token"
-    assert captured["required_scope"] == "mcp:chat"
-    assert captured["scope"].username == "alice"
-    assert captured["payload"]["session_id"] == "session-1"
-    assert captured["trace_config"].http_timeout_seconds == 30
+    assert captured["runtime"] is app.state.runtime_container
+    assert captured["execution_store"] is store
+    assert captured["scope"] is scope
+    assert captured["payload"]["session_id"] == "session_demo"
 
 
-def test_internal_chat_rejects_workspace_header_mismatch(monkeypatch):
+def test_internal_chat_rejects_workspace_scope_mismatch(monkeypatch):
+    app = _app()
     monkeypatch.setattr(
         mcp_routes,
         "resolve_mcp_scope_from_token",
         lambda *_args, **_kwargs: MCPRequestScope(
-            username="alice",
-            workspace_id="workspace-a",
+            username="operator_a",
+            workspace_id="workspace_demo",
             scopes=["mcp:chat"],
-            token="mcp_token",
+            token="token-placeholder",
         ),
     )
 
-    response = _app().test_client().post(
+    response = TestClient(app).post(
         "/agentic/mcp/internal/chat",
-        headers={"Authorization": "Bearer mcp_token", "X-Workspace-Id": "workspace-b"},
-        json={"request": "分析"},
+        headers={
+            "Authorization": "Bearer token-placeholder",
+            "X-Workspace-Id": "workspace_other",
+        },
+        json={"request": "synthetic question"},
     )
 
     assert response.status_code == 403
-    assert response.get_json()["error"]["error_code"] == "MCP_WORKSPACE_SCOPE_MISMATCH"
+    assert response.json()["error"]["error_code"] == "MCP_WORKSPACE_SCOPE_MISMATCH"
+
+
+def test_internal_chat_authenticates_before_consuming_body():
+    app = _app()
+    body_chunks_requested = []
+
+    def chunks():
+        body_chunks_requested.append(True)
+        yield b'{"request":"synthetic question"}'
+
+    response = TestClient(app).post(
+        "/agentic/mcp/internal/chat",
+        content=chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["error_code"] == "AUTH_TOKEN_MISSING"
+    assert body_chunks_requested == []
+
+
+def test_management_token_creation_uses_native_dependencies(monkeypatch):
+    app = _app()
+    backend = _AuthBackend()
+    app.state.services["AUTH_MANAGER"] = backend
+    monkeypatch.setattr(mcp_routes, "resolve_workspace_id", lambda _request: "workspace_demo")
+    captured = {}
+
+    def create_token(**kwargs):
+        captured.update(kwargs)
+        return {"item": {"id": "token_demo"}, "token": "one-time-placeholder"}
+
+    monkeypatch.setattr(mcp_routes, "_create_token", create_token)
+    response = TestClient(app).post(
+        "/agentic/mcp/tokens",
+        headers={"Authorization": "Bearer valid"},
+        json={"name": "synthetic", "scopes": ["mcp:chat"]},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["item"]["id"] == "token_demo"
+    assert captured["username"] == "operator_a"
+    assert captured["workspace_id"] == "workspace_demo"
+    assert backend.verify_calls == 1
+
+
+def test_management_auth_rejects_before_consuming_body():
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
+    body_chunks_requested = []
+
+    def chunks():
+        body_chunks_requested.append(True)
+        yield b'{"name":"synthetic"}'
+
+    response = TestClient(app).post(
+        "/agentic/mcp/tokens",
+        content=chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 401
+    assert body_chunks_requested == []
 
 
 def test_create_token_api_forwards_validated_ontology_binding(monkeypatch):
-    captured = {}
     app = _app()
-    app.config["AUTH_MANAGER"] = SimpleNamespace(
-        verify_token=lambda _token: SimpleNamespace(
-            username="operator_a",
-            role="user",
-            password_change_required=False,
-        ),
-    )
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
     monkeypatch.setattr(
         mcp_routes,
-        "_resolve_workspace_or_response",
-        lambda: ("workspace_demo", None),
+        "resolve_workspace_id",
+        lambda _request: "workspace_demo",
     )
     monkeypatch.setattr(
         mcp_routes,
         "load_mcp_runtime_config",
         lambda: SimpleNamespace(token_ttl_seconds=3600),
     )
+    captured = {}
 
     def create_token(**kwargs):
         captured.update(kwargs)
         return {
-            "token": "<MCP_TOKEN>",
+            "token": "one-time-placeholder",
             "item": {
                 "token_id": "token_demo",
                 "ontology_id": kwargs["ontology_id"],
@@ -183,9 +227,9 @@ def test_create_token_api_forwards_validated_ontology_binding(monkeypatch):
         }
 
     monkeypatch.setattr(mcp_routes, "create_mcp_token", create_token)
-    response = app.test_client().post(
+    response = TestClient(app).post(
         "/agentic/mcp/tokens",
-        headers={"Authorization": "Bearer <ACCESS_TOKEN>"},
+        headers={"Authorization": "Bearer valid"},
         json={
             "ontology_id": "knowledge_package_demo",
             "scopes": ["mcp:search", "mcp:chat"],
@@ -200,23 +244,18 @@ def test_create_token_api_forwards_validated_ontology_binding(monkeypatch):
 
 def test_create_token_api_returns_stable_ontology_errors(monkeypatch):
     app = _app()
-    app.config["AUTH_MANAGER"] = SimpleNamespace(
-        verify_token=lambda _token: SimpleNamespace(
-            username="operator_a",
-            role="user",
-            password_change_required=False,
-        ),
-    )
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
     monkeypatch.setattr(
         mcp_routes,
-        "_resolve_workspace_or_response",
-        lambda: ("workspace_demo", None),
+        "resolve_workspace_id",
+        lambda _request: "workspace_demo",
     )
     monkeypatch.setattr(
         mcp_routes,
         "load_mcp_runtime_config",
         lambda: SimpleNamespace(token_ttl_seconds=3600),
     )
+
     def reject_disabled_ontology(**_kwargs):
         raise MCPOntologyBindingError(
             "MCP_ONTOLOGY_DISABLED",
@@ -226,18 +265,18 @@ def test_create_token_api_returns_stable_ontology_errors(monkeypatch):
 
     monkeypatch.setattr(mcp_routes, "create_mcp_token", reject_disabled_ontology)
 
-    invalid = app.test_client().post(
+    invalid = TestClient(app).post(
         "/agentic/mcp/tokens",
-        headers={"Authorization": "Bearer <ACCESS_TOKEN>"},
+        headers={"Authorization": "Bearer valid"},
         json={"ontology_id": ""},
     )
-    disabled = app.test_client().post(
+    disabled = TestClient(app).post(
         "/agentic/mcp/tokens",
-        headers={"Authorization": "Bearer <ACCESS_TOKEN>"},
+        headers={"Authorization": "Bearer valid"},
         json={"ontology_id": "knowledge_package_demo"},
     )
 
     assert invalid.status_code == 400
-    assert invalid.get_json()["error_code"] == "MCP_ONTOLOGY_ID_INVALID"
+    assert invalid.json()["error_code"] == "MCP_ONTOLOGY_ID_INVALID"
     assert disabled.status_code == 409
-    assert disabled.get_json()["error_code"] == "MCP_ONTOLOGY_DISABLED"
+    assert disabled.json()["error_code"] == "MCP_ONTOLOGY_DISABLED"

@@ -9,10 +9,20 @@ import { getChatDataSourceStatus } from './lib/chatDataSourceStatus.js';
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const chatSource = readFileSync(join(currentDir, 'ChatWorkspace.jsx'), 'utf8');
 const tracePanelSource = readFileSync(join(currentDir, 'components/TracePanel.jsx'), 'utf8');
+const conversationViewSource = readFileSync(join(currentDir, 'components/ConversationView.jsx'), 'utf8');
 const chatCssSource = readFileSync(join(currentDir, 'chat.css'), 'utf8');
+const candidatePanelSource = readFileSync(
+  join(currentDir, '../solver/CandidateResultsPanel.jsx'),
+  'utf8',
+);
+const solverIndexSource = readFileSync(join(currentDir, '../solver/index.js'), 'utf8');
+const solverCssSource = readFileSync(join(currentDir, '../solver/solver.css'), 'utf8');
 const appShellSource = readFileSync(join(currentDir, '../../app/AppShell.jsx'), 'utf8');
 const agenticStreamSource = readFileSync(join(currentDir, 'hooks/useAgenticStream.js'), 'utf8');
+const streamManagerSource = readFileSync(join(currentDir, 'hooks/useStreamManager.js'), 'utf8');
+const runAdmissionSource = readFileSync(join(currentDir, 'lib/runAdmission.js'), 'utf8');
 const chatSessionsSource = readFileSync(join(currentDir, 'hooks/useChatSessions.js'), 'utf8');
+const messageBuilderSource = readFileSync(join(currentDir, 'lib/messageBuilder.js'), 'utf8');
 
 test('automatic ontology selection does not claim that business data is ready', () => {
   const status = getChatDataSourceStatus(null);
@@ -93,6 +103,17 @@ test('agent stream ownership remains mounted while the chat surface changes', ()
   assert.equal(chatSource.includes('const { sendAgentic, resumeAgentic } = agenticStream;'), true);
 });
 
+test('live chat consumes PublicEvent while legacy decoding stays in hydration', () => {
+  assert.equal(streamManagerSource.includes('decodePublicEventFrame'), true);
+  assert.equal(streamManagerSource.includes('error instanceof PublicEventProtocolError'), true);
+  assert.equal(streamManagerSource.includes('reader.cancel(error).catch'), true);
+  assert.equal(streamManagerSource.includes('agent-stream.v2'), false);
+  assert.equal(agenticStreamSource.includes('applyPublicEvent'), true);
+  assert.equal(agenticStreamSource.includes('applyLocalRunTermination'), true);
+  assert.equal(agenticStreamSource.includes('agent-stream.v2'), false);
+  assert.equal(messageBuilderSource.includes('storedAgentEventToPublicEvent'), true);
+});
+
 test('trace panel has one accessible toggle and keeps the mobile backdrop close action', () => {
   assert.equal(chatSource.includes("const traceToggleLabel = traceOpen ? '收起运行轨迹' : '展开运行轨迹';"), true);
   assert.equal(chatSource.includes('className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}'), true);
@@ -130,6 +151,68 @@ test('live run dots keep a visible heartbeat in reduced-motion environments', ()
   );
 });
 
+test('authoritative solver result loads all candidates through the solver public boundary', () => {
+  assert.equal(
+    conversationViewSource.includes("import { CandidateResultsPanel } from '../../solver/index.js';"),
+    true,
+  );
+  assert.equal(
+    conversationViewSource.includes('<CandidateResultsPanel result={result} />'),
+    true,
+  );
+  assert.equal(solverIndexSource.includes("from './CandidateResultsPanel.jsx'"), true);
+  assert.equal(candidatePanelSource.includes('getSolverCandidateResults('), true);
+  assert.equal(candidatePanelSource.includes('normalizeCandidateResults('), true);
+  assert.equal(candidatePanelSource.includes('全部候选方案'), true);
+  assert.equal(candidatePanelSource.includes('最优方案'), true);
+  assert.equal(candidatePanelSource.includes('历史结果未保存候选明细'), true);
+  assert.equal(candidatePanelSource.includes('候选明细未通过完整性校验'), true);
+  assert.match(
+    solverCssSource,
+    /\.mwr \.solver-candidate-row\.is-selected\s*\{[^}]*font-weight:\s*700/,
+  );
+});
+
+test('authoritative solver result omits protocol summary fields from the business surface', () => {
+  assert.equal(conversationViewSource.includes('solver-result-summary'), false);
+  assert.equal(conversationViewSource.includes('solverSummaryValue'), false);
+  assert.equal(chatCssSource.includes('.mwr .solver-result-summary'), false);
+});
+
+test('authoritative solver result localizes known proof kinds', () => {
+  assert.equal(
+    conversationViewSource.includes("verifier_exhaustive_check: '全候选独立校验'"),
+    true,
+  );
+  assert.equal(
+    conversationViewSource.includes('solverProofKindLabel(result.proof_kind)'),
+    true,
+  );
+});
+
+test('solver candidate results use the full message width without wrapping rows', () => {
+  assert.equal(
+    conversationViewSource.includes('has-solver-result'),
+    true,
+  );
+  assert.match(
+    chatCssSource,
+    /\.mwr \.msg\.a\.has-solver-result \.bubwrap\s*\{[^}]*width:\s*calc\(100% - 40px\)[^}]*max-width:\s*none/,
+  );
+  assert.match(
+    solverCssSource,
+    /\.mwr \.solver-candidate-table\s*\{[^}]*width:\s*max-content[^}]*min-width:\s*100%[^}]*table-layout:\s*auto/,
+  );
+  assert.match(
+    solverCssSource,
+    /\.mwr \.solver-route-batches\s*\{[^}]*white-space:\s*nowrap/,
+  );
+  assert.match(
+    solverCssSource,
+    /\.mwr \.solver-route-sequence\s*\{[^}]*min-width:\s*max-content[^}]*flex-wrap:\s*nowrap/,
+  );
+});
+
 test('new chat navigation is active only for a blank chat session', () => {
   assert.equal(
     appShellSource.includes("className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}"),
@@ -138,8 +221,24 @@ test('new chat navigation is active only for a blank chat session', () => {
 });
 
 test('awaiting interaction can be cancelled by button or Escape', () => {
-  assert.match(chatSource, /interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.match(chatSource, /sessions\/\$\{encodeURIComponent\(targetSessionId\)\}\/interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.equal(chatSource.includes("headers: { 'Idempotency-Key': createIdempotencyKey() }"), true);
   assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
   assert.equal(chatSource.includes('取消（Esc）'), true);
   assert.equal(chatSource.includes('applyInteractionCancellation'), true);
+});
+
+test('awaiting interaction creates a new server-assigned run from cursor zero', () => {
+  assert.equal(runAdmissionSource.includes('interaction_response: options.interactionResponse'), true);
+  assert.equal(agenticStreamSource.includes('streamManager.startRunForSession('), true);
+  assert.equal(agenticStreamSource.includes('runLifecycle.activeRunId = admission.runId;'), true);
+  assert.equal(streamManagerSource.includes('cursor: 0'), true);
+});
+
+test('pending interaction replaces and guards the ordinary composer', () => {
+  assert.equal(chatSource.includes('{pendingInteraction ? ('), true);
+  assert.equal(
+    chatSource.includes('if (!workspaceDataReady || !text || streamState.isLoading || pendingInteraction) return;'),
+    true,
+  );
 });

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import inspect
 import logging
@@ -17,18 +18,26 @@ from config import AgentConfig
 from agent.exceptions import WorkflowCancelledError
 from agent.evolution import ProposalBuffer
 from agent.memory.filesystem_manager import FileSystemMemoryManager
+from agent.runtime.async_utils import (
+    clear_bounded_offload_pools,
+    configure_bounded_offload_pools,
+)
+from agent.runtime.offload import BoundedOffloadPool
 from llm import configure_llm_router, reset_llm_router_for_tests
 from agent.tools.base import ToolCaller, ToolContext, ToolInvocation, ToolOutcome
-from agent.tools.memory import wait_for_memory_tasks
 from agent.tools.registry import (
     TOOL_SPECS,
     _ARGUMENT_PARSE_ERROR_KEY,
-    execute_tool_batch,
+    aexecute_tool_batch,
     get_regular_tools_schema,
     get_tools_schema,
     is_tool_available,
 )
-from agent.tools.executor import _aggregate_outputs, _execute_single_task
+from agent.tools.executor import _aggregate_outputs
+from tool_execution_test_adapter import (
+    execute_single_task as _execute_single_task,
+    execute_tool_batch,
+)
 import utils.logging as logging_utils
 from utils.read_docs import build_read_document_record, merge_read_documents_registry
 from utils.streaming import stream_writer_context
@@ -82,9 +91,11 @@ class _BlockingRouterLLM:
         self.started = threading.Event()
         self.release = threading.Event()
         self.calls = []
+        self.thread_names = []
 
     def call(self, messages, **kwargs):
         self.calls.append({"messages": messages, "kwargs": kwargs})
+        self.thread_names.append(threading.current_thread().name)
         self.started.set()
         self.release.wait(timeout=5)
         if len(self.calls) == 1:
@@ -1583,8 +1594,8 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
         {
             "role": "user",
             "content": (
-                "第1批：示例原料A，2.5万吨，周期1.5天，减一线去辅助生产线A；\n"
-                "第2批：示例原料B，4.0万吨，周期2.5天，减一线去辅助生产线B。"
+                "第1批：示例原料A，2.5万吨，周期1.5天，合成物流去辅助生产线A；\n"
+                "第2批：示例原料B，4.0万吨，周期2.5天，合成物流去辅助生产线B。"
             ),
         },
         {
@@ -1593,7 +1604,7 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
             "content": (
                 '[{"ProductName":"常一线","Yield_1_Percent":1.81,'
                 '"RefineryUnitID":10,"LogicTankID":21},'
-                '{"ProductName":"减一线","Yield_1_Percent":11.6,'
+                '{"ProductName":"合成物流","Yield_1_Percent":11.6,'
                 '"RefineryUnitID":10,"LogicTankID":21}]'
             ),
         },
@@ -1610,7 +1621,7 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
                 ],
                 "productYieldData": [
                     {"ProductName": "常一线", "Yield_1_Percent": 1.81, "RefineryUnitID": 10, "LogicTankID": 21},
-                    {"ProductName": "减一线", "Yield_1_Percent": 11.6, "RefineryUnitID": 10, "LogicTankID": 21},
+                    {"ProductName": "合成物流", "Yield_1_Percent": 11.6, "RefineryUnitID": 10, "LogicTankID": 21},
                 ],
             },
         },
@@ -1620,6 +1631,97 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
 
     assert outcome.content == "ok"
     assert len(called) == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "Error: Script exited with code 1. [SCRIPT_RUNTIME_ERROR] Python KeyError.",
+        "Error: Script execution cancelled.",
+        "Error: Sandbox unavailable.",
+        (
+            "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] "
+            "Required business data connection is unavailable."
+        ),
+        "Error: deterministic_operation_protected",
+    ),
+)
+def test_execute_script_runtime_and_nonrecoverable_failures_are_terminal(
+    monkeypatch,
+    content,
+):
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: content,
+    )
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {},
+        },
+        context=_make_context(),
+        tool_call_id="call-runtime-failure",
+    )
+
+    assert outcome.terminal is True
+    assert outcome.state_updates["terminal_error"] == {
+        "error_code": "EXECUTE_SCRIPT_FAILED",
+        "message": (
+            "The deterministic operation failed, so no calculated conclusion was produced."
+        ),
+        "tool_name": "execute_script",
+    }
+
+
+def test_execute_script_operation_selection_failure_remains_correctable(monkeypatch):
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: (
+            "Error: Operation 'leaf' in ontology 'demo' has no registered "
+            "script implementation or is not a bound operation."
+        ),
+    )
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "leaf",
+            "arguments": {},
+        },
+        context=_make_context(),
+        tool_call_id="call-selection-failure",
+    )
+
+    assert outcome.terminal is False
+    assert outcome.state_updates == {}
+    assert "has no registered script implementation" in outcome.content
+
+
+def test_execute_script_argument_consistency_failure_remains_correctable(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "unexpected",
+    )
+    context = _make_context(
+        messages=[{"role": "user", "content": "Use unit-01 for this run."}]
+    )
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {"payload": {"unit_no": "unit-02"}},
+        },
+        context=context,
+        tool_call_id="call-identity-drift",
+    )
+
+    assert outcome.terminal is False
+    assert "argument consistency check failed" in outcome.content
+    assert called == []
 
 
 def test_execute_script_still_rejects_mixed_user_rows_with_business_query_evidence(monkeypatch):
@@ -2333,9 +2435,8 @@ def test_memory_tool_routes_user_memory_to_memory_manager():
     )
 
     payload = json.loads(result.messages[0]["content"])
-    assert payload["queued"] is True
-    assert payload["status"] == "queued"
-    wait_for_memory_tasks(timeout=5)
+    assert payload["stored"] is True
+    assert payload["destination"] == "ordinary_memory"
     assert memory_manager.stored[0]["memory_type"] == "preference"
     assert memory_manager.stored[0]["scope"] == "user"
     assert "tags" not in memory_manager.stored[0]
@@ -2346,6 +2447,59 @@ def test_memory_tool_routes_user_memory_to_memory_manager():
     ]
     router_payload = json.loads(llm.calls[0]["messages"][1]["content"])
     assert router_payload == {"content": "用户偏好：默认使用中文回答。"}
+
+
+def test_memory_tool_rejects_model_initiated_capture_without_explicit_user_request():
+    memory_manager = _FakeMemoryManager()
+
+    result = execute_tool_batch(
+        [_build_tool_call("memory", {"content": "Store this generated execution plan."})],
+        _make_context(
+            memory_manager=memory_manager,
+            messages=[{"role": "user", "content": "Calculate the current plan."}],
+        ),
+    )
+
+    payload = json.loads(result.messages[0]["content"])
+    assert payload == {
+        "stored": False,
+        "status": "rejected",
+        "error": "explicit_current_user_memory_request_required",
+    }
+    assert memory_manager.stored == []
+
+
+def test_memory_tool_accepts_explicit_current_user_request():
+    memory_manager = _FakeMemoryManager()
+    llm = _FakeRouterLLM(
+        [
+            {"destination": "ordinary_memory", "reason": "durable preference"},
+            {
+                "content": "Use concise answers in future sessions.",
+                "memory_type": "preference",
+                "reason": "durable preference",
+            },
+        ]
+    )
+
+    result = execute_tool_batch(
+        [_build_tool_call("memory", {"content": "Use concise answers in future sessions."})],
+        _make_context(
+            llm=llm,
+            memory_manager=memory_manager,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Remember that I want concise answers in future sessions.",
+                }
+            ],
+        ),
+    )
+
+    payload = json.loads(result.messages[0]["content"])
+    assert payload["stored"] is True
+    assert payload["destination"] == "ordinary_memory"
+    assert memory_manager.stored
 
 
 def test_memory_tool_replaces_conflicting_ordinary_preference(tmp_path):
@@ -2394,13 +2548,11 @@ def test_memory_tool_replaces_conflicting_ordinary_preference(tmp_path):
         [_build_tool_call("memory", {"content": "以后使用英文回答计算处理成本的问题。"})],
         _make_context(llm=llm, memory_manager=memory_manager),
     )
-    wait_for_memory_tasks(timeout=5)
 
     execute_tool_batch(
         [_build_tool_call("memory", {"content": "以后改为使用中文回答计算处理成本的问题。"})],
         _make_context(llm=llm, memory_manager=memory_manager),
     )
-    wait_for_memory_tasks(timeout=5)
 
     context = memory_manager.build_memory_context(query="计算处理成本")
     assert "以后使用中文回答计算处理成本的问题" in context
@@ -2428,26 +2580,89 @@ def test_memory_tool_replaces_conflicting_ordinary_preference(tmp_path):
     ]
 
 
-def test_memory_tool_returns_before_router_completes():
+def test_memory_tool_awaits_bounded_tool_offload_without_blocking_event_loop():
     llm = _BlockingRouterLLM()
-    started_at = time.perf_counter()
+    memory_manager = _FakeMemoryManager()
 
-    result = execute_tool_batch(
-        [_build_tool_call("memory", {"content": "记住：后台分类不要阻塞主流程。"})],
-        _make_context(llm=llm),
-    )
+    async def scenario():
+        pools = [
+            BoundedOffloadPool(
+                name=name,
+                max_workers=1,
+                max_pending=1,
+                capacity_wait_seconds=0.1,
+                operation_timeout_seconds=5,
+            )
+            for name in ("memory-short", "memory-external", "memory-tool")
+        ]
+        configure_bounded_offload_pools(
+            short_io=pools[0],
+            external_io=pools[1],
+            tool_io=pools[2],
+        )
+        try:
+            invocation = asyncio.create_task(
+                aexecute_tool_batch(
+                    [_build_tool_call("memory", {"content": "记住：后台分类不要阻塞主流程。"})],
+                    _make_context(llm=llm, memory_manager=memory_manager),
+                )
+            )
+            while not llm.started.is_set():
+                await asyncio.sleep(0.001)
 
-    elapsed = time.perf_counter() - started_at
-    payload = json.loads(result.messages[0]["content"])
-    assert payload["queued"] is True
-    assert elapsed < 1.0
-    assert llm.started.wait(timeout=1)
-    llm.release.set()
-    wait_for_memory_tasks(timeout=5)
+            event_loop_probe = asyncio.create_task(asyncio.sleep(0.005))
+            await event_loop_probe
+            assert invocation.done() is False
+
+            llm.release.set()
+            result = await asyncio.wait_for(invocation, timeout=5)
+            payload = json.loads(result.messages[0]["content"])
+            assert payload["stored"] is True
+            assert payload["destination"] == "ordinary_memory"
+            assert llm.thread_names
+            assert all(name.startswith("agentic-memory-tool") for name in llm.thread_names)
+        finally:
+            llm.release.set()
+            clear_bounded_offload_pools()
+            deadline = asyncio.get_running_loop().time() + 1
+            for pool in pools:
+                await pool.close(deadline=deadline)
+
+    asyncio.run(scenario())
+
     assert [call["kwargs"]["request_label"] for call in llm.calls] == [
         "memory_route",
         "memory_extract_ordinary",
     ]
+
+
+def test_memory_tool_has_native_async_entrypoint_only():
+    memory_tool = TOOL_SPECS["memory"]
+
+    assert inspect.iscoroutinefunction(memory_tool.aexecute)
+    assert not hasattr(memory_tool, "execute")
+
+
+def test_memory_tool_redacts_sync_worker_failure(monkeypatch):
+    def fail_memory_processing(*_args, **_kwargs):
+        raise RuntimeError("token=your-api-key-here")
+
+    monkeypatch.setattr(
+        "agent.tools.memory._process_memory_task",
+        fail_memory_processing,
+    )
+
+    result = execute_tool_batch(
+        [_build_tool_call("memory", {"content": "记住这条合成偏好。"})],
+        _make_context(),
+    )
+
+    payload = json.loads(result.messages[0]["content"])
+    assert payload == {
+        "stored": False,
+        "status": "error",
+        "error": "token=[REDACTED]",
+    }
 
 
 def test_memory_schema_keeps_model_visible_arguments_minimal():
@@ -2527,8 +2742,8 @@ def test_process_memory_request_uses_operation_evolution_buffer(monkeypatch, tmp
 
     content = result.messages[0]["content"]
     payload = json.loads(content)
-    assert payload["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert payload["stored"] is True
+    assert payload["destination"] == "operation_evolution"
     op_dir = buffer.op_dir("demo", "流程A", workspace_id="ws-1")
     assert (op_dir / "proposals.jsonl").exists()
     proposal = json.loads((op_dir / "proposals.jsonl").read_text(encoding="utf-8").strip())
@@ -2599,8 +2814,7 @@ def test_operation_memory_extractor_skips_compact_key_lines(monkeypatch, tmp_pat
         ),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     extractor_input = llm.calls[1]["messages"][1]["content"]
     assert "名称：流程A；描述：校验物料编号。" in extractor_input
     assert "名称：TargetItem；描述：物料" in extractor_input
@@ -2650,8 +2864,7 @@ def test_operation_evolution_relation_merges_procedure_duplicate(monkeypatch, tm
         _make_context(llm=llm, workspace_id="ws-1", selected_ontology_id="demo"),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     aggregates = buffer.list_aggregates("demo", "流程A", workspace_id="ws-1", statuses=("pending",))
     assert len(aggregates) == 1
     assert aggregates[0].fingerprint == existing.fingerprint
@@ -2706,8 +2919,7 @@ def test_operation_evolution_relation_replaces_same_scope_schema(monkeypatch, tm
         _make_context(llm=llm, workspace_id="ws-1", selected_ontology_id="demo"),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     all_schema = buffer.list_aggregates("demo", None, workspace_id="ws-1")
     old = next(agg for agg in all_schema if agg.fingerprint == existing.fingerprint)
     active = buffer.recall(
@@ -2763,8 +2975,7 @@ def test_operation_evolution_does_not_compare_schema_across_operations(monkeypat
         _make_context(llm=llm, workspace_id="ws-1", selected_ontology_id="demo"),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     assert buffer.list_aggregates("demo", "流程A", workspace_id="ws-1", statuses=("pending",))
     assert [call["kwargs"]["request_label"] for call in llm.calls] == [
         "memory_route",
@@ -2802,8 +3013,8 @@ def test_process_memory_request_stores_object_level_schema_without_operation(mon
     )
 
     payload = json.loads(result.messages[0]["content"])
-    assert payload["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert payload["stored"] is True
+    assert payload["destination"] == "operation_evolution"
     object_schema_dir = buffer.op_dir("demo", None, workspace_id="ws-1")
     proposal = json.loads((object_schema_dir / "proposals.jsonl").read_text(encoding="utf-8").strip())
     assert proposal["operation_key"] is None
@@ -2842,8 +3053,7 @@ def test_operation_memory_without_operation_key_stays_in_evolution(monkeypatch, 
         ),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     assert memory_manager.stored == []
     ontology_dir = buffer.op_dir("demo", None, workspace_id="ws-1")
     proposal = json.loads((ontology_dir / "proposals.jsonl").read_text(encoding="utf-8").strip())
@@ -3129,6 +3339,47 @@ def test_registry_can_hide_request_user_interaction_for_non_interactive_main_run
     assert "ontology_context" in main_tools
 
 
+def test_registry_can_hide_dynamic_solver_tools_without_loading_catalog(monkeypatch):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "solve_synthetic_route_aaaaaaaa",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        },
+        allowed_callers={"main"},
+    )
+    catalog_calls = []
+
+    def load_solver_specs(**kwargs):
+        catalog_calls.append(kwargs)
+        return (solver_spec,)
+
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        load_solver_specs,
+    )
+
+    hidden_names = [
+        tool["function"]["name"]
+        for tool in get_tools_schema("main", include_solver=False)
+    ]
+
+    assert "solve_synthetic_route_aaaaaaaa" not in hidden_names
+    assert catalog_calls == []
+
+    visible_names = [tool["function"]["name"] for tool in get_tools_schema("main")]
+
+    assert "solve_synthetic_route_aaaaaaaa" in visible_names
+    assert len(catalog_calls) == 1
+
+
 def test_request_user_interaction_returns_non_terminal_error_when_interaction_is_disabled():
     tool = TOOL_SPECS["request_user_interaction"]
 
@@ -3141,6 +3392,148 @@ def test_request_user_interaction_returns_non_terminal_error_when_interaction_is
     assert result.terminal is False
     assert result.state_updates == {}
     assert "request_user_interaction is unavailable in this run" in str(result.content or "")
+
+
+def test_request_user_interaction_rejects_optional_solver_field(monkeypatch):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "function": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_count": {"type": "integer"},
+                        "mode": {
+                            "type": "string",
+                            "title": "Operating mode",
+                            "enum": ["safe", "fast"],
+                        },
+                    },
+                    "required": ["item_count"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        lambda **kwargs: (solver_spec,),
+    )
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={
+            "type": "single_choice",
+            "prompt": "Choose the operating mode.",
+            "options": [
+                {"id": "safe", "label": "safe", "value": "safe"},
+                {"id": "fast", "label": "fast", "value": "fast"},
+            ],
+            "requested_fields": ["mode"],
+        },
+        context=_make_context(
+            workspace_id="workspace-synthetic",
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version="revision-synthetic-1",
+        ),
+        tool_call_id="ask-optional",
+    )
+
+    assert result.terminal is False
+    assert result.state_updates == {}
+    assert "optional_solver_input" in str(result.content or "")
+    assert "mode" in str(result.content or "")
+    assert solver_spec.name in str(result.content or "")
+
+
+def test_request_user_interaction_infers_optional_solver_enum_without_field_name(
+    monkeypatch,
+):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "function": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_count": {"type": "integer"},
+                        "mode": {"type": "string", "enum": ["safe", "fast"]},
+                    },
+                    "required": ["item_count"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        lambda **kwargs: (solver_spec,),
+    )
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={
+            "type": "single_choice",
+            "prompt": "Choose a mode.",
+            "options": [
+                {"id": "safe", "label": "safe", "value": "safe"},
+                {"id": "fast", "label": "fast", "value": "fast"},
+            ],
+        },
+        context=_make_context(
+            workspace_id="workspace-synthetic",
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version="revision-synthetic-1",
+        ),
+        tool_call_id="ask-optional-inferred",
+    )
+
+    assert result.terminal is False
+    assert "optional_solver_input" in str(result.content or "")
+    assert '"mode"' in str(result.content or "")
+
+
+def test_request_user_interaction_keeps_required_solver_field_interactive(monkeypatch):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "function": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_count": {"type": "integer"},
+                        "mode": {"type": "string", "enum": ["safe", "fast"]},
+                    },
+                    "required": ["item_count"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        lambda **kwargs: (solver_spec,),
+    )
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={
+            "type": "input",
+            "prompt": "Provide item_count.",
+            "requested_fields": ["item_count"],
+        },
+        context=_make_context(
+            workspace_id="workspace-synthetic",
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version="revision-synthetic-1",
+        ),
+        tool_call_id="ask-required",
+    )
+
+    assert result.terminal is True
+    assert result.state_updates["pending_user_interaction"]["prompt"] == (
+        "Provide item_count."
+    )
 
 
 def test_registry_exposes_single_subagent_tool_for_main_agent():

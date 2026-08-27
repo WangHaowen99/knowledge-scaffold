@@ -11,7 +11,7 @@ from agent.core.shared.modes import VALID_AGENT_MODES
 def test_agent_loop_engine_is_jiuwen_only_facade():
     assert issubclass(AgentLoopEngine, JiuwenReactLoopEngine)
     assert AgentLoopEngine.__init__ is JiuwenReactLoopEngine.__init__
-    assert AgentLoopEngine.run is JiuwenReactLoopEngine.run
+    assert AgentLoopEngine.arun is JiuwenReactLoopEngine.arun
     assert AgentLoopEngine._VALID_AGENT_MODES is VALID_AGENT_MODES
 
 

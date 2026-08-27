@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
+from agent.runtime.async_utils import run_sync_compat
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.evolution import append_operation_proposal_with_relations, get_proposal_buffer
 from agent.memory.models import MEMORY_TYPE_TO_DIR
@@ -16,6 +15,7 @@ from llm import LLMPurpose, get_llm_router
 from utils.json_utils import _loads_json_object_loose
 from utils.logging import get_logger
 from utils.read_docs import normalize_read_documents_registry
+from utils.security.redaction import redact_sensitive_text
 
 if TYPE_CHECKING:
     from agent.memory.protocol import MemoryManager
@@ -24,9 +24,19 @@ logger = get_logger("tools.memory")
 
 _MEMORY_TYPES = set(MEMORY_TYPE_TO_DIR)
 _EVOLUTION_KINDS = {"procedure", "pitfall", "schema"}
-_MEMORY_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-classifier")
-_MEMORY_FUTURES: Set[Future] = set()
-_MEMORY_FUTURES_LOCK = Lock()
+
+_EXPLICIT_MEMORY_PATTERNS = (
+    re.compile(r"(?:请|帮我|麻烦)?(?:记住|记下|记一下|记下来|保存到记忆|存到记忆)"),
+    re.compile(r"(?:以后|今后|后续|下次).{0,16}(?:一直|都|继续|记得|遵循|使用|采用|按照)"),
+    re.compile(r"\bremember\s+(?:that|to|this|my)\b", re.IGNORECASE),
+    re.compile(r"\b(?:save|store)\s+this\s+(?:for|in)\b", re.IGNORECASE),
+    re.compile(r"\bfrom\s+now\s+on\b", re.IGNORECASE),
+)
+_NEGATED_MEMORY_PATTERN = re.compile(
+    r"(?:不要|别|无需|不用|不必).{0,8}(?:记住|记忆|保存)|"
+    r"\b(?:do\s+not|don't|dont|never)\s+(?:remember|save|store)\b",
+    re.IGNORECASE,
+)
 
 MEMORY_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
@@ -169,6 +179,32 @@ def _strip_json_fence(text: str) -> str:
 
 def _safe_str(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _latest_user_request(messages: List[Dict[str, Any]]) -> str:
+    for message in reversed(list(messages or [])):
+        if str(message.get("role") or "").strip().lower() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") in {None, "text"}
+            )
+    return ""
+
+
+def has_explicit_memory_request(messages: List[Dict[str, Any]]) -> bool:
+    request = _latest_user_request(messages)
+    if not request or _NEGATED_MEMORY_PATTERN.search(request):
+        return False
+    return any(pattern.search(request) for pattern in _EXPLICIT_MEMORY_PATTERNS)
+
+
+_has_explicit_memory_request = has_explicit_memory_request
 
 
 def _recent_read_context(read_documents: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -677,34 +713,7 @@ def store_user_memory(
     )
 
 
-def _on_memory_task_done(future: Future) -> None:
-    with _MEMORY_FUTURES_LOCK:
-        _MEMORY_FUTURES.discard(future)
-    try:
-        result = future.result()
-    except Exception:
-        logger.exception("async memory task failed")
-        return
-    logger.info("async memory task completed: %s", result)
-
-
-def _submit_memory_task(content: str, context: _MemoryTaskContext) -> Future:
-    future = _MEMORY_EXECUTOR.submit(_process_memory_task, content, context)
-    with _MEMORY_FUTURES_LOCK:
-        _MEMORY_FUTURES.add(future)
-    future.add_done_callback(_on_memory_task_done)
-    return future
-
-
-def wait_for_memory_tasks(timeout: Optional[float] = None) -> None:
-    """Wait for currently queued memory tasks. Test seam."""
-    with _MEMORY_FUTURES_LOCK:
-        futures = list(_MEMORY_FUTURES)
-    for future in futures:
-        future.result(timeout=timeout)
-
-
-def handle_memory(
+async def handle_memory(
     content: str,
     *,
     context: ToolContext,
@@ -713,6 +722,17 @@ def handle_memory(
     if not content:
         return json.dumps(
             {"stored": False, "status": "error", "error": "empty content"},
+            ensure_ascii=False,
+        )
+
+    context_messages = list(context.messages or [])
+    if context_messages and not _has_explicit_memory_request(context_messages):
+        return json.dumps(
+            {
+                "stored": False,
+                "status": "rejected",
+                "error": "explicit_current_user_memory_request_required",
+            },
             ensure_ascii=False,
         )
 
@@ -725,22 +745,25 @@ def handle_memory(
             selected_ontology_id=context.selected_ontology_id,
             read_documents=dict(context.read_documents or {}),
         )
-        _submit_memory_task(content, task_context)
+        result = await run_sync_compat(
+            _process_memory_task,
+            content,
+            task_context,
+            run_id=context.run_id,
+            task_name="memory-tool-capture",
+            offload_kind="tool",
+        )
         return json.dumps(
-            {
-                "queued": True,
-                "status": "queued",
-                "content_preview": content[:120],
-            },
+            result,
             ensure_ascii=False,
         )
     except Exception as exc:
-        logger.exception("memory tool failed")
+        logger.error("memory tool failed: %s", type(exc).__name__)
         return json.dumps(
             {
                 "stored": False,
                 "status": "error",
-                "error": str(exc),
+                "error": redact_sensitive_text(exc),
             },
             ensure_ascii=False,
         )
@@ -759,7 +782,7 @@ class MemoryTool:
         object.__setattr__(self, "schema", MEMORY_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main"})
 
-    def execute(
+    async def aexecute(
         self,
         *,
         args: Dict[str, Any],
@@ -768,4 +791,4 @@ class MemoryTool:
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
         del tool_call_id, event_emitter
-        return ToolOutcome(content=handle_memory(**args, context=context))
+        return ToolOutcome(content=await handle_memory(**args, context=context))

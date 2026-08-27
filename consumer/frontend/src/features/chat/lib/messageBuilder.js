@@ -4,11 +4,11 @@
 
 import createLogger from '../../../shared/lib/logger.js';
 import {
-  AGENT_STREAM_EVENT,
-  applyAgentV2Event,
+  applyPublicEvent,
   closeOpenSegment,
-  isAgentV2Envelope,
 } from './streamHelpers.js';
+import { storedAgentEventToPublicEvent } from './legacyAgentEvent.js';
+import { publicEventTimestamp } from './publicEvent.js';
 import { applyInteractionCancellation, INTERACTION_CANCELLED_TYPE } from './pendingInteraction.js';
 
 const logger = createLogger('MessageBuilder');
@@ -18,25 +18,33 @@ const TURN_DISPLAY_NAME = '本体消费智能体';
 
 export const buildMessagesFromEvents = (events = []) => {
   const messages = [];
-  const turnMessageIndexByRun = new Map();
+  const turnMessageIndexByKey = new Map();
 
-  const ensureTurnBubble = (runId) => {
-    if (turnMessageIndexByRun.has(runId)) {
-      return turnMessageIndexByRun.get(runId);
+  const ensureTurnBubble = (runId, turnId = null) => {
+    const normalizedTurnId = turnId == null ? '' : String(turnId).trim();
+    const turnKey = `${runId}::${normalizedTurnId || 'pending'}`;
+    if (turnMessageIndexByKey.has(turnKey)) {
+      return turnMessageIndexByKey.get(turnKey);
     }
 
     const existingIdx = messages.findIndex(
-      (msg) => msg.runId === runId && msg.kind === 'agent_step' && msg.stepLabel === TURN_STEP_LABEL
+      (msg) => (
+        msg.runId === runId
+        && msg.kind === 'agent_step'
+        && msg.stepLabel === TURN_STEP_LABEL
+        && String(msg.turnId ?? '').trim() === normalizedTurnId
+      )
     );
     if (existingIdx !== -1) {
-      turnMessageIndexByRun.set(runId, existingIdx);
+      turnMessageIndexByKey.set(turnKey, existingIdx);
       return existingIdx;
     }
 
     const idx = messages.length;
     messages.push({
-      id: `${runId}:turn`,
+      id: normalizedTurnId ? `${runId}:turn:${normalizedTurnId}` : `${runId}:turn`,
       runId,
+      ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}),
       role: 'assistant',
       kind: 'agent_step',
       stepLabel: TURN_STEP_LABEL,
@@ -54,13 +62,13 @@ export const buildMessagesFromEvents = (events = []) => {
       ts: Date.now(),
     });
 
-    turnMessageIndexByRun.set(runId, idx);
+    turnMessageIndexByKey.set(turnKey, idx);
     return idx;
   };
 
   logger.debug(`Processing ${events.length} events`);
 
-  events.forEach((event) => {
+  events.forEach((event, eventIndex) => {
     const eventLabel = event?.event;
     const data = event?.data;
 
@@ -89,18 +97,22 @@ export const buildMessagesFromEvents = (events = []) => {
       return;
     }
 
-    if (eventLabel !== AGENT_STREAM_EVENT || !isAgentV2Envelope(data)) {
-      return;
-    }
+    const publicEvent = storedAgentEventToPublicEvent(event, { index: eventIndex });
+    if (!publicEvent) return;
 
-    const runId = data.run_id || 'unknown-run';
-    const idx = ensureTurnBubble(runId);
+    // run.started is a run-level control event. It has no turn-scoped
+    // rendering data and must not create a phantom assistant bubble during
+    // durable session hydration.
+    if (publicEvent.event_type === 'run.started') return;
+
+    const runId = publicEvent.run_id || 'unknown-run';
+    const idx = ensureTurnBubble(runId, publicEvent.turn_id);
     const current = messages[idx];
 
-    const next = applyAgentV2Event(current, data);
+    const next = applyPublicEvent(current, publicEvent);
     messages[idx] = {
       ...next,
-      ts: data.ts || Date.now(),
+      ts: publicEventTimestamp(publicEvent),
     };
   });
 

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+import yaml
 
 from config.system_config import load_system_config
 from persistence.execution_store import ExecutionStore
@@ -38,6 +39,7 @@ from ontology.ontologies import (
     get_ontology_version_dir,
     is_valid_ontology_version,
 )
+from ontology.mutation_lock import ontology_mutation_lock
 from workspace.workspaces import get_workspace_ontologies_root
 from agent.skill_evolution.models import (
     DiffFileEntry,
@@ -213,11 +215,52 @@ def _collect_version_files(version_dir: Path) -> Dict[str, bytes]:
     ]
     for p in sorted(paths, key=lambda x: x.relative_to(version_dir).as_posix()):
         rel = p.relative_to(version_dir).as_posix()
+        if rel == "manifest.yaml":
+            continue
         try:
             out[rel] = p.read_bytes()
         except OSError:
             continue
+    revision_manifest = _canonical_revision_manifest(version_dir)
+    if revision_manifest is not None:
+        out["manifest.yaml"] = revision_manifest
     return out
+
+
+def _canonical_revision_manifest(version_dir: Path) -> Optional[bytes]:
+    """Hash legacy backfill and its equivalent revision manifest identically."""
+
+    manifest_path = version_dir / "manifest.yaml"
+    manifest: Any = None
+    if manifest_path.is_file() and not manifest_path.is_symlink():
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            try:
+                return manifest_path.read_bytes()
+            except OSError:
+                return None
+    elif version_dir.parent.name == "versions":
+        shared_manifest_path = version_dir.parent.parent / "manifest.yaml"
+        if shared_manifest_path.is_file() and not shared_manifest_path.is_symlink():
+            try:
+                shared = yaml.safe_load(shared_manifest_path.read_text(encoding="utf-8")) or {}
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                return None
+            if isinstance(shared, dict) and str(shared.get("schema_version") or "").strip() == "0.1":
+                manifest = dict(shared)
+                manifest["version"] = version_dir.name
+                manifest.pop("active_version", None)
+                manifest.pop("versions", None)
+    if not isinstance(manifest, dict):
+        return None
+    return json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
 
 
 def _locate_evolved_root(extract_dir: Path) -> Path:
@@ -312,8 +355,10 @@ class SkillEvolutionService:
 
     @staticmethod
     def _ontology_root(ontology: OntologyManifest) -> Path:
-        """OntologyManifest.ontology_dir is the active *version* dir; the root
-        (containing manifest.yaml + versions/) is the manifest's parent."""
+        """Return the installed package root for versioned and legacy layouts."""
+        version_dir = Path(ontology.ontology_dir)
+        if version_dir.parent.name == "versions":
+            return version_dir.parent.parent
         return Path(ontology.manifest_path).parent
 
     def _active_version_dir(self, workspace_id: str, ontology: OntologyManifest) -> Path:
@@ -857,40 +902,49 @@ class SkillEvolutionService:
             _install_ontology_version_package,
         )
 
-        # Full-snapshot guard: install rmtree's the target version dir then
-        # copies evolved_root's contents, so a partial snapshot (e.g. missing
-        # objects/ because skill-evolver returned only operations) would
-        # silently delete the missing component. Require evolved_root to
-        # contain every top-level component the active version has.
-        self._assert_full_snapshot(
-            evolved_root,
-            self._active_version_dir(record.workspace_id, ontology),
-            ONTOLOGY_VERSIONED_SKIP_NAMES,
-        )
+        with ontology_mutation_lock(ontology_dir):
+            # Re-check drift after acquiring the same lock used by every other
+            # ontology writer. This closes the validation-to-install race.
+            locked_drift = self.detect_drift(record)
+            if locked_drift.drifted:
+                raise ValueError(locked_drift.message)
+            ontology = self._resolve_ontology(record.workspace_id, record.ontology_id)
+            ontology_dir = self._ontology_root(ontology)
 
-        if mode == "new_version":
-            default_name = "evol-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-            target_version = str(version_name or default_name).strip()
-            if not is_valid_ontology_version(target_version):
-                raise ValueError("版本号不合法，仅支持 [A-Za-z0-9][A-Za-z0-9._-]*")
-            manifest = ensure_ontology_versions(ontology_dir)
-            existing_versions = [str(v).strip() for v in (manifest.get("versions") or []) if str(v or "").strip()]
-            if target_version in existing_versions:
-                raise ValueError("版本 {} 已存在，请换一个版本号".format(target_version))
-            _install_ontology_version_package(
-                source_root=evolved_root,
-                ontology_dir=ontology_dir,
-                ontology_id=ontology.id,
-                ontology_name=ontology.name,
-                ontology_description=ontology.description,
-                target_version=target_version,
-                existed=True,
+            # Full-snapshot guard: install rmtree's the target version dir then
+            # copies evolved_root's contents, so a partial snapshot (e.g. missing
+            # objects/ because skill-evolver returned only operations) would
+            # silently delete the missing component. Require evolved_root to
+            # contain every top-level component the active version has.
+            self._assert_full_snapshot(
+                evolved_root,
+                self._active_version_dir(record.workspace_id, ontology),
+                ONTOLOGY_VERSIONED_SKIP_NAMES,
             )
-            new_version = target_version
-        else:
-            # overwrite active version contents (in-place; rollback via new_version mode)
-            version_dir = self._active_version_dir(record.workspace_id, ontology)
-            _copy_versioned_package_contents(evolved_root, version_dir)
+
+            if mode == "new_version":
+                default_name = "evol-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                target_version = str(version_name or default_name).strip()
+                if not is_valid_ontology_version(target_version):
+                    raise ValueError("版本号不合法，仅支持 [A-Za-z0-9][A-Za-z0-9._-]*")
+                manifest = ensure_ontology_versions(ontology_dir)
+                existing_versions = [str(v).strip() for v in (manifest.get("versions") or []) if str(v or "").strip()]
+                if target_version in existing_versions:
+                    raise ValueError("版本 {} 已存在，请换一个版本号".format(target_version))
+                _install_ontology_version_package(
+                    source_root=evolved_root,
+                    ontology_dir=ontology_dir,
+                    ontology_id=ontology.id,
+                    ontology_name=ontology.name,
+                    ontology_description=ontology.description,
+                    target_version=target_version,
+                    existed=True,
+                )
+                new_version = target_version
+            else:
+                # overwrite active version contents (in-place; rollback via new_version mode)
+                version_dir = self._active_version_dir(record.workspace_id, ontology)
+                _copy_versioned_package_contents(evolved_root, version_dir)
 
         record.status = "approved"
         record.decision = decision

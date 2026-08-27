@@ -302,6 +302,45 @@ def test_hugegraph_uses_separate_connection_and_query_timeouts(monkeypatch):
     assert calls[0]["timeout"] == (10, 30)
 
 
+def test_hugegraph_uses_pinned_ip_with_original_tls_identity(monkeypatch):
+    captured = {}
+
+    class Response:
+        text = "{}"
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    backend = HugeGraphBackend({
+        "url": "https://snapshot.example.com:8443",
+        "resolved_url": "https://192.0.2.24:8443",
+        "graph": "graph_demo",
+    })
+    monkeypatch.setattr(
+        backend._pinned_session,
+        "request",
+        lambda **kwargs: captured.update(kwargs) or Response(),
+    )
+
+    backend.verify_connectivity()
+
+    assert captured["url"].startswith(
+        "https://192.0.2.24:8443/graphs/graph_demo/"
+    )
+    assert captured["headers"]["Host"] == "snapshot.example.com:8443"
+    assert captured["allow_redirects"] is False
+    assert backend._pinned_session.trust_env is False
+    assert (
+        backend._pinned_session.adapters["https://"]._server_hostname
+        == "snapshot.example.com"
+    )
+    backend.close()
+
+
 def test_hugegraph_legacy_timeout_does_not_override_default_query_timeout(monkeypatch):
     calls = _install_hugegraph_http(monkeypatch)
     backend = HugeGraphBackend({

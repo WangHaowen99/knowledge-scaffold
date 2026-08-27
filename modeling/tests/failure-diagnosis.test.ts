@@ -1117,6 +1117,32 @@ test('用户转为建模修缮任务会确认可优化诊断并保留修缮来�
   assert.equal(hasConfirmedOptimizableDiagnoses([planned]), true);
 });
 
+test('暂缓处理不会清除阻断状态或把诊断提升为可优化知识包缺陷', () => {
+  const project = createProject({ owner: 'diagnosis-defer', name: 'diagnosis-defer', domain: 'demo', background: '' });
+  const round = createRound(project.id, '1.0.0', 1);
+  const [diagnosis] = replaceFailureDiagnoses(project.id, round.id, '1.0.0', 'revision-1', [{
+    category: 'data_gap', title: '字段口径待确认', summary: '当前资料缺少权威语义', evidence: ['资料未说明口径'],
+    confidence: 'high', blocking: true, repairScope: 'package', packageOptimizable: false,
+    resultIds: ['result-1'], relatedQuestions: ['如何计算收益？'], suggestedAction: '请专家先确认字段口径。',
+  }]);
+
+  const deferred = resolveFailureDiagnosis({
+    projectId: project.id,
+    diagnosisId: diagnosis.id,
+    action: 'defer',
+    note: '先暂缓，等待业务确认',
+    actor: 'expert-user',
+    payload: { nextSteps: ['rerun_evaluation'] },
+  });
+
+  assert.equal(deferred.resolutionStatus, 'deferred');
+  assert.equal(deferred.resolutionAction, 'defer');
+  assert.equal(deferred.blocking, true);
+  assert.equal(deferred.packageOptimizable, false);
+  assert.equal(deferred.repairScope, 'package');
+  assert.equal(hasConfirmedOptimizableDiagnoses([deferred]), false);
+});
+
 test('优化建议持久化根因、证据、通用化和验证方案', () => {
   const project = createProject({ owner: 'suggestion-user', name: 'suggestion-project', domain: 'demo', background: '' });
   const round = createRound(project.id, '1.0.0', 1);

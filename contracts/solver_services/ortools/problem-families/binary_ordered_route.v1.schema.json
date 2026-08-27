@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/solver-services/ortools/problem-families/binary_ordered_route.v1.schema.json",
+  "title": "binary_ordered_route 1.0 ProblemIR (canonical candidate-selection payload)",
+  "$defs": {
+    "neutralValue": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "integer"},
+        {"type": "string", "maxLength": 2048},
+        {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {"$ref": "#/$defs/neutralValue"}
+        },
+        {
+          "type": "object",
+          "maxProperties": 2048,
+          "propertyNames": {
+            "not": {
+              "pattern": "(?i)^(workspace(_?id)?|owner(_?id)?|user(_?id)?|tenant(_?id)?|authorization|.*(?:access|refresh|bearer|auth)?_?token|.*(?:api|client|private)?_?secret|.*(?:api|access|private)?_?key|password|credential(?:_?ref(?:erence)?)?|endpoint(?:_?url)?|base_?url|database_?(?:url|dsn)|connection_?string)$"
+            }
+          },
+          "additionalProperties": {"$ref": "#/$defs/neutralValue"}
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "eligible", "assignment", "metrics"],
+      "properties": {
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "eligible": {"type": "boolean"},
+        "assignment": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"type": "string", "minLength": 1, "maxLength": 256},
+          "additionalProperties": {"$ref": "#/$defs/neutralValue"}
+        },
+        "metrics": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"type": "string", "minLength": 1, "maxLength": 256},
+          "additionalProperties": {"type": "integer"}
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "problem_family", "family_version", "payload"],
+  "properties": {
+    "schema_version": {"const": "solver.problem.v1"},
+    "problem_family": {"const": "binary_ordered_route"},
+    "family_version": {"const": "1.0"},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_space", "parameters", "constraints", "objectives", "limits"],
+      "properties": {
+        "decision_space": {"$ref": "#/$defs/neutralValue"},
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidate_selection"],
+          "properties": {
+            "candidate_selection": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["profile_id", "candidate_count", "candidate_evaluation_digest", "candidates"],
+              "properties": {
+                "profile_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "candidate_count": {"type": "integer", "minimum": 1, "maximum": 128},
+                "candidate_evaluation_digest": {"type": "string", "pattern": "^sha256:solver-coordination\\.v1:[a-f0-9]{64}$"},
+                "candidates": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 128,
+                  "items": {"$ref": "#/$defs/candidate"}
+                }
+              }
+            },
+            "domain_evaluation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "profile_id",
+                "metric_scale",
+                "rounding",
+                "plan_month",
+                "production_condition",
+                "items",
+                "model",
+                "tables"
+              ],
+              "properties": {
+                "schema_version": {"const": "refinery_route_context.v1"},
+                "profile_id": {"const": "refinery_route.v1"},
+                "metric_scale": {"type": "integer", "minimum": 1, "maximum": 1000000},
+                "rounding": {"const": "ROUND_HALF_EVEN"},
+                "plan_month": {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"},
+                "production_condition": {"const": "NO_JET"},
+                "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "items": {"$ref": "#/$defs/neutralValue"}
+                },
+                "model": {"$ref": "#/$defs/neutralValue"},
+                "tables": {"$ref": "#/$defs/neutralValue"}
+              }
+            }
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {"$ref": "#/$defs/neutralValue"}
+        },
+        "objectives": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["metric", "sense"],
+            "properties": {
+              "metric": {"type": "string", "minLength": 1, "maxLength": 256},
+              "sense": {"enum": ["maximize", "minimize"]}
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_candidates", "max_verification_candidates"],
+          "properties": {
+            "max_candidates": {"type": "integer", "minimum": 1, "maximum": 128},
+            "max_verification_candidates": {"type": "integer", "minimum": 1, "maximum": 128}
+          }
+        }
+      }
+    }
+  }
+}

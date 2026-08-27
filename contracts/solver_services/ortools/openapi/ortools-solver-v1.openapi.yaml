@@ -1,0 +1,58 @@
+openapi: 3.1.0
+info:
+  title: OR-Tools Solver Service API
+  version: 1.0.0
+security:
+  - serviceBearer: []
+components:
+  securitySchemes:
+    serviceBearer:
+      type: http
+      scheme: bearer
+paths:
+  /health:
+    get:
+      operationId: health
+      security: []
+      responses:
+        "200": {description: Process is alive}
+  /api/v1/capabilities:
+    get:
+      operationId: capabilities
+      responses:
+        "200": {description: Solver service capabilities}
+  /api/v1/jobs:
+    post:
+      operationId: submitJob
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string, minLength: 16, maxLength: 256}
+      responses:
+        "202": {description: Job accepted or reused}
+  /api/v1/jobs/{job_id}:
+    parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema: {type: string}
+    get:
+      operationId: getJob
+      responses:
+        "200": {description: Current Job}
+    delete:
+      operationId: cancelJob
+      responses:
+        "200": {description: Current terminal or cancelled Job}
+  /api/v1/jobs/{job_id}/result:
+    parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema: {type: string}
+    get:
+      operationId: getResult
+      responses:
+        "200": {description: Completed mathematical result}
+        "409": {description: Result is not available}

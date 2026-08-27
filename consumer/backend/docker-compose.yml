@@ -3,22 +3,21 @@ version: '3.3'
 services:
   backend:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: consumer/backend/Dockerfile
     pull_policy: build
     image: onto-agent-backend:${TAG:-latest}
     container_name: onto-agent-backend-${TAG:-latest}
     restart: unless-stopped
+    stop_grace_period: 45s
     ports:
       - "${BACKEND_PORT:-5055}:5055"
     volumes:
-      - ./config:/app/config:ro
       - ./logs:/app/logs
       - ../.onto-runtime:/app/.onto-runtime
     env_file:
       - ./.env
     environment:
-      - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
       - MCP_SERVER_HOST=mcp
@@ -58,7 +57,6 @@ services:
     ports:
       - "${MCP_SERVER_PORT:-7488}:7488"
     volumes:
-      - ./config:/app/config:ro
       - ./logs:/app/logs
       - ../.onto-runtime:/app/.onto-runtime
     env_file:

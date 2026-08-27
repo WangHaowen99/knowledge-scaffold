@@ -32,6 +32,50 @@ class WorkflowCancelledError(AgenticError):
     pass
 
 
+class ModelInvocationError(AgenticError):
+    """Mark an exception observed at the model-call boundary."""
+
+    def __init__(self, cause: BaseException) -> None:
+        self.cause = cause
+        super().__init__("Model invocation failed")
+
+
+class ModelOutputTruncatedError(AgenticError):
+    """Raised when the provider stops a final answer at its output limit."""
+
+    error_code = "MODEL_OUTPUT_TRUNCATED"
+    public_message = "回答达到输出上限，内容尚未完成"
+    retriable = True
+
+    def __init__(
+        self,
+        partial_output: str,
+        *,
+        finish_reason: str,
+    ) -> None:
+        self.partial_output = str(partial_output or "")
+        self.finish_reason = str(finish_reason or "length")
+        super().__init__(self.public_message)
+
+    def __str__(self) -> str:
+        return self.public_message
+
+
+class ModelContentFilteredError(AgenticError):
+    """Raised when the provider filters the final model response."""
+
+    error_code = "MODEL_CONTENT_FILTERED"
+    public_message = "模型回答因内容策略未能完整生成"
+    retriable = False
+
+    def __init__(self, partial_output: str = "") -> None:
+        self.partial_output = str(partial_output or "")
+        super().__init__(self.public_message)
+
+    def __str__(self) -> str:
+        return self.public_message
+
+
 class AgentLoopStalledError(AgenticError):
     """Raised when the agent repeats an identical failed tool call."""
 

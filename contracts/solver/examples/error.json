@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "CAPACITY_TEMPORARY",
+    "category": "capacity",
+    "message": "capacity is temporarily unavailable",
+    "retryable": true,
+    "diagnostic_ref": "diag_synthetic_0001"
+  }
+}

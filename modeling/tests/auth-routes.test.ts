@@ -2916,12 +2916,20 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
   const projectId = created.json().project.id;
   await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
 
-  const [m3repo, diagnosisRepo] = await Promise.all([
+  const [m3repo, diagnosisRepo, { getPackageArtifactStore }] = await Promise.all([
     import('../src/workflow/m3-repo.js'),
     import('../src/evaluation/failure-diagnosis-repo.js'),
+    import('../src/artifacts/runtime.js'),
   ]);
-  const round = m3repo.createRound(projectId, '0.1.0', 2);
-  const stored = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', 'rev-0', [
+  const packageView = await getPackageArtifactStore().current(projectId)
+    ?? await getPackageArtifactStore().initializeDraftPackage(projectId, {
+      id: 'evaluation-repair-package',
+      name: '评测缺陷回建模',
+      description: '用于验证当前知识包修订上的评测缺陷回流。',
+    });
+  const packageRevision = packageView.revision.oid;
+  const round = m3repo.createRound(projectId, '0.1.0', 2, packageRevision);
+  const stored = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', packageRevision, [
     {
       category: 'knowledge_gap', title: '缺少分流适用条件', summary: '没有说明触发门槛',
       evidence: ['用例 3 回答与预期不符'], confidence: 'high', blocking: false,

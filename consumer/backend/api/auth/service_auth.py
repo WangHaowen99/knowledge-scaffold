@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 
-from flask import Request
+from fastapi import Request
 
 
 def modeling_service_authorized(request: Request) -> bool:

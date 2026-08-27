@@ -4,10 +4,31 @@ from __future__ import annotations
 
 from typing import Mapping
 
+
+_DETERMINISTIC_ENV_NAMES = frozenset(
+    {
+        "PYTHONHASHSEED",
+        "PYTHONDONTWRITEBYTECODE",
+        "TZ",
+        "LC_ALL",
+        "LANG",
+        "DETERMINISTIC_EXECUTION",
+        "ONTOLOGY_ID",
+        "ONTOLOGY_VERSION",
+        "ONTO_DETERMINISTIC_PROVIDER_SOCKET",
+        "PACKAGE_REVISION",
+        "RUN_ARTIFACT_DIR",
+        "RUN_ARTIFACT_MAX_FILE_BYTES",
+        "RUN_ARTIFACT_MAX_TOTAL_BYTES",
+        "RUN_ARTIFACT_MAX_COUNT",
+    }
+)
+
+
 def _is_allowed_override(key: str) -> bool:
     from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 
-    return key == SCRIPT_BUSINESS_DATA_CONNECTION_ENV
+    return key == SCRIPT_BUSINESS_DATA_CONNECTION_ENV or key in _DETERMINISTIC_ENV_NAMES
 
 
 def build_script_env(

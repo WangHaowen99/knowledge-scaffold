@@ -204,6 +204,7 @@ def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_onto
         selected_ontology_id="demo",
         selected_ontology_version=None,
         caller="main",
+        messages=[],
         agent_config=SimpleNamespace(execute_script_timeout=30),
     )
 

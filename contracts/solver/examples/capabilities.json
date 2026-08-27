@@ -1,0 +1,26 @@
+{
+  "protocol_versions": ["solver.job.v1"],
+  "connector": {
+    "name": "synthetic-connector",
+    "version": "1.0.0",
+    "build": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "execution": {
+    "async_jobs": true,
+    "cancellation": true,
+    "prefer_wait": true
+  },
+  "problem_families": [
+    {
+      "name": "binary_ordered_route",
+      "versions": ["1.0"],
+      "features": ["lexicographic_objective"],
+      "result_assurances": ["feasible_solution", "best_bound"],
+      "limits": {
+        "max_payload_bytes": 1048576,
+        "max_solve_time_ms": 60000,
+        "max_workers": 4
+      }
+    }
+  ]
+}

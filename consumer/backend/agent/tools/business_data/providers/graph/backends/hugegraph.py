@@ -9,8 +9,10 @@ import json
 import re
 from typing import Any
 from urllib.parse import quote
+from urllib.parse import urlsplit
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsupportedError
 from ..filter_expr import normalize_structured_operator, safe_prop
@@ -52,6 +54,24 @@ _HUGEG_INTERNAL_KEYS = {
     "d2o_source_vertex_id",
     "d2o_target_vertex_id",
 }
+
+
+class _PinnedTLSAdapter(HTTPAdapter):
+    """Connect to a fixed IP while verifying the original TLS server name."""
+
+    def __init__(self, server_hostname: str) -> None:
+        self._server_hostname = server_hostname
+        super().__init__()
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["assert_hostname"] = self._server_hostname
+        pool_kwargs["server_hostname"] = self._server_hostname
+        return super().init_poolmanager(
+            connections,
+            maxsize,
+            block=block,
+            **pool_kwargs,
+        )
 _PATTERN_SEGMENT_META_KEYS = {"return_properties"}
 _PATTERN_COMPACT_EXACT_KEYS = {
     "ID",
@@ -143,6 +163,7 @@ class HugeGraphBackend:
 
     def __init__(self, provider_config: Mapping[str, Any]) -> None:
         self.url = str(provider_config.get("url") or "").rstrip("/")
+        self.resolved_url = str(provider_config.get("resolved_url") or "").rstrip("/")
         self.graph = str(provider_config.get("graph") or _DEFAULT_GRAPH).strip() or _DEFAULT_GRAPH
         self.graph_space = str(provider_config.get("graph_space") or "").strip()
         self.username = str(provider_config.get("username") or "").strip()
@@ -157,6 +178,26 @@ class HugeGraphBackend:
         self.vertex_query_limit = int(provider_config.get("vertex_query_limit") or 200000)
         self.edge_query_limit = int(provider_config.get("edge_query_limit") or 200000)
         self.max_retries = min(1, max(0, int(provider_config.get("max_retries") or 0)))
+        self._pinned_session = None
+        self._pinned_host_header = ""
+        if self.resolved_url:
+            original = urlsplit(self.url)
+            self._pinned_host_header = original.netloc
+            if self.resolved_url.casefold().startswith("https://"):
+                server_hostname = str(original.hostname or "").strip()
+                if not server_hostname:
+                    raise GraphBackendError("HugeGraph TLS server name is invalid")
+                self._pinned_session = requests.Session()
+                self._pinned_session.trust_env = False
+                self._pinned_session.mount(
+                    "https://",
+                    _PinnedTLSAdapter(server_hostname),
+                )
+
+    def close(self) -> None:
+        if self._pinned_session is not None:
+            self._pinned_session.close()
+            self._pinned_session = None
 
     def verify_connectivity(self) -> None:
         if not self.url:
@@ -965,9 +1006,11 @@ class HugeGraphBackend:
     ) -> Any:
         if not self.url:
             raise GraphBackendError("HugeGraph URL 未配置")
-        url = "{}{}".format(self.url, path)
+        url = "{}{}".format(self.resolved_url or self.url, path)
         timeout = (self.connection_timeout, self.query_timeout)
         headers = {}
+        if self.resolved_url and self._pinned_host_header:
+            headers["Host"] = self._pinned_host_header
         if self.token:
             headers["Authorization"] = "Bearer {}".format(self.token)
         auth = (self.username, self.password) if self.username and self.password else None
@@ -976,15 +1019,29 @@ class HugeGraphBackend:
         last_exc: Exception | None = None
         for _attempt in range(attempts):
             try:
-                response = requests.request(
-                    method=method,
-                    url=url,
-                    params=params,
-                    json=json_body,
-                    timeout=timeout,
-                    headers=headers,
-                    auth=auth,
+                request = (
+                    self._pinned_session.request
+                    if self._pinned_session is not None
+                    else requests.request
                 )
+                request_options = {
+                    "method": method,
+                    "url": url,
+                    "params": params,
+                    "json": json_body,
+                    "timeout": timeout,
+                    "headers": headers,
+                    "auth": auth,
+                }
+                if self.resolved_url:
+                    request_options["allow_redirects"] = False
+                response = request(**request_options)
+                if self.resolved_url and 300 <= int(
+                    getattr(response, "status_code", 200)
+                ) < 400:
+                    raise requests.exceptions.RequestException(
+                        "HugeGraph fixed endpoint refused redirect"
+                    )
                 response.raise_for_status()
                 try:
                     return response.json()

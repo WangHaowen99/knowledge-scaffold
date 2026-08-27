@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "CAPACITY_UNAVAILABLE",
+    "category": "capacity",
+    "message": "Solver service capacity is exhausted",
+    "retryable": true,
+    "diagnostic_ref": "diag_synthetic_0001"
+  }
+}

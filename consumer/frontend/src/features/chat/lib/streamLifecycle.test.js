@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   abortStreamController,
   abortStreamControllers,
-  classifyRunProgressFromEnvelope,
+  classifyRunProgressFromPublicEvent,
   formatElapsedMs,
   isSilentStreamAbort,
   isTerminalRunStatus,
@@ -90,33 +90,33 @@ test('run progress keeps the current phase while elapsed time keeps increasing',
   );
 });
 
-test('run progress classifies agent stream envelopes into user-visible phases', () => {
+test('run progress classifies PublicEvents into user-visible phases', () => {
   assert.equal(
-    classifyRunProgressFromEnvelope({ type: 'turn.started', payload: {} }).phase,
+    classifyRunProgressFromPublicEvent({ event_type: 'turn.started', payload: {} }).phase,
     'analyzing',
   );
   assert.equal(
-    classifyRunProgressFromEnvelope({ type: 'token.delta', payload: { channel: 'content' } }).phase,
+    classifyRunProgressFromPublicEvent({ event_type: 'token.delta', payload: { channel: 'content' } }).phase,
     'generating',
   );
   assert.equal(
-    classifyRunProgressFromEnvelope({ type: 'tool.started', payload: { tool_name: 'business_data_query' } }).phase,
+    classifyRunProgressFromPublicEvent({ event_type: 'tool.started', payload: { tool_name: 'business_data_query' } }).phase,
     'business_data',
   );
   assert.equal(
-    classifyRunProgressFromEnvelope({ type: 'tool.started', payload: { tool_name: 'web_search' } }).phase,
+    classifyRunProgressFromPublicEvent({ event_type: 'tool.started', payload: { tool_name: 'web_search' } }).phase,
     'web_search',
   );
   assert.equal(
-    classifyRunProgressFromEnvelope({ type: 'tool.started', payload: { tool_name: 'python_script' } }).phase,
+    classifyRunProgressFromPublicEvent({ event_type: 'tool.started', payload: { tool_name: 'python_script' } }).phase,
     'script',
   );
   assert.equal(
-    classifyRunProgressFromEnvelope({ type: 'tool.finished', payload: { tool_name: 'python_script' } }).phase,
+    classifyRunProgressFromPublicEvent({ event_type: 'tool.finished', payload: { tool_name: 'python_script' } }).phase,
     'analyzing',
   );
   assert.equal(
-    classifyRunProgressFromEnvelope({ type: 'subagent.started', payload: {} }).phase,
+    classifyRunProgressFromPublicEvent({ event_type: 'subagent.started', payload: {} }).phase,
     'subagent',
   );
   assert.equal(

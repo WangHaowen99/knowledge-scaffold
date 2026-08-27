@@ -86,14 +86,23 @@ export function addTestcases(
   }
   return { added, skipped, testcases: listTestcases(projectId) };
 }
-export function updateTestcase(id: string, patch: { question?: string; groundTruth?: string }): void {
-  const cur = getDb().prepare('SELECT * FROM testcases WHERE id = ?').get(id) as any;
-  if (!cur) return;
-  getDb().prepare('UPDATE testcases SET question = ?, ground_truth = ? WHERE id = ?')
-    .run(patch.question ?? cur.question, patch.groundTruth ?? cur.ground_truth, id);
+export function testcaseBelongsToProject(id: string, projectId: string): boolean {
+  return Boolean(getDb().prepare('SELECT 1 FROM testcases WHERE id = ? AND project_id = ?').get(id, projectId));
 }
-export function deleteTestcase(id: string): void {
-  getDb().prepare('DELETE FROM testcases WHERE id = ?').run(id);
+export function updateTestcase(
+  projectId: string,
+  id: string,
+  patch: { question?: string; groundTruth?: string },
+): Testcase | null {
+  const cur = getDb().prepare('SELECT * FROM testcases WHERE id = ? AND project_id = ?').get(id, projectId) as any;
+  if (!cur) return null;
+  getDb().prepare('UPDATE testcases SET question = ?, ground_truth = ? WHERE id = ? AND project_id = ?')
+    .run(patch.question ?? cur.question, patch.groundTruth ?? cur.ground_truth, id, projectId);
+  return rowToTc(getDb().prepare('SELECT * FROM testcases WHERE id = ? AND project_id = ?').get(id, projectId));
+}
+export function deleteTestcase(projectId: string, id: string): boolean {
+  const result = getDb().prepare('DELETE FROM testcases WHERE id = ? AND project_id = ?').run(id, projectId);
+  return Number(result.changes) > 0;
 }
 export function prefillFromQuestions(
   projectId: string,

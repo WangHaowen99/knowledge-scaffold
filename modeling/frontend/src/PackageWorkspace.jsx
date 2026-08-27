@@ -677,7 +677,7 @@ export default function PackageWorkspace({
         }} />;
     }
     if (view === 'diagnose') {
-      return <FailureDiagnosisPanel projectId={projectId} onChanged={load}
+      return <FailureDiagnosisPanel projectId={projectId} currentRevisionOid={pkg?.revision} onChanged={load}
         onAdvance={() => selectEvaluationLifecycle('optimize')}
         onGoEvaluate={() => selectEvaluationLifecycle('run')} />;
     }

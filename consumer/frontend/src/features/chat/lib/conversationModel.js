@@ -1,8 +1,4 @@
-import { buildMessagesFromEvents } from './messageBuilder.js';
-import {
-  AGENT_STREAM_EVENT,
-  isAgentV2Envelope,
-} from './streamHelpers.js';
+import { publicErrorMessage } from './streamHelpers.js';
 
 const TERMINAL_STATUSES = new Set(['finished', 'error', 'cancelled', 'awaiting']);
 const BUSINESS_DATA_TOOLS = new Set(['business_data_search']);
@@ -101,15 +97,19 @@ export const conversationKindForTool = (toolName) => {
   const normalized = stringValue(toolName).trim().toLowerCase();
   if (BUSINESS_DATA_TOOLS.has(normalized)) return 'business_data';
   if (normalized === 'web_search') return 'web_search';
+  if (normalized === 'solve' || normalized.startsWith('solve_')) return 'solver';
   return 'tool';
 };
 
 export const conversationKindForSegment = (segment) => {
   const type = stringValue(segment?.type).trim().toLowerCase();
-  if (type === 'tool') return conversationKindForTool(segment?.meta?.tool_name);
+  if (type === 'tool') {
+    return conversationKindForTool(segment?.meta?.tool_name || segment?.meta?.name);
+  }
   if (type === 'subagent' || type === 'subagent_group') return 'subagent';
   if (type === 'reasoning') return 'reasoning';
   if (type === 'content') return 'content';
+  if (type === 'artifacts') return 'artifacts';
   return type || 'unknown';
 };
 
@@ -233,7 +233,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
           terminal: Boolean(event?.finished),
           text: event?.kind === 'tool'
             ? stringValue(event?.text || event?.message)
-            : stringValue(event?.text || event?.error),
+            : stringValue(event?.text || publicErrorMessage(event?.error)),
           toolName: stringValue(event?.toolName),
           toolCallId: stringValue(event?.toolCallId),
           traceId: stringValue(event?.traceId || event?.trace_id),
@@ -250,7 +250,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
           parsedOutput: plainObject(event?.outputProjection ?? event?.output_projection)
             ? (event?.outputProjection ?? event?.output_projection)
             : parseOutput(event?.output),
-          error: stringValue(event?.error) || progressError,
+          error: publicErrorMessage(event?.error) || progressError,
           progress,
           startedAt,
           endedAt,
@@ -290,7 +290,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
         status: normalizeConversationStatus(child?.status, !child?.endTs),
         terminal: Boolean(child?.endTs) || ['completed', 'error', 'cancelled'].includes(stringValue(child?.status)),
         result: child?.result ?? null,
-        error: stringValue(child?.error),
+        error: publicErrorMessage(child?.error),
         traceId: stringValue(child?.traceId),
         spanId: stringValue(child?.spanId),
         parentSpanId: stringValue(child?.parentSpanId),
@@ -342,14 +342,23 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
   const startedAt = timestampValue(segment?.startTs ?? segment?.ts);
   const endedAt = timestampValue(segment?.endTs);
   const meta = segment?.meta || {};
-  const toolName = stringValue(meta.tool_name);
+  const toolName = stringValue(meta.tool_name || meta.name);
   const progress = kind === 'business_data'
     ? normalizeProgress(meta.db_events, kind, key)
     : kind === 'web_search'
       ? normalizeProgress(meta.web_search_events, kind, key)
+      : kind === 'solver'
+        ? (Array.isArray(meta.solver_events) ? meta.solver_events : []).map((event, progressIndex) => ({
+          key: `${key}:solver-progress:${event?.job_id || 'job'}:${event?.event_seq ?? progressIndex}`,
+          type: stringValue(event?.type),
+          phase: stringValue(event?.phase),
+          text: stringValue(event?.message),
+          eventSeq: numberValue(event?.event_seq),
+          status: stringValue(event?.status),
+        }))
       : [];
   const progressError = progressErrorText(progress);
-  let status = kind === 'tool' || kind === 'business_data' || kind === 'web_search'
+  let status = kind === 'tool' || kind === 'business_data' || kind === 'web_search' || kind === 'solver'
     ? normalizeToolStatus(segment)
     : normalizeConversationStatus(segment?.state, !segment?.finished);
   if (progressError) {
@@ -380,7 +389,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     progress,
   };
 
-  if (kind === 'tool' || kind === 'business_data' || kind === 'web_search') {
+  if (kind === 'tool' || kind === 'business_data' || kind === 'web_search' || kind === 'solver') {
     block.toolName = toolName;
     block.toolCallId = stringValue(meta.tool_call_id);
     block.input = meta.input ?? null;
@@ -390,8 +399,26 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     block.outputTruncated = Boolean(meta.output_truncated);
     block.outputProjection = plainObject(meta.output_projection) ? meta.output_projection : null;
     block.parsedOutput = block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
-    block.error = stringValue(meta.error) || progressError;
+    block.error = publicErrorMessage(meta.error) || progressError;
     block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
+  }
+  if (kind === 'solver') {
+    block.solverResult = plainObject(meta.solver_result) && meta.solver_result.authoritative === true
+      ? meta.solver_result
+      : null;
+    block.solverRejection = plainObject(meta.solver_rejection) ? meta.solver_rejection : null;
+  }
+  if (kind === 'artifacts') {
+    block.artifacts = (Array.isArray(meta.artifacts) ? meta.artifacts : [])
+      .filter(plainObject)
+      .map((artifact, artifactIndex) => ({
+        key: stringValue(artifact.output_ref || artifact.name || artifactIndex),
+        name: stringValue(artifact.name || `artifact-${artifactIndex + 1}`),
+        mediaType: stringValue(artifact.media_type || artifact.content_type),
+        size: numberValue(artifact.size),
+        sha256: stringValue(artifact.sha256),
+        outputRef: stringValue(artifact.output_ref),
+      }));
   }
   if (kind === 'web_search') {
     const parsedOutput = plainObject(block.parsedOutput) ? block.parsedOutput : {};
@@ -434,7 +461,8 @@ const lifecycleBlock = (message, messageKey, status, order) => {
     terminal: TERMINAL_STATUSES.has(status),
     text: awaiting
       ? stringValue(message?.interaction?.prompt || message?.content)
-      : stringValue(message?.meta?.error || message?.meta?.cancel_reason),
+      : publicErrorMessage(message?.meta?.error)
+        || stringValue(message?.meta?.cancel_reason),
     interaction: awaiting ? (message?.interaction || null) : null,
     startedAt,
     endedAt: startedAt,
@@ -503,7 +531,8 @@ const normalizeMessage = (message, index, occurrences) => {
     content: stringValue(message?.content),
     interaction: message?.interaction || null,
     options: Array.isArray(message?.options) ? message.options : [],
-    error: stringValue(message?.meta?.error),
+    error: publicErrorMessage(message?.meta?.error),
+    errorCode: stringValue(message?.meta?.error_code),
     cancelReason: stringValue(message?.meta?.cancel_reason),
     startedAt,
     endedAt,
@@ -514,29 +543,15 @@ const normalizeMessage = (message, index, occurrences) => {
   };
 };
 
-const durableEventsFromEnvelopes = (envelopes) => (Array.isArray(envelopes) ? envelopes : [])
-  .map((item) => {
-    if (item?.event && item?.data) return item;
-    if (isAgentV2Envelope(item)) return { event: AGENT_STREAM_EVENT, data: item };
-    return null;
-  })
-  .filter(Boolean);
-
 const resolveMessages = (input) => {
-  if (Array.isArray(input)) {
-    const looksLikeEnvelope = input.some((item) => isAgentV2Envelope(item) || item?.event === AGENT_STREAM_EVENT);
-    return looksLikeEnvelope ? buildMessagesFromEvents(durableEventsFromEnvelopes(input)) : input;
-  }
+  if (Array.isArray(input)) return input;
   if (Array.isArray(input?.messages) && input.messages.length > 0) return input.messages;
-  if (Array.isArray(input?.envelopes)) {
-    return buildMessagesFromEvents(durableEventsFromEnvelopes(input.envelopes));
-  }
   return [];
 };
 
 /**
- * Canonical renderer input for a conversation. Existing messages are authoritative;
- * raw agent.v2 envelopes are accepted as a hydration fallback.
+ * Canonical renderer input for a conversation. Hydration adapters must project
+ * stored events into messages before they reach this renderer boundary.
  */
 export const buildConversationViewModel = (input = []) => {
   const occurrences = new Map();

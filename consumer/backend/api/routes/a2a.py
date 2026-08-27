@@ -1,135 +1,206 @@
-"""A2A adapter endpoints (agent card, task CRUD, and task event stream)."""
+"""A2A HTTP projection over the canonical native-async run platform."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-import time
-from typing import Any, Dict
+from typing import Any
 
-from flask import Blueprint, Response, current_app, jsonify, request
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from agent.core.shared.interaction_policy import set_user_interaction_capability
-from api.protocols.a2a.mapper import map_agent_v2_event_to_a2a_update
-from api.protocols.a2a.models import A2ATaskCreateRequest
-from api.protocols.a2a.service import A2ATaskService
-from api.auth.auth import get_current_user, require_auth
-from utils.identifiers import validate_session_id
-from utils.logging import get_logger
-from workspace.workspaces import enforce_workspace_access, workspace_scope
-from integration.observability.trace_context import (
-    bind_otel_context,
-    bind_otel_traceparent,
-    capture_otel_context,
+from agent.runtime.errors import (
+    EventReplayUnavailableError,
+    RunConflictError,
+    RunNotFoundError,
+    SessionBusyError,
 )
+from agent.runtime.event_bus import (
+    EventBusClosedError,
+    EventSubscriberLimitExceeded,
+)
+from api.auth.auth import AuthUser, require_authenticated_user
+from api.dependencies import require_workspace_id
+from api.protocols.a2a.models import A2ATaskCreateRequest, A2ATaskState
+from api.protocols.a2a.service import A2ATaskService
+from api.request_parsing import read_optional_json_object
+from utils.identifiers import validate_session_id
 
 
-logger = get_logger("routes.a2a")
-
-a2a_bp = Blueprint("a2a", __name__)
+a2a_router = APIRouter()
 
 
-def _get_orchestrator():
-    from api.routes import get_orchestrator
+def _runtime(request: Request):
+    container = getattr(request.app.state, "runtime_container", None)
+    if container is not None:
+        return container
+    from api.routes import get_agent_execution_runtime
 
-    return get_orchestrator()
-
-
-def _get_user_stores():
-    from api.routes import get_request_stores
-
-    return get_request_stores()
+    return get_agent_execution_runtime()
 
 
-def _get_request_workspace_id():
-    from api.routes import get_request_workspace_id
+async def _service(
+    request: Request,
+    user: AuthUser,
+    workspace_id: str,
+) -> A2ATaskService:
+    from api.routes import get_user_stores
 
-    return get_request_workspace_id()
-
-
-def _build_task_service() -> A2ATaskService:
-    orchestrator = _get_orchestrator()
-    chat_store, execution_store = _get_user_stores()
-    current_user = get_current_user()
-    workspace_id = _get_request_workspace_id()
-
+    runtime = _runtime(request)
+    _chat_store, execution_store = await runtime.short_io.run(
+        get_user_stores,
+        user.username,
+        workspace_id,
+    )
     return A2ATaskService(
-        orchestrator=orchestrator,
-        chat_store=chat_store,
+        runtime=runtime,
         execution_store=execution_store,
-        user_id=(current_user.username if current_user else None),
+        username=user.username,
         workspace_id=workspace_id,
-        flask_app=current_app._get_current_object(),
         traceparent=str(request.headers.get("traceparent") or "").strip(),
     )
 
 
-def _task_access_matches(
-    service: A2ATaskService,
-    task_id: str,
-    *,
-    session_id: str | None = None,
-) -> bool:
-    """Bind a task lookup to its persisted owner and workspace."""
-    orchestrator = getattr(service, "orchestrator", None)
-    run_store = getattr(orchestrator, "run_store", None)
-    if run_store is None:
-        return False
-
-    run = run_store.get_run(task_id)
-    if run is None:
-        return False
-    metadata = dict(getattr(run, "metadata", {}) or {})
-    persisted_user_id = str(metadata.get("user_id") or "").strip()
-    persisted_workspace_id = str(metadata.get("workspace_id") or "").strip()
-    if not persisted_user_id or persisted_user_id != str(service.user_id or "").strip():
-        return False
-    if not persisted_workspace_id or persisted_workspace_id != str(service.workspace_id or "").strip():
-        return False
-    persisted_session_id = str(metadata.get("session_id") or "").strip()
-    if session_id and persisted_session_id != session_id:
-        return False
-    enforce_workspace_access(persisted_workspace_id)
-    return True
-
-
-def _extract_message(payload: Dict[str, Any]) -> str:
+def _extract_message(payload: dict[str, Any]) -> str:
     message = str(payload.get("message") or "").strip()
     if message:
         return message
-
-    # Soft-compatible shape: input.parts[0].text
     input_payload = payload.get("input")
     if isinstance(input_payload, dict):
         parts = input_payload.get("parts")
-        if isinstance(parts, list) and parts:
-            first = parts[0] or {}
-            if isinstance(first, dict):
-                text = str(first.get("text") or "").strip()
-                if text:
-                    return text
+        if isinstance(parts, list) and parts and isinstance(parts[0], dict):
+            return str(parts[0].get("text") or "").strip()
     return ""
 
 
-@a2a_bp.route("/.well-known/a2a/agent-card.json", methods=["GET"])
-def get_agent_card():
-    """Public agent discovery endpoint."""
-    base_url = str(request.host_url or "").rstrip("/")
-    card = {
+def _event_cursor(request: Request) -> int:
+    raw = request.headers.get("Last-Event-ID") or request.query_params.get(
+        "after_seq", 0
+    )
+    try:
+        cursor = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("after_seq must be a non-negative integer") from exc
+    if cursor < 0:
+        raise ValueError("after_seq must be a non-negative integer")
+    return cursor
+
+
+def _encode_task_update(event: Any, *, external_task_id: str) -> str:
+    update = {
+        "task_id": external_task_id,
+        "canonical_run_id": event.run_id,
+        "session_id": event.session_id,
+        "event_type": event.event_type,
+        "timestamp": event.created_at,
+        "source": event.source or {},
+        "payload": event.payload,
+        "seq": event.seq,
+    }
+    return "id: {}\nevent: task.update\ndata: {}\n\n".format(
+        event.seq,
+        json.dumps(update, ensure_ascii=False),
+    )
+
+
+def _subscriber_limit(exc: EventSubscriberLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "A2A task event subscriber capacity is exhausted",
+            "error_code": exc.error_code,
+            "scope": exc.scope,
+            "limit": exc.limit,
+            "retriable": True,
+        },
+        status_code=429,
+    )
+
+
+async def _task_stream(
+    request: Request,
+    *,
+    external_task_id: str,
+    canonical_run_id: str,
+    after_seq: int,
+) -> StreamingResponse | JSONResponse:
+    runtime = _runtime(request)
+    manager = runtime.manager
+    event_hub = runtime.event_hub
+    reservation_id: str | None = None
+    try:
+        await manager.repository.list_after(canonical_run_id, after_seq)
+        reservation_id = await event_hub.reserve_subscriber(canonical_run_id)
+    except EventReplayUnavailableError:
+        return JSONResponse(
+            {"error": "Task event stream is no longer available"},
+            status_code=410,
+        )
+    except EventSubscriberLimitExceeded as exc:
+        return _subscriber_limit(exc)
+    except (KeyError, RunNotFoundError):
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    except EventBusClosedError:
+        return JSONResponse(
+            {"error": "Runtime is draining", "error_code": "RUNTIME_DRAINING"},
+            status_code=503,
+        )
+
+    subscription = event_hub.stream(
+        canonical_run_id,
+        after_seq=after_seq,
+        reservation_id=reservation_id,
+    )
+
+    async def generate():
+        iterator = subscription.__aiter__()
+        pending: asyncio.Task | None = None
+        try:
+            yield "retry: 2000\n\n"
+            while True:
+                if pending is None:
+                    pending = asyncio.create_task(anext(iterator))
+                try:
+                    event = await asyncio.wait_for(
+                        asyncio.shield(pending),
+                        timeout=15.0,
+                    )
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                except StopAsyncIteration:
+                    return
+                pending = None
+                yield _encode_task_update(
+                    event,
+                    external_task_id=external_task_id,
+                )
+        finally:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            await iterator.aclose()
+            if reservation_id is not None:
+                await event_hub.release_subscriber_reservation(reservation_id)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@a2a_router.get("/.well-known/a2a/agent-card.json")
+def get_agent_card(request: Request):
+    base_url = str(request.base_url).rstrip("/")
+    return {
         "name": "onto-agent",
-        "description": "A2A adapter over agent-stream.v2 runtime",
+        "description": "A2A adapter over canonical asynchronous Runs",
         "version": "0.1.0",
         "url": base_url,
-        "skills": [
-            "ontology_context",
-            "skill",
-            "business_data_search",
-            "execute_script",
-            "spawn_sub_agent",
-            "memory",
-        ],
         "capabilities": {
             "streaming": True,
             "cancellation": True,
+            "supports_user_interaction": False,
         },
         "endpoints": {
             "create_task": "/a2a/tasks",
@@ -140,188 +211,143 @@ def get_agent_card():
         },
         "authentication": {
             "type": "bearer",
-            "notes": "Same JWT auth as /agentic/* endpoints",
+            "notes": "Same authentication as the canonical agent endpoints",
         },
     }
-    return jsonify(card)
 
 
-@a2a_bp.route("/a2a/tasks", methods=["POST"])
-@require_auth()
-def create_task():
-    payload = request.get_json(silent=True) or {}
-    message = _extract_message(payload)
-    if not message:
-        return jsonify({"error": "message is required"}), 400
-
-    req = A2ATaskCreateRequest(
+def _task_request(payload: dict[str, Any], message: str) -> A2ATaskCreateRequest:
+    context = payload.get("context")
+    if context is not None and not isinstance(context, dict):
+        raise ValueError("context must be an object or null")
+    return A2ATaskCreateRequest(
         message=message,
         session_id=payload.get("session_id") or None,
         task_id=str(payload.get("task_id") or "").strip() or None,
-        context=set_user_interaction_capability(
-            dict(payload.get("context") or {}),
-            supported=False,
-        ),
-    )
-
-    service = _build_task_service()
-    try:
-        snapshot = service.create_task(req)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    return jsonify({"task": snapshot.to_dict()}), 202
-
-
-@a2a_bp.route("/a2a/tasks/<task_id>", methods=["GET"])
-@require_auth()
-def get_task(task_id: str):
-    service = _build_task_service()
-    session_id = str(request.args.get("session_id") or "").strip() or None
-    try:
-        snapshot = service.get_task(task_id, session_id=session_id)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    if snapshot.state.value == "not_found":
-        return jsonify({"task": snapshot.to_dict()}), 404
-    if not _task_access_matches(service, task_id, session_id=session_id):
-        return jsonify({"error": "Task not found"}), 404
-    return jsonify({"task": snapshot.to_dict()})
-
-
-@a2a_bp.route("/a2a/tasks/<task_id>", methods=["DELETE"])
-@require_auth()
-def cancel_task(task_id: str):
-    service = _build_task_service()
-    snapshot = service.get_task(task_id)
-    if snapshot.state.value == "not_found" or not _task_access_matches(service, task_id):
-        return jsonify({"error": "Task not found"}), 404
-    ok = service.cancel_task(task_id)
-    if not ok:
-        return jsonify({"error": "Task not found"}), 404
-    snapshot = service.get_task(task_id)
-    return jsonify({"success": True, "task": snapshot.to_dict()})
-
-
-@a2a_bp.route("/a2a/tasks/<task_id>/events", methods=["GET"])
-@require_auth()
-def replay_task_events(task_id: str):
-    """Replay persisted task events from chat session storage as A2A updates."""
-    service = _build_task_service()
-    snapshot = service.get_task(task_id)
-    if snapshot.state.value == "not_found":
-        return jsonify({"error": "Task not found"}), 404
-    session_id = str(request.args.get("session_id") or "").strip() or None
-    if session_id:
-        try:
-            session_id = validate_session_id(session_id)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-    if not session_id:
-        session_id = snapshot.session_id
-        if not session_id:
-            return jsonify({"error": "session_id is required"}), 400
-    if not _task_access_matches(service, task_id, session_id=session_id):
-        return jsonify({"error": "Task not found"}), 404
-
-    chat_store, _execution_store = _get_user_stores()
-    session = chat_store.get_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-
-    filtered = []
-    for event in list(getattr(session, "events", []) or []):
-        if event.get("event") != "agent.v2":
-            continue
-        run_id = str((event.get("data") or {}).get("run_id") or "").strip()
-        if run_id != task_id:
-            continue
-        filtered.append(event)
-
-    def generate():
-        for event in filtered:
-            update = map_agent_v2_event_to_a2a_update(event)
-            yield "event: task.update\n"
-            yield "data: {}\n\n".format(json.dumps(update, ensure_ascii=False))
-
-    return Response(
-        generate(),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        context=dict(context or {}),
     )
 
 
-@a2a_bp.route("/a2a/tasks/stream", methods=["POST"])
-@require_auth()
-def create_task_and_stream():
-    """Create and stream a task in one call, mapping agent.v2 -> task.update."""
-    payload = request.get_json(silent=True) or {}
+@a2a_router.post("/a2a/tasks")
+async def create_task(
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    payload = await read_optional_json_object(request)
     message = _extract_message(payload)
     if not message:
-        return jsonify({"error": "message is required"}), 400
+        return JSONResponse({"error": "message is required"}, status_code=400)
+    try:
+        service = await _service(request, user, workspace_id)
+        view, _snapshot = await service.create_task(
+            _task_request(payload, message)
+        )
+    except (RunConflictError, SessionBusyError) as exc:
+        return JSONResponse(
+            {"error": str(exc), "error_code": exc.error_code},
+            status_code=409,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"task": view.to_dict()}, status_code=202)
 
-    task_id = str(payload.get("task_id") or "").strip() or None
-    session_id = str(payload.get("session_id") or "").strip()
-    context = set_user_interaction_capability(
-        dict(payload.get("context") or {}),
-        supported=False,
+
+@a2a_router.get("/a2a/tasks/{task_id}")
+async def get_task(
+    task_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    session_id = str(request.query_params.get("session_id") or "").strip() or None
+    try:
+        if session_id:
+            session_id = validate_session_id(session_id)
+        service = await _service(request, user, workspace_id)
+        view, _snapshot = await service.get_task(
+            task_id,
+            session_id=session_id,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(
+        {"task": view.to_dict()},
+        status_code=404 if view.state is A2ATaskState.NOT_FOUND else 200,
     )
 
-    if not session_id:
-        return jsonify({"error": "session_id is required"}), 400
+
+@a2a_router.delete("/a2a/tasks/{task_id}")
+async def cancel_task(
+    task_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
     try:
-        session_id = validate_session_id(session_id)
+        service = await _service(request, user, workspace_id)
+        view = await service.cancel_task(task_id)
+    except RunNotFoundError:
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    return {"success": True, "task": view.to_dict()}
+
+
+@a2a_router.get("/a2a/tasks/{task_id}/events")
+async def replay_task_events(
+    task_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    service = await _service(request, user, workspace_id)
+    view, snapshot = await service.get_task(task_id)
+    if view.state is A2ATaskState.NOT_FOUND:
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    canonical_run_id = (
+        snapshot.run_id if snapshot is not None else await service.canonical_run_id(task_id)
+    )
+    if not canonical_run_id:
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    try:
+        after_seq = _event_cursor(request)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return await _task_stream(
+        request,
+        external_task_id=task_id,
+        canonical_run_id=canonical_run_id,
+        after_seq=after_seq,
+    )
 
-    current_user = get_current_user()
-    orchestrator = _get_orchestrator()
-    workspace_id = _get_request_workspace_id()
-    if task_id and orchestrator.run_store.get_run(task_id) is not None:
-        return jsonify({"error": "task_id already exists"}), 400
-    request_traceparent = str(request.headers.get("traceparent") or "").strip()
-    request_otel_context = capture_otel_context()
 
-    def generate():
-        try:
-            with bind_otel_context(request_otel_context):
-                with workspace_scope(workspace_id), bind_otel_traceparent(
-                    request_traceparent,
-                    strict=False,
-                ):
-                    for event in orchestrator.run(
-                        user_request=message,
-                        user_context=context,
-                        session_id=session_id,
-                        user_id=(current_user.username if current_user else None),
-                        workspace_id=workspace_id,
-                        requested_run_id=task_id,
-                    ):
-                        update = map_agent_v2_event_to_a2a_update(event)
-                        yield "event: task.update\n"
-                        yield "data: {}\n\n".format(json.dumps(update, ensure_ascii=False))
-        except Exception as exc:
-            logger.exception("A2A stream failed")
-            now_ms = int(time.time() * 1000)
-            update = {
-                "task_id": task_id,
-                "session_id": session_id,
-                "event_type": "task.error",
-                "timestamp": now_ms,
-                "source": {"node": "a2a", "component": "routes"},
-                "payload": {"error": "{}".format(str(exc))},
-            }
-            yield "event: task.update\n"
-            yield "data: {}\n\n".format(json.dumps(update, ensure_ascii=False))
-
-    return Response(
-        generate(),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+@a2a_router.post("/a2a/tasks/stream")
+async def create_task_and_stream(
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    payload = await read_optional_json_object(request)
+    message = _extract_message(payload)
+    if not message:
+        return JSONResponse({"error": "message is required"}, status_code=400)
+    if not str(payload.get("session_id") or "").strip():
+        return JSONResponse({"error": "session_id is required"}, status_code=400)
+    try:
+        after_seq = _event_cursor(request)
+        service = await _service(request, user, workspace_id)
+        view, snapshot = await service.create_task(
+            _task_request(payload, message)
+        )
+    except (RunConflictError, SessionBusyError) as exc:
+        return JSONResponse(
+            {"error": str(exc), "error_code": exc.error_code},
+            status_code=409,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return await _task_stream(
+        request,
+        external_task_id=view.id,
+        canonical_run_id=snapshot.run_id,
+        after_seq=after_seq,
     )

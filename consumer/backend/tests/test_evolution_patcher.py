@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from agent.evolution.models import Aggregate
 from agent.evolution import registry
 from agent.evolution.patcher import OperationPatcher
 from agent.evolution.patcher import PatcherConfig
 from agent.evolution.patcher import StagedMergeOutput
+from agent.runtime.async_utils import (
+    clear_bounded_offload_pools,
+    configure_bounded_offload_pools,
+)
+from agent.runtime.offload import BoundedOffloadPool
+from agent.runtime.supervisor import RunTaskSupervisor
 from llm import LLMPurpose
 
 
@@ -141,11 +149,8 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
         def on_buffer_change(self, *args, **kwargs):
             del args, kwargs
 
-        def start(self):
-            self.started = True
-
-        def shutdown(self, wait=False):
-            self.shutdown_wait = wait
+        def cancel_nowait(self):
+            self.cancelled = True
 
         def update_config(self, config):
             self.updated.append(config)
@@ -162,3 +167,46 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
     assert [cfg.min_occurrences for cfg in first.updated] == [7]
 
     registry.reset_operation_patcher()
+
+
+def test_patcher_close_cancels_sleeping_sweep_without_consuming_deadline():
+    class _Buffer:
+        @staticmethod
+        def iter_op_dirs():
+            return []
+
+    async def scenario():
+        pools = [
+            BoundedOffloadPool(
+                name=f"patcher-close-{name}",
+                max_workers=1,
+                max_pending=2,
+                capacity_wait_seconds=0.05,
+                operation_timeout_seconds=1.0,
+            )
+            for name in ("short", "external", "tool")
+        ]
+        configure_bounded_offload_pools(
+            short_io=pools[0],
+            external_io=pools[1],
+            tool_io=pools[2],
+        )
+        supervisor = RunTaskSupervisor()
+        patcher = OperationPatcher(buffer=_Buffer(), config=PatcherConfig())
+        patcher.bind_supervisor(supervisor)
+        loop = asyncio.get_running_loop()
+        try:
+            assert await patcher.start()
+            await asyncio.sleep(0)
+
+            closed = await patcher.close(deadline=loop.time() + 0.05)
+
+            assert closed is True
+            assert supervisor.active_derived_count == 0
+        finally:
+            await supervisor.close(deadline=loop.time() + 0.2)
+            for pool in pools:
+                await pool.close(deadline=loop.time() + 0.2)
+            clear_bounded_offload_pools()
+
+    asyncio.run(scenario())

@@ -9,7 +9,11 @@ from shared_capabilities.business_data import (
     ProviderResult,
     UnsupportedCapabilityError,
 )
-from shared_capabilities.ontology_script_sdk import DataProviderClient
+from shared_capabilities.ontology_script_sdk import (
+    DataProviderClient,
+    load_effective_connection,
+    write_artifact,
+)
 from shared_capabilities.ontology_script_sdk.connection_env import (
     SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
 )
@@ -30,6 +34,31 @@ def test_script_client_is_parameterless():
         DataProviderClient(config={})
 
 
+def test_write_artifact_uses_only_run_owned_directory(tmp_path, monkeypatch):
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    monkeypatch.setenv("RUN_ARTIFACT_DIR", str(artifact_root))
+    monkeypatch.setenv("RUN_ARTIFACT_MAX_FILE_BYTES", "128")
+
+    name = write_artifact("result.txt", "synthetic result")
+
+    assert name == "result.txt"
+    assert (artifact_root / name).read_text(encoding="utf-8") == "synthetic result"
+
+
+def test_write_artifact_rejects_path_and_overwrite(tmp_path, monkeypatch):
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    monkeypatch.setenv("RUN_ARTIFACT_DIR", str(artifact_root))
+    monkeypatch.setenv("RUN_ARTIFACT_MAX_FILE_BYTES", "128")
+
+    with pytest.raises(ValueError, match="plain file name"):
+        write_artifact("../result.txt", "synthetic result")
+    write_artifact("result.txt", "first")
+    with pytest.raises(FileExistsError):
+        write_artifact("result.txt", "second")
+
+
 def test_script_client_requires_version_one_envelope(monkeypatch):
     monkeypatch.setenv(
         SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
@@ -37,6 +66,31 @@ def test_script_client_requires_version_one_envelope(monkeypatch):
     )
     with pytest.raises(ConnectionEnvelopeError, match="version"):
         DataProviderClient()
+
+
+def test_public_sdk_exposes_effective_connection_for_graph_snapshot_handlers(
+    monkeypatch,
+):
+    envelope = {
+        **_envelope("neo4j"),
+        "endpoint": "bolt://service.example.net:7687",
+        "auth": {
+            "type": "mindsdb_password",
+            "username": "reader",
+            "password": "placeholder",
+        },
+        "options": {"database": "snapshot_20260808"},
+    }
+    monkeypatch.setenv(
+        SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
+        json.dumps(envelope),
+    )
+
+    connection = load_effective_connection()
+
+    assert connection.provider == "neo4j"
+    assert connection.endpoint == "bolt://service.example.net:7687"
+    assert connection.options["database"] == "snapshot_20260808"
 
 
 def test_script_client_allows_dataagent_and_checks_provider_capabilities(monkeypatch):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import time
 from collections.abc import Mapping
 from inspect import isawaitable
@@ -39,6 +40,8 @@ class JiuwenModelTraceBridge:
         enable_reasoning: bool,
         event_class_provider: Any = None,
         model_timing_observer: Optional[Callable[[int, int], None]] = None,
+        model_error_callback: Optional[Callable[[BaseException | None], None]] = None,
+        model_completion_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
         prompt_build_ms: int = 0,
         system_prompt_chars: int = 0,
         sliding_window_applied: bool,
@@ -53,6 +56,8 @@ class JiuwenModelTraceBridge:
         self.enable_reasoning = bool(enable_reasoning)
         self.event_class_provider = event_class_provider
         self.model_timing_observer = model_timing_observer
+        self.model_error_callback = model_error_callback
+        self.model_completion_callback = model_completion_callback
         self.prompt_build_ms = max(0, int(prompt_build_ms or 0))
         self.system_prompt_chars = max(0, int(system_prompt_chars or 0))
         # Keep the legacy exported name, but store only the static ownership
@@ -64,7 +69,11 @@ class JiuwenModelTraceBridge:
         self._call_counts: Dict[int, int] = {}
 
     async def register(self, agent: Any) -> bool:
-        if not self.runtime_trace.enabled and self.model_timing_observer is None:
+        if (
+            not self.runtime_trace.enabled
+            and self.model_timing_observer is None
+            and self.model_completion_callback is None
+        ):
             return False
         manager = getattr(agent, "agent_callback_manager", None)
         register_callback = getattr(manager, "register_callback", None)
@@ -105,6 +114,8 @@ class JiuwenModelTraceBridge:
         self._registered = []
 
     async def _on_before_model_call(self, ctx: Any) -> None:
+        if self.model_error_callback is not None:
+            self.model_error_callback(None)
         iteration = self._current_iteration()
         call_index = self._next_call_index(iteration)
         inputs = read_field(ctx, "inputs")
@@ -153,13 +164,23 @@ class JiuwenModelTraceBridge:
             )
         elapsed_ms = elapsed_ms_since(record.get("started_at"))
         self._notify_model_timing(int(record["iteration"]), elapsed_ms)
+        normalized_usage = get_provider_adapter(self.model_provider).normalize_usage(
+            jiuwen_usage_to_dict(read_field(response, "usage_metadata"))
+        )
+        self._notify_model_completion(
+            {
+                "iteration": int(record["iteration"]),
+                "call_index": int(record["call_index"]),
+                "finish_reason": read_field(response, "finish_reason"),
+                "has_tool_calls": bool(tool_calls),
+                "usage": normalized_usage,
+            }
+        )
         model_name = resolved_jiuwen_model_name(ctx, self.llm_config, preferred=record.get("model"))
         self.runtime_trace.llm_finished(
             iteration=int(record["iteration"]),
             call_index=int(record["call_index"]),
-            usage=get_provider_adapter(self.model_provider).normalize_usage(
-                jiuwen_usage_to_dict(read_field(response, "usage_metadata"))
-            ),
+            usage=normalized_usage,
             prompt_text=lambda: "\n".join(str(message.get("content", "")) for message in messages),
             completion_text=lambda: str(read_field(response, "content") or ""),
             reasoning_text=lambda: str(read_field(response, "reasoning_content") or ""),
@@ -175,11 +196,25 @@ class JiuwenModelTraceBridge:
             tool_names=tool_names_from_calls_or_infos(tool_calls, tool_infos),
         )
 
+    def _notify_model_completion(self, completion: Mapping[str, Any]) -> None:
+        if self.model_completion_callback is None:
+            return
+        try:
+            self.model_completion_callback(dict(completion))
+        except Exception:
+            logger.warning("Jiuwen model completion observer failed", exc_info=True)
+
     async def _on_model_exception(self, ctx: Any) -> None:
         record = self._active_calls.pop(id(ctx), None)
         if record is None:
             record = self._start_missing_record(ctx)
         exc = read_field(ctx, "exception")
+        if (
+            isinstance(exc, BaseException)
+            and not isinstance(exc, asyncio.CancelledError)
+            and self.model_error_callback is not None
+        ):
+            self.model_error_callback(exc)
         self._notify_model_timing(
             int(record["iteration"]),
             elapsed_ms_since(record.get("started_at")),

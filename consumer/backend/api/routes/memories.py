@@ -11,16 +11,19 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Optional
 
-from flask import Blueprint, jsonify, request
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
 from agent.memory.models import MEMORY_TYPE_TO_DIR
-from api.auth.auth import get_current_user, require_auth
 from agent.tools.memory import store_user_memory
+from api.auth.auth import AuthUser, require_authenticated_user
+from api.dependencies import require_workspace_id, run_in_runtime_pool
+from api.request_parsing import read_json_object
 from utils.logging import get_logger
 
 logger = get_logger("routes.memories")
 
-memories_bp = Blueprint("memories", __name__, url_prefix="/agentic")
+memories_router = APIRouter(prefix="/agentic")
 
 
 def _get_orchestrator():
@@ -28,15 +31,7 @@ def _get_orchestrator():
     return get_orchestrator()
 
 
-def _enforce_request_workspace_access() -> str:
-    from api.routes import get_request_workspace_id
-    return get_request_workspace_id()
-
-
-def _get_memory_manager():
-    user = get_current_user()
-    if not user:
-        return None
+def _get_memory_manager(user: AuthUser):
     return _get_orchestrator()._get_memory_manager(user.username)
 
 
@@ -130,28 +125,33 @@ def _find_memory_hit(memory_manager, memory_id: str):
     return None
 
 
-@memories_bp.route("/memories", methods=["GET"])
-@require_auth()
-def list_memories():
+@memories_router.get("/memories")
+async def list_memories(
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """List the current user's ordinary long-term memories."""
-    _enforce_request_workspace_access()
-    memory_type, error = _parse_memory_type(request.args.get("memory_type"))
+    memory_type, error = _parse_memory_type(request.query_params.get("memory_type"))
     if error:
-        return jsonify({"error": error}), 400
+        return JSONResponse({"error": error}, status_code=400)
 
-    memory_manager = _get_memory_manager()
+    memory_manager = _get_memory_manager(user)
     if not memory_manager:
-        return jsonify({
+        return {
             "memory_enabled": False,
             "memories": [],
             "count": 0,
-        })
+        }
 
-    limit = _parse_limit(request.args.get("limit"))
-    include_archived = _parse_bool(request.args.get("include_archived"))
-    query = str(request.args.get("query") or "").strip()
+    limit = _parse_limit(request.query_params.get("limit"))
+    include_archived = _parse_bool(request.query_params.get("include_archived"))
+    query = str(request.query_params.get("query") or "").strip()
     try:
-        hits = _list_memory_hits(
+        hits = await run_in_runtime_pool(
+            request,
+            "short_io",
+            _list_memory_hits,
             memory_manager,
             memory_type=memory_type,
             include_archived=include_archived,
@@ -160,116 +160,177 @@ def list_memories():
         )
     except Exception:
         logger.warning("Failed to list user memories", exc_info=True)
-        return jsonify({"error": "Failed to list memories"}), 500
+        return JSONResponse(
+            {"error": "Failed to list memories"},
+            status_code=500,
+        )
 
-    return jsonify({
+    return {
         "memory_enabled": True,
         "memories": [_memory_payload(hit) for hit in hits],
         "count": len(hits),
-    })
+    }
 
 
-@memories_bp.route("/memories", methods=["POST"])
-@require_auth()
-def create_memory():
+@memories_router.post("/memories")
+async def create_memory(
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """Create a current-user ordinary memory item."""
-    _enforce_request_workspace_access()
-    data = request.get_json() or {}
+    data = await read_json_object(request)
     content = str(data.get("content") or "").strip()
     if len(content) < 8:
-        return jsonify({"error": "记忆内容太短，请补充具体上下文。"}), 400
+        return JSONResponse(
+            {"error": "记忆内容太短，请补充具体上下文。"},
+            status_code=400,
+        )
 
-    memory_manager = _get_memory_manager()
+    memory_manager = _get_memory_manager(user)
     if not memory_manager:
-        return jsonify({"error": "Memory manager not available"}), 503
+        return JSONResponse(
+            {"error": "Memory manager not available"},
+            status_code=503,
+        )
 
     session_id = str(data.get("session_id") or "").strip() or None
     try:
-        result = store_user_memory(
+        result = await run_in_runtime_pool(
+            request,
+            "short_io",
+            store_user_memory,
             content,
             memory_manager=memory_manager,
             session_id=session_id,
         )
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception:
         logger.warning("Failed to create user memory", exc_info=True)
-        return jsonify({"error": "Failed to create memory"}), 500
+        return JSONResponse(
+            {"error": "Failed to create memory"},
+            status_code=500,
+        )
 
     status = 200 if result.get("merged") or result.get("relation") == "duplicate" else 201
-    return jsonify({"memory": _store_result_payload(result)}), status
+    return JSONResponse(
+        {"memory": _store_result_payload(result)},
+        status_code=status,
+    )
 
 
-@memories_bp.route("/memories/<memory_id>", methods=["PUT"])
-@require_auth()
-def update_memory(memory_id: str):
+def _replace_memory(memory_manager, memory_id: str, content: str):
+    hit = _find_memory_hit(memory_manager, memory_id)
+    if not hit:
+        return None
+    archived = memory_manager.archive_memory(
+        source_uri=hit.source_uri,
+        reason="edited by user",
+    )
+    if not archived:
+        return None
+    return memory_manager.store_memory(
+        content=content,
+        memory_type=hit.memory_type or "preference",
+        scope="user",
+        source="manual_edit",
+    )
+
+
+@memories_router.put("/memories/{memory_id}")
+async def update_memory(
+    memory_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """Update an active ordinary memory item."""
-    _enforce_request_workspace_access()
-    data = request.get_json() or {}
+    data = await read_json_object(request)
     content = str(data.get("content") or "").strip()
     if len(content) < 8:
-        return jsonify({"error": "记忆内容太短，请补充具体上下文。"}), 400
-
-    memory_manager = _get_memory_manager()
-    if not memory_manager:
-        return jsonify({"error": "Memory manager not available"}), 503
-
-    try:
-        hit = _find_memory_hit(memory_manager, memory_id)
-    except Exception:
-        logger.warning("Failed to resolve user memory for update", exc_info=True)
-        return jsonify({"error": "Failed to update memory"}), 500
-    if not hit:
-        return jsonify({"error": "Memory not found"}), 404
-
-    try:
-        archived = memory_manager.archive_memory(
-            source_uri=hit.source_uri,
-            reason="edited by user",
+        return JSONResponse(
+            {"error": "记忆内容太短，请补充具体上下文。"},
+            status_code=400,
         )
-        if not archived:
-            return jsonify({"error": "Memory not found"}), 404
-        result = memory_manager.store_memory(
-            content=content,
-            memory_type=hit.memory_type or "preference",
-            scope="user",
-            source="manual_edit",
+
+    memory_manager = _get_memory_manager(user)
+    if not memory_manager:
+        return JSONResponse(
+            {"error": "Memory manager not available"},
+            status_code=503,
+        )
+
+    try:
+        result = await run_in_runtime_pool(
+            request,
+            "short_io",
+            _replace_memory,
+            memory_manager,
+            memory_id,
+            content,
         )
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception:
         logger.warning("Failed to update user memory", exc_info=True)
-        return jsonify({"error": "Failed to update memory"}), 500
+        return JSONResponse(
+            {"error": "Failed to update memory"},
+            status_code=500,
+        )
+    if result is None:
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
 
-    return jsonify({"memory": _store_result_payload(result.to_dict())})
+    return {"memory": _store_result_payload(result.to_dict())}
 
 
-@memories_bp.route("/memories/<memory_id>", methods=["DELETE"])
-@require_auth()
-def delete_memory(memory_id: str):
+@memories_router.delete("/memories/{memory_id}")
+async def delete_memory(
+    memory_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+    _workspace_id: str = Depends(require_workspace_id),
+):
     """Archive an active ordinary memory item."""
-    _enforce_request_workspace_access()
-    memory_manager = _get_memory_manager()
+    memory_manager = _get_memory_manager(user)
     if not memory_manager:
-        return jsonify({"error": "Memory manager not available"}), 503
+        return JSONResponse(
+            {"error": "Memory manager not available"},
+            status_code=503,
+        )
 
     try:
-        hit = _find_memory_hit(memory_manager, memory_id)
+        hit = await run_in_runtime_pool(
+            request,
+            "short_io",
+            _find_memory_hit,
+            memory_manager,
+            memory_id,
+        )
     except Exception:
         logger.warning("Failed to resolve user memory for delete", exc_info=True)
-        return jsonify({"error": "Failed to delete memory"}), 500
+        return JSONResponse(
+            {"error": "Failed to delete memory"},
+            status_code=500,
+        )
     if not hit:
-        return jsonify({"error": "Memory not found"}), 404
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
 
     try:
-        archived = memory_manager.archive_memory(
+        archived = await run_in_runtime_pool(
+            request,
+            "short_io",
+            memory_manager.archive_memory,
             source_uri=hit.source_uri,
             reason="deleted by user",
         )
     except Exception:
         logger.warning("Failed to delete user memory", exc_info=True)
-        return jsonify({"error": "Failed to delete memory"}), 500
+        return JSONResponse(
+            {"error": "Failed to delete memory"},
+            status_code=500,
+        )
     if not archived:
-        return jsonify({"error": "Memory not found"}), 404
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
 
-    return jsonify({"success": True, "id": memory_id})
+    return {"success": True, "id": memory_id}

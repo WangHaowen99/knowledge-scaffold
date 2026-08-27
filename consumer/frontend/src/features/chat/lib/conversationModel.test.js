@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildConversationViewModel } from './conversationModel.js';
-import { AGENT_STREAM_PROTOCOL } from './streamHelpers.js';
+import {
+  LEGACY_AGENT_STREAM_EVENT,
+  LEGACY_AGENT_STREAM_PROTOCOL,
+} from './legacyAgentEvent.js';
+import { buildMessagesFromEvents } from './messageBuilder.js';
+
+const hydrateLegacyEnvelopes = (envelopes) => buildMessagesFromEvents(
+  envelopes.map((data) => ({ event: LEGACY_AGENT_STREAM_EVENT, data })),
+);
 
 const assistantMessage = {
   id: 'turn-message-1',
@@ -59,6 +67,24 @@ const assistantMessage = {
   iterationMetrics: [{ iteration: 1, status: 'completed', totalElapsedMs: 700, ts: 1750 }],
 };
 
+test('conversation model exposes the incomplete-output error code', () => {
+  const model = buildConversationViewModel([{
+    id: 'synthetic-truncated-turn',
+    runId: 'synthetic-run',
+    role: 'assistant',
+    status: 'failed',
+    content: 'synthetic partial answer',
+    meta: {
+      error: '回答达到输出上限，内容尚未完成',
+      error_code: 'MODEL_OUTPUT_TRUNCATED',
+    },
+  }]);
+
+  assert.equal(model.turns[0].status, 'error');
+  assert.equal(model.turns[0].content, 'synthetic partial answer');
+  assert.equal(model.turns[0].errorCode, 'MODEL_OUTPUT_TRUNCATED');
+});
+
 test('system cancellation notice remains a standalone non-turn message', () => {
   const model = buildConversationViewModel([{
     id: 'interaction-cancelled-1',
@@ -92,6 +118,80 @@ test('conversation blocks keep source segment order and add lifecycle last', () 
   assert.equal(turn.blocks[1].outputSize, 8192);
   assert.deepEqual(turn.blocks[1].progress.map((item) => item.type), ['intermediate', 'final']);
   assert.equal(turn.blocks.at(-1).status, 'finished');
+});
+
+test('solver tool segments project progress and authoritative result separately', () => {
+  const model = buildConversationViewModel([{
+    id: 'solver-message',
+    role: 'assistant',
+    runId: 'run-synthetic',
+    status: 'success',
+    streamSegments: [{
+      type: 'tool',
+      state: 'completed',
+      finished: true,
+      meta: {
+        tool_name: 'solve_synthetic_route_aaaaaaaa',
+        tool_call_id: 'call-solver',
+        solver_events: [
+          { type: 'solver.progress', event_seq: 2, phase: 'solve', message: '正在求解' },
+          { type: 'solver.verification.completed', event_seq: 3, phase: 'verify', message: '独立校验完成' },
+        ],
+        solver_result: {
+          authoritative: true,
+          feasibility: 'feasible',
+          optimality: 'not_proven',
+          proof_kind: 'constraint_recalculation',
+          summary: { candidate_id: 'ALL_0' },
+          result_artifact_ref: 'artifact://result-synthetic',
+          verification_evidence_ref: 'artifact://evidence-synthetic',
+        },
+      },
+    }],
+  }]);
+
+  const block = model.turns[0].blocks[0];
+  assert.equal(block.kind, 'solver');
+  assert.deepEqual(block.progress.map((item) => item.phase), ['solve', 'verify']);
+  assert.equal(block.solverResult.authoritative, true);
+  assert.equal(block.solverResult.optimality, 'not_proven');
+});
+
+test('deterministic artifact segments normalize download metadata', () => {
+  const message = {
+    ...assistantMessage,
+    streamSegments: [
+      ...assistantMessage.streamSegments,
+      {
+        type: 'artifacts',
+        state: 'final',
+        text: '',
+        meta: {
+          artifacts: [{
+            name: 'result.json',
+            media_type: 'application/json',
+            size: 14,
+            sha256: 'sha256:abc',
+            output_ref: 'artifact-ref',
+          }],
+        },
+        finished: true,
+      },
+    ],
+  };
+
+  const model = buildConversationViewModel([message]);
+  const block = model.turns[0].blocks.find((item) => item.kind === 'artifacts');
+
+  assert.ok(block);
+  assert.deepEqual(block.artifacts[0], {
+    key: 'artifact-ref',
+    name: 'result.json',
+    mediaType: 'application/json',
+    size: 14,
+    sha256: 'sha256:abc',
+    outputRef: 'artifact-ref',
+  });
 });
 
 test('conversation keys and timing are deterministic across rebuilds', () => {
@@ -144,6 +244,25 @@ test('awaiting interaction is a terminal renderer block with a stable lifecycle 
   assert.equal(awaiting.blocks.at(-1).key, running.blocks.at(-1).key);
 });
 
+test('structured runtime errors render their public message instead of object text', () => {
+  const turn = buildConversationViewModel([{
+    ...assistantMessage,
+    status: 'error',
+    content: '',
+    streamSegments: [],
+    meta: {
+      error: {
+        error_code: 'MODEL_PROVIDER_ERROR',
+        message: '模型服务请求失败',
+        source: 'model',
+      },
+    },
+  }]).turns[0];
+
+  assert.equal(turn.error, '模型服务请求失败');
+  assert.equal(turn.blocks.at(-1).text, '模型服务请求失败');
+});
+
 test('web search and generic tools remain distinct renderer kinds', () => {
   const message = {
     ...assistantMessage,
@@ -191,6 +310,27 @@ test('web search and generic tools remain distinct renderer kinds', () => {
   assert.equal(blocks[1].error, 'boom');
 });
 
+test('canonical tool name fields select specialized renderer kinds', () => {
+  const message = {
+    ...assistantMessage,
+    streamSegments: [{
+      type: 'tool',
+      state: 'completed',
+      meta: {
+        name: 'business_data_search',
+        tool_call_id: 'call-canonical-business-data',
+        db_events: [{ type: 'final', content: 'Synthetic query completed', seq: 2, ts: 1200 }],
+      },
+      finished: true,
+    }],
+  };
+
+  const block = buildConversationViewModel([message]).turns[0].blocks[0];
+  assert.equal(block.kind, 'business_data');
+  assert.equal(block.toolName, 'business_data_search');
+  assert.equal(block.progress[0].text, 'Synthetic query completed');
+});
+
 test('business data exposes progress and parsed structured output', () => {
   const block = buildConversationViewModel([assistantMessage]).turns[0].blocks[1];
   const structured = buildConversationViewModel([{
@@ -233,7 +373,7 @@ test('business data progress omits empty entries and keeps provider errors', () 
 
 test('raw envelopes hydrate into the same ordered conversation model', () => {
   const envelope = (type, payload, seq, ts) => ({
-    protocol: AGENT_STREAM_PROTOCOL,
+    protocol: LEGACY_AGENT_STREAM_PROTOCOL,
     type,
     payload,
     run_id: 'run-envelope',
@@ -255,7 +395,7 @@ test('raw envelopes hydrate into the same ordered conversation model', () => {
     envelope('turn.finished', { status: 'success', final_output: '回答' }, 6, 150),
   ];
 
-  const model = buildConversationViewModel({ envelopes });
+  const model = buildConversationViewModel(hydrateLegacyEnvelopes(envelopes));
   assert.equal(model.turns[0].runId, 'run-envelope');
   assert.deepEqual(
     model.turns[0].blocks.map((block) => block.kind),
@@ -298,7 +438,7 @@ test('finished narrative segments cannot remain visually running', () => {
 
 test('raw tool envelopes preserve elapsed timing including orphan completions', () => {
   const rawEnvelope = (type, payload, seq, ts) => ({
-    protocol: AGENT_STREAM_PROTOCOL,
+    protocol: LEGACY_AGENT_STREAM_PROTOCOL,
     type,
     payload,
     run_id: 'run-timing',
@@ -306,7 +446,7 @@ test('raw tool envelopes preserve elapsed timing including orphan completions', 
     seq,
     ts,
   });
-  const model = buildConversationViewModel({ envelopes: [
+  const messages = hydrateLegacyEnvelopes([
     rawEnvelope('turn.started', {}, 1, 100),
     rawEnvelope('tool.started', { tool_name: 'lookup', tool_call_id: 'timed' }, 2, 120),
     rawEnvelope('tool.finished', {
@@ -316,7 +456,8 @@ test('raw tool envelopes preserve elapsed timing including orphan completions', 
       tool_name: 'orphan', tool_call_id: 'orphan', status: 'completed', elapsed_ms: 25,
     }, 4, 220),
     rawEnvelope('turn.finished', { status: 'success', final_output: 'done' }, 5, 240),
-  ] });
+  ]);
+  const model = buildConversationViewModel(messages);
   const tools = model.turns[0].blocks.filter((block) => block.kind === 'tool');
 
   assert.deepEqual(tools.map((block) => block.durationMs), [45, 25]);

@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "runner_protocol": "v2",
+  "upstream": {
+    "repository": "https://gitcode.com/openJiuwen/jiuwenswarm.git",
+    "commit": "d7c2ab2f299cd2c73201afb41ebb8b9c00cc7015"
+  },
+  "python": {
+    "executable": "/usr/bin/python3"
+  },
+  "revision_file": "/app/sandbox-runtime/python/.runtime-revision",
+  "shared_revision_file": "/run/onto-runtime-attestation/revision",
+  "requirements_file": "runtime-requirements.txt",
+  "allowed_external_import_roots": [],
+  "allowed_standard_library_imports": [
+    "__future__",
+    "argparse",
+    "base64",
+    "binascii",
+    "bisect",
+    "collections",
+    "collections.abc",
+    "csv",
+    "dataclasses",
+    "decimal",
+    "enum",
+    "fractions",
+    "functools",
+    "hashlib",
+    "heapq",
+    "hmac",
+    "html",
+    "html.entities",
+    "html.parser",
+    "itertools",
+    "json",
+    "math",
+    "operator",
+    "re",
+    "statistics",
+    "string",
+    "textwrap",
+    "typing",
+    "unicodedata",
+    "urllib.parse"
+  ],
+  "allowed_runtime_imports": {
+    "shared_capabilities.ontology_script_sdk": [
+      "DeterministicProviderCallError",
+      "DeterministicProviderClient",
+      "write_artifact"
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-"""Tool for synchronous sub-agent task-group orchestration."""
+"""Tool for native-async sub-agent task-group orchestration."""
 
 import json
 import uuid
@@ -10,6 +10,7 @@ from config import AgentConfig
 from agent.exceptions import WorkflowCancelledError
 from agent.sub_agents.manager import SubAgentTaskSpec, get_subagent_manager
 from utils.logging import get_logger
+from utils.security.redaction import redact_sensitive_text
 
 logger = get_logger("tools.spawn_sub_agent")
 
@@ -124,7 +125,7 @@ def normalize_spawn_sub_agent_args(
     return normalized, None
 
 
-def handle_spawn_sub_agent(
+async def handle_spawn_sub_agent_async(
     *,
     args: Dict[str, Any],
     agent_config: Optional[AgentConfig],
@@ -149,9 +150,8 @@ def handle_spawn_sub_agent(
         run_id,
         agent_config or AgentConfig.from_env(),
     )
-
     try:
-        result = runtime_manager.execute_group(
+        result = await runtime_manager.aexecute_group(
             run_id=run_id,
             session_id=session_id,
             parent_tool_call_id=parent_tool_call_id,
@@ -169,9 +169,11 @@ def handle_spawn_sub_agent(
     except WorkflowCancelledError:
         raise
     except Exception as exc:
-        logger.exception("Failed to execute spawn_sub_agent group: %s", exc)
+        logger.exception("Failed to execute async spawn_sub_agent group")
         return json.dumps(
-            _build_error_payload("spawn_sub_agent failed: {}".format(str(exc))),
+            _build_error_payload(
+                "spawn_sub_agent failed: {}".format(redact_sensitive_text(exc))
+            ),
             ensure_ascii=False,
         )
 
@@ -189,7 +191,7 @@ class SpawnSubAgentTool:
         object.__setattr__(self, "schema", SPAWN_SUB_AGENT_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
 
-    def execute(
+    async def aexecute(
         self,
         *,
         args: Dict[str, Any],
@@ -198,7 +200,7 @@ class SpawnSubAgentTool:
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
         return ToolOutcome(
-            content=handle_spawn_sub_agent(
+            content=await handle_spawn_sub_agent_async(
                 args=args,
                 agent_config=context.agent_config,
                 run_id=context.run_id,

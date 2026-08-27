@@ -118,6 +118,29 @@ def test_mcp_scope_allows_current_owner_member_default_and_ownerless_access(
     assert scope.workspace_id == "team-space"
 
 
+def test_mcp_scope_allows_legacy_workspace_without_acl_fields(tmp_path, monkeypatch):
+    runtime_root = tmp_path / ".onto-runtime"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    cfg = _config(tmp_path / "tokens.json")
+    _configure_mcp(monkeypatch, cfg)
+    metadata_path = _write_workspace(
+        runtime_root,
+        "legacy-space",
+        owner=None,
+        members=[],
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("owner")
+    metadata.pop("members")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    token = _create_token(cfg, username="user", workspace_id="legacy-space")
+
+    scope = resolve_mcp_scope_from_token(token, required_scope="mcp:search")
+
+    assert scope.username == "user"
+    assert scope.workspace_id == "legacy-space"
+
+
 def test_mcp_scope_rejects_old_token_immediately_after_member_removal(tmp_path, monkeypatch):
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))

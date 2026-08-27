@@ -8,28 +8,22 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from api.auth.auth import AuthManager
+from auth_test_backend import AuthManager
+from api.routes.auth import auth_router
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
 
 
 def _build_app(auth_manager, auth_server_url=""):
-    import app as app_module
-
-    runtime = {
-        "config": SimpleNamespace(auth_server_url=auth_server_url),
-        "agent_config": SimpleNamespace(),
-        "llm_router": None,
-        "auth_manager": auth_manager,
-        "user_store_manager": SimpleNamespace(),
-    }
-    original_build_runtime = app_module.build_runtime_services
-    original_register_routes = app_module.register_routes
-    try:
-        app_module.build_runtime_services = lambda previous_llm_router=None: runtime
-        app_module.register_routes = lambda *args, **kwargs: None
-        app = app_module.create_app()
-    finally:
-        app_module.build_runtime_services = original_build_runtime
-        app_module.register_routes = original_register_routes
+    app = TestApplication()
+    app.state.services.update(
+        {
+            "APP_CONFIG": SimpleNamespace(auth_server_url=auth_server_url),
+            "AUTH_MANAGER": auth_manager,
+        }
+    )
+    app.include_router(auth_router)
     return app
 
 
@@ -50,19 +44,19 @@ class _StubResponse:
 
 
 def test_register_disabled_without_auth_server_url(auth_manager):
-    client = _build_app(auth_manager).test_client()
+    client = TestClient(_build_app(auth_manager))
     response = client.post("/auth/register", json={})
     assert response.status_code == 503
-    assert response.get_json() == {"error": "注册功能未开启"}
+    assert response.json() == {"error": "注册功能未开启"}
 
 
 def test_capabilities_disabled_without_auth_server_url(auth_manager):
-    client = _build_app(auth_manager).test_client()
+    client = TestClient(_build_app(auth_manager))
 
     response = client.get("/auth/capabilities")
 
     assert response.status_code == 200
-    assert response.get_json() == {"registration_enabled": False}
+    assert response.json() == {"registration_enabled": False}
 
 
 def test_capabilities_proxy_registration_setting(auth_manager, monkeypatch):
@@ -73,12 +67,12 @@ def test_capabilities_proxy_registration_setting(auth_manager, monkeypatch):
         "get",
         lambda *args, **kwargs: _StubResponse(200, {"registration_enabled": True}),
     )
-    client = _build_app(auth_manager, "http://auth-server:5056/").test_client()
+    client = TestClient(_build_app(auth_manager, "http://auth-server:5056/"))
 
     response = client.get("/auth/capabilities")
 
     assert response.status_code == 200
-    assert response.get_json() == {"registration_enabled": True}
+    assert response.json() == {"registration_enabled": True}
 
 
 def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
@@ -100,14 +94,14 @@ def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
     import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = _build_app(auth_manager, "http://auth-server:5056/").test_client()
+    client = TestClient(_build_app(auth_manager, "http://auth-server:5056/"))
     response = client.post(
         "/auth/register",
         json={"username": "eve", "email": "eve@example.com", "password": "Rt5&Yhn8Uj2!"},
     )
     assert response.status_code == 200
     # 一步建号：透传 auth-server 的 {success, user} 响应
-    assert response.get_json() == {
+    assert response.json() == {
         "success": True,
         "user": {
             "username": "eve",
@@ -133,10 +127,10 @@ def test_register_proxy_passthrough_password_policy_error(auth_manager, monkeypa
     import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = _build_app(auth_manager, "http://auth-server:5056").test_client()
+    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     response = client.post("/auth/register", json={"username": "eve", "email": "e@x.com", "password": "1"})
     assert response.status_code == 400
-    data = response.get_json()
+    data = response.json()
     assert data["code"] == "PASSWORD_POLICY_FAILED"
     assert data["violations"] == ["min_length"]
 
@@ -148,13 +142,13 @@ def test_register_proxy_passthrough_rate_limited(auth_manager, monkeypatch):
     import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = _build_app(auth_manager, "http://auth-server:5056").test_client()
+    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     response = client.post(
         "/auth/register",
         json={"username": "eve", "email": "e@x.com", "password": "Rt5&Yhn8Uj2!"},
     )
     assert response.status_code == 429
-    assert response.get_json() == {"error": "请求过于频繁，请稍后再试"}
+    assert response.json() == {"error": "请求过于频繁，请稍后再试"}
 
 
 def test_register_proxy_upstream_down(auth_manager, monkeypatch):
@@ -164,13 +158,13 @@ def test_register_proxy_upstream_down(auth_manager, monkeypatch):
     import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = _build_app(auth_manager, "http://auth-server:5056").test_client()
+    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     response = client.post(
         "/auth/register",
         json={"username": "eve", "email": "e@x.com", "password": "Rt5&Yhn8Uj2!"},
     )
     assert response.status_code == 502
-    assert response.get_json() == {"error": "注册服务暂不可用，请稍后再试"}
+    assert response.json() == {"error": "注册服务暂不可用，请稍后再试"}
 
 
 def test_register_proxy_non_json_upstream(auth_manager, monkeypatch):
@@ -180,18 +174,18 @@ def test_register_proxy_non_json_upstream(auth_manager, monkeypatch):
     import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = _build_app(auth_manager, "http://auth-server:5056").test_client()
+    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     response = client.post(
         "/auth/register",
         json={"username": "eve", "email": "e@x.com", "password": "Rt5&Yhn8Uj2!"},
     )
     assert response.status_code == 500
-    assert response.get_json() == {"error": "注册服务响应异常"}
+    assert response.json() == {"error": "注册服务响应异常"}
 
 
 def test_register_verify_resend_endpoints_removed(auth_manager):
     """验证码链路已删除：verify/resend 端点不再存在（404）。"""
-    client = _build_app(auth_manager, "http://auth-server:5056").test_client()
+    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     for path in ("/auth/register/verify", "/auth/register/resend"):
         response = client.post(path, json={})
         assert response.status_code == 404

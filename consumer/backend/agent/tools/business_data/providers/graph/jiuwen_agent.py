@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from copy import copy
 from dataclasses import is_dataclass, replace
 import hashlib
 import json
 import threading
-import time
 import uuid
 from collections.abc import Mapping
 from inspect import isawaitable
@@ -24,7 +22,6 @@ from agent.core.jiuwen_engine import (
     _jiuwen_agent_callback_event_class,
     _resolve_jiuwen_llm_config,
     _remember_jiuwen_terminal_tool_batch,
-    _run_awaitable,
     create_default_jiuwen_agent,
     register_current_runtime_tools,
     require_openjiuwen,
@@ -33,6 +30,7 @@ from agent.core.jiuwen_engine import (
 from agent.core.jiuwen.tools import safe_jiuwen_resource_part
 from agent.core.jiuwen.trace import JiuwenModelTraceBridge
 from agent.exceptions import WorkflowCancelledError
+from agent.runtime.async_utils import call_async_or_thread, run_sync_compat
 from agent.tools.base import ToolBatchResult
 from utils.logging import get_logger
 from .agent import (
@@ -77,53 +75,40 @@ class JiuwenGraphQueryAgent:
         self._tool_registrar = tool_registrar or register_graph_runtime_tools
         self._invoker = invoker
 
-    def run(
+    async def arun(
         self,
         *,
         context: GraphSearchRuntimeContext,
         mapping: GraphEntityMapping,
         tool_executor: GraphToolExecutor,
     ) -> GraphAgentResult:
+        """Run the nested graph agent on the ASGI-owned event loop."""
+
         timeout_seconds = _graph_agent_timeout_seconds(
             provider_config=context.provider_config,
             outer_timeout_seconds=context.timeout_seconds,
         )
-        timeout_cancel_event = threading.Event()
-        context.provider_config["_graph_cancel_event"] = timeout_cancel_event
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jiuwen-graph-query-agent")
-        future = executor.submit(
-            self._run_without_timeout,
-            context=context,
-            mapping=mapping,
-            tool_executor=tool_executor,
-        )
-        deadline = time.monotonic() + timeout_seconds
+        cancel_event = threading.Event()
+        context.provider_config["_graph_cancel_event"] = cancel_event
         try:
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    timeout_cancel_event.set()
-                    future.cancel()
-                    raise GraphAgentTimeoutError(
-                        "GraphQueryAgent 调用超时（{}s）".format(_format_timeout(timeout_seconds))
-                    )
-                try:
-                    return future.result(timeout=min(0.05, remaining))
-                except FuturesTimeoutError:
-                    continue
+            async with asyncio.timeout(timeout_seconds):
+                return await self._arun_without_timeout(
+                    context=context,
+                    mapping=mapping,
+                    tool_executor=tool_executor,
+                )
+        except TimeoutError as exc:
+            cancel_event.set()
+            raise GraphAgentTimeoutError(
+                "GraphQueryAgent 调用超时（{}s）".format(
+                    _format_timeout(timeout_seconds)
+                )
+            ) from exc
         finally:
-            def clear_cancel_event(_future: Any = None) -> None:
-                del _future
-                if context.provider_config.get("_graph_cancel_event") is timeout_cancel_event:
-                    context.provider_config.pop("_graph_cancel_event", None)
+            if context.provider_config.get("_graph_cancel_event") is cancel_event:
+                context.provider_config.pop("_graph_cancel_event", None)
 
-            if future.done():
-                clear_cancel_event()
-            else:
-                future.add_done_callback(clear_cancel_event)
-            executor.shutdown(wait=future.done(), cancel_futures=True)
-
-    def _run_without_timeout(
+    async def _arun_without_timeout(
         self,
         *,
         context: GraphSearchRuntimeContext,
@@ -143,11 +128,15 @@ class JiuwenGraphQueryAgent:
             tool_executor=tool_executor,
             executions=executions,
             executed_steps=executed_steps,
+            run_id=str(context.provider_config.get("run_id") or "") or None,
         )
-        final_message = ""
-        input_payload = _build_agent_input(context=context, mapping=mapping, tool_schemas=tool_schemas)
+        input_payload = _build_agent_input(
+            context=context,
+            mapping=mapping,
+            tool_schemas=tool_schemas,
+        )
         attempt = 1
-        final_message = self._invoke_once(
+        final_message = await self._ainvoke_once(
             context=context,
             tool_schemas=tool_schemas,
             adapter=adapter,
@@ -155,31 +144,48 @@ class JiuwenGraphQueryAgent:
             attempt=attempt,
         )
 
-        if not executions and adapter.last_tool_input_error is None and final_message.strip():
+        if (
+            not executions
+            and adapter.last_tool_input_error is None
+            and final_message.strip()
+        ):
             attempt += 1
-            executed_steps.append({
-                "tool": "GraphQueryAgent",
-                "summary": "上一轮未调用内部图工具，使用隔离会话重试",
-            })
-            final_message = self._invoke_once(
+            executed_steps.append(
+                {
+                    "tool": "GraphQueryAgent",
+                    "summary": "上一轮未调用内部图工具，使用隔离会话重试",
+                }
+            )
+            final_message = await self._ainvoke_once(
                 context=context,
                 tool_schemas=tool_schemas,
                 adapter=adapter,
-                query=_no_tool_retry_query(context=context, final_message=final_message),
+                query=_no_tool_retry_query(
+                    context=context,
+                    final_message=final_message,
+                ),
                 attempt=attempt,
             )
 
-        if executions and _path_intent_missing_pattern(context=context, executions=executions):
+        if executions and _path_intent_missing_pattern(
+            context=context,
+            executions=executions,
+        ):
             attempt += 1
-            executed_steps.append({
-                "tool": "GraphQueryAgent",
-                "summary": "关系/路径意图尚未尝试 pattern_search，追加一次路径检索修正",
-            })
-            final_message = self._invoke_once(
+            executed_steps.append(
+                {
+                    "tool": "GraphQueryAgent",
+                    "summary": "关系/路径意图尚未尝试 pattern_search，追加一次路径检索修正",
+                }
+            )
+            final_message = await self._ainvoke_once(
                 context=context,
                 tool_schemas=tool_schemas,
                 adapter=adapter,
-                query=_retry_query_with_context(context=context, executions=executions),
+                query=_retry_query_with_context(
+                    context=context,
+                    executions=executions,
+                ),
                 attempt=attempt,
             )
 
@@ -190,14 +196,16 @@ class JiuwenGraphQueryAgent:
                 final_message=final_message,
                 warnings=_path_missing_pattern_warnings(context, executions),
             )
-        last_error = adapter.last_error
         if adapter.last_tool_input_error is not None:
             raise GraphAgentToolInputError(str(adapter.last_tool_input_error))
+        last_error = adapter.last_error
         if final_message.strip():
-            last_error = "GraphQueryAgent 未调用内部图检索工具: {}".format(final_message.strip()[:200])
+            last_error = "GraphQueryAgent 未调用内部图检索工具: {}".format(
+                final_message.strip()[:200]
+            )
         raise GraphAgentError(last_error or "GraphQueryAgent 未调用可用图检索工具")
 
-    def _invoke_once(
+    async def _ainvoke_once(
         self,
         *,
         context: GraphSearchRuntimeContext,
@@ -208,21 +216,27 @@ class JiuwenGraphQueryAgent:
     ) -> str:
         invocation_id = _graph_invocation_id(context=context, attempt=attempt)
         if self._invoker is not None:
-            raw_result = self._invoker({
-                "context": context,
-                "tool_schemas": tool_schemas,
-                "adapter": adapter,
-                "query": query,
-                "attempt": attempt,
-                "invocation_id": invocation_id,
-            })
+            raw_result = await call_async_or_thread(
+                self._invoker,
+                {
+                    "context": context,
+                    "tool_schemas": tool_schemas,
+                    "adapter": adapter,
+                    "query": query,
+                    "attempt": attempt,
+                    "invocation_id": invocation_id,
+                },
+                run_id=str(context.provider_config.get("run_id") or "") or None,
+                task_name="graph-agent-invoker",
+                offload_kind="tool",
+            )
             adapter.raise_last_backend_error()
             return _extract_output(raw_result)
 
         agent: Any | None = None
         registered_cards: list[Any] = []
         trace_bridge: JiuwenModelTraceBridge | None = None
-        terminal_force_finish_bridge: _JiuwenTerminalForceFinishBridge | None = None
+        terminal_bridge: _JiuwenTerminalForceFinishBridge | None = None
         terminal_result: dict[str, Any] = {}
         owns_runtime = self._agent_factory is None
         conversation_id = _graph_conversation_id(
@@ -243,8 +257,12 @@ class JiuwenGraphQueryAgent:
                 )
                 agent = create_default_jiuwen_agent(
                     llm_config=llm_config,
-                    max_iterations=_graph_agent_max_iterations(context.provider_config),
-                    system_prompt=_build_graph_agent_system_prompt(context.schema_context),
+                    max_iterations=_graph_agent_max_iterations(
+                        context.provider_config
+                    ),
+                    system_prompt=_build_graph_agent_system_prompt(
+                        context.schema_context
+                    ),
                     agent_id=_graph_agent_resource_id(
                         context,
                         attempt=attempt,
@@ -261,15 +279,18 @@ class JiuwenGraphQueryAgent:
                 max_parallel_workers=10,
             )
 
-            registered_cards = list(self._tool_registrar(
-                agent,
-                tool_schemas=tool_schemas,
-                adapter=adapter,
-                context=context,
-                attempt=attempt,
-                invocation_id=invocation_id,
-                terminal_tool_batch_callback=remember_terminal_tool_batch,
-            ) or [])
+            registered_cards = list(
+                self._tool_registrar(
+                    agent,
+                    tool_schemas=tool_schemas,
+                    adapter=adapter,
+                    context=context,
+                    attempt=attempt,
+                    invocation_id=invocation_id,
+                    terminal_tool_batch_callback=remember_terminal_tool_batch,
+                )
+                or []
+            )
             trace_bridge = JiuwenModelTraceBridge(
                 runtime_trace=build_graph_agent_runtime_trace(context),
                 state={
@@ -286,29 +307,29 @@ class JiuwenGraphQueryAgent:
                 enable_reasoning=False,
                 sliding_window_applied=False,
             )
-            _run_awaitable(trace_bridge.register(agent))
-            terminal_force_finish_bridge = _JiuwenTerminalForceFinishBridge(
+            await trace_bridge.register(agent)
+            terminal_bridge = _JiuwenTerminalForceFinishBridge(
                 terminal_result,
                 event_class_provider=_jiuwen_agent_callback_event_class,
             )
-            _run_awaitable(terminal_force_finish_bridge.register(agent))
+            await terminal_bridge.register(agent)
 
             invoke = getattr(agent, "invoke", None)
             if not callable(invoke):
-                raise GraphAgentUnavailableError("Configured Jiuwen graph agent does not expose invoke().")
-            raw_result = invoke({
-                "query": query,
-                "conversation_id": conversation_id,
-            })
-            if isawaitable(raw_result):
-                raw_result = _run_awaitable(
-                    raw_result,
-                    cancel_event=context.provider_config.get("_graph_cancel_event"),
-                    state={"run_id": context.provider_config.get("run_id")},
+                raise GraphAgentUnavailableError(
+                    "Configured Jiuwen graph agent does not expose invoke()."
                 )
+            raw_result = invoke(
+                {"query": query, "conversation_id": conversation_id}
+            )
+            if isawaitable(raw_result):
+                raw_result = await raw_result
             adapter.raise_last_backend_error()
             if _is_error_result(raw_result):
-                raise GraphAgentError(_extract_output(raw_result) or "Jiuwen graph agent returned an error.")
+                raise GraphAgentError(
+                    _extract_output(raw_result)
+                    or "Jiuwen graph agent returned an error."
+                )
             return _extract_output(raw_result)
         except (GraphAgentError, GraphBackendError, WorkflowCancelledError):
             raise
@@ -316,33 +337,39 @@ class JiuwenGraphQueryAgent:
             raise GraphAgentUnavailableError(str(exc)) from exc
         except RuntimeError as exc:
             raise GraphAgentUnavailableError(
-                "GraphQueryAgent LLM 不可用: {}".format(_safe_exception_detail(exc))
+                "GraphQueryAgent LLM 不可用: {}".format(
+                    _safe_exception_detail(exc)
+                )
             ) from exc
         except Exception as exc:
             raise GraphAgentError(
-                "GraphQueryAgent 调用失败: {}".format(_safe_exception_detail(exc))
+                "GraphQueryAgent 调用失败: {}".format(
+                    _safe_exception_detail(exc)
+                )
             ) from exc
         finally:
-            if terminal_force_finish_bridge is not None:
-                _run_graph_cleanup(
-                    "terminal force-finish callback unregister",
-                    lambda: _run_awaitable(terminal_force_finish_bridge.unregister()),
-                )
-            if trace_bridge is not None:
-                _run_graph_cleanup(
-                    "model trace callback unregister",
-                    lambda: _run_awaitable(trace_bridge.unregister()),
-                )
+            await _run_graph_cleanup(
+                "terminal force-finish callback unregister",
+                terminal_bridge.unregister if terminal_bridge is not None else None,
+            )
+            await _run_graph_cleanup(
+                "model trace callback unregister",
+                trace_bridge.unregister if trace_bridge is not None else None,
+            )
             if agent is not None and registered_cards:
-                _run_graph_cleanup(
-                    "private graph tool unregister",
-                    lambda: unregister_graph_runtime_tools(agent, registered_cards),
-                )
+                try:
+                    unregister_graph_runtime_tools(agent, registered_cards)
+                except Exception:
+                    logger.warning(
+                        "Graph cleanup failed: private graph tool unregister",
+                        exc_info=True,
+                    )
             if owns_runtime and agent is not None:
-                _run_graph_cleanup(
+                await _run_graph_cleanup(
                     "owned graph Jiuwen runtime release",
-                    lambda: _run_awaitable(
-                        _dispose_owned_jiuwen_runtime(agent, session_id=conversation_id)
+                    lambda: _dispose_owned_jiuwen_runtime(
+                        agent,
+                        session_id=conversation_id,
                     ),
                 )
 
@@ -356,10 +383,12 @@ class GraphJiuwenToolAdapter:
         tool_executor: GraphToolExecutor,
         executions: list[GraphToolExecution],
         executed_steps: list[dict[str, Any]],
+        run_id: str | None = None,
     ) -> None:
         self.tool_executor = tool_executor
         self.executions = executions
         self.executed_steps = executed_steps
+        self.run_id = run_id
         self.last_error = "GraphQueryAgent 未调用可用图检索工具"
         self.last_tool_input_error: GraphToolInputError | None = None
         self.last_backend_error: GraphBackendError | None = None
@@ -367,8 +396,14 @@ class GraphJiuwenToolAdapter:
         self._lock = threading.Lock()
 
     async def invoke(self, tool_name: str, tool_args: Any) -> str:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._invoke_sync, tool_name, tool_args)
+        return await run_sync_compat(
+            self._invoke_sync,
+            tool_name,
+            tool_args,
+            run_id=self.run_id,
+            task_name="graph-data-tool",
+            offload_kind="tool",
+        )
 
     def _invoke_sync(self, tool_name: str, tool_args: Any) -> str:
         name = str(tool_name or "").strip()
@@ -576,10 +611,13 @@ def register_graph_runtime_tools(
         "messages": [],
     }
 
-    def execute_private_graph_tools(tool_calls: Any, _tool_context: Any) -> ToolBatchResult:
+    async def execute_private_graph_tools(
+        tool_calls: Any,
+        _tool_context: Any,
+    ) -> ToolBatchResult:
         messages: list[dict[str, Any]] = []
         for tool_call in list(tool_calls or []):
-            content = adapter._invoke_sync(tool_call.name, tool_call.arguments)
+            content = await adapter.invoke(tool_call.name, tool_call.arguments)
             messages.append({
                 "role": "tool",
                 "content": content,
@@ -624,9 +662,13 @@ def unregister_graph_runtime_tools(agent: Any, cards: list[Any]) -> None:
         unregister_current_runtime_tools(agent, cards)
 
 
-def _run_graph_cleanup(step: str, cleanup: Any) -> None:
+async def _run_graph_cleanup(step: str, cleanup: Any) -> None:
+    if cleanup is None:
+        return
     try:
-        cleanup()
+        result = cleanup()
+        if isawaitable(result):
+            await result
     except Exception:
         logger.warning("Graph Jiuwen cleanup failed: %s", step, exc_info=True)
 

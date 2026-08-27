@@ -70,6 +70,19 @@ def clear_run_sequence(run_id: Optional[str]) -> None:
         _run_sequences.pop(run_id, None)
 
 
+def restore_run_sequence(run_id: str, sequence: int) -> None:
+    """Restore a persisted event sequence without moving it backwards."""
+    normalized = str(run_id or "").strip()
+    if not normalized:
+        return
+    try:
+        restored = max(0, int(sequence))
+    except (TypeError, ValueError):
+        return
+    with _seq_lock:
+        _run_sequences[normalized] = max(_run_sequences.get(normalized, 0), restored)
+
+
 def build_agent_event(
     *,
     run_id: str,

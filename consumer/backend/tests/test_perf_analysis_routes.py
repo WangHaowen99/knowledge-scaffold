@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from flask import Flask
+from fastapi.testclient import TestClient
 
-from api.routes.performance import performance_bp
+from api.testing import TestApplication
+
+
+from api.routes.performance import performance_router
 from api.auth.auth import AuthManager
+from workspace.workspaces import create_workspace
 
 
 class _FakeChatStore:
@@ -27,9 +31,12 @@ class _FakeExecutionStore:
         return {"turns": [{"run_id": run_id} for run_id in runs]}
 
 
-def _build_test_client(tmp_path, *, role="admin"):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+def _build_test_client(tmp_path, *, role="admin", monkeypatch=None):
+    if monkeypatch is not None:
+        monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+        create_workspace("Demo", workspace_id="demo", set_as_default=True)
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     if role == "admin":
@@ -41,16 +48,16 @@ def _build_test_client(tmp_path, *, role="admin"):
         user = auth_manager.change_password("perf-user", "PerfStrong123!", "ChangedStrong123!")
     assert user is not None
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(performance_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(performance_router)
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     return client, {"Authorization": "Bearer {}".format(token)}
 
 
 def test_session_performance_requires_existing_current_workspace_session(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="user")
+    client, headers = _build_test_client(tmp_path, role="user", monkeypatch=monkeypatch)
     monkeypatch.setattr(
         "api.routes.performance.get_request_stores",
         lambda: (_FakeChatStore(), object()),
@@ -62,7 +69,7 @@ def test_session_performance_requires_existing_current_workspace_session(tmp_pat
 
 
 def test_session_performance_returns_current_session_analysis(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="user")
+    client, headers = _build_test_client(tmp_path, role="user", monkeypatch=monkeypatch)
     captured = {}
     monkeypatch.setattr(
         "api.routes.performance.get_request_stores",
@@ -81,14 +88,14 @@ def test_session_performance_returns_current_session_analysis(tmp_path, monkeypa
     response = client.get("/agentic/sessions/sess-a/performance", headers=headers)
 
     assert response.status_code == 200
-    assert response.get_json()["summary"]["run_count"] == 1
+    assert response.json()["summary"]["run_count"] == 1
     assert captured["end_ms"] == 1_000_000_000
     assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
     assert captured["workspace_id"] == "ws-a"
 
 
 def test_session_performance_availability_uses_lightweight_probe(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="user")
+    client, headers = _build_test_client(tmp_path, role="user", monkeypatch=monkeypatch)
     captured = {}
     monkeypatch.setattr(
         "api.routes.performance.get_request_stores",
@@ -108,14 +115,14 @@ def test_session_performance_availability_uses_lightweight_probe(tmp_path, monke
     response = client.get("/agentic/sessions/sess-a/performance/availability", headers=headers)
 
     assert response.status_code == 200
-    assert response.get_json()["available"] is True
+    assert response.json()["available"] is True
     assert captured["end_ms"] == 1_000_000_000
     assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
     assert captured["workspace_id"] == "ws-a"
 
 
 def test_session_performance_availability_requires_existing_session(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="user")
+    client, headers = _build_test_client(tmp_path, role="user", monkeypatch=monkeypatch)
     monkeypatch.setattr(
         "api.routes.performance.get_request_stores",
         lambda: (_FakeChatStore(), object()),
@@ -127,7 +134,11 @@ def test_session_performance_availability_requires_existing_session(tmp_path, mo
 
 
 def test_session_speedscope_download_is_scoped_to_current_user(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="user")
+    client, headers = _build_test_client(
+        tmp_path,
+        role="user",
+        monkeypatch=monkeypatch,
+    )
     trace_path = tmp_path / "session.speedscope.json"
     trace_path.write_text('{"$schema":"https://www.speedscope.app/file-format-schema.json"}', encoding="utf-8")
     captured = {}
@@ -147,14 +158,18 @@ def test_session_speedscope_download_is_scoped_to_current_user(tmp_path, monkeyp
     response = client.get("/agentic/sessions/sess-a/performance/speedscope", headers=headers)
 
     assert response.status_code == 200
-    assert response.mimetype == "application/json"
-    assert response.data.startswith(b'{"$schema"')
+    assert response.headers["content-type"] == "application/json"
+    assert response.content.startswith(b'{"$schema"')
     assert "attachment" in response.headers["Content-Disposition"]
     assert captured == {"workspace_id": "ws-a", "session_id": "sess-a", "user_id": "perf-user"}
 
 
 def test_admin_can_download_any_workspace_user_session_speedscope(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="admin")
+    client, headers = _build_test_client(
+        tmp_path,
+        role="admin",
+        monkeypatch=monkeypatch,
+    )
     trace_path = tmp_path / "session.speedscope.json"
     trace_path.write_text("{}", encoding="utf-8")
     captured = {}
@@ -174,7 +189,11 @@ def test_admin_can_download_any_workspace_user_session_speedscope(tmp_path, monk
 
 
 def test_session_speedscope_download_returns_controlled_not_found(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="user")
+    client, headers = _build_test_client(
+        tmp_path,
+        role="user",
+        monkeypatch=monkeypatch,
+    )
     monkeypatch.setattr(
         "api.routes.performance.get_request_stores",
         lambda: (_FakeChatStore({"sess-a"}), object()),
@@ -185,14 +204,14 @@ def test_session_speedscope_download_returns_controlled_not_found(tmp_path, monk
     response = client.get("/agentic/sessions/sess-a/performance/speedscope", headers=headers)
 
     assert response.status_code == 404
-    assert response.get_json() == {
+    assert response.json() == {
         "error": "Speedscope trace not found",
         "code": "SPEEDSCOPE_NOT_FOUND",
     }
 
 
 def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, role="user")
+    client, headers = _build_test_client(tmp_path, role="user", monkeypatch=monkeypatch)
     captured = {}
     monkeypatch.setattr(
         "api.routes.performance.get_request_stores",
@@ -219,13 +238,17 @@ def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatc
 
     assert missing_owner.status_code == 404
     assert owned.status_code == 200
-    assert owned.get_json()["run"]["run_id"] == "run-a"
+    assert owned.json()["run"]["run_id"] == "run-a"
     assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
     assert captured["workspace_id"] == "ws-a"
 
 
 def test_modeling_service_can_read_run_trace_without_user_access_token(tmp_path, monkeypatch):
-    client, _headers = _build_test_client(tmp_path, role="user")
+    client, _headers = _build_test_client(
+        tmp_path,
+        role="user",
+        monkeypatch=monkeypatch,
+    )
     monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
     captured = {}
     monkeypatch.setattr(
@@ -233,15 +256,16 @@ def test_modeling_service_can_read_run_trace_without_user_access_token(tmp_path,
         lambda run_id, **kwargs: captured.update(kwargs)
         or {"run": {"run_id": run_id}, "timeline": [{"event": "run.finished"}], "tools": []},
     )
-    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "mw-shadow-project-1")
-
     response = client.get(
         "/agentic/internal/modeling/performance/runs/run-a?session_id=session-a",
-        headers={"Authorization": "Bearer {}".format("s" * 32), "X-Workspace-Id": "mw-shadow-project-1"},
+        headers={
+            "Authorization": "Bearer {}".format("s" * 32),
+            "X-Workspace-Id": "demo",
+        },
     )
 
     assert response.status_code == 200
-    assert captured["workspace_id"] == "mw-shadow-project-1"
+    assert captured["workspace_id"] == "demo"
 
 
 def test_modeling_trace_endpoint_rejects_an_invalid_service_token(tmp_path, monkeypatch):

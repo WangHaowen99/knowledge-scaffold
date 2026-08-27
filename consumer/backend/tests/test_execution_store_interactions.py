@@ -1,10 +1,20 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
+from persistence.chat_store import ChatStore
+from persistence.deterministic_terminal import (
+    persist_deterministic_terminal,
+    recover_pending_deterministic_artifacts,
+    recover_pending_deterministic_terminal,
+)
 from persistence.execution_store import (
     INTERACTION_CANCELLED_MESSAGE,
     INTERACTION_CANCELLED_NOTICE,
     ExecutionStore,
     InteractionCheckpointError,
+    SolverCheckpointError,
+    TurnOwnershipError,
 )
 
 
@@ -18,18 +28,368 @@ def _seed_choice_checkpoint(store: ExecutionStore, session_id: str = "sess-choic
             {"id": "b", "label": "方案 B", "value": "B"},
         ],
     }
-    store.start_turn(
+    original_turn, created = store.create_turn_for_run(
         session_id=session_id,
-        turn_id=1,
-        run_id="run-1",
         user_request="start",
+        idempotency_key_hash="checkpoint-request-key-hash",
+        request_fingerprint="checkpoint-request-fingerprint",
     )
+    assert created is True
     store.await_turn(
         session_id=session_id,
-        turn_id=1,
+        turn_id=original_turn["turn_id"],
         final_output={"type": "user_interaction", "interaction": interaction},
     )
     return interaction
+
+
+def test_deterministic_terminal_journal_recovers_failed_event_projection(
+    tmp_path,
+    monkeypatch,
+):
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    chat_store.create_session(session_id="session_terminal_recovery")
+    execution_store.start_turn(
+        "session_terminal_recovery",
+        1,
+        "run_terminal_recovery",
+        "synthetic request",
+    )
+    event = {
+        "event": "agent.v2",
+        "data": {
+            "protocol": "agent-stream.v2",
+            "event_id": "run_terminal_recovery:1",
+            "seq": 1,
+            "type": "turn.finished",
+            "run_id": "run_terminal_recovery",
+            "session_id": "session_terminal_recovery",
+            "turn_id": 1,
+            "payload": {"status": "completed"},
+        },
+    }
+    original_append = chat_store.append_events_once
+    monkeypatch.setattr(
+        chat_store,
+        "append_events_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic projection failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic projection failure"):
+        persist_deterministic_terminal(
+            execution_store,
+            chat_store,
+            session_id="session_terminal_recovery",
+            turn_id=1,
+            status="success",
+            final_output={
+                "status": "success",
+                "text": "synthetic answer",
+                "execution": {"type": "deterministic"},
+            },
+            llm_context=[],
+            events=[event],
+        )
+
+    assert execution_store.get_pending_deterministic_terminal(
+        "session_terminal_recovery"
+    ) is not None
+    monkeypatch.setattr(chat_store, "append_events_once", original_append)
+
+    assert recover_pending_deterministic_terminal(
+        execution_store,
+        chat_store,
+        "session_terminal_recovery",
+    ) is True
+    assert execution_store.get_pending_deterministic_terminal(
+        "session_terminal_recovery"
+    ) is None
+    assert execution_store.get_turn("session_terminal_recovery", 1)["status"] == "success"
+    assert any(
+        (item.get("data") or {}).get("event_id") == "run_terminal_recovery:1"
+        for item in chat_store.get_session("session_terminal_recovery").events
+    )
+
+
+def test_deterministic_artifact_journal_removes_failed_run_output(tmp_path):
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    chat_store.create_session(session_id="session_artifact_recovery")
+    execution_store.start_turn(
+        "session_artifact_recovery",
+        1,
+        "run_artifact_recovery",
+        "synthetic request",
+    )
+    output_ref = "a" * 32
+    execution_store.reserve_deterministic_artifacts(
+        "session_artifact_recovery",
+        1,
+        "run_artifact_recovery",
+        [output_ref],
+    )
+    stored = chat_store.store_tool_output(
+        "session_artifact_recovery",
+        "run_artifact_recovery",
+        "deterministic:result.txt",
+        "synthetic artifact",
+        output_ref=output_ref,
+    )
+    assert stored is not None
+    execution_store.fail_turn(
+        "session_artifact_recovery",
+        1,
+        "synthetic failure",
+        run_id="run_artifact_recovery",
+    )
+
+    assert recover_pending_deterministic_artifacts(
+        execution_store,
+        chat_store,
+        "session_artifact_recovery",
+        run_is_active=lambda _run_id: False,
+    ) is True
+    assert execution_store.get_pending_deterministic_artifacts(
+        "session_artifact_recovery"
+    ) == []
+    assert chat_store.get_tool_output(
+        "session_artifact_recovery",
+        "run_artifact_recovery",
+        output_ref,
+    ) is None
+
+
+def test_deterministic_artifact_recovery_preserves_running_turn(tmp_path):
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    chat_store.create_session(session_id="session_running_artifact")
+    execution_store.start_turn(
+        "session_running_artifact",
+        1,
+        "run_running_artifact",
+        "synthetic request",
+    )
+    output_ref = "b" * 32
+    execution_store.reserve_deterministic_artifacts(
+        "session_running_artifact",
+        1,
+        "run_running_artifact",
+        [output_ref],
+    )
+    chat_store.store_tool_output(
+        "session_running_artifact",
+        "run_running_artifact",
+        "deterministic:result.txt",
+        "synthetic artifact",
+        output_ref=output_ref,
+    )
+
+    assert recover_pending_deterministic_artifacts(
+        execution_store,
+        chat_store,
+        "session_running_artifact",
+        run_is_active=lambda _run_id: False,
+    ) is False
+    assert execution_store.get_pending_deterministic_artifacts(
+        "session_running_artifact"
+    ) == [
+        {
+            "turn_id": 1,
+            "run_id": "run_running_artifact",
+            "output_refs": [output_ref],
+        }
+    ]
+    assert chat_store.get_tool_output(
+        "session_running_artifact",
+        "run_running_artifact",
+        output_ref,
+    ) is not None
+
+
+def _seed_one_run_checkpoint(
+    store: ExecutionStore,
+    session_id: str = "session_hitl_contract",
+) -> tuple[dict, dict]:
+    original_turn, created = store.create_turn_for_run(
+        session_id=session_id,
+        user_request="Start a synthetic interaction",
+        idempotency_key_hash="initial-request-key-hash",
+        request_fingerprint="initial-request-fingerprint",
+    )
+    assert created is True
+
+    interaction = {
+        "id": "interaction_contract_choice",
+        "type": "single_choice",
+        "prompt": "Choose a synthetic option",
+        "options": [
+            {"id": "option_a", "label": "Option A", "value": "value_a"},
+            {"id": "option_b", "label": "Option B", "value": "value_b"},
+        ],
+    }
+    store.await_turn(
+        session_id=session_id,
+        turn_id=original_turn["turn_id"],
+        final_output={"type": "user_interaction", "interaction": interaction},
+    )
+    return original_turn, interaction
+
+
+def _answer_choice(interaction: dict, option_id: str, value: str) -> dict:
+    return {
+        "interaction_id": interaction["id"],
+        "type": interaction["type"],
+        "option_id": option_id,
+        "value": value,
+    }
+
+
+def test_hitl_answer_creates_new_run_and_turn_without_reopening_original(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    original_turn, interaction = _seed_one_run_checkpoint(store)
+    response = _answer_choice(interaction, "option_a", "value_a")
+
+    answer_turn, created = store.consume_interaction_and_create_turn(
+        session_id="session_hitl_contract",
+        interaction_id=interaction["id"],
+        user_request="Choose option A",
+        interaction_response=response,
+        idempotency_key_hash="answer-request-key-hash",
+        request_fingerprint="answer-request-fingerprint",
+    )
+
+    assert created is True
+    assert answer_turn["run_id"] != original_turn["run_id"]
+    assert answer_turn["turn_id"] == original_turn["turn_id"] + 1
+    assert answer_turn["status"] == "running"
+
+    history = store.get_session_history("session_hitl_contract")
+    assert len(history["turns"]) == 2
+    persisted_original, persisted_answer = history["turns"]
+    assert persisted_original["run_id"] == original_turn["run_id"]
+    assert persisted_original["status"] == "awaiting_input"
+    assert persisted_original["pending_interaction"] == interaction
+    assert persisted_original["interaction_response"] == response
+    assert persisted_original["interaction_consumed_at"]
+    assert (
+        persisted_original["interaction_consumed_by_turn_id"]
+        == persisted_answer["turn_id"]
+    )
+    assert persisted_answer["run_id"] == answer_turn["run_id"]
+    assert persisted_answer["turn_id"] == answer_turn["turn_id"]
+    answer_message = history["session_history"][-1]
+    assert answer_message["role"] == "user"
+    assert answer_message["run_id"] == answer_turn["run_id"]
+    assert answer_message["turn_id"] == answer_turn["turn_id"]
+    assert answer_message["interaction_response"] == response
+    assert not any(
+        message.get("role") == "tool"
+        for message in history["session_history"]
+    )
+
+
+def test_same_interaction_retry_returns_existing_admission_without_second_execution(
+    tmp_path,
+):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    _original_turn, interaction = _seed_one_run_checkpoint(store)
+    response = _answer_choice(interaction, "option_a", "value_a")
+    registered_run_ids = []
+
+    first_turn, first_created = store.consume_interaction_and_create_turn(
+        session_id="session_hitl_contract",
+        interaction_id=interaction["id"],
+        user_request="Choose option A",
+        interaction_response=response,
+        idempotency_key_hash="answer-request-key-hash",
+        request_fingerprint="answer-request-fingerprint",
+    )
+    if first_created:
+        registered_run_ids.append(first_turn["run_id"])
+
+    retry_turn, retry_created = store.consume_interaction_and_create_turn(
+        session_id="session_hitl_contract",
+        interaction_id=interaction["id"],
+        user_request="Choose option A",
+        interaction_response=response,
+        idempotency_key_hash="answer-retry-key-hash",
+        request_fingerprint="answer-request-fingerprint",
+    )
+    if retry_created:
+        registered_run_ids.append(retry_turn["run_id"])
+
+    assert first_created is True
+    assert retry_created is False
+    assert retry_turn == first_turn
+    assert registered_run_ids == [first_turn["run_id"]]
+    history = store.get_session_history("session_hitl_contract")
+    assert len(history["turns"]) == 2
+
+
+def test_concurrent_interaction_retries_create_one_run_and_turn(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    _original_turn, interaction = _seed_one_run_checkpoint(store)
+    response = _answer_choice(interaction, "option_a", "value_a")
+
+    def submit(index: int):
+        return store.consume_interaction_and_create_turn(
+            session_id="session_hitl_contract",
+            interaction_id=interaction["id"],
+            user_request="Choose option A",
+            interaction_response=response,
+            idempotency_key_hash="answer-retry-key-hash-{}".format(index),
+            request_fingerprint="answer-request-fingerprint",
+        )
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        admissions = list(executor.map(submit, range(100)))
+
+    turns = [turn for turn, _created in admissions]
+    created_flags = [created for _turn, created in admissions]
+    assert sum(created_flags) == 1
+    assert {turn["run_id"] for turn in turns} == {turns[0]["run_id"]}
+    assert {turn["turn_id"] for turn in turns} == {turns[0]["turn_id"]}
+    history = store.get_session_history("session_hitl_contract")
+    assert len(history["turns"]) == 2
+    assert history["turns"][0]["status"] == "awaiting_input"
+    assert (
+        history["turns"][0]["interaction_consumed_by_turn_id"]
+        == history["turns"][1]["turn_id"]
+    )
+
+
+def test_different_answer_for_consumed_interaction_reports_existing_run(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    _original_turn, interaction = _seed_one_run_checkpoint(store)
+    first_response = _answer_choice(interaction, "option_a", "value_a")
+    first_turn, created = store.consume_interaction_and_create_turn(
+        session_id="session_hitl_contract",
+        interaction_id=interaction["id"],
+        user_request="Choose option A",
+        interaction_response=first_response,
+        idempotency_key_hash="answer-request-key-hash",
+        request_fingerprint="answer-request-fingerprint",
+    )
+    assert created is True
+
+    conflicting_response = _answer_choice(interaction, "option_b", "value_b")
+    with pytest.raises(InteractionCheckpointError) as exc_info:
+        store.consume_interaction_and_create_turn(
+            session_id="session_hitl_contract",
+            interaction_id=interaction["id"],
+            user_request="Choose option B",
+            interaction_response=conflicting_response,
+            idempotency_key_hash="conflicting-answer-key-hash",
+            request_fingerprint="conflicting-answer-fingerprint",
+        )
+
+    assert exc_info.value.code == "INTERACTION_ALREADY_CONSUMED"
+    assert exc_info.value.existing_run_id == first_turn["run_id"]
+    history = store.get_session_history("session_hitl_contract")
+    assert len(history["turns"]) == 2
 
 
 def test_interaction_response_survives_backend_process_reload_and_is_consumed(tmp_path):
@@ -47,24 +407,35 @@ def test_interaction_response_survives_backend_process_reload_and_is_consumed(tm
     # contract. A fresh instance models the old-backend process reopening the
     # same current runtime after a code-only rollback.
     reloaded_store = ExecutionStore(str(storage_dir))
-    canonical = reloaded_store.validate_interaction_response("sess-choice", response)
-    assert canonical == response
-
-    reloaded_store.start_turn(
+    answer_turn, created = reloaded_store.consume_interaction_and_create_turn(
         session_id="sess-choice",
-        turn_id=2,
-        run_id="run-2",
         user_request="方案 A",
+        interaction_id=interaction["id"],
         interaction_response=response,
+        idempotency_key_hash="answer-request-key-hash",
+        request_fingerprint="answer-request-fingerprint",
     )
+    assert created is True
 
     history = reloaded_store.get_session_history("sess-choice")
     assert history["turns"][0]["interaction_response"] == response
     assert history["turns"][0]["interaction_consumed_at"]
+    assert (
+        history["turns"][0]["interaction_consumed_by_turn_id"]
+        == answer_turn["turn_id"]
+    )
     assert history["turns"][1]["status"] == "running"
 
-    with pytest.raises(InteractionCheckpointError, match="no pending interaction"):
-        reloaded_store.validate_interaction_response("sess-choice", response)
+    retry_turn, retry_created = reloaded_store.consume_interaction_and_create_turn(
+        session_id="sess-choice",
+        user_request="方案 A",
+        interaction_id=interaction["id"],
+        interaction_response=response,
+        idempotency_key_hash="answer-retry-key-hash",
+        request_fingerprint="answer-request-fingerprint",
+    )
+    assert retry_created is False
+    assert retry_turn == answer_turn
 
 
 @pytest.mark.parametrize(
@@ -103,11 +474,11 @@ def test_pending_interaction_cannot_be_bypassed_with_plain_message(tmp_path):
     _seed_choice_checkpoint(store)
 
     with pytest.raises(InteractionCheckpointError, match="awaiting an interaction response"):
-        store.start_turn(
+        store.create_turn_for_run(
             session_id="sess-choice",
-            turn_id=2,
-            run_id="run-2",
             user_request="ignore checkpoint",
+            idempotency_key_hash="bypass-request-key-hash",
+            request_fingerprint="bypass-request-fingerprint",
         )
 
 
@@ -132,38 +503,56 @@ def test_pending_interaction_can_be_cancelled_without_losing_context(tmp_path):
     assert cancellation["message"] == INTERACTION_CANCELLED_MESSAGE
     assert cancellation["display_message"] == INTERACTION_CANCELLED_NOTICE
     history = store.get_session_history("sess-choice")
-    assert history["turns"][0]["status"] == "cancelled"
+    assert history["turns"][0]["status"] == "awaiting_input"
     assert history["turns"][0]["interaction_response"] == cancellation
+    assert history["turns"][0]["interaction_consumed_at"]
     assert history["turns"][0]["interaction_cancelled_at"]
-    assert "interaction_context_consumed_at" not in history["turns"][0]
+    assert "interaction_consumed_by_turn_id" not in history["turns"][0]
     assert store.get_llm_context("sess-choice") == prior_context
 
-    # A plain message claims the cancellation for one-time model injection.
+    # Cancellation consumes the checkpoint without reopening the old Run.
     reloaded = ExecutionStore(str(storage_dir))
     assert reloaded.validate_interaction_response("sess-choice", None) is None
-    resumed_turn = reloaded.start_turn(
+    next_turn, created = reloaded.create_turn_for_run(
         session_id="sess-choice",
-        turn_id=2,
-        run_id="run-2",
         user_request="继续分析其他问题",
+        idempotency_key_hash="post-cancel-request-key-hash",
+        request_fingerprint="post-cancel-request-fingerprint",
     )
-    assert resumed_turn["prior_interaction_cancellation"] == cancellation
+    assert created is True
     cancelled_turn = reloaded.get_turn("sess-choice", 1)
-    assert cancelled_turn["interaction_context_consumed_at"]
-    assert cancelled_turn["interaction_context_consumed_by_turn_id"] == 2
-    assert reloaded.get_llm_context("sess-choice") == prior_context
+    assert cancelled_turn["status"] == "awaiting_input"
+    assert "interaction_consumed_by_turn_id" not in cancelled_turn
+    assert "prior_interaction_cancellation" not in next_turn
+    context_after_cancel = reloaded.get_llm_context("sess-choice")
+    assert context_after_cancel[: len(prior_context)] == prior_context
+    assert context_after_cancel[-1]["role"] == "user"
+    assert context_after_cancel[-1]["content"] == "继续分析其他问题"
+    assert "interaction_response" not in context_after_cancel[-1]
 
-    # Retrying stays idempotent and later turns cannot claim the event again.
+    # Retrying the cancellation stays idempotent and creates no Run or Turn.
     assert reloaded.cancel_pending_interaction("sess-choice", interaction["id"]) == cancellation
-    reloaded.complete_turn("sess-choice", 2, {"answer": "done"}, None)
-    later_turn = reloaded.start_turn(
-        session_id="sess-choice",
-        turn_id=3,
-        run_id="run-3",
-        user_request="再次提问",
+    assert len(reloaded.get_session_history("sess-choice")["turns"]) == 2
+    reloaded.complete_turn(
+        "sess-choice",
+        next_turn["turn_id"],
+        {"answer": "done"},
+        None,
     )
-    assert "prior_interaction_cancellation" not in later_turn
-    assert reloaded.get_llm_context("sess-choice") == prior_context
+    later_turn, later_created = reloaded.create_turn_for_run(
+        session_id="sess-choice",
+        user_request="再次提问",
+        idempotency_key_hash="later-request-key-hash",
+        request_fingerprint="later-request-fingerprint",
+    )
+    assert later_created is True
+    assert later_turn["turn_id"] == next_turn["turn_id"] + 1
+    final_context = reloaded.get_llm_context("sess-choice")
+    assert final_context[: len(prior_context)] == prior_context
+    assert [entry["content"] for entry in final_context[-2:]] == [
+        "继续分析其他问题",
+        "再次提问",
+    ]
 
 
 def test_pending_interaction_cancel_rejects_stale_id(tmp_path):
@@ -191,3 +580,217 @@ def test_turn_feedback_is_durable_and_queryable_without_evolution_store(tmp_path
 
     assert reloaded.set_turn_feedback("sess-feedback", 2, "none") is True
     assert "feedback" not in reloaded.get_turn("sess-feedback", 2)
+
+
+def test_waiting_solver_checkpoint_and_tool_inbox_survive_process_reload(tmp_path):
+    storage_dir = tmp_path / "executions"
+    store = ExecutionStore(str(storage_dir))
+    store.start_turn(
+        session_id="sess-solver",
+        turn_id=1,
+        run_id="run-solver",
+        user_request="solve synthetic plan",
+    )
+    checkpoint = {
+        "schema_version": "agent.solver-checkpoint.v1",
+        "stage": "waiting_solver",
+        "tool_call": {
+            "id": "tool-call-solver",
+            "name": "solve_synthetic_aaaaaaaa",
+            "arguments": {"item_count": 2},
+        },
+        "state": {
+            "run_id": "run-solver",
+            "session_id": "sess-solver",
+            "current_turn_id": 1,
+            "workspace_id": "workspace-synthetic",
+            "user_id": "owner-synthetic",
+            "user_request": "solve synthetic plan",
+            "user_context": {
+                "selected_ontology_id": "package-synthetic",
+                "selected_ontology_version": "revision-synthetic-1",
+            },
+            "messages": [
+                {"role": "user", "content": "solve synthetic plan"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tool-call-solver",
+                            "type": "function",
+                            "function": {
+                                "name": "solve_synthetic_aaaaaaaa",
+                                "arguments": "{\"item_count\":2}",
+                            },
+                        }
+                    ],
+                },
+            ],
+            "read_documents": {"by_path": {}, "by_resource": {}},
+            "results": {},
+            "completed_ids": [],
+            "failed_ids": [],
+            "errors": [],
+            "evolution_recall_records": [],
+            "debug": False,
+            "final_output": None,
+        },
+    }
+
+    saved = store.save_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        checkpoint=checkpoint,
+    )
+    assert saved == checkpoint
+
+    result = {
+        "status": "completed",
+        "authoritative": True,
+        "run_id": "run-solver",
+        "job_id": "job-solver",
+    }
+    first = store.put_solver_tool_result(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        tool_call_id="tool-call-solver",
+        result_digest="sha256:" + "a" * 64,
+        result=result,
+    )
+    replay = store.put_solver_tool_result(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        tool_call_id="tool-call-solver",
+        result_digest="sha256:" + "a" * 64,
+        result=result,
+    )
+    assert first == replay
+
+    reloaded = ExecutionStore(str(storage_dir))
+    durable = reloaded.get_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+    )
+    assert durable["checkpoint"] == checkpoint
+    assert durable["tool_result_inbox"]["result"] == result
+    assert durable["tool_result_inbox"]["result_digest"] == "sha256:" + "a" * 64
+
+    with pytest.raises(SolverCheckpointError, match="tool result"):
+        reloaded.put_solver_tool_result(
+            "sess-solver",
+            run_id="run-solver",
+            turn_id=1,
+            tool_call_id="tool-call-solver",
+            result_digest="sha256:" + "b" * 64,
+            result={"status": "different"},
+        )
+
+    next_checkpoint = dict(checkpoint)
+    next_checkpoint["tool_call"] = {
+        **checkpoint["tool_call"],
+        "id": "tool-call-solver-next",
+        "name": "solve_synthetic_bbbbbbbb",
+    }
+    next_checkpoint["state"] = {
+        **checkpoint["state"],
+        "messages": [
+            {
+                **checkpoint["state"]["messages"][1],
+                "tool_calls": [
+                    {
+                        **checkpoint["state"]["messages"][1]["tool_calls"][0],
+                        "id": "tool-call-solver-next",
+                        "function": {
+                            "name": "solve_synthetic_bbbbbbbb",
+                            "arguments": "{\"item_count\":3}",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    store.save_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        checkpoint=next_checkpoint,
+    )
+    switched = store.get_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+    )
+    assert switched["checkpoint"]["tool_call"]["id"] == "tool-call-solver-next"
+    assert switched["tool_result_inbox"] is None
+
+
+def test_start_next_turn_allocates_unique_ids_atomically(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+
+    def start(index):
+        turn, response = store.start_next_turn(
+            session_id="sess-concurrent",
+            run_id="run-{}".format(index),
+            user_request="synthetic request {}".format(index),
+        )
+        assert response is None
+        return turn
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        turns = list(executor.map(start, range(16)))
+
+    assert sorted(turn["turn_id"] for turn in turns) == list(range(1, 17))
+    assert len({turn["run_id"] for turn in turns}) == 16
+
+
+@pytest.mark.parametrize(
+    "finish",
+    [
+        lambda store: store.complete_turn(
+            "sess-owner",
+            1,
+            {"answer": "unexpected"},
+            None,
+            run_id="run-other",
+        ),
+        lambda store: store.fail_turn(
+            "sess-owner",
+            1,
+            "unexpected",
+            run_id="run-other",
+        ),
+        lambda store: store.cancel_turn(
+            "sess-owner",
+            1,
+            "unexpected",
+            run_id="run-other",
+        ),
+        lambda store: store.await_turn(
+            "sess-owner",
+            1,
+            run_id="run-other",
+        ),
+    ],
+)
+def test_turn_finalization_rejects_another_run(tmp_path, finish):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    store.start_turn("sess-owner", 1, "run-owner", "synthetic request")
+
+    with pytest.raises(TurnOwnershipError, match="does not belong"):
+        finish(store)
+
+    turn = store.get_turn("sess-owner", 1)
+    assert turn["run_id"] == "run-owner"
+    assert turn["status"] == "running"
+
+
+def test_run_scoped_turn_lookup_distinguishes_missing_from_wrong_owner(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    store.start_turn("sess-owner", 1, "run-owner", "synthetic request")
+
+    assert store.get_turn("sess-owner", 2, run_id="run-owner") is None
+    with pytest.raises(TurnOwnershipError, match="does not belong"):
+        store.get_turn("sess-owner", 1, run_id="run-other")

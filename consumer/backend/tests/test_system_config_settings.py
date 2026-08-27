@@ -83,6 +83,7 @@ def test_system_config_ignores_legacy_backend_config_when_new_config_is_missing(
 
     monkeypatch.delenv(system_config_module.SYSTEM_CONFIG_PATH_ENV, raising=False)
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
     monkeypatch.setattr(system_config_module, "DEFAULT_CONFIG_PATH", config_path)
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_path.parent)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
@@ -92,6 +93,7 @@ def test_system_config_ignores_legacy_backend_config_when_new_config_is_missing(
     assert config["llm"]["base_url"] == ""
     assert config["llm"]["model"] == ""
     assert config["llm"]["api_key"] == ""
+    assert config["llm"]["max_tokens"] == 32768
     assert not config_path.exists()
 
 

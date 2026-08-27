@@ -11,18 +11,28 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import createLogger from '../../../shared/lib/logger';
 import { authFetch } from '../../../shared/api/auth';
-import { AGENT_STREAM_EVENT, isAgentV2Envelope } from '../lib/streamHelpers';
+import { publicErrorMessage } from '../lib/streamHelpers';
+import {
+  decodePublicEventFrame,
+  PublicEventProtocolError,
+} from '../lib/publicEvent';
 import { parseSSEMessage, takeSSEFrames } from '../lib/sse';
 import {
+  AGENTIC_RUNS_ENDPOINT,
+  buildRunRequestHeaders,
+  normalizeRunAdmission,
+} from '../lib/runAdmission';
+import {
+  buildRunCancelUrl,
   buildRunEventsUrl,
-  buildRunStatusUrl,
-  classifyEnvelope,
+  buildRunUrl,
+  classifyPublicEvent,
   normalizeSequence,
 } from '../lib/streamResume';
 import {
   abortStreamController,
   abortStreamControllers,
-  classifyRunProgressFromEnvelope,
+  classifyRunProgressFromPublicEvent,
   isSilentStreamAbort,
   isTerminalRunStatus,
   resolveRunStartedAt,
@@ -33,7 +43,6 @@ import {
 } from '../lib/streamLifecycle';
 
 const logger = createLogger('StreamManager');
-const QUEUE_POLL_INTERVAL_MS = 600;
 const RECONNECT_DELAY_MS = 800;
 const MAX_RECONNECT_ATTEMPTS = 8;
 
@@ -64,31 +73,6 @@ const buildInitialProgressState = (now = Date.now(), phase = 'starting') => ({
   progressPhase: phase,
 });
 
-/**
- * Build cancel URL from stream URL and runId.
- */
-const buildCancelUrl = (streamUrl, runId) => {
-  if (!streamUrl || !runId) return null;
-
-  const baseOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
-  let url;
-  try {
-    url = new URL(streamUrl, baseOrigin);
-  } catch (error) {
-    logger.warn('Failed to resolve stream URL for cancel', { streamUrl, error: error.message });
-    return null;
-  }
-
-  if (!url.pathname.endsWith('/agentic/runs/stream')) {
-    return null;
-  }
-
-  url.pathname = url.pathname.replace(/\/agentic\/runs\/stream\/?$/, `/agentic/runs/${runId}/cancel`);
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-};
-
 const useStreamManager = () => {
   // Stream contexts: Map<sessionId, StreamContext>
   const [streams, setStreams] = useState(new Map());
@@ -99,7 +83,7 @@ const useStreamManager = () => {
   // AbortControllers: Map<sessionId, AbortController>
   const abortControllersRef = useRef(new Map());
 
-  // Stream metadata: Map<sessionId, { runId, streamUrl, runType }>
+  // Stream metadata: Map<sessionId, { runId, runStatus, lastSeq }>
   const streamMetaRef = useRef(new Map());
 
   /**
@@ -109,13 +93,10 @@ const useStreamManager = () => {
     if (!sessionId) return { ok: true, cancelled: false };
 
     const meta = streamMetaRef.current.get(sessionId);
-    if (!meta?.runId || !meta?.streamUrl) return { ok: true, cancelled: false };
-
-    const cancelUrl = buildCancelUrl(meta.streamUrl, meta.runId);
-    if (!cancelUrl) return { ok: false };
+    if (!meta?.runId) return { ok: true, cancelled: false };
 
     try {
-      const res = await authFetch(cancelUrl, {
+      const res = await authFetch(buildRunCancelUrl(meta.runId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason }),
@@ -124,7 +105,7 @@ const useStreamManager = () => {
       if (!res.ok) {
         const payload = await res.json().catch(() => ({}));
         if (res.status === 404) {
-          const statusResponse = await authFetch(buildRunStatusUrl(meta.runId));
+          const statusResponse = await authFetch(buildRunUrl(meta.runId));
           const statusPayload = await statusResponse.json().catch(() => ({}));
           const terminalStatus = String(statusPayload.status || '').trim();
           if (statusResponse.ok && isTerminalRunStatus(terminalStatus)) {
@@ -135,7 +116,7 @@ const useStreamManager = () => {
           sessionId,
           reason,
           status: res.status,
-          error: payload.error || payload.detail || '',
+          error: publicErrorMessage(payload.error ?? payload.detail),
         });
         return { ok: false };
       }
@@ -250,43 +231,35 @@ const useStreamManager = () => {
     let terminalStatus = '';
     let receivedEvent = false;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (value) buffer += decoder.decode(value, { stream: !done });
-      if (done) buffer += decoder.decode();
-      const { frames: parts, remainder } = takeSSEFrames(buffer, { done });
-      buffer = remainder;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buffer += decoder.decode(value, { stream: !done });
+        if (done) buffer += decoder.decode();
+        const { frames: parts, remainder } = takeSSEFrames(buffer, { done });
+        buffer = remainder;
 
-      let shouldStop = false;
-      for (const part of parts) {
-        const parsed = parseSSEMessage(part);
-        if (!parsed) continue;
-        receivedEvent = true;
-
-        let { event, data } = parsed;
-        if ((event === 'message' || !event) && data && typeof data === 'object') {
-          if (data.event && data.data) {
-            event = data.event;
-            data = data.data;
-          } else if (!event && (data.event || data.type)) {
-            event = data.event || data.type;
+        let shouldStop = false;
+        for (const part of parts) {
+          const parsed = parseSSEMessage(part);
+          if (!parsed) continue;
+          const activeMeta = streamMetaRef.current.get(sessionId);
+          if (!activeMeta || activeMeta.streamToken !== streamToken) {
+            await reader.cancel();
+            return { terminalStatus: '', superseded: true };
           }
-        }
 
-        const activeMeta = streamMetaRef.current.get(sessionId);
-        if (!activeMeta || activeMeta.streamToken !== streamToken) {
-          await reader.cancel();
-          return { terminalStatus: '', superseded: true };
-        }
-
-        if (event === AGENT_STREAM_EVENT && isAgentV2Envelope(data)) {
-          const classification = classifyEnvelope(
-            data,
+          const publicEvent = decodePublicEventFrame(parsed, {
+            expectedRunId: activeMeta.runId,
+            expectedSessionId: sessionId,
+          });
+          const classification = classifyPublicEvent(
+            publicEvent,
             activeMeta.lastSeq,
             activeMeta.seenEventIds,
           );
           if (classification.duplicate) {
-            logger.debug('Ignoring replayed SSE envelope', {
+            logger.debug('Ignoring replayed PublicEvent', {
               sessionId,
               eventId: classification.identity,
               sequence: classification.sequence,
@@ -294,46 +267,51 @@ const useStreamManager = () => {
             continue;
           }
 
-          activeMeta.runId = data.run_id || activeMeta.runId;
-          activeMeta.runType = data.type || activeMeta.runType;
+          logger.debug('PublicEvent received', {
+            sessionId,
+            eventType: publicEvent.event_type,
+            sequence: publicEvent.seq,
+          });
+          if (onEvent?.(publicEvent)) {
+            logger.debug('Stream handler requested break', { sessionId });
+            shouldStop = true;
+          }
+
+          activeMeta.runStatus = publicEvent.status;
           activeMeta.lastSeq = classification.nextCursor;
           if (classification.identity) activeMeta.seenEventIds.add(classification.identity);
-          const progress = classifyRunProgressFromEnvelope(data);
-          if (progress?.phase) {
-            activeMeta.progressPhase = progress.phase;
-          }
+          const progress = classifyRunProgressFromPublicEvent(publicEvent);
+          if (progress?.phase) activeMeta.progressPhase = progress.phase;
           streamMetaRef.current.set(sessionId, activeMeta);
+          receivedEvent = true;
 
           updateStreamState(sessionId, {
             runId: activeMeta.runId,
             cursor: activeMeta.lastSeq,
-            status: data.type === 'turn.finished' ? 'finalizing' : 'streaming',
+            status: publicEvent.event_type === 'turn.finished' ? 'finalizing' : 'streaming',
             startedAt: activeMeta.startedAt,
             progressPhase: activeMeta.progressPhase,
           });
 
-          if (data.type === 'turn.finished') {
-            terminalStatus = String(data.payload?.status || 'success');
+          if (publicEvent.event_type === 'turn.finished') {
+            terminalStatus = publicEvent.status;
           }
+          if (shouldStop) break;
         }
 
-        logger.debug('SSE event', { sessionId, event });
-        if (onEvent?.(event, data)) {
-          logger.debug('Stream handler requested break', { sessionId });
-          shouldStop = true;
+        if (shouldStop || terminalStatus) {
+          if (!terminalStatus) terminalStatus = 'completed';
+          await reader.cancel();
+          break;
+        }
+        if (done) {
+          logger.debug('Stream response ended', { sessionId, terminal: Boolean(terminalStatus) });
           break;
         }
       }
-
-      if (shouldStop || terminalStatus) {
-        if (!terminalStatus) terminalStatus = 'success';
-        await reader.cancel();
-        break;
-      }
-      if (done) {
-        logger.debug('Stream response ended', { sessionId, terminal: Boolean(terminalStatus) });
-        break;
-      }
+    } catch (error) {
+      await reader.cancel(error).catch(() => {});
+      throw error;
     }
 
     return { terminalStatus, superseded: false, receivedEvent };
@@ -345,6 +323,8 @@ const useStreamManager = () => {
     abortControllersRef.current.delete(sessionId);
     streamMetaRef.current.delete(sessionId);
     updateStreamState(sessionId, {
+      runId: activeMeta.runId,
+      cursor: activeMeta.lastSeq,
       isLoading: false,
       status,
       queue: null,
@@ -360,60 +340,16 @@ const useStreamManager = () => {
       if (!meta || meta.streamToken !== streamToken) return { superseded: true, terminalStatus: '' };
       if (!controller || controller.signal.aborted) throw abortError();
 
-      if (meta.runStatus === 'queued') {
-        try {
-          const statusResponse = await authFetch(buildRunStatusUrl(meta.runId), {
-            signal: controller.signal,
-          });
-          const statusPayload = await statusResponse.json().catch(() => ({}));
-          if (!statusResponse.ok) {
-            throw new Error(statusPayload.error || `Run status failed with ${statusResponse.status}`);
-          }
-
-          meta.runStatus = String(statusPayload.status || 'queued');
-          meta.queue = statusPayload.queue || null;
-          streamMetaRef.current.set(sessionId, meta);
-          if (meta.runStatus === 'queued') {
-            meta.progressPhase = 'queued';
-            streamMetaRef.current.set(sessionId, meta);
-            updateStreamState(sessionId, {
-              isLoading: true,
-              status: 'queued',
-              runId: meta.runId,
-              queue: meta.queue,
-              startedAt: meta.startedAt,
-              progressPhase: meta.progressPhase,
-            });
-            await waitForDelay(QUEUE_POLL_INTERVAL_MS, controller.signal);
-            continue;
-          }
-          reconnectAttempts = 0;
-        } catch (error) {
-          if (error.name === 'AbortError') throw error;
-          reconnectAttempts += 1;
-          if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) throw error;
-          meta.progressPhase = 'reconnecting';
-          streamMetaRef.current.set(sessionId, meta);
-          updateStreamState(sessionId, {
-            isLoading: true,
-            status: 'reconnecting',
-            runId: meta.runId,
-            queue: meta.queue,
-            startedAt: meta.startedAt,
-            progressPhase: meta.progressPhase,
-          });
-          await waitForDelay(RECONNECT_DELAY_MS * reconnectAttempts, controller.signal);
-          continue;
-        }
-      }
-
+      const isQueued = meta.runStatus === 'queued';
       meta.progressPhase = reconnectAttempts > 0
         ? 'reconnecting'
-        : (['queued', 'reconnecting'].includes(meta.progressPhase) ? 'running' : (meta.progressPhase || 'running'));
+        : (isQueued ? 'queued' : (meta.progressPhase || 'running'));
       streamMetaRef.current.set(sessionId, meta);
       updateStreamState(sessionId, {
         isLoading: true,
-        status: streamStatusForConnection(reconnectAttempts),
+        status: isQueued && reconnectAttempts === 0
+          ? 'queued'
+          : streamStatusForConnection(reconnectAttempts),
         runId: meta.runId,
         cursor: meta.lastSeq,
         queue: null,
@@ -427,25 +363,23 @@ const useStreamManager = () => {
           headers,
           signal: controller.signal,
         });
-        if (response.status === 409) {
-          const payload = await response.json().catch(() => ({}));
-          meta.runStatus = 'queued';
-          meta.queue = payload.queue || null;
-          meta.progressPhase = 'queued';
-          streamMetaRef.current.set(sessionId, meta);
-          continue;
-        }
         if (response.status === 410) {
           const payload = await response.json().catch(() => ({}));
           const goneStatus = String(payload.status || meta.runStatus || '').trim();
           if (isTerminalRunStatus(goneStatus)) {
             return { terminalStatus: goneStatus, superseded: false, receivedEvent: false };
           }
-          throw new Error(payload.error || 'Run event stream is no longer available');
+          throw new Error(publicErrorMessage(
+            payload.error ?? payload.detail,
+            'Run event stream is no longer available',
+          ));
         }
         if (!response.ok || !response.body) {
           const payload = await response.json().catch(() => ({}));
-          throw new Error(payload.error || `Run event stream failed with ${response.status}`);
+          throw new Error(publicErrorMessage(
+            payload.error ?? payload.detail,
+            `Run event stream failed with ${response.status}`,
+          ));
         }
 
         const result = await processStream(
@@ -458,6 +392,7 @@ const useStreamManager = () => {
         reconnectAttempts = result.receivedEvent ? 0 : reconnectAttempts + 1;
       } catch (error) {
         if (error.name === 'AbortError') throw error;
+        if (error instanceof PublicEventProtocolError) throw error;
         reconnectAttempts += 1;
         logger.warn('Run event stream disconnected; retrying from cursor', {
           sessionId,
@@ -476,19 +411,20 @@ const useStreamManager = () => {
   }, [processStream, updateStreamState]);
 
   /**
-   * Start a stream for a specific session.
+   * Create one canonical run, then follow its detached event stream.
    */
-  const startStreamForSession = useCallback(async (sessionId, url, body, { onEvent, onComplete, onError }) => {
+  const startRunForSession = useCallback(async (
+    sessionId,
+    body,
+    { idempotencyKey, onAdmission, onEvent, onComplete, onError },
+  ) => {
     if (!sessionId) {
-      logger.warn('Cannot start stream without sessionId');
+      logger.warn('Cannot create run without sessionId');
       return;
     }
 
-    logger.info('Starting stream for session', { sessionId, url });
+    logger.info('Creating run for session', { sessionId });
 
-    const requestedRunId = typeof body?.run_id === 'string' && body.run_id.trim()
-      ? body.run_id.trim()
-      : null;
     const startedAt = Date.now();
     const streamToken = `${startedAt}-${Math.random().toString(16).slice(2)}`;
     const initialProgress = buildInitialProgressState(startedAt);
@@ -497,10 +433,8 @@ const useStreamManager = () => {
     abortStreamController(abortControllersRef.current.get(sessionId), { silent: true });
     abortControllersRef.current.set(sessionId, controller);
     streamMetaRef.current.set(sessionId, {
-      streamUrl: url,
-      runId: requestedRunId,
-      runType: null,
-      runStatus: 'running',
+      runId: null,
+      runStatus: 'admitting',
       streamToken,
       lastSeq: 0,
       seenEventIds: new Set(),
@@ -512,63 +446,51 @@ const useStreamManager = () => {
     updateStreamState(sessionId, {
       sessionId,
       isLoading: true,
-      status: 'streaming',
-      runId: requestedRunId,
+      status: 'admitting',
+      runId: null,
       ...initialProgress,
     });
 
     try {
-      const res = await authFetch(url, {
+      const res = await authFetch(AGENTIC_RUNS_ENDPOINT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildRunRequestHeaders(idempotencyKey),
         body: JSON.stringify(body),
         signal: controller.signal,
       });
 
-      logger.debug('Stream response', { sessionId, status: res.status });
+      logger.debug('Run admission response', { sessionId, status: res.status });
 
-      let result;
-      if (res.status === 202) {
-        const payload = await res.json().catch(() => ({}));
-        const meta = streamMetaRef.current.get(sessionId);
-        if (!meta || meta.streamToken !== streamToken) return;
-        meta.runId = String(payload.run_id || requestedRunId || '').trim();
-        if (!meta.runId) throw new Error('Queued stream response did not include run_id');
-        meta.runStatus = String(payload.status || 'queued');
-        meta.queue = payload.queue || null;
-        meta.progressPhase = 'queued';
-        streamMetaRef.current.set(sessionId, meta);
-        updateStreamState(sessionId, {
-          isLoading: true,
-          status: streamStatusForAdmission(meta.runStatus),
-          runId: meta.runId,
-          queue: meta.queue,
-          startedAt: meta.startedAt,
-          progressPhase: meta.progressPhase,
-        });
-        result = await followRun(sessionId, streamToken, onEvent);
-      } else {
-        if (!res.ok || !res.body) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data?.error || `Stream failed with status ${res.status}`);
-        }
-        const meta = streamMetaRef.current.get(sessionId);
-        if (meta?.streamToken === streamToken) {
-          meta.progressPhase = 'running';
-          streamMetaRef.current.set(sessionId, meta);
-          updateStreamState(sessionId, {
-            isLoading: true,
-            status: 'streaming',
-            runId: meta.runId,
-            startedAt: meta.startedAt,
-            progressPhase: meta.progressPhase,
-          });
-        }
-        result = await processStream(sessionId, res.body.getReader(), streamToken, onEvent);
-        if (!result.terminalStatus && !result.superseded) {
-          result = await followRun(sessionId, streamToken, onEvent);
-        }
+      const payload = await res.json().catch(() => ({}));
+      if (res.status !== 200 && res.status !== 202) {
+        throw new Error(publicErrorMessage(
+          payload?.error ?? payload?.detail ?? payload,
+          `Run creation failed with status ${res.status}`,
+        ));
       }
+
+      const admission = normalizeRunAdmission(payload, sessionId);
+      const meta = streamMetaRef.current.get(sessionId);
+      if (!meta || meta.streamToken !== streamToken) return;
+      meta.runId = admission.runId;
+      meta.runStatus = admission.status;
+      meta.lastSeq = 0;
+      meta.queue = null;
+      meta.progressPhase = admission.status === 'queued' ? 'queued' : 'running';
+      streamMetaRef.current.set(sessionId, meta);
+      updateStreamState(sessionId, {
+        isLoading: true,
+        status: streamStatusForAdmission(admission.status),
+        runId: admission.runId,
+        turnId: admission.turnId,
+        cursor: 0,
+        queue: null,
+        startedAt: meta.startedAt,
+        progressPhase: meta.progressPhase,
+      });
+      onAdmission?.(admission);
+
+      const result = await followRun(sessionId, streamToken, onEvent);
 
       if (result.superseded) return;
       if (onComplete) onComplete(result.terminalStatus);
@@ -579,11 +501,12 @@ const useStreamManager = () => {
         if (!isSilentStreamAbort(controller) && onError) onError(error, true);
       } else {
         logger.error('Stream error', { sessionId, error: error.message });
+        updateStreamState(sessionId, { error: error.message });
         if (onError) onError(error, false);
       }
       cleanupStream(sessionId, streamToken, streamStatusForError(error));
     }
-  }, [cleanupStream, followRun, processStream, updateStreamState]);
+  }, [cleanupStream, followRun, updateStreamState]);
 
   /**
    * Reattach after a page reload or session switch. The durable session read
@@ -611,9 +534,7 @@ const useStreamManager = () => {
     abortStreamController(abortControllersRef.current.get(sessionId), { silent: true });
     abortControllersRef.current.set(sessionId, controller);
     streamMetaRef.current.set(sessionId, {
-      streamUrl: '/agentic/runs/stream',
       runId,
-      runType: null,
       runStatus: status === 'queued' ? 'queued' : 'running',
       streamToken,
       lastSeq: cursor,
@@ -689,7 +610,7 @@ const useStreamManager = () => {
       return true;
     }
 
-    if (meta?.runId && meta?.streamUrl) {
+    if (meta?.runId) {
       logger.info('Stopping pending run for session', { sessionId, runId: meta.runId });
       const result = await cancelBackendRun(sessionId, 'user_stop');
       if (!result.ok) {
@@ -739,7 +660,7 @@ const useStreamManager = () => {
 
   return {
     // Stream management
-    startStreamForSession,
+    startRunForSession,
     resumeRunForSession,
     stopStreamForSession,
     getStreamState,

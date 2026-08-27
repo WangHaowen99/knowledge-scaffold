@@ -1,222 +1,293 @@
-"""Regression tests for ACP protocol adapter behavior."""
+"""ACP protocol regressions for canonical Run identity and one-run HITL."""
 
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from llm import LLMPurpose
-from api.protocols.acp import server as acp_server
 import utils.lang as lang_module
-from api.protocols.acp.models import RunStatus
-from api.protocols.acp.server import (
-    _build_await_response,
-    _claim_acp_run,
-    _map_orch_event_to_acp_sse,
-    _merge_terminal_answer,
+from agent.runtime.contracts import (
+    PublicEvent,
+    RunSnapshot,
+    RunStatus as CanonicalRunStatus,
+    RuntimeInvocationContext,
 )
-from agent.core.orchestrator import _resolve_run_id
-from persistence.run_store import RunStore
-from persistence.run_store import RunStatus as StoreRunStatus
+from api.auth.auth import AuthUser
+from api.protocols.acp import server as acp_server
+from api.protocols.acp.models import RunStatus
+from api.testing import TestApplication
+from persistence.execution_store import ExecutionStore
 from utils.lang import _detect_language_via_llm, detect_language, translate_text
 
 
-def test_acp_stream_does_not_emit_answer_for_token_delta():
-    event = {
-        "event": "agent.v2",
-        "data": {
-            "type": "token.delta",
-            "payload": {"channel": "content", "text": "hello"},
-        },
+class _InlinePool:
+    async def run(self, function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+
+class _Manager:
+    def __init__(self):
+        self.snapshots = {}
+        self.contexts = []
+
+    @asynccontextmanager
+    async def session_guard(self, _scope, _session_id):
+        yield
+
+    async def assert_session_available(self, _scope, _session_id):
+        return None
+
+    async def create_run(self, context, scope, *, session_guarded=False):
+        assert session_guarded is True
+        snapshot = RunSnapshot(
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            status=CanonicalRunStatus.QUEUED,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            last_seq=0,
+            scope=scope,
+            context=context,
+        )
+        self.contexts.append(context)
+        self.snapshots[context.run_id] = snapshot
+        return snapshot, True
+
+    async def get_run(self, run_id, scope):
+        snapshot = self.snapshots.get(run_id)
+        return snapshot if snapshot is not None and scope.owns(snapshot) else None
+
+
+def _request(manager):
+    app = TestApplication()
+    app.state.runtime_container = SimpleNamespace(
+        manager=manager,
+        short_io=_InlinePool(),
+        event_hub=SimpleNamespace(),
+    )
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/acp/runs",
+        "raw_path": b"/acp/runs",
+        "query_string": b"",
+        "headers": [],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "app": app,
+        "state": {},
     }
+    from starlette.requests import Request
 
-    mapped = list(_map_orch_event_to_acp_sse(event, "run_1", {}, []))
-
-    assert mapped == [
-        ("message_delta", {"type": "message_delta", "text": "hello", "run_id": "run_1"}),
-    ]
+    return Request(scope)
 
 
-def test_acp_suppressed_execute_script_does_not_emit_started_or_finished_events():
-    tool_map = {}
-    started = {
-        "event": "agent.v2",
-        "data": {
-            "type": "tool.started",
-            "payload": {
-                "tool_call_id": "tc_1",
-                "tool_name": "execute_script",
-                "input": {"operation_key": "故障历史"},
+def test_acp_server_has_no_private_registry_or_flask_blueprint():
+    assert not hasattr(acp_server, "_ACP_RUN_REGISTRY")
+    assert not hasattr(acp_server, "acp_bp")
+    assert acp_server.acp_router.prefix == "/acp"
+
+
+def test_acp_forwards_explicit_deterministic_operation_and_arguments(
+    tmp_path,
+    monkeypatch,
+):
+    async def scenario():
+        manager = _Manager()
+        request = _request(manager)
+        store = ExecutionStore(str(tmp_path / "executions"))
+
+        async def stores(_request_value, username, workspace_id):
+            assert username == "operator_a"
+            assert workspace_id == "workspace_demo"
+            return SimpleNamespace(), store
+
+        monkeypatch.setattr(acp_server, "_stores", stores)
+        created = await acp_server._create_from_payload(
+            request,
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "parts": [{"type": "text", "content": "synthetic request"}],
+                    }
+                ],
+                "context": {"session_id": "session_explicit_operation"},
+                "arguments": {"code": "CODE-42"},
+                "requested_operation_key": "operation_demo",
             },
-        },
-    }
-    finished = {
-        "event": "agent.v2",
-        "data": {
-            "type": "tool.finished",
-            "payload": {
-                "tool_call_id": "tc_1",
-                "tool_name": "execute_script",
-                "status": "completed",
-                "output_preview": "故障历史结果",
-            },
-        },
-    }
+            AuthUser(username="operator_a", role="user"),
+            "workspace_demo",
+        )
 
-    assert list(_map_orch_event_to_acp_sse(started, "run_1", tool_map, ["故障历史"])) == []
-    assert list(_map_orch_event_to_acp_sse(finished, "run_1", tool_map, ["故障历史"])) == []
+        assert not isinstance(created, JSONResponse)
+        assert manager.contexts[-1].arguments == {"code": "CODE-42"}
+        assert (
+            manager.contexts[-1].requested_operation_key
+            == "operation_demo"
+        )
+
+    from fastapi.responses import JSONResponse
+
+    asyncio.run(scenario())
 
 
-def test_acp_completed_run_cannot_be_claimed_for_execution():
-    entry = {"status": RunStatus.COMPLETED}
+def test_acp_public_event_keeps_external_id_as_metadata_only():
+    event = PublicEvent(
+        event_id="event_demo",
+        seq=1,
+        run_id="agentic-canonical-demo",
+        session_id="session_demo",
+        turn_id=1,
+        event_type="turn.finished",
+        status="completed",
+        source={"component": "synthetic"},
+        payload={"status": "completed", "content": "synthetic answer"},
+        created_at="2026-01-01T00:00:01Z",
+    )
 
-    ok, detail, status_code = _claim_acp_run(entry, allowed_statuses={RunStatus.PENDING})
+    mapped = list(acp_server._map_public_event(event, "external_run_demo"))
 
-    assert ok is False
-    assert detail == "Run is already completed"
-    assert status_code == 409
-    assert entry["status"] == RunStatus.COMPLETED
-
-
-def test_acp_pending_run_is_claimed_for_execution():
-    entry = {"status": RunStatus.PENDING}
-
-    ok, detail, status_code = _claim_acp_run(entry, allowed_statuses={RunStatus.PENDING})
-
-    assert ok is True
-    assert detail is None
-    assert status_code is None
-    assert entry["status"] == RunStatus.RUNNING
-
-
-def test_acp_build_await_response_preserves_prompt_and_interaction_id():
-    awaiting = _build_await_response(
+    assert mapped[-1] == (
+        "run.completed",
         {
-            "question": "请选择处理方式",
-            "tool_call_id": "interaction_1",
-            "options": [{"id": "a", "label": "方案A", "value": "A"}],
-            "interaction": {"id": "interaction_1"},
+            "type": "run.completed",
+            "run_id": "external_run_demo",
+            "canonical_run_id": "agentic-canonical-demo",
+        },
+    )
+
+
+def test_acp_interaction_option_maps_to_canonical_value():
+    interaction_id, value, option_id = acp_server._interaction_response_values(
+        {"await_id": "interaction_demo", "option_id": "option_a"},
+        {
+            "id": "interaction_demo",
+            "type": "single_choice",
+            "options": [
+                {"id": "option_a", "label": "Option A", "value": "value_a"}
+            ],
+        },
+        "Option A",
+    )
+
+    assert interaction_id == "interaction_demo"
+    assert option_id == "option_a"
+    assert value == "value_a"
+
+
+def test_acp_await_projection_preserves_prompt_and_interaction_id():
+    awaiting = acp_server._build_await_response(
+        {
+            "question": "Choose a synthetic option",
+            "tool_call_id": "interaction_demo",
+            "options": [{"id": "option_a", "value": "value_a"}],
         }
     )
 
-    assert awaiting is not None
-    assert awaiting["await_id"] == "interaction_1"
-    assert awaiting["message"]["parts"][0]["content"] == "请选择处理方式"
-    assert awaiting["options"] == [{"id": "a", "label": "方案A", "value": "A"}]
+    assert awaiting["await_id"] == "interaction_demo"
+    assert awaiting["message"]["parts"][0]["content"] == "Choose a synthetic option"
 
 
-def test_acp_persist_new_pending_run_keeps_store_status_pending(monkeypatch):
-    run_store = RunStore()
-    monkeypatch.setattr(
-        acp_server,
-        "_orchestrator",
-        SimpleNamespace(run_store=run_store),
-    )
-
-    acp_server._persist_to_runstore(
-        "run_pending",
-        {
-            "status": RunStatus.PENDING,
-            "workspace_id": "demo",
-            "session_id": "sess_1",
-            "user_query": "hello",
-            "user_context": {},
-            "lang": None,
-            "user_id": None,
-            "messages": [],
-            "error": None,
-        },
-    )
-
-    stored = run_store.get_run("run_pending")
-    assert stored is not None
-    assert stored.status == StoreRunStatus.PENDING
-    assert stored.metadata["source"] == "acp"
-    assert stored.metadata["acp_status"] == "pending"
-
-
-def test_run_store_preserves_existing_acp_metadata_when_orchestrator_reuses_run_id():
-    run_store = RunStore()
-    run_store.create_run(
-        run_id="run_acp_existing",
-        user_request="original",
-        metadata={
-            "source": "acp",
-            "acp_workspace_id": "demo",
-            "acp_session_id": "sess_1",
-        },
-    )
-    run_store.update_status("run_acp_existing", StoreRunStatus.PENDING)
-
-    run_store.create_run(
-        run_id="run_acp_existing",
-        user_request="execute request",
-        metadata={
-            "session_id": "sess_1",
-            "workspace_id": "demo",
-            "model_profile_id": "default",
-        },
-    )
-
-    stored = run_store.get_run("run_acp_existing")
-    assert stored is not None
-    assert stored.user_request == "execute request"
-    assert stored.status == StoreRunStatus.RUNNING
-    assert stored.metadata["source"] == "acp"
-    assert stored.metadata["acp_workspace_id"] == "demo"
-    assert stored.metadata["model_profile_id"] == "default"
-
-
-def test_acp_claim_rejects_second_claim_after_first_claim():
-    entry = {"status": RunStatus.PENDING}
-
-    first_ok, _, _ = _claim_acp_run(entry, allowed_statuses={RunStatus.PENDING})
-    second_ok, second_detail, second_status = _claim_acp_run(
-        entry,
-        allowed_statuses={RunStatus.PENDING},
-    )
-
-    assert first_ok is True
-    assert second_ok is False
-    assert second_detail == "Run is already running"
-    assert second_status == 409
-
-
-def test_acp_requested_run_id_can_reuse_existing_acp_run():
-    run_store = RunStore()
-    run_store.create_run(
-        run_id="run_acp_existing",
-        user_request="original",
-        metadata={"source": "acp"},
-    )
-
-    assert (
-        _resolve_run_id(
-            "run_acp_existing",
-            run_store,
-            allow_existing_acp_run=True,
+def test_acp_hitl_answer_allocates_a_new_canonical_run(tmp_path):
+    async def scenario():
+        manager = _Manager()
+        request = _request(manager)
+        store = ExecutionStore(str(tmp_path / "executions"))
+        user = AuthUser(username="operator_a", role="user")
+        first = await acp_server._admit_run(
+            request,
+            user=user,
+            workspace_id="workspace_demo",
+            execution_store=store,
+            external_run_id="external_run_demo",
+            session_id="session_demo",
+            query="synthetic question",
+            context_values={},
+            lang=None,
         )
-        == "run_acp_existing"
+        interaction = {
+            "id": "interaction_demo",
+            "type": "single_choice",
+            "prompt": "Choose a synthetic option",
+            "options": [{"id": "option_a", "value": "value_a"}],
+        }
+        store.await_turn(
+            "session_demo",
+            first.turn_id,
+            final_output={"type": "user_interaction", "interaction": interaction},
+        )
+        second = await acp_server._admit_run(
+            request,
+            user=user,
+            workspace_id="workspace_demo",
+            execution_store=store,
+            external_run_id="external_run_demo",
+            session_id="session_demo",
+            query="Choose option A",
+            context_values={},
+            lang=None,
+            interaction_response={
+                "interaction_id": "interaction_demo",
+                "type": "single_choice",
+                "option_id": "option_a",
+                "value": "value_a",
+            },
+            parent_run_id=first.run_id,
+        )
+        return store, first, second, manager
+
+    store, first, second, manager = asyncio.run(scenario())
+
+    assert first.run_id.startswith("agentic-")
+    assert second.run_id.startswith("agentic-")
+    assert second.run_id != first.run_id
+    assert manager.contexts[0].run_id == first.run_id
+    assert manager.contexts[1].run_id == second.run_id
+    _session_id, latest = store.find_turn_by_protocol_id(
+        "acp", "external_run_demo"
+    )
+    assert latest["run_id"] == second.run_id
+    history = store.get_session_history("session_demo")
+    assert history["turns"][0]["status"] == "awaiting_input"
+    assert history["turns"][0]["run_id"] == first.run_id
+
+
+def test_acp_response_exposes_external_id_and_canonical_metadata():
+    context = RuntimeInvocationContext(
+        run_id="agentic-canonical-demo",
+        session_id="session_demo",
+        turn_id=1,
+        workspace_id="workspace_demo",
+        username="operator_a",
+        query="synthetic question",
+    )
+    snapshot = RunSnapshot(
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=1,
+        status=CanonicalRunStatus.RUNNING,
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:01Z",
+        last_seq=1,
+        scope=acp_server._scope(AuthUser("operator_a", "user"), "workspace_demo"),
+        context=context,
     )
 
-
-def test_non_acp_entrypoint_does_not_reuse_existing_acp_run_id():
-    run_store = RunStore()
-    run_store.create_run(
-        run_id="run_acp_existing",
-        user_request="original",
-        metadata={"source": "acp"},
+    response = acp_server._response_from_snapshot(
+        snapshot,
+        external_run_id="external_run_demo",
     )
 
-    assert _resolve_run_id("run_acp_existing", run_store) != "run_acp_existing"
-
-
-def test_non_acp_requested_run_id_still_avoids_existing_run_collision():
-    run_store = RunStore()
-    run_store.create_run(
-        run_id="run_existing",
-        user_request="original",
-        metadata={"source": "agentic"},
-    )
-
-    assert _resolve_run_id("run_existing", run_store) != "run_existing"
+    assert response.run_id == "external_run_demo"
+    assert response.status is RunStatus.RUNNING
+    assert response.metadata["canonical_run_id"] == "agentic-canonical-demo"
 
 
 def test_ascii_non_english_language_is_not_forced_to_english():
@@ -243,7 +314,6 @@ def test_language_llm_detection_uses_task_llm_router(monkeypatch):
     monkeypatch.setattr(lang_module, "get_llm_router", lambda: _Router(), raising=False)
 
     assert _detect_language_via_llm("texto mezclado con technical terms") == "es"
-    assert calls
     assert calls[0]["purpose"] == LLMPurpose.TASK
     assert calls[0]["stream"] is False
     assert calls[0]["enable_reasoning"] is False
@@ -261,37 +331,7 @@ def test_language_translation_uses_task_llm_router(monkeypatch):
     monkeypatch.setattr(lang_module, "get_llm_router", lambda: _Router(), raising=False)
 
     assert translate_text("需要翻译", "en", source_lang="zh") == "translated"
-    assert calls
     assert calls[0]["purpose"] == LLMPurpose.TASK
     assert calls[0]["stream"] is False
     assert calls[0]["enable_reasoning"] is False
     assert calls[0]["request_label"] == "language_translate"
-
-
-def test_acp_stream_emits_answer_for_structured_success_output():
-    event = {
-        "event": "agent.v2",
-        "data": {
-            "type": "turn.finished",
-            "payload": {
-                "status": "success",
-                "final_output": {"type": "report", "text": "Structured final answer"},
-            },
-        },
-    }
-
-    mapped = list(_map_orch_event_to_acp_sse(event, "run_1", {}, []))
-
-    assert mapped == [
-        ("answer", {"type": "answer", "text": "Structured final answer", "run_id": "run_1"}),
-    ]
-
-
-def test_merge_terminal_answer_preserves_streamed_text_when_final_output_is_empty():
-    assert _merge_terminal_answer("streamed answer", None) == "streamed answer"
-    assert _merge_terminal_answer("streamed answer", "") == "streamed answer"
-    assert _merge_terminal_answer("streamed answer", {"type": "report", "text": ""}) == "streamed answer"
-
-
-def test_merge_terminal_answer_prefers_non_empty_terminal_text():
-    assert _merge_terminal_answer("streamed answer", {"type": "report", "text": "final answer"}) == "final answer"

@@ -38,6 +38,10 @@ test('profile refs accept scoped objects, scoped strings, and legacy global ids'
   assert.equal(encodeProfileRef({ scope: 'workspace', id: 'private' }), 'workspace:private');
 });
 
+test('new profile drafts default max tokens to 32768', () => {
+  assert.equal(createProfileDraft().max_tokens, 32768);
+});
+
 test('draft and payload never reuse or emit a public secret placeholder', () => {
   const draft = createProfileDraft(profile('fast', { has_api_key: true, api_key: 'server-should-not-appear' }));
   assert.equal(draft.api_key, '');

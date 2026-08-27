@@ -15,6 +15,7 @@ without requiring a live LLM:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from types import SimpleNamespace
 
@@ -354,7 +355,13 @@ class TestFactoryAgentCapabilityValidation:
         }
 
         with pytest.raises(ValueError, match="conversation history"):
-            engine.run(state, caller="subagent", system_prompt="stage-b-test")
+            asyncio.run(
+                engine.arun(
+                    state,
+                    caller="subagent",
+                    system_prompt="stage-b-test",
+                )
+            )
 
         assert create_calls == []
 
@@ -384,7 +391,13 @@ class TestFactoryAgentCapabilityValidation:
         }
 
         with pytest.raises(ValueError, match="interaction_response"):
-            engine.run(state, caller="subagent", system_prompt="stage-b-test")
+            asyncio.run(
+                engine.arun(
+                    state,
+                    caller="subagent",
+                    system_prompt="stage-b-test",
+                )
+            )
 
         assert create_calls == []
 

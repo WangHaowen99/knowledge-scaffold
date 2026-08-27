@@ -9,8 +9,6 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from concurrent.futures import Future
-from contextvars import copy_context
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
@@ -20,9 +18,9 @@ from ...exceptions import (
     WorkflowCancelledError,
 )
 from integration.observability import AgentRuntimeTrace, RuntimeStatus
-from integration.observability.stack_profiler import profile_current_thread
+from ...runtime.async_utils import call_async_or_thread
 from ...tools.base import ToolBatchResult, ToolInvocation
-from ...tools.executor import execute_tool_batch
+from ...tools.executor import aexecute_tool_batch
 from utils.json_utils import _loads_json_object_loose
 from ..shared.state_updates import apply_tool_batch_result_to_state
 from .common import (
@@ -241,7 +239,7 @@ class CurrentRuntimeToolAdapter:
             raise ValueError("tool_name is required")
         self.state = state
         self.context_factory = context_factory
-        self.tool_batch_executor = tool_batch_executor or execute_tool_batch
+        self.tool_batch_executor = tool_batch_executor or aexecute_tool_batch
         self.iteration_event_callback = iteration_event_callback
         self.tool_batch_started_callback = tool_batch_started_callback
         self.tool_batch_failed_callback = tool_batch_failed_callback
@@ -253,7 +251,7 @@ class CurrentRuntimeToolAdapter:
         self._invocation_index = 0
         self._invocation_index_lock = threading.Lock()
         self._serial_execution_lock = (
-            threading.Lock()
+            asyncio.Lock()
             if not _is_tool_concurrency_safe(self.tool_name)
             else None
         )
@@ -301,7 +299,7 @@ class CurrentRuntimeToolAdapter:
                 },
             }
             append_assistant_tool_call_to_state(self.state, assistant_tool_call)
-            self._emit_state_snapshot()
+            await self._emit_state_snapshot()
             if self._serial_execution_lock is not None and not lock_held:
                 await _acquire_thread_lock_async(self._serial_execution_lock)
                 try:
@@ -346,7 +344,7 @@ class CurrentRuntimeToolAdapter:
                 )
             else:
                 runtime_trace.tool_batch_started(iteration=iteration, batch_index=batch_index)
-            batch_result = await _run_sync_in_tool_thread(
+            batch_result = await _invoke_tool_batch_executor(
                 self.tool_batch_executor,
                 [tool_call],
                 context,
@@ -361,7 +359,7 @@ class CurrentRuntimeToolAdapter:
             )
         except (WorkflowCancelledError, asyncio.CancelledError):
             self._skip_failure_guard_invocation(call_index)
-            self._rollback_cancelled_tool_call(tool_call.id)
+            await self._rollback_cancelled_tool_call(tool_call.id)
             if self.tool_batch_failed_callback is not None:
                 self.tool_batch_failed_callback(
                     context,
@@ -377,7 +375,7 @@ class CurrentRuntimeToolAdapter:
                 )
             raise
         except AgentLoopStalledError as exc:
-            self._emit_state_snapshot()
+            await self._emit_state_snapshot()
             if callable(self.terminal_error_callback):
                 self.terminal_error_callback(exc)
             if self.tool_batch_failed_callback is not None:
@@ -410,7 +408,7 @@ class CurrentRuntimeToolAdapter:
                     batch_index=batch_index,
                 )
             raise
-        self._emit_state_snapshot()
+        await self._emit_state_snapshot()
         finished_at = time.perf_counter()
         elapsed_ms = int((finished_at - started_at) * 1000)
         terminal = bool(getattr(batch_result, "terminal", False))
@@ -449,16 +447,25 @@ class CurrentRuntimeToolAdapter:
             self._invocation_index += 1
             return self._invocation_index
 
-    def _emit_state_snapshot(self) -> None:
+    async def _emit_state_snapshot(self) -> None:
         if not callable(self.state_snapshot_callback):
             return
         with JIUWEN_STATE_MESSAGES_LOCK:
             snapshot = deepcopy(self.state)
-        self.state_snapshot_callback(snapshot)
+        await call_async_or_thread(
+            self.state_snapshot_callback,
+            snapshot,
+            run_id=str(self.state.get("run_id") or "").strip() or None,
+            task_name="jiuwen-state-snapshot",
+            offload_kind="short",
+        )
 
-    def _rollback_cancelled_tool_call(self, tool_call_id: Optional[str]) -> None:
+    async def _rollback_cancelled_tool_call(
+        self,
+        tool_call_id: Optional[str],
+    ) -> None:
         if remove_assistant_tool_call_from_state(self.state, tool_call_id):
-            self._emit_state_snapshot()
+            await self._emit_state_snapshot()
 
     def _register_failure_guard_invocation(self, call_index: int) -> None:
         register_invocation = getattr(self.failure_guard, "register_invocation", None)
@@ -601,49 +608,24 @@ def _terminal_tool_content(state: Mapping[str, Any], batch_result: Any) -> str:
     return str(final_output or "")
 
 
-async def _acquire_thread_lock_async(lock: threading.Lock) -> None:
-    while True:
-        if lock.acquire(blocking=False):
-            return
-        await asyncio.sleep(0.001)
+async def _acquire_thread_lock_async(lock: asyncio.Lock) -> None:
+    """Compatibility boundary for cancellable serial tool admission."""
+    await lock.acquire()
 
 
-async def _run_sync_in_tool_thread(
+async def _invoke_tool_batch_executor(
     func: Any,
     *args: Any,
 ) -> Any:
-    future: Future[Any] = Future()
-    context = copy_context()
-    run_id = _run_id_from_tool_thread_args(args)
-
-    def runner() -> None:
-        try:
-            with profile_current_thread(run_id):
-                result = context.run(func, *args)
-        except BaseException as exc:
-            future.set_exception(exc)
-        else:
-            future.set_result(result)
-
-    thread = threading.Thread(target=runner, name="jiuwen-tool", daemon=True)
-    thread.start()
-    try:
-        while not future.done():
-            await asyncio.sleep(0.001)
-    except asyncio.CancelledError:
-        # Python cannot stop a running synchronous thread.  Keep the Jiuwen
-        # task alive until the daemon worker has exited so cancellation never
-        # returns while that tool can still mutate external state.
-        while not future.done():
-            try:
-                await asyncio.sleep(0.001)
-            except asyncio.CancelledError:
-                continue
-        raise
-    return future.result()
+    return await call_async_or_thread(
+        func,
+        *args,
+        run_id=_run_id_from_tool_executor_args(args),
+        task_name="jiuwen-tool-batch",
+    )
 
 
-def _run_id_from_tool_thread_args(args: tuple[Any, ...]) -> Optional[str]:
+def _run_id_from_tool_executor_args(args: tuple[Any, ...]) -> Optional[str]:
     for arg in args:
         run_id = str(getattr(arg, "run_id", "") or "").strip()
         if run_id:
@@ -717,7 +699,7 @@ def register_current_runtime_tools(
             tool_name=tool_info["name"],
             state=state,
             context_factory=context_factory,
-            tool_batch_executor=tool_batch_executor or execute_tool_batch,
+            tool_batch_executor=tool_batch_executor or aexecute_tool_batch,
             iteration_event_callback=iteration_event_callback,
             tool_batch_started_callback=tool_batch_started_callback,
             tool_batch_failed_callback=tool_batch_failed_callback,
@@ -795,6 +777,7 @@ def get_jiuwen_tool_infos(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     include_interaction: bool = True,
+    include_solver: bool = True,
     selected_ontology_id: Optional[str] = None,
     selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -816,7 +799,10 @@ def get_jiuwen_tool_infos(
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
+            include_solver=include_solver,
             workspace_id=workspace_id,
+            selected_ontology_id=selected_ontology_id,
+            selected_ontology_version=selected_ontology_version,
         )
     ]
 

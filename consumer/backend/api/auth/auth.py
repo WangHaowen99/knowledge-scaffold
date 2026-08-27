@@ -10,13 +10,17 @@ import os
 import secrets
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Protocol
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional, Protocol
 
-from flask import current_app, g, jsonify, request
+from fastapi import Request as StarletteRequest
+from agent.runtime.offload import OffloadPoolClosed, OffloadPoolSaturated
+from api.exceptions import APIError
+
 
 @dataclass(frozen=True)
 class AuthUser:
@@ -41,6 +45,12 @@ class LoginResult:
     access_token: str
     refresh_token: Optional[str] = None
     expires_in: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class AuthFailure:
+    status_code: int
+    content: Dict[str, Any]
 
 
 class PasswordPolicyError(ValueError):
@@ -464,45 +474,122 @@ def _b64url_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + padding)
 
 
-def get_auth_manager() -> Optional[AuthBackend]:
-    return current_app.config.get("AUTH_MANAGER")
+_current_user: ContextVar[Optional[AuthUser]] = ContextVar(
+    "consumer_current_user",
+    default=None,
+)
+
+
+def get_auth_manager(request: StarletteRequest) -> Optional[AuthBackend]:
+    services = getattr(request.app.state, "services", {})
+    return services.get("AUTH_MANAGER")
 
 
 def get_current_user() -> Optional[AuthUser]:
-    return getattr(g, "current_user", None)
+    return _current_user.get()
 
 
-def require_auth(roles: Optional[Iterable[str]] = None):
+@contextmanager
+def current_user_scope(user: Optional[AuthUser]):
+    """Bind an authenticated principal to the current request/task scope."""
+    token = _current_user.set(user)
+    try:
+        yield user
+    finally:
+        _current_user.reset(token)
+
+
+def _authorization_error(status_code: int, message: str, *, code: str = "") -> AuthFailure:
+    content = {"error": message}
+    if code:
+        content["code"] = code
+    return AuthFailure(status_code=status_code, content=content)
+
+
+def _authorize_request(
+    request: StarletteRequest,
+    *,
+    roles: Optional[set[str]] = None,
+) -> tuple[Optional[AuthUser], Optional[AuthFailure]]:
+    auth_manager = get_auth_manager(request)
+    if not auth_manager:
+        return None, _authorization_error(500, "Auth not configured")
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None, _authorization_error(401, "Unauthorized")
+
+    token = auth_header.split(" ", 1)[1].strip()
+    user = auth_manager.verify_token(token)
+    if not user:
+        return None, _authorization_error(401, "Unauthorized")
+
+    if roles and user.role not in roles:
+        return None, _authorization_error(403, "Forbidden")
+
+    return user, None
+
+
+def authenticated_user_dependency(
+    roles: Optional[Iterable[str]] = None,
+) -> Callable[[StarletteRequest], AsyncIterator[AuthUser]]:
+    """Build a native FastAPI dependency that scopes the authenticated user."""
     roles_set = set(roles) if roles else None
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            if request.method == "OPTIONS":
-                return "", 204
 
-            auth_manager = get_auth_manager()
-            if not auth_manager:
-                return jsonify({"error": "Auth not configured"}), 500
+    async def dependency(request: StarletteRequest):
+        user = await authenticate_user(request, roles=roles_set)
+        token = _current_user.set(user)
+        try:
+            yield user
+        finally:
+            _current_user.reset(token)
 
-            auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
-                return jsonify({"error": "Unauthorized"}), 401
-
-            token = auth_header.split(" ", 1)[1].strip()
-            user = auth_manager.verify_token(token)
-            if not user:
-                return jsonify({"error": "Unauthorized"}), 401
-
-            if roles_set and user.role not in roles_set:
-                return jsonify({"error": "Forbidden"}), 403
-
-            g.current_user = user
-            return fn(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
+    return dependency
 
 
-def require_role(role: str):
-    return require_auth(roles=[role])
+async def authenticate_user(
+    request: StarletteRequest,
+    *,
+    roles: Optional[Iterable[str]] = None,
+) -> AuthUser:
+    """Authenticate one native ASGI request without consuming its body."""
+    runtime = getattr(request.app.state, "runtime_container", None)
+    app_type = type(request.app)
+    is_isolated_test = (
+        app_type.__module__ == "api.testing"
+        and app_type.__name__ == "TestApplication"
+    )
+    if runtime is None and is_isolated_test:
+        runtime = getattr(request.app.state, "agent_execution_runtime", None)
+    pool = getattr(runtime, "external_io", None) if runtime is not None else None
+    if pool is None:
+        if not is_isolated_test:
+            raise APIError(503, {"error": "Runtime is not available"})
+        user, error = _authorize_request(
+            request,
+            roles=set(roles) if roles else None,
+        )
+    else:
+        try:
+            user, error = await pool.run(
+                _authorize_request,
+                request,
+                roles=set(roles) if roles else None,
+            )
+        except OffloadPoolSaturated as exc:
+            raise APIError(
+                429,
+                {"error": "Runtime offload capacity is exhausted"},
+            ) from exc
+        except OffloadPoolClosed as exc:
+            raise APIError(503, {"error": "Runtime is draining"}) from exc
+    if error is not None:
+        raise APIError(error.status_code, error.content)
+    if user is None:
+        failure = _authorization_error(401, "Unauthorized")
+        raise APIError(failure.status_code, failure.content)
+    return user
+
+
+require_authenticated_user = authenticated_user_dependency()
+require_admin_user = authenticated_user_dependency(["admin"])

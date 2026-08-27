@@ -1,14 +1,55 @@
 /**
- * Shared helpers for agent-stream.v2 event processing.
+ * Project canonical PublicEvent records into chat UI state.
  */
 
-export const AGENT_STREAM_PROTOCOL = 'agent-stream.v2';
-export const AGENT_STREAM_EVENT = 'agent.v2';
+import { isPublicEvent, publicEventTimestamp } from './publicEvent.js';
 
-const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled', 'awaiting_input']);
 const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set(['start', 'intermediate', 'final', 'error']);
 const WEB_SEARCH_EVENT_TYPES = new Set(['start', 'final', 'error']);
 const DATA_SEARCH_TOOL_NAMES = new Set(['business_data_search']);
+const SOLVER_EVENT_TYPES = new Set([
+  'solver.input.awaiting_confirmation',
+  'solver.progress',
+  'solver.verification.completed',
+  'solver.verification.rejected',
+  'solver.result.authoritative',
+]);
+const SOLVER_PUBLIC_FIELDS = new Set([
+  'run_id', 'job_id', 'attempt_id', 'event_seq', 'phase', 'status', 'message',
+  'elapsed_ms', 'percent', 'authoritative', 'feasibility', 'optimality',
+  'proof_kind', 'summary', 'result_artifact_ref', 'verification_evidence_ref',
+  'candidate_results_artifact_ref', 'candidate_results_artifact_digest',
+  'knowledge_revision_id', 'fact_snapshot_digest', 'problem_digest', 'code',
+  'retryable', 'missing', 'questions', 'tool_call_id', 'tool_name',
+]);
+
+export const publicErrorMessage = (value, fallback = '') => {
+  const visited = new Set();
+  const extract = (candidate, depth = 0) => {
+    if (candidate == null || depth > 4) return '';
+    if (typeof candidate === 'string') return candidate.trim();
+    if (typeof candidate === 'number') return String(candidate);
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        const message = extract(item, depth + 1);
+        if (message) return message;
+      }
+      return '';
+    }
+    if (typeof candidate !== 'object' || visited.has(candidate)) return '';
+    visited.add(candidate);
+    for (const key of ['message', 'detail', 'error', 'reason', 'description']) {
+      const message = extract(candidate[key], depth + 1);
+      if (message) return message;
+    }
+    return extract(candidate.error_code ?? candidate.code, depth + 1);
+  };
+  return extract(value) || (typeof fallback === 'string' ? fallback : '');
+};
+
+const hasPublicErrorValue = (value) => (
+  value != null && (typeof value !== 'string' || Boolean(value.trim()))
+);
 
 const TOOL_STATUS_ICON_MAP = {
   completed: 'completed',
@@ -43,18 +84,29 @@ const normalizeSpanId = (value) => (
   typeof value === 'string' ? value.trim() : ''
 );
 
+const toolNameFromPayload = (payload = {}) => (
+  normalizeToolName(payload?.tool_name) || normalizeToolName(payload?.name)
+);
+
 const extractToolQuery = (meta = {}) => String(
   meta?.input?.query
+  ?? meta?.input_preview?.query
   ?? meta?.tool_input?.query
   ?? meta?.tool_args?.query
   ?? meta?.query
   ?? ''
 ).trim();
 
+const withPublicToolInput = (payload = {}) => (
+  payload?.input == null && payload?.input_preview != null
+    ? { ...payload, input: payload.input_preview }
+    : payload
+);
+
 const resolveToolLocator = (payload = {}) => {
   const spanId = normalizeSpanId(payload?.span_id);
   const toolCallId = normalizeToolCallId(payload?.tool_call_id);
-  const toolName = normalizeToolName(payload?.tool_name);
+  const toolName = toolNameFromPayload(payload);
   const query = extractToolQuery(payload);
 
   return {
@@ -87,7 +139,7 @@ const segmentMatchesToolLocator = (segment, locator = {}) => {
     return segmentToolCallId === locator.toolCallId;
   }
 
-  const segmentToolName = normalizeToolName(segmentMeta?.tool_name);
+  const segmentToolName = toolNameFromPayload(segmentMeta);
   if (locator.isOntology && locator.query) {
     if (!DATA_SEARCH_TOOL_NAMES.has(segmentToolName)) return false;
     return extractToolQuery(segmentMeta) === locator.query;
@@ -132,19 +184,61 @@ const mergeToolMeta = (baseMeta = {}, incomingMeta = {}) => {
   return merged;
 };
 
+const solverValueIsSafe = (value, depth = 0) => {
+  if (depth > 6) return null;
+  if (value == null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 100).map((item) => solverValueIsSafe(item, depth + 1));
+  }
+  if (typeof value !== 'object') return null;
+  const safe = {};
+  Object.entries(value).forEach(([key, item]) => {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (/(token|secret|password|credential|endpoint|internalpath|problemir)/.test(normalized)) return;
+    if (normalized === 'factsnapshot' || normalized === 'factsnapshotpayload') return;
+    safe[key] = solverValueIsSafe(item, depth + 1);
+  });
+  return safe;
+};
+
+const projectSolverEvent = (type, payload = {}) => {
+  const projected = { type };
+  Object.entries(payload || {}).forEach(([key, value]) => {
+    if (SOLVER_PUBLIC_FIELDS.has(key)) projected[key] = solverValueIsSafe(value);
+  });
+  return projected;
+};
+
+const mergeSolverEventMeta = (baseMeta = {}, event = {}) => {
+  const existing = Array.isArray(baseMeta?.solver_events) ? baseMeta.solver_events : [];
+  const eventSeq = Number(event?.event_seq);
+  const isReplay = Number.isFinite(eventSeq)
+    && existing.some((item) => Number(item?.event_seq) === eventSeq && item?.job_id === event?.job_id);
+  const solverEvents = isReplay ? existing : [...existing, event].sort((left, right) => {
+    const leftSeq = Number(left?.event_seq);
+    const rightSeq = Number(right?.event_seq);
+    if (Number.isFinite(leftSeq) && Number.isFinite(rightSeq)) return leftSeq - rightSeq;
+    return 0;
+  });
+  const merged = {
+    ...mergeToolMeta(baseMeta, event),
+    solver_events: solverEvents,
+  };
+  if (event.type === 'solver.result.authoritative' && event.authoritative === true) {
+    merged.solver_result = event;
+  }
+  if (event.type === 'solver.verification.rejected') {
+    merged.solver_rejection = event;
+  }
+  return merged;
+};
+
 const closeOpenNonToolSegment = (segments = []) => {
   if (!Array.isArray(segments) || segments.length === 0) return Array.isArray(segments) ? segments : [];
   const last = segments[segments.length - 1];
   if (!last || last.finished || last.type === 'tool') return segments;
   return closeOpenSegment(segments);
 };
-
-export const isAgentV2Envelope = (payload) => (
-  payload
-  && typeof payload === 'object'
-  && payload.protocol === AGENT_STREAM_PROTOCOL
-  && typeof payload.type === 'string'
-);
 
 export const closeOpenSegment = (segments = []) => {
   if (!Array.isArray(segments) || segments.length === 0) return Array.isArray(segments) ? segments : [];
@@ -324,23 +418,45 @@ const iterationParentKeyFromPayload = (payload = {}) => {
   return `iteration:main:${Math.floor(iteration)}`;
 };
 
-const extractTurnFinishedOutput = (payload = {}) => {
-  const statusRaw = typeof payload.status === 'string' ? payload.status.toLowerCase() : 'success';
-  const status = TERMINAL_STATUSES.has(statusRaw) ? statusRaw : 'success';
+const extractTurnFinishedOutput = (payload = {}, publicStatus = 'completed') => {
+  const status = publicStatus === 'completed'
+    ? 'success'
+    : (publicStatus === 'failed' ? 'error' : publicStatus);
 
-  const result = payload.final_output;
+  const result = payload.final_output
+    ?? payload.structured_content
+    ?? payload.result
+    ?? payload.content;
   let content = '';
   let options = null;
   let messageType = 'text';
   let interaction = null;
+  let artifacts = [];
+  const errorCode = typeof payload?.error === 'object' && payload.error
+    ? String(payload.error.error_code ?? payload.error.code ?? '').trim()
+    : '';
 
   if (typeof result === 'string') {
     content = result;
   } else if (result && typeof result === 'object') {
     content = result.text || result.formatted_result || '';
+    if (!content && result.structured_result && typeof result.structured_result === 'object') {
+      const structured = result.structured_result;
+      content = structured.text || structured.formatted_result || structured.message || '';
+      if (!content) {
+        try {
+          content = JSON.stringify(structured, null, 2);
+        } catch {
+          content = '';
+        }
+      }
+    }
     options = Array.isArray(result.options) ? result.options : null;
     messageType = typeof result.type === 'string' ? result.type : 'text';
     interaction = result.interaction && typeof result.interaction === 'object' ? result.interaction : null;
+    artifacts = Array.isArray(result.artifacts)
+      ? result.artifacts.filter((item) => item && typeof item === 'object' && item.output_ref)
+      : [];
   }
 
   return {
@@ -349,7 +465,11 @@ const extractTurnFinishedOutput = (payload = {}) => {
     options,
     messageType,
     interaction,
-    error: payload.error || null,
+    artifacts,
+    error: hasPublicErrorValue(payload.error)
+      ? publicErrorMessage(payload.error, '运行失败')
+      : null,
+    errorCode,
     cancelReason: payload.cancel_reason || null,
   };
 };
@@ -383,8 +503,98 @@ const shouldAppendFinalContent = (segments = [], finalContent = '') => {
   return trailingContent !== normalized && !trailingContent.endsWith(normalized);
 };
 
-const extractBusinessDataSearchProgressEvent = (payload = {}, envelope = {}) => {
-  const toolName = normalizeToolName(payload?.tool_name);
+const finalizeTurnState = (next, publicStatus, payload, eventTs) => {
+  const terminal = extractTurnFinishedOutput(payload, publicStatus);
+  next.streamSegments = closeUnfinishedSegmentsForTerminalTurn(
+    next.streamSegments,
+    terminal.status,
+    eventTs,
+  );
+
+  if (shouldAppendFinalContent(next.streamSegments, terminal.content || '')) {
+    const finalIteration = Array.isArray(next.iterationMetrics)
+      ? next.iterationMetrics[next.iterationMetrics.length - 1]
+      : null;
+    next.streamSegments.push({
+      type: 'content',
+      state: 'final',
+      text: terminal.content,
+      node: 'final',
+      meta: {},
+      finished: true,
+      parentKey: iterationParentKeyFromPayload(finalIteration) || undefined,
+    });
+  }
+  if (terminal.artifacts.length > 0) {
+    next.streamSegments.push({
+      type: 'artifacts',
+      state: 'final',
+      text: '',
+      node: 'final',
+      meta: { artifacts: terminal.artifacts },
+      finished: true,
+    });
+  }
+
+  if (terminal.status === 'success') {
+    next.status = 'finished';
+  } else if (terminal.status === 'awaiting_input') {
+    next.status = 'awaiting';
+  } else if (terminal.status === 'cancelled') {
+    next.status = 'aborted';
+    next.error = true;
+  } else {
+    next.status = 'error';
+    next.error = true;
+  }
+
+  next.isLoading = false;
+  next.endTs = eventTs;
+  next.currentSegmentType = null;
+
+  if (terminal.content && !next.content) next.content = terminal.content;
+  if (terminal.options) next.options = terminal.options;
+  if (terminal.interaction) next.interaction = terminal.interaction;
+  if (terminal.messageType) next.messageType = terminal.messageType;
+  if (terminal.error) {
+    next.meta = { ...(next.meta || {}), error: terminal.error };
+  }
+  if (terminal.errorCode) {
+    next.meta = { ...(next.meta || {}), error_code: terminal.errorCode };
+  }
+  if (terminal.cancelReason) {
+    next.meta = { ...(next.meta || {}), cancel_reason: terminal.cancelReason };
+  }
+
+  return next;
+};
+
+export const applyLocalRunTermination = (
+  current,
+  {
+    status,
+    error = '',
+    cancelReason = '',
+    timestamp = Date.now(),
+  } = {},
+) => {
+  const publicStatus = status === 'cancelled' ? 'cancelled' : 'failed';
+  const eventTs = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+  const next = {
+    ...current,
+    streamSegments: Array.isArray(current?.streamSegments)
+      ? current.streamSegments.slice()
+      : [],
+  };
+  return finalizeTurnState(next, publicStatus, {
+    status: publicStatus,
+    ...(error ? { error } : {}),
+    ...(cancelReason ? { cancel_reason: cancelReason } : {}),
+  }, eventTs);
+};
+
+const extractBusinessDataSearchProgressEvent = (payload = {}, event = {}) => {
+  const toolName = toolNameFromPayload(payload);
   if (!DATA_SEARCH_TOOL_NAMES.has(toolName)) return null;
 
   const rawEvent = payload?.progress?.business_data_search_event;
@@ -397,8 +607,8 @@ const extractBusinessDataSearchProgressEvent = (payload = {}, envelope = {}) => 
 
   const content = rawEvent?.content == null ? '' : String(rawEvent.content).trim();
   if (!content) return null;
-  const rawTs = Number(envelope?.ts);
-  const rawSeq = Number(envelope?.seq);
+  const rawTs = publicEventTimestamp(event);
+  const rawSeq = Number(event?.seq);
 
   const stage = typeof rawEvent?.stage === 'string' ? rawEvent.stage.trim() : '';
   const bindingKey = typeof rawEvent?.binding_key === 'string' ? rawEvent.binding_key.trim() : '';
@@ -434,8 +644,8 @@ const appendBusinessDataSearchEventToMeta = (meta = {}, dbEvent = null) => {
   };
 };
 
-const extractWebSearchProgressEvent = (payload = {}, envelope = {}) => {
-  const toolName = normalizeToolName(payload?.tool_name);
+const extractWebSearchProgressEvent = (payload = {}, event = {}) => {
+  const toolName = toolNameFromPayload(payload);
   if (toolName !== 'web_search') return null;
 
   const rawEvent = payload?.progress?.web_search_event;
@@ -447,8 +657,8 @@ const extractWebSearchProgressEvent = (payload = {}, envelope = {}) => {
   if (!WEB_SEARCH_EVENT_TYPES.has(eventType)) return null;
 
   const content = rawEvent?.content == null ? '' : String(rawEvent.content);
-  const rawTs = Number(envelope?.ts);
-  const rawSeq = Number(envelope?.seq);
+  const rawTs = publicEventTimestamp(event);
+  const rawSeq = Number(event?.seq);
 
   return {
     type: eventType,
@@ -857,6 +1067,16 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
     };
   }
   if (type === 'tool.finished') {
+    let legacyOutput = '';
+    if (!payload?.output_preview && payload?.output != null) {
+      try {
+        legacyOutput = typeof payload.output === 'string'
+          ? payload.output
+          : JSON.stringify(payload.output);
+      } catch {
+        legacyOutput = '';
+      }
+    }
     return {
       kind: 'tool',
       toolCallId,
@@ -865,7 +1085,7 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
       spanId: payload?.span_id || '',
       parentSpanId: payload?.parent_span_id || '',
       finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
-      output: payload?.output_preview || '',
+      output: payload?.output_preview || legacyOutput,
       outputRef: payload?.output_ref || '',
       outputSize: payload?.output_size ?? null,
       outputTruncated: Boolean(payload?.output_truncated),
@@ -888,8 +1108,8 @@ const routeEventToSubagentChild = (segments, subagentId, event, meta = {}) => {
   );
 };
 
-export const applyAgentV2Event = (current, envelope) => {
-  if (!isAgentV2Envelope(envelope)) return current;
+export const applyPublicEvent = (current, publicEvent) => {
+  if (!isPublicEvent(publicEvent)) return current;
 
   const next = {
     ...current,
@@ -898,27 +1118,31 @@ export const applyAgentV2Event = (current, envelope) => {
       : [],
   };
 
-  const type = envelope.type;
+  const type = publicEvent.event_type;
   const payload = {
-    ...(envelope.payload || {}),
-    ...(envelope.trace_id ? { trace_id: envelope.trace_id } : {}),
-    ...(envelope.span_id ? { span_id: envelope.span_id } : {}),
-    ...(envelope.parent_span_id ? { parent_span_id: envelope.parent_span_id } : {}),
+    ...(publicEvent.payload || {}),
+    ...(publicEvent.trace_id ? { trace_id: publicEvent.trace_id } : {}),
+    ...(publicEvent.span_id ? { span_id: publicEvent.span_id } : {}),
+    ...(publicEvent.parent_span_id ? { parent_span_id: publicEvent.parent_span_id } : {}),
   };
-  const sourceNode = envelope?.source?.node || 'agent';
-  // Optional trace-tree linkage (backend 2.1/2.2). Absent on plain events;
-  // segments without spanKey fall back to a flat list in TracePanel.
-  const envelopeSpanKey = typeof envelope?.span_key === 'string' ? envelope.span_key : '';
-  const envelopeParentKey = typeof envelope?.parent_key === 'string' ? envelope.parent_key : '';
-  const envelopeSourceOrder = envelope?.seq != null && Number.isFinite(Number(envelope.seq))
-    ? Number(envelope.seq)
+  const eventTs = publicEventTimestamp(publicEvent);
+  const sourceNode = publicEvent?.source?.node || 'agent';
+  // Trace linkage is optional compatibility metadata on historical events.
+  const eventSpanKey = typeof publicEvent?.source?.span_key === 'string'
+    ? publicEvent.source.span_key
+    : '';
+  const eventParentKey = typeof publicEvent?.source?.parent_key === 'string'
+    ? publicEvent.source.parent_key
+    : '';
+  const eventSourceOrder = publicEvent?.seq != null && Number.isFinite(Number(publicEvent.seq))
+    ? Number(publicEvent.seq)
     : null;
   const subagentIdInPayload = typeof payload?.subagent_id === 'string' && payload.subagent_id
     ? payload.subagent_id
     : null;
 
   if (subagentIdInPayload && (type === 'tool.started' || type === 'tool.progress' || type === 'tool.finished')) {
-    const event = buildToolEventFromPayload(type, payload, envelope.ts || Date.now(), envelopeSourceOrder);
+    const event = buildToolEventFromPayload(type, payload, eventTs, eventSourceOrder);
     if (event) {
       const routed = routeEventToSubagentChild(
         next.streamSegments,
@@ -929,7 +1153,7 @@ export const applyAgentV2Event = (current, envelope) => {
           taskId: payload.task_id,
           task: payload.task,
           taskIndex: payload.task_index,
-          ts: envelope.ts || Date.now(),
+          ts: eventTs,
         },
       );
       if (routed) {
@@ -949,8 +1173,8 @@ export const applyAgentV2Event = (current, envelope) => {
       traceId: payload.trace_id || '',
       spanId: payload.span_id || '',
       parentSpanId: payload.parent_span_id || '',
-      sourceOrder: envelopeSourceOrder,
-      ts: envelope.ts || Date.now(),
+      sourceOrder: eventSourceOrder,
+      ts: eventTs,
     };
     const routed = routeEventToSubagentChild(
       next.streamSegments,
@@ -961,7 +1185,7 @@ export const applyAgentV2Event = (current, envelope) => {
         taskId: payload.task_id,
         task: payload.task,
         taskIndex: payload.task_index,
-        ts: envelope.ts || Date.now(),
+        ts: eventTs,
       },
     );
     if (routed) {
@@ -1000,8 +1224,8 @@ export const applyAgentV2Event = (current, envelope) => {
       taskOrder: [],
       pendingTasks,
       finished: false,
-      sourceOrder: envelopeSourceOrder,
-      startTs: envelope.ts || Date.now(),
+      sourceOrder: eventSourceOrder,
+      startTs: eventTs,
       traceId: payload.trace_id || '',
       spanId: payload.span_id || '',
       parentSpanId: payload.parent_span_id || '',
@@ -1042,11 +1266,11 @@ export const applyAgentV2Event = (current, envelope) => {
         ...closeSubagentGroupForTerminalTurn(
           group,
           status === 'cancelled' ? 'cancelled' : (status === 'error' ? 'error' : 'success'),
-          envelope.ts || Date.now(),
+          eventTs,
         ),
         status,
         finished: true,
-        endTs: envelope.ts || Date.now(),
+        endTs: eventTs,
         meta: { ...(group?.meta || {}), ...payload },
       }),
     );
@@ -1072,7 +1296,7 @@ export const applyAgentV2Event = (current, envelope) => {
           taskId,
           task: taskText,
           taskIndex: payload.task_index,
-          ts: envelope.ts || Date.now(),
+          ts: eventTs,
         });
         nextGroup.children[subagentIdInPayload] = {
           ...cloneChild(child),
@@ -1081,7 +1305,7 @@ export const applyAgentV2Event = (current, envelope) => {
           taskIndex: normalizeTaskIndex(payload.task_index, child?.taskIndex ?? pending?.taskIndex ?? 0),
           task: taskText || child?.task || '',
           status: payload.status || 'running',
-          startTs: child?.startTs || envelope.ts || Date.now(),
+          startTs: child?.startTs || eventTs,
           traceId: payload.trace_id || child?.traceId || '',
           spanId: payload.span_id || child?.spanId || '',
           parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
@@ -1108,8 +1332,8 @@ export const applyAgentV2Event = (current, envelope) => {
       spanId: payload.span_id || '',
       parentSpanId: payload.parent_span_id || '',
       meta: payload,
-      sourceOrder: envelopeSourceOrder,
-      ts: envelope.ts || Date.now(),
+      sourceOrder: eventSourceOrder,
+      ts: eventTs,
     };
     const routed = routeEventToSubagentChild(
       next.streamSegments,
@@ -1120,7 +1344,7 @@ export const applyAgentV2Event = (current, envelope) => {
         taskId: payload.task_id,
         task: payload.task,
         taskIndex: payload.task_index,
-        ts: envelope.ts || Date.now(),
+        ts: eventTs,
       },
     );
     if (routed) {
@@ -1141,7 +1365,7 @@ export const applyAgentV2Event = (current, envelope) => {
         taskId: payload.task_id,
         task: payload.task,
         taskIndex: payload.task_index,
-        ts: envelope.ts || Date.now(),
+        ts: eventTs,
       },
       (child) => ({
         ...cloneChild(child),
@@ -1159,6 +1383,9 @@ export const applyAgentV2Event = (current, envelope) => {
 
   if (type === 'subagent.finished' && subagentIdInPayload) {
     const finalStatus = normalizeToolStatus(payload.status) || payload.status || 'completed';
+    const subagentError = hasPublicErrorValue(payload.error)
+      ? publicErrorMessage(payload.error, '子 Agent 执行失败')
+      : null;
     const updatedSegments = updateSubagentChildInSegments(
       next.streamSegments,
       subagentIdInPayload,
@@ -1167,15 +1394,15 @@ export const applyAgentV2Event = (current, envelope) => {
         taskId: payload.task_id,
         task: payload.task,
         taskIndex: payload.task_index,
-        ts: envelope.ts || Date.now(),
+        ts: eventTs,
       },
       (child) => ({
         ...cloneChild(child),
         status: finalStatus,
-        endTs: envelope.ts || Date.now(),
-        events: closeSubagentEventsForTerminal(child?.events, finalStatus, envelope.ts || Date.now()),
+        endTs: eventTs,
+        events: closeSubagentEventsForTerminal(child?.events, finalStatus, eventTs),
         result: payload.result || null,
-        error: payload.error || null,
+        error: subagentError,
         traceId: payload.trace_id || child?.traceId || '',
         spanId: payload.span_id || child?.spanId || '',
         parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
@@ -1192,7 +1419,7 @@ export const applyAgentV2Event = (current, envelope) => {
     next.status = 'running';
     next.isLoading = true;
     next.meta = payload;
-    next.startTs = envelope.ts || Date.now();
+    next.startTs = eventTs;
     next.currentSegmentType = null;
     next.terminalToolBatchReached = false;
     return next;
@@ -1200,13 +1427,15 @@ export const applyAgentV2Event = (current, envelope) => {
 
   if (
     next.terminalToolBatchReached
-    && (type === 'token.delta' || type === 'reasoning.summary')
+    && (type === 'token.delta' || type === 'reasoning.delta' || type === 'reasoning.summary')
   ) {
     return next;
   }
 
-  if (type === 'token.delta') {
-    const channel = payload.channel === 'reasoning' ? 'reasoning' : 'content';
+  if (type === 'token.delta' || type === 'reasoning.delta') {
+    const channel = type === 'reasoning.delta' || payload.channel === 'reasoning'
+      ? 'reasoning'
+      : 'content';
     const text = payload.text == null ? '' : String(payload.text);
     next.streamSegments = appendInlineTextSegment(next.streamSegments, {
       type: channel,
@@ -1214,12 +1443,12 @@ export const applyAgentV2Event = (current, envelope) => {
       text,
       node: sourceNode,
       meta: payload,
-      ts: envelope.ts || Date.now(),
+      ts: eventTs,
       traceId: payload.trace_id || '',
       spanId: payload.span_id || '',
       parentSpanId: payload.parent_span_id || '',
-      spanKey: envelopeSpanKey,
-      parentKey: envelopeParentKey || iterationParentKeyFromPayload(payload),
+      spanKey: eventSpanKey,
+      parentKey: eventParentKey || iterationParentKeyFromPayload(payload),
     });
     if (channel === 'reasoning') {
       next.reasoning = `${next.reasoning || ''}${text}`;
@@ -1237,12 +1466,39 @@ export const applyAgentV2Event = (current, envelope) => {
     next.iterationMetrics = upsertIterationMetric(
       current?.iterationMetrics,
       payload,
-      envelope.ts || Date.now(),
+      eventTs,
     );
     if (payload.status === 'terminal_tool_batch') {
       next.terminalToolBatchReached = true;
     }
     next.currentSegmentType = null;
+    return next;
+  }
+
+  if (type === 'interaction.requested') {
+    const interactionId = String(payload.interaction_id || payload.id || '').trim();
+    if (!interactionId) return next;
+    const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+    next.interaction = {
+      id: interactionId,
+      type: payload.type || 'input',
+      prompt,
+      options: Array.isArray(payload.options) ? payload.options : [],
+    };
+    next.options = next.interaction.options;
+    next.messageType = 'user_interaction';
+    if (prompt && !next.content) next.content = prompt;
+    if (publicEvent.status === 'awaiting_input') {
+      next.streamSegments = closeUnfinishedSegmentsForTerminalTurn(
+        next.streamSegments,
+        'awaiting_input',
+        eventTs,
+      );
+      next.status = 'awaiting';
+      next.isLoading = false;
+      next.endTs = eventTs;
+      next.currentSegmentType = null;
+    }
     return next;
   }
 
@@ -1301,8 +1557,46 @@ export const applyAgentV2Event = (current, envelope) => {
     return next;
   }
 
+  if (SOLVER_EVENT_TYPES.has(type)) {
+    const event = projectSolverEvent(type, payload);
+    const locator = resolveToolLocator(event);
+    const targetIdx = findLastSegmentIndex(
+      next.streamSegments,
+      (segment) => segmentMatchesToolLocator(segment, locator),
+    );
+    if (targetIdx !== -1) {
+      const target = next.streamSegments[targetIdx];
+      next.streamSegments[targetIdx] = {
+        ...target,
+        text: event.message || target.text,
+        meta: mergeSolverEventMeta(target.meta, event),
+      };
+    } else if (hasToolLocator(locator)) {
+      next.streamSegments = closeOpenNonToolSegment(next.streamSegments);
+      next.streamSegments.push({
+        type: 'tool',
+        state: 'running',
+        text: event.message || '求解处理中',
+        node: sourceNode,
+        meta: mergeSolverEventMeta({}, event),
+        finished: false,
+        toolStatus: null,
+        startTs: eventTs,
+        endTs: null,
+        spanKey: eventSpanKey || undefined,
+        parentKey: eventParentKey || undefined,
+      });
+    }
+    next.status = 'running';
+    next.isLoading = true;
+    next.currentSegmentType = 'tool';
+    return next;
+  }
+
   if (type === 'tool.started') {
-    const locator = resolveToolLocator(payload);
+    const publicPayload = withPublicToolInput(payload);
+    const locator = resolveToolLocator(publicPayload);
+    const toolName = locator.toolName || 'unknown_tool';
     const targetIdx = hasToolLocator(locator)
       ? findLastSegmentIndex(
         next.streamSegments,
@@ -1315,35 +1609,35 @@ export const applyAgentV2Event = (current, envelope) => {
       next.streamSegments[targetIdx] = {
         ...target,
         state: 'running',
-        text: payload.message || target.text || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
+        text: publicPayload.message || target.text || `调用工具: ${toolName}`,
         node: sourceNode || target.node,
-        meta: mergeToolMeta(target.meta, payload),
+        meta: mergeToolMeta(target.meta, publicPayload),
         traceId: payload.trace_id || target.traceId,
         spanId: payload.span_id || target.spanId,
         parentSpanId: payload.parent_span_id || target.parentSpanId,
         finished: false,
-        startTs: target.startTs || envelope.ts || Date.now(),
+        startTs: target.startTs || eventTs,
         endTs: null,
-        spanKey: target.spanKey || envelopeSpanKey || undefined,
-        parentKey: target.parentKey || envelopeParentKey || undefined,
+        spanKey: target.spanKey || eventSpanKey || undefined,
+        parentKey: target.parentKey || eventParentKey || undefined,
       };
     } else {
       next.streamSegments = closeOpenNonToolSegment(next.streamSegments);
       next.streamSegments.push({
         type: 'tool',
         state: 'running',
-        text: payload.message || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
+        text: publicPayload.message || `调用工具: ${toolName}`,
         node: sourceNode,
-        meta: payload,
+        meta: publicPayload,
         traceId: payload.trace_id || '',
         spanId: payload.span_id || '',
         parentSpanId: payload.parent_span_id || '',
         finished: false,
         toolStatus: null,
-        startTs: envelope.ts || Date.now(),
+        startTs: eventTs,
         endTs: null,
-        spanKey: envelopeSpanKey || undefined,
-        parentKey: envelopeParentKey || undefined,
+        spanKey: eventSpanKey || undefined,
+        parentKey: eventParentKey || undefined,
       });
     }
     next.status = 'running';
@@ -1355,8 +1649,9 @@ export const applyAgentV2Event = (current, envelope) => {
   if (type === 'tool.progress') {
     const text = payload.message == null ? '' : String(payload.message);
     const locator = resolveToolLocator(payload);
-    const dbSearchEvent = extractBusinessDataSearchProgressEvent(payload, envelope);
-    const webSearchEvent = extractWebSearchProgressEvent(payload, envelope);
+    const toolName = locator.toolName || 'unknown_tool';
+    const dbSearchEvent = extractBusinessDataSearchProgressEvent(payload, publicEvent);
+    const webSearchEvent = extractWebSearchProgressEvent(payload, publicEvent);
     const targetOpenIdx = findLastSegmentIndex(
       next.streamSegments,
       (segment) => (
@@ -1389,9 +1684,9 @@ export const applyAgentV2Event = (current, envelope) => {
         spanId: payload.span_id || target.spanId,
         parentSpanId: payload.parent_span_id || target.parentSpanId,
         finished: targetOpenIdx !== -1 ? false : Boolean(target.finished),
-        startTs: target.startTs || envelope.ts || Date.now(),
-        spanKey: target.spanKey || envelopeSpanKey || undefined,
-        parentKey: target.parentKey || envelopeParentKey || undefined,
+        startTs: target.startTs || eventTs,
+        spanKey: target.spanKey || eventSpanKey || undefined,
+        parentKey: target.parentKey || eventParentKey || undefined,
       };
     } else if (dbSearchEvent || webSearchEvent || hasToolLocator(locator)) {
       next.streamSegments = closeOpenNonToolSegment(next.streamSegments);
@@ -1401,7 +1696,7 @@ export const applyAgentV2Event = (current, envelope) => {
         text: text
           || (dbSearchEvent ? `business_data_search ${dbSearchEvent.type}` : '')
           || (webSearchEvent ? `web_search ${webSearchEvent.type}` : '')
-          || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
+          || `调用工具: ${toolName}`,
         node: sourceNode,
         meta: appendWebSearchEventToMeta(
           appendBusinessDataSearchEventToMeta(mergeToolMeta({}, payload), dbSearchEvent),
@@ -1412,10 +1707,10 @@ export const applyAgentV2Event = (current, envelope) => {
         parentSpanId: payload.parent_span_id || '',
         finished: false,
         toolStatus: null,
-        startTs: envelope.ts || Date.now(),
+        startTs: eventTs,
         endTs: null,
-        spanKey: envelopeSpanKey || undefined,
-        parentKey: envelopeParentKey || undefined,
+        spanKey: eventSpanKey || undefined,
+        parentKey: eventParentKey || undefined,
       });
     } else {
       next.streamSegments = appendInlineTextSegment(next.streamSegments, {
@@ -1425,12 +1720,12 @@ export const applyAgentV2Event = (current, envelope) => {
         node: sourceNode,
         meta: payload,
         mergeKey: 'tool_call_id',
-        ts: envelope.ts || Date.now(),
+        ts: eventTs,
         traceId: payload.trace_id || '',
         spanId: payload.span_id || '',
         parentSpanId: payload.parent_span_id || '',
-        spanKey: envelopeSpanKey || undefined,
-        parentKey: envelopeParentKey || undefined,
+        spanKey: eventSpanKey || undefined,
+        parentKey: eventParentKey || undefined,
       });
     }
     next.status = 'running';
@@ -1441,8 +1736,15 @@ export const applyAgentV2Event = (current, envelope) => {
 
   if (type === 'tool.finished') {
     const locator = resolveToolLocator(payload);
+    const toolName = locator.toolName || 'unknown_tool';
     const hasLocator = hasToolLocator(locator);
     const toolStatus = normalizeToolStatus(payload.status);
+    const toolError = hasPublicErrorValue(payload.error)
+      ? publicErrorMessage(payload.error, '工具执行失败')
+      : '';
+    const publicPayload = toolError
+      ? { ...payload, error: toolError }
+      : payload;
     const targetIdx = findLastSegmentIndex(
       next.streamSegments,
       (segment) => (
@@ -1456,41 +1758,41 @@ export const applyAgentV2Event = (current, envelope) => {
       const target = next.streamSegments[targetIdx];
       next.streamSegments[targetIdx] = {
         ...target,
-        meta: mergeToolMeta(target.meta, payload),
+        meta: mergeToolMeta(target.meta, publicPayload),
         traceId: payload.trace_id || target.traceId,
         spanId: payload.span_id || target.spanId,
         parentSpanId: payload.parent_span_id || target.parentSpanId,
         state: toolStatus || 'completed',
-        text: target.text || payload.output_preview || '',
+        text: target.text || payload.output_preview || toolError,
         finished: true,
         toolStatus,
         startTs: target.startTs
           || (Number.isFinite(Number(payload.elapsed_ms))
-            ? (envelope.ts || Date.now()) - Number(payload.elapsed_ms)
-            : envelope.ts || Date.now()),
-        endTs: envelope.ts || Date.now(),
-        spanKey: target.spanKey || envelopeSpanKey || undefined,
-        parentKey: target.parentKey || envelopeParentKey || undefined,
+            ? eventTs - Number(payload.elapsed_ms)
+            : eventTs),
+        endTs: eventTs,
+        spanKey: target.spanKey || eventSpanKey || undefined,
+        parentKey: target.parentKey || eventParentKey || undefined,
       };
     } else {
       next.streamSegments = closeOpenSegment(next.streamSegments);
       next.streamSegments.push({
         type: 'tool',
         state: toolStatus || 'completed',
-        text: payload.output_preview || payload.error || `工具完成: ${payload.tool_name || 'unknown_tool'}`,
+        text: payload.output_preview || toolError || `工具完成: ${toolName}`,
         node: sourceNode,
-        meta: payload,
+        meta: publicPayload,
         traceId: payload.trace_id || '',
         spanId: payload.span_id || '',
         parentSpanId: payload.parent_span_id || '',
         finished: true,
         toolStatus,
         startTs: Number.isFinite(Number(payload.elapsed_ms))
-          ? (envelope.ts || Date.now()) - Number(payload.elapsed_ms)
-          : envelope.ts || Date.now(),
-        endTs: envelope.ts || Date.now(),
-        spanKey: envelopeSpanKey || undefined,
-        parentKey: envelopeParentKey || undefined,
+          ? eventTs - Number(payload.elapsed_ms)
+          : eventTs,
+        endTs: eventTs,
+        spanKey: eventSpanKey || undefined,
+        parentKey: eventParentKey || undefined,
       });
     }
 
@@ -1510,7 +1812,7 @@ export const applyAgentV2Event = (current, envelope) => {
       node: payload.agent_type || 'subagent',
       meta: payload,
       mergeKey: 'subagent_id',
-      ts: envelope.ts || Date.now(),
+      ts: eventTs,
       traceId: payload.trace_id || '',
       spanId: payload.span_id || '',
       parentSpanId: payload.parent_span_id || '',
@@ -1551,70 +1853,7 @@ export const applyAgentV2Event = (current, envelope) => {
   }
 
   if (type === 'turn.finished') {
-    const terminal = extractTurnFinishedOutput(payload);
-    next.streamSegments = closeUnfinishedSegmentsForTerminalTurn(
-      next.streamSegments,
-      terminal.status,
-      envelope.ts || Date.now(),
-    );
-
-    if (shouldAppendFinalContent(next.streamSegments, terminal.content || '')) {
-      const finalIteration = Array.isArray(next.iterationMetrics)
-        ? next.iterationMetrics[next.iterationMetrics.length - 1]
-        : null;
-      next.streamSegments.push({
-        type: 'content',
-        state: 'final',
-        text: terminal.content,
-        node: 'final',
-        meta: {},
-        finished: true,
-        parentKey: iterationParentKeyFromPayload(finalIteration) || undefined,
-      });
-    }
-
-    if (terminal.status === 'success') {
-      next.status = 'finished';
-    } else if (terminal.status === 'awaiting_input') {
-      next.status = 'awaiting';
-    } else if (terminal.status === 'cancelled') {
-      next.status = 'aborted';
-      next.error = true;
-    } else {
-      next.status = 'error';
-      next.error = true;
-    }
-
-    next.isLoading = false;
-    next.endTs = envelope.ts || Date.now();
-    next.currentSegmentType = null;
-
-    if (terminal.content && !next.content) {
-      next.content = terminal.content;
-    }
-    if (terminal.options) {
-      next.options = terminal.options;
-    }
-    if (terminal.interaction) {
-      next.interaction = terminal.interaction;
-    }
-    if (terminal.messageType) {
-      next.messageType = terminal.messageType;
-    }
-    if (terminal.error) {
-      next.meta = {
-        ...(next.meta || {}),
-        error: terminal.error,
-      };
-    }
-    if (terminal.cancelReason) {
-      next.meta = {
-        ...(next.meta || {}),
-        cancel_reason: terminal.cancelReason,
-      };
-    }
-
-    return next;
+    return finalizeTurnState(next, publicEvent.status, payload, eventTs);
   }
 
   return next;

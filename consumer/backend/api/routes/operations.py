@@ -24,9 +24,10 @@ import hashlib
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, jsonify, request
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
 from config import LimitsConfig
 from agent.evolution import (
@@ -36,13 +37,17 @@ from agent.evolution import (
     resolve_operation_md,
     staged_paths_for,
 )
-from api.auth.auth import get_current_user, require_auth
+from api.dependencies import (
+    require_admin_workspace_id,
+    require_workspace_id,
+    run_in_runtime_pool,
+)
+from api.request_parsing import read_optional_json_object
 from utils.logging import get_logger
-from workspace.workspaces import resolve_workspace_id
 
 logger = get_logger("routes.operations")
 
-operations_bp = Blueprint("operations", __name__, url_prefix="/agentic/operations")
+operations_router = APIRouter(prefix="/agentic/operations")
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +63,6 @@ def _proposal_to_dict(proposal) -> Dict[str, Any]:
     return proposal.to_dict()
 
 
-def _is_admin() -> bool:
-    user = get_current_user()
-    return bool(user and user.role == "admin")
-
-
 def _read_meta(meta_path: Path) -> Dict[str, Any]:
     if not meta_path.exists():
         return {}
@@ -72,16 +72,12 @@ def _read_meta(meta_path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _request_workspace_id() -> str:
-    return resolve_workspace_id(request)
-
-
 def _sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
-def _parse_statuses(default: set) -> set:
-    raw_filter = (request.args.get("status") or "").strip()
+def _parse_statuses(request: Request, default: set) -> set:
+    raw_filter = (request.query_params.get("status") or "").strip()
     if raw_filter.lower() == "all":
         return {"pending", "promoted", "rejected", "applied"}
     if raw_filter:
@@ -157,12 +153,13 @@ def _operation_summary(
 # ---------------------------------------------------------------------------
 
 
-@operations_bp.route("/proposals", methods=["GET"])
-@require_auth()
-def list_operation_proposals():
+@operations_router.get("/proposals")
+def list_operation_proposals(
+    request: Request,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Cross-operation index of aggregate snapshots for the active workspace."""
-    statuses = _parse_statuses({"pending", "promoted", "rejected"})
-    workspace_id = _request_workspace_id()
+    statuses = _parse_statuses(request, {"pending", "promoted", "rejected"})
     buf = get_proposal_buffer()
     items: List[Dict[str, Any]] = []
     aggregate_count = 0
@@ -187,25 +184,29 @@ def list_operation_proposals():
             )
         )
     items.sort(key=lambda item: item.get("last_seen") or 0, reverse=True)
-    return jsonify({
+    return {
         "count": len(items),
         "aggregate_count": aggregate_count,
         "items": items,
-    })
+    }
 
 
-@operations_bp.route("/proposals/export", methods=["GET"])
-@require_auth()
-def export_operation_proposals():
+@operations_router.get("/proposals/export")
+def export_operation_proposals(
+    request: Request,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Export operation-evolution proposals for the active workspace as JSON."""
-    statuses = _parse_statuses({"pending", "promoted", "rejected", "applied"})
+    statuses = _parse_statuses(
+        request,
+        {"pending", "promoted", "rejected", "applied"},
+    )
     try:
-        records_limit = int(request.args.get("records_limit") or 1000)
+        records_limit = int(request.query_params.get("records_limit") or 1000)
     except ValueError:
         records_limit = 1000
     records_limit = max(0, min(records_limit, 10000))
 
-    workspace_id = _request_workspace_id()
     buf = get_proposal_buffer()
     operations: List[Dict[str, Any]] = []
     aggregate_count = 0
@@ -248,7 +249,7 @@ def export_operation_proposals():
         })
 
     operations.sort(key=lambda item: item["summary"].get("last_seen") or 0, reverse=True)
-    return jsonify({
+    return {
         "schema": "operation-evolution-proposals.v1",
         "exported_at": time.time(),
         "workspace_id": workspace_id,
@@ -257,20 +258,23 @@ def export_operation_proposals():
         "aggregate_count": aggregate_count,
         "record_count": record_count,
         "operations": operations,
-    })
+    }
 
 
-@operations_bp.route("/<ontology_id>/<operation_key>/proposals", methods=["GET"])
-@require_auth()
-def list_proposals(ontology_id: str, operation_key: str):
+@operations_router.get("/{ontology_id}/{operation_key}/proposals")
+def list_proposals(
+    ontology_id: str,
+    operation_key: str,
+    request: Request,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """List aggregates for an operation. Filter via `?status=pending,promoted`.
 
     Default returns everything except `applied` (already merged) so the UI can
     focus on what the human still needs to act on.
     """
-    statuses = _parse_statuses({"pending", "promoted", "rejected"})
+    statuses = _parse_statuses(request, {"pending", "promoted", "rejected"})
     buf = get_proposal_buffer()
-    workspace_id = _request_workspace_id()
     aggs = buf.list_aggregates(
         ontology_id,
         operation_key,
@@ -282,10 +286,10 @@ def list_proposals(ontology_id: str, operation_key: str):
         "operation_key": operation_key,
         "proposals": [_aggregate_to_dict(a) for a in aggs],
     }
-    include_records = (request.args.get("include_records") or "").strip().lower()
+    include_records = (request.query_params.get("include_records") or "").strip().lower()
     if include_records in {"1", "true", "yes"}:
         try:
-            limit = int(request.args.get("records_limit") or 200)
+            limit = int(request.query_params.get("records_limit") or 200)
         except ValueError:
             limit = 200
         records = buf.list_proposal_records(
@@ -298,70 +302,99 @@ def list_proposals(ontology_id: str, operation_key: str):
         payload["proposal_records"] = [
             _proposal_to_dict(p) for p in records if p.fingerprint in wanted_fps
         ]
-    return jsonify(payload)
+    return payload
 
 
-@operations_bp.route(
-    "/<ontology_id>/<operation_key>/proposals/<fingerprint>/endorse",
-    methods=["POST"],
+@operations_router.post(
+    "/{ontology_id}/{operation_key}/proposals/{fingerprint}/endorse",
 )
-@require_auth()
-def endorse_proposal(ontology_id: str, operation_key: str, fingerprint: str):
+def endorse_proposal(
+    ontology_id: str,
+    operation_key: str,
+    fingerprint: str,
+    workspace_id: str = Depends(require_workspace_id),
+):
     buf = get_proposal_buffer()
-    buf.endorse(ontology_id, operation_key, fingerprint, workspace_id=_request_workspace_id())
-    return jsonify({"success": True})
+    buf.endorse(
+        ontology_id,
+        operation_key,
+        fingerprint,
+        workspace_id=workspace_id,
+    )
+    return {"success": True}
 
 
-@operations_bp.route(
-    "/<ontology_id>/<operation_key>/proposals/<fingerprint>/reject",
-    methods=["POST"],
+@operations_router.post(
+    "/{ontology_id}/{operation_key}/proposals/{fingerprint}/reject",
 )
-@require_auth()
-def reject_proposal(ontology_id: str, operation_key: str, fingerprint: str):
+def reject_proposal(
+    ontology_id: str,
+    operation_key: str,
+    fingerprint: str,
+    workspace_id: str = Depends(require_workspace_id),
+):
     buf = get_proposal_buffer()
-    buf.reject(ontology_id, operation_key, fingerprint, workspace_id=_request_workspace_id())
-    return jsonify({"success": True})
+    buf.reject(
+        ontology_id,
+        operation_key,
+        fingerprint,
+        workspace_id=workspace_id,
+    )
+    return {"success": True}
 
 
-@operations_bp.route(
-    "/<ontology_id>/<operation_key>/proposals/<fingerprint>",
-    methods=["PATCH"],
+@operations_router.patch(
+    "/{ontology_id}/{operation_key}/proposals/{fingerprint}",
 )
-@require_auth()
-def edit_proposal(ontology_id: str, operation_key: str, fingerprint: str):
-    data = request.get_json(silent=True) or {}
+async def edit_proposal(
+    ontology_id: str,
+    operation_key: str,
+    fingerprint: str,
+    request: Request,
+    workspace_id: str = Depends(require_workspace_id),
+):
+    data = await read_optional_json_object(request)
     new_content = str(data.get("content") or "").strip()
     if len(new_content) < 4:
-        return jsonify({"error": "content must be at least 4 chars"}), 400
+        return JSONResponse(
+            {"error": "content must be at least 4 chars"},
+            status_code=400,
+        )
     buf = get_proposal_buffer()
     try:
-        agg = buf.edit(
+        agg = await run_in_runtime_pool(
+            request,
+            "short_io",
+            buf.edit,
             ontology_id,
             operation_key,
             fingerprint,
             new_content,
-            workspace_id=_request_workspace_id(),
+            workspace_id=workspace_id,
         )
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return JSONResponse({"error": str(exc)}, status_code=400)
     if agg is None:
-        return jsonify({"error": "Proposal not found"}), 404
-    return jsonify({"success": True, "aggregate": _aggregate_to_dict(agg)})
+        return JSONResponse({"error": "Proposal not found"}, status_code=404)
+    return {"success": True, "aggregate": _aggregate_to_dict(agg)}
 
 
-@operations_bp.route("/<ontology_id>/<operation_key>/rescan", methods=["POST"])
-@require_auth()
-def rescan_operation(ontology_id: str, operation_key: str):
+@operations_router.post("/{ontology_id}/{operation_key}/rescan")
+def rescan_operation(
+    ontology_id: str,
+    operation_key: str,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Manual trigger for the patcher to re-evaluate this op now."""
     patcher = get_operation_patcher()
     if patcher is None:
-        return jsonify({"error": "Patcher not running"}), 503
+        return JSONResponse({"error": "Patcher not running"}, status_code=503)
     patcher.request_rescan(
         ontology_id,
         operation_key,
-        workspace_id=_request_workspace_id(),
+        workspace_id=workspace_id,
     )
-    return jsonify({"success": True, "queued": True})
+    return {"success": True, "queued": True}
 
 
 # ---------------------------------------------------------------------------
@@ -369,36 +402,42 @@ def rescan_operation(ontology_id: str, operation_key: str):
 # ---------------------------------------------------------------------------
 
 
-@operations_bp.route("/pending", methods=["GET"])
-@require_auth()
-def list_pending():
+@operations_router.get("/pending")
+def list_pending(
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Cross-op list of staged patches awaiting admin review. Drives the badge."""
-    items = list_pending_staged(workspace_id=_request_workspace_id())
-    return jsonify({"count": len(items), "items": items})
+    items = list_pending_staged(workspace_id=workspace_id)
+    return {"count": len(items), "items": items}
 
 
-@operations_bp.route("/<ontology_id>/<operation_key>/staged", methods=["GET"])
-@require_auth()
-def get_staged(ontology_id: str, operation_key: str):
+@operations_router.get("/{ontology_id}/{operation_key}/staged")
+def get_staged(
+    ontology_id: str,
+    operation_key: str,
+    workspace_id: str = Depends(require_workspace_id),
+):
     """Return original + staged content + metadata for the diff viewer."""
-    workspace_id = _request_workspace_id()
     paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
     if paths is None:
-        return jsonify({"error": "Operation .md not found"}), 404
+        return JSONResponse(
+            {"error": "Operation .md not found"},
+            status_code=404,
+        )
     staged_path, meta_path = paths
     if not staged_path.exists():
-        return jsonify({"error": "No staged patch"}), 404
+        return JSONResponse({"error": "No staged patch"}, status_code=404)
     op_path = resolve_operation_md(ontology_id, operation_key, workspace_id=workspace_id)
     original = op_path.read_text(encoding="utf-8") if op_path and op_path.exists() else ""
     staged = staged_path.read_text(encoding="utf-8")
     meta = _read_meta(meta_path)
-    return jsonify({
+    return {
         "ontology_id": ontology_id,
         "operation_key": operation_key,
         "original": original,
         "staged": staged,
         "meta": meta,
-    })
+    }
 
 
 def _archive_original(op_path: Path) -> Path:
@@ -411,21 +450,37 @@ def _archive_original(op_path: Path) -> Path:
     return target
 
 
-@operations_bp.route("/<ontology_id>/<operation_key>/staged/apply", methods=["POST"])
-@require_auth(roles=["admin"])
-def apply_staged(ontology_id: str, operation_key: str):
+@operations_router.post("/{ontology_id}/{operation_key}/staged/apply")
+def apply_staged(
+    ontology_id: str,
+    operation_key: str,
+    workspace_id: str = Depends(require_admin_workspace_id),
+):
     """Promote staged → live `.md`. Admin only. Archives previous `.md` and
     transitions the merged proposals to status=applied."""
-    workspace_id = _request_workspace_id()
     paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
     if paths is None:
-        return jsonify({"error": "Operation .md not found"}), 404
+        return JSONResponse(
+            {"error": "Operation .md not found"},
+            status_code=404,
+        )
     staged_path, meta_path = paths
     if not staged_path.exists():
-        return jsonify({"error": "No staged patch"}), 404
+        return JSONResponse({"error": "No staged patch"}, status_code=404)
     op_path = resolve_operation_md(ontology_id, operation_key, workspace_id=workspace_id)
     if op_path is None:
-        return jsonify({"error": "Operation .md missing"}), 404
+        return JSONResponse({"error": "Operation .md missing"}, status_code=404)
+    from ontology.operation_execution import is_deterministic_package_locked
+
+    if is_deterministic_package_locked(op_path.parent.parent):
+        return JSONResponse(
+            {
+                "error": "deterministic_operation_immutable",
+                "error_code": "deterministic_operation_immutable",
+                "message": "确定性 Operation 必须通过新 ontology version 发布",
+            },
+            status_code=409,
+        )
 
     meta = _read_meta(meta_path)
     fingerprints: List[str] = list(meta.get("fingerprints") or [])
@@ -435,22 +490,34 @@ def apply_staged(ontology_id: str, operation_key: str):
     try:
         current_content = op_path.read_text(encoding="utf-8")
         if expected_sha and _sha256_text(current_content) != expected_sha:
-            return jsonify({
-                "error": "Operation .md changed since staged patch was created",
-                "expected_original_sha": expected_sha,
-                "current_sha": _sha256_text(current_content),
-            }), 409
+            return JSONResponse(
+                {
+                    "error": "Operation .md changed since staged patch was created",
+                    "expected_original_sha": expected_sha,
+                    "current_sha": _sha256_text(current_content),
+                },
+                status_code=409,
+            )
         new_content = staged_path.read_text(encoding="utf-8")
         max_chars = LimitsConfig.from_env().operation_max_chars
         if len(new_content) > max_chars:
-            return jsonify({
-                "error": "单个逻辑长度超过上限: {} / {} 字符".format(len(new_content), max_chars)
-            }), 400
+            return JSONResponse(
+                {
+                    "error": "单个逻辑长度超过上限: {} / {} 字符".format(
+                        len(new_content),
+                        max_chars,
+                    )
+                },
+                status_code=400,
+            )
         archived_to = _archive_original(op_path)
         op_path.write_text(new_content, encoding="utf-8")
     except Exception as exc:
         logger.exception("apply_staged failed for %s/%s", ontology_id, operation_key)
-        return jsonify({"error": "Apply failed: {}".format(exc)}), 500
+        return JSONResponse(
+            {"error": "Apply failed: {}".format(exc)},
+            status_code=500,
+        )
 
     # Drop staged + meta only after successful write.
     try:
@@ -471,35 +538,30 @@ def apply_staged(ontology_id: str, operation_key: str):
         except Exception:
             logger.exception("apply_staged: archive_applied failed")
 
-    return jsonify({
+    return {
         "success": True,
         "applied": True,
         "archived_to": str(archived_to) if archived_to else None,
         "fingerprints_applied": fingerprints,
-    })
+    }
 
 
-@operations_bp.route("/<ontology_id>/<operation_key>/staged/reject", methods=["POST"])
-@require_auth(roles=["admin"])
-def reject_staged(ontology_id: str, operation_key: str):
-    """Drop the staged patch. Admin only.
-
-    Body: ``{"reject_proposals": bool}`` (default true).
-    - true  → mark each merged proposal status=rejected so the patcher won't
-              immediately re-stage it.
-    - false → revert to pending so the buffer can keep accumulating evidence.
-    """
-    workspace_id = _request_workspace_id()
+def _reject_staged(
+    *,
+    ontology_id: str,
+    operation_key: str,
+    workspace_id: str,
+    reject_proposals: bool,
+):
     paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
     if paths is None:
-        return jsonify({"error": "Operation .md not found"}), 404
+        return JSONResponse(
+            {"error": "Operation .md not found"},
+            status_code=404,
+        )
     staged_path, meta_path = paths
     if not staged_path.exists():
-        return jsonify({"error": "No staged patch"}), 404
-
-    body = request.get_json(silent=True) or {}
-    reject_proposals = bool(body.get("reject_proposals", True))
-
+        return JSONResponse({"error": "No staged patch"}, status_code=404)
     meta = _read_meta(meta_path)
     fingerprints: List[str] = list(meta.get("fingerprints") or [])
 
@@ -530,8 +592,28 @@ def reject_staged(ontology_id: str, operation_key: str):
             except Exception:
                 logger.warning("reject_staged: revert_promoted failed", exc_info=True)
 
-    return jsonify({
+    return {
         "success": True,
         "rejected": True,
         "fingerprints_rejected": fingerprints if reject_proposals else [],
-    })
+    }
+
+
+@operations_router.post("/{ontology_id}/{operation_key}/staged/reject")
+async def reject_staged(
+    ontology_id: str,
+    operation_key: str,
+    request: Request,
+    workspace_id: str = Depends(require_admin_workspace_id),
+):
+    """Drop the staged patch and optionally reject its merged proposals."""
+    body = await read_optional_json_object(request)
+    return await run_in_runtime_pool(
+        request,
+        "short_io",
+        _reject_staged,
+        ontology_id=ontology_id,
+        operation_key=operation_key,
+        workspace_id=workspace_id,
+        reject_proposals=bool(body.get("reject_proposals", True)),
+    )

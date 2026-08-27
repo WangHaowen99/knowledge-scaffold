@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createFauxCore, fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux';
 
-import { ModelContextLengthExceededError, runAgent } from '../src/workflow/agent.js';
+import { makeAgent, ModelContextLengthExceededError, runAgent } from '../src/workflow/agent.js';
 
 test('模型任务超过时限会中止并返回可识别的超时错误', async () => {
   let aborted = false;
@@ -21,6 +22,7 @@ test('模型任务超过时限会中止并返回可识别的超时错误', async
 
   assert.notEqual(outcome, 'hung');
   assert.match(String((outcome as Error)?.message ?? outcome), /模型任务.*超时/);
+  assert.equal((outcome as any)?.code, 'MODEL_REQUEST_TIMEOUT');
   assert.equal(aborted, true);
 });
 
@@ -41,14 +43,38 @@ test('模型流把供应商错误写入 agent state 时必须向调用方抛出'
     /429 insufficient_quota/,
   );
 });
+
+test('同一 Agent 后续成功时不会重新抛出历史供应商错误', async () => {
+  const core = createFauxCore({ provider: 'synthetic-error-history', models: [{ id: 'synthetic-error-history' }] });
+  core.setResponses([
+    fauxAssistantMessage('合成失败响应。', {
+      stopReason: 'error',
+      errorMessage: 'synthetic provider failure',
+    }),
+    fauxAssistantMessage('合成恢复响应。'),
+  ]);
+  const agent = makeAgent(
+    { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' },
+    '仅处理完全合成的测试输入。',
+    [],
+  );
+
+  await assert.rejects(runAgent(agent, '执行合成失败轮次。'), /synthetic provider failure/u);
+  await assert.doesNotReject(runAgent(agent, '执行合成恢复轮次。'));
+  assert.equal(core.state.callCount, 2);
+});
+
 test('模型上下文超限会归一化为可识别错误', async () => {
+  const state = {
+    model: { contextWindow: 1_000_000 },
+    messages: [] as unknown[],
+  };
   const agent = {
-    state: {
-      model: { contextWindow: 1_000_000 },
-      messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'context_length_exceeded', content: [] }],
-    },
+    state,
     subscribe: () => () => undefined,
-    prompt: async () => undefined,
+    prompt: async () => {
+      state.messages.push({ role: 'assistant', stopReason: 'error', errorMessage: 'context_length_exceeded', content: [] });
+    },
     waitForIdle: async () => undefined,
     abort: () => undefined,
   };

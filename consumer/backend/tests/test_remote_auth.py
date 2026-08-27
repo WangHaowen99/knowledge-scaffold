@@ -17,12 +17,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 from werkzeug.serving import make_server
 
-from api.auth.auth import AuthManager, PasswordPolicyError
+from auth_test_backend import AuthManager
+from api.auth.auth import PasswordPolicyError
 from api.auth.remote_auth import RemoteAuthBackend
 from api import workspace_acl_service
 from api.workspace_acl_service import WorkspaceIdentityNotFoundError
+from api.routes.auth import auth_router
+from api.testing import TestApplication
 
 # 测试专用例外：决策 D4 禁止 consumer 与 auth-server 之间任何生产代码 Python import
 # （唯一接口是 HTTP）。集成测试为了进程内起真实 server 而 import auth_server，
@@ -85,24 +89,14 @@ def backend(auth_server):
 
 def _build_consumer_app(auth_manager):
     """与 test_auth_contract.py 相同的装配打桩方式，只替换 auth_manager。"""
-    import app as app_module
-
-    runtime = {
-        "config": SimpleNamespace(),
-        "agent_config": SimpleNamespace(),
-        "llm_router": None,
-        "auth_manager": auth_manager,
-        "user_store_manager": SimpleNamespace(),
-    }
-    original_build_runtime = app_module.build_runtime_services
-    original_register_routes = app_module.register_routes
-    try:
-        app_module.build_runtime_services = lambda previous_llm_router=None: runtime
-        app_module.register_routes = lambda *args, **kwargs: None
-        app = app_module.create_app()
-    finally:
-        app_module.build_runtime_services = original_build_runtime
-        app_module.register_routes = original_register_routes
+    app = TestApplication()
+    app.state.services.update(
+        {
+            "APP_CONFIG": SimpleNamespace(auth_server_url=""),
+            "AUTH_MANAGER": auth_manager,
+        }
+    )
+    app.include_router(auth_router)
     return app
 
 
@@ -368,11 +362,11 @@ def test_auth_server_down_raises_unavailable(tmp_path):
 
 def test_login_and_refresh_routes_remote_mode(auth_server):
     backend = RemoteAuthBackend(auth_server.base_url, admin_token=ADMIN_TOKEN)
-    client = _build_consumer_app(backend).test_client()
+    client = TestClient(_build_consumer_app(backend))
 
     login = client.post("/auth/login", json={"username": "admin", "password": "TestBootstrap#2026"})
     assert login.status_code == 200
-    data = login.get_json()
+    data = login.json()
     # 冻结契约 {token, user} 之上的加法扩展
     assert set(data.keys()) == {"token", "user", "refresh_token", "expires_in"}
     assert data["user"] == {
@@ -385,11 +379,11 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     # 拿到的 access token 能直接访问受保护接口。
     me = client.get("/auth/me", headers={"Authorization": f"Bearer {data['token']}"})
     assert me.status_code == 200
-    assert me.get_json()["user"]["username"] == "admin"
+    assert me.json()["user"]["username"] == "admin"
 
     refreshed = client.post("/auth/refresh", json={"refresh_token": data["refresh_token"]})
     assert refreshed.status_code == 200
-    refreshed_data = refreshed.get_json()
+    refreshed_data = refreshed.json()
     assert set(refreshed_data.keys()) == {"token", "refresh_token", "expires_in"}
     me2 = client.get(
         "/auth/me", headers={"Authorization": f"Bearer {refreshed_data['token']}"}
@@ -400,12 +394,12 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
         "/auth/logout", json={"refresh_token": refreshed_data["refresh_token"]}
     )
     assert logout.status_code == 200
-    assert logout.get_json() == {"success": True}
+    assert logout.json() == {"success": True}
     revoked = client.post(
         "/auth/refresh", json={"refresh_token": refreshed_data["refresh_token"]}
     )
     assert revoked.status_code == 401
-    assert revoked.get_json() == {"error": "Unauthorized"}
+    assert revoked.json() == {"error": "Unauthorized"}
 
     missing_logout_token = client.post("/auth/logout", json={})
     assert missing_logout_token.status_code == 400
@@ -413,24 +407,24 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     # 上游拒绝（无效 refresh）→ 401，前端据此登出
     rejected = client.post("/auth/refresh", json={"refresh_token": "garbage"})
     assert rejected.status_code == 401
-    assert rejected.get_json() == {"error": "Unauthorized"}
+    assert rejected.json() == {"error": "Unauthorized"}
 
 
 def test_login_wrong_password_remote_mode_contract(auth_server):
     backend = RemoteAuthBackend(auth_server.base_url)
-    client = _build_consumer_app(backend).test_client()
+    client = TestClient(_build_consumer_app(backend))
     response = client.post("/auth/login", json={"username": "admin", "password": "nope"})
     assert response.status_code == 401
-    assert response.get_json() == {"error": "Invalid credentials"}
+    assert response.json() == {"error": "Invalid credentials"}
 
 
 def test_refresh_route_backend_without_refresh_returns_503(tmp_path):
     # 后端未实现 refresh_tokens（如 AuthManager 契约测试后端）时，/auth/refresh 返回 503
     backend_without_refresh = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    client = _build_consumer_app(backend_without_refresh).test_client()
+    client = TestClient(_build_consumer_app(backend_without_refresh))
     response = client.post("/auth/refresh", json={"refresh_token": "anything"})
     assert response.status_code == 503
-    assert response.get_json() == {"error": "当前认证模式不支持刷新"}
+    assert response.json() == {"error": "当前认证模式不支持刷新"}
 
 
 # ---------------------------------------------------------------- 装配
@@ -472,7 +466,8 @@ def test_create_app_requires_auth_server_url(tmp_path, monkeypatch):
     monkeypatch.delenv("AUTH_SERVER_URL", raising=False)
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
     with pytest.raises(RuntimeError, match="AUTH_SERVER_URL"):
-        app_module.create_app()
+        with TestClient(app_module.create_app()):
+            pass
 
 
 def test_remote_backend_requires_base_url():

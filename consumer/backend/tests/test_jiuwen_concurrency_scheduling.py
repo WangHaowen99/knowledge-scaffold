@@ -7,6 +7,8 @@ import time
 from collections import defaultdict
 from types import SimpleNamespace
 
+import pytest
+
 from agent.core.jiuwen.concurrency import (
     JiuwenConcurrencyAbilityManager,
     JiuwenToolConcurrencyPolicy,
@@ -21,13 +23,51 @@ from agent.core.jiuwen_engine import (
     _remember_jiuwen_terminal_tool_batch,
 )
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
+from agent.runtime.async_utils import (
+    clear_bounded_offload_pools,
+    configure_bounded_offload_pools,
+)
+from agent.runtime.offload import BoundedOffloadPool
 from agent.tools.base import ToolContext, ToolOutcome
-from agent.tools.executor import execute_tool_batch
+from agent.tools.executor import aexecute_tool_batch
 from agent.tools.registry import TOOL_SPECS
 from agent.tools.scheduling import (
     normalize_parallelism_limit,
     plan_barriered_tool_batches,
 )
+
+
+@pytest.fixture(autouse=True)
+def _lifespan_owned_offload_pools():
+    def new_pool(name):
+        return BoundedOffloadPool(
+            name=name,
+            max_workers=4,
+            max_pending=16,
+            capacity_wait_seconds=1.0,
+            operation_timeout_seconds=5.0,
+        )
+
+    pools = tuple(
+        new_pool(name)
+        for name in ("concurrency-short", "concurrency-external", "concurrency-tool")
+    )
+    configure_bounded_offload_pools(
+        short_io=pools[0],
+        external_io=pools[1],
+        tool_io=pools[2],
+    )
+    try:
+        yield
+    finally:
+        async def close_pools():
+            deadline = asyncio.get_running_loop().time() + 2.0
+            await asyncio.gather(
+                *(pool.close(deadline=deadline) for pool in pools)
+            )
+
+        clear_bounded_offload_pools()
+        asyncio.run(close_pools())
 
 
 def _tool_call(call_id, name, arguments=None):
@@ -348,7 +388,7 @@ def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interact
                 },
             }
 
-        def execute(
+        async def aexecute(
             self,
             *,
             args,
@@ -362,7 +402,7 @@ def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interact
                 active_tools += 1
                 max_active_tools = max(max_active_tools, active_tools)
                 execution_events.append((self.name, "start", tool_call_id))
-            time.sleep(0.02)
+            await asyncio.sleep(0.02)
             with execution_lock:
                 execution_events.append((self.name, "end", tool_call_id))
                 active_tools -= 1
@@ -436,7 +476,7 @@ def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interact
             tool_name=tool_name,
             state=state,
             context_factory=build_tool_context,
-            tool_batch_executor=execute_tool_batch,
+            tool_batch_executor=aexecute_tool_batch,
             terminal_tool_batch_callback=remember_terminal_tool_batch,
         )
         for tool_name in tool_names

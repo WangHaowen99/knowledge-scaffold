@@ -1,0 +1,8 @@
+{
+  "api_version": "ortools.solver.v1",
+  "job_id": "job_0123456789ABCDEF",
+  "request_id": "req_0123456789ABCDEFGHIJ",
+  "problem_type": "binary_ordered_route",
+  "problem_version": "1.0",
+  "status": "accepted"
+}

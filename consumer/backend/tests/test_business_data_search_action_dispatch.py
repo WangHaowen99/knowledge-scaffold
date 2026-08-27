@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -53,6 +54,10 @@ def _make_context():
     )
 
 
+def _execute(tool, **kwargs):
+    return asyncio.run(tool.aexecute(**kwargs))
+
+
 def _install_common_fakes(monkeypatch):
     monkeypatch.setattr(
         "agent.tools.business_data_search.get_ontology_manifest",
@@ -96,13 +101,13 @@ def _patch_value_lookup(monkeypatch, response_json=None):
 def _patch_handle(monkeypatch, content="查询结果文本"):
     call_count = {"n": 0}
 
-    def fake_handle(**kwargs):
+    async def fake_handle(**kwargs):
         call_count["n"] += 1
         call_count["kwargs"] = kwargs
         return content
 
     monkeypatch.setattr(
-        "agent.tools.business_data_search.handle_business_data_search",
+        "agent.tools.business_data_search.handle_business_data_search_async",
         fake_handle,
     )
     return call_count
@@ -114,7 +119,7 @@ def test_query_action_rejects_value_inputs(monkeypatch):
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -143,7 +148,7 @@ def test_query_path_allows_empty_value_inputs(monkeypatch, include_action):
     }
     if include_action:
         args["action"] = "query"
-    outcome = BusinessDataSearchTool().execute(
+    outcome = _execute(BusinessDataSearchTool(),
         args=args,
         context=_make_context(),
     )
@@ -157,7 +162,7 @@ def test_query_path_allows_non_array_or_null_value_inputs(monkeypatch, value_inp
     action defaults to 'query' — they are treated as omitted."""
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
-    outcome = BusinessDataSearchTool().execute(
+    outcome = _execute(BusinessDataSearchTool(),
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -175,7 +180,7 @@ def test_value_inputs_rejection_message_is_actionable(monkeypatch):
     so the model can self-correct without guessing."""
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
-    outcome = BusinessDataSearchTool().execute(
+    outcome = _execute(BusinessDataSearchTool(),
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -194,7 +199,7 @@ def test_lookup_values_rejects_missing_value_inputs(monkeypatch):
     _install_common_fakes(monkeypatch)
     lookup_calls = _patch_value_lookup(monkeypatch)
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -214,7 +219,7 @@ def test_lookup_values_rejects_empty_or_non_array_value_inputs(
 ):
     _install_common_fakes(monkeypatch)
     lookup_calls = _patch_value_lookup(monkeypatch)
-    outcome = BusinessDataSearchTool().execute(
+    outcome = _execute(BusinessDataSearchTool(),
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -233,7 +238,7 @@ def test_omitted_action_with_value_inputs_rejected(monkeypatch):
     handle_calls = _patch_handle(monkeypatch)
     lookup_calls = _patch_value_lookup(monkeypatch)
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -250,7 +255,7 @@ def test_omitted_action_with_value_inputs_rejected(monkeypatch):
 def test_empty_query_rejected(monkeypatch):
     _install_common_fakes(monkeypatch)
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -265,7 +270,7 @@ def test_empty_query_rejected(monkeypatch):
 def test_unknown_action_rejected(monkeypatch):
     _install_common_fakes(monkeypatch)
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -280,7 +285,7 @@ def test_unknown_action_rejected(monkeypatch):
 def test_internal_arguments_are_rejected(monkeypatch):
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
-    outcome = BusinessDataSearchTool().execute(
+    outcome = _execute(BusinessDataSearchTool(),
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -296,7 +301,7 @@ def test_internal_arguments_are_rejected(monkeypatch):
 def test_unknown_public_arguments_are_rejected(monkeypatch):
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
-    outcome = BusinessDataSearchTool().execute(
+    outcome = _execute(BusinessDataSearchTool(),
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -315,7 +320,7 @@ def test_query_action_without_value_inputs_works(monkeypatch):
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -333,7 +338,7 @@ def test_omitted_action_defaults_to_query(monkeypatch):
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -356,7 +361,7 @@ def test_omitted_action_defaults_to_query(monkeypatch):
 def test_failed_query_does_not_update_object_context_usage(monkeypatch, content):
     _install_common_fakes(monkeypatch)
     _patch_handle(monkeypatch, content=content)
-    outcome = BusinessDataSearchTool().execute(
+    outcome = _execute(BusinessDataSearchTool(),
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -382,7 +387,7 @@ def test_lookup_values_calls_value_lookup(monkeypatch):
         ),
     )
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -415,7 +420,7 @@ def test_lookup_values_does_not_call_handle(monkeypatch):
         ),
     )
     tool = BusinessDataSearchTool()
-    tool.execute(
+    _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",
@@ -468,7 +473,7 @@ def test_lookup_values_rejected_when_object_not_resolved(monkeypatch):
         ),
     )
     tool = BusinessDataSearchTool()
-    outcome = tool.execute(
+    outcome = _execute(tool,
         args={
             "ontology_id": "demo",
             "entity": "flight",

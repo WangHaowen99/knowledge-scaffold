@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
-from agent.tools.business_data_search import BusinessDataSearchTool, handle_business_data_search
+from agent.tools.business_data_search import (
+    BusinessDataSearchTool as NativeBusinessDataSearchTool,
+    handle_business_data_search,
+)
 from ontology.ontology_catalog import (
     ObjectReferenceLookupResult,
     ObjectReferenceStatus,
 )
+
+
+class BusinessDataSearchTool(NativeBusinessDataSearchTool):
+    """Synchronous test adapter around the production async-only tool."""
+
+    def execute(self, **kwargs):
+        return asyncio.run(self.aexecute(**kwargs))
 
 
 def _fake_ontology(ontology_id, *, workspace_id=None):
@@ -31,8 +42,8 @@ def _install_search_fakes(monkeypatch):
             mode="direct_provider",
             provider="nl2sql_http",
             config={
-                "url": "https://nl2sql.equipment.local",
-                "token": "secret-token",
+                "url": "https://service.example.net",
+                "token": "your-api-key-here",
                 "scene": "example",
                 "timeout_seconds": 120,
                 "max_retries": 3,
@@ -132,12 +143,15 @@ def test_non_retryable_graph_timeout_stops_the_main_agent_tool_loop(monkeypatch)
             resolution=SimpleNamespace(object_key="refinery_unit"),
         ),
     )
-    monkeypatch.setattr(
-        "agent.tools.business_data_search.handle_business_data_search",
-        lambda **_kwargs: (
+    async def fake_handle_business_data_search_async(**_kwargs):
+        return (
             '{"success":false,"engine":"graph_search_runtime",'
             '"error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
-        ),
+        )
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search_async",
+        fake_handle_business_data_search_async,
     )
     monkeypatch.setattr(
         "agent.tools.business_data_search._build_provider_runtime_context",
@@ -218,7 +232,7 @@ def test_business_data_search_uses_ontology_identity_for_resolved_source(monkeyp
     assert captured["connection"].name == "demo-ontology"
     assert captured["connection"].mode == "direct_provider"
     assert captured["connection"].provider == "nl2sql_http"
-    assert captured["connection"].config["token"] == "secret-token"
+    assert captured["connection"].config["token"] == "your-api-key-here"
 
 
 def test_business_data_search_reports_missing_data_source(monkeypatch):
@@ -303,12 +317,12 @@ def test_business_data_search_tool_normalizes_alias_before_provider(tmp_path, mo
         ),
     )
 
-    def fake_handle_business_data_search(**kwargs):
+    async def fake_handle_business_data_search(**kwargs):
         captured.update(kwargs)
         return "查询结果"
 
     monkeypatch.setattr(
-        "agent.tools.business_data_search.handle_business_data_search",
+        "agent.tools.business_data_search.handle_business_data_search_async",
         fake_handle_business_data_search,
     )
 
@@ -343,12 +357,12 @@ def test_business_data_search_tool_passes_matched_field_aliases_internally(
         ),
     )
 
-    def fake_handle_business_data_search(**kwargs):
+    async def fake_handle_business_data_search(**kwargs):
         captured.update(kwargs)
         return "查询结果"
 
     monkeypatch.setattr(
-        "agent.tools.business_data_search.handle_business_data_search",
+        "agent.tools.business_data_search.handle_business_data_search_async",
         fake_handle_business_data_search,
     )
 
@@ -514,18 +528,17 @@ def test_business_data_search_tool_allows_graph_schema_only_entity(
             config={},
         )
 
-    def fake_query_business_data_stream(request, *, connection):
-        captured["request"] = request
-        captured["connection"] = connection
-        yield {"type": "final", "content": "查询结果"}
+    async def fake_handle_business_data_search_async(**kwargs):
+        captured.update(kwargs)
+        return "查询结果"
 
     monkeypatch.setattr(
         "agent.tools.business_data_search.resolve_business_data_source",
         fake_resolve_business_data_source,
     )
     monkeypatch.setattr(
-        "agent.tools.business_data_search.query_business_data_stream",
-        fake_query_business_data_stream,
+        "agent.tools.business_data_search.handle_business_data_search_async",
+        fake_handle_business_data_search_async,
     )
 
     outcome = BusinessDataSearchTool().execute(
@@ -538,8 +551,8 @@ def test_business_data_search_tool_allows_graph_schema_only_entity(
     )
 
     assert outcome.content == "查询结果"
-    assert captured["request"].entity == "SchemaOnlyEntity"
-    assert captured["connection"].provider == "neo4j"
+    assert captured["entity"] == "SchemaOnlyEntity"
+    assert captured["_resolved_connection"].provider == "neo4j"
     assert captured["resolve_count"] == 1
     assert "object_context_usage" not in outcome.state_updates
 

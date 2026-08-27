@@ -28,7 +28,7 @@
 | 多语言配置粒度 | workspace 级别 |
 | ACP 配置粒度 | workspace 级别 |
 | 多语言开关逻辑 | 关 = 完全不走多语言逻辑（零开销）；开 = 检测语言 + 注入提示词 + 翻译 |
-| `consume_stream` | **不迁移**（onto-agent 已有 `/agentic/runs/stream`） |
+| `consume_stream` | **不迁移**（主协议已使用 `POST /agentic/runs` 创建，再从服务端 events link 读取 SSE） |
 
 ---
 
@@ -185,7 +185,7 @@ onto-agent (当前):      server.py → Orchestrator.run() → Jiuwen ReAct loop
 
 | 场景 | 行为 |
 |------|------|
-| `/agentic/runs/stream` 调用，`lang.enabled = false` | `state["user_lang"] = None`，但引擎第一行就检查 `enabled` → false → 跳过，Zero overhead |
+| 主协议创建 Run 后读取 events，`lang.enabled = false` | `state["user_lang"] = None`，但引擎第一行就检查 `enabled` → false → 跳过，Zero overhead |
 | ACP 传来 `RunRequest.lang = "ja"`，但 `lang.enabled = false` | ACP server.py 照常将 `"ja"` 写入 `state["user_lang"]`，但引擎第一行就检查 `enabled` → false → **忽略该参数**，以语言跟随开关为准 |
 
 ---
@@ -251,20 +251,20 @@ onto-agent (当前):      server.py → Orchestrator.run() → Jiuwen ReAct loop
 
 **适配器模式核心设计：**
 
-- 所有执行端点统一调用 `orchestrator.run(...)`（与 A2A 共享），不再直接创建 ReAct loop
-- 流式端点共享同一个核心生成器 `_stream_orchestrator_events()`，通过 `_map_orch_event_to_acp_sse()` 将 `agent.v2` 事件映射为 ACP SSE
-- 同步执行端点内部调用 `orchestrator.run()` 并将最后一条 `final_output` 打包为 `RunResponse`
-- 自动获得 A2A 已有的基础设施：`run_store` / `chat_store` / `execution_store` 持久化、OpenViking 记忆注入与提交、`_StreamEventPersistenceBuffer` 批量事件持久化、`ReflectionWorker` 被动反思、Session 多轮对话积累
-- `_ACP_RUN_REGISTRY` 轻量级注册表仅跟踪 ACP 协议层元数据（如 `context`、`lang`），实际运行状态由 orchestrator 持久化
+- 所有执行端点通过 canonical Run Manager 创建一次执行，不再直接创建 ReAct loop。
+- 流式端点订阅 persist-first EventHub，并把统一 PublicEvent 映射为 ACP SSE。
+- 同步执行端点等待 canonical Run 终态，再投影为 `RunResponse`。
+- ACP 外部 Run ID、`context` 与 `lang` 随 Turn 的 `protocol_metadata` 持久化；协议层不维护私有内存运行注册表。
+- HITL 回答消费持久化 checkpoint，创建新的 canonical Run/Turn；ACP 外部 Run ID 继续解析到最新 Turn。
 
-**ACP SSE 事件与 agent.v2 事件映射（_map_orch_event_to_acp_sse）：**
+**ACP SSE 与 PublicEvent 映射：**
 
 ```
-agent.v2 "turn.content"  → { "type": "message", "content": "..." }
-agent.v2 "turn.tool_call" → { "type": "tool_call", "name": "...", "args": {...} }
-agent.v2 "turn.tool_result" → { "type": "tool_result", "content": "..." }
-agent.v2 "turn.finished"  → { "type": "run.completed" }
-agent.v2 "error"           → { "type": "run.error", "error": "..." }
+PublicEvent "token.delta"    → { "type": "message_delta", "text": "..." }
+PublicEvent "tool.started"   → { "type": "thinking", "text": "..." }
+PublicEvent "tool.finished"  → { "type": "result", "data": {...} }
+PublicEvent "turn.started"   → { "type": "run.started" }
+PublicEvent "turn.finished"  → run.completed / run.awaiting / run.cancelled / run.failed
 ```
 
 #### 3.1.4 `client.py` — ACPClient SDK
@@ -280,7 +280,7 @@ agent.v2 "error"           → { "type": "run.error", "error": "..." }
 #### 3.1.5 `consume_stream.py` — 不迁移
 
 ```
-原因：onto-agent 已有等价接口 /agentic/runs/stream
+原因：主协议已有 `POST /agentic/runs` 和 `GET /agentic/runs/{run_id}/events?after_seq=0`
       consume_stream 是 OntoConsume-Agent 在 ACP 协议上的"简化包装层"
       onto-agent 不需要这个包装层
 ```
@@ -400,7 +400,7 @@ def _build_main_system_prompt(self, state, *, include_orchestration=True):
 # state["user_lang"] = run_request.lang  # 有效值 → 直接用；None → auto-detect
 # 然后交由 Orchestrator.run() 处理（与 A2A 共享编排层）
 
-# 非 ACP（/agentic/runs/stream）构建 state:
+# 非 ACP（主协议 create-then-stream）构建 state:
 # state["user_lang"] = None  # 总是走 auto-detect
 ```
 
@@ -932,7 +932,7 @@ elif event_type == "tool.progress":
 
 | 文件 | 原因 |
 |------|------|
-| `OntoConsume-Agent/backend/app/core/acp/consume_stream.py` | onto-agent 已有 `/agentic/runs/stream` 等价接口；ACP consume_stream 是 OntoConsume-Agent 在 ACP 协议上的特定简化包装层，依赖 LangGraph + StreamingPrinter |
+| `OntoConsume-Agent/backend/app/core/acp/consume_stream.py` | 主协议已有 `POST /agentic/runs` 和按服务端 ID 读取 events 的等价能力；ACP consume_stream 是源项目的特定简化包装层，依赖 LangGraph + StreamingPrinter |
 | `OntoConsume-Agent/backend/app/agent/` | LangGraph 编排层，onto-agent 不自建 LangGraph |
 | `OntoConsume-Agent/backend/app/core/workspaces.py` | onto-agent 有自己完整的 workspace 体系 |
 | `OntoConsume-Agent/backend/app/core/db.py` | onto-agent 有自己独立的数据库层 |
@@ -1067,7 +1067,7 @@ Routes: 73 endpoints
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
-| `API_MODE` | `agentic` | `agentic` = 原生 `/agentic/runs/stream`；`acp` = ACP `/acp/runs/execute_stream` |
+| `API_MODE` | `agentic` | `agentic` = 原生 Run create-then-stream；`acp` = ACP `/acp/runs/execute_stream` |
 | `TEST_QUESTION_LIMIT` | `0`（全部） | 限制问题数量（用于快速冒烟测试） |
 | `RUNS_PER_QUESTION` | `1` | 每个问题重复次数 |
 

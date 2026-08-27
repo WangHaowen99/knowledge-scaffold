@@ -2,32 +2,35 @@
 
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+
 import hashlib
 import json
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask
 
 from agent.evolution import get_proposal_buffer, reset_operation_patcher, reset_proposal_buffer
-from api.routes.operations import operations_bp
-from api.auth.auth import AuthManager
+from api.routes.operations import operations_router
+from auth_test_backend import AuthManager
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 def _build_test_client(tmp_path):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
     user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(operations_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(operations_router)
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     headers = {"Authorization": "Bearer {}".format(token)}
     return client, headers
@@ -94,7 +97,7 @@ def test_apply_staged_rejects_when_operation_changed_after_stage(monkeypatch, tm
     )
 
     assert response.status_code == 409
-    assert "changed since staged" in response.get_json()["error"]
+    assert "changed since staged" in response.json()["error"]
     assert op_path.read_text(encoding="utf-8") == "# OP_A\n\n人工修改"
 
 
@@ -118,7 +121,74 @@ def test_apply_staged_rejects_operation_over_char_limit(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 400
-    assert "单个逻辑长度超过上限" in response.get_json()["error"]
+    assert "单个逻辑长度超过上限" in response.json()["error"]
+    assert op_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_staged_rejects_in_place_deterministic_operation(monkeypatch, tmp_path):
+    reset_operation_patcher()
+    reset_proposal_buffer()
+    client, headers = _build_test_client(tmp_path)
+    original = (
+        "---\n"
+        "resource: operation\n"
+        "key: OP_A\n"
+        "execution:\n"
+        "  type: deterministic\n"
+        "  input_schema: schemas/input.json\n"
+        "  output_schema: schemas/output.json\n"
+        "---\n\n# OP_A\n"
+    )
+    op_path = _create_workspace_with_operation(
+        tmp_path,
+        monkeypatch,
+        workspace_id="demo",
+        operation_content=original,
+    )
+    (op_path.parent.parent / ".deterministic-lock.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    _write_staged(op_path, original_content=original, staged_content=original + "staged")
+
+    response = client.post(
+        "/agentic/operations/example/OP_A/staged/apply",
+        headers=_headers_for_workspace(headers, "demo"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "deterministic_operation_immutable"
+    assert response.json()["error_code"] == "deterministic_operation_immutable"
+    assert op_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_staged_rejects_legacy_operation_in_mixed_locked_version(
+    monkeypatch,
+    tmp_path,
+):
+    reset_operation_patcher()
+    reset_proposal_buffer()
+    client, headers = _build_test_client(tmp_path)
+    original = "# OP_A\n\n旧 Operation，与确定性 Operation 同版本"
+    op_path = _create_workspace_with_operation(
+        tmp_path,
+        monkeypatch,
+        workspace_id="demo",
+        operation_content=original,
+    )
+    (op_path.parent.parent / ".deterministic-lock.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    _write_staged(op_path, original_content=original, staged_content=original + "\nstaged")
+
+    response = client.post(
+        "/agentic/operations/example/OP_A/staged/apply",
+        headers=_headers_for_workspace(headers, "demo"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "deterministic_operation_immutable"
     assert op_path.read_text(encoding="utf-8") == original
 
 
@@ -147,7 +217,7 @@ def test_staged_routes_resolve_operation_inside_request_workspace(monkeypatch, t
     )
 
     assert response.status_code == 200
-    body = response.get_json()
+    body = response.json()
     assert body["original"] == "# OP_A\n\nworkspace B"
     assert body["staged"] == "# OP_A\n\nstaged B"
 
@@ -192,7 +262,7 @@ def test_operation_proposal_index_scopes_to_request_workspace(monkeypatch, tmp_p
     )
 
     assert response.status_code == 200
-    body = response.get_json()
+    body = response.json()
     assert body["count"] == 1
     assert body["aggregate_count"] == 1
     item = body["items"][0]
@@ -236,7 +306,7 @@ def test_list_proposals_can_include_raw_records(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 200
-    body = response.get_json()
+    body = response.json()
     assert [item["fingerprint"] for item in body["proposals"]] == [agg.fingerprint]
     assert len(body["proposal_records"]) == 1
     record = body["proposal_records"][0]
@@ -288,7 +358,7 @@ def test_export_operation_proposals_includes_workspace_records(monkeypatch, tmp_
     )
 
     assert response.status_code == 200
-    body = response.get_json()
+    body = response.json()
     assert body["schema"] == "operation-evolution-proposals.v1"
     assert body["workspace_id"] == "ws-a"
     assert body["operation_count"] == 1

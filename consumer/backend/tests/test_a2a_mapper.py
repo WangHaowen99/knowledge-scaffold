@@ -1,7 +1,7 @@
 """Tests for A2A mapper utilities."""
 
 from api.protocols.a2a.mapper import map_run_status_to_a2a
-from persistence.run_store import RunStatus
+from agent.runtime.contracts import RunStatus
 
 
 def test_map_run_status_running_to_in_progress():
@@ -14,3 +14,7 @@ def test_map_run_status_completed_to_completed():
 
 def test_map_run_status_none_to_not_found():
     assert map_run_status_to_a2a(None).value == "not_found"
+
+
+def test_map_unexpected_awaiting_to_failed():
+    assert map_run_status_to_a2a(RunStatus.AWAITING_INPUT).value == "failed"

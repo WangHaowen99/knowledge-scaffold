@@ -1,27 +1,30 @@
-from flask import Flask
 
-from api.auth.auth import AuthManager
+
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+from auth_test_backend import AuthManager
 
 
 def _build_client(tmp_path, monkeypatch):
-    from api.routes.platform_config import platform_config_bp
+    from api.routes.platform_config import platform_config_router
 
     config_path = tmp_path / "config" / "platform_config.json"
     monkeypatch.setenv("ONTO_PLATFORM_CONFIG_PATH", str(config_path))
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
     refresh_calls = []
-    app.config["REFRESH_PLATFORM_CONNECTOR"] = lambda: refresh_calls.append("refresh")
+    app.state.services["REFRESH_PLATFORM_CONNECTOR"] = lambda: refresh_calls.append("refresh")
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert admin is not None
     admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(platform_config_bp)
-    client = app.test_client()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(platform_config_router)
+    client = TestClient(app)
     token = auth_manager.issue_token(admin)
     headers = {"Authorization": f"Bearer {token}"}
     return client, headers, refresh_calls, config_path
@@ -48,7 +51,7 @@ def test_platform_config_api_saves_masked_config_and_refreshes_connector(tmp_pat
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["config"]["enabled"] is True
     assert payload["config"]["base_url"] == "https://platform.example"
     assert payload["config"]["environment_id"] == "prod"
@@ -64,7 +67,7 @@ def test_platform_config_api_saves_masked_config_and_refreshes_connector(tmp_pat
 
     fetch_response = client.get("/api/platform-config", headers=headers)
     assert fetch_response.status_code == 200
-    fetch_payload = fetch_response.get_json()
+    fetch_payload = fetch_response.json()
     assert fetch_payload["has_api_key"] is True
     assert "api_key" not in fetch_payload
 
@@ -93,7 +96,7 @@ def test_platform_config_api_tests_connection_with_submitted_values(tmp_path, mo
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {
+    assert response.json() == {
         "success": True,
         "message": "连接成功",
         "tested_at": "2026-06-16T10:00:00Z",

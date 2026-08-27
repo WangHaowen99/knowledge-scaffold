@@ -3,11 +3,12 @@
 import threading
 from types import SimpleNamespace
 
-from flask import Flask
+from fastapi.testclient import TestClient
 
 import api.routes as routes_module
+from api.testing import TestApplication
+from auth_test_backend import AuthManager
 from config.settings import AppConfig, LLMConfig
-from api.auth.auth import AuthManager
 from llm import LLMPurpose, LLMService, configure_llm_router, reset_llm_router_for_tests
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
@@ -23,6 +24,11 @@ class _FakeStreamingResponse:
 
     def close(self) -> None:
         return
+
+
+class _InlinePool:
+    async def run(self, function, *args, **kwargs):
+        return function(*args, **kwargs)
 
 
 class _RecordingLLM:
@@ -99,14 +105,18 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
 
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
     user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    runtime = SimpleNamespace(short_io=_InlinePool(), external_io=_InlinePool())
+    app.state.runtime_container = runtime
+    app.state.agent_execution_runtime = runtime
+    monkeypatch.setattr(routes_module, "_agent_execution_runtime", runtime)
 
     user_store_manager = UserStoreManager(
         str(tmp_path / "chats"),
@@ -124,7 +134,7 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
     chat_store = user_store_manager.get_chat_store(user.username, "demo")
     chat_store.create_session(session_id="session-1")
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     response = client.post(
         "/agentic/sessions/session-1/generate-title",
@@ -133,7 +143,7 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["title"] == "排产优化"
+    assert response.json()["title"] == "排产优化"
     assert len(main_llm.calls) == 0
     assert len(task_llm.calls) == 1
     assert chat_store.get_session("session-1").title == "排产优化"

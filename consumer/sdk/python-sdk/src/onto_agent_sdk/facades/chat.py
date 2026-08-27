@@ -17,23 +17,34 @@ class ChatFacade:
         *,
         session_id: str,
         message: str,
-        run_id: Optional[str] = None,
-        context: Optional[JsonDict] = None,
         agent_mode: Optional[AgentMode] = None,
+        llm_request_mode: Optional[str] = None,
+        model_profile_id: Optional[str] = None,
+        arguments: Optional[JsonDict] = None,
+        include_trace: Optional[bool] = None,
         selected_ontology_id: Optional[str] = None,
+        interaction_response: Optional[JsonDict] = None,
+        idempotency_key: Optional[str] = None,
     ) -> EventStream:
-        run_context: JsonDict = dict(context or {})
-        if agent_mode is not None:
-            run_context["agent_mode"] = agent_mode
+        run_arguments: JsonDict = dict(arguments or {})
         if selected_ontology_id is not None:
-            run_context["selected_ontology_id"] = selected_ontology_id
+            run_arguments["selected_ontology_id"] = selected_ontology_id
 
-        return self._runs.stream(
+        admission = self._runs.create(
             session_id=session_id,
             request=message,
-            run_id=run_id,
-            context=run_context,
+            agent_mode=agent_mode,
+            llm_request_mode=llm_request_mode,
+            model_profile_id=model_profile_id,
+            arguments=run_arguments or None,
+            include_trace=include_trace,
+            interaction_response=interaction_response,
+            idempotency_key=idempotency_key,
         )
+        links = admission.get("links")
+        if not isinstance(links, dict) or not links.get("events"):
+            raise ValueError("run admission response is missing links.events")
+        return self._runs.events_from_link(str(links["events"]), after_seq=0)
 
     def list_sessions(self) -> list[JsonDict]:
         return self._sessions.list()

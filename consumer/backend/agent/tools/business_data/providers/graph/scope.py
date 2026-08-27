@@ -27,19 +27,21 @@ class GraphScopeError(ValueError):
 def build_graph_scope(provider_config: Mapping[str, Any]) -> GraphScope:
     workspace_property = str(provider_config.get("workspace_property") or "d2o_workspace_id").strip()
     workspace_id = str(provider_config.get("workspace_id") or "").strip()
+    workspace_value = str(provider_config.get("workspace_value") or "").strip()
     workspace_name = str(provider_config.get("workspace_name") or "").strip()
     ontology_property = str(provider_config.get("ontology_property") or "").strip()
     ontology_id = str(provider_config.get("ontology_id") or "").strip() if ontology_property else ""
+    ontology_value = str(provider_config.get("ontology_value") or "").strip() if ontology_property else ""
 
     if not workspace_property:
         raise GraphScopeError("workspace_property 不能为空")
-    if not workspace_id:
+    if not workspace_id and not workspace_value:
         raise GraphScopeError("workspace_id 不能为空，无法执行带 scope 的图查询")
-    if workspace_property == "workspace_name" and not workspace_name:
+    if workspace_property == "workspace_name" and not (workspace_name or workspace_value):
         raise GraphScopeError(
             "workspace_name 不能为空，无法按工作空间名称执行图查询",
         )
-    if ontology_property and not ontology_id:
+    if ontology_property and not (ontology_id or ontology_value):
         raise GraphScopeError("ontology_id 不能为空，无法执行带 scope 的图查询")
     validate_graph_identifier(workspace_property, "workspace_property")
     if ontology_property:
@@ -48,12 +50,13 @@ def build_graph_scope(provider_config: Mapping[str, Any]) -> GraphScope:
     return GraphScope(
         workspace_property=workspace_property,
         workspace_value=(
-            workspace_name
+            workspace_value
+            or workspace_name
             if workspace_property == "workspace_name"
-            else workspace_id
+            else workspace_value or workspace_id
         ),
         ontology_property=ontology_property,
-        ontology_value=ontology_id if ontology_property else "",
+        ontology_value=(ontology_value or ontology_id) if ontology_property else "",
     )
 
 
