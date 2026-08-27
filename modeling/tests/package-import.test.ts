@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { strToU8, zipSync } from 'fflate';
 
-import { parsePackageArchive } from '../src/workflow/package-import.js';
+import { decodeLegacyZipEntryName, parsePackageArchive } from '../src/workflow/package-import.js';
 import { zipPackage } from '../src/workflow/export.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import type { PackageSpec } from '../src/types.js';
@@ -64,6 +64,21 @@ function demoSpec(): PackageSpec {
       ].join('\n'),
     }],
   };
+}
+
+function replaceZipEntryName(archive: Uint8Array, from: string, to: Uint8Array): Uint8Array {
+  const source = strToU8(from);
+  assert.equal(source.length, to.length);
+  const result = new Uint8Array(archive);
+  let replacements = 0;
+  for (let offset = 0; offset <= result.length - source.length; offset += 1) {
+    if (!source.every((byte, index) => result[offset + index] === byte)) continue;
+    result.set(to, offset);
+    replacements += 1;
+    offset += source.length - 1;
+  }
+  assert.equal(replacements, 2);
+  return result;
 }
 
 test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
@@ -185,6 +200,38 @@ test('ZIP 中的二进制附件按原始字节保留且不作为文本解析', (
   assert.equal(Object.hasOwn(imported.files, 'assets/logo.png'), false);
   assert.deepEqual(imported.rawFiles['assets/logo.png'], binary);
   assert.ok(imported.warnings.some((warning) => warning.includes('二进制附件')));
+});
+
+test('ZIP 未标 UTF-8 时兼容解码 GB18030 文件名', () => {
+  const spec = demoSpec();
+  const rendered = renderPackage(spec);
+  const entries = Object.fromEntries(Object.entries(rendered).map(([path, content]) => (
+    [`pkg/${path}`, strToU8(content)]
+  )));
+  entries['pkg/model/package-spec.json'] = strToU8(JSON.stringify(spec));
+  entries['pkg/model/coverage.json'] = strToU8(JSON.stringify({ covered: [], uncovered: [] }));
+  entries['pkg/objects/abcd.md'] = strToU8('# 合成条目');
+  const gbkPath = Uint8Array.from([
+    ...strToU8('pkg/objects/'),
+    0xb2, 0xe2, 0xca, 0xd4,
+    ...strToU8('.md'),
+  ]);
+  const archive = replaceZipEntryName(
+    zipSync(entries),
+    'pkg/objects/abcd.md',
+    gbkPath,
+  );
+
+  const imported = parsePackageArchive(archive);
+
+  assert.equal(decodeLegacyZipEntryName(String.fromCharCode(0xb2, 0xe2, 0xca, 0xd4)), '测试');
+  assert.equal(imported.files['objects/测试.md'], '# 合成条目');
+  assert.equal(Object.hasOwn(imported.files, 'objects/abcd.md'), false);
+});
+
+test('ZIP 文件名兼容不会误改无法可靠识别的单字节名称', () => {
+  const legacyLatinName = `caf${String.fromCharCode(0xe9)}.md`;
+  assert.equal(decodeLegacyZipEntryName(legacyLatinName), legacyLatinName);
 });
 
 test('ZIP 导入拒绝路径穿越和缺少 manifest 的压缩包', () => {

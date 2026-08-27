@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { jwtVerify, SignJWT } from 'jose';
+import { errors as joseErrors, jwtVerify, SignJWT } from 'jose';
 
 import { config } from '../config.js';
 import { getDb, nowIso } from '../db/index.js';
@@ -59,7 +59,10 @@ export interface VerifiedProjectMcpToken {
 }
 
 export interface ProjectMcpRuntimeStatus {
-  enabled: true;
+  enabled: boolean;
+  configured: true;
+  running: boolean;
+  detail: string;
   project_id: string;
   endpoint_id: string;
   transport: ModelingMcpTransportMode;
@@ -109,6 +112,14 @@ interface ProjectMcpTokenRow {
   revoked_by: string | null;
 }
 
+interface ModelingMcpRuntimeRow {
+  instance_id: string;
+  status: 'running' | 'stopped';
+  started_at: string;
+  heartbeat_at: string;
+  detail: string | null;
+}
+
 const ENDPOINT_ID_PATTERN = /^[0-9a-f]{16}$/u;
 const VALID_SCOPES: readonly ModelingMcpScope[] = [
   'ontology.read',
@@ -117,6 +128,8 @@ const VALID_SCOPES: readonly ModelingMcpScope[] = [
   'ontology.change.review',
 ] as const;
 const DEFAULT_SCOPES: readonly ModelingMcpScope[] = ['ontology.read'];
+const MCP_RUNTIME_STALE_MS = 30_000;
+const MCP_TOKEN_SECRET_MIN_CHARS = 32;
 const TOOLSET_SCOPE_REQUIREMENTS: Record<ModelingMcpToolset, readonly ModelingMcpScope[]> = {
   read: ['ontology.read'],
   change: ['ontology.change.validate', 'ontology.change.apply', 'ontology.change.review'],
@@ -291,7 +304,10 @@ export async function verifyProjectMcpToken(input: {
       audience: config.mcp.tokenAudience,
     });
     payload = verified.payload as Record<string, unknown>;
-  } catch {
+  } catch (error) {
+    if (error instanceof joseErrors.JWTExpired) {
+      throw new ModelingMcpError('MCP_TOKEN_EXPIRED', 'MCP Token 已过期', 401);
+    }
     throw new ModelingMcpError('MCP_TOKEN_INVALID', 'MCP Token 无效或已过期', 401);
   }
 
@@ -350,8 +366,12 @@ export function projectMcpRuntimeStatus(projectId: string, toolsByToolset: Recor
   const endpoint = ensureProjectMcpEndpoint(project.id);
   const baseUrl = modelingMcpPublicBaseUrl();
   const transports = enabledModelingMcpHttpTransports();
+  const runtime = modelingMcpRuntimeState();
   return {
-    enabled: true,
+    enabled: runtime.running,
+    configured: true,
+    running: runtime.running,
+    detail: runtime.detail,
     project_id: project.id,
     endpoint_id: endpoint.endpointId,
     transport: config.mcp.transport,
@@ -432,11 +452,14 @@ function parseScopesJson(raw: string): string[] {
 }
 
 function normalizeScopes(scopes: readonly string[] | null | undefined): ModelingMcpScope[] {
+  if (Array.isArray(scopes) && scopes.length === 0) {
+    throw new ModelingMcpError('MCP_SCOPE_INVALID', '至少选择一个 scope', 400);
+  }
   const normalized = (Array.isArray(scopes) ? scopes : DEFAULT_SCOPES)
     .map((item) => String(item ?? '').trim())
     .filter(Boolean);
   const unique = [...new Set(normalized)];
-  if (!unique.length) return [...DEFAULT_SCOPES];
+  if (!unique.length) throw new ModelingMcpError('MCP_SCOPE_INVALID', '至少选择一个 scope', 400);
   const unknown = unique.filter((scope) => !VALID_SCOPES.includes(scope as ModelingMcpScope));
   if (unknown.length) {
     throw new ModelingMcpError('MCP_SCOPE_INVALID', `不支持的 scope: ${unknown.join(', ')}`, 400);
@@ -468,16 +491,23 @@ function normalizeTokenTtlSeconds(value: number | undefined): number {
 }
 
 function describeScope(scope: ModelingMcpScope): string {
-  if (scope === 'ontology.read') return '读取对象列表与对象详情。';
-  if (scope === 'ontology.change.validate') return '预校验对象元属性、字段与对象关系修改。';
-  if (scope === 'ontology.change.apply') return '把对象模型修改写入 candidate 草稿。';
-  return '提交对象模型复核，并执行最终人工确认或退回。';
+  if (scope === 'ontology.read') return '读取当前项目的本体资源。';
+  if (scope === 'ontology.change.validate') return '同步预校验本体资源修改，不写入。';
+  if (scope === 'ontology.change.apply') return '执行获准的本体资源写操作。';
+  return '提交、确认或退回需要人工复核的本体修改。';
 }
 
 function signingSecret(): Uint8Array {
   if (signingSecretCache) return signingSecretCache;
   const envSecret = String(config.mcp.tokenSecret ?? '').trim();
   if (envSecret) {
+    if (envSecret.length < MCP_TOKEN_SECRET_MIN_CHARS) {
+      throw new ModelingMcpError(
+        'MCP_TOKEN_SECRET_INVALID',
+        `MODELING_MCP_TOKEN_SECRET 至少需要 ${MCP_TOKEN_SECRET_MIN_CHARS} 个字符`,
+        500,
+      );
+    }
     signingSecretCache = new TextEncoder().encode(envSecret);
     return signingSecretCache;
   }
@@ -501,4 +531,41 @@ function signingSecret(): Uint8Array {
     signingSecretCache = new TextEncoder().encode(current);
     return signingSecretCache;
   }
+}
+
+export function markModelingMcpRuntimeRunning(instanceId: string, detail = ''): void {
+  const now = nowIso();
+  getDb().prepare(`INSERT INTO modeling_mcp_runtime
+    (singleton_id, instance_id, status, started_at, heartbeat_at, detail)
+    VALUES (1, ?, 'running', ?, ?, ?)
+    ON CONFLICT(singleton_id) DO UPDATE SET
+      instance_id = excluded.instance_id,
+      status = 'running',
+      started_at = CASE
+        WHEN modeling_mcp_runtime.instance_id = excluded.instance_id
+          THEN modeling_mcp_runtime.started_at
+        ELSE excluded.started_at
+      END,
+      heartbeat_at = excluded.heartbeat_at,
+      detail = excluded.detail`)
+    .run(instanceId, now, now, detail || null);
+}
+
+export function markModelingMcpRuntimeStopped(instanceId: string, detail = ''): void {
+  getDb().prepare(`UPDATE modeling_mcp_runtime
+    SET status = 'stopped', heartbeat_at = ?, detail = ?
+    WHERE singleton_id = 1 AND instance_id = ?`)
+    .run(nowIso(), detail || null, instanceId);
+}
+
+function modelingMcpRuntimeState(): { running: boolean; detail: string } {
+  const row = getDb().prepare(`SELECT instance_id, status, started_at, heartbeat_at, detail
+    FROM modeling_mcp_runtime WHERE singleton_id = 1`).get() as ModelingMcpRuntimeRow | undefined;
+  if (!row) return { running: false, detail: 'MCP 服务尚未上报运行状态' };
+  if (row.status !== 'running') return { running: false, detail: row.detail || 'MCP 服务已停止' };
+  const heartbeat = Date.parse(row.heartbeat_at);
+  if (!Number.isFinite(heartbeat) || Date.now() - heartbeat > MCP_RUNTIME_STALE_MS) {
+    return { running: false, detail: 'MCP 服务心跳已过期' };
+  }
+  return { running: true, detail: row.detail || 'MCP 服务运行中' };
 }

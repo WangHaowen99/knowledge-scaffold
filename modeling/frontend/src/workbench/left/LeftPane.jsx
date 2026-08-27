@@ -5,6 +5,7 @@ import {
   directoryPathsForFile,
   listDirectoryPaths,
 } from '../../packageFileTree.js';
+import { decodeLegacyArchiveName, displayPackageEntryName } from '../../legacyArchiveFilename.js';
 import { store, actions } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import * as F from '../lib/mock/fixtures.js';
@@ -141,10 +142,7 @@ function PackageTree() {
 
 /** index.md 之类的同名文件必须带上父目录，否则树里三个「index.md」分不清。 */
 export function displayName(path) {
-  const parts = path.replace(/\/$/, '').split('/');
-  const base = parts.pop() || path;
-  if (base === 'index.md' && parts.length) return `${parts[parts.length - 1]}/index.md`;
-  return base;
+  return displayPackageEntryName(path);
 }
 
 const Row = memo(function Row({ item, depth, ariaLevel, active, heat, hitPaths = [], fresh }) {
@@ -184,7 +182,7 @@ function DirectoryNode({ node, expanded, onToggle, selectedPath, heat, hitPaths,
         onClick={() => onToggle(node.path)} title={`${open ? '收起' : '展开'} ${node.path}`}>
         <ChevronRight className="wb-tree-chevron" size={13} aria-hidden="true" />
         {open ? <FolderOpen size={14} aria-hidden="true" /> : <Folder size={14} aria-hidden="true" />}
-        <span className="nm">{node.name}</span>
+        <span className="nm">{decodeLegacyArchiveName(node.name)}</span>
         <span className="count">{node.fileCount}</span>
       </button>
       {open && (

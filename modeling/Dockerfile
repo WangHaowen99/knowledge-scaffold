@@ -21,6 +21,6 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 COPY --from=backend-build /app/dist ./dist
 COPY --from=frontend-build /app/dist ./frontend-dist
-EXPOSE 5100
+EXPOSE 5100 5188
 # node:sqlite 在 22 LTS 需实验开关；24+ 稳定后可移除。
 CMD ["node", "--experimental-sqlite", "dist/server.js"]

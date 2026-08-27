@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import { displayPackageEntryName } from '../../legacyArchiveFilename.js';
 import { store } from '../lib/appStore.js';
 import { displayEvidenceReferences } from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
@@ -228,7 +229,7 @@ function parseFlow(source = '', path = '') {
   }
   for (const node of nodes.values()) if (!seen.has(node.id)) ordered.push(node);
   if (!ordered.length && source) ordered.push({ id: 'source', text: '流程源码暂无法图形化，请切到文件内容查看', kind: 'step' });
-  return { title: path.split('/').pop()?.replace(/\.mmd$/, '') || '流程', nodes: ordered };
+  return { title: displayPackageEntryName(path).replace(/\.mmd$/, '') || '流程', nodes: ordered };
 }
 
 function Node({ node, first, focus }) {
