@@ -534,6 +534,348 @@ class TestFieldTypeNormalization:
         )
 
 
+class TestSkillSourcePackages:
+    """Tests for legacy SKILL.md/object/logic source packages."""
+
+    @staticmethod
+    def make_source_package(root: Path) -> None:
+        """Create a minimal synthetic source-format package."""
+        root.mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            "---\n"
+            "id: source-demo\n"
+            "name: source-demo\n"
+            "version: 1.0.0\n"
+            "description: Synthetic source package for conversion tests.\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        (root / "object" / "物料.md").parent.mkdir(parents=True)
+        (root / "object" / "物料.md").write_text(
+            "# 对象描述\n"
+            "合成对象描述。\n\n"
+            "# 对象别名\n"
+            "物料号, 零件\n\n"
+            "# 英文名称\n"
+            "Material\n\n"
+            "# 对象属性清单\n"
+            "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
+            "| 物料编号 | material_code | 物料唯一编号 | 是 | 字符串 | 料号 | 必填 |\n"
+            "| 物料名称 | material_name | 物料名称 | 否 | 字符串 | 无 | 无 |\n",
+            encoding="utf-8",
+        )
+        (root / "logic").mkdir(parents=True, exist_ok=True)
+        (root / "logic" / "物料查询.md").write_text(
+            "# 业务描述\n"
+            "根据物料编号查询物料。\n\n"
+            "# 与logic的关联\n"
+            "- 被logic调用 > 无\n\n"
+            "# 触发条件\n"
+            "用户输入物料编号。\n\n"
+            "# 输入\n"
+            "| 参数名称 | 描述 | 输入源 |\n"
+            "| --- | --- | --- |\n"
+            "| 物料编号 | 需要查询的编号 | 用户输入 |\n\n"
+            "# 输出\n"
+            "| 参数名称 | 描述 |\n"
+            "| --- | --- |\n"
+            "| 物料名称 | 查询到的名称 |\n\n"
+            "# 逻辑描述\n"
+            "按物料编号查询并返回物料信息。\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def test_directory_source_package_converts_to_v01(tmp_path: Path) -> None:
+        source = tmp_path / "source"
+        output = tmp_path / "output_converted"
+        TestSkillSourcePackages.make_source_package(source)
+
+        result = import_package(source, output_dir=output)
+
+        assert result.imported is True
+        assert result.required_conversion is True
+        assert result.errors == []
+        assert validate_package(output).is_conformant is True
+        assert (output / "manifest.yaml").is_file()
+        assert (output / "index.md").is_file()
+        assert (output / "mappings" / "object-data-mappings.json").is_file()
+
+        manifest = yaml.safe_load(
+            (output / "manifest.yaml").read_text(encoding="utf-8")
+        )
+        assert manifest["kind"] == "ontology-package"
+        assert manifest["schema_version"] == "0.1"
+        assert manifest["id"] == "source-demo"
+
+        object_doc = (output / "objects" / "物料.md").read_text(encoding="utf-8")
+        assert "resource: object" in object_doc
+        assert "| 中文名称 | 英文名称 | 描述 | 属性别名 |" in object_doc
+        assert "material_code" in object_doc
+        assert "属性规则" not in object_doc
+
+        operation_doc = (
+            output / "operations" / "物料查询.md"
+        ).read_text(encoding="utf-8")
+        assert "resource: operation" in operation_doc
+        assert "objects: []" in operation_doc
+        assert "# 管理标签\n#主流程" in operation_doc
+
+    @staticmethod
+    def test_source_field_aliases_sanitized(tmp_path: Path) -> None:
+        source = tmp_path / "alias_source"
+        output = tmp_path / "alias_output_converted"
+        TestSkillSourcePackages.make_source_package(source)
+        object_path = source / "object" / "物料.md"
+        object_path.write_text(
+            "# 对象描述\n"
+            "合成对象描述。\n\n"
+            "# 对象别名\n"
+            "物料号\n\n"
+            "# 英文名称\n"
+            "Material\n\n"
+            "# 对象属性清单\n"
+            "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
+            "| 原因代码 | cause_code | 原因代码 | 否 | 字符串 | 原因 | 无 |\n"
+            "| 原因分析 | cause_analysis | 原因分析 | 否 | 字符串 | 原因 | 无 |\n"
+            "| 数量 | quantity | 数量 | 否 | 数字 | 无 | 无 |\n"
+            "| 单位 | unit | 单位 | 否 | 字符串 | 无 | 无 |\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        doc = (output / "objects" / "物料.md").read_text(encoding="utf-8")
+        assert "| 原因代码 | cause_code | 原因代码 | 原因 |" in doc
+        assert "| 原因分析 | cause_analysis | 原因分析 |  |" in doc
+        assert "| 数量 | quantity | 数量 |  |" in doc
+        assert "| 单位 | unit | 单位 |  |" in doc
+
+    @staticmethod
+    def test_zip_source_package_with_wrapper_directory(tmp_path: Path) -> None:
+        source = tmp_path / "source"
+        zip_path = tmp_path / "source.zip"
+        zip_output = tmp_path / "source_converted.zip"
+        TestSkillSourcePackages.make_source_package(source)
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for path in sorted(source.rglob("*")):
+                if not path.is_file():
+                    continue
+                arcname = "wrapped/" + path.relative_to(source).as_posix()
+                zf.write(path, arcname)
+
+        result = import_package_from_zip(zip_path, zip_output=zip_output)
+
+        assert result.imported is True
+        assert result.errors == []
+        assert result.zip_output == str(zip_output)
+        with zipfile.ZipFile(zip_output) as zf:
+            names = set(zf.namelist())
+        assert "manifest.yaml" in names
+        assert "objects/物料.md" in names
+        assert "operations/物料查询.md" in names
+
+    @staticmethod
+    def test_object_table_missing_alias_column_keeps_rows(tmp_path: Path) -> None:
+        source = tmp_path / "missing_alias_source"
+        output = tmp_path / "missing_alias_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "object" / "物料.md").write_text(
+            "# 对象属性清单\n"
+            "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 物料编号 | material_code | 物料唯一编号 | 是 | 字符串 |\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        doc = (output / "objects" / "物料.md").read_text(encoding="utf-8")
+        assert "| 物料编号 | material_code | 物料唯一编号 |  |" in doc
+
+    @staticmethod
+    def test_source_field_rows_missing_key_are_reported(tmp_path: Path) -> None:
+        source = tmp_path / "empty_key_source"
+        output = tmp_path / "empty_key_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "object" / "物料.md").write_text(
+            "# 对象属性清单\n"
+            "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
+            "| 物料编号 | material_code | 物料唯一编号 | 是 | 字符串 | 无 | 必填 |\n"
+            "| 备注 | | 备注文本 | 否 | 字符串 | 无 | 无 |\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is False
+        assert any("备注" in error for error in result.errors)
+        doc = (output / "objects" / "物料.md").read_text(encoding="utf-8")
+        assert "| 备注" in doc
+        assert "material_code" in doc
+
+    @staticmethod
+    def test_source_table_garbage_rows_are_dropped(tmp_path: Path) -> None:
+        source = tmp_path / "garbage_source"
+        output = tmp_path / "garbage_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "object" / "物料.md").write_text(
+            "# 对象属性清单\n"
+            "| 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 物料编号 | material_code | 物料唯一编号 | 无 |\n"
+            "|  |  | 仅描述文本 |  |\n"
+            "|  |  |  |  |\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        doc = (output / "objects" / "物料.md").read_text(encoding="utf-8")
+        assert "material_code" in doc
+        assert "仅描述文本" not in doc
+
+    @staticmethod
+    def test_source_no_space_heading_parsed(tmp_path: Path) -> None:
+        source = tmp_path / "no_space_source"
+        output = tmp_path / "no_space_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "object" / "物料.md").write_text(
+            "#实体属性清单\n"
+            "| 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 物料编号 | material_code | 物料唯一编号 | 无 |\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        doc = (output / "objects" / "物料.md").read_text(encoding="utf-8")
+        assert "material_code" in doc
+
+    @staticmethod
+    def test_source_copy_skips_cache_and_junk_files(tmp_path: Path) -> None:
+        source = tmp_path / "junk_source"
+        output = tmp_path / "junk_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "action" / "__pycache__").mkdir(parents=True, exist_ok=True)
+        (source / "action" / "__pycache__" / "helper.pyc").write_bytes(b"x")
+        (source / "action" / ".DS_Store").write_bytes(b"junk")
+        (source / "action" / "查询物料.py").write_text(
+            "# 工具流程: 物料查询\n"
+            "print(1)\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        assert (output / "scripts" / "查询物料.py").is_file()
+        assert not (output / "scripts" / "__pycache__").exists()
+        assert not (output / "scripts" / ".DS_Store").exists()
+
+    @staticmethod
+    def test_source_operation_tag_supports_flow_use(tmp_path: Path) -> None:
+        source = tmp_path / "flow_use_source"
+        output = tmp_path / "flow_use_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "logic" / "物料查询.md").write_text(
+            "# 与logic的关联\n"
+            "- 被流程使用 > 查询流程\n\n"
+            "# 逻辑描述\n"
+            "查询物料。\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        doc = (output / "operations" / "物料查询.md").read_text(encoding="utf-8")
+        assert "# 管理标签\n#子流程" in doc
+
+    @staticmethod
+    def test_source_multi_line_object_aliases_preserved(tmp_path: Path) -> None:
+        source = tmp_path / "multi_alias_source"
+        output = tmp_path / "multi_alias_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "object" / "物料.md").write_text(
+            "# 对象别名\n"
+            "物料号\n"
+            "零件\n\n"
+            "# 对象属性清单\n"
+            "| 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 物料编号 | material_code | 物料唯一编号 | 无 |\n",
+            encoding="utf-8",
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        doc = (output / "objects" / "物料.md").read_text(encoding="utf-8")
+        assert "- 物料号" in doc
+        assert "- 零件" in doc
+
+    @staticmethod
+    def test_source_action_and_asset_converted(tmp_path: Path) -> None:
+        source = tmp_path / "action_asset_source"
+        output = tmp_path / "action_asset_output"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "action").mkdir(parents=True, exist_ok=True)
+        (source / "action" / "查询物料.py").write_text(
+            "# 工具流程: 物料查询\n"
+            "print(1)\n",
+            encoding="utf-8",
+        )
+        (source / "asset").mkdir(parents=True, exist_ok=True)
+        (source / "asset" / "common.conf").write_text(
+            "threshold=3\n", encoding="utf-8"
+        )
+
+        result = convert_package(source, output)
+
+        assert result.success is True
+        assert (output / "scripts" / "查询物料.py").is_file()
+        assert (output / "scripts" / "查询物料.md").is_file()
+        script_doc = (output / "scripts" / "查询物料.md").read_text(encoding="utf-8")
+        assert "bound_operation: 物料查询" in script_doc
+        assert "entrypoint: 查询物料.py" in script_doc
+        assert (output / "scripts" / "index.md").is_file()
+        assert (output / "assets" / "common.conf").is_file()
+
+    @staticmethod
+    def test_zip_source_package_with_asset_skill_md(tmp_path: Path) -> None:
+        source = tmp_path / "asset_skill_source"
+        zip_path = tmp_path / "asset_skill_source.zip"
+        zip_output = tmp_path / "asset_skill_source_converted.zip"
+        TestSkillSourcePackages.make_source_package(source)
+        (source / "asset").mkdir(parents=True, exist_ok=True)
+        (source / "asset" / "SKILL.md").write_text(
+            "# Shared asset\n", encoding="utf-8"
+        )
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for path in sorted(source.rglob("*")):
+                if not path.is_file():
+                    continue
+                arcname = path.relative_to(source).as_posix()
+                zf.write(path, arcname)
+
+        result = import_package_from_zip(zip_path, zip_output=zip_output)
+
+        assert result.imported is True
+        assert result.errors == []
+
+
+
 # --------------------------------------------------------------------------- #
 # Tests: zip import
 # --------------------------------------------------------------------------- #
