@@ -204,6 +204,33 @@ test('package mapping format：对象索引必须保留来源 Sheet 列和值', 
   assert.ok(runFormatChecks(spec, missingValue).some((finding) => /DataObject.*缺少 来源Sheet/.test(finding.message)));
 });
 
+test('package mapping format：对象来源在规格、详情、目录和运行时 mapping 之间必须一致', () => {
+  const spec = packageSpec();
+  const wrongIndex = renderPackage(spec);
+  wrongIndex['objects/index.md'] = wrongIndex['objects/index.md'].replace('| DataSheet |', '| OtherSheet |');
+  assert.ok(runFormatChecks(spec, wrongIndex).some((finding) => (
+    finding.category === '对象来源不一致' && /DataObject.*DataSheet.*OtherSheet/.test(finding.message)
+  )));
+
+  const textOnlySpec = packageSpec();
+  delete textOnlySpec.objects[0].sourceTable;
+  const textOnlyFiles = renderPackage(textOnlySpec);
+  textOnlyFiles['objects/DataObject.md'] = textOnlyFiles['objects/DataObject.md'].replace(
+    '\n---\n# 业务定义',
+    '\nsources:\n  - "表格：DataSheet"\n---\n# 业务定义',
+  );
+  textOnlyFiles['objects/index.md'] = textOnlyFiles['objects/index.md'].replace(
+    '| DataObject | 数据实体 | 由 Excel 数据表支持的实体 | — |',
+    '| DataObject | 数据实体 | 由 Excel 数据表支持的实体 | DataSheet |',
+  );
+  const findings = runFormatChecks(textOnlySpec, textOnlyFiles);
+  assert.ok(findings.some((finding) => (
+    finding.category === '对象来源不一致'
+    && finding.target === 'objects/DataObject.md'
+    && /未声明结构化表格来源/.test(finding.message)
+  )));
+});
+
 test('package mapping：已声明的数据映射必须匹配真实 Sheet、字段和主键', () => {
   const valid = packageSpec();
   assert.deepEqual(findObjectDataMappingProblems(valid, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])]), []);

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { parse as parseYaml } from 'yaml';
 
 import { getDb, nowIso } from '../db/index.js';
 import { findObjectDataMappingProblems } from './data-mapping.js';
@@ -325,6 +326,30 @@ function parseFrontmatter(md: string): Record<string, string> | null {
   return out;
 }
 
+function parseStructuredFrontmatter(md: string): Record<string, unknown> | null {
+  if (!md.startsWith('---\n')) return null;
+  const end = md.indexOf('\n---', 4);
+  if (end < 0) return null;
+  try {
+    const parsed = parseYaml(md.slice(4, end));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 // 提取 markdown 索引表格的第一列（跳过表头与分隔行、以及「—」占位）
 function tableFirstColumn(md: string): string[] {
   const keys: string[] = [];
@@ -473,9 +498,11 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   }
 
   const objectIndex = files['objects/index.md'];
+  let objectIndexEntries: Map<string, { key: string; sourceSheet: string }> | undefined;
   if (objectIndex?.trim()) {
     try {
       const entries = parseObjectIndex(objectIndex);
+      objectIndexEntries = entries;
       for (const object of spec.objects ?? []) {
         if (!entries.has(object.key)) {
           add('错误', '对象索引非法', 'objects/index.md', `objects/index.md 缺少对象 ${object.key} 及其来源 Sheet`);
@@ -500,8 +527,39 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
         for (const object of spec.objects ?? []) {
           const objectKey = mappingObjectName(object);
           const tableSource = tableSourceFor(object);
+          const objectPath = `objects/${object.key}.md`;
+          const detail = parseStructuredFrontmatter(files[objectPath] ?? '');
+          const detailSources = stringValues(detail?.sources);
+          const detailMapping = recordValue(detail?.mapping);
+          const indexSource = objectIndexEntries?.get(object.key)?.sourceSheet;
+          const mappingExists = Object.hasOwn(j.objects, objectKey);
+          const runtimeMapping = recordValue(j.objects[objectKey]);
           if (tableSource && !Object.hasOwn(j.objects, objectKey)) {
             add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 声明了来源表「${tableSource.table}」，但最终 mapping 中缺少 object key ${objectKey}`);
+          }
+          if (tableSource) {
+            if (indexSource && indexSource !== tableSource.table) {
+              add('错误', '对象来源不一致', 'objects/index.md', `对象 ${object.key} 的来源 Sheet 应为「${tableSource.table}」（当前：「${indexSource}」）`);
+            }
+            if (!detailSources.includes(`表格：${tableSource.table}`)) {
+              add('错误', '对象来源不一致', objectPath, `对象 ${object.key} 声明了来源表「${tableSource.table}」，但详情 sources 未包含对应表格来源`);
+            }
+            if (!runtimeMapping
+              || detailMapping?.provider_alias !== runtimeMapping.provider_alias
+              || detailMapping?.resource !== runtimeMapping.resource) {
+              add('错误', '对象来源不一致', objectPath, `对象 ${object.key} 的详情 mapping 与结构化数据映射不一致`);
+            }
+          } else {
+            const detailTableSources = detailSources.filter((source) => source.startsWith('表格：'));
+            const indexClaimsTable = Boolean(indexSource && indexSource !== '—' && !indexSource.startsWith('文档：'));
+            if (detailTableSources.length || detailMapping || mappingExists || indexClaimsTable) {
+              add(
+                '错误',
+                '对象来源不一致',
+                objectPath,
+                `对象 ${object.key} 未声明结构化表格来源，但对象详情、对象目录或运行时 mapping 声明了可实例化来源`,
+              );
+            }
           }
         }
         for (const [objectKey, v] of Object.entries<any>(j.objects)) {

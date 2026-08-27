@@ -3392,7 +3392,12 @@ export class AgentCoreService {
       .filter((finding) => finding.severity === '错误');
     const baselineIdentities = new Set(baselineErrors.map(formatFindingIdentity));
     let candidateSpec = candidate.spec;
-    try { candidateSpec = parseRenderedPackageFiles(candidateFiles); } catch { /* fallback to current spec */ }
+    try {
+      candidateSpec = {
+        ...parseRenderedPackageFiles(candidateFiles),
+        dataSourceType: candidate.spec.dataSourceType,
+      };
+    } catch { /* fallback to current spec */ }
     const introduced = runFormatChecks(candidateSpec, candidateFiles)
       .filter((finding) => finding.severity === '错误')
       .filter((finding) => (
