@@ -9,7 +9,7 @@ export interface MaterialParseProjectEvent {
   sourceKey: string;
   filename: string;
   revisionNo: number;
-  purpose: 'auto' | 'goal' | 'schema' | 'evidence';
+  purpose: 'auto' | 'goal' | 'schema' | 'term' | 'evidence';
   readingMode: 'on_demand' | 'full';
   autoContinue?: boolean;
   uploadBatchId?: string;

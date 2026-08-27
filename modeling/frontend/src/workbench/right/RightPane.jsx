@@ -7,6 +7,7 @@ import ActivityLine from './ActivityLine.jsx';
 import Composer from './Composer.jsx';
 import Icon from '../ui/Icon.jsx';
 import { userFacingText } from '../lib/userFacingText.js';
+import SemanticBindingPanel from '../../SemanticBindingPanel.jsx';
 
 const selUser = (s) => s.userMessages;
 const selScene = (s) => s.scene;
@@ -16,6 +17,9 @@ const selError = (s) => s.error;
 const selLoading = (s) => s.loading;
 const selActivity = (s) => s.activity;
 const selInteraction = (s) => s.interaction;
+const selProjectId = (s) => s.projectId;
+const selRevision = (s) => s.revision;
+const selPackageVersion = (s) => s.packageVersion;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
     const interaction = s.messages[index]?.blocks?.find((block) => block.interaction)?.interaction;
@@ -36,6 +40,9 @@ export default function RightPane() {
   const loading = useStore(store, selLoading);
   const activity = useStore(store, selActivity);
   const interaction = useStore(store, selInteraction);
+  const projectId = useStore(store, selProjectId);
+  const revision = useStore(store, selRevision);
+  const packageVersion = useStore(store, selPackageVersion);
   const interactionId = useStore(store, selPendingInteractionMessageId);
   const scroller = useRef(null);
   const stream = useRef(null);
@@ -119,6 +126,13 @@ export default function RightPane() {
               </div>
               <div className="card-b t-sm">{userFacingText(error)}</div>
             </div>
+          )}
+          {!demo && projectId && revision && packageVersion && (
+            <SemanticBindingPanel
+              projectId={projectId}
+              packageRevision={revision}
+              onApplied={() => void actions.refreshSnapshot()}
+            />
           )}
           <ActivityLine />
           <div />

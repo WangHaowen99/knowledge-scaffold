@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
 import { updateManifestPlatformMetadata } from '../workflow/package-contract.js';
+import { parseRenderedPackageFiles } from '../workflow/package-import.js';
 import { renderPackage } from '../workflow/package-render.js';
 import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
@@ -177,6 +178,7 @@ export interface DecidePackageCandidateRevisionInput {
 
 export interface AcceptPackageCandidateRevisionInput extends DecidePackageCandidateRevisionInput {
   selectedGroupIds?: readonly string[];
+  packageDataSourceType?: PackageSpec['dataSourceType'];
 }
 
 export interface ReturnPackageCandidateRevisionInput extends DecidePackageCandidateRevisionInput {
@@ -1110,12 +1112,15 @@ export class PackageArtifactStore {
       const contentChanges = selectedCandidateChanges(candidate.groups, selection.selectedGroupIds);
       const candidateTarget = applyCandidateChanges(current, contentChanges);
       const candidateView = this.viewFromSnapshot(candidateTarget);
-      validateChangedCandidateScripts(currentView.spec, candidateView.spec, candidateTarget, contentChanges);
-      if (![currentView.spec.version, packageVersion].includes(candidateView.spec.version)) {
+      const candidateSpec = parseRenderedPackageFiles(packageTextFiles(candidateTarget.files));
+      validateChangedCandidateScripts(currentView.spec, candidateSpec, candidateTarget, contentChanges);
+      const allowedVersions = [currentView.spec.version, packageVersion];
+      if (!allowedVersions.includes(candidateSpec.version) || !allowedVersions.includes(candidateView.spec.version)) {
         throw new PackageArtifactStoreError('invalid_input', '候选修订不能自行指定知识包版本');
       }
       const versionedSpec: PackageSpec = {
-        ...candidateView.spec,
+        ...candidateSpec,
+        ...(input.packageDataSourceType ? { dataSourceType: input.packageDataSourceType } : {}),
         version: packageVersion,
         status: 'review',
       };
@@ -1829,6 +1834,16 @@ function applyCandidateChanges(
   };
 }
 
+function packageTextFiles(files: readonly ArtifactFile[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const file of files) {
+    if (!file.path.startsWith(PACKAGE_PREFIX)) continue;
+    const content = tryDecodeText(file.content);
+    if (content !== null) result[file.path.slice(PACKAGE_PREFIX.length)] = content;
+  }
+  return result;
+}
+
 function diffCandidateSnapshots(base: ArtifactSnapshot, target: ArtifactSnapshot): ArtifactFileDiff[] {
   const before = new Map(base.files.map((file) => [file.path, file.content]));
   const after = new Map(target.files.map((file) => [file.path, file.content]));
@@ -2139,12 +2154,18 @@ function metadataChanges(current: readonly ArtifactFile[], spec: PackageSpec): A
   if (!manifest) throw new PackageArtifactStoreError('invalid_package', '知识包缺少 manifest.yaml');
   const encoder = new TextEncoder();
   const normalizedSpec = canonicalizePackageSpec(spec);
+  const rendered = renderPackage(normalizedSpec, { validateScripts: false });
   return [
     { kind: 'write', path: SPEC_PATH, content: encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`) },
     {
       kind: 'write',
       path: `${PACKAGE_PREFIX}manifest.yaml`,
       content: encoder.encode(updateManifestMetadata(decodeText(manifest.content), normalizedSpec)),
+    },
+    {
+      kind: 'write',
+      path: `${PACKAGE_PREFIX}mappings/object-data-mappings.json`,
+      content: encoder.encode(rendered['mappings/object-data-mappings.json']),
     },
   ];
 }

@@ -3,6 +3,7 @@ import {
   authFetch,
   createProject,
   downloadDocument,
+  downloadTermTableTemplate,
   exportPackageUrl,
   listMaterialRevisions,
   requireOkResponse,
@@ -14,6 +15,10 @@ import { createProjectEventParser } from '../../project-events.js';
 const P = (id) => `/api/projects/${encodeURIComponent(id)}`;
 
 export const getSnapshot = (id) => api(`${P(id)}/agent/snapshot`);
+export const getPackageDataSource = (id) => api(`${P(id)}/agent/package-data-source`);
+export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent/package-data-source`, {
+  method: 'PUT', body: JSON.stringify({ dataSourceType }),
+});
 export const getAgentState = (id) => api(`${P(id)}/agent/state`);
 export const getPackageFile = (id, path) => api(
   `${P(id)}/agent/file?path=${encodeURIComponent(path)}`,
@@ -113,6 +118,7 @@ export const uploadMaterial = uploadDocument;
 export const updateMaterialDirectives = updateDocumentDirectives;
 export const getMaterialRevisions = (id) => listMaterialRevisions(id);
 export const downloadMaterial = downloadDocument;
+export const downloadTermTemplate = downloadTermTableTemplate;
 export const downloadPackage = async (id) => requireOkResponse(await authFetch(exportPackageUrl(id)));
 export const createModelingProject = (input) => createProject({ ...input, runtime: 'agent' });
 

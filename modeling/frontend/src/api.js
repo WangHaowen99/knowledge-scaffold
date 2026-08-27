@@ -128,12 +128,18 @@ export const deleteDocument = (id, docId) => api(`/api/projects/${encodeURICompo
 export const downloadDocument = async (id, docId) => requireOkResponse(await authFetch(
   `/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}/download`,
 ));
+export const downloadTermTableTemplate = async (id = '') => requireOkResponse(await authFetch(
+  id ? `/api/projects/${encodeURIComponent(id)}/documents/term-template` : '/api/documents/term-template',
+));
 export const listMaterialRevisions = (id, sourceKey = '') => api(
   `/api/projects/${encodeURIComponent(id)}/documents/revisions${sourceKey ? `?sourceKey=${encodeURIComponent(sourceKey)}` : ''}`,
 );
 export const runAnalyze = (id) => api(`/api/projects/${encodeURIComponent(id)}/analyze`, { method: 'POST' });
 
 const P = (id) => `/api/projects/${encodeURIComponent(id)}`;
+export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent/package-data-source`, {
+  method: 'PUT', body: JSON.stringify({ dataSourceType }),
+});
 export const getPackage = (id) => api(`${P(id)}/package`);
 export const getPackageFile = (id, path, options = {}) => api(
   `${P(id)}/package/file?path=${encodeURIComponent(path)}`,

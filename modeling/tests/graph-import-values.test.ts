@@ -30,6 +30,7 @@ const typedSchema: GraphImportPackageSchema = {
       { property: 'midnight_at', sourceColumn: 'midnight_at' },
     ],
   }],
+  valueBindings: [],
   relations: [],
 };
 

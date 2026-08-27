@@ -14,11 +14,18 @@ import {
   applySemanticBindingSelection,
   previewSemanticBindingCandidates,
 } from '../src/workflow/semantic-binding-service.js';
+import { validateTermTables } from '../src/workflow/term-table.js';
 import type { DataDictTable, PackageSpec } from '../src/types.js';
 
-function dataTable(name: string, columns: string[], rows: Record<string, string>[] = []): DataDictTable {
+function dataTable(
+  name: string,
+  columns: string[],
+  rows: Record<string, string>[] = [],
+  materialPurpose?: DataDictTable['materialPurpose'],
+): DataDictTable {
   return {
     name,
+    ...(materialPurpose ? { materialPurpose } : {}),
     rowCount: rows.length || 1,
     fields: columns.map((column) => ({
       name: column,
@@ -488,6 +495,70 @@ test('semantic binding：知识结构尚未抽取对象字段时不推荐 bindin
   }, tables);
   assert.equal(modeledPreview.bindingCount, 1);
   assert.equal(modeledPreview.suggestions[0]?.resource, '机场中文代号');
+});
+
+test('semantic binding：上传术语表后按固定列顺序生成 binding 并保留 alias 字段', () => {
+  const spec: PackageSpec = {
+    id: 'term-demo', name: 'term demo', description: 'term demo',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
+    objects: [{
+      key: 'Record', title: '记录', description: '记录',
+      sourceTable: 'records',
+      fields: [{ key: 'status_code', sourceColumn: 'STATUS_CODE' }],
+    }],
+    operations: [],
+  };
+  const tables = [
+    dataTable('records', ['STATUS_CODE'], [
+      { STATUS_CODE: 'A' },
+      { STATUS_CODE: 'I' },
+      { STATUS_CODE: 'X' },
+    ]),
+    dataTable('status_terms', ['STATUS_CODE', 'STATUS_NAME', 'STATUS_ALIAS', 'STATUS_EN_NAME'], [
+      { STATUS_CODE: 'A', STATUS_NAME: '启用', STATUS_ALIAS: '有效', STATUS_EN_NAME: 'Active' },
+      { STATUS_CODE: 'I', STATUS_NAME: '停用', STATUS_ALIAS: '无效', STATUS_EN_NAME: 'Inactive' },
+    ], 'term'),
+    dataTable('category_lookup', ['CATEGORY_CODE', 'CATEGORY_NAME'], [
+      { CATEGORY_CODE: 'C01', CATEGORY_NAME: '类别一' },
+    ]),
+  ];
+
+  const suggestions = suggestSemanticBindings(spec, tables);
+  assert.equal(suggestions.length, 1);
+  assert.equal(suggestions[0].resource, 'status_terms');
+  assert.equal(suggestions[0].valueField, 'STATUS_CODE');
+  assert.equal(suggestions[0].semanticField, 'STATUS_NAME');
+  assert.deepEqual(suggestions[0].aliasFields, ['STATUS_ALIAS', 'STATUS_EN_NAME']);
+
+  const withBinding = applySemanticBindingSelection(spec, tables, {
+    bindingKeys: [suggestions[0].key],
+    fieldRefs: [],
+  }).spec;
+  const fieldRefs = suggestSemanticFieldRefs(withBinding, tables);
+  assert.equal(fieldRefs[0]?.objectKey, 'Record');
+  assert.equal(fieldRefs[0]?.fieldKey, 'status_code');
+  assert.equal(fieldRefs[0]?.coverage, 0.667);
+  assert.equal(fieldRefs[0]?.matchedValueCount, 2);
+  assert.equal(fieldRefs[0]?.sourceValueCount, 3);
+});
+
+test('semantic binding：术语表校验跳过空值并阻止非法 sheet 与一值多义', () => {
+  assert.throws(() => validateTermTables([]), /至少需要包含一个 sheet/);
+  assert.throws(() => validateTermTables([dataTable('bad_terms', ['STATUS_CODE'], [], 'term')]), /至少需要两列/);
+  assert.doesNotThrow(() => validateTermTables([
+    dataTable('status_terms', ['STATUS_CODE', 'STATUS_NAME'], [
+      { STATUS_CODE: 'A', STATUS_NAME: '启用' },
+      { STATUS_CODE: '', STATUS_NAME: '空值跳过' },
+      { STATUS_CODE: 'B', STATUS_NAME: '' },
+      { STATUS_CODE: 'A', STATUS_NAME: '启用' },
+    ], 'term'),
+  ]));
+  assert.throws(() => validateTermTables([
+    dataTable('status_terms', ['STATUS_CODE', 'STATUS_NAME'], [
+      { STATUS_CODE: 'A', STATUS_NAME: '启用' },
+      { STATUS_CODE: 'A', STATUS_NAME: '停用' },
+    ], 'term'),
+  ]), /对应多个 semantic/);
 });
 
 test('semantic binding：同一资源表多组 code/name 按字段语义配对', () => {

@@ -91,6 +91,7 @@ test('资料用途与阅读方式随修订继承，且数据 Schema 只接受表
     parseStatus: 'parsed', textContent: '业务说明',
   }).document;
   assert.throws(() => repo.updateDirectives(guide.id, { purpose: 'schema', readingMode: 'on_demand' }), /Excel 或 CSV/);
+  assert.throws(() => repo.updateDirectives(guide.id, { purpose: 'term', readingMode: 'on_demand' }), /术语表/);
   const updated = repo.updateDirectives(guide.id, {
     purpose: 'goal', readingMode: 'full', expectedDirectiveRevision: 0,
   });

@@ -99,6 +99,11 @@ export function packageGenerationContract() {
         required: true,
         allowEmptyObjects: true,
         requiredFields: ['schema_version', 'default_provider_alias', 'objects'],
+        termTableRules: [
+          '资料 purpose=term 的表格是术语表，只能用于 value_bindings 和字段 value_binding_ref',
+          '术语表不得单独生成 object、operation、rule 或 metric',
+          '每个术语表 sheet 按第 1 列 value、第 2 列 semantic、第 3 列以后 alias 解释',
+        ],
       },
       scripts: {
         uniqueEntrypoints: true,

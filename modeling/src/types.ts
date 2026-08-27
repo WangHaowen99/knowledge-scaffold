@@ -114,6 +114,7 @@ export interface DataDictCell {
 export interface DataDictTable {
   name: string; // sheet 名 = 表名
   documentId?: string; // 来源资料修订 ID；用于精确追踪知识证据
+  materialPurpose?: DocumentRecord['purpose']; // 上传资料用途；术语表导入依赖该标记区分普通业务表
   fields: DataDictField[];
   rowCount: number;
   // 数据行（按 fields 顺序的字符串矩阵）；保留数量由具体解析场景决定。
@@ -129,7 +130,7 @@ export interface DocumentRecord {
   revisionNo?: number;
   filename: string;
   kind: 'markdown' | 'text' | 'pdf' | 'word' | 'excel' | 'csv' | 'unknown';
-  purpose?: 'auto' | 'goal' | 'schema' | 'evidence';
+  purpose?: 'auto' | 'goal' | 'schema' | 'evidence' | 'term';
   readingMode?: 'on_demand' | 'full';
   directiveRevision?: number;
   parseStatus: 'pending' | 'parsed' | 'failed';

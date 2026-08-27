@@ -20,9 +20,14 @@ import {
 } from '../documents/material-impact.js';
 import { getDocumentRawContent, listDocuments, updateDocumentDirectives } from '../documents/repo.js';
 import { parseFullTableDocumentIsolated } from '../documents/parse-service.js';
+import { validateTermTables } from '../workflow/term-table.js';
 import { config } from '../config.js';
 import { getProjectDataSource } from '../evaluation/data-source-repo.js';
 import { EvaluationAuthenticationError } from '../evaluation/auth-session.js';
+import {
+  getProjectPackageDataSourceSelection,
+  normalizePackageDataSourceSelection,
+} from '../workflow/package-data-source-selection.js';
 import { getRunningEvaluationDatabaseImportRun } from '../evaluation/eval-db-import-repo.js';
 import { redactEvaluationDatabaseError, resolveEvaluationDatabaseTarget } from '../evaluation/evaluation-database-target.js';
 import {
@@ -134,6 +139,7 @@ interface WorkspaceRow {
   run_id: string;
   owner: string;
   base_revision_oid: string;
+  package_data_source_type: 'nl2sql' | 'neo4j';
   candidate_id: string | null;
   lease_expires_at: string;
 }
@@ -230,6 +236,7 @@ export class AgentCoreService {
       binaryFiles: packageFiles.binaryFiles,
       materials,
       confirmPolicy: this.workbenchConfirmPolicy(project.id),
+      packageDataSource: getProjectPackageDataSourceSelection(project.id),
     };
   }
 
@@ -1174,6 +1181,7 @@ export class AgentCoreService {
         supersededChanges,
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
         packageContract: packageGenerationContract(),
+        packageDataSource: { dataSourceType: workspace.package_data_source_type },
         display: { text: '知识包版本已变化，已按当前内容重新准备修改' },
       };
     }
@@ -1185,6 +1193,7 @@ export class AgentCoreService {
         resumed: Boolean(existing),
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
         packageContract: packageGenerationContract(),
+        packageDataSource: { dataSourceType: workspace.package_data_source_type },
         display: { text: existing ? '已继续上次未完成的修改' : '已准备本次修改' },
       };
     }
@@ -1227,6 +1236,7 @@ export class AgentCoreService {
       preservedChanges: this.changes(this.workspace(context.project.id)!).length,
       runCredential: issueAgentRunCredential(context.project.id, context.runId, context.username),
       packageContract: packageGenerationContract(),
+      packageDataSource: { dataSourceType: this.workspace(context.project.id)?.package_data_source_type ?? 'neo4j' },
       display: { text: '已继续上次未完成的修改' },
     };
   }
@@ -1262,17 +1272,19 @@ export class AgentCoreService {
     }
 
     if (!existing || existing.run_id !== context.runId) {
+      const packageDataSourceType = getProjectPackageDataSourceSelection(context.project.id).dataSourceType;
       this.db.exec('BEGIN IMMEDIATE');
       try {
         this.db.prepare('DELETE FROM agent_candidate_changes WHERE project_id = ?').run(context.project.id);
         this.db.prepare(`INSERT INTO agent_candidate_workspaces (
-          project_id, run_id, owner, base_revision_oid, candidate_id,
+          project_id, run_id, owner, base_revision_oid, package_data_source_type, candidate_id,
           lease_expires_at, created_at, updated_at
-        ) VALUES (?,?,?,?,NULL,?,?,?)
+        ) VALUES (?,?,?,?,?,NULL,?,?,?)
         ON CONFLICT(project_id) DO UPDATE SET
           run_id = excluded.run_id,
           owner = excluded.owner,
           base_revision_oid = excluded.base_revision_oid,
+          package_data_source_type = excluded.package_data_source_type,
           candidate_id = NULL,
           lease_expires_at = excluded.lease_expires_at,
           created_at = excluded.created_at,
@@ -1282,6 +1294,7 @@ export class AgentCoreService {
             context.runId,
             context.username,
             current.revision.oid,
+            packageDataSourceType,
             expiresAt,
             now.toISOString(),
             now.toISOString(),
@@ -1309,13 +1322,14 @@ export class AgentCoreService {
     try {
       this.db.prepare('DELETE FROM agent_candidate_changes WHERE project_id = ?').run(context.project.id);
       this.db.prepare(`UPDATE agent_candidate_workspaces SET
-        run_id = ?, owner = ?, base_revision_oid = ?, candidate_id = NULL,
+        run_id = ?, owner = ?, base_revision_oid = ?, package_data_source_type = ?, candidate_id = NULL,
         lease_expires_at = ?, created_at = ?, updated_at = ?
         WHERE project_id = ?`)
         .run(
           context.runId,
           context.username,
           currentRevision,
+          getProjectPackageDataSourceSelection(context.project.id).dataSourceType,
           expiresAt,
           now.toISOString(),
           now.toISOString(),
@@ -1331,7 +1345,7 @@ export class AgentCoreService {
 
   private workspace(projectId: string): WorkspaceRow | null {
     return (this.db.prepare(`SELECT project_id, run_id, owner, base_revision_oid,
-      candidate_id, lease_expires_at FROM agent_candidate_workspaces WHERE project_id = ?`)
+      package_data_source_type, candidate_id, lease_expires_at FROM agent_candidate_workspaces WHERE project_id = ?`)
       .get(projectId) as WorkspaceRow | undefined) ?? null;
   }
 
@@ -1440,13 +1454,14 @@ export class AgentCoreService {
     }
     const purpose = String(args.purpose ?? document.purpose ?? 'auto');
     const readingMode = String(args.reading_mode ?? document.readingMode ?? 'on_demand');
-    if (!['auto', 'goal', 'schema', 'evidence'].includes(purpose)) {
-      throw new AgentCoreError('INVALID_MATERIAL_PURPOSE', '资料用途不正确', ['选择由助手判断、建模目标依据、数据 Schema 或通用业务依据'], 400);
+    if (!['auto', 'goal', 'schema', 'term', 'evidence'].includes(purpose)) {
+      throw new AgentCoreError('INVALID_MATERIAL_PURPOSE', '资料用途不正确', ['选择由助手判断、建模目标依据、数据 Schema、术语表或通用业务依据'], 400);
     }
     if (!['on_demand', 'full'].includes(readingMode)) {
       throw new AgentCoreError('INVALID_READING_MODE', '阅读方式不正确', ['选择按需读取或全文精读'], 400);
     }
     try {
+      if (purpose === 'term') validateTermTables(document.tables ?? []);
       const updated = updateDocumentDirectives(document.id, {
         purpose: purpose as NonNullable<typeof document.purpose>,
         readingMode: readingMode as NonNullable<typeof document.readingMode>,
@@ -1470,7 +1485,7 @@ export class AgentCoreService {
             })),
           })),
         } : {}),
-        recommendedPhase: purpose === 'goal' ? 'goal' : purpose === 'schema' ? 'knowledge' : null,
+        recommendedPhase: purpose === 'goal' ? 'goal' : ['schema', 'term'].includes(purpose) ? 'knowledge' : null,
         display: {
           text: `已将《${updated.filename}》设为${materialPurposeLabel(updated.purpose)}，${updated.readingMode === 'full' ? '需要全文精读' : '默认按需读取'}`,
         },
@@ -1646,6 +1661,7 @@ export class AgentCoreService {
     return listDocuments(projectId).flatMap((document) => (document.tables ?? []).map((table) => ({
       ...table,
       documentId: document.id,
+      materialPurpose: document.purpose ?? 'auto',
     })));
   }
 
@@ -1655,6 +1671,7 @@ export class AgentCoreService {
       name: table.name,
       documentId: table.documentId,
       filename: documents.find((document) => document.id === table.documentId)?.filename,
+      purpose: table.materialPurpose ?? 'auto',
       rowCount: table.rowCount,
       fields: table.fields.length,
     }));
@@ -3530,6 +3547,7 @@ export class AgentCoreService {
     const accepted = await this.artifacts.acceptCandidateRevision(workspace.project_id, {
       candidateId: workspace.candidate_id,
       selectedGroupIds: selected,
+      packageDataSourceType: normalizePackageDataSourceSelection(workspace.package_data_source_type),
       note: auditNote(review.feedback),
       action: {
         cause: 'agent_candidate_accepted',
@@ -5194,6 +5212,7 @@ function materialPurposeLabel(purpose: string | undefined): string {
     auto: '由助手判断',
     goal: '建模目标依据',
     schema: '数据 Schema',
+    term: '术语表',
     evidence: '通用业务依据',
   })[purpose ?? 'auto'] ?? '由助手判断';
 }

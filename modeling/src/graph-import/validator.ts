@@ -7,6 +7,7 @@ import type {
   GraphImportPackageSchema,
   GraphImportRelationPlan,
   GraphImportValidation,
+  GraphImportValueBindingSchema,
   GraphRelationMapping,
 } from './types.js';
 import {
@@ -32,6 +33,8 @@ interface BuiltEntity {
   recordKeyByRowIndex: Map<number, string>;
 }
 
+type GraphImportEntitySchema = GraphImportObjectSchema | GraphImportValueBindingSchema;
+
 export function normalizeGraphImportMapping(mapping: GraphImportMapping): GraphImportMapping {
   const relations = (mapping as any)?.relations;
   if (!Array.isArray(relations)) throw new Error('mapping.relations 必须是数组');
@@ -55,7 +58,7 @@ export function normalizeGraphImportMapping(mapping: GraphImportMapping): GraphI
   };
 }
 
-function tableForObject(tables: DataDictTable[], object: GraphImportObjectSchema): DataDictTable {
+function tableForObject(tables: DataDictTable[], object: GraphImportEntitySchema): DataDictTable {
   const table = tables.find((item) => item.name === object.defaultSheet);
   if (!table) {
     throw new Error(`实体「${object.key}」在知识包中固定的 Sheet「${object.defaultSheet}」不存在于 Excel`);
@@ -71,7 +74,7 @@ function objectByKey(schema: GraphImportPackageSchema, key: string): GraphImport
 }
 
 function joinColumn(
-  object: GraphImportObjectSchema,
+  object: GraphImportEntitySchema,
   table: DataDictTable,
   property: string,
 ): MappedColumn {
@@ -109,7 +112,7 @@ function inferenceWarning(
 function buildEntityPlan(
   tables: DataDictTable[],
   profilesBySheet: Map<string, GraphImportColumnProfile[]>,
-  object: GraphImportObjectSchema,
+  object: GraphImportEntitySchema,
 ): BuiltEntity {
   const table = tableForObject(tables, object);
   const columnProfiles = profilesBySheet.get(table.name)!;
@@ -266,7 +269,8 @@ export function validateGraphImportMapping(
     objectByKey(schema, item.targetObject);
   }
   const profilesBySheet = new Map(tables.map((table) => [table.name, inferGraphImportColumns(table)]));
-  const builtEntityList = schema.objects.map((object) => (
+  const importableEntities = [...schema.objects, ...(schema.valueBindings ?? [])];
+  const builtEntityList = importableEntities.map((object) => (
     buildEntityPlan(tables, profilesBySheet, object)
   ));
   const builtEntities = new Map(builtEntityList.map((item) => [item.plan.objectKey, item]));

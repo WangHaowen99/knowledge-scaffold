@@ -512,6 +512,46 @@
 .wb-create .inner { max-width: 780px; margin: 0 auto; padding: var(--s-8) var(--s-7) 56px; }
 .wb-field { margin-bottom: var(--s-6); }
 .wb-field > label { display: block; font-size: var(--t-md); color: var(--c-muted); margin-bottom: var(--s-2); }
+.wb-data-source-choice {
+  margin: var(--s-6) 0 0; padding: 0; border: 0;
+}
+.wb-data-source-choice legend {
+  display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-2);
+  color: var(--c-muted); font-size: var(--t-md);
+}
+.wb-data-source-options { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.wb-radio-card {
+  display: inline-flex; align-items: center; gap: var(--s-2); min-height: 34px;
+  padding: 5px var(--s-3); border: 1px solid var(--c-line); border-radius: var(--r-md);
+  background: var(--c-surface); color: var(--c-ink-2); cursor: pointer;
+  transition: border-color var(--e-fast), background var(--e-fast), color var(--e-fast);
+}
+.wb-radio-card:hover, .wb-radio-card.on {
+  border-color: var(--c-accent); background: var(--c-accent-bg); color: var(--c-accent);
+}
+.wb-radio-card input { width: 14px; height: 14px; margin: 0; accent-color: var(--c-accent); }
+.wb-radio-card > span:first-of-type { font-weight: 600; }
+.wb-help {
+  position: relative; display: inline-grid; place-items: center; width: 16px; height: 16px;
+  border: 1px solid var(--c-line); border-radius: 50%; color: var(--c-muted);
+  background: var(--c-surface); font-size: 11px; line-height: 1; font-weight: 700;
+  cursor: help;
+}
+.wb-help:hover, .wb-help:focus-visible {
+  border-color: var(--c-accent); color: var(--c-accent); outline: none;
+}
+.wb-help-pop {
+  position: absolute; z-index: 20; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
+  display: none; width: max-content; max-width: 280px; padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--c-line); border-radius: var(--r-md); background: var(--c-ink);
+  color: #fff; box-shadow: var(--sh-2); font-size: var(--t-sm); font-weight: 400;
+  line-height: 1.55; text-align: left;
+}
+.wb-help-pop::after {
+  content: ''; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: var(--c-ink);
+}
+.wb-help:hover .wb-help-pop, .wb-help:focus-visible .wb-help-pop { display: block; }
 
 /* 消息上的定位入口：助手说「看这个」，点一下中栏跳过去并恢复跟随 */
 .wb-jump {
@@ -696,7 +736,6 @@
 .wb-release-cases summary { color: var(--c-accent); font-size: var(--t-sm); cursor: pointer; }
 .wb-release-cases ol { margin: var(--s-3) 0 0; padding-left: var(--s-6); color: var(--c-ink-2); font-size: var(--t-sm); }
 .wb-release-cases li + li { margin-top: var(--s-2); }
-
 @media (max-width: 900px) {
   .wb-pane-l, .wb-grip-l { display: none; }
   .wb-pane-r { width: min(46vw, 420px) !important; }

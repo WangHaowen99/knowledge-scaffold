@@ -242,8 +242,10 @@ export class DocumentRevisionRepo {
   }): DocumentRecord {
     const document = this.get(id);
     if (!document || document.lifecycleStatus !== 'active') throw new Error('资料不存在或已经停用');
-    if (input.purpose === 'schema' && !['excel', 'csv'].includes(document.kind)) {
-      throw new Error('只有 Excel 或 CSV 表格可以指定为数据 Schema');
+    if ((input.purpose === 'schema' || input.purpose === 'term') && !['excel', 'csv'].includes(document.kind)) {
+      throw new Error(input.purpose === 'term'
+        ? '只有 Excel 或 CSV 表格可以指定为术语表'
+        : '只有 Excel 或 CSV 表格可以指定为数据 Schema');
     }
     const expected = input.expectedDirectiveRevision ?? document.directiveRevision ?? 0;
     const result = this.db.prepare(`UPDATE documents

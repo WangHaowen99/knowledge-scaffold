@@ -30,6 +30,7 @@ export const graphSchema: GraphImportPackageSchema = {
       ],
     },
   ],
+  valueBindings: [],
   relations: [{
     id: 'Part|contains|BOMItem|0', sourceObject: 'Part', relationName: 'contains',
     targetObject: 'BOMItem', note: '',

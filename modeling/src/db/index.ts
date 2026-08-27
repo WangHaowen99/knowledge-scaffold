@@ -22,6 +22,65 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, definitio
   }
 }
 
+function ensureDocumentPurposeAllowsTerm(db: DatabaseSync): void {
+  const row = db.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'documents'`).get() as { sql?: string } | undefined;
+  if (!row?.sql || row.sql.includes("'term'")) return;
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE documents_next (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        source_key    TEXT,
+        revision_no   INTEGER NOT NULL DEFAULT 1,
+        filename      TEXT NOT NULL,
+        kind          TEXT NOT NULL,
+        purpose       TEXT NOT NULL DEFAULT 'auto'
+                      CHECK (purpose IN ('auto', 'goal', 'schema', 'evidence', 'term')),
+        reading_mode  TEXT NOT NULL DEFAULT 'on_demand'
+                      CHECK (reading_mode IN ('on_demand', 'full')),
+        directive_revision INTEGER NOT NULL DEFAULT 0,
+        parse_status  TEXT NOT NULL DEFAULT 'pending',
+        parse_error   TEXT,
+        text_content  TEXT,
+        tables_json   TEXT,
+        raw_content   BLOB,
+        content_hash  TEXT NOT NULL DEFAULT '',
+        semantic_hash TEXT NOT NULL DEFAULT '',
+        lifecycle_status TEXT NOT NULL DEFAULT 'active'
+                      CHECK (lifecycle_status IN ('active', 'superseded', 'deleted')),
+        supersedes_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+        created_at    TEXT NOT NULL,
+        retired_at    TEXT
+      );
+      INSERT INTO documents_next (
+        id, project_id, source_key, revision_no, filename, kind, purpose, reading_mode,
+        directive_revision, parse_status, parse_error, text_content, tables_json, raw_content,
+        content_hash, semantic_hash, lifecycle_status, supersedes_id, created_at, retired_at
+      )
+      SELECT
+        id, project_id, source_key, revision_no, filename, kind, purpose, reading_mode,
+        directive_revision, parse_status, parse_error, text_content, tables_json, raw_content,
+        content_hash, semantic_hash, lifecycle_status, supersedes_id, created_at, retired_at
+      FROM documents;
+      DROP TABLE documents;
+      ALTER TABLE documents_next RENAME TO documents;
+      CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id);
+      CREATE INDEX IF NOT EXISTS idx_documents_source_history
+        ON documents(project_id, source_key, revision_no);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_active_source
+        ON documents(project_id, source_key) WHERE lifecycle_status = 'active';
+      COMMIT;`);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* 没有活动事务时忽略 */ }
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 /**
  * 资料修订列必须在执行完整 schema 之前补齐。schema 会立即创建依赖
  * source_key/lifecycle_status 的索引，旧库需要先完成列迁移才能启动。
@@ -39,6 +98,7 @@ export function ensureDocumentRevisionColumns(db: DatabaseSync): void {
   ensureColumn(db, 'documents', 'purpose', "TEXT NOT NULL DEFAULT 'auto'");
   ensureColumn(db, 'documents', 'reading_mode', "TEXT NOT NULL DEFAULT 'on_demand'");
   ensureColumn(db, 'documents', 'directive_revision', 'INTEGER NOT NULL DEFAULT 0');
+  ensureDocumentPurposeAllowsTerm(db);
   db.exec("UPDATE documents SET source_key = id WHERE source_key IS NULL OR source_key = ''");
 }
 
@@ -303,6 +363,7 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'inflight_operations', 'cancel_requested', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'agent_candidate_workspaces', 'credential_hash', 'TEXT');
   ensureColumn(db, 'agent_candidate_workspaces', 'credential_expires_at', 'TEXT');
+  ensureColumn(db, 'agent_candidate_workspaces', 'package_data_source_type', "TEXT NOT NULL DEFAULT 'neo4j'");
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
   ensureColumn(db, 'generation_batch_checkpoints', 'dependency_hash', "TEXT NOT NULL DEFAULT ''");

@@ -34,6 +34,7 @@ import {
   updateDocumentDirectives,
 } from './documents/repo.js';
 import { buildDocumentExport } from './documents/export.js';
+import { buildTermTableTemplate } from './documents/term-template.js';
 import {
   analyzeMaterialImpact,
   applyMaterialInvalidation,
@@ -210,6 +211,7 @@ import {
   applySemanticBindingSelection,
   previewSemanticBindingCandidates,
 } from './workflow/semantic-binding-service.js';
+import { validateTermTables } from './workflow/term-table.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
   `semantic_binding_ignored:${projectId}:${revision}`;
@@ -255,7 +257,7 @@ function parseDraftRevision(value: unknown): number | null {
 function parseMaterialPurpose(value: unknown): NonNullable<DocumentRecord['purpose']> | undefined {
   const normalized = String(value ?? '').trim();
   if (!normalized) return undefined;
-  if (!['auto', 'goal', 'schema', 'evidence'].includes(normalized)) throw new Error('资料用途不正确');
+  if (!['auto', 'goal', 'schema', 'evidence', 'term'].includes(normalized)) throw new Error('资料用途不正确');
   return normalized as NonNullable<DocumentRecord['purpose']>;
 }
 
@@ -281,6 +283,7 @@ function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
     tables: documents.flatMap((document) => (document.tables ?? []).map((table) => ({
       ...table,
       documentId: document.id,
+      materialPurpose: document.purpose ?? 'auto',
     }))),
     documents: documents.flatMap((document) => document.textContent
       ? [{
@@ -446,6 +449,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     } else {
       try {
         parsed = await parseDocumentIsolated(pending.kind, buffer, pending.filename);
+      } catch (error) {
+        parsed = { error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    if (!parsed.error && pending.purpose === 'term') {
+      try {
+        validateTermTables(parsed.tables ?? []);
       } catch (error) {
         parsed = { error: error instanceof Error ? error.message : String(error) };
       }
@@ -901,8 +911,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         } catch (error) {
           return reply.code(400).send({ error: error instanceof Error ? error.message : '资料设置不正确' });
         }
-        if (purpose === 'schema' && !['excel', 'csv'].includes(kind)) {
-          return reply.code(400).send({ error: '只有 Excel 或 CSV 表格可以指定为数据 Schema' });
+        if ((purpose === 'schema' || purpose === 'term') && !['excel', 'csv'].includes(kind)) {
+          return reply.code(400).send({
+            error: purpose === 'term'
+              ? '只有 Excel 或 CSV 表格可以指定为术语表'
+              : '只有 Excel 或 CSV 表格可以指定为数据 Schema',
+          });
+        }
+        if (purpose === 'term') {
+          try {
+            const parsed = await parseDocumentIsolated(kind, buffer, filename);
+            if (parsed.error) throw new Error(parsed.error);
+            validateTermTables(parsed.tables ?? []);
+          } catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : '术语表格式不正确' });
+          }
         }
         const revision = insertDocumentRevision({
           projectId: p.id, filename, kind,
@@ -960,6 +983,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       try {
         const purpose = parseMaterialPurpose((req.body as any)?.purpose) ?? document.purpose ?? 'auto';
         const readingMode = parseReadingMode((req.body as any)?.readingMode) ?? document.readingMode ?? 'on_demand';
+        if (purpose === 'term' && !['excel', 'csv'].includes(document.kind)) {
+          return reply.code(400).send({ error: '只有 Excel 或 CSV 表格可以指定为术语表' });
+        }
+        if (purpose === 'term') validateTermTables(document.tables ?? []);
         const expectedDirectiveRevision = Number((req.body as any)?.expectedDirectiveRevision);
         if (!Number.isSafeInteger(expectedDirectiveRevision) || expectedDirectiveRevision < 0) {
           return reply.code(400).send({ error: '缺少有效的资料设置版本，请刷新后重试' });
@@ -990,6 +1017,26 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         `attachment; filename="material"; filename*=UTF-8''${encodeURIComponent(exported.filename)}`);
       reply.header('X-Material-Export-Mode', exported.mode);
       return reply.send(exported.buffer);
+    });
+
+    r.get('/api/projects/:id/documents/term-template', async (req, reply) => {
+      const p = getProject((req.params as any).id);
+      if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      const template = buildTermTableTemplate();
+      reply.header('Content-Type', template.contentType);
+      reply.header('Content-Length', template.buffer.byteLength);
+      reply.header('Content-Disposition',
+        `attachment; filename="term-table-template.xlsx"; filename*=UTF-8''${encodeURIComponent(template.filename)}`);
+      return reply.send(template.buffer);
+    });
+
+    r.get('/api/documents/term-template', async (_req, reply) => {
+      const template = buildTermTableTemplate();
+      reply.header('Content-Type', template.contentType);
+      reply.header('Content-Length', template.buffer.byteLength);
+      reply.header('Content-Disposition',
+        `attachment; filename="term-table-template.xlsx"; filename*=UTF-8''${encodeURIComponent(template.filename)}`);
+      return reply.send(template.buffer);
     });
 
     r.delete('/api/projects/:id/documents/:docId', async (req, reply) => {
