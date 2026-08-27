@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/solver-services/ortools/job.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "job_id", "request_id", "problem_type", "problem_version", "status"],
+  "properties": {
+    "api_version": {"const": "ortools.solver.v1"},
+    "job_id": {"type": "string", "pattern": "^job_[A-Za-z0-9_-]{8,128}$"},
+    "request_id": {"type": "string", "pattern": "^req_[A-Za-z0-9_-]{8,96}$"},
+    "problem_type": {"const": "binary_ordered_route"},
+    "problem_version": {"const": "1.0"},
+    "status": {"enum": ["accepted", "running", "completed", "failed", "cancelled", "attempt_lost"]},
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "category", "retryable", "diagnostic_ref"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$"},
+        "category": {"enum": ["validation", "authentication", "capacity", "execution", "result", "internal"]},
+        "retryable": {"type": "boolean"},
+        "diagnostic_ref": {"type": "string", "pattern": "^diag_[A-Za-z0-9_-]{8,128}$"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"enum": ["failed", "attempt_lost"]}}, "required": ["status"]},
+      "then": {"required": ["failure"]},
+      "else": {"not": {"required": ["failure"]}}
+    }
+  ]
+}

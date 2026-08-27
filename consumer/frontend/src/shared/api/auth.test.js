@@ -16,6 +16,21 @@ import {
   synchronizeAuthStateFromStorage,
 } from './auth.js';
 
+// Node 24 exposes an experimental global Web Locks implementation. These
+// tests intentionally exercise the storage-restricted fallback used when the
+// browser-owned window has no LockManager, so isolate that environment here.
+const nodeNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+if (nodeNavigatorDescriptor?.configurable) {
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    enumerable: nodeNavigatorDescriptor.enumerable,
+    value: undefined,
+  });
+  test.after(() => {
+    Object.defineProperty(globalThis, 'navigator', nodeNavigatorDescriptor);
+  });
+}
+
 const createStorage = () => {
   const values = new Map();
   return {

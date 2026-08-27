@@ -1,0 +1,16 @@
+{
+  "api_version": "ortools.solver.v1",
+  "job_id": "job_0123456789ABCDEF",
+  "request_id": "req_0123456789ABCDEFGHIJ",
+  "problem_type": "binary_ordered_route",
+  "problem_version": "1.0",
+  "solve_outcome": "optimal",
+  "assignments": {"candidate_id": "CANDIDATE_SYNTHETIC_0001"},
+  "objective_values": {"primary_score": 20},
+  "assurance": {"best_bound": 20, "gap": "0", "certificate": null},
+  "engine": {
+    "name": "ortools-cp-sat",
+    "version": "9.15.6755",
+    "service_build": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  }
+}

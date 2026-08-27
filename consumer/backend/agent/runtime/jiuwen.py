@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import threading
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Collection, Mapping, Optional
 
@@ -16,6 +20,7 @@ from agent.exceptions import (
 from utils.security.redaction import redact_sensitive_text
 
 from .adapter import PublicEventAdapter
+from .async_utils import call_async_or_thread
 from .contracts import (
     RuntimeErrorInfo,
     RuntimeEventSink,
@@ -26,6 +31,23 @@ from .contracts import (
 from .events import RuntimeEvent
 from .jiuwen_events import JiuwenRuntimeEventBridge
 from .lifecycle import JiuwenRuntimeLifecycleError, get_jiuwen_runner_lifecycle
+
+
+_STATE_SNAPSHOT_CALLBACK: ContextVar[Any] = ContextVar(
+    "jiuwen_state_snapshot_callback",
+    default=None,
+)
+
+
+@contextmanager
+def solver_state_snapshot_callback_context(callback: Any):
+    """Bind the durable pre-tool state barrier for the current Agent task."""
+
+    token = _STATE_SNAPSHOT_CALLBACK.set(callback)
+    try:
+        yield
+    finally:
+        _STATE_SNAPSHOT_CALLBACK.reset(token)
 
 
 @dataclass
@@ -157,19 +179,84 @@ class JiuwenAsyncAgentRuntime:
                 try:
                     if cancel_requested:
                         raise asyncio.CancelledError
-                    engine = self._create_engine(context)
-                    final_state = await engine.arun(
-                        self._build_engine_state(context),
-                        caller="main",
-                        event_writer=bridge.engine_event,
-                        observer=bridge,
-                        token_callback=bridge.token_callback,
-                        tool_event_emitter=None,
-                        protocol_event_observer=bridge.protocol_event,
-                        event_source_node="jiuwen_react",
-                        subagent_manager=subagent_manager,
+                    engine_state = await self._prepare_engine_state(context)
+                    runtime_arguments = dict(context.arguments or {})
+                    has_solver_package_context = bool(
+                        str(
+                            runtime_arguments.get("selected_ontology_id") or ""
+                        ).strip()
+                        and str(
+                            runtime_arguments.get("selected_ontology_version")
+                            or runtime_arguments.get("selected_version")
+                            or ""
+                        ).strip()
                     )
+                    solver_requirement = None
+                    solver_guard = None
+                    if has_solver_package_context:
+                        from agent.core.shared.solver_route_guard import (
+                            SolverRouteExecutionGuard,
+                            solver_route_requirement_from_state,
+                        )
+
+                        solver_requirement = solver_route_requirement_from_state(
+                            engine_state
+                        )
+                        if solver_requirement is not None:
+                            solver_guard = SolverRouteExecutionGuard(
+                                solver_requirement
+                            )
+
+                    def observe_protocol_event(
+                        event_type: str,
+                        payload: Mapping[str, Any],
+                    ) -> None:
+                        if solver_guard is not None:
+                            solver_guard.observe(
+                                {
+                                    "type": event_type,
+                                    "payload": dict(payload or {}),
+                                }
+                            )
+                        bridge.protocol_event(event_type, payload)
+
+                    direct_arguments = engine_state.get(
+                        "_solver_direct_arguments"
+                    )
+                    if solver_requirement is not None and isinstance(
+                        direct_arguments,
+                        Mapping,
+                    ):
+                        final_state = await self._execute_direct_solver(
+                            engine_state,
+                            context=context,
+                            requirement=solver_requirement,
+                            arguments=direct_arguments,
+                            observer=bridge,
+                            protocol_event_observer=observe_protocol_event,
+                        )
+                    else:
+                        engine = self._create_engine(context)
+                        final_state = await engine.arun(
+                            engine_state,
+                            caller="main",
+                            event_writer=bridge.engine_event,
+                            snapshot_callback=_STATE_SNAPSHOT_CALLBACK.get(),
+                            observer=bridge,
+                            token_callback=bridge.token_callback,
+                            tool_event_emitter=None,
+                            protocol_event_observer=observe_protocol_event,
+                            event_source_node="jiuwen_react",
+                            subagent_manager=subagent_manager,
+                        )
                     pending_interaction = final_state.get("pending_user_interaction")
+                    if solver_guard is not None:
+                        solver_guard.ensure_terminal(
+                            allow_awaiting_input=(
+                                isinstance(pending_interaction, Mapping)
+                                and bool(pending_interaction)
+                            )
+                        )
                     if isinstance(pending_interaction, Mapping) and pending_interaction:
                         terminal_status = "awaiting_input"
                         terminal_payload = self._awaiting_payload(
@@ -206,9 +293,9 @@ class JiuwenAsyncAgentRuntime:
 
             try:
                 async with asyncio.TaskGroup() as task_group:
-                    producer = task_group.create_task(
-                        produce(),
-                        name="jiuwen-runtime-{}".format(context.run_id),
+                    producer = task_group.create_task(produce())
+                    producer.set_name(
+                        "jiuwen-runtime-{}".format(context.run_id)
                     )
                     active.task = producer
                     while True:
@@ -289,6 +376,141 @@ class JiuwenAsyncAgentRuntime:
             agent_config=self.agent_config,
         )
 
+    async def _execute_direct_solver(
+        self,
+        state: dict[str, Any],
+        *,
+        context: RuntimeInvocationContext,
+        requirement: Any,
+        arguments: Mapping[str, Any],
+        observer: Any,
+        protocol_event_observer: Callable[[str, Mapping[str, Any]], None],
+    ) -> dict[str, Any]:
+        """Execute validated structured Solver arguments without a model hop."""
+
+        from agent.core.shared.state_updates import apply_tool_batch_result_to_state
+        from agent.tools.base import ToolContext, ToolInvocation
+        from agent.tools.executor import aexecute_tool_batch
+
+        tool_call_id = "solver-{}".format(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "{}:{}:{}".format(
+                    context.run_id,
+                    context.turn_id,
+                    requirement.operation_key,
+                ),
+            ).hex
+        )
+        messages = list(state.get("messages") or [])
+        messages.append({"role": "user", "content": context.query})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": requirement.tool_name,
+                            "arguments": json.dumps(
+                                dict(arguments),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        },
+                    }
+                ],
+            }
+        )
+        state["messages"] = messages
+        await self._emit_state_snapshot(state, context.run_id)
+
+        selected_ontology_id = str(
+            dict(state.get("user_context") or {}).get(
+                "selected_ontology_id"
+            )
+            or ""
+        ).strip()
+        selected_ontology_version = str(
+            dict(state.get("user_context") or {}).get(
+                "selected_ontology_version"
+            )
+            or dict(state.get("user_context") or {}).get("selected_version")
+            or ""
+        ).strip()
+        memory_manager = (
+            self._memory_manager_provider(context)
+            if self._memory_manager_provider is not None
+            else self.memory_manager
+        )
+        tool_context = ToolContext(
+            memory_manager=memory_manager,
+            messages=messages,
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            agent_config=self.agent_config,
+            caller="main",
+            user_id=context.username,
+            agent_mode=context.agent_mode,
+            agent_iteration=1,
+            workspace_id=context.workspace_id,
+            read_documents=state.get("read_documents"),
+            selected_ontology_id=selected_ontology_id or None,
+            selected_ontology_version=selected_ontology_version or None,
+            model_profile_id=context.model_profile_id,
+            observer=observer,
+            supports_user_interaction=context.supports_user_interaction,
+            traceparent=context.traceparent or None,
+            protocol_event_observer=protocol_event_observer,
+        )
+        batch_result = await aexecute_tool_batch(
+            [
+                ToolInvocation(
+                    id=tool_call_id,
+                    name=requirement.tool_name,
+                    arguments=dict(arguments),
+                )
+            ],
+            tool_context,
+        )
+        apply_tool_batch_result_to_state(state, batch_result)
+        final_output = state.get("final_output")
+        if final_output not in (None, ""):
+            assistant_content = (
+                final_output
+                if isinstance(final_output, str)
+                else json.dumps(
+                    final_output,
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                )
+            )
+            state.setdefault("messages", []).append(
+                {"role": "assistant", "content": assistant_content}
+            )
+        await self._emit_state_snapshot(state, context.run_id)
+        return state
+
+    @staticmethod
+    async def _emit_state_snapshot(
+        state: Mapping[str, Any],
+        run_id: str,
+    ) -> None:
+        callback = _STATE_SNAPSHOT_CALLBACK.get()
+        if not callable(callback):
+            return
+        await call_async_or_thread(
+            callback,
+            copy.deepcopy(dict(state)),
+            run_id=run_id,
+            task_name="jiuwen-state-snapshot",
+            offload_kind="short",
+        )
+
     def _require_async_lifecycle(self) -> None:
         lifecycle = get_jiuwen_runner_lifecycle()
         snapshot = lifecycle.snapshot()
@@ -354,6 +576,37 @@ class JiuwenAsyncAgentRuntime:
         ):
             if arguments.get(key) not in (None, ""):
                 user_context[key] = arguments[key]
+        selected_ontology_id = str(
+            arguments.get("selected_ontology_id") or ""
+        ).strip()
+        selected_ontology_version = str(
+            arguments.get("selected_ontology_version")
+            or arguments.get("selected_version")
+            or ""
+        ).strip()
+        solver_requirement = None
+        if selected_ontology_id and selected_ontology_version:
+            from agent.core.shared.solver_route_guard import (
+                bind_solver_route_requirement,
+                resolve_solver_route_requirement,
+                should_suppress_solver_tools,
+            )
+
+            solver_requirement = resolve_solver_route_requirement(
+                user_request=context.query,
+                arguments=arguments,
+                selected_ontology_id=selected_ontology_id,
+                selected_ontology_version=selected_ontology_version,
+                workspace_id=context.workspace_id,
+            )
+            user_context = bind_solver_route_requirement(
+                user_context,
+                solver_requirement,
+                suppress_solver_tools=(
+                    solver_requirement is None
+                    and should_suppress_solver_tools(context.query)
+                ),
+            )
         model_query = context.query
         if context.interaction_cancellation:
             model_query = (
@@ -382,7 +635,7 @@ class JiuwenAsyncAgentRuntime:
                     default=str,
                 ),
             ).strip()
-        return {
+        state = {
             "run_id": context.run_id,
             "session_id": context.session_id,
             "current_turn_id": context.turn_id,
@@ -401,6 +654,34 @@ class JiuwenAsyncAgentRuntime:
             "final_output": None,
             "debug": False,
         }
+        if solver_requirement is not None and solver_requirement.direct_arguments is not None:
+            state["_solver_direct_arguments"] = copy.deepcopy(
+                solver_requirement.direct_arguments
+            )
+        return state
+
+    async def _prepare_engine_state(
+        self,
+        context: RuntimeInvocationContext,
+    ) -> dict[str, Any]:
+        arguments = dict(context.arguments or {})
+        selected_ontology_id = str(
+            arguments.get("selected_ontology_id") or ""
+        ).strip()
+        selected_ontology_version = str(
+            arguments.get("selected_ontology_version")
+            or arguments.get("selected_version")
+            or ""
+        ).strip()
+        if not selected_ontology_id or not selected_ontology_version:
+            return self._build_engine_state(context)
+        return await call_async_or_thread(
+            self._build_engine_state,
+            context,
+            run_id=context.run_id,
+            task_name="solver-route-resolution",
+            offload_kind="tool",
+        )
 
     @staticmethod
     def _completed_payload(
@@ -488,8 +769,15 @@ class JiuwenAsyncAgentRuntime:
         if not current_query:
             return history
 
-        if history and str(history[-1].get("role") or "") == "user":
-            latest_content = str(history[-1].get("content") or "")
+        latest_user_index = None
+        for index in range(len(history) - 1, -1, -1):
+            if str(history[index].get("role") or "") == "user":
+                latest_user_index = index
+                break
+        if latest_user_index is not None:
+            latest_content = str(
+                history[latest_user_index].get("content") or ""
+            )
             if latest_content == current_query:
                 return history
             if dict(state.get("user_context") or {}).get("interaction_response"):
@@ -498,7 +786,10 @@ class JiuwenAsyncAgentRuntime:
                     1,
                 )[0]
                 if latest_content == base_query:
-                    history[-1] = {**history[-1], "content": current_query}
+                    history[latest_user_index] = {
+                        **history[latest_user_index],
+                        "content": current_query,
+                    }
                     return history
 
         history.append({"role": "user", "content": current_query})
@@ -520,6 +811,29 @@ class JiuwenAsyncAgentRuntime:
 
     @staticmethod
     def _runtime_error(exc: Exception) -> RuntimeErrorInfo:
+        exception_type = type(exc)
+        is_solver_guard_error = (
+            exception_type.__name__ == "SolverRouteGuardError"
+            and exception_type.__module__
+            == "agent.core.shared.solver_route_guard"
+        )
+        if is_solver_guard_error:
+            details = {}
+            phase = str(getattr(exc, "phase", "") or "").strip()
+            if phase:
+                details["phase"] = phase
+            return RuntimeErrorInfo(
+                error_code=str(
+                    getattr(exc, "code", "solver_route_guard_failed")
+                    or "solver_route_guard_failed"
+                ),
+                message=redact_sensitive_text(
+                    str(getattr(exc, "public_message", exc) or exc)
+                ).strip()[:1000],
+                retriable=bool(getattr(exc, "retryable", False)),
+                source="tool",
+                details=details,
+            )
         if isinstance(exc, AgentLoopStalledError):
             return RuntimeErrorInfo(
                 error_code="AGENT_LOOP_STALLED",

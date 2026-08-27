@@ -1,0 +1,15 @@
+{
+  "contract_version": "solver-coordination.v1",
+  "vectors": [
+    {
+      "name": "sorted-object-and-array-order",
+      "input": {"z": [2, 1], "a": "synthetic"},
+      "canonical_utf8": "{\"a\":\"synthetic\",\"z\":[2,1]}"
+    },
+    {
+      "name": "unicode-nfc",
+      "input": {"label": "é"},
+      "canonical_utf8": "{\"label\":\"é\"}"
+    }
+  ]
+}

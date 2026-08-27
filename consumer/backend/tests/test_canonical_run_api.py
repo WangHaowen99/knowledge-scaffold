@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 import importlib.util
 from pathlib import Path
 import sys
+import threading
 from typing import Any
 
 import httpx
@@ -355,6 +356,44 @@ async def _client_for(app: FastAPI):
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
     )
+
+
+def test_store_resolution_uses_short_io_without_blocking_event_loop(monkeypatch):
+    async def scenario() -> None:
+        started = threading.Event()
+        release = threading.Event()
+        worker_thread_ids: list[int] = []
+
+        def slow_get_stores():
+            worker_thread_ids.append(threading.get_ident())
+            started.set()
+            if not release.wait(timeout=2.0):
+                raise TimeoutError("test did not release slow store construction")
+            return "chat-store", "execution-store"
+
+        class _ThreadedOffloadPool:
+            async def run(self, function, *args, **kwargs):
+                return await asyncio.to_thread(function, *args, **kwargs)
+
+        monkeypatch.setattr(workflows, "_get_stores", slow_get_stores)
+        runtime = type("Runtime", (), {"short_io": _ThreadedOffloadPool()})()
+        resolution = asyncio.create_task(workflows._resolve_stores(runtime))
+
+        try:
+            deadline = asyncio.get_running_loop().time() + 1.0
+            while not started.is_set():
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0)
+
+            await asyncio.sleep(0)
+            assert resolution.done() is False
+            assert len(worker_thread_ids) == 1
+            assert worker_thread_ids[0] != threading.get_ident()
+        finally:
+            release.set()
+        assert await resolution == ("chat-store", "execution-store")
+
+    asyncio.run(scenario())
 
 
 def test_post_run_allocates_server_ids_and_exact_retry_starts_one_task(
@@ -920,6 +959,57 @@ def test_sse_lazy_reservation_is_released_when_client_breaks_before_events(
         await iterator.aclose()
         await asyncio.sleep(0)
         assert harness.manager.event_bus.active_subscriber_count == 0
+        assert harness.manager.event_bus.reserved_subscriber_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_sse_replays_terminal_event_when_reservation_expires_before_iteration(
+    monkeypatch,
+    tmp_path,
+):
+    async def scenario() -> None:
+        _app, harness = _install_harness(monkeypatch, tmp_path)
+        run_id = "agentic-synthetic-fast-terminal"
+        snapshot = await harness.manager.add_live_run(
+            run_id=run_id,
+            session_id="session_sse_fast_terminal",
+            turn_id=1,
+        )
+        request = Request(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/agentic/runs/{}/events".format(run_id),
+                "raw_path": b"/agentic/runs/events",
+                "query_string": b"after_seq=0",
+                "root_path": "",
+                "headers": [],
+                "client": ("testclient", 50000),
+                "server": ("testserver", 80),
+            }
+        )
+
+        response = await workflows.stream_run_events(
+            run_id,
+            request,
+            current_user=_USER,
+            workspace_id=_WORKSPACE_ID,
+        )
+        await harness.manager._finish(
+            snapshot,
+            result=RuntimeResult(status="completed", content="done"),
+        )
+
+        iterator = response.body_iterator
+        assert str(await anext(iterator)).startswith("retry: 2000")
+        terminal_chunk = str(await anext(iterator))
+        assert "event: turn.finished" in terminal_chunk
+        assert '"status":"completed"' in terminal_chunk
+        await iterator.aclose()
         assert harness.manager.event_bus.reserved_subscriber_count == 0
 
     asyncio.run(scenario())

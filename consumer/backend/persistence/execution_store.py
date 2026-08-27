@@ -13,6 +13,7 @@ Storage structure:
 
 import copy
 import json
+import logging
 import os
 import threading
 from copy import deepcopy
@@ -27,6 +28,9 @@ from agent.state import (
 )
 from utils.identifiers import resolve_session_storage_dir, validate_session_id
 from utils.read_docs import normalize_read_documents_registry
+
+
+logger = logging.getLogger(__name__)
 
 
 class InteractionCheckpointError(ValueError):
@@ -58,6 +62,92 @@ class ExecutionStoreCorruptionError(RuntimeError):
 
 class TurnOwnershipError(RuntimeError):
     """Raised when a run attempts to update another run's turn."""
+
+
+class SolverCheckpointError(ValueError):
+    """Raised when a durable Solver continuation checkpoint conflicts."""
+
+
+_SOLVER_CHECKPOINT_STATE_FIELDS = frozenset(
+    {
+        "run_id",
+        "session_id",
+        "current_turn_id",
+        "workspace_id",
+        "user_id",
+        "user_request",
+        "user_context",
+        "user_lang",
+        "messages",
+        "read_documents",
+        "results",
+        "completed_ids",
+        "failed_ids",
+        "errors",
+        "evolution_recall_records",
+        "debug",
+        "final_output",
+    }
+)
+_SOLVER_CHECKPOINT_USER_CONTEXT_FIELDS = frozenset(
+    {
+        "agent_mode",
+        "lang",
+        "llm_request_mode",
+        "model_profile_id",
+        "model_profile_ref",
+        "selected_ontology_id",
+        "selected_ontology_version",
+        "selected_version",
+    }
+)
+
+
+def _json_clone(value: Any, label: str) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise SolverCheckpointError("{} must be JSON serializable".format(label)) from exc
+
+
+def _solver_checkpoint_payload(checkpoint: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(checkpoint, dict):
+        raise SolverCheckpointError("solver checkpoint must be an object")
+    if set(checkpoint) != {"schema_version", "stage", "tool_call", "state"}:
+        raise SolverCheckpointError("solver checkpoint fields are invalid")
+    if checkpoint.get("schema_version") != "agent.solver-checkpoint.v1":
+        raise SolverCheckpointError("solver checkpoint schema is unsupported")
+    if checkpoint.get("stage") not in {"waiting_solver", "react"}:
+        raise SolverCheckpointError("solver checkpoint stage is invalid")
+    tool_call = checkpoint.get("tool_call")
+    if not isinstance(tool_call, dict) or set(tool_call) != {"id", "name", "arguments"}:
+        raise SolverCheckpointError("solver checkpoint ToolCall is invalid")
+    if not str(tool_call.get("id") or "").strip() or not str(tool_call.get("name") or "").strip():
+        raise SolverCheckpointError("solver checkpoint ToolCall identity is missing")
+    if not isinstance(tool_call.get("arguments"), dict):
+        raise SolverCheckpointError("solver checkpoint ToolCall arguments are invalid")
+    state = checkpoint.get("state")
+    if not isinstance(state, dict) or set(state) - _SOLVER_CHECKPOINT_STATE_FIELDS:
+        raise SolverCheckpointError("solver checkpoint state fields are invalid")
+    filtered_state = dict(state)
+    user_context = filtered_state.get("user_context")
+    if isinstance(user_context, dict):
+        filtered_state["user_context"] = {
+            key: value
+            for key, value in user_context.items()
+            if key in _SOLVER_CHECKPOINT_USER_CONTEXT_FIELDS
+        }
+    elif user_context is not None:
+        raise SolverCheckpointError("solver checkpoint user context is invalid")
+    return _json_clone(
+        {
+            "schema_version": checkpoint["schema_version"],
+            "stage": checkpoint["stage"],
+            "tool_call": tool_call,
+            "state": filtered_state,
+        },
+        "solver checkpoint",
+    )
 
 
 INTERACTION_CANCELLED_MESSAGE = "我已主动取消上一条交互请求，未提供所请求的信息或选择。"
@@ -472,11 +562,7 @@ class ExecutionStore:
                 )
                 try:
                     os.replace(session_path, quarantine_path)
-                    directory_fd = os.open(str(session_path.parent), os.O_RDONLY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                    _fsync_directory(session_path.parent)
                 finally:
                     self._corrupt_sessions[session_id] = str(quarantine_path)
                 raise ExecutionStoreCorruptionError(
@@ -536,7 +622,13 @@ class ExecutionStore:
         )
         try:
             with open(temp_path, "x", encoding="utf-8") as f:
-                json.dump(committed, f, ensure_ascii=False, indent=2)
+                json.dump(
+                    committed,
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                    allow_nan=False,
+                )
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, session_path)
@@ -545,10 +637,7 @@ class ExecutionStore:
             self._cache.pop(session_id, None)
             raise
         finally:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
+            temp_path.unlink(missing_ok=True)
         self._cache[session_id] = committed
         return committed
 
@@ -2016,6 +2105,163 @@ class ExecutionStore:
                     if str(turn.get("status") or "") == normalized_status
                 ]
             return copy.deepcopy(list(reversed(turns)))
+
+    def save_waiting_solver_checkpoint(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+        turn_id: int,
+        checkpoint: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        canonical = _solver_checkpoint_payload(checkpoint)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise SolverCheckpointError("solver checkpoint run_id is required")
+        with self._lock_for_session(session_id):
+            history = self._load_session(session_id)
+            turn = None
+            for item in history.get("turns", []):
+                if item.get("turn_id") != turn_id:
+                    continue
+                if str(item.get("run_id") or "") == normalized_run_id:
+                    turn = item
+                    break
+            if turn is None or turn.get("status") != "running":
+                raise SolverCheckpointError("solver checkpoint turn is not running")
+            state = canonical["state"]
+            if (
+                str(state.get("run_id") or "") != normalized_run_id
+                or str(state.get("session_id") or "") != session_id
+                or int(state.get("current_turn_id") or 0) != int(turn_id)
+            ):
+                raise SolverCheckpointError("solver checkpoint state identity drifted")
+            existing = turn.get("solver_checkpoint")
+            existing_checkpoint = existing.get("checkpoint") if isinstance(existing, dict) else None
+            existing_call = (
+                existing_checkpoint.get("tool_call")
+                if isinstance(existing_checkpoint, dict)
+                else None
+            )
+            existing_call_id = (
+                str(existing_call.get("id") or "").strip()
+                if isinstance(existing_call, dict)
+                else ""
+            )
+            new_call_id = str(canonical["tool_call"]["id"]).strip()
+            existing_inbox = existing.get("tool_result_inbox") if isinstance(existing, dict) else None
+            inbox = (
+                _json_clone(existing_inbox, "solver tool result inbox")
+                if (
+                    existing_call_id == new_call_id
+                    and isinstance(existing_inbox, dict)
+                    and str(existing_inbox.get("tool_call_id") or "").strip()
+                    == new_call_id
+                )
+                else None
+            )
+            turn["solver_checkpoint"] = {
+                "checkpoint": canonical,
+                "tool_result_inbox": inbox,
+                "updated_at": datetime.now().isoformat(),
+            }
+            self._save_session(session_id)
+            return _json_clone(canonical, "solver checkpoint")
+
+    def get_waiting_solver_checkpoint(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise SolverCheckpointError("solver checkpoint run_id is required")
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if not history:
+                return None
+            for turn in reversed(history.get("turns", [])):
+                if str(turn.get("run_id") or "") != normalized_run_id:
+                    continue
+                record = turn.get("solver_checkpoint")
+                if not isinstance(record, dict):
+                    return None
+                return _json_clone(record, "solver checkpoint record")
+            return None
+
+    def put_solver_tool_result(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+        turn_id: int,
+        tool_call_id: str,
+        result_digest: str,
+        result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized_run_id = str(run_id or "").strip()
+        normalized_tool_call_id = str(tool_call_id or "").strip()
+        normalized_digest = str(result_digest or "").strip()
+        if not normalized_run_id or not normalized_tool_call_id or not normalized_digest:
+            raise SolverCheckpointError("solver tool result identity is required")
+        canonical_result = _json_clone(result, "solver tool result")
+        with self._lock_for_session(session_id):
+            history = self._load_session(session_id)
+            turn = None
+            for item in history.get("turns", []):
+                if item.get("turn_id") != turn_id:
+                    continue
+                if str(item.get("run_id") or "") == normalized_run_id:
+                    turn = item
+                    break
+            record = turn.get("solver_checkpoint") if isinstance(turn, dict) else None
+            if not isinstance(record, dict):
+                raise SolverCheckpointError("solver checkpoint is missing")
+            checkpoint = record.get("checkpoint")
+            call = checkpoint.get("tool_call") if isinstance(checkpoint, dict) else None
+            if not isinstance(call, dict) or str(call.get("id") or "") != normalized_tool_call_id:
+                raise SolverCheckpointError("solver tool result ToolCall drifted")
+            inbox = record.get("tool_result_inbox")
+            if inbox is not None:
+                if (
+                    not isinstance(inbox, dict)
+                    or inbox.get("result_digest") != normalized_digest
+                    or inbox.get("result") != canonical_result
+                ):
+                    raise SolverCheckpointError("solver tool result conflicts with inbox")
+                return _json_clone(inbox, "solver tool result inbox")
+            inbox = {
+                "tool_call_id": normalized_tool_call_id,
+                "result_digest": normalized_digest,
+                "result": canonical_result,
+                "created_at": datetime.now().isoformat(),
+            }
+            record["tool_result_inbox"] = inbox
+            record["updated_at"] = datetime.now().isoformat()
+            self._save_session(session_id)
+            return _json_clone(inbox, "solver tool result inbox")
+
+    def complete_waiting_solver_checkpoint(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+        turn_id: int,
+    ) -> None:
+        normalized_run_id = str(run_id or "").strip()
+        with self._lock_for_session(session_id):
+            history = self._load_session(session_id)
+            turn = None
+            for item in history.get("turns", []):
+                if item.get("turn_id") != turn_id:
+                    continue
+                if str(item.get("run_id") or "") == normalized_run_id:
+                    turn = item
+                    break
+            if isinstance(turn, dict) and "solver_checkpoint" in turn:
+                turn.pop("solver_checkpoint", None)
+                self._save_session(session_id)
 
     def delete_session(self, session_id: str) -> bool:
         """

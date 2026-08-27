@@ -7,6 +7,21 @@ import { isPublicEvent, publicEventTimestamp } from './publicEvent.js';
 const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set(['start', 'intermediate', 'final', 'error']);
 const WEB_SEARCH_EVENT_TYPES = new Set(['start', 'final', 'error']);
 const DATA_SEARCH_TOOL_NAMES = new Set(['business_data_search']);
+const SOLVER_EVENT_TYPES = new Set([
+  'solver.input.awaiting_confirmation',
+  'solver.progress',
+  'solver.verification.completed',
+  'solver.verification.rejected',
+  'solver.result.authoritative',
+]);
+const SOLVER_PUBLIC_FIELDS = new Set([
+  'run_id', 'job_id', 'attempt_id', 'event_seq', 'phase', 'status', 'message',
+  'elapsed_ms', 'percent', 'authoritative', 'feasibility', 'optimality',
+  'proof_kind', 'summary', 'result_artifact_ref', 'verification_evidence_ref',
+  'candidate_results_artifact_ref', 'candidate_results_artifact_digest',
+  'knowledge_revision_id', 'fact_snapshot_digest', 'problem_digest', 'code',
+  'retryable', 'missing', 'questions', 'tool_call_id', 'tool_name',
+]);
 
 export const publicErrorMessage = (value, fallback = '') => {
   const visited = new Set();
@@ -166,6 +181,55 @@ const mergeToolMeta = (baseMeta = {}, incomingMeta = {}) => {
     merged.tool_call_id = existingToolCallId;
   }
 
+  return merged;
+};
+
+const solverValueIsSafe = (value, depth = 0) => {
+  if (depth > 6) return null;
+  if (value == null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 100).map((item) => solverValueIsSafe(item, depth + 1));
+  }
+  if (typeof value !== 'object') return null;
+  const safe = {};
+  Object.entries(value).forEach(([key, item]) => {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (/(token|secret|password|credential|endpoint|internalpath|problemir)/.test(normalized)) return;
+    if (normalized === 'factsnapshot' || normalized === 'factsnapshotpayload') return;
+    safe[key] = solverValueIsSafe(item, depth + 1);
+  });
+  return safe;
+};
+
+const projectSolverEvent = (type, payload = {}) => {
+  const projected = { type };
+  Object.entries(payload || {}).forEach(([key, value]) => {
+    if (SOLVER_PUBLIC_FIELDS.has(key)) projected[key] = solverValueIsSafe(value);
+  });
+  return projected;
+};
+
+const mergeSolverEventMeta = (baseMeta = {}, event = {}) => {
+  const existing = Array.isArray(baseMeta?.solver_events) ? baseMeta.solver_events : [];
+  const eventSeq = Number(event?.event_seq);
+  const isReplay = Number.isFinite(eventSeq)
+    && existing.some((item) => Number(item?.event_seq) === eventSeq && item?.job_id === event?.job_id);
+  const solverEvents = isReplay ? existing : [...existing, event].sort((left, right) => {
+    const leftSeq = Number(left?.event_seq);
+    const rightSeq = Number(right?.event_seq);
+    if (Number.isFinite(leftSeq) && Number.isFinite(rightSeq)) return leftSeq - rightSeq;
+    return 0;
+  });
+  const merged = {
+    ...mergeToolMeta(baseMeta, event),
+    solver_events: solverEvents,
+  };
+  if (event.type === 'solver.result.authoritative' && event.authoritative === true) {
+    merged.solver_result = event;
+  }
+  if (event.type === 'solver.verification.rejected') {
+    merged.solver_rejection = event;
+  }
   return merged;
 };
 
@@ -1483,6 +1547,42 @@ export const applyPublicEvent = (current, publicEvent) => {
         reasoning_summary: summary,
       },
     };
+    return next;
+  }
+
+  if (SOLVER_EVENT_TYPES.has(type)) {
+    const event = projectSolverEvent(type, payload);
+    const locator = resolveToolLocator(event);
+    const targetIdx = findLastSegmentIndex(
+      next.streamSegments,
+      (segment) => segmentMatchesToolLocator(segment, locator),
+    );
+    if (targetIdx !== -1) {
+      const target = next.streamSegments[targetIdx];
+      next.streamSegments[targetIdx] = {
+        ...target,
+        text: event.message || target.text,
+        meta: mergeSolverEventMeta(target.meta, event),
+      };
+    } else if (hasToolLocator(locator)) {
+      next.streamSegments = closeOpenNonToolSegment(next.streamSegments);
+      next.streamSegments.push({
+        type: 'tool',
+        state: 'running',
+        text: event.message || '求解处理中',
+        node: sourceNode,
+        meta: mergeSolverEventMeta({}, event),
+        finished: false,
+        toolStatus: null,
+        startTs: eventTs,
+        endTs: null,
+        spanKey: eventSpanKey || undefined,
+        parentKey: eventParentKey || undefined,
+      });
+    }
+    next.status = 'running';
+    next.isLoading = true;
+    next.currentSegmentType = 'tool';
     return next;
   }
 

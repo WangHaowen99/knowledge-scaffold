@@ -92,6 +92,27 @@ def test_universal_prompt_keeps_tool_usage_rules_general():
     assert "### execute_script" not in prompt
 
 
+def test_universal_prompt_scopes_tool_execution_claims_to_latest_user_turn():
+    prompt = build_universal_system_prompt()
+
+    assert (
+        "Treat tool calls and tool results before the latest user message as historical context."
+        in prompt
+    )
+    assert (
+        "Never state that a tool ran for the current request unless it was called after the latest user message."
+        in prompt
+    )
+
+
+def test_universal_prompt_never_pauses_for_optional_solver_arguments():
+    prompt = build_universal_system_prompt()
+
+    assert "the schema's `required` array is the sole missing-input authority" in prompt
+    assert "Never call `request_user_interaction` for an optional Solver ToolCard property" in prompt
+    assert "omit it and invoke the Solver ToolCard" in prompt
+
+
 def test_universal_prompt_disables_user_interaction_rules_for_non_interactive_runs():
     prompt = build_universal_system_prompt(allow_user_interaction=False)
 
@@ -164,6 +185,22 @@ def test_script_runtime_failure_stops_without_manual_fallback():
         assert "stop and report the blocker" in prompt
         assert "must not fall back to `ontology_context`, `business_data_search`" in prompt
         assert "must not calculate or replay the operation manually" in prompt
+
+
+def test_solver_workflow_uses_exact_card_and_never_falls_back_to_llm_math():
+    prompt = build_universal_system_prompt()
+
+    assert "solver_catalog" in prompt
+    assert "solver_workflow" in prompt
+    assert "solve_<operation>_<digest>" in prompt
+    assert "Only a result with `authoritative=true`" in prompt
+    assert "verified feasible" in prompt
+    assert "proven optimal" in prompt
+    assert "must not calculate, estimate, or reconstruct a numeric solution" in prompt
+    assert "Provider-managed facts are never user inputs" in prompt
+    assert "do not ask the user to provide a fact snapshot" in prompt
+    assert "knowledge_package_solver_contract_incompatible" in prompt
+    assert "upgrade or reimport the selected knowledge package" in prompt
 
 
 def test_successful_deterministic_script_result_is_reused_without_reexecution():

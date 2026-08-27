@@ -108,6 +108,7 @@ class AgenticState(TypedDict):
     workspace_id: Optional[str]
     user_request: str
     user_context: Dict[str, Any]
+    traceparent: NotRequired[str]
     memory_context: Optional[str]
 
     # Execution results

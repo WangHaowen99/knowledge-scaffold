@@ -1,0 +1,29 @@
+{
+  "api_versions": ["ortools.solver.v1"],
+  "service": {
+    "name": "ortools-solver-service",
+    "version": "1.0.0",
+    "build": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "engine": {"name": "ortools-cp-sat", "version": "9.15.6755"},
+  "execution": {
+    "async_jobs": true,
+    "cancellation": true,
+    "prefer_wait": true,
+    "job_retention_seconds": 86400,
+    "max_concurrent_jobs": 2
+  },
+  "problem_types": [
+    {
+      "name": "binary_ordered_route",
+      "versions": ["1.0"],
+      "features": ["lexicographic_objective", "domain_candidate_evaluation"],
+      "result_assurances": ["feasible_solution", "best_bound", "gap"],
+      "limits": {
+        "max_payload_bytes": 1048576,
+        "max_solve_time_ms": 3600000,
+        "max_search_workers": 1
+      }
+    }
+  ]
+}

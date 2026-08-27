@@ -1,9 +1,11 @@
 """Ontology loading and registry helpers."""
 
 import logging
+import os
 import re
 import shutil
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from workspace.workspaces import get_workspace_ontologies_root, get_workspace_project_root
 
+from utils.atomic_files import staged_bytes
 from utils.read_docs import build_read_document_record
 
 logger = logging.getLogger("ontology.ontologies")
@@ -21,6 +24,45 @@ SELECTED_ONTOLOGY_CONTEXT_END = "</Selected-Ontology>"
 ONTOLOGY_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ONTOLOGY_SHARED_MANIFEST_NAME = "manifest.yaml"
 ONTOLOGY_VERSIONS_DIR_NAME = "versions"
+SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS = frozenset({"0.1", "0.2"})
+_FORBIDDEN_RUNTIME_BINDING_KEY_PARTS = frozenset(
+    {"endpoint", "token", "secret", "platform"}
+)
+
+
+def validate_no_runtime_binding_data(value: Any) -> None:
+    """Reject runtime binding data from package-owned declarative contracts."""
+
+    if isinstance(value, Mapping):
+        for raw_key, item in value.items():
+            key = str(raw_key or "").strip()
+            separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+            normalized = re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
+            key_parts = frozenset(part for part in normalized.split("_") if part)
+            if normalized == "runtime_binding" or key_parts.intersection(
+                _FORBIDDEN_RUNTIME_BINDING_KEY_PARTS
+            ):
+                raise ValueError(
+                    "Forbidden runtime binding field in ontology package: {}".format(
+                        key or "<empty>"
+                    )
+                )
+            validate_no_runtime_binding_data(item)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            validate_no_runtime_binding_data(item)
+
+
+def validate_ontology_manifest_schema(manifest: Dict[str, Any]) -> str:
+    """Validate and return the schema revision declared by a package manifest."""
+    if not isinstance(manifest, dict):
+        raise ValueError("Ontology manifest must be a mapping")
+    validate_no_runtime_binding_data(manifest)
+    schema_version = str(manifest.get("schema_version") or "").strip()
+    if schema_version not in SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS:
+        raise ValueError("Unsupported ontology schema version")
+    return schema_version
 
 
 def _coerce_manifest_enabled(value: object) -> bool:
@@ -65,7 +107,7 @@ class OntologyLoader:
         version: Optional[str] = None,
     ) -> Optional[OntologyManifest]:
         manifest_path = ontology_path / "manifest.yaml"
-        if not manifest_path.exists():
+        if not manifest_path.is_file() or manifest_path.is_symlink():
             logger.warning("Ontology manifest not found: %s", manifest_path)
             return None
 
@@ -73,6 +115,14 @@ class OntologyLoader:
             raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
         except Exception as exc:
             logger.error("Failed to parse ontology manifest %s: %s", manifest_path, exc)
+            return None
+        if not isinstance(raw, dict):
+            logger.error("Ontology manifest must be a mapping: %s", manifest_path)
+            return None
+        try:
+            validate_ontology_manifest_schema(raw)
+        except ValueError as exc:
+            logger.error("Invalid ontology manifest %s: %s", manifest_path, exc)
             return None
 
         manifest_version = str(raw.get("version") or "").strip()
@@ -82,23 +132,14 @@ class OntologyLoader:
             active_version = versions[0]
         selected_version = str(version or active_version or manifest_version).strip()
 
-        required_fields = ["kind", "id", "name", "description", "language"]
-        missing_fields = [field for field in required_fields if not raw.get(field)]
-        if not active_version:
-            missing_fields.append("version")
-        if missing_fields:
+        shared_kind = str(raw.get("kind")).strip()
+        shared_schema_version = str(raw.get("schema_version") or "").strip()
+        if (
+            shared_kind != "ontology-package"
+            or shared_schema_version not in SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS
+        ):
             logger.error(
-                "Ontology manifest missing fields %s: %s",
-                missing_fields,
-                manifest_path,
-            )
-            return None
-
-        kind = str(raw.get("kind")).strip()
-        schema_version = str(raw.get("schema_version") or "").strip()
-        if kind != "ontology-package" or schema_version != "0.1":
-            logger.error(
-                "Ontology manifest must declare kind=ontology-package and schema_version=0.1: %s",
+                "Ontology manifest must declare kind=ontology-package and a supported schema version: %s",
                 manifest_path,
             )
             return None
@@ -112,21 +153,83 @@ class OntologyLoader:
                     manifest_path,
                 )
                 return None
+            if shared_schema_version == "0.1":
+                _validate_revision_with_legacy_backfill(
+                    active_dir,
+                    raw,
+                    selected_version,
+                )
+
+            selected_manifest_path = manifest_path
+            package_raw = dict(raw)
+            version_manifest_path = active_dir / ONTOLOGY_SHARED_MANIFEST_NAME
+            if version_manifest_path.is_file() and not version_manifest_path.is_symlink():
+                try:
+                    version_raw = yaml.safe_load(version_manifest_path.read_text(encoding="utf-8")) or {}
+                except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                    logger.error(
+                        "Failed to parse ontology version manifest %s: %s",
+                        version_manifest_path,
+                        exc,
+                    )
+                    return None
+                if not isinstance(version_raw, dict):
+                    logger.error(
+                        "Ontology version manifest must be a mapping: %s",
+                        version_manifest_path,
+                    )
+                    return None
+                try:
+                    validate_ontology_manifest_schema(version_raw)
+                except ValueError:
+                    logger.error(
+                        "Ontology version manifest declares unsupported schema version: %s",
+                        version_manifest_path,
+                    )
+                    return None
+                package_raw.update(version_raw)
+                package_raw["enabled"] = raw.get("enabled", True)
+                selected_manifest_path = version_manifest_path
+
+            required_fields = ["kind", "id", "name", "description", "language"]
+            missing_fields = [field for field in required_fields if not package_raw.get(field)]
+            if not active_version:
+                missing_fields.append("version")
+            if missing_fields:
+                logger.error(
+                    "Ontology manifest missing fields %s: %s",
+                    missing_fields,
+                    selected_manifest_path,
+                )
+                return None
+
+            kind = str(package_raw.get("kind")).strip()
+            schema_version = str(package_raw.get("schema_version") or "").strip()
+            if kind != "ontology-package" or schema_version not in SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS:
+                logger.error(
+                    "Ontology version manifest must declare a supported package schema: %s",
+                    selected_manifest_path,
+                )
+                return None
 
             index_path = active_dir / "index.md"
             return OntologyManifest(
                 kind=kind,
                 schema_version=schema_version,
-                id=str(raw.get("id")).strip(),
-                name=str(raw.get("name")).strip(),
-                description=str(raw.get("description")).strip(),
+                id=str(package_raw.get("id")).strip(),
+                name=str(package_raw.get("name")).strip(),
+                description=str(package_raw.get("description")).strip(),
                 version=selected_version,
                 active_version=active_version,
                 versions=versions or [active_version],
-                language=str(raw.get("language")).strip(),
-                enabled=_coerce_manifest_enabled(raw.get("enabled", True)),
-                scope=[str(item).strip() for item in (raw.get("scope") or []) if str(item).strip()],
-                manifest_path=str(manifest_path),
+                language=str(package_raw.get("language")).strip(),
+                enabled=_coerce_manifest_enabled(package_raw.get("enabled", True)),
+                scope=[
+                    str(item).strip()
+                    for item in (package_raw.get("scope") or [])
+                    if str(item).strip()
+                ],
+                manifest_path=str(selected_manifest_path),
                 ontology_dir=str(active_dir),
                 index_path=(
                     str(index_path)
@@ -163,13 +266,85 @@ def _normalize_manifest_versions(value: Any, default_version: str = "") -> List[
     return versions
 
 
+def _write_revision_manifest_atomic(manifest_path: Path, manifest: Dict[str, Any]) -> None:
+    payload = yaml.safe_dump(
+        manifest,
+        allow_unicode=True,
+        sort_keys=False,
+    ).encode("utf-8")
+    with staged_bytes(
+        payload=payload,
+        prefix=".manifest-",
+        suffix=".tmp",
+        directory=str(manifest_path.parent),
+    ) as temporary_path:
+        os.replace(temporary_path, manifest_path)
+
+
+def _validate_revision_with_legacy_backfill(
+    revision_root: Path,
+    shared_manifest: Dict[str, Any],
+    version: str,
+) -> None:
+    """Backfill pre-revision-manifest v0.1 installs, then validate strictly."""
+
+    if not revision_root.is_dir() or revision_root.is_symlink():
+        raise ValueError("Ontology revision directory is missing or unsafe")
+    if not is_valid_ontology_version(version):
+        raise ValueError("Invalid ontology version")
+
+    revision_manifest_path = revision_root / ONTOLOGY_SHARED_MANIFEST_NAME
+    created_manifest = False
+    if not revision_manifest_path.is_file() or revision_manifest_path.is_symlink():
+        if revision_manifest_path.exists() or revision_manifest_path.is_symlink():
+            raise ValueError("Ontology revision manifest is missing or unsafe")
+        if str(shared_manifest.get("schema_version") or "").strip() != "0.1":
+            raise ValueError("Ontology revision manifest is missing or unsafe")
+
+        revision_manifest = dict(shared_manifest)
+        revision_manifest["version"] = version
+        revision_manifest.pop("active_version", None)
+        revision_manifest.pop("versions", None)
+        _write_revision_manifest_atomic(revision_manifest_path, revision_manifest)
+        created_manifest = True
+
+    from ontology.package_import import validate_ontology_revision
+
+    try:
+        validate_ontology_revision(revision_root)
+    except Exception:
+        if created_manifest:
+            revision_manifest_path.unlink(missing_ok=True)
+        raise
+
+
 def load_ontology_manifest_data(ontology_dir: Path) -> Dict[str, Any]:
     manifest_path = ontology_dir / ONTOLOGY_SHARED_MANIFEST_NAME
-    if not manifest_path.is_file():
+    if not manifest_path.is_file() or manifest_path.is_symlink():
         raise ValueError("Ontology manifest not found")
     raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        raise ValueError("Ontology manifest must be a mapping")
+    schema_version = validate_ontology_manifest_schema(raw)
+    versions_dir = ontology_dir / ONTOLOGY_VERSIONS_DIR_NAME
+    if versions_dir.exists() or versions_dir.is_symlink():
+        if not versions_dir.is_dir() or versions_dir.is_symlink():
+            raise ValueError("Ontology versions directory is missing or unsafe")
+        active_version = str(
+            raw.get("active_version") or raw.get("version") or ""
+        ).strip()
+        revision_root = versions_dir / active_version
+        if schema_version == "0.2":
+            _validate_revision_with_legacy_backfill(
+                revision_root,
+                raw,
+                active_version,
+            )
+        elif not revision_root.is_dir() or revision_root.is_symlink():
+            raise ValueError("Ontology revision directory is missing or unsafe")
+    elif schema_version == "0.2":
+        revision_root = ontology_dir
+        from ontology.package_import import validate_ontology_revision
+
+        validate_ontology_revision(revision_root)
     return raw
 
 
@@ -219,12 +394,24 @@ def ensure_ontology_versions(ontology_dir: Path) -> Dict[str, Any]:
     versions_dir = ontology_dir / ONTOLOGY_VERSIONS_DIR_NAME
     version_dir = versions_dir / version
 
-    if not versions_dir.exists():
+    migrating = not versions_dir.exists()
+    if versions_dir.is_symlink():
+        raise ValueError("Ontology versions directory must not be a symbolic link")
+    if migrating:
         _copy_version_payload(ontology_dir, version_dir)
-    elif not version_dir.exists():
-        version_dir.mkdir(parents=True, exist_ok=True)
+    elif not version_dir.is_dir() or version_dir.is_symlink():
+        raise ValueError("Ontology revision directory is missing or unsafe")
+    version_manifest_path = version_dir / ONTOLOGY_SHARED_MANIFEST_NAME
+    if migrating:
+        revision_manifest = dict(manifest)
+        revision_manifest["version"] = version
+        revision_manifest.pop("active_version", None)
+        revision_manifest.pop("versions", None)
+        _write_revision_manifest_atomic(version_manifest_path, revision_manifest)
+    _validate_revision_with_legacy_backfill(version_dir, manifest, version)
     _remove_root_version_payload(ontology_dir)
 
+    manifest.pop("capabilities", None)
     manifest["version"] = version
     manifest["active_version"] = version
     manifest["versions"] = versions
@@ -248,18 +435,39 @@ def get_ontology_version_dir(
 
     versions_dir = ontology_dir / ONTOLOGY_VERSIONS_DIR_NAME
     if not versions_dir.is_dir():
+        if versions_dir.exists() or versions_dir.is_symlink():
+            return None
         if create:
             ensure_ontology_versions(ontology_dir)
         else:
             return ontology_dir if target_version == str(manifest.get("version") or "").strip() else None
+    if versions_dir.is_symlink():
+        return None
 
     version_dir = ontology_dir / ONTOLOGY_VERSIONS_DIR_NAME / target_version
-    if version_dir.is_dir():
-        return version_dir
-    if create:
-        version_dir.mkdir(parents=True, exist_ok=True)
+    if version_dir.is_dir() and not version_dir.is_symlink():
+        if str(manifest.get("schema_version") or "").strip() == "0.2":
+            _validate_revision_with_legacy_backfill(
+                version_dir,
+                manifest,
+                target_version,
+            )
         return version_dir
     return None
+
+
+def validate_ontology_version_revision(
+    ontology_dir: Path,
+    version: str,
+) -> Path:
+    """Validate one installed revision, backfilling legacy v0.1 metadata."""
+
+    manifest = load_ontology_manifest_data(ontology_dir)
+    version_dir = get_ontology_version_dir(ontology_dir, version, create=False)
+    if version_dir is None:
+        raise ValueError("Ontology revision directory is missing or unsafe")
+    _validate_revision_with_legacy_backfill(version_dir, manifest, version)
+    return version_dir
 
 
 def set_ontology_active_version(ontology_dir: Path, version: str) -> OntologyManifest:
@@ -269,8 +477,13 @@ def set_ontology_active_version(ontology_dir: Path, version: str) -> OntologyMan
     versions = _normalize_manifest_versions(manifest.get("versions"), str(manifest.get("version") or ""))
     if version not in versions:
         raise ValueError("Ontology version not found")
-    if get_ontology_version_dir(ontology_dir, version, create=False) is None:
-        raise ValueError("Ontology version not found")
+    try:
+        validate_ontology_version_revision(ontology_dir, version)
+    except ValueError as exc:
+        if "revision directory" in str(exc):
+            raise ValueError("Ontology version not found") from exc
+        raise
+    manifest.pop("capabilities", None)
 
     manifest["active_version"] = version
     manifest["version"] = version

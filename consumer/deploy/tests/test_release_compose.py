@@ -30,6 +30,89 @@ def test_release_compose_has_no_legacy_config_mount_or_environment():
     assert "LEGACY_SYSTEM_CONFIG_PATH" not in compose_text
 
 
+def test_release_compose_requires_an_explicit_independent_solver_image():
+    compose_text = (DEPLOY_ROOT / "docker-compose.solver.release.yml").read_text(encoding="utf-8")
+
+    assert "image: ${ORTOOLS_SOLVER_IMAGE:?set ORTOOLS_SOLVER_IMAGE}" in compose_text
+    assert "SOLVER_SERVICE_TOKEN_SECRET" in compose_text
+    solver_build = Path(__file__).resolve().parents[3] / "solvers" / "ortools" / "build_image.sh"
+    assert solver_build.is_file()
+    build_text = solver_build.read_text(encoding="utf-8")
+    assert "solvers/ortools/Dockerfile" in build_text
+    assert "solver-ortools-service" in build_text
+
+
+def _compose_service_block(compose_text: str, service_name: str) -> str:
+    """Return one service block without requiring PyYAML in deployment tests."""
+
+    marker = f"  {service_name}:\n"
+    start = compose_text.index(marker)
+    remainder = compose_text[start + len(marker) :]
+    next_service = re.search(r"^  [a-zA-Z0-9][a-zA-Z0-9_-]*:\n", remainder, re.MULTILINE)
+    end = start + len(marker) + (next_service.start() if next_service else len(remainder))
+    return compose_text[start:end]
+
+
+def test_release_compose_exposes_one_solver_service_only_on_the_private_network():
+    compose_text = (DEPLOY_ROOT / "docker-compose.solver.release.yml").read_text(encoding="utf-8")
+    solver = _compose_service_block(compose_text, "ortools-solver")
+
+    assert 'profiles: ["solver-ortools"]' in solver
+    assert 'expose:\n      - "8080"' in solver
+    assert "ports:" not in solver
+    assert "read_only: true" in solver
+    assert "/tmp:rw,noexec,nosuid,size=16m" in solver
+    service_names = set(
+        re.findall(
+            r"^  ([a-zA-Z0-9][a-zA-Z0-9_-]*):$",
+            _compose_service_block(compose_text, "ortools-solver")
+            + _compose_service_block(compose_text, "backend"),
+            re.MULTILINE,
+        )
+    )
+    assert service_names == {"ortools-solver", "backend"}
+    assert "TLS_CERTIFICATE" not in compose_text
+    assert "TLS_KEY" not in compose_text
+
+
+def test_release_compose_explicitly_allows_private_solver_http():
+    compose_text = (DEPLOY_ROOT / "docker-compose.solver.release.yml").read_text(encoding="utf-8")
+    backend = _compose_service_block(compose_text, "backend")
+
+    assert "SOLVER_SERVICE_ALLOWED_HOSTS=ortools-solver" in backend
+    assert "SOLVER_SERVICE_ALLOWED_PORTS=8080" in backend
+    assert "SOLVER_SERVICE_ALLOW_HTTP=true" in backend
+    assert "SOLVER_SERVICE_ALLOW_LOCALHOST=false" in backend
+    assert "SOLVER_CONNECTOR_" not in backend
+
+
+def test_solver_release_overlay_has_no_nginx_or_tls_sidecar():
+    overlay = (DEPLOY_ROOT / "docker-compose.solver.release.yml").read_text(encoding="utf-8")
+
+    assert "nginx" not in overlay.lower()
+    assert "sidecar" not in overlay.lower()
+    assert "TLS_CERTIFICATE" not in overlay
+    assert "TLS_KEY" not in overlay
+
+
+def test_base_release_compose_is_usable_without_solver_secrets():
+    compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
+    assert "ortools-solver" not in compose_text
+    assert "SOLVER_CONNECTOR_SERVICE_TOKEN_FILE" not in compose_text
+    assert "ORTOOLS_CONNECTOR_SERVICE_TOKEN_SECRET" not in compose_text
+    assert "SOLVER_CONNECTOR_TLS_CA_FILE" not in compose_text
+
+
+def test_solver_release_overlay_has_no_certificate_secrets_and_is_explicitly_optional():
+    overlay = (DEPLOY_ROOT / "docker-compose.solver.release.yml").read_text(encoding="utf-8")
+    assert "SOLVER_CONNECTOR_TLS_CA_FILE" not in overlay
+    assert "solver_connector_tls_ca_certificate" not in overlay
+    assert "ORTOOLS_CONNECTOR_TLS" not in overlay
+    assert "--profile solver-ortools" in overlay
+    assert "SOLVER_CONNECTOR_" not in overlay
+    assert "ORTOOLS_CONNECTOR_" not in overlay
+
+
 def test_release_compose_loads_sandbox_settings_from_backend_env_file():
     compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
 

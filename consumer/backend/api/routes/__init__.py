@@ -30,7 +30,10 @@ from api.routes.mcp import mcp_router
 from api.routes.errors import workspace_not_found_response
 from api.protocols.acp.server import acp_router
 from api.routes.skill_evolution import skill_evolution_router
-
+from api.routes.solver_coordination import (
+    solver_coordination_public_router,
+    solver_coordination_router,
+)
 
 logger = get_logger("routes")
 
@@ -50,6 +53,8 @@ ROUTERS = (
     mcp_router,
     acp_router,
     skill_evolution_router,
+    solver_coordination_router,
+    solver_coordination_public_router,
 )
 
 _orchestrator: Optional[AgenticOrchestrator] = None
@@ -94,7 +99,6 @@ def register_routes(
         user_store_manager=user_store_manager,
         agent_config=agent_config,
     )
-
 
 def update_runtime_dependencies(
     user_store_manager: Optional[UserStoreManager] = None,

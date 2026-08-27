@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import uuid
 from typing import Any, Mapping
 
@@ -13,6 +14,11 @@ from agent.runtime.contracts import (
     RunStatus,
     RuntimeInvocationContext,
     TERMINAL_RUN_STATUSES,
+)
+from agent.runtime.errors import EventReplayUnavailableError
+from agent.runtime.event_bus import (
+    EventSubscriberLimitExceeded,
+    EventSubscriberReservationError,
 )
 from api.final_output import coerce_final_output_to_text
 from api.protocols.mcp.public_trace import MCPPublicTraceCollector
@@ -29,11 +35,64 @@ from integration.mcp.ontology_binding import (
 )
 from integration.mcp.scope import MCPRequestScope
 from llm.llm_request_mode import normalize_llm_request_mode
+from ontology.ontologies import get_ontology_registry
 from utils.identifiers import validate_session_id
 from utils.logging import get_logger
 
 
 logger = get_logger("api.protocols.mcp.workflow_bridge")
+_MCP_CLEANUP_TIMEOUT_SECONDS = 5.0
+_SOLVER_RESULT_FIELDS = frozenset(
+    {
+        "run_id",
+        "job_id",
+        "attempt_id",
+        "event_seq",
+        "status",
+        "authoritative",
+        "feasibility",
+        "optimality",
+        "proof_kind",
+        "summary",
+        "result_artifact_ref",
+        "verification_evidence_ref",
+        "candidate_results_artifact_ref",
+        "candidate_results_artifact_digest",
+        "knowledge_revision_id",
+        "fact_snapshot_digest",
+        "problem_digest",
+    }
+)
+
+
+class _MCPOntologySelectionRequired(ValueError):
+    pass
+
+
+class _AuthoritativeSolverResultCollector:
+    """Project only the public, authoritative portion of solver events."""
+
+    def __init__(self) -> None:
+        self._result: dict[str, Any] | None = None
+
+    def consume(self, event_type: str, payload: Mapping[str, Any] | None) -> None:
+        values = payload if isinstance(payload, Mapping) else {}
+        is_authoritative_event = event_type == "solver.result.authoritative"
+        is_native_tool_projection = (
+            event_type == "tool.progress" and values.get("authoritative") is True
+        )
+        if not (is_authoritative_event or is_native_tool_projection):
+            return
+        if values.get("authoritative") is not True:
+            return
+        self._result = {
+            str(key): value
+            for key, value in values.items()
+            if str(key) in _SOLVER_RESULT_FIELDS
+        }
+
+    def snapshot(self) -> dict[str, Any] | None:
+        return dict(self._result) if self._result is not None else None
 
 
 async def execute_mcp_chat_workflow_async(
@@ -62,14 +121,18 @@ async def execute_mcp_chat_workflow_async(
 
     data = dict(payload or {})
     include_trace = data.get("include_trace") is True
-    collector = _create_trace_collector(trace_config, include_trace=include_trace)
+    trace_collector = _create_trace_collector(
+        trace_config,
+        include_trace=include_trace,
+    )
+    solver_collector = _AuthoritativeSolverResultCollector()
     query = str(data.get("request") or data.get("query") or "").strip()
     if not query:
         return _workflow_error(
             "INVALID_TOOL_ARGUMENTS",
             "query must not be empty",
             status_code=400,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
     raw_session_id = str(data.get("session_id") or "").strip() or (
         "mcp_{}".format(uuid.uuid4().hex)
@@ -81,7 +144,7 @@ async def execute_mcp_chat_workflow_async(
             "INVALID_SESSION_ID",
             str(exc),
             status_code=400,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
 
     context_values = data.get("context")
@@ -90,7 +153,7 @@ async def execute_mcp_chat_workflow_async(
             "INVALID_TOOL_ARGUMENTS",
             "context must be an object or null",
             status_code=400,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
     context_values = dict(context_values or {})
     requested_operation_key = str(
@@ -106,8 +169,14 @@ async def execute_mcp_chat_workflow_async(
             "INVALID_TOOL_ARGUMENTS",
             "arguments must be an object or null",
             status_code=400,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
+    from api.routes import get_orchestrator
+
+    try:
+        orchestrator = get_orchestrator()
+    except RuntimeError:
+        orchestrator = None
     try:
         arguments = bind_chat_arguments(
             arguments=raw_arguments,
@@ -121,18 +190,47 @@ async def execute_mcp_chat_workflow_async(
                 arguments=context_values,
                 token_ontology_id=selected_ontology_id,
             ) or {}
+        if orchestrator is not None:
+            context_values = await short_io.run(
+                _resolve_mcp_ontology_context,
+                orchestrator=orchestrator,
+                scope=scope,
+                session_id=session_id,
+                context=context_values,
+            )
+            selected_ontology_id = str(
+                context_values.get("selected_ontology_id") or ""
+            ).strip()
+            if selected_ontology_id:
+                merged_arguments = dict(arguments or {})
+                for key in (
+                    "selected_ontology_id",
+                    "selected_ontology_version",
+                    "selected_version",
+                ):
+                    value = context_values.get(key)
+                    if value not in (None, ""):
+                        merged_arguments[key] = value
+                arguments = merged_arguments
         if scope.ontology_id and selected_ontology_id:
             await short_io.run(
                 validate_runtime_ontology_availability,
                 workspace_id=scope.workspace_id,
                 ontology_id=selected_ontology_id,
             )
+    except _MCPOntologySelectionRequired as exc:
+        return _workflow_error(
+            "MCP_ONTOLOGY_SELECTION_REQUIRED",
+            str(exc),
+            status_code=400,
+            trace=_trace_snapshot(trace_collector),
+        )
     except MCPOntologyBindingError as exc:
         return _workflow_error(
             exc.code,
             exc.detail,
             status_code=exc.status_code,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
             error_type=exc.error_type,
         )
     model_profile_id = str(
@@ -141,16 +239,15 @@ async def execute_mcp_chat_workflow_async(
         or ""
     ).strip()
     try:
-        from api.routes import get_orchestrator
-
-        try:
-            orchestrator = get_orchestrator()
-        except RuntimeError:
-            orchestrator = None
+        deterministic_preflight = getattr(
+            orchestrator,
+            "is_deterministic_request_potentially_applicable",
+            None,
+        )
         deterministic_candidate = bool(
-            orchestrator is not None
+            callable(deterministic_preflight)
             and await short_io.run(
-                orchestrator.is_deterministic_request_potentially_applicable,
+                deterministic_preflight,
                 user_request=query,
                 user_context=context_values,
                 arguments=arguments,
@@ -171,7 +268,7 @@ async def execute_mcp_chat_workflow_async(
             "INVALID_MODEL_PROFILE",
             str(exc),
             status_code=400,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
 
     run_scope = RunScope(
@@ -179,30 +276,31 @@ async def execute_mcp_chat_workflow_async(
         workspace_id=scope.workspace_id,
         scopes=("agent:run", "agent:read", "agent:cancel"),
     )
+    run_id = "agentic-{}".format(uuid.uuid4().hex)
+    reservation_id: str | None = None
+    turn_id: int | None = None
+    snapshot: RunSnapshot | None = None
+    run_started = False
+    admission_complete = False
+    admission_cancel_reason = "mcp_chat_admission_failed"
     try:
         async with manager.session_guard(run_scope, session_id):
             await manager.assert_session_available(run_scope, session_id)
-            turn, created = await short_io.run(
-                execution_store.create_turn_for_run,
+            reservation_id = await event_hub.reserve_subscriber(run_id)
+            turn, created = await _allocate_mcp_turn(
+                short_io=short_io,
+                execution_store=execution_store,
                 session_id=session_id,
                 user_request=query,
-                protocol_metadata={
-                    "protocol": "mcp",
-                    "external_run_id": "mcp_{}".format(uuid.uuid4().hex),
-                },
+                run_id=run_id,
             )
             if not created:
-                return _workflow_error(
-                    "MCP_CHAT_WORKFLOW_FAILED",
-                    "MCP chat admission was not unique",
-                    status_code=500,
-                    retriable=True,
-                    trace=_trace_snapshot(collector),
-                )
+                raise RuntimeError("MCP chat admission was not unique")
+            turn_id = int(turn["turn_id"])
             context = RuntimeInvocationContext(
-                run_id=str(turn["run_id"]),
+                run_id=run_id,
                 session_id=session_id,
-                turn_id=int(turn["turn_id"]),
+                turn_id=turn_id,
                 workspace_id=scope.workspace_id,
                 username=scope.username,
                 query=query,
@@ -220,34 +318,26 @@ async def execute_mcp_chat_workflow_async(
                 admission_timeout_seconds=max(0.01, float(queue_wait_seconds)),
                 timeout_seconds=max(1.0, float(execution_timeout_seconds)),
             )
-            try:
-                snapshot, manager_created = await manager.create_run(
-                    context,
-                    run_scope,
-                    session_guarded=True,
-                )
-            except Exception:
-                await short_io.run(
-                    execution_store.mark_turn_task_start_failed,
-                    session_id,
-                    int(turn["turn_id"]),
-                )
-                raise
+            snapshot, manager_created = await manager.create_run(
+                context,
+                run_scope,
+                session_guarded=True,
+            )
             if not manager_created:
-                await short_io.run(
-                    execution_store.mark_turn_task_start_failed,
-                    session_id,
-                    int(turn["turn_id"]),
-                )
-                return _workflow_error(
-                    "MCP_CHAT_WORKFLOW_FAILED",
-                    "MCP chat task registration was not unique",
-                    status_code=500,
-                    retriable=True,
-                    run_id=str(turn["run_id"]),
-                    session_id=session_id,
-                    trace=_trace_snapshot(collector),
-                )
+                raise RuntimeError("MCP chat task registration was not unique")
+            run_started = True
+        admission_complete = True
+    except EventSubscriberLimitExceeded as exc:
+        return _workflow_error(
+            "RUNTIME_CAPACITY_EXCEEDED",
+            str(exc),
+            status_code=429,
+            retriable=True,
+            trace=_trace_snapshot(trace_collector),
+        )
+    except asyncio.CancelledError:
+        admission_cancel_reason = "mcp_chat_request_cancelled"
+        raise
     except Exception as exc:
         error_code = str(getattr(exc, "error_code", ""))
         status_code = 409 if error_code == "SESSION_BUSY" else 500
@@ -256,8 +346,34 @@ async def execute_mcp_chat_workflow_async(
             str(exc) or "MCP chat admission failed",
             status_code=status_code,
             retriable=status_code >= 500,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
+    finally:
+        if not admission_complete:
+            if run_started:
+                await _cancel_mcp_run(
+                    manager=manager,
+                    run_id=run_id,
+                    scope=run_scope,
+                    reason=admission_cancel_reason,
+                )
+            elif turn_id is not None:
+                await _mark_mcp_turn_start_failed(
+                    short_io=short_io,
+                    execution_store=execution_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    run_id=run_id,
+                )
+            if reservation_id is not None:
+                await _release_mcp_reservation(
+                    event_hub=event_hub,
+                    reservation_id=reservation_id,
+                    run_id=run_id,
+                )
+
+    if snapshot is None or reservation_id is None:
+        raise RuntimeError("MCP chat admission completed without runtime state")
 
     total_timeout = max(0.01, float(queue_wait_seconds)) + max(
         0.01, float(execution_timeout_seconds)
@@ -267,18 +383,18 @@ async def execute_mcp_chat_workflow_async(
             runtime,
             snapshot,
             run_scope,
+            reservation_id=reservation_id,
             timeout_seconds=total_timeout,
-            collector=collector,
+            trace_collector=trace_collector,
+            solver_collector=solver_collector,
         )
     except TimeoutError:
-        try:
-            await manager.cancel_run(
-                snapshot.run_id,
-                run_scope,
-                reason="mcp_chat_execution_timeout",
-            )
-        except Exception:
-            logger.exception("failed to cancel timed-out MCP chat run")
+        await _cancel_mcp_run(
+            manager=manager,
+            run_id=snapshot.run_id,
+            scope=run_scope,
+            reason="mcp_chat_execution_timeout",
+        )
         return _workflow_error(
             "MCP_CHAT_EXECUTION_TIMEOUT",
             "MCP chat execution timed out and was cancelled",
@@ -286,9 +402,36 @@ async def execute_mcp_chat_workflow_async(
             retriable=True,
             run_id=snapshot.run_id,
             session_id=session_id,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
-    except Exception:
+    except asyncio.CancelledError:
+        await _cancel_mcp_run(
+            manager=manager,
+            run_id=snapshot.run_id,
+            scope=run_scope,
+            reason="mcp_chat_request_cancelled",
+        )
+        raise
+    except Exception as exc:
+        current = await manager.get_run(snapshot.run_id, run_scope)
+        if current is not None and current.status in TERMINAL_RUN_STATUSES:
+            return _project_terminal(
+                current,
+                scope=scope,
+                trace_collector=trace_collector,
+                solver_collector=solver_collector,
+            )
+        await _cancel_mcp_run(
+            manager=manager,
+            run_id=snapshot.run_id,
+            scope=run_scope,
+            reason="mcp_chat_workflow_failed",
+        )
+        logger.warning(
+            "MCP chat wait failed run_id=%s error_type=%s",
+            snapshot.run_id,
+            type(exc).__name__,
+        )
         return _workflow_error(
             "MCP_CHAT_WORKFLOW_FAILED",
             "MCP chat workflow failed",
@@ -296,9 +439,187 @@ async def execute_mcp_chat_workflow_async(
             retriable=True,
             run_id=snapshot.run_id,
             session_id=session_id,
-            trace=_trace_snapshot(collector),
+            trace=_trace_snapshot(trace_collector),
         )
-    return _project_terminal(snapshot, scope=scope, collector=collector)
+    finally:
+        await _release_mcp_reservation(
+            event_hub=event_hub,
+            reservation_id=reservation_id,
+            run_id=snapshot.run_id,
+        )
+    return _project_terminal(
+        snapshot,
+        scope=scope,
+        trace_collector=trace_collector,
+        solver_collector=solver_collector,
+    )
+
+
+async def _cancel_mcp_run(
+    *,
+    manager: Any,
+    run_id: str,
+    scope: RunScope,
+    reason: str,
+) -> None:
+    await _run_mcp_cleanup(
+        manager.cancel_run(run_id, scope, reason=reason),
+        action="cancel_run",
+        run_id=run_id,
+    )
+
+
+async def _release_mcp_reservation(
+    *,
+    event_hub: Any,
+    reservation_id: str,
+    run_id: str,
+) -> None:
+    await _run_mcp_cleanup(
+        event_hub.release_subscriber_reservation(reservation_id),
+        action="release_reservation",
+        run_id=run_id,
+    )
+
+
+async def _mark_mcp_turn_start_failed(
+    *,
+    short_io: Any,
+    execution_store: Any,
+    session_id: str,
+    turn_id: int,
+    run_id: str,
+) -> None:
+    await _run_mcp_cleanup(
+        short_io.run(
+            execution_store.mark_turn_task_start_failed,
+            session_id,
+            turn_id,
+        ),
+        action="mark_turn_task_start_failed",
+        run_id=run_id,
+    )
+
+
+def _log_mcp_cleanup_completion(
+    task: asyncio.Task[Any],
+    *,
+    action: str,
+    run_id: str,
+) -> None:
+    if task.cancelled():
+        logger.warning("MCP cleanup was cancelled action=%s run_id=%s", action, run_id)
+        return
+    try:
+        task.result()
+    except Exception as exc:
+        logger.warning(
+            "MCP cleanup failed action=%s run_id=%s error_type=%s",
+            action,
+            run_id,
+            type(exc).__name__,
+        )
+
+
+async def _run_mcp_cleanup(
+    operation: Any,
+    *,
+    action: str,
+    run_id: str,
+) -> Any:
+    cleanup = asyncio.create_task(operation)
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(cleanup),
+            timeout=_MCP_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        cleanup.add_done_callback(
+            lambda task: _log_mcp_cleanup_completion(
+                task,
+                action=action,
+                run_id=run_id,
+            )
+        )
+        raise
+    except TimeoutError:
+        cleanup.add_done_callback(
+            lambda task: _log_mcp_cleanup_completion(
+                task,
+                action=action,
+                run_id=run_id,
+            )
+        )
+        logger.warning("MCP cleanup timed out action=%s run_id=%s", action, run_id)
+    except Exception as exc:
+        logger.warning(
+            "MCP cleanup failed action=%s run_id=%s error_type=%s",
+            action,
+            run_id,
+            type(exc).__name__,
+        )
+    return None
+
+
+async def _allocate_mcp_turn(
+    *,
+    short_io: Any,
+    execution_store: Any,
+    session_id: str,
+    user_request: str,
+    run_id: str,
+) -> tuple[dict[str, Any], bool]:
+    abandoned = asyncio.Event()
+    create_turn = partial(
+        execution_store.create_turn_for_run,
+        session_id=session_id,
+        user_request=user_request,
+        run_id=run_id,
+        protocol_metadata={
+            "protocol": "mcp",
+            "external_run_id": "mcp_{}".format(uuid.uuid4().hex),
+        },
+    )
+
+    async def allocate() -> tuple[dict[str, Any], bool]:
+        turn, created = await short_io.run(create_turn)
+        if abandoned.is_set() and created:
+            await _mark_mcp_turn_start_failed(
+                short_io=short_io,
+                execution_store=execution_store,
+                session_id=session_id,
+                turn_id=int(turn["turn_id"]),
+                run_id=str(turn["run_id"]),
+            )
+        return turn, created
+
+    allocation = asyncio.create_task(allocate())
+    try:
+        return await asyncio.shield(allocation)
+    except asyncio.CancelledError:
+        abandoned.set()
+        if allocation.done() and not allocation.cancelled():
+            error = allocation.exception()
+            if error is None:
+                turn, created = allocation.result()
+                if created:
+                    await _mark_mcp_turn_start_failed(
+                        short_io=short_io,
+                        execution_store=execution_store,
+                        session_id=session_id,
+                        turn_id=int(turn["turn_id"]),
+                        run_id=str(turn["run_id"]),
+                    )
+        else:
+            async def settle_allocation() -> None:
+                await allocation
+
+            await _run_mcp_cleanup(
+                settle_allocation(),
+                action="allocate_turn",
+                run_id=run_id,
+            )
+        raise
 
 
 async def _wait_for_terminal(
@@ -306,26 +627,64 @@ async def _wait_for_terminal(
     initial: RunSnapshot,
     scope: RunScope,
     *,
+    reservation_id: str,
     timeout_seconds: float,
-    collector: MCPPublicTraceCollector | None,
+    trace_collector: MCPPublicTraceCollector | None,
+    solver_collector: _AuthoritativeSolverResultCollector,
 ) -> RunSnapshot:
     manager = runtime.manager
     current = await manager.get_run(initial.run_id, scope)
-    if (
-        current is not None
-        and current.status in TERMINAL_RUN_STATUSES
-        and collector is None
-    ):
-        return current
+    if current is not None:
+        is_untraced_terminal = (
+            current.status in TERMINAL_RUN_STATUSES
+            and trace_collector is None
+            and current.last_seq == 0
+        )
+        if is_untraced_terminal:
+            return current
 
     async def consume() -> RunSnapshot:
-        async for event in runtime.event_hub.stream(initial.run_id, after_seq=0):
-            if collector is not None:
-                collector.consume({"type": event.event_type, "payload": event.payload})
-        terminal = await manager.get_run(initial.run_id, scope)
-        if terminal is None:
-            raise RuntimeError("canonical run disappeared")
-        return terminal
+        cursor = 0
+        pending_reservation_id: str | None = reservation_id
+        while True:
+            stream = runtime.event_hub.stream(
+                initial.run_id,
+                after_seq=cursor,
+                reservation_id=pending_reservation_id,
+            )
+            pending_reservation_id = None
+            try:
+                async for event in stream:
+                    cursor = max(cursor, int(event.seq))
+                    if trace_collector is not None:
+                        trace_collector.consume(
+                            {"type": event.event_type, "payload": event.payload}
+                        )
+                    solver_collector.consume(event.event_type, event.payload)
+            except EventSubscriberReservationError:
+                continue
+            except EventReplayUnavailableError:
+                current_snapshot = await manager.get_run(initial.run_id, scope)
+                if current_snapshot is None:
+                    raise RuntimeError("canonical run disappeared")
+                if current_snapshot.status in TERMINAL_RUN_STATUSES:
+                    return current_snapshot
+                cursor = current_snapshot.last_seq
+                continue
+            except EventSubscriberLimitExceeded:
+                await asyncio.sleep(0.01)
+                continue
+            finally:
+                await stream.aclose()
+
+            current_snapshot = await manager.get_run(initial.run_id, scope)
+            if current_snapshot is None:
+                raise RuntimeError("canonical run disappeared")
+            if current_snapshot.status in TERMINAL_RUN_STATUSES:
+                if cursor >= current_snapshot.last_seq:
+                    return current_snapshot
+                continue
+            await asyncio.sleep(0)
 
     try:
         return await asyncio.wait_for(consume(), timeout=max(0.01, timeout_seconds))
@@ -337,7 +696,8 @@ def _project_terminal(
     snapshot: RunSnapshot,
     *,
     scope: MCPRequestScope,
-    collector: MCPPublicTraceCollector | None,
+    trace_collector: MCPPublicTraceCollector | None,
+    solver_collector: _AuthoritativeSolverResultCollector,
 ) -> tuple[dict[str, Any], int]:
     status = snapshot.status
     content = (
@@ -354,13 +714,18 @@ def _project_terminal(
         "status": "success" if status is RunStatus.COMPLETED else status.value,
         "resumable": False,
     }
+    authoritative_solver_result = solver_collector.snapshot()
+    if authoritative_solver_result is not None:
+        result["authoritative_solver_result"] = authoritative_solver_result
+    if snapshot.result is not None and snapshot.result.structured_content is not None:
+        result["final_output"] = snapshot.result.structured_content
     if status is RunStatus.COMPLETED:
         response = {
             "ok": True,
             "result": result,
             "scope": {"username": scope.username, "workspace_id": scope.workspace_id},
         }
-        _attach_trace(response, collector)
+        _attach_trace(response, trace_collector)
         return response, 200
 
     error = snapshot.error
@@ -374,7 +739,8 @@ def _project_terminal(
     elif error_code == "INTERACTION_NOT_SUPPORTED":
         public_code, status_code = "INTERACTION_NOT_SUPPORTED", 409
     else:
-        public_code, status_code = "MCP_CHAT_WORKFLOW_FAILED", 500
+        public_code, status_code = error_code, 500
+    error_details = error.details if error is not None else {}
     return _workflow_error(
         public_code,
         error.message if error is not None else "MCP chat workflow failed",
@@ -383,7 +749,8 @@ def _project_terminal(
         run_id=snapshot.run_id,
         session_id=snapshot.session_id,
         result=result,
-        trace=_trace_snapshot(collector),
+        trace=_trace_snapshot(trace_collector),
+        phase=str(error_details.get("phase") or "").strip(),
     )
 
 
@@ -398,12 +765,14 @@ def _workflow_error(
     result: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
     error_type: str = "workflow_error",
+    phase: str = "",
 ) -> tuple[dict[str, Any], int]:
     body = error_result(
         error_type=error_type,
         error_code=code,
         detail=detail,
         retriable=retriable,
+        phase=phase,
     )
     if result is not None:
         body["result"] = result
@@ -417,6 +786,76 @@ def _workflow_error(
     if trace is not None:
         body["trace"] = trace
     return body, status_code
+
+
+def _resolve_mcp_ontology_context(
+    *,
+    orchestrator: Any,
+    scope: MCPRequestScope,
+    session_id: str,
+    context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    resolved = dict(context or {})
+    if str(resolved.get("selected_ontology_id") or "").strip():
+        return resolved
+
+    locked = _locked_session_ontology_context(
+        orchestrator,
+        username=scope.username,
+        workspace_id=scope.workspace_id,
+        session_id=session_id,
+    )
+    if locked:
+        resolved.update(locked)
+        return resolved
+
+    registry = get_ontology_registry(workspace_id=scope.workspace_id)
+    enabled = sorted(
+        {
+            str(item or "").strip()
+            for item in registry.list_enabled_ontologies()
+            if str(item or "").strip()
+        }
+    )
+    if len(enabled) == 1:
+        resolved["selected_ontology_id"] = enabled[0]
+    elif len(enabled) > 1:
+        raise _MCPOntologySelectionRequired(
+            "This workspace has multiple enabled ontology packages; "
+            "selected_ontology_id is required for a new MCP chat session."
+        )
+    return resolved
+
+
+def _locked_session_ontology_context(
+    orchestrator: Any,
+    *,
+    username: str,
+    workspace_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    get_stores = getattr(orchestrator, "_get_stores", None)
+    if not callable(get_stores):
+        return {}
+    try:
+        chat_store, _execution_store = get_stores(username, workspace_id)
+        session = chat_store.get_session(session_id)
+        metadata = dict(getattr(session, "metadata", {}) or {})
+    except (AttributeError, LookupError, OSError, TypeError, ValueError):
+        return {}
+    selected_id = str(metadata.get("selected_ontology_id") or "").strip()
+    if not selected_id:
+        return {}
+    result = {"selected_ontology_id": selected_id}
+    selected_version = str(
+        metadata.get("selected_ontology_version")
+        or metadata.get("selected_version")
+        or ""
+    ).strip()
+    if selected_version:
+        result["selected_ontology_version"] = selected_version
+        result["selected_version"] = selected_version
+    return result
 
 
 def _create_trace_collector(

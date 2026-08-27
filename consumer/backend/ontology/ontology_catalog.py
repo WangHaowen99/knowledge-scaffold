@@ -18,6 +18,10 @@ from ontology.ontologies import (
     get_ontology_registry,
     get_runtime_ontology_manifest,
 )
+from solver_coordination.capability_catalog import (
+    load_solver_capability_catalog,
+    public_solver_catalog,
+)
 from ontology.package_browser import (
     PackageBrowserError,
     list_package_files,
@@ -826,13 +830,13 @@ def find_field_alias_matches(
             continue
         for name in (definition.title, *definition.aliases):
             display_name = str(name or "").strip()
-            if (
-                not display_name
-                or len(display_name) > _FIELD_REFERENCE_TEXT_LIMIT
-                or len(definition.key) > _FIELD_REFERENCE_TEXT_LIMIT
-                or normalize_object_identifier(display_name)
-                == normalize_object_identifier(definition.key)
-            ):
+            if not display_name or len(display_name) > _FIELD_REFERENCE_TEXT_LIMIT:
+                continue
+            if len(definition.key) > _FIELD_REFERENCE_TEXT_LIMIT:
+                continue
+            if normalize_object_identifier(
+                display_name
+            ) == normalize_object_identifier(definition.key):
                 continue
             compare = normalize_object_identifier(display_name)
             identifier_keys = _field_identifier_keys(index, compare)
@@ -2346,6 +2350,22 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
     rules_text = read_optional_text(ontology_dir / "rules" / "index.md")
     metrics_text = read_optional_text(ontology_dir / "metrics" / "index.md")
     script_catalog = load_script_catalog(ontology_dir)
+    selected_manifest_path = Path(ontology.manifest_path)
+    if not selected_manifest_path.is_file() or selected_manifest_path.is_symlink():
+        raise ValueError("Ontology revision manifest is missing or unsafe")
+    manifest_data = yaml.safe_load(selected_manifest_path.read_text(encoding="utf-8")) or {}
+    solver_catalog = ()
+    schema_version = str(
+        getattr(ontology, "schema_version", "")
+        or manifest_data.get("schema_version")
+        or ""
+    ).strip()
+    if schema_version == "0.2" and ontology.enabled:
+        solver_catalog = load_solver_capability_catalog(
+            ontology_dir,
+            manifest_data,
+            package_revision=ontology.version,
+        )
     deterministic_keys = protected_operation_keys(ontology_dir)
     operations_catalog = parse_markdown_table(operations_text) or operations_text
     operations_catalog = _annotate_coordinating_operations(
@@ -2368,6 +2388,11 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
         "metrics_catalog": parse_markdown_table(metrics_text) or metrics_text,
         "script_catalog": public_script_catalog(script_catalog),
         "value_domain_present": bool(load_value_bindings(ontology_dir)),
+        **(
+            {"solver_catalog": public_solver_catalog(solver_catalog)}
+            if schema_version == "0.2" and ontology.enabled
+            else {}
+        ),
     }
     if deterministic_keys:
         payload["deterministic_operations"] = sorted(
@@ -2566,6 +2591,14 @@ def format_root_payload_compact(
         "script_catalog:",
         *_format_script_catalog(root_payload.get("script_catalog")),
     ])
+    if "solver_catalog" in root_payload:
+        lines.extend(
+            [
+                "",
+                "solver_catalog:",
+                *_format_solver_catalog(root_payload.get("solver_catalog")),
+            ]
+        )
     return lines
 
 
@@ -2651,6 +2684,31 @@ def _format_script_catalog(catalog: Any) -> List[str]:
             lines.append("- {} (parameters: {})".format(label, params_text))
         else:
             lines.append("- {} (parameters: none)".format(label))
+    return lines or ["- none"]
+
+
+def _format_solver_catalog(catalog: Any) -> List[str]:
+    if not catalog:
+        return ["- none"]
+    if not isinstance(catalog, list):
+        return _format_catalog(catalog)
+
+    lines: List[str] = []
+    for entry in catalog:
+        if not isinstance(entry, dict):
+            continue
+        operation_key = _compact_inline_text(entry.get("operation_key"))
+        if not operation_key:
+            continue
+        model_id = _compact_inline_text(entry.get("decision_model_id"))
+        problem_family = _compact_inline_text(entry.get("problem_family"))
+        detail_parts = []
+        if model_id:
+            detail_parts.append("decision_model: {}".format(model_id))
+        if problem_family:
+            detail_parts.append("problem_family: {}".format(problem_family))
+        details = "; ".join(detail_parts)
+        lines.append("- {}{}".format(operation_key, " ({})".format(details) if details else ""))
     return lines or ["- none"]
 
 

@@ -80,7 +80,7 @@ def initialize_open_telemetry(app: Any = None) -> None:
                 _meter_provider_initialized = True
 
         if app is not None:
-            _instrument_flask(app)
+            _instrument_fastapi(app)
         if not _client_instrumentation_initialized:
             _instrument_clients()
             _client_instrumentation_initialized = True
@@ -350,22 +350,28 @@ class _WorkspaceContextSpanProcessor(_SpanProcessorBase):
         return True
 
 
-def _instrument_flask(app: Any) -> None:
+def _instrument_fastapi(app: Any) -> None:
     app_id = id(app)
     if app_id in _instrumented_apps:
         return
     try:
-        from opentelemetry.instrumentation.flask import FlaskInstrumentor
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        FlaskInstrumentor().instrument_app(app, request_hook=_flask_request_hook)
+        FastAPIInstrumentor.instrument_app(
+            app,
+            server_request_hook=_asgi_server_request_hook,
+        )
         _instrumented_apps.add(app_id)
     except ImportError:
-        logger.info("Flask OpenTelemetry instrumentation is not installed")
+        logger.info("FastAPI OpenTelemetry instrumentation is not installed")
     except Exception:
-        logger.warning("Failed to instrument Flask", exc_info=True)
+        logger.warning("Failed to instrument FastAPI", exc_info=True)
 
 
-def _flask_request_hook(span: Any, environ: Mapping[str, Any]) -> None:
+def _asgi_server_request_hook(
+    span: Any,
+    scope: Mapping[str, Any],
+) -> None:
     if span is None:
         return
     try:
@@ -377,8 +383,19 @@ def _flask_request_hook(span: Any, environ: Mapping[str, Any]) -> None:
         if router is not None:
             span.set_attribute("agent.observability.router_id", router.router_id)
     except Exception:
-        logger.warning("Failed to bind Flask request to the workspace observer", exc_info=True)
-    workspace_id = str(environ.get("HTTP_X_WORKSPACE_ID") or "").strip()
+        logger.warning(
+            "Failed to bind ASGI request to the workspace observer",
+            exc_info=True,
+        )
+    try:
+        from starlette.datastructures import Headers
+
+        workspace_id = str(
+            Headers(scope=scope).get("x-workspace-id") or ""
+        ).strip()
+    except Exception:
+        logger.warning("Failed to read ASGI request headers", exc_info=True)
+        workspace_id = ""
     if workspace_id:
         span.set_attribute("agent.workspace_id", workspace_id)
 

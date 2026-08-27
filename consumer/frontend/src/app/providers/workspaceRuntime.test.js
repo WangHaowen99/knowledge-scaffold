@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { clearWorkspaceRuntime } from './workspaceRuntime.js';
 
-test('workspace switch clears streams, message caches and session state', () => {
+test('workspace switch clears streams, message caches, session state and optional solver state', () => {
   const calls = [];
   clearWorkspaceRuntime({
     streamManager: {
@@ -12,7 +12,15 @@ test('workspace switch clears streams, message caches and session state', () => 
     chat: {
       resetSessionsState: () => calls.push('reset-sessions'),
     },
+    resetSolver: () => calls.push('reset-solver'),
   });
 
-  assert.deepEqual(calls, ['clear-caches', 'reset-sessions']);
+  assert.deepEqual(calls, ['clear-caches', 'reset-sessions', 'reset-solver']);
+});
+
+test('workspace runtime reset keeps the solver callback optional', () => {
+  assert.doesNotThrow(() => clearWorkspaceRuntime({
+    streamManager: { clearAllCaches() {} },
+    chat: { resetSessionsState() {} },
+  }));
 });

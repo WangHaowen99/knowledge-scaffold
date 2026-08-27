@@ -9,6 +9,7 @@ import json
 import pytest
 
 from agent.core.jiuwen.tools import get_jiuwen_tool_infos
+from agent.core.shared.solver_route_guard import bind_solver_route_requirement
 from agent.core.shared.tool_context import build_tool_context
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 import agent.tools.execute_script as execute_script_module
@@ -262,6 +263,61 @@ def test_jiuwen_and_token_schemas_use_selected_ontology_and_workspace(monkeypatc
 
     assert tool_info_parameters == token_parameters
     assert "workspace_input" in tool_info_parameters["properties"]["arguments"]["properties"]
+
+
+def test_suppressed_solver_state_hides_cards_from_both_jiuwen_tool_shapes(monkeypatch):
+    token_calls = []
+    info_calls = []
+    token_schema = {
+        "type": "function",
+        "function": {
+            "name": "execute_script",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    tool_info = {
+        "type": "function",
+        "name": "execute_script",
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+    def fake_get_tools_schema(_caller, **kwargs):
+        token_calls.append(kwargs)
+        return [token_schema]
+
+    def fake_get_jiuwen_tool_infos(_caller, **kwargs):
+        info_calls.append(kwargs)
+        return [tool_info]
+
+    monkeypatch.setattr(
+        "agent.tools.registry.get_tools_schema",
+        fake_get_tools_schema,
+    )
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.get_jiuwen_tool_infos",
+        fake_get_jiuwen_tool_infos,
+    )
+    engine = object.__new__(JiuwenReactLoopEngine)
+    engine.agent_config = SimpleNamespace(
+        web_search=SimpleNamespace(enabled=False),
+    )
+    state = {
+        "workspace_id": "workspace-synthetic",
+        "user_context": bind_solver_route_requirement(
+            {
+                "selected_ontology_id": "package-synthetic",
+                "selected_ontology_version": "revision-synthetic-1",
+                "agent_mode": "quick",
+            },
+            None,
+            suppress_solver_tools=True,
+        ),
+    }
+
+    assert engine._tools_schema_for_state(state, caller="main") == [token_schema]
+    assert engine._jiuwen_tool_infos_for_state(state, caller="main") == [tool_info]
+    assert token_calls[0]["include_solver"] is False
+    assert info_calls[0]["include_solver"] is False
 
 
 def test_dynamic_schema_is_isolated_by_workspace_under_concurrency(monkeypatch, tmp_path):

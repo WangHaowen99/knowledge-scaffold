@@ -57,6 +57,7 @@ from .jiuwen.trace import (
     JiuwenModelTraceBridge as _BaseJiuwenModelTraceBridge,
     jiuwen_agent_callback_event_class as _default_jiuwen_agent_callback_event_class,
 )
+from .model_connection_policy import resolve_model_connection_policy
 from .shared.events import (
     emit_iteration_completed_event,
     emit_reasoning_summary_event,
@@ -1140,6 +1141,14 @@ class JiuwenReactLoopEngine:
             )
             effective_rounds = _resolve_effective_context_max_rounds(configured_rounds, state)
 
+        from .shared.solver_route_guard import solver_route_requirement_from_state
+
+        tool_choice = (
+            "required"
+            if solver_route_requirement_from_state(state) is not None
+            else None
+        )
+
         return create_default_jiuwen_agent(
             llm_config=llm_config
             or _resolve_jiuwen_llm_config(
@@ -1158,6 +1167,7 @@ class JiuwenReactLoopEngine:
                 "parallel_default_max_workers",
                 10,
             ),
+            tool_choice=tool_choice,
         )
 
     def _seed_initial_messages(self, state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
@@ -1574,10 +1584,43 @@ class JiuwenReactLoopEngine:
         if not query:
             raise ValueError("Jiuwen ReAct runtime requires a user_request or user message.")
         query_with_context = self._append_selected_ontology_context_to_query(state, query)
+        query_with_context = self._append_current_turn_tool_provenance_to_query(
+            state,
+            query_with_context,
+        )
         return {
             "query": append_current_date_reminder_to_text(query_with_context),
             "conversation_id": str(state.get("session_id") or "default_session"),
         }
+
+    @staticmethod
+    def _append_current_turn_tool_provenance_to_query(
+        state: Mapping[str, Any],
+        query: str,
+    ) -> str:
+        from .shared.solver_route_guard import solver_tools_suppressed_from_state
+
+        if not solver_tools_suppressed_from_state(state):
+            return query
+        return "\n".join(
+            (
+                query,
+                "",
+                "<Current-Turn-Tool-Provenance>",
+                "Only the latest user message defines the active request.",
+                (
+                    "Earlier completed tool-using turns may have been omitted from "
+                    "the active context."
+                ),
+                (
+                    "Do not infer, continue, or report an omitted task unless the "
+                    "latest user message explicitly requests it."
+                ),
+                "Do not mention unavailable or omitted tools in the answer.",
+                "Use only the tools exposed for this turn.",
+                "</Current-Turn-Tool-Provenance>",
+            )
+        )
 
     def _append_selected_ontology_context_to_query(self, state: Mapping[str, Any], query: str) -> str:
         selected_ontology_id = _active_ontology_id_from_state(state)
@@ -1630,6 +1673,7 @@ class JiuwenReactLoopEngine:
         subagent_lineage: Optional[Dict[str, Any]],
         observer: Any,
         agent_iteration: int,
+        traceparent: Optional[str] = None,
     ) -> ToolContext:
         workspace_id = str(state.get("workspace_id") or "").strip() or _resolve_current_workspace_id()
         return build_tool_context(
@@ -1645,36 +1689,58 @@ class JiuwenReactLoopEngine:
             subagent_lineage=subagent_lineage,
             protocol_event_observer=protocol_event_observer,
             observer=observer or NOOP_OBSERVER,
+            traceparent=traceparent,
         )
 
     def _tools_schema_for_state(self, state: Mapping[str, Any], *, caller: str) -> list[Mapping[str, Any]]:
         from ..tools.registry import get_tools_schema
+        from .shared.solver_route_guard import (
+            restrict_tools_for_solver_route,
+            solver_route_requirement_from_state,
+            solver_tools_suppressed_from_state,
+        )
 
         schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
         include_memory = _memory_tool_requested_in_state(state)
-        return get_tools_schema(
+        schemas = get_tools_schema(
             schema_caller,
             include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
+            include_solver=not solver_tools_suppressed_from_state(state),
             selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
+        return restrict_tools_for_solver_route(
+            schemas,
+            requirement=solver_route_requirement_from_state(state),
+        )
 
     def _jiuwen_tool_infos_for_state(self, state: Mapping[str, Any], *, caller: str) -> list[Mapping[str, Any]]:
+        from .shared.solver_route_guard import (
+            restrict_tools_for_solver_route,
+            solver_route_requirement_from_state,
+            solver_tools_suppressed_from_state,
+        )
+
         schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
         include_memory = _memory_tool_requested_in_state(state)
-        return get_jiuwen_tool_infos(
+        infos = get_jiuwen_tool_infos(
             schema_caller,
             include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
+            include_solver=not solver_tools_suppressed_from_state(state),
             selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
+        )
+        return restrict_tools_for_solver_route(
+            infos,
+            requirement=solver_route_requirement_from_state(state),
         )
 
     def _tool_visibility_for_state(self, state: Mapping[str, Any], *, caller: str) -> tuple[str, bool, bool, bool]:
@@ -1773,6 +1839,7 @@ def create_default_jiuwen_agent(
     enable_reasoning: bool = False,
     stream_enabled: bool = True,
     parallel_default_max_workers: int = 10,
+    tool_choice: Optional[str] = None,
 ) -> Any:
     _configure_jiuwen_log_path()
     try:
@@ -1798,12 +1865,15 @@ def create_default_jiuwen_agent(
     model_client_config_cls = model_config_module.ModelClientConfig
     model_request_config_cls = model_config_module.ModelRequestConfig
 
+    connection_policy = resolve_model_connection_policy(
+        configured_timeout=getattr(llm_config, "timeout", None)
+    )
     model_client_config = model_client_config_cls(
         client_provider=_map_jiuwen_provider(getattr(llm_config, "provider", None)),
         api_key=str(getattr(llm_config, "api_key", "") or ""),
         api_base=str(getattr(llm_config, "base_url", "") or ""),
-        timeout=float(getattr(llm_config, "timeout", 60) or 60),
-        max_retries=3,
+        timeout=connection_policy.timeout,
+        max_retries=connection_policy.max_retries,
         verify_ssl=False,
     )
     reasoning_extra_body = get_provider_adapter(
@@ -1816,6 +1886,10 @@ def create_default_jiuwen_agent(
     }
     if reasoning_extra_body:
         model_request_kwargs["extra_body"] = reasoning_extra_body
+    if tool_choice is not None:
+        if tool_choice != "required":
+            raise ValueError("tool_choice must be required or None")
+        model_request_kwargs["tool_choice"] = tool_choice
     model_request_kwargs.update(
         get_provider_adapter(getattr(llm_config, "provider", None)).top_level_params(
             stream=bool(stream_enabled)
@@ -2196,7 +2270,15 @@ def _build_jiuwen_history_source_messages(state: Mapping[str, Any]) -> list[Dict
         for message in list(state.get("messages") or [])
         if isinstance(message, Mapping)
     ]
-    return _drop_current_user_message(messages, state)
+    history = _drop_current_user_message(messages, state)
+    from .shared.solver_route_guard import (
+        filter_solver_history_messages,
+        solver_tools_suppressed_from_state,
+    )
+
+    if solver_tools_suppressed_from_state(state):
+        return filter_solver_history_messages(history)
+    return history
 
 
 def _build_jiuwen_context_messages(

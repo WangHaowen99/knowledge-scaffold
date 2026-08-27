@@ -13,6 +13,7 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     ExecutionStore,
     InteractionCheckpointError,
+    SolverCheckpointError,
     TurnOwnershipError,
 )
 
@@ -579,6 +580,151 @@ def test_turn_feedback_is_durable_and_queryable_without_evolution_store(tmp_path
 
     assert reloaded.set_turn_feedback("sess-feedback", 2, "none") is True
     assert "feedback" not in reloaded.get_turn("sess-feedback", 2)
+
+
+def test_waiting_solver_checkpoint_and_tool_inbox_survive_process_reload(tmp_path):
+    storage_dir = tmp_path / "executions"
+    store = ExecutionStore(str(storage_dir))
+    store.start_turn(
+        session_id="sess-solver",
+        turn_id=1,
+        run_id="run-solver",
+        user_request="solve synthetic plan",
+    )
+    checkpoint = {
+        "schema_version": "agent.solver-checkpoint.v1",
+        "stage": "waiting_solver",
+        "tool_call": {
+            "id": "tool-call-solver",
+            "name": "solve_synthetic_aaaaaaaa",
+            "arguments": {"item_count": 2},
+        },
+        "state": {
+            "run_id": "run-solver",
+            "session_id": "sess-solver",
+            "current_turn_id": 1,
+            "workspace_id": "workspace-synthetic",
+            "user_id": "owner-synthetic",
+            "user_request": "solve synthetic plan",
+            "user_context": {
+                "selected_ontology_id": "package-synthetic",
+                "selected_ontology_version": "revision-synthetic-1",
+            },
+            "messages": [
+                {"role": "user", "content": "solve synthetic plan"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tool-call-solver",
+                            "type": "function",
+                            "function": {
+                                "name": "solve_synthetic_aaaaaaaa",
+                                "arguments": "{\"item_count\":2}",
+                            },
+                        }
+                    ],
+                },
+            ],
+            "read_documents": {"by_path": {}, "by_resource": {}},
+            "results": {},
+            "completed_ids": [],
+            "failed_ids": [],
+            "errors": [],
+            "evolution_recall_records": [],
+            "debug": False,
+            "final_output": None,
+        },
+    }
+
+    saved = store.save_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        checkpoint=checkpoint,
+    )
+    assert saved == checkpoint
+
+    result = {
+        "status": "completed",
+        "authoritative": True,
+        "run_id": "run-solver",
+        "job_id": "job-solver",
+    }
+    first = store.put_solver_tool_result(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        tool_call_id="tool-call-solver",
+        result_digest="sha256:" + "a" * 64,
+        result=result,
+    )
+    replay = store.put_solver_tool_result(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        tool_call_id="tool-call-solver",
+        result_digest="sha256:" + "a" * 64,
+        result=result,
+    )
+    assert first == replay
+
+    reloaded = ExecutionStore(str(storage_dir))
+    durable = reloaded.get_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+    )
+    assert durable["checkpoint"] == checkpoint
+    assert durable["tool_result_inbox"]["result"] == result
+    assert durable["tool_result_inbox"]["result_digest"] == "sha256:" + "a" * 64
+
+    with pytest.raises(SolverCheckpointError, match="tool result"):
+        reloaded.put_solver_tool_result(
+            "sess-solver",
+            run_id="run-solver",
+            turn_id=1,
+            tool_call_id="tool-call-solver",
+            result_digest="sha256:" + "b" * 64,
+            result={"status": "different"},
+        )
+
+    next_checkpoint = dict(checkpoint)
+    next_checkpoint["tool_call"] = {
+        **checkpoint["tool_call"],
+        "id": "tool-call-solver-next",
+        "name": "solve_synthetic_bbbbbbbb",
+    }
+    next_checkpoint["state"] = {
+        **checkpoint["state"],
+        "messages": [
+            {
+                **checkpoint["state"]["messages"][1],
+                "tool_calls": [
+                    {
+                        **checkpoint["state"]["messages"][1]["tool_calls"][0],
+                        "id": "tool-call-solver-next",
+                        "function": {
+                            "name": "solve_synthetic_bbbbbbbb",
+                            "arguments": "{\"item_count\":3}",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    store.save_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+        turn_id=1,
+        checkpoint=next_checkpoint,
+    )
+    switched = store.get_waiting_solver_checkpoint(
+        "sess-solver",
+        run_id="run-solver",
+    )
+    assert switched["checkpoint"]["tool_call"]["id"] == "tool-call-solver-next"
+    assert switched["tool_result_inbox"] is None
 
 
 def test_start_next_turn_allocates_unique_ids_atomically(tmp_path):

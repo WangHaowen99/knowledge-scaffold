@@ -1,0 +1,8 @@
+{
+  "protocol_version": "solver.job.v1",
+  "job_id": "job_synthetic_0001",
+  "request_ref": "req_0123456789ABCDEFGHIJ",
+  "problem_family": "binary_ordered_route",
+  "family_version": "1.0",
+  "status": "accepted"
+}

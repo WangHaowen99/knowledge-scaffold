@@ -299,7 +299,7 @@ class CurrentRuntimeToolAdapter:
                 },
             }
             append_assistant_tool_call_to_state(self.state, assistant_tool_call)
-            self._emit_state_snapshot()
+            await self._emit_state_snapshot()
             if self._serial_execution_lock is not None and not lock_held:
                 await _acquire_thread_lock_async(self._serial_execution_lock)
                 try:
@@ -359,7 +359,7 @@ class CurrentRuntimeToolAdapter:
             )
         except (WorkflowCancelledError, asyncio.CancelledError):
             self._skip_failure_guard_invocation(call_index)
-            self._rollback_cancelled_tool_call(tool_call.id)
+            await self._rollback_cancelled_tool_call(tool_call.id)
             if self.tool_batch_failed_callback is not None:
                 self.tool_batch_failed_callback(
                     context,
@@ -375,7 +375,7 @@ class CurrentRuntimeToolAdapter:
                 )
             raise
         except AgentLoopStalledError as exc:
-            self._emit_state_snapshot()
+            await self._emit_state_snapshot()
             if callable(self.terminal_error_callback):
                 self.terminal_error_callback(exc)
             if self.tool_batch_failed_callback is not None:
@@ -408,7 +408,7 @@ class CurrentRuntimeToolAdapter:
                     batch_index=batch_index,
                 )
             raise
-        self._emit_state_snapshot()
+        await self._emit_state_snapshot()
         finished_at = time.perf_counter()
         elapsed_ms = int((finished_at - started_at) * 1000)
         terminal = bool(getattr(batch_result, "terminal", False))
@@ -447,16 +447,25 @@ class CurrentRuntimeToolAdapter:
             self._invocation_index += 1
             return self._invocation_index
 
-    def _emit_state_snapshot(self) -> None:
+    async def _emit_state_snapshot(self) -> None:
         if not callable(self.state_snapshot_callback):
             return
         with JIUWEN_STATE_MESSAGES_LOCK:
             snapshot = deepcopy(self.state)
-        self.state_snapshot_callback(snapshot)
+        await call_async_or_thread(
+            self.state_snapshot_callback,
+            snapshot,
+            run_id=str(self.state.get("run_id") or "").strip() or None,
+            task_name="jiuwen-state-snapshot",
+            offload_kind="short",
+        )
 
-    def _rollback_cancelled_tool_call(self, tool_call_id: Optional[str]) -> None:
+    async def _rollback_cancelled_tool_call(
+        self,
+        tool_call_id: Optional[str],
+    ) -> None:
         if remove_assistant_tool_call_from_state(self.state, tool_call_id):
-            self._emit_state_snapshot()
+            await self._emit_state_snapshot()
 
     def _register_failure_guard_invocation(self, call_index: int) -> None:
         register_invocation = getattr(self.failure_guard, "register_invocation", None)
@@ -768,6 +777,7 @@ def get_jiuwen_tool_infos(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     include_interaction: bool = True,
+    include_solver: bool = True,
     selected_ontology_id: Optional[str] = None,
     selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -789,7 +799,10 @@ def get_jiuwen_tool_infos(
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
+            include_solver=include_solver,
             workspace_id=workspace_id,
+            selected_ontology_id=selected_ontology_id,
+            selected_ontology_version=selected_ontology_version,
         )
     ]
 

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
   AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, FileText, GitBranch,
-  Globe2, Loader2, Search, Wrench,
+  Globe2, Loader2, Search, ShieldCheck, ShieldX, Workflow, Wrench,
 } from 'lucide-react';
 
 import Markdown from '../../../shared/ui/Markdown';
+import { CandidateResultsPanel } from '../../solver/index.js';
 import { formatDurationMs, formatTime } from '../lib/chatPresentation';
 import { resolveRunProgressView } from '../lib/streamLifecycle';
 import { CopyButton, RunFeedback } from './RunActions';
@@ -77,9 +78,13 @@ export function AssistantTurn({ turn, sessionId = '', runState = null }) {
     .trim() || turn.content;
   const hasVisibleBlock = (turn.blocks || []).some((block) => block.kind !== 'status');
   const hasLiveProgress = Boolean(turn.isLoading && runState?.isLoading);
+  const hasSolverResult = (turn.blocks || []).some(
+    (block) => block.kind === 'solver' && Boolean(block.solverResult),
+  );
 
   return (
-    <article className="msg a assistant-turn" data-run-id={turn.runId || undefined} data-message-key={turn.key}>
+    <article className={`msg a assistant-turn${hasSolverResult ? ' has-solver-result' : ''}`}
+      data-run-id={turn.runId || undefined} data-message-key={turn.key}>
       <div className="av">知</div>
       <div className="bubwrap">
         <div className={`bub assistant-turn-body status-${turn.status}`}>
@@ -102,6 +107,7 @@ function ConversationBlock({ block, turn, answerText, sessionId, runState }) {
   if (block.kind === 'reasoning') return <ReasoningBlock block={block} />;
   if (block.kind === 'business_data') return <BusinessDataResult block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'web_search') return <WebSearchSources block={block} sessionId={sessionId} runId={turn.runId} />;
+  if (block.kind === 'solver') return <SolverCallBlock block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'tool') return <ToolCallBlock block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'artifacts') return <ArtifactBlock block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'subagent') return <SubagentGroup block={block} sessionId={sessionId} runId={turn.runId} />;
@@ -169,6 +175,91 @@ export function ToolCallBlock({ block, sessionId = '', runId = '' }) {
           output_ref: block.outputRef,
           output_size: block.outputSize,
         }} fallbackText={block.text} sessionId={sessionId} runId={runId} />
+        {block.error && <div className="conversation-error" role="alert"><AlertCircle size={13} />{block.error}</div>}
+      </div>
+    </details>
+  );
+}
+
+const solverSemanticLabel = (value) => ({
+  feasible: '可行',
+  infeasible: '已证明不可行',
+  not_found: '未找到可行解',
+  proven_optimal: '已证明最优',
+  not_proven: '未证明最优',
+  not_applicable: '不适用',
+}[value] || value || '—');
+
+const solverProofKindLabel = (value) => ({
+  constraint_recalculation: '约束重新计算',
+  independent_domain_constraint_check: '独立业务约束校验',
+  verifier_exhaustive_check: '全候选独立校验',
+  exhaustive: '全候选校验',
+  verifier_infeasibility_certificate: '不可行性证明',
+}[value] || value || '—');
+
+function SolverAuthoritativeResult({ result }) {
+  return (
+    <section className="solver-authoritative-result" aria-label="已验证求解结果">
+      <header>
+        <span className="solver-verified-mark"><ShieldCheck size={15} />独立校验通过</span>
+        <span className="solver-authority-label">权威结果</span>
+      </header>
+      <dl className="solver-result-semantics">
+        <div><dt>可行性</dt><dd>{solverSemanticLabel(result.feasibility)}</dd></div>
+        <div><dt>最优性</dt><dd>{solverSemanticLabel(result.optimality)}</dd></div>
+        <div><dt>证明方式</dt><dd>{solverProofKindLabel(result.proof_kind)}</dd></div>
+      </dl>
+      <CandidateResultsPanel result={result} />
+      <details className="solver-result-evidence">
+        <summary>版本与证据</summary>
+        <dl>
+          {result.knowledge_revision_id && <div><dt>知识版本</dt><dd><code>{result.knowledge_revision_id}</code></dd></div>}
+          {result.fact_snapshot_digest && <div><dt>事实快照</dt><dd><code>{result.fact_snapshot_digest}</code></dd></div>}
+          {result.result_artifact_ref && <div><dt>结果制品</dt><dd><code>{result.result_artifact_ref}</code></dd></div>}
+          {result.verification_evidence_ref && <div><dt>验证证据</dt><dd><code>{result.verification_evidence_ref}</code></dd></div>}
+          {result.candidate_results_artifact_ref && <div><dt>候选明细</dt><dd><code>{result.candidate_results_artifact_ref}</code></dd></div>}
+          {result.candidate_results_artifact_digest && <div><dt>候选摘要</dt><dd><code>{result.candidate_results_artifact_digest}</code></dd></div>}
+        </dl>
+      </details>
+    </section>
+  );
+}
+
+export function SolverCallBlock({ block, sessionId = '', runId = '' }) {
+  const input = safeJson(block.input);
+  const rejection = block.solverRejection;
+  return (
+    <details className={`conversation-process solver-process status-${block.status}`}
+      open={block.status === 'running' || block.status === 'error' || Boolean(block.solverResult)}
+      data-block-key={block.key}>
+      <summary><Workflow size={14} /><span>求解任务</span><BlockMeta status={block.status} durationMs={block.durationMs} /></summary>
+      <div className="conversation-process-body">
+        {block.progress?.length > 0 && (
+          <ol className="solver-progress-list">
+            {block.progress.map((item) => (
+              <li key={item.key} data-phase={item.phase || 'unknown'}>
+                <span>{item.text || item.phase || item.type}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {block.solverResult && <SolverAuthoritativeResult result={block.solverResult} />}
+        {rejection && (
+          <div className="solver-verification-rejected" role="alert">
+            <ShieldX size={14} />
+            <span>{rejection.message || '求解结果未通过独立校验，未发布为业务结论。'}</span>
+          </div>
+        )}
+        {!block.solverResult && !rejection && block.status !== 'running' && (
+          <ToolOutput meta={{
+            output_preview: block.output,
+            output_truncated: block.outputTruncated,
+            output_ref: block.outputRef,
+            output_size: block.outputSize,
+          }} fallbackText={block.text} sessionId={sessionId} runId={runId} />
+        )}
+        {input && block.status === 'error' && <section className="tool-input"><strong>输入</strong><pre>{input}</pre></section>}
         {block.error && <div className="conversation-error" role="alert"><AlertCircle size={13} />{block.error}</div>}
       </div>
     </details>

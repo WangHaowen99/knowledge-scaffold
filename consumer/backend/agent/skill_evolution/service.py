@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+import yaml
 
 from config.system_config import load_system_config
 from persistence.execution_store import ExecutionStore
@@ -214,11 +215,52 @@ def _collect_version_files(version_dir: Path) -> Dict[str, bytes]:
     ]
     for p in sorted(paths, key=lambda x: x.relative_to(version_dir).as_posix()):
         rel = p.relative_to(version_dir).as_posix()
+        if rel == "manifest.yaml":
+            continue
         try:
             out[rel] = p.read_bytes()
         except OSError:
             continue
+    revision_manifest = _canonical_revision_manifest(version_dir)
+    if revision_manifest is not None:
+        out["manifest.yaml"] = revision_manifest
     return out
+
+
+def _canonical_revision_manifest(version_dir: Path) -> Optional[bytes]:
+    """Hash legacy backfill and its equivalent revision manifest identically."""
+
+    manifest_path = version_dir / "manifest.yaml"
+    manifest: Any = None
+    if manifest_path.is_file() and not manifest_path.is_symlink():
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            try:
+                return manifest_path.read_bytes()
+            except OSError:
+                return None
+    elif version_dir.parent.name == "versions":
+        shared_manifest_path = version_dir.parent.parent / "manifest.yaml"
+        if shared_manifest_path.is_file() and not shared_manifest_path.is_symlink():
+            try:
+                shared = yaml.safe_load(shared_manifest_path.read_text(encoding="utf-8")) or {}
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                return None
+            if isinstance(shared, dict) and str(shared.get("schema_version") or "").strip() == "0.1":
+                manifest = dict(shared)
+                manifest["version"] = version_dir.name
+                manifest.pop("active_version", None)
+                manifest.pop("versions", None)
+    if not isinstance(manifest, dict):
+        return None
+    return json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
 
 
 def _locate_evolved_root(extract_dir: Path) -> Path:
@@ -313,8 +355,10 @@ class SkillEvolutionService:
 
     @staticmethod
     def _ontology_root(ontology: OntologyManifest) -> Path:
-        """OntologyManifest.ontology_dir is the active *version* dir; the root
-        (containing manifest.yaml + versions/) is the manifest's parent."""
+        """Return the installed package root for versioned and legacy layouts."""
+        version_dir = Path(ontology.ontology_dir)
+        if version_dir.parent.name == "versions":
+            return version_dir.parent.parent
         return Path(ontology.manifest_path).parent
 
     def _active_version_dir(self, workspace_id: str, ontology: OntologyManifest) -> Path:

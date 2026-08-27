@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import threading
 import time
@@ -28,8 +29,156 @@ from agent.runtime.contracts import (
 from agent.runtime.events import RuntimeEvent
 from utils.logging import get_logger
 
+try:
+    from agent.tools.events import tool_output_artifact_writer_context
+except ImportError:  # pragma: no cover - minimal runtime-only installations.
+    tool_output_artifact_writer_context = None
+
 
 logger = get_logger("runtime.service")
+
+
+_SOLVER_CONTINUATION_STATE_FIELDS = (
+    "run_id",
+    "session_id",
+    "current_turn_id",
+    "workspace_id",
+    "user_id",
+    "user_request",
+    "user_context",
+    "user_lang",
+    "messages",
+    "read_documents",
+    "results",
+    "completed_ids",
+    "failed_ids",
+    "errors",
+    "evolution_recall_records",
+    "debug",
+    "final_output",
+)
+
+
+def _solver_tool_name(name: Any) -> bool:
+    normalized = str(name or "").strip()
+    return normalized == "solve" or normalized.startswith("solve_")
+
+
+def _solver_tool_arguments(
+    function: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    raw = function.get("arguments")
+    if isinstance(raw, dict):
+        return copy.deepcopy(raw)
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _waiting_solver_checkpoint_from_state(
+    state: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    messages: list[Mapping[str, Any]] = []
+    for message in list(state.get("messages") or []):
+        if isinstance(message, Mapping):
+            messages.append(message)
+    for assistant_index in range(len(messages) - 1, -1, -1):
+        assistant = messages[assistant_index]
+        if assistant.get("role") != "assistant":
+            continue
+        calls = assistant.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for raw_call in reversed(calls):
+            if not isinstance(raw_call, Mapping):
+                continue
+            function = raw_call.get("function")
+            if not isinstance(function, Mapping):
+                continue
+            if not _solver_tool_name(function.get("name")):
+                continue
+            tool_call_id = str(raw_call.get("id") or "").strip()
+            arguments = _solver_tool_arguments(function)
+            if not tool_call_id or arguments is None:
+                return None
+            tool_result_index = None
+            for index in range(assistant_index + 1, len(messages)):
+                message = messages[index]
+                if message.get("role") != "tool":
+                    continue
+                if str(message.get("tool_call_id") or "").strip() == tool_call_id:
+                    tool_result_index = index
+                    break
+            if tool_result_index is not None:
+                for index in range(tool_result_index + 1, len(messages)):
+                    later_message = messages[index]
+                    if later_message.get("role") == "assistant" and not later_message.get(
+                        "tool_calls"
+                    ):
+                        return None
+            continuation_state: dict[str, Any] = {}
+            for key in _SOLVER_CONTINUATION_STATE_FIELDS:
+                if key in state:
+                    continuation_state[key] = copy.deepcopy(state.get(key))
+            return {
+                "schema_version": "agent.solver-checkpoint.v1",
+                "stage": (
+                    "waiting_solver" if tool_result_index is None else "react"
+                ),
+                "tool_call": {
+                    "id": tool_call_id,
+                    "name": str(function.get("name") or "").strip(),
+                    "arguments": arguments,
+                },
+                "state": continuation_state,
+            }
+    return None
+
+
+def _append_solver_tool_message(
+    checkpoint: Mapping[str, Any],
+    inbox: Mapping[str, Any],
+) -> dict[str, Any]:
+    state = copy.deepcopy(dict(checkpoint.get("state") or {}))
+    call = dict(checkpoint.get("tool_call") or {})
+    tool_call_id = str(call.get("id") or "").strip()
+    tool_name = str(call.get("name") or "").strip()
+    result = inbox.get("result")
+    inbox_call_id = str(inbox.get("tool_call_id") or "").strip()
+    if not tool_call_id or not tool_name or inbox_call_id != tool_call_id:
+        raise ValueError("solver checkpoint inbox is invalid")
+    if not isinstance(result, Mapping):
+        raise ValueError("solver checkpoint inbox is invalid")
+    messages = list(state.get("messages") or [])
+    has_tool_result = False
+    for message in messages:
+        if not isinstance(message, Mapping):
+            continue
+        if message.get("role") != "tool":
+            continue
+        if str(message.get("tool_call_id") or "").strip() == tool_call_id:
+            has_tool_result = True
+            break
+    if not has_tool_result:
+        messages.append(
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    dict(result),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+            }
+        )
+    state["messages"] = messages
+    return state
 
 
 class _MultipleInteractionsRequested(RuntimeError):
@@ -276,6 +425,99 @@ def _direct_terminal_event(
         session_id=context.session_id,
         turn_id=context.turn_id,
         source={"node": "direct_execution", "component": "service"},
+        payload=payload,
+    )
+
+
+def _solver_runtime_event(
+    context: RuntimeInvocationContext,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> RuntimeEvent:
+    statuses = {
+        "solver.input.awaiting_confirmation": "awaiting_input",
+        "solver.progress": "running",
+        "solver.verification.completed": "completed",
+        "solver.verification.rejected": "failed",
+        "solver.result.authoritative": "completed",
+        "tool.progress": "running",
+    }
+    return RuntimeEvent(
+        event_type=event_type,
+        status=statuses.get(event_type, "running"),
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        source={
+            "node": "solver_recovery",
+            "component": (
+                "tool" if event_type.startswith("tool.") else "solver"
+            ),
+        },
+        payload=dict(payload or {}),
+    )
+
+
+def _solver_terminal_event(
+    context: RuntimeInvocationContext,
+    *,
+    state: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> RuntimeEvent:
+    final_output = state.get("final_output")
+    if isinstance(final_output, str):
+        content = final_output
+    elif final_output in (None, ""):
+        content = ""
+    else:
+        content = json.dumps(final_output, ensure_ascii=False, default=str)
+    history_messages = []
+    for message in list(state.get("messages") or []):
+        if isinstance(message, Mapping):
+            history_messages.append(dict(message))
+    if content:
+        history_messages.append({"role": "assistant", "content": content})
+    public_result = dict(result)
+    raw_status = str(public_result.get("status") or "").strip().lower()
+    if public_result.get("authoritative") is True:
+        status = "completed"
+        error = None
+    elif raw_status == "cancelled":
+        status = "cancelled"
+        error = None
+    else:
+        status = "failed"
+        code = str(
+            public_result.get("code") or "solver_result_rejected"
+        ).strip()
+        error = RuntimeErrorInfo(
+            error_code=code,
+            message=content or "The Solver result was not authoritative.",
+            retriable=bool(public_result.get("retryable")),
+            source="tool",
+            details={
+                "phase": str(public_result.get("phase") or "").strip(),
+            },
+        )
+    payload: dict[str, Any] = {
+        "status": status,
+        "content": content,
+        "structured_content": {
+            "text": content,
+            "solver": public_result,
+        },
+        "history_messages": history_messages,
+        "read_documents": dict(state.get("read_documents") or {}),
+    }
+    if error is not None:
+        payload["error"] = error.model_dump(mode="json")
+    return RuntimeEvent(
+        event_type="turn.finished",
+        status=status,
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        source={"node": "solver_recovery", "component": "solver"},
         payload=payload,
     )
 
@@ -554,8 +796,24 @@ class AsyncExecutionService:
         sink: PublicEventSink,
     ) -> RuntimeResult:
         adapter = PublicEventAdapter(include_trace=context.include_trace)
-        direct_events = None
+        resumed_solver_events = None
         if self.session_adapter is not None:
+            resumed_solver_events = await self.session_adapter.try_resume_solver(
+                context
+            )
+        if resumed_solver_events is not None:
+            return await self._consume_events(
+                context,
+                sink,
+                adapter,
+                resumed_solver_events,
+            )
+        direct_events = None
+        arguments = dict(context.arguments or {})
+        selected_ontology_id = str(
+            arguments.get("selected_ontology_id") or ""
+        ).strip()
+        if self.session_adapter is not None and selected_ontology_id:
             direct_events = await self.session_adapter.try_direct_execute(context)
         if direct_events is not None:
             return await self._consume_events(
@@ -808,12 +1066,9 @@ class OrchestratorSessionAdapter:
     @contextmanager
     def execution_scope(self, context: RuntimeInvocationContext):
         """Bind workspace and artifact persistence for the whole Agent task."""
-        try:
-            from agent.tools.events import tool_output_artifact_writer_context
-        except ImportError:
-            tool_output_artifact_writer_context = None
+        from agent.runtime.jiuwen import solver_state_snapshot_callback_context
 
-        chat_store, _execution_store = self._stores(context)
+        chat_store, execution_store = self._stores(context)
         artifact_writer = _build_tool_output_artifact_writer(
             chat_store,
             session_id=context.session_id,
@@ -824,8 +1079,268 @@ class OrchestratorSessionAdapter:
             if tool_output_artifact_writer_context is not None
             else nullcontext()
         )
-        with _workspace_context(context.workspace_id), artifact_scope:
+        snapshot_scope = solver_state_snapshot_callback_context(
+            self._solver_snapshot_callback(context, execution_store)
+        )
+        with _workspace_context(context.workspace_id), artifact_scope, snapshot_scope:
             yield
+
+    def _solver_snapshot_callback(
+        self,
+        context: RuntimeInvocationContext,
+        execution_store: Any,
+    ) -> Callable[[Mapping[str, Any]], Any]:
+        async def persist(snapshot: Mapping[str, Any]) -> None:
+            await run_sync_compat(
+                self._persist_solver_snapshot_sync,
+                context,
+                execution_store,
+                snapshot,
+                run_id=context.run_id,
+                task_name="solver-checkpoint-persist",
+                offload_kind="short",
+            )
+
+        return persist
+
+    @staticmethod
+    def _persist_solver_snapshot_sync(
+        context: RuntimeInvocationContext,
+        execution_store: Any,
+        state: Mapping[str, Any],
+    ) -> None:
+        checkpoint = _waiting_solver_checkpoint_from_state(state)
+        if checkpoint is not None:
+            checkpoint_state = checkpoint.get("state")
+            checkpoint_state = (
+                checkpoint_state
+                if isinstance(checkpoint_state, Mapping)
+                else {}
+            )
+            identity = (
+                str(checkpoint_state.get("run_id") or ""),
+                str(checkpoint_state.get("session_id") or ""),
+                int(checkpoint_state.get("current_turn_id") or 0),
+                str(checkpoint_state.get("workspace_id") or ""),
+                str(checkpoint_state.get("user_id") or ""),
+            )
+            expected = (
+                context.run_id,
+                context.session_id,
+                context.turn_id,
+                context.workspace_id,
+                context.username,
+            )
+            if identity != expected:
+                raise ValueError("solver checkpoint identity drifted")
+            execution_store.save_waiting_solver_checkpoint(
+                context.session_id,
+                run_id=context.run_id,
+                turn_id=context.turn_id,
+                checkpoint=checkpoint,
+            )
+            return
+        existing = execution_store.get_waiting_solver_checkpoint(
+            context.session_id,
+            run_id=context.run_id,
+        )
+        if existing is not None:
+            execution_store.complete_waiting_solver_checkpoint(
+                context.session_id,
+                run_id=context.run_id,
+                turn_id=context.turn_id,
+            )
+
+    async def try_resume_solver(
+        self,
+        context: RuntimeInvocationContext,
+    ) -> list[RuntimeEvent] | None:
+        return await run_sync_compat(
+            self._resume_solver_sync,
+            context,
+            run_id=context.run_id,
+            task_name="solver-checkpoint-resume",
+            offload_kind="tool",
+        )
+
+    def _resume_solver_sync(
+        self,
+        context: RuntimeInvocationContext,
+    ) -> list[RuntimeEvent] | None:
+        _chat_store, execution_store = self._stores(context)
+        record = execution_store.get_waiting_solver_checkpoint(
+            context.session_id,
+            run_id=context.run_id,
+        )
+        if not isinstance(record, Mapping):
+            return None
+        checkpoint = record.get("checkpoint")
+        if not isinstance(checkpoint, Mapping):
+            raise ValueError("waiting Solver checkpoint is invalid")
+        state = checkpoint.get("state")
+        state = state if isinstance(state, Mapping) else {}
+        identity = (
+            str(state.get("run_id") or ""),
+            str(state.get("session_id") or ""),
+            int(state.get("current_turn_id") or 0),
+            str(state.get("workspace_id") or ""),
+            str(state.get("user_id") or ""),
+        )
+        expected = (
+            context.run_id,
+            context.session_id,
+            context.turn_id,
+            context.workspace_id,
+            context.username,
+        )
+        if identity != expected:
+            raise ValueError("waiting Solver checkpoint identity drifted")
+        call = checkpoint.get("tool_call")
+        if not isinstance(call, Mapping):
+            raise ValueError("waiting Solver ToolCall is invalid")
+        expected_tool_call_id = str(call.get("id") or "").strip()
+        tool_name = str(call.get("name") or "").strip()
+        if not expected_tool_call_id or not tool_name:
+            raise ValueError("waiting Solver ToolCall is invalid")
+
+        inbox = record.get("tool_result_inbox")
+        if isinstance(inbox, Mapping) and str(
+            inbox.get("tool_call_id") or ""
+        ).strip() != expected_tool_call_id:
+            execution_store.save_waiting_solver_checkpoint(
+                context.session_id,
+                run_id=context.run_id,
+                turn_id=context.turn_id,
+                checkpoint=dict(checkpoint),
+            )
+            inbox = None
+
+        progress: list[tuple[str, dict[str, Any]]] = []
+        if not isinstance(inbox, Mapping):
+            from agent.tools.solver import (
+                dispatch_solver_checkpoint_tool,
+                recover_solver_tool_result,
+            )
+
+            def record_progress(
+                event_type: str,
+                payload: Mapping[str, Any],
+            ) -> None:
+                public = dict(payload or {})
+                public.update(
+                    {
+                        "tool_call_id": expected_tool_call_id,
+                        "tool_name": tool_name,
+                    }
+                )
+                progress.append((event_type, public))
+
+            recovered = recover_solver_tool_result(
+                workspace_id=context.workspace_id,
+                owner_id=context.username,
+                run_id=context.run_id,
+                turn_id=context.turn_id,
+                tool_call_id=expected_tool_call_id,
+                card_name=tool_name,
+                progress_callback=record_progress,
+            )
+            recovery_state = (
+                str(recovered.get("state") or "").strip()
+                if isinstance(recovered, Mapping)
+                else ""
+            )
+            if recovery_state == "pending":
+                raise RuntimeError("waiting Solver ToolResult is not ready")
+            if recovery_state == "conflict":
+                raise RuntimeError(
+                    "waiting Solver ToolCall identity is inconsistent"
+                )
+            if recovery_state == "missing" or not isinstance(recovered, Mapping):
+                recovered = dispatch_solver_checkpoint_tool(
+                    workspace_id=context.workspace_id,
+                    owner_id=context.username,
+                    session_id=context.session_id,
+                    run_id=context.run_id,
+                    turn_id=context.turn_id,
+                    checkpoint=checkpoint,
+                    progress_callback=record_progress,
+                )
+            if not isinstance(recovered, Mapping):
+                raise RuntimeError("waiting Solver ToolResult is not ready")
+            inbox = execution_store.put_solver_tool_result(
+                context.session_id,
+                run_id=context.run_id,
+                turn_id=context.turn_id,
+                tool_call_id=expected_tool_call_id,
+                result_digest=str(recovered.get("result_digest") or ""),
+                result=dict(recovered.get("result") or {}),
+            )
+
+        resumed_state = _append_solver_tool_message(checkpoint, inbox)
+        from agent.core.shared.state_updates import apply_state_updates_to_state
+        from agent.tools.solver import project_solver_tool_result
+
+        result_payload = inbox.get("result")
+        if not isinstance(result_payload, Mapping):
+            raise ValueError("waiting Solver ToolResult is invalid")
+        solver_outcome = project_solver_tool_result(dict(result_payload))
+        if solver_outcome.state_updates:
+            apply_state_updates_to_state(
+                resumed_state,
+                dict(solver_outcome.state_updates),
+            )
+        if not solver_outcome.terminal:
+            raise RuntimeError("waiting Solver ToolResult is not terminal")
+        execution_store.save_waiting_solver_checkpoint(
+            context.session_id,
+            run_id=context.run_id,
+            turn_id=context.turn_id,
+            checkpoint={
+                "schema_version": "agent.solver-checkpoint.v1",
+                "stage": "react",
+                "tool_call": copy.deepcopy(dict(call)),
+                "state": resumed_state,
+            },
+        )
+
+        events: list[RuntimeEvent] = []
+        for event_type, payload in progress:
+            if event_type not in {
+                "solver.input.awaiting_confirmation",
+                "solver.progress",
+                "solver.verification.completed",
+                "solver.verification.rejected",
+                "solver.result.authoritative",
+            }:
+                event_type = "solver.progress"
+            events.append(_solver_runtime_event(context, event_type, payload))
+            events.append(_solver_runtime_event(context, "tool.progress", payload))
+        authoritative_payload = dict(result_payload)
+        authoritative_payload.update(
+            {
+                "tool_call_id": expected_tool_call_id,
+                "tool_name": tool_name,
+            }
+        )
+        if authoritative_payload.get("authoritative") is True and not any(
+            event.event_type == "solver.result.authoritative"
+            for event in events
+        ):
+            events.append(
+                _solver_runtime_event(
+                    context,
+                    "solver.result.authoritative",
+                    authoritative_payload,
+                )
+            )
+        events.append(
+            _solver_terminal_event(
+                context,
+                state=resumed_state,
+                result=result_payload,
+            )
+        )
+        return events
 
     async def prepare(
         self,
@@ -1606,6 +2121,11 @@ class OrchestratorSessionAdapter:
                     ),
                     run_id=context.run_id,
                 )
+            execution_store.complete_waiting_solver_checkpoint(
+                context.session_id,
+                run_id=context.run_id,
+                turn_id=context.turn_id,
+            )
 
             try:
                 history_source = result.history_messages or context.history_messages

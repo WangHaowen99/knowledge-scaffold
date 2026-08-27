@@ -1,0 +1,44 @@
+{
+  "protocol_version": "solver.job.v1",
+  "request_ref": "req_0123456789ABCDEFGHIJ",
+  "problem": {
+    "schema_version": "solver.problem.v1",
+    "problem_family": "binary_ordered_route",
+    "family_version": "1.0",
+    "payload": {
+      "decision_space": {"variables": ["selected_candidate"]},
+      "parameters": {
+        "candidate_selection": {
+          "profile_id": "synthetic_profile.v1",
+          "candidate_count": 2,
+          "candidate_evaluation_digest": "sha256:solver-coordination.v1:2222222222222222222222222222222222222222222222222222222222222222",
+          "candidates": [
+            {
+              "candidate_id": "CANDIDATE_SYNTHETIC_0000",
+              "eligible": true,
+              "assignment": {"item_0001": "OPTION_0"},
+              "metrics": {"primary_score": 10, "candidate_rank": 0}
+            },
+            {
+              "candidate_id": "CANDIDATE_SYNTHETIC_0001",
+              "eligible": true,
+              "assignment": {"item_0001": "OPTION_1"},
+              "metrics": {"primary_score": 20, "candidate_rank": 1}
+            }
+          ]
+        }
+      },
+      "constraints": [{"kind": "select_exactly_one_candidate"}],
+      "objectives": [
+        {"metric": "primary_score", "sense": "maximize"},
+        {"metric": "candidate_rank", "sense": "minimize"}
+      ],
+      "limits": {"max_candidates": 128, "max_verification_candidates": 128}
+    }
+  },
+  "requirements": {
+    "capabilities": ["lexicographic_objective"],
+    "result_quality": "optimal",
+    "limits": {"solve_time_ms": 60000, "workers": 4}
+  }
+}

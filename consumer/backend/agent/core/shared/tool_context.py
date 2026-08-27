@@ -30,6 +30,7 @@ def build_tool_context(
     subagent_lineage: Any = None,
     parent_tool_call_id: Any = None,
     observer: Any = None,
+    traceparent: Optional[str] = None,
 ) -> ToolContext:
     user_context = dict(state.get("user_context") or {}) if isinstance(state, Mapping) else {}
     context_kwargs = dict(
@@ -41,6 +42,7 @@ def build_tool_context(
         user_id=str(state.get("user_id") or "").strip() or None,
         agent_config=agent_config,
         caller=caller,
+        traceparent=traceparent or (str(state.get("traceparent") or "").strip() or None),
         agent_mode=resolve_agent_mode(user_context),
         agent_iteration=agent_iteration,
         workspace_id=workspace_id,

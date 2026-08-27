@@ -25,8 +25,9 @@ import './appShell.css';
 const KnowledgeWorkbench = lazy(() => import('../features/knowledge/KnowledgeWorkbench'));
 const ConfigCenter = lazy(() => import('../features/settings/ConfigCenter'));
 const ObservabilityFeature = lazy(() => import('../features/observability/index.jsx'));
+const SolverCoordinationWorkbench = lazy(() => import('../features/solver/SolverCoordinationWorkbench'));
 
-const SURFACES = { chat: '新建对话', kb: '知识包工作台', config: '配置中心', observability: '可观测性' };
+const SURFACES = { chat: '新建对话', kb: '知识包工作台', solver: '求解器协同', config: '配置中心', observability: '可观测性' };
 const EMPTY_TRACE_METADATA = Object.freeze({});
 
 export default function AppShell() {
@@ -47,6 +48,7 @@ export default function AppShell() {
     try { return localStorage.getItem('mw_sidebar_collapsed') === '1'; } catch { return false; }
   });
   const [kbFocus, setKbFocus] = useState(null);
+  const [solverResetToken, setSolverResetToken] = useState(0);
   const streamManager = useStreamManager();
   const chat = useChatSessions(streamManager);
   const agenticStream = useAgenticStream({
@@ -74,6 +76,7 @@ export default function AppShell() {
     try { localStorage.setItem('mw_sidebar_collapsed', next ? '1' : '0'); } catch { /* ignore */ }
     return next;
   });
+  const resetSolver = useCallback(() => setSolverResetToken((value) => value + 1), []);
 
   // 每次新登录弹出操作向导（会话级标记，跳过/完成后本次不再弹）
   useEffect(() => {
@@ -101,7 +104,7 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => {
-    clearWorkspaceRuntime({ streamManager, chat });
+    clearWorkspaceRuntime({ streamManager, chat, resetSolver });
     if (!workspaceDataReady) return undefined;
     const t = setTimeout(() => chat.loadSessions(false), 0);
     return () => clearTimeout(t);
@@ -202,7 +205,7 @@ export default function AppShell() {
     setSurface('observability');
     setMobileNavOpen(false);
   };
-  const isFullSurface = surface === 'chat' || surface === 'kb';
+  const isFullSurface = surface === 'chat' || surface === 'kb' || surface === 'solver';
   const workspaceSurfaceBlocked = requiresWorkspaceData(surface, observabilityView)
     && !workspaceDataReady;
   const canCreateWorkspace = can('workspace.create');
@@ -368,6 +371,11 @@ export default function AppShell() {
                 onConfigureDataSource={(ontologyId) => navigate({ surface: 'kb', tab: 'data', ontologyId })} />
             )}
             {surface === 'kb' && workspaceDataReady && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} traceMessages={chat.messages} traceMetadata={currentTraceMetadata} /></Suspense>}
+            {surface === 'solver' && workspaceDataReady && (
+              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载求解器协同" /></div>}>
+                <SolverCoordinationWorkbench key={workspaceId} workspaceId={workspaceId} resetToken={solverResetToken} />
+              </Suspense>
+            )}
             {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
             {surface === 'observability' && !workspaceSurfaceBlocked && (
               <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载可观测性" /></div>}>

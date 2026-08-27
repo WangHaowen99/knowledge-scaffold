@@ -4,8 +4,8 @@
 services:
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: consumer/backend/Dockerfile
     image: onto-agent-backend:${TAG:-latest}
     container_name: onto-agent-backend-${TAG:-latest}
     restart: unless-stopped

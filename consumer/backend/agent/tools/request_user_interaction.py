@@ -6,7 +6,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from agent.tools.base import ToolContext, ToolOutcome
 
@@ -63,6 +63,15 @@ REQUEST_USER_INTERACTION_TOOL_SCHEMA: Dict[str, Any] = {
                     "type": "string",
                     "description": "For approval checkpoints, summarize the next step if the user continues.",
                 },
+                "requested_fields": {
+                    "type": "array",
+                    "description": (
+                        "For a missing-input interaction, list the exact tool-schema field "
+                        "paths that block execution. Never list optional properties."
+                    ),
+                    "items": {"type": "string"},
+                    "uniqueItems": True,
+                },
             },
             "required": ["type", "prompt"],
         },
@@ -101,6 +110,9 @@ class RequestUserInteractionTool:
                 ),
                 terminal=False,
             )
+        optional_rejection = _reject_optional_solver_interaction(args, context=context)
+        if optional_rejection is not None:
+            return optional_rejection
         interaction = build_user_interaction(args, tool_call_id=tool_call_id)
         final_output = {
             "type": "user_interaction",
@@ -140,6 +152,163 @@ class RequestUserInteractionTool:
             tool_call_id=tool_call_id,
             event_emitter=event_emitter,
         )
+
+
+def _reject_optional_solver_interaction(
+    args: Mapping[str, Any], *, context: ToolContext
+) -> Optional[ToolOutcome]:
+    interaction_type = str(args.get("type") or "").strip().lower()
+    if interaction_type not in {"input", "single_choice"}:
+        return None
+
+    try:
+        from agent.tools.registry import get_solver_tool_specs_for_context
+
+        specs = tuple(
+            get_solver_tool_specs_for_context(
+                selected_ontology_id=getattr(context, "selected_ontology_id", None),
+                selected_ontology_version=getattr(
+                    context, "selected_ontology_version", None
+                ),
+                workspace_id=getattr(context, "workspace_id", None),
+            )
+        )
+    except Exception:
+        return None
+    if not specs:
+        return None
+
+    requested_fields = _requested_field_names(args.get("requested_fields"))
+    interaction_text = _interaction_search_text(args)
+    optional_matches: set[str] = set()
+    required_matches: set[str] = set()
+    matching_tools: set[str] = set()
+
+    for spec in specs:
+        function = getattr(spec, "schema", {}).get("function", {})
+        parameters = function.get("parameters", {}) if isinstance(function, Mapping) else {}
+        if not isinstance(parameters, Mapping):
+            continue
+        tool_optional: set[str] = set()
+        tool_required: set[str] = set()
+        for path, required, field_schema in _schema_fields(parameters):
+            if requested_fields:
+                matched = _requested_field_matches(path, requested_fields)
+            else:
+                matched = _field_signals_match(path, field_schema, interaction_text)
+            if not matched:
+                continue
+            if required:
+                tool_required.add(path)
+            else:
+                tool_optional.add(path)
+        if tool_required:
+            required_matches.update(tool_required)
+        if tool_optional:
+            optional_matches.update(tool_optional)
+            matching_tools.add(str(getattr(spec, "name", "") or "").strip())
+
+    if not optional_matches or required_matches:
+        return None
+
+    tool_names = sorted(name for name in matching_tools if name)
+    payload = {
+        "status": "interaction_rejected",
+        "code": "optional_solver_input",
+        "optional_fields": sorted(optional_matches),
+        "instruction": (
+            "These fields are optional. Do not pause or invent values; omit them and "
+            "invoke the matching Solver ToolCard now with all available required arguments."
+        ),
+    }
+    if tool_names:
+        payload["solver_tools"] = tool_names
+    return ToolOutcome(
+        content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        terminal=False,
+    )
+
+
+def _requested_field_names(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        str(item or "").strip()
+        for item in value
+        if isinstance(item, str) and str(item or "").strip()
+    }
+
+
+def _requested_field_matches(path: str, requested_fields: set[str]) -> bool:
+    leaf = path.rsplit(".", 1)[-1].replace("[]", "")
+    normalized_path = path.replace("[]", "")
+    return any(
+        requested == path
+        or requested.replace("[]", "") == normalized_path
+        or requested.rsplit(".", 1)[-1].replace("[]", "") == leaf
+        for requested in requested_fields
+    )
+
+
+def _schema_fields(
+    schema: Mapping[str, Any], *, prefix: str = ""
+) -> Iterable[tuple[str, bool, Mapping[str, Any]]]:
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return
+    required_names = {
+        str(name)
+        for name in schema.get("required", [])
+        if isinstance(name, str)
+    }
+    for raw_name, raw_field_schema in properties.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_field_schema, Mapping):
+            continue
+        path = "{}.{}".format(prefix, raw_name) if prefix else raw_name
+        yield path, raw_name in required_names, raw_field_schema
+        field_type = raw_field_schema.get("type")
+        if field_type == "object":
+            yield from _schema_fields(raw_field_schema, prefix=path)
+        elif field_type == "array":
+            item_schema = raw_field_schema.get("items")
+            if isinstance(item_schema, Mapping):
+                yield from _schema_fields(item_schema, prefix=path + "[]")
+
+
+def _interaction_search_text(args: Mapping[str, Any]) -> str:
+    values: list[str] = [str(args.get("prompt") or "")]
+    options = args.get("options")
+    if isinstance(options, list):
+        for option in options:
+            if isinstance(option, Mapping):
+                values.extend(
+                    str(option.get(key) or "")
+                    for key in ("id", "label", "value", "description")
+                )
+            else:
+                values.append(str(option or ""))
+    return "\n".join(values).casefold()
+
+
+def _field_signals_match(
+    path: str, field_schema: Mapping[str, Any], interaction_text: str
+) -> bool:
+    signals = {
+        path,
+        path.rsplit(".", 1)[-1].replace("[]", ""),
+    }
+    for key in ("title", "x-display-name"):
+        value = field_schema.get(key)
+        if isinstance(value, str) and value.strip():
+            signals.add(value.strip())
+    enum_values = field_schema.get("enum")
+    if isinstance(enum_values, list):
+        signals.update(
+            str(value).strip()
+            for value in enum_values
+            if isinstance(value, str) and len(value.strip()) >= 2
+        )
+    return any(signal.casefold() in interaction_text for signal in signals if signal)
 
 
 def build_user_interaction(args: Dict[str, Any], *, tool_call_id: Optional[str] = None) -> Dict[str, Any]:

@@ -27,6 +27,20 @@ def test_build_graph_scope_uses_runtime_workspace_id():
     assert scope.ontology_value == ""
 
 
+def test_build_graph_scope_prefers_explicit_graph_values_over_runtime_ids():
+    scope = build_graph_scope({
+        "workspace_id": "workspace-solver-demo",
+        "workspace_value": "workspace_demo",
+        "ontology_id": "runtime-package-id",
+        "ontology_value": "demo-refinery-ontology",
+        "workspace_property": "d2o_workspace_id",
+        "ontology_property": "d2o_ontology_id",
+    })
+
+    assert scope.workspace_value == "workspace_demo"
+    assert scope.ontology_value == "demo-refinery-ontology"
+
+
 def test_build_graph_scope_uses_workspace_name_for_workspace_name_property():
     scope = build_graph_scope({
         "workspace_id": "workspace-a",

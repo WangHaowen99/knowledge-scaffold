@@ -1594,8 +1594,8 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
         {
             "role": "user",
             "content": (
-                "第1批：示例原料A，2.5万吨，周期1.5天，减一线去辅助生产线A；\n"
-                "第2批：示例原料B，4.0万吨，周期2.5天，减一线去辅助生产线B。"
+                "第1批：示例原料A，2.5万吨，周期1.5天，合成物流去辅助生产线A；\n"
+                "第2批：示例原料B，4.0万吨，周期2.5天，合成物流去辅助生产线B。"
             ),
         },
         {
@@ -1604,7 +1604,7 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
             "content": (
                 '[{"ProductName":"常一线","Yield_1_Percent":1.81,'
                 '"RefineryUnitID":10,"LogicTankID":21},'
-                '{"ProductName":"减一线","Yield_1_Percent":11.6,'
+                '{"ProductName":"合成物流","Yield_1_Percent":11.6,'
                 '"RefineryUnitID":10,"LogicTankID":21}]'
             ),
         },
@@ -1621,7 +1621,7 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
                 ],
                 "productYieldData": [
                     {"ProductName": "常一线", "Yield_1_Percent": 1.81, "RefineryUnitID": 10, "LogicTankID": 21},
-                    {"ProductName": "减一线", "Yield_1_Percent": 11.6, "RefineryUnitID": 10, "LogicTankID": 21},
+                    {"ProductName": "合成物流", "Yield_1_Percent": 11.6, "RefineryUnitID": 10, "LogicTankID": 21},
                 ],
             },
         },
@@ -3339,6 +3339,47 @@ def test_registry_can_hide_request_user_interaction_for_non_interactive_main_run
     assert "ontology_context" in main_tools
 
 
+def test_registry_can_hide_dynamic_solver_tools_without_loading_catalog(monkeypatch):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "solve_synthetic_route_aaaaaaaa",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        },
+        allowed_callers={"main"},
+    )
+    catalog_calls = []
+
+    def load_solver_specs(**kwargs):
+        catalog_calls.append(kwargs)
+        return (solver_spec,)
+
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        load_solver_specs,
+    )
+
+    hidden_names = [
+        tool["function"]["name"]
+        for tool in get_tools_schema("main", include_solver=False)
+    ]
+
+    assert "solve_synthetic_route_aaaaaaaa" not in hidden_names
+    assert catalog_calls == []
+
+    visible_names = [tool["function"]["name"] for tool in get_tools_schema("main")]
+
+    assert "solve_synthetic_route_aaaaaaaa" in visible_names
+    assert len(catalog_calls) == 1
+
+
 def test_request_user_interaction_returns_non_terminal_error_when_interaction_is_disabled():
     tool = TOOL_SPECS["request_user_interaction"]
 
@@ -3351,6 +3392,148 @@ def test_request_user_interaction_returns_non_terminal_error_when_interaction_is
     assert result.terminal is False
     assert result.state_updates == {}
     assert "request_user_interaction is unavailable in this run" in str(result.content or "")
+
+
+def test_request_user_interaction_rejects_optional_solver_field(monkeypatch):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "function": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_count": {"type": "integer"},
+                        "mode": {
+                            "type": "string",
+                            "title": "Operating mode",
+                            "enum": ["safe", "fast"],
+                        },
+                    },
+                    "required": ["item_count"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        lambda **kwargs: (solver_spec,),
+    )
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={
+            "type": "single_choice",
+            "prompt": "Choose the operating mode.",
+            "options": [
+                {"id": "safe", "label": "safe", "value": "safe"},
+                {"id": "fast", "label": "fast", "value": "fast"},
+            ],
+            "requested_fields": ["mode"],
+        },
+        context=_make_context(
+            workspace_id="workspace-synthetic",
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version="revision-synthetic-1",
+        ),
+        tool_call_id="ask-optional",
+    )
+
+    assert result.terminal is False
+    assert result.state_updates == {}
+    assert "optional_solver_input" in str(result.content or "")
+    assert "mode" in str(result.content or "")
+    assert solver_spec.name in str(result.content or "")
+
+
+def test_request_user_interaction_infers_optional_solver_enum_without_field_name(
+    monkeypatch,
+):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "function": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_count": {"type": "integer"},
+                        "mode": {"type": "string", "enum": ["safe", "fast"]},
+                    },
+                    "required": ["item_count"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        lambda **kwargs: (solver_spec,),
+    )
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={
+            "type": "single_choice",
+            "prompt": "Choose a mode.",
+            "options": [
+                {"id": "safe", "label": "safe", "value": "safe"},
+                {"id": "fast", "label": "fast", "value": "fast"},
+            ],
+        },
+        context=_make_context(
+            workspace_id="workspace-synthetic",
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version="revision-synthetic-1",
+        ),
+        tool_call_id="ask-optional-inferred",
+    )
+
+    assert result.terminal is False
+    assert "optional_solver_input" in str(result.content or "")
+    assert '"mode"' in str(result.content or "")
+
+
+def test_request_user_interaction_keeps_required_solver_field_interactive(monkeypatch):
+    solver_spec = SimpleNamespace(
+        name="solve_synthetic_route_aaaaaaaa",
+        schema={
+            "function": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_count": {"type": "integer"},
+                        "mode": {"type": "string", "enum": ["safe", "fast"]},
+                    },
+                    "required": ["item_count"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.tools.registry.get_solver_tool_specs_for_context",
+        lambda **kwargs: (solver_spec,),
+    )
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={
+            "type": "input",
+            "prompt": "Provide item_count.",
+            "requested_fields": ["item_count"],
+        },
+        context=_make_context(
+            workspace_id="workspace-synthetic",
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version="revision-synthetic-1",
+        ),
+        tool_call_id="ask-required",
+    )
+
+    assert result.terminal is True
+    assert result.state_updates["pending_user_interaction"]["prompt"] == (
+        "Provide item_count."
+    )
 
 
 def test_registry_exposes_single_subagent_tool_for_main_agent():

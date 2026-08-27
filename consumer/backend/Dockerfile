@@ -12,15 +12,22 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# The Consumer image is built from the repository root so the public solver
+# service contract can be packaged without copying the Solver Service source.
+# Keep requirements in its own layer for better build caching.
+COPY consumer/backend/requirements.txt ./requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 
-# Copy application code
-COPY . .
+# Copy only the Consumer application.  The Consumer-owned Connector lives in
+# this source tree, while the independent Solver Service stays outside it.
+COPY consumer/backend/ ./
+# The OR-Tools service DTO contract is a standalone runtime dependency. It is
+# copied from the repository root while the Solver Service implementation
+# remains outside the Consumer image.
+COPY contracts/solver_services/ /app/contracts/solver_services/
 
 # Bind authoritative results/checkpoints to the exact shipped source,
 # installed Python distributions and interpreter runtime.

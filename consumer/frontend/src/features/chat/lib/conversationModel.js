@@ -97,6 +97,7 @@ export const conversationKindForTool = (toolName) => {
   const normalized = stringValue(toolName).trim().toLowerCase();
   if (BUSINESS_DATA_TOOLS.has(normalized)) return 'business_data';
   if (normalized === 'web_search') return 'web_search';
+  if (normalized === 'solve' || normalized.startsWith('solve_')) return 'solver';
   return 'tool';
 };
 
@@ -346,9 +347,18 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     ? normalizeProgress(meta.db_events, kind, key)
     : kind === 'web_search'
       ? normalizeProgress(meta.web_search_events, kind, key)
+      : kind === 'solver'
+        ? (Array.isArray(meta.solver_events) ? meta.solver_events : []).map((event, progressIndex) => ({
+          key: `${key}:solver-progress:${event?.job_id || 'job'}:${event?.event_seq ?? progressIndex}`,
+          type: stringValue(event?.type),
+          phase: stringValue(event?.phase),
+          text: stringValue(event?.message),
+          eventSeq: numberValue(event?.event_seq),
+          status: stringValue(event?.status),
+        }))
       : [];
   const progressError = progressErrorText(progress);
-  let status = kind === 'tool' || kind === 'business_data' || kind === 'web_search'
+  let status = kind === 'tool' || kind === 'business_data' || kind === 'web_search' || kind === 'solver'
     ? normalizeToolStatus(segment)
     : normalizeConversationStatus(segment?.state, !segment?.finished);
   if (progressError) {
@@ -379,7 +389,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     progress,
   };
 
-  if (kind === 'tool' || kind === 'business_data' || kind === 'web_search') {
+  if (kind === 'tool' || kind === 'business_data' || kind === 'web_search' || kind === 'solver') {
     block.toolName = toolName;
     block.toolCallId = stringValue(meta.tool_call_id);
     block.input = meta.input ?? null;
@@ -391,6 +401,12 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     block.parsedOutput = block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
     block.error = publicErrorMessage(meta.error) || progressError;
     block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
+  }
+  if (kind === 'solver') {
+    block.solverResult = plainObject(meta.solver_result) && meta.solver_result.authoritative === true
+      ? meta.solver_result
+      : null;
+    block.solverRejection = plainObject(meta.solver_rejection) ? meta.solver_rejection : null;
   }
   if (kind === 'artifacts') {
     block.artifacts = (Array.isArray(meta.artifacts) ? meta.artifacts : [])
