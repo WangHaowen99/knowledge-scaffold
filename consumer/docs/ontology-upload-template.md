@@ -190,6 +190,18 @@ assets/
 
 支持读取的公共文件格式为 UTF-8 文本类文件：`.conf`、`.cfg`、`.ini`、`.env`、`.properties`、`.yaml`、`.yml`、`.json`、`.toml`、`.txt`、`.md`、`.csv`、`.tsv`、`.sql`、`.xml`。其他格式会保留在 ZIP 预览/目录中，但不会作为 `ontology_context(resource="asset")` 的正文读取对象。
 
+#### 业务阶段 CheckPoint（可选）
+
+需要启用业务阶段 CheckPoint 的知识包必须包含：
+
+```text
+assets/business-checkpoint-template.md
+```
+
+主流程 `operations/<operation_key>.md` 应定义稳定的 `stage`、`phase`、标题、阶段顺序和上报规则，并要求执行前通过 `ontology_context(resource="asset", key="business-checkpoint-template.md")` 加载通用模板。知识包不需要增加或修改 `ONTOLOGY.md`。
+
+`waiting_user` CheckPoint 只负责阶段观察：上报后还必须调用 `request_user_interaction` 创建可恢复的等待输入状态，随后停止自动推进。用户回复并恢复执行后，先上报该阶段的 `completed` phase，再进入下一阶段。
+
 ## 旧格式包的转换
 
 旧格式包（含 `SKILL.md`、`object/`、`logic/`、`action/`、`asset/` 的源格式包，以及使用 `*-list.md` 清单的迁移期包）需先离线转换为 v0.1 格式：
@@ -211,4 +223,5 @@ python legacy_package_converter.py /path/to/ontology_dir  # 目录输入，默�
 - `scripts/` 下脚本文件应为 `.py`；`scripts/<key>.md` 与 `scripts/index.md` 描述脚本参数。
 - `mappings/object-data-mappings.json`（如有）为合法 JSON，`fields` 的 key 使用业务字段 key。
 - `assets/`（如有）中需要模型读取正文的文件应使用受支持的 UTF-8 文本/配置格式。
+- 需要开启业务阶段 CheckPoint 时，确认 `assets/business-checkpoint-template.md` 存在、非空且可读取，主流程 operation 已声明阶段映射。
 - 旧格式包请先离线转换为 v0.1 格式后再上传。

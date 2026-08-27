@@ -8,8 +8,13 @@ from typing import Any, Callable, Dict, Optional, Set
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.evolution import build_near_point_block
 from utils.logging import get_logger
+from ontology.capabilities import (
+    BUSINESS_CHECKPOINT_TEMPLATE_KEY,
+    is_business_checkpoint_available,
+)
 from ontology.ontology_catalog import (
     build_root_payload,
+    find_asset_file,
     find_script_entry,
     find_markdown_file,
     format_markdown_payload_compact,
@@ -18,6 +23,7 @@ from ontology.ontology_catalog import (
     get_object_value_bound_fields,
     load_script_catalog,
     read_required_text,
+    read_required_asset_text,
     resolve_object_reference,
 )
 from ontology.operation_execution import (
@@ -41,7 +47,7 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
     "function": {
         "name": "ontology_context",
         "description": (
-            "Load ontology root catalogs, operation, object/entity, rule, metric, and script specs. "
+            "Load ontology root catalogs, operation, object/entity, rule, metric, script, and CheckPoint template specs. "
             "This tool reads ontology specs only; it does not query business data or execute scripts. "
             "Load each needed ontology resource once and reuse it."
         ),
@@ -54,18 +60,19 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
                 },
                 "resource": {
                     "type": "string",
-                    "enum": ["root", "operation", "object", "rule", "metric", "script"],
+                    "enum": ["root", "operation", "object", "rule", "metric", "script", "asset"],
                     "description": (
                         "The ontology resource to load: root returns ontology metadata and catalogs; "
                         "operation returns operation content by key; object returns object/entity definition by key; "
                         "rule returns rule content by key; metric returns metric content by key; "
-                        "script returns registered script description by key or bound operation key."
+                        "script returns registered script description by key or bound operation key; "
+                        "asset returns only business-checkpoint-template.md when CheckPoint is enabled."
                     ),
                 },
                 "key": {
                     "type": "string",
                     "description": (
-                        "Resource key when loading operation/object/rule/metric/script. "
+                        "Resource key when loading operation/object/rule/metric/script/asset. "
                         "For resource='object', the object key, title, canonical_key, or declared alias is accepted. "
                         "Leave empty for `root`."
                     ),
@@ -115,7 +122,11 @@ def _handle_ontology_context_result(
 
     if normalized_resource == "root":
         return _OntologyContextResult(
-            content=_build_root_payload(ontology=ontology, ontology_dir=ontology_dir),
+            content=_build_root_payload(
+                ontology=ontology,
+                ontology_dir=ontology_dir,
+                workspace_id=workspace_id,
+            ),
             resolved_path=Path(ontology.manifest_path).resolve(),
         )
     if normalized_resource == "operation":
@@ -201,15 +212,64 @@ def _handle_ontology_context_result(
                 path,
             ),
         )
+    if normalized_resource == "asset":
+        normalized_key = str(key or "").replace("\\", "/").strip("/")
+        if normalized_key != BUSINESS_CHECKPOINT_TEMPLATE_KEY:
+            return _OntologyContextResult(
+                content=(
+                    "Error: ontology_context resource 'asset' only supports '{}'."
+                ).format(BUSINESS_CHECKPOINT_TEMPLATE_KEY)
+            )
+        if not is_business_checkpoint_available(
+            ontology.id,
+            ontology_version=str(getattr(ontology, "version", "") or "").strip() or None,
+            workspace_id=workspace_id,
+        ):
+            return _OntologyContextResult(
+                content="Error: CheckPoint is disabled or its package template is unavailable."
+            )
+        path, asset_error = find_asset_file(ontology_dir, BUSINESS_CHECKPOINT_TEMPLATE_KEY)
+        if asset_error:
+            return _OntologyContextResult(content=asset_error)
+        assert path is not None
+        content, read_error = read_required_asset_text(
+            path,
+            "asset '{}'".format(BUSINESS_CHECKPOINT_TEMPLATE_KEY),
+        )
+        if read_error:
+            return _OntologyContextResult(content=read_error)
+        return _OntologyContextResult(
+            content="asset_key: {}\n\n{}".format(BUSINESS_CHECKPOINT_TEMPLATE_KEY, content or ""),
+            resolved_path=path,
+            resolved_key=BUSINESS_CHECKPOINT_TEMPLATE_KEY,
+        )
     return _OntologyContextResult(
         content=(
-            "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, or script."
+            "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, script, or asset."
         ).format(normalized_resource)
     )
 
 
-def _build_root_payload(*, ontology: Any, ontology_dir: Path) -> str:
+def _resolve_script_resource_key(ontology_dir: Path, key: str) -> str:
+    entry = find_script_entry(load_script_catalog(ontology_dir), key)
+    if not entry:
+        return str(key or "").strip()
+    return str(entry.get("script_key") or key or "").strip()
+
+
+def _build_root_payload(
+    *,
+    ontology: Any,
+    ontology_dir: Path,
+    workspace_id: Optional[str],
+) -> str:
     payload = build_root_payload(ontology=ontology, ontology_dir=ontology_dir)
+    if is_business_checkpoint_available(
+        ontology.id,
+        ontology_version=str(getattr(ontology, "version", "") or "").strip() or None,
+        workspace_id=workspace_id,
+    ):
+        payload["assets_catalog"] = [BUSINESS_CHECKPOINT_TEMPLATE_KEY]
     return "\n".join(format_root_payload_compact(ontology_id=ontology.id, root_payload=payload))
 
 

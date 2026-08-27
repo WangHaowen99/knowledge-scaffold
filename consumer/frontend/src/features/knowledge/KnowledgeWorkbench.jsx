@@ -16,6 +16,7 @@ import { DIR_ICONS, DIR_LABELS, findDirEntries } from './hooks/useKbBrowser';
 import Markdown from '../../shared/ui/Markdown';
 import { ToastNotice } from '../../shared/ui/feedback';
 import { EmptyState, Modal, ScopeTabs, StatusTag } from '../../shared/ui/primitives';
+import businessCheckpointGuide from './content/businessCheckpointGuide.js';
 import './knowledge.css';
 
 const EXT_LANG = { '.md': 'markdown', '.yaml': 'yaml', '.yml': 'yaml', '.json': 'json', '.py': 'python', '.sql': 'sql', '.csv': 'csv', '.txt': 'text' };
@@ -31,7 +32,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   const {
     pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
     canActivate, canManage, viewVersion, viewingActive, versionOverride, selectVersion,
-    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
+    setPkgEnabled, setBusinessCheckpointEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
     clearOperationNotice, opBusy, opNotice,
     importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge, retryPackages,
     importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
@@ -47,6 +48,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   const [editContent, setEditContent] = useState('');
   const [fileBusy, setFileBusy] = useState('');
   const [fileNotice, setFileNotice] = useState('');
+  const [checkpointDialog, setCheckpointDialog] = useState('');
   const fileAbortRef = useRef(null);
   const fileScopeRef = useRef('');
   fileScopeRef.current = `${workspaceId || ''}:${pkgId || ''}:${sel.file || ''}:${versionOverride || ''}`;
@@ -132,6 +134,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
 
   useEffect(() => {
     setFileNotice('');
+    setCheckpointDialog('');
   }, [pkgId, versionOverride, workspaceId]);
 
   const importDialog = (
@@ -155,6 +158,20 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   const onToggleEnabled = () => {
     if (pkg.enabled && !window.confirm(`禁用后 Agent 将无法使用「${pkg.name || pkgId}」，确认禁用？`)) return;
     setPkgEnabled(!pkg.enabled);
+  };
+  const checkpointEnabled = pkg?.business_checkpoint?.enabled === true;
+  const checkpointTemplateAvailable = pkg?.business_checkpoint?.template_available === true;
+  const onToggleBusinessCheckpoint = () => {
+    setFileNotice('');
+    if (checkpointEnabled) {
+      setBusinessCheckpointEnabled(false);
+      return;
+    }
+    setCheckpointDialog('confirm');
+  };
+  const confirmBusinessCheckpoint = () => {
+    setCheckpointDialog('');
+    setBusinessCheckpointEnabled(true);
   };
   const onDeleteVersion = () => {
     if (!window.confirm(`确认删除「${pkg.name || pkgId}」的版本 ${viewVersion}？该版本文件将被永久删除。`)) return;
@@ -258,6 +275,9 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
       <div className="kb-toolbar">
         <span className="kb-tb-name">{pkg.name || pkgId}</span>
         <StatusTag status={pkg.enabled ? 'enabled' : 'disabled'}>{pkg.enabled ? '已启用' : '已禁用'}</StatusTag>
+        <StatusTag status={checkpointEnabled ? 'enabled' : 'disabled'}>
+          CheckPoint {checkpointEnabled ? '已开启' : '已关闭'}
+        </StatusTag>
         {activeVersion && <StatusTag status="active">激活版本 {activeVersion}</StatusTag>}
         {versions.length > 0 && (
           <label className="kb-tb-ver">查看版本
@@ -269,6 +289,16 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
         <span className="kb-tb-sp" />
         <button className="btn" disabled={Boolean(opBusy)} onClick={() => { setFileNotice(''); downloadPkg(); }}>{opBusy === 'download' ? '打包中…' : '下载 ZIP'}</button>
         {canManage && <button className="btn" disabled={Boolean(opBusy)} onClick={onToggleEnabled}>{opBusy === 'status' ? '处理中…' : pkg.enabled ? '禁用' : '启用'}</button>}
+        {canManage && (
+          <button
+            className="btn"
+            disabled={Boolean(opBusy) || (!checkpointEnabled && (!pkg.enabled || !checkpointTemplateAvailable))}
+            title={checkpointTemplateAvailable ? '控制 LLM 是否获得 CheckPoint 工具' : '知识包缺少 assets/business-checkpoint-template.md'}
+            onClick={onToggleBusinessCheckpoint}
+          >
+            {opBusy === 'businessCheckpoint' ? '处理中…' : checkpointEnabled ? '关闭 CheckPoint' : '开启 CheckPoint'}
+          </button>
+        )}
         {canActivate && !viewingActive && <button className="btn btn-p" disabled={Boolean(opBusy)} onClick={activateVersion}>{opBusy === 'activate' ? '激活中…' : '设为激活版本'}</button>}
         {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy) || viewingActive || versions.length <= 1} onClick={onDeleteVersion}>{opBusy === 'deleteVersion' ? '删除中…' : '删除版本'}</button>}
         {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy)} onClick={onDeletePackage}>{opBusy === 'deletePackage' ? '删除中…' : '删除知识包'}</button>}
@@ -345,6 +375,25 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
         <Modal title="导入结果预览" description="导入已完成。请核对识别到的内容与服务端校验结果。" onClose={clearImportPreview}
           actions={<button className="btn btn-p" onClick={clearImportPreview}>完成</button>} wide>
           <ImportPreview preview={importPreview} />
+        </Modal>
+      )}
+      {checkpointDialog === 'confirm' && (
+        <Modal title="开启 CheckPoint" onClose={() => setCheckpointDialog('')}
+          actions={<><button className="btn" onClick={() => setCheckpointDialog('')}>取消</button><button className="btn btn-p" onClick={confirmBusinessCheckpoint}>确认开启</button></>}>
+          <p className="kb-checkpoint-confirm-copy">
+            CheckPoint 需要本体包配套配置才能完整生效，本体包配置规范参考：
+            <a href="#business-checkpoint-guide" onClick={(event) => { event.preventDefault(); setCheckpointDialog('guide'); }}>本体包 Checkpoint 通用规范</a>
+          </p>
+        </Modal>
+      )}
+      {checkpointDialog === 'guide' && (
+        <Modal title="本体包 Checkpoint 通用规范" onClose={() => setCheckpointDialog('confirm')}
+          actions={<button className="btn btn-p" onClick={() => setCheckpointDialog('confirm')}>返回</button>} wide>
+          <div className="kb-checkpoint-template-download">
+            <span>通用模板：</span>
+            <a href="/business-checkpoint-template.md" download="business-checkpoint-template.md">下载 business-checkpoint-template.md</a>
+          </div>
+          <Markdown>{businessCheckpointGuide}</Markdown>
         </Modal>
       )}
       <ToastNotice message={workbenchNotices.toastMessage} tone={workbenchNotices.toastTone} duration={5200} />

@@ -1151,7 +1151,24 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 响应 `404`：`{ "error": "Ontology not found" }`
 
-### 6.7.2 `PUT /agentic/ontologies/{ontology_id}/active-version` (`admin`)
+### 6.7.2 `GET|PUT /agentic/ontologies/{ontology_id}/capabilities/business-checkpoint`
+
+读取或修改知识包的业务阶段 CheckPoint 开关。开关默认关闭；GET 对已认证工作空间成员开放，PUT 仅允许工作空间 owner 或平台管理员。
+
+PUT 请求体：
+
+```json
+{
+  "enabled": true,
+  "expected_revision": "<revision returned by GET or ontology list>"
+}
+```
+
+开启前，当前激活版本必须包含可读取的 `assets/business-checkpoint-template.md`，否则返回 `409`。revision 已变化时同样返回 `409`。关闭后，新构建的 LLM 工具列表不再包含 `report_business_checkpoint`；已缓存的工具调用也会在执行时被拒绝。
+
+成功响应包含 `enabled`、新 `revision` 和 `updated_at`。知识包导入后该开关重置为关闭，删除知识包时同步清理配置。
+
+### 6.7.3 `PUT /agentic/ontologies/{ontology_id}/active-version` (`admin`)
 
 切换 ontology 的激活版本。
 
@@ -1180,7 +1197,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 响应 `404`：`{ "error": "Ontology not found" }`
 
-### 6.7.3 `GET /agentic/ontologies/{ontology_id}/graph`
+### 6.7.4 `GET /agentic/ontologies/{ontology_id}/graph`
 
 返回 ontology 指定版本的节点与边图谱快照。
 
@@ -1229,7 +1246,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 响应 `404`：`{ "error": "Ontology not found" }` 或 `{ "error": "Ontology version not found" }`
 
-### 6.7.4 `GET /agentic/ontologies/{ontology_id}/tree`
+### 6.7.5 `GET /agentic/ontologies/{ontology_id}/tree`
 
 返回指定版本目录的目录树，供编辑器/浏览器展示。
 
@@ -1271,7 +1288,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 安全错误响应 `400`：`{ "error": "Invalid file path" }`
 
-### 6.7.5 `GET /agentic/ontologies/{ontology_id}/raw-file`
+### 6.7.6 `GET /agentic/ontologies/{ontology_id}/raw-file`
 
 读取指定版本内的单个文本文件内容。
 

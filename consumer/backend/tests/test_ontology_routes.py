@@ -142,6 +142,249 @@ def test_server_request_limit_exceeds_ontology_zip_limit():
     assert MAX_CONTENT_LENGTH > ontologies_module.ONTOLOGY_MAX_ZIP_BYTES
 
 
+def test_business_checkpoint_toggle_controls_tool_visibility_end_to_end(tmp_path, monkeypatch):
+    from agent.tools.base import ToolContext
+    from agent.core.jiuwen.tools import get_jiuwen_tool_infos
+    from agent.tools.registry import TOOL_SPECS, get_tools_schema
+    from config import AgentConfig
+    from utils.streaming import stream_writer_context
+
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = _write_example_ontology(workspace_paths)
+    template_dir = ontology_dir / "versions" / "1.0.0" / "assets"
+    template_dir.mkdir(parents=True)
+    (template_dir / "business-checkpoint-template.md").write_text(
+        "# Synthetic CheckPoint Template\n",
+        encoding="utf-8",
+    )
+    (template_dir / "private.conf").write_text(
+        "synthetic_setting=true\n",
+        encoding="utf-8",
+    )
+    client, headers = _build_test_client(tmp_path)
+
+    def visible_tool_names():
+        return {
+            schema["function"]["name"]
+            for schema in get_tools_schema(
+                "main",
+                selected_ontology_id=EXAMPLE_ONTOLOGY_ID,
+                selected_ontology_version="1.0.0",
+                workspace_id="demo",
+            )
+        }
+
+    def visible_jiuwen_tool_names():
+        return {
+            item["name"]
+            for item in get_jiuwen_tool_infos(
+                "main",
+                selected_ontology_id=EXAMPLE_ONTOLOGY_ID,
+                selected_ontology_version="1.0.0",
+                workspace_id="demo",
+            )
+        }
+
+    context = ToolContext(
+        memory_manager=None,
+        messages=[],
+        run_id="run-checkpoint",
+        session_id="session-checkpoint",
+        turn_id=1,
+        agent_config=AgentConfig.from_env(),
+        caller="main",
+        workspace_id="demo",
+        project_root=str(tmp_path),
+        selected_ontology_id=EXAMPLE_ONTOLOGY_ID,
+        selected_ontology_version="1.0.0",
+    )
+
+    assert "report_business_checkpoint" not in visible_tool_names()
+    assert "report_business_checkpoint" not in visible_jiuwen_tool_names()
+    closed_template = TOOL_SPECS["ontology_context"].execute(
+        args={
+            "ontology_id": EXAMPLE_ONTOLOGY_ID,
+            "resource": "asset",
+            "key": "business-checkpoint-template.md",
+        },
+        context=context,
+    )
+    assert "disabled" in closed_template.content
+    closed_root = TOOL_SPECS["ontology_context"].execute(
+        args={"ontology_id": EXAMPLE_ONTOLOGY_ID, "resource": "root"},
+        context=context,
+    )
+    assert "assets_catalog:" not in closed_root.content
+
+    enable_response = client.put(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        json={"enabled": True, "expected_revision": ""},
+    )
+    assert enable_response.status_code == 200
+    enabled_revision = enable_response.json()["revision"]
+    assert "report_business_checkpoint" in visible_tool_names()
+    assert "report_business_checkpoint" in visible_jiuwen_tool_names()
+    enabled_root = TOOL_SPECS["ontology_context"].execute(
+        args={"ontology_id": EXAMPLE_ONTOLOGY_ID, "resource": "root"},
+        context=context,
+    )
+    assert "assets_catalog:\n- business-checkpoint-template.md" in enabled_root.content
+    assert "private.conf" not in enabled_root.content
+    enabled_template = TOOL_SPECS["ontology_context"].execute(
+        args={
+            "ontology_id": EXAMPLE_ONTOLOGY_ID,
+            "resource": "asset",
+            "key": "business-checkpoint-template.md",
+        },
+        context=context,
+    )
+    assert enabled_template.content == (
+        "asset_key: business-checkpoint-template.md\n\n"
+        "# Synthetic CheckPoint Template"
+    )
+    private_asset = TOOL_SPECS["ontology_context"].execute(
+        args={
+            "ontology_id": EXAMPLE_ONTOLOGY_ID,
+            "resource": "asset",
+            "key": "private.conf",
+        },
+        context=context,
+    )
+    assert "only supports 'business-checkpoint-template.md'" in private_asset.content
+
+    checkpoint_events = []
+    with stream_writer_context(checkpoint_events.append):
+        enabled_outcome = TOOL_SPECS["report_business_checkpoint"].execute(
+            args={
+                "stage": "synthetic_stage",
+                "stage_title": "合成阶段",
+                "phase": "synthetic_stage.started",
+                "phase_title": "开始合成阶段",
+                "summary": "开始执行合成阶段。",
+            },
+            context=context,
+            tool_call_id="call-checkpoint-enabled",
+        )
+    assert enabled_outcome.content.startswith("Business CheckPoint reported")
+    event = next(item for item in checkpoint_events if item["data"]["type"] == "business.checkpoint")
+    assert event["data"]["payload"]["tool_call_id"] == "call-checkpoint-enabled"
+
+    disable_response = client.put(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        json={"enabled": False, "expected_revision": enabled_revision},
+    )
+    assert disable_response.status_code == 200
+    disabled_revision = disable_response.json()["revision"]
+
+    list_response = client.get("/agentic/ontologies", headers=headers)
+    assert list_response.status_code == 200
+    listed_checkpoint = list_response.json()["ontologies"][0]["business_checkpoint"]
+    assert listed_checkpoint["enabled"] is False
+    assert listed_checkpoint["revision"] == disabled_revision
+
+    # Rebuilding the tool list after closing the switch must remove the tool.
+    assert "report_business_checkpoint" not in visible_tool_names()
+    assert "report_business_checkpoint" not in visible_jiuwen_tool_names()
+    closed_again_template = TOOL_SPECS["ontology_context"].execute(
+        args={
+            "ontology_id": EXAMPLE_ONTOLOGY_ID,
+            "resource": "asset",
+            "key": "business-checkpoint-template.md",
+        },
+        context=context,
+    )
+    assert "disabled" in closed_again_template.content
+    closed_again_root = TOOL_SPECS["ontology_context"].execute(
+        args={"ontology_id": EXAMPLE_ONTOLOGY_ID, "resource": "root"},
+        context=context,
+    )
+    assert "assets_catalog:" not in closed_again_root.content
+
+    # A previously cached tool schema/card must still be rejected at execution time.
+    closed_events = []
+    with stream_writer_context(closed_events.append):
+        closed_outcome = TOOL_SPECS["report_business_checkpoint"].execute(
+            args={
+                "stage": "synthetic_stage",
+                "stage_title": "合成阶段",
+                "phase": "synthetic_stage.completed",
+                "phase_title": "合成阶段完成",
+                "summary": "合成阶段已经完成。",
+            },
+            context=context,
+            tool_call_id="call-checkpoint-closed",
+        )
+    assert "disabled" in closed_outcome.content
+    assert not any(item["data"]["type"] == "business.checkpoint" for item in closed_events)
+
+    stale_response = client.put(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        json={"enabled": True, "expected_revision": enabled_revision},
+    )
+    assert stale_response.status_code == 409
+
+
+def test_business_checkpoint_cannot_be_enabled_without_template(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    _write_example_ontology(workspace_paths)
+    client, headers = _build_test_client(tmp_path)
+
+    response = client.put(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        json={"enabled": True, "expected_revision": ""},
+    )
+
+    assert response.status_code == 409
+    assert "business-checkpoint-template.md" in response.json()["error"]
+
+
+def test_business_checkpoint_template_read_error_does_not_expose_server_path(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = _write_example_ontology(workspace_paths)
+    template_dir = ontology_dir / "versions" / "1.0.0" / "assets"
+    template_dir.mkdir(parents=True)
+    (template_dir / "business-checkpoint-template.md").write_text(
+        "# Synthetic CheckPoint Template\n",
+        encoding="utf-8",
+    )
+    client, headers = _build_test_client(tmp_path)
+    exposed_path = r"C:\workspace_demo\ontologies\package_demo\business-checkpoint-template.md"
+    monkeypatch.setattr(
+        "ontology.capabilities.read_required_asset_text",
+        lambda *_args, **_kwargs: (
+            None,
+            "Error: failed to read business CheckPoint template: {}".format(exposed_path),
+        ),
+    )
+
+    list_response = client.get("/agentic/ontologies", headers=headers)
+    capability_response = client.get(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+    )
+    enable_response = client.put(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        json={"enabled": True, "expected_revision": ""},
+    )
+
+    assert list_response.status_code == 200
+    assert capability_response.status_code == 200
+    assert enable_response.status_code == 409
+    for response in (list_response, capability_response, enable_response):
+        response_text = json.dumps(response.json(), ensure_ascii=False)
+        assert exposed_path not in response_text
+        assert "workspace_demo" not in response_text
+        assert "CheckPoint template cannot be read" in response_text
+
+
 def _build_source_ontology_zip(
     *,
     include_scripts: bool,
@@ -302,6 +545,13 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
     assert payload["ontologies"] == [
         {
             "active_version": "1.0.0",
+            "business_checkpoint": {
+                "enabled": False,
+                "revision": "",
+                "template_available": False,
+                "template_error": "Error: asset directory not found.",
+                "updated_at": "",
+            },
             "business_data": {
                 "configured": False,
                 "mode": "",
@@ -945,6 +1195,98 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
     assert response.status_code == 201
     assert response.json()["import_mode"] == "converted"
     assert (workspace_paths.ontologies_dir / "converted-demo").exists()
+
+
+def test_import_does_not_write_package_when_checkpoint_reset_fails(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    install_called = False
+
+    def fail_checkpoint_reset(*_args, **_kwargs):
+        raise ontologies_module.OntologyCapabilityStoreError("synthetic reset failure")
+
+    def record_install(*_args, **_kwargs):
+        nonlocal install_called
+        install_called = True
+        raise AssertionError("package installation must not start")
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "reset_business_checkpoint_capability",
+        fail_checkpoint_reset,
+    )
+    monkeypatch.setattr(
+        ontologies_module,
+        "_install_ontology_version_package",
+        record_install,
+    )
+
+    response = _post(
+        client,
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={
+            "file": (
+                _build_v01_ontology_zip(),
+                "source-demo.zip",
+            )
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"] == "Failed to initialize CheckPoint capability"
+    assert install_called is False
+    assert not (workspace_paths.ontologies_dir / "source-demo").exists()
+
+
+def test_failed_reimport_leaves_existing_checkpoint_capability_disabled(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = _write_example_ontology(workspace_paths)
+    template_dir = ontology_dir / "versions" / "1.0.0" / "assets"
+    template_dir.mkdir(parents=True)
+    (template_dir / "business-checkpoint-template.md").write_text(
+        "# Synthetic CheckPoint Template\n",
+        encoding="utf-8",
+    )
+    client, headers = _build_test_client(tmp_path)
+    enable_response = client.put(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        json={"enabled": True, "expected_revision": ""},
+    )
+    assert enable_response.status_code == 200
+
+    def fail_install(**_kwargs):
+        raise OSError("synthetic install failure")
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "_install_ontology_version_package",
+        fail_install,
+    )
+    import_response = _post(
+        client,
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={
+            "file": (
+                _build_v01_ontology_zip(
+                    ontology_id=EXAMPLE_ONTOLOGY_ID,
+                    version="1.0.0",
+                ),
+                "package-demo.zip",
+            ),
+            "action": "overwrite_matching",
+        },
+    )
+
+    assert import_response.status_code == 500
+    capability_response = client.get(
+        "/agentic/ontologies/{}/capabilities/business-checkpoint".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+    )
+    assert capability_response.status_code == 200
+    assert capability_response.json()["enabled"] is False
 
 
 def test_import_converted_ontology_zip_reports_invalid_frontmatter_as_bad_request(

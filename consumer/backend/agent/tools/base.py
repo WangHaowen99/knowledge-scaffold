@@ -65,6 +65,7 @@ class ToolContext:
     # Appended at the end to preserve positional compatibility for existing
     # tool adapters while carrying the W3C context through solver calls.
     traceparent: Optional[str] = None
+    selected_ontology_is_explicit: bool = True
 
 
 @dataclass

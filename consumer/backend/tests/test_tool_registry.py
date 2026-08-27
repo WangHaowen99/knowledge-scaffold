@@ -585,7 +585,9 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
         "parameter format: name=description required|optional type; type[] means pass an array value.\n"
         "- 流程A (parameters: none)"
     ) in root_content
-    assert "assets_catalog" not in root_content
+    assert "assets_catalog:" not in root_content
+    assert "common.conf" not in root_content
+    assert "rules/limits.ini" not in root_content
 
     object_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "object", "key": "TargetItem"})],
@@ -594,11 +596,14 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     assert object_result.messages[0]["content"] == "object_key: TargetItem\n\ncontent:\n# TargetItem\n字段"
     assert object_result.state_updates["read_document_records"][0]["doc_type"] == "object_doc"
 
-    unsupported_resource_result = execute_tool_batch(
+    asset_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "asset", "key": "rules/limits.ini"})],
         _make_context(project_root=str(tmp_path)),
     )
-    assert "arguments.resource must be one of" in unsupported_resource_result.messages[0]["content"]
+    assert asset_result.messages[0]["content"] == (
+        "Error: ontology_context resource 'asset' only supports "
+        "'business-checkpoint-template.md'."
+    )
 
 
 def test_ontology_context_reports_missing_object_as_recoverable_result(tmp_path, monkeypatch):
@@ -667,7 +672,7 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
         "- 处理成本 | 库存处理成本 | 数量乘单价"
     ) in root_content
     assert "- 分析影响 - 影响分析脚本 (parameters: change_order_id=CHANGE_ORDER编号 required string)" in root_content
-    assert "assets_catalog" not in root_content
+    assert "assets_catalog:" not in root_content
     assert "legacy-operation" not in root_content
     assert "legacy-object" not in root_content
     assert "- 分析影响 (parameters: none)" not in root_content
@@ -3085,7 +3090,12 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
         "rule",
         "metric",
         "script",
+        "asset",
     ]
+    assert (
+        "asset returns only business-checkpoint-template.md when CheckPoint is enabled"
+        in ontology_resource_description
+    )
     assert "resource='root'" not in ontology_description
     assert "semantic keys" not in ontology_description
     assert "file paths" not in ontology_description

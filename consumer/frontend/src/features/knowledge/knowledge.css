@@ -19,6 +19,10 @@
 .mwr .kb-toolbar .kb-tb-sp { flex: 1; }
 .mwr .kb-opnotice { font-size: 12.5px; color: var(--muted); padding: 0 4px; flex: none; }
 .mwr .content-full .kb-opnotice { padding: 6px 14px 0; }
+.mwr .kb-checkpoint-confirm-copy { margin: 4px 0; color: var(--ink2); font-size: 13.5px; line-height: 1.7; }
+.mwr .kb-checkpoint-confirm-copy a { margin-left: 4px; color: var(--blue-d); font-weight: 650; text-decoration: underline; text-underline-offset: 2px; }
+.mwr .kb-checkpoint-template-download { display: flex; align-items: center; gap: 5px; margin: 0 0 12px; padding: 10px 12px; color: var(--ink2); background: var(--surface-subtle); border: 1px solid var(--hair); border-radius: 8px; font-size: 13px; }
+.mwr .kb-checkpoint-template-download a { color: var(--blue-d); font-weight: 650; text-decoration: underline; text-underline-offset: 2px; }
 
 /* ---- 数据源测试连接 / 保存操作反馈条 ---- */
 .mwr .kb-ds-feedback {

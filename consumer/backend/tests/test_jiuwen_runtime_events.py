@@ -809,6 +809,46 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_runtime_forwards_business_checkpoint(self):
+        class CheckpointEngine:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def arun(self, state, **kwargs):
+                kwargs["protocol_event_observer"](
+                    "business.checkpoint",
+                    {
+                        "tool_name": "report_business_checkpoint",
+                        "tool_call_id": "checkpoint-call",
+                        "stage": "synthetic_stage",
+                        "phase": "synthetic_stage.started",
+                        "summary": "Synthetic checkpoint payload.",
+                    },
+                )
+                return {**state, "final_output": "done"}
+
+        runtime = JiuwenAsyncAgentRuntime(
+            agent_config=SimpleNamespace(),
+            engine_factory=CheckpointEngine,
+        )
+        events = [
+            event
+            async for event in runtime.astream(_context("run-business-checkpoint"))
+        ]
+
+        self.assertEqual(
+            [event.event_type for event in events],
+            ["turn.started", "business.checkpoint", "turn.finished"],
+        )
+        checkpoint = events[1]
+        self.assertEqual(checkpoint.status, "running")
+        self.assertEqual(checkpoint.payload["stage"], "synthetic_stage")
+        draft = PublicEventAdapter().adapt(checkpoint)
+        self.assertIsNotNone(draft)
+        assert draft is not None
+        self.assertEqual(draft.event_type, "business.checkpoint")
+        self.assertEqual(draft.payload["tool_call_id"], "checkpoint-call")
+
     async def test_runtime_forwards_tool_progress_and_subagent_lifecycle(self):
         class ProgressEngine:
             def __init__(self, **kwargs):
