@@ -1454,7 +1454,24 @@ async def test_restored_confirmation_accepts_the_same_frozen_candidate(settings)
         await runtime.shutdown()
 
 
-async def test_legacy_confirmation_without_receipt_is_retired_and_revalidated_before_new_card(settings) -> None:
+@pytest.mark.parametrize(
+    ("error_code", "reason"),
+    [
+        (
+            "CANDIDATE_REVALIDATION_REQUIRED",
+            "待确认候选或校验规则已经变化，原确认不能继续提交",
+        ),
+        (
+            "STALE_CONFIRMATION",
+            "待确认内容已经变化，不能把旧卡片的决定用于新候选",
+        ),
+    ],
+)
+async def test_stale_confirmation_is_retired_and_revalidated_before_new_card(
+    settings,
+    error_code: str,
+    reason: str,
+) -> None:
     groups = [{"id": "knowledge", "tier": "structural", "title": "确认知识修改", "impact": []}]
     model = ScriptedModel([
         [ToolTurn("request_confirmation", {"summary": "确认旧候选"})],
@@ -1463,8 +1480,8 @@ async def test_legacy_confirmation_without_receipt_is_retired_and_revalidated_be
     gateway = FakeGateway({
         "prepare_confirmation_groups": {"change_groups": groups},
         "request_confirmation": {
-            "error": "CANDIDATE_REVALIDATION_REQUIRED",
-            "reason": "待确认候选或校验规则已经变化，原确认不能继续提交",
+            "error": error_code,
+            "reason": reason,
             "retryable": False,
             "next": ["重新执行完整候选预检，并基于新的确认卡再次决定"],
         },

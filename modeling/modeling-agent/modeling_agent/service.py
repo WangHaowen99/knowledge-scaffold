@@ -932,7 +932,8 @@ class AgentService:
             if confirmation_result.get("error"):
                 reason = str(confirmation_result.get("reason") or "待修改内容没有成功结算")
                 error_code = str(confirmation_result.get("error") or "CONFIRMATION_FAILED")
-                if approved and error_code == "CANDIDATE_REVALIDATION_REQUIRED":
+                if error_code in {"CANDIDATE_REVALIDATION_REQUIRED", "STALE_CONFIRMATION"}:
+                    decision = "接受" if approved else "退回"
                     superseded_answer = {
                         "approved": False,
                         "action": "superseded",
@@ -949,7 +950,7 @@ class AgentService:
                         "role": "system",
                         "blocks": [{
                             "type": "text",
-                            "text": "刚才的待确认内容已变化，接受操作未生效；助手正在重新校验，新的内容需要再次确认。",
+                            "text": f"刚才的待确认内容已变化，{decision}操作未生效；助手正在重新校验，新的内容需要再次确认。",
                         }],
                     })
                     return await self._resume(
@@ -959,9 +960,9 @@ class AgentService:
                             "action": "settled_confirmation",
                             "result": confirmation_result,
                             "continuation": (
-                                "旧确认卡已经作废，用户的接受没有应用到任何候选。"
+                                f"旧确认卡已经作废，用户的{decision}没有应用到任何候选。"
                                 "立即重新执行完整预检；若有 findings，自动修正后重新预检。"
-                                "只有通过后才能展示新的确认卡，绝不能沿用刚才的接受结果。"
+                                "只有通过后才能展示新的确认卡，绝不能沿用刚才的决定。"
                             ),
                         }},
                         autonomous_seed=True,
