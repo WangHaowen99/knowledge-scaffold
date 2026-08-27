@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -31,6 +32,9 @@ from agent.runtime.service import AsyncExecutionService, pending_interaction_fro
 from agent.runtime.store import InMemoryRunRepository, utc_now_iso
 from agent.runtime.supervisor import RunTaskSupervisor
 from utils.security.redaction import redact_sensitive_value
+
+
+logger = logging.getLogger(__name__)
 
 
 def request_fingerprint(context: RuntimeInvocationContext) -> str:
@@ -573,7 +577,12 @@ class AsyncRunManager:
                     if callable(prepare_context)
                     else snapshot.context
                 )
-            except Exception:
+            except Exception as exc:
+                logger.error(
+                    "run context preparation failed run_id=%s error_type=%s",
+                    run_id,
+                    type(exc).__name__,
+                )
                 error = RuntimeErrorInfo(
                     error_code="SESSION_PREPARE_FAILED",
                     message="会话运行状态准备失败",

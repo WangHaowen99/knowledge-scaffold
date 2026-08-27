@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+import api.routes.evidence as evidence_routes
 from api.auth.auth import AuthManager
 from api.routes.evidence import evidence_router
 from api.testing import TestApplication
@@ -14,6 +16,16 @@ from ontology.evidence.manager import EvidenceIndexManager
 from ontology.evidence.worker import EvidenceIndexWorker
 from persistence.runtime_facts import RuntimeFactsStore
 from workspace.workspaces import create_workspace, get_workspace_paths
+
+
+class _RecordingPool:
+    def __init__(self, name: str, calls: list[tuple[str, object]]):
+        self.name = name
+        self.calls = calls
+
+    async def run(self, function, *args, **kwargs):
+        self.calls.append((self.name, function))
+        return function(*args, **kwargs)
 
 
 def _client(tmp_path: Path):
@@ -29,10 +41,64 @@ def _client(tmp_path: Path):
             "RootStrong123!",
         )
     app.state.services["AUTH_MANAGER"] = auth
+    offload_calls: list[tuple[str, object]] = []
+    app.state.runtime_container = SimpleNamespace(
+        short_io=_RecordingPool("short_io", offload_calls),
+        tool_io=_RecordingPool("tool_io", offload_calls),
+    )
+    app.state.offload_calls = offload_calls
     app.include_router(evidence_router)
     client = TestClient(app)
     token = auth.issue_token(user)
     return client, {"Authorization": "Bearer " + token}
+
+
+def test_management_routes_use_bounded_runtime_pools(tmp_path: Path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    client, headers = _client(tmp_path)
+
+    def fake_rebuild_core(request, ontology_id, payload):
+        return {"status": "queued"}, 202
+
+    def fake_cleanup_core(request, *, kind, payload):
+        return {"kind": kind}, 200
+
+    monkeypatch.setattr(
+        evidence_routes,
+        "_rebuild_evidence_index_core",
+        fake_rebuild_core,
+    )
+    monkeypatch.setattr(
+        evidence_routes,
+        "_cleanup_core",
+        fake_cleanup_core,
+    )
+
+    assert client.post(
+        "/agentic/ontologies/eco/evidence-index/rebuild",
+        headers=headers,
+        json={},
+    ).status_code == 202
+    assert client.post(
+        "/agentic/ontology-evidence/cleanup",
+        headers=headers,
+        json={},
+    ).status_code == 200
+    assert client.post(
+        "/agentic/runtime-facts/cleanup",
+        headers=headers,
+        json={},
+    ).status_code == 200
+    management_calls = [
+        (pool_name, function)
+        for pool_name, function in client.app.state.offload_calls
+        if function in {fake_rebuild_core, fake_cleanup_core}
+    ]
+    assert management_calls == [
+        ("short_io", fake_rebuild_core),
+        ("tool_io", fake_cleanup_core),
+        ("tool_io", fake_cleanup_core),
+    ]
 
 
 def _workspace(tmp_path: Path, monkeypatch):

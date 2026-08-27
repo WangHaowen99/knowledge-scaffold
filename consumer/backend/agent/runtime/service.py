@@ -1654,6 +1654,11 @@ class OrchestratorSessionAdapter:
             requested_ontology_id = str(
                 arguments.get("selected_ontology_id") or ""
             ).strip()
+            requested_ontology_version = str(
+                arguments.get("selected_ontology_version")
+                or arguments.get("selected_version")
+                or ""
+            ).strip()
             locked_ontology_id = str(
                 session_metadata.get("selected_ontology_id") or ""
             ).strip()
@@ -1672,6 +1677,16 @@ class OrchestratorSessionAdapter:
                         locked_ontology_id
                     )
                 )
+            if (
+                locked_ontology_version
+                and requested_ontology_version
+                and requested_ontology_version != locked_ontology_version
+            ):
+                raise ValueError(
+                    "selected_ontology_version is locked for this session: {}".format(
+                        locked_ontology_version
+                    )
+                )
             if requested_ontology_id and prior_turn_count > 0 and not locked_ontology_id:
                 raise ValueError(
                     "selected_ontology_id can only be set before the first user turn"
@@ -1679,7 +1694,9 @@ class OrchestratorSessionAdapter:
 
             selected_ontology = None
             selected_ontology_id = locked_ontology_id or requested_ontology_id
-            selected_ontology_version = locked_ontology_version
+            selected_ontology_version = (
+                locked_ontology_version or requested_ontology_version
+            )
             if selected_ontology_id:
                 from ontology.ontologies import (
                     get_ontology_registry,
@@ -1696,6 +1713,25 @@ class OrchestratorSessionAdapter:
                         raise ValueError(
                             "Locked selected ontology is unavailable: {}".format(
                                 locked_ontology_id
+                            )
+                        )
+                elif requested_ontology_version:
+                    selected_ontology = get_runtime_ontology_manifest(
+                        selected_ontology_id,
+                        version=requested_ontology_version,
+                        workspace_id=context.workspace_id,
+                    )
+                    if selected_ontology is None:
+                        raise ValueError(
+                            "Invalid selected ontology version: {}@{}".format(
+                                selected_ontology_id,
+                                requested_ontology_version,
+                            )
+                        )
+                    if not selected_ontology.enabled:
+                        raise ValueError(
+                            "Disabled selected_ontology_id: {}".format(
+                                selected_ontology_id
                             )
                         )
                 else:
