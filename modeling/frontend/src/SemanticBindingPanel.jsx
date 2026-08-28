@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
-import { applySemanticBindings, getSemanticBindingSuggestions, ignoreSemanticBindings } from './api.js';
+import {
+  applySemanticBindings,
+  clearSemanticBindings,
+  getSemanticBindingSuggestions,
+  ignoreSemanticBindings,
+} from './api.js';
 import { safeUiError } from './revision-state.js';
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -36,6 +41,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
   const suggestions = snapshot?.suggestions ?? [];
   const fieldSuggestions = snapshot?.fieldSuggestions ?? [];
   const confirmedBindings = snapshot?.confirmedBindings ?? [];
+  const hasConfirmedBindings = confirmedBindings.length > 0;
   const bindingLabelByKey = useMemo(() => new Map(confirmedBindings.map((binding) => [
     binding.key,
     `${binding.resource}.${binding.valueField} -> ${binding.resource}.${binding.semanticField}`,
@@ -47,8 +53,9 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
   const working = disabled || loading || busy;
   const selectedBindingKeys = [...selectedBindings];
   const bindingStage = suggestions.length > 0;
+  const fieldStage = !bindingStage && fieldSuggestions.length > 0;
   const stageLabel = bindingStage ? '1/2 step' : '2/2 step';
-  const title = bindingStage ? '术语绑定推荐' : '业务字段关联术语推荐';
+  const title = bindingStage ? '术语绑定推荐' : fieldStage ? '业务字段关联术语推荐' : '已确认术语绑定';
 
   const toggleBinding = (key) => {
     setSelectedBindings((current) => {
@@ -105,9 +112,31 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
       setBusy(false);
     }
   };
+  const clearConfirmed = async () => {
+    if (!snapshot || working || !hasConfirmedBindings) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await clearSemanticBindings(projectId, {
+        expectedRevision: snapshot.revision,
+      });
+      const refreshed = await getSemanticBindingSuggestions(projectId);
+      const suggestions = asArray(refreshed.suggestions);
+      const fieldSuggestions = asArray(refreshed.fieldSuggestions);
+      setSnapshot({ ...refreshed, suggestions, fieldSuggestions, confirmedBindings: asArray(refreshed.confirmedBindings) });
+      setSelectedBindings(new Set(suggestions.map((item) => String(item.key))));
+      setSelectedRefs(new Set(fieldSuggestions.map((ref) => refId(ref, ref.bindingKey))));
+      onApplied?.(result);
+      window.dispatchEvent(new CustomEvent('mw-package-updated'));
+    } catch (cause) {
+      setError(safeUiError(cause, '已确认术语绑定清空失败'));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (loading && !snapshot) return <section className="semantic-binding-panel"><div className="empty">正在分析术语绑定候选…</div></section>;
-  if (!suggestions.length && !fieldSuggestions.length && !error) return null;
+  if (!suggestions.length && !fieldSuggestions.length && !hasConfirmedBindings && !error) return null;
 
   return (
     <section className="semantic-binding-panel" aria-label="术语绑定批量确认">
@@ -116,13 +145,22 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
           <h3>{title}</h3>
           <p>{bindingStage
             ? `${stageLabel} · 发现 ${suggestions.length} 个候选术语绑定`
-            : `${stageLabel} · 发现 ${fieldSuggestions.length} 个业务字段关联候选`}</p>
+            : fieldStage
+              ? `${stageLabel} · 发现 ${fieldSuggestions.length} 个业务字段关联候选`
+              : `当前已确认 ${confirmedBindings.length} 个术语绑定`}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button type="button" className="btn" disabled={working} onClick={ignoreAll}>全部忽略</button>
-          <button type="button" className="btn btn-p" disabled={working || (bindingStage ? !selectedBindings.size : !selectedRefPayload.length)} onClick={submit}>
-            {busy ? '确认中...' : bindingStage ? `确认术语绑定 ${selectedBindings.size}` : `确认字段关联 ${selectedRefPayload.length}`}
-          </button>
+          {hasConfirmedBindings && (
+            <button type="button" className="btn" disabled={working} onClick={clearConfirmed}>清空已确认</button>
+          )}
+          {(bindingStage || fieldStage) && (
+            <button type="button" className="btn" disabled={working} onClick={ignoreAll}>全部忽略</button>
+          )}
+          {(bindingStage || fieldStage) && (
+            <button type="button" className="btn btn-p" disabled={working || (bindingStage ? !selectedBindings.size : !selectedRefPayload.length)} onClick={submit}>
+              {busy ? '确认中...' : bindingStage ? `确认术语绑定 ${selectedBindings.size}` : `确认字段关联 ${selectedRefPayload.length}`}
+            </button>
+          )}
         </div>
       </header>
       <div className="semantic-binding-list">
@@ -163,6 +201,19 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
             </article>
           );
         })}
+        {!bindingStage && !fieldStage && confirmedBindings.map((binding) => (
+          <article key={binding.key} className="semantic-binding-item">
+            <div className="semantic-binding-main">
+              <span>
+                <strong>{binding.resource}.{binding.valueField} {'->'} {binding.resource}.{binding.semanticField}</strong>
+                <em>{binding.key}</em>
+              </span>
+            </div>
+            {asArray(binding.aliasFields).length > 0 && (
+              <div className="semantic-binding-meta">别名字段：{binding.aliasFields.join('、')}</div>
+            )}
+          </article>
+        ))}
       </div>
       {error && <div role="alert" className="semantic-binding-error">{error}</div>}
     </section>

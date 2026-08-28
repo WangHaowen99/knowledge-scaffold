@@ -209,6 +209,7 @@ import {
 import { describeMaterialAnalysisFailure } from './workflow/material-analysis-failure.js';
 import {
   applySemanticBindingSelection,
+  clearSemanticBindings,
   previewSemanticBindingCandidates,
 } from './workflow/semantic-binding-service.js';
 import { validateTermTables } from './workflow/term-table.js';
@@ -1447,6 +1448,54 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             revision: saved.revision.oid,
             appliedBindings: applied.appliedBindings,
             appliedFieldRefs: applied.appliedFieldRefs,
+          };
+        } catch (error) {
+          return sendArtifactError(reply, error);
+        }
+      }, 'semantic-binding');
+    });
+
+    r.post('/api/projects/:id/package/semantic-bindings/clear', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = String(body.expectedRevision ?? '').trim();
+      if (!expectedRevision) return reply.code(400).send({ error: 'expectedRevision 必填' });
+      return withLock(`${c.p.id}:semantic-binding`, reply, async () => {
+        try {
+          const current = await packageArtifacts.current(c.p.id);
+          if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+          if (current.revision.oid !== expectedRevision) {
+            return reply.code(409).send({
+              code: 'REVISION_CONFLICT',
+              error: '知识包已更新，请刷新后重试',
+              currentRevision: current.revision.oid,
+            });
+          }
+          const cleared = clearSemanticBindings(current.spec);
+          const saved = await packageArtifacts.savePackageVersion(c.p.id, {
+            expectedRevision,
+            spec: cleared.spec,
+            coverage: current.coverage,
+            action: {
+              cause: 'semantic_binding_cleared',
+              summary: '清空已确认术语绑定',
+              actorKind: 'user',
+              actorName: req.user!.username,
+            },
+          });
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: c.p.id,
+            type: 'package.revision.created',
+            payload: { revisionId: saved.revision.oid, cause: 'semantic_binding_cleared' },
+          });
+          return {
+            revision: saved.revision.oid,
+            clearedBindings: cleared.clearedBindings,
+            clearedFieldRefs: cleared.clearedFieldRefs,
           };
         } catch (error) {
           return sendArtifactError(reply, error);
