@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -1507,7 +1508,9 @@ def test_native_runtime_hitl_persists_checkpoint_before_new_run(tmp_path):
     asyncio.run(run_test())
 
 
-def test_prepare_failure_compensates_allocated_turn(tmp_path):
+def test_prepare_failure_compensates_allocated_turn(tmp_path, caplog):
+    private_marker = "prepare-private-marker-7f3a"
+
     async def run_test():
         class _SyntheticOrchestrator:
             def __init__(self):
@@ -1521,8 +1524,8 @@ def test_prepare_failure_compensates_allocated_turn(tmp_path):
 
         orchestrator = _SyntheticOrchestrator()
 
-        def fail_message_write(**_kwargs):
-            raise RuntimeError("synthetic message projection failure")
+        def fail_message_write(*_args, **_kwargs):
+            raise RuntimeError(private_marker)
 
         orchestrator.chat_store.add_message = fail_message_write
         service = AsyncExecutionService(
@@ -1549,7 +1552,20 @@ def test_prepare_failure_compensates_allocated_turn(tmp_path):
         assert service.session_adapter._pending_prepare_turns == {}
         assert service.session_adapter._run_contexts == {}
 
-    asyncio.run(run_test())
+    with caplog.at_level(logging.ERROR, logger="agent.runtime.manager"):
+        asyncio.run(run_test())
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "agent.runtime.manager"
+        and "run context preparation failed" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert private_marker not in caplog.text
+    assert "run_id=run_prepare_compensation" in records[0].getMessage()
+    assert "error_type=RuntimeError" in records[0].getMessage()
+    assert records[0].exc_info is None
 
 
 def test_terminal_projection_failure_preserves_completed_public_state(tmp_path):

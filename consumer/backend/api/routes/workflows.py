@@ -1265,7 +1265,7 @@ async def create_sync_run(
         admission_cancel_reason = "sync_request_cancelled"
         raise
     except Exception as exc:
-        logger.warning(
+        logger.error(
             "sync run admission failed run_id=%s error_type=%s",
             run_id,
             type(exc).__name__,

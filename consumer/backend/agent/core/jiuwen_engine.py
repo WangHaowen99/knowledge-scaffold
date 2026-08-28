@@ -90,6 +90,17 @@ from .shared.tool_context import build_tool_context
 logger = get_logger("jiuwen_engine")
 
 
+async def _persist_state_snapshot(
+    snapshot_callback: Any,
+    state: Mapping[str, Any],
+) -> None:
+    if snapshot_callback is None:
+        return
+    result = snapshot_callback(deepcopy(state))
+    if isawaitable(result):
+        await result
+
+
 def _jiuwen_agent_callback_event_class() -> Any:
     return _default_jiuwen_agent_callback_event_class()
 
@@ -1092,8 +1103,7 @@ class JiuwenReactLoopEngine:
                 raise
             if terminal_result.get("batch_result") is not None:
                 close_terminal_tool_iteration()
-                if snapshot_callback is not None:
-                    snapshot_callback(deepcopy(state))
+                await _persist_state_snapshot(snapshot_callback, state)
                 runtime_trace.agent_loop_finished(RuntimeStatus.SUCCESS)
                 return state
             if _is_error_result(raw_result):
@@ -1114,8 +1124,7 @@ class JiuwenReactLoopEngine:
             state["final_output"] = output
             state["results"] = {**dict(state.get("results") or {}), "output": output}
 
-            if snapshot_callback is not None:
-                snapshot_callback(deepcopy(state))
+            await _persist_state_snapshot(snapshot_callback, state)
 
             completed_iteration = final_iteration()
             final_elapsed_ms = int(

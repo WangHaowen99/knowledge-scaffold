@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import importlib.util
+import logging
 from pathlib import Path
 import sys
 from typing import Any
@@ -16,6 +17,7 @@ import pytest
 
 from agent.runtime.manager import AsyncRunManager
 from agent.runtime.mock import FixedAsyncAgentRuntime
+from agent.runtime.offload import BoundedOffloadPool
 from agent.runtime.runtime import RuntimeState
 from agent.runtime.service import AsyncExecutionService, OrchestratorSessionAdapter
 from api.auth.auth import AuthUser
@@ -183,7 +185,7 @@ class _Harness:
     runtime: _RecordingFixedRuntime
     orchestrator: _SyntheticOrchestrator
     execution_store: ExecutionStore
-    short_io: _InlineOffloadPool
+    short_io: Any
 
 
 def _install_harness(
@@ -191,6 +193,7 @@ def _install_harness(
     tmp_path,
     *,
     synthetic_runtime: _RecordingFixedRuntime | None = None,
+    short_io: Any | None = None,
 ) -> tuple[FastAPI, _Harness]:
     orchestrator = _SyntheticOrchestrator(tmp_path)
     selected_runtime = synthetic_runtime or _RecordingFixedRuntime()
@@ -199,14 +202,14 @@ def _install_harness(
         session_adapter=OrchestratorSessionAdapter(lambda: orchestrator),
     )
     manager = _RecordingRunManager(service)
-    short_io = _InlineOffloadPool()
+    selected_short_io = short_io or _InlineOffloadPool()
     runtime_container = type(
         "SyntheticRuntimeContainer",
         (),
         {
             "manager": manager,
             "event_hub": manager.event_bus,
-            "short_io": short_io,
+            "short_io": selected_short_io,
             "state": RuntimeState.ACCEPTING,
         },
     )()
@@ -215,7 +218,7 @@ def _install_harness(
         runtime=selected_runtime,
         orchestrator=orchestrator,
         execution_store=orchestrator.execution_store,
-        short_io=short_io,
+        short_io=selected_short_io,
     )
 
     monkeypatch.setattr(workflows, "_get_runtime", lambda: runtime_container)
@@ -338,6 +341,106 @@ def test_sync_run_real_stack_returns_success_and_public_trace(
             )
 
     asyncio.run(scenario())
+
+
+def test_sync_run_real_stack_preserves_run_id_through_bounded_offload(
+    monkeypatch,
+    tmp_path,
+):
+    async def scenario() -> None:
+        short_io = BoundedOffloadPool(
+            name="sync-route",
+            max_workers=1,
+            max_pending=4,
+            capacity_wait_seconds=0.1,
+            operation_timeout_seconds=3,
+        )
+        app, harness = _install_harness(
+            monkeypatch,
+            tmp_path,
+            short_io=short_io,
+        )
+        try:
+            async with await _client_for(app) as client:
+                response = await client.post(
+                    "/agentic/runs/sync",
+                    json={
+                        "request": "Analyze bounded offload input",
+                        "session_id": "session_sync_bounded_offload",
+                        "context": {"llm_request_mode": "sync"},
+                        "arguments": {"mock_scenario": "success"},
+                    },
+                )
+
+            assert response.status_code == 200, response.text
+            body = response.json()
+            snapshot = await harness.manager.repository.get(body["run_id"])
+            assert snapshot is not None
+            durable_turn = harness.execution_store.get_turn(
+                "session_sync_bounded_offload",
+                snapshot.turn_id,
+                run_id=body["run_id"],
+            )
+            assert durable_turn is not None
+            assert durable_turn["run_id"] == snapshot.run_id == body["run_id"]
+            assert durable_turn["status"] == "success"
+            _assert_no_sync_subscriber_leak(harness)
+        finally:
+            await harness.manager.shutdown(
+                deadline=asyncio.get_running_loop().time() + 1.0
+            )
+            assert await short_io.close(
+                deadline=asyncio.get_running_loop().time() + 1.0
+            )
+
+    asyncio.run(scenario())
+
+
+def test_sync_run_admission_failure_does_not_log_exception_text(
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    private_marker = "admission-private-marker-9c2e"
+
+    async def scenario() -> None:
+        app, harness = _install_harness(monkeypatch, tmp_path)
+
+        def fail_turn_allocation(**_kwargs):
+            raise RuntimeError(private_marker)
+
+        harness.execution_store.create_turn_for_run = fail_turn_allocation
+        try:
+            async with await _client_for(app) as client:
+                response = await client.post(
+                    "/agentic/runs/sync",
+                    json={
+                        "request": "Analyze synthetic failure input",
+                        "session_id": "session_sync_admission_failure",
+                    },
+                )
+
+            assert response.status_code == 500, response.text
+            _assert_no_sync_subscriber_leak(harness)
+        finally:
+            await harness.manager.shutdown(
+                deadline=asyncio.get_running_loop().time() + 1.0
+            )
+
+    with caplog.at_level(logging.ERROR, logger=workflows.logger.name):
+        asyncio.run(scenario())
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == workflows.logger.name
+        and "sync run admission failed" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert private_marker not in caplog.text
+    assert "run_id=agentic-" in records[0].getMessage()
+    assert "error_type=RuntimeError" in records[0].getMessage()
+    assert records[0].exc_info is None
 
 
 def test_sync_run_subscriber_capacity_retry_does_not_duplicate_history(

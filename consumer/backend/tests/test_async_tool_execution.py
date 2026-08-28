@@ -230,7 +230,9 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
             await asyncio.wait_for(run_sync_compat(started.wait, 1), timeout=2)
             task.cancel()
-            await asyncio.sleep(0.02)
+            async with asyncio.timeout(1):
+                while not task.done():
+                    await asyncio.sleep(0.005)
             self.assertTrue(task.done())
             self.assertEqual(
                 self.offload_pools[2].metrics()["unfinished"],

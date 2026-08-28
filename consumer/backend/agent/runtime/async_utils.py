@@ -121,7 +121,7 @@ async def run_sync_compat(
         result = await pool.run(
             func,
             *args,
-            run_id=run_id,
+            profile_run_id=run_id,
             **kwargs,
         )
     return await result if inspect.isawaitable(result) else result

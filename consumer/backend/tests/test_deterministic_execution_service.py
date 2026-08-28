@@ -126,6 +126,45 @@ def _write_package(root: Path, *, parser=False, data_access="none") -> Path:
     return ontology_dir
 
 
+def _write_solver_only_package(root: Path, *, schema_version="0.2") -> Path:
+    ontology_dir = root / "ontology"
+    (ontology_dir / "operations").mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        'schema_version: "{}"\n'.format(schema_version),
+        encoding="utf-8",
+    )
+    (ontology_dir / "operations" / "query.md").write_text(
+        "---\n"
+        "resource: operation\n"
+        "key: query\n"
+        "execution:\n"
+        "  mode: solver_workflow\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    return ontology_dir
+
+
+def _write_validation_only_package(root: Path) -> Path:
+    ontology_dir = root / "ontology"
+    (ontology_dir / "operations").mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        'schema_version: "0.1"\n',
+        encoding="utf-8",
+    )
+    (ontology_dir / "operations" / "validate-query.md").write_text(
+        "---\n"
+        "resource: operation\n"
+        "key: validate_query\n"
+        "execution:\n"
+        "  mode: validation_workflow\n"
+        "  validates_operation: query\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    return ontology_dir
+
+
 def _add_runtime_session_parameter(
     ontology_dir: Path,
     *,
@@ -324,6 +363,66 @@ def test_no_match_and_explicit_legacy_leave_new_service(tmp_path, monkeypatch):
     assert legacy.reason == "explicit_legacy_operation"
     assert isinstance(no_match, NotApplicable)
     assert no_match.reason == "no_deterministic_match"
+
+
+def test_solver_only_package_bypasses_deterministic_preflight(tmp_path, monkeypatch):
+    ontology_dir = _write_solver_only_package(tmp_path)
+    _patch_manifest(monkeypatch, ontology_dir)
+    request = _request()
+    service = DeterministicExecutionService()
+
+    assert service.is_potentially_applicable(request) is False
+    outcome = service.execute(
+        request,
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, NotApplicable)
+    assert outcome.reason == "no_deterministic_operations"
+
+
+def test_v01_solver_workflow_fails_closed_in_deterministic_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_solver_only_package(tmp_path, schema_version="0.1")
+    _patch_manifest(monkeypatch, ontology_dir)
+    request = _request()
+    service = DeterministicExecutionService()
+
+    assert service.is_potentially_applicable(request) is True
+    outcome = service.execute(
+        request,
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == "execution_declaration_invalid"
+
+
+def test_validation_only_package_bypasses_deterministic_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_validation_only_package(tmp_path)
+    _patch_manifest(monkeypatch, ontology_dir)
+    request = _request()
+    service = DeterministicExecutionService()
+
+    assert service.is_potentially_applicable(request) is False
+    outcome = service.execute(
+        request,
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, NotApplicable)
+    assert outcome.reason == "no_deterministic_operations"
 
 
 def test_declared_all_and_any_terms_route_natural_language_request(

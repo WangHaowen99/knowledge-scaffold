@@ -25,6 +25,7 @@ from api.auth.auth import get_current_user
 from api.dependencies import (
     require_admin_workspace_id,
     require_workspace_id,
+    run_in_runtime_pool,
 )
 from api.request_parsing import read_optional_json_object
 from config.evidence_config import EvidenceConfig
@@ -55,7 +56,6 @@ RUNTIME_FACT_MIN_RETENTION_DAYS = 30
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[^\x00-\x1f\x7f]{8,128}$")
 _ONTOLOGY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-
 
 # ---------------------------------------------------------------------------
 # Shared, framework-agnostic helpers
@@ -687,7 +687,14 @@ async def rebuild_evidence_index_api(
     workspace_id: str = Depends(require_admin_workspace_id),
 ):
     payload = await read_optional_json_object(request)
-    result, status = _rebuild_evidence_index_core(request, ontology_id, payload)
+    result, status = await run_in_runtime_pool(
+        request,
+        "short_io",
+        _rebuild_evidence_index_core,
+        request,
+        ontology_id,
+        payload,
+    )
     return JSONResponse(result, status_code=status)
 
 
@@ -697,7 +704,14 @@ async def cleanup_static_evidence_api(
     workspace_id: str = Depends(require_admin_workspace_id),
 ):
     payload = await read_optional_json_object(request)
-    result, status = _cleanup_core(request, kind="static", payload=payload)
+    result, status = await run_in_runtime_pool(
+        request,
+        "tool_io",
+        _cleanup_core,
+        request,
+        kind="static",
+        payload=payload,
+    )
     return JSONResponse(result, status_code=status)
 
 
@@ -707,5 +721,12 @@ async def cleanup_runtime_facts_api(
     workspace_id: str = Depends(require_admin_workspace_id),
 ):
     payload = await read_optional_json_object(request)
-    result, status = _cleanup_core(request, kind="runtime", payload=payload)
+    result, status = await run_in_runtime_pool(
+        request,
+        "tool_io",
+        _cleanup_core,
+        request,
+        kind="runtime",
+        payload=payload,
+    )
     return JSONResponse(result, status_code=status)
