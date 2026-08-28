@@ -8,6 +8,8 @@ export default function EvaluationDatabaseUrlConfirmModal({
   configured,
   databaseUrlPreview,
   confirmLabel,
+  selectionLocked = false,
+  lockedSelection = null,
   busy,
   error,
   onCancel,
@@ -17,6 +19,12 @@ export default function EvaluationDatabaseUrlConfirmModal({
   const [mode, setMode] = useState(configured ? 'default' : 'custom');
   const [customUrl, setCustomUrl] = useState('');
   const [localError, setLocalError] = useState('');
+  const lockedChoice = selectionLocked
+    ? (lockedSelection || (configured ? { mode: 'default', databaseUrl: '' } : null))
+    : null;
+  const lockedLabel = lockedChoice?.mode === 'custom'
+    ? '使用已确认的本次自定义 URL'
+    : '使用已确认的服务端 EVAL_DB_URL';
 
   useEffect(() => {
     setMode(configured ? 'default' : 'custom');
@@ -27,6 +35,14 @@ export default function EvaluationDatabaseUrlConfirmModal({
 
   const cancel = () => { if (!busy) onCancel(); };
   const confirm = () => {
+    if (lockedChoice) {
+      setLocalError('');
+      onConfirm({
+        mode: lockedChoice.mode,
+        databaseUrl: lockedChoice.mode === 'custom' ? lockedChoice.databaseUrl : '',
+      });
+      return;
+    }
     const validationError = evaluationDatabaseUrlSelectionError(mode, customUrl, configured);
     if (validationError) { setLocalError(validationError); return; }
     setLocalError('');
@@ -70,34 +86,47 @@ export default function EvaluationDatabaseUrlConfirmModal({
           <code>{databaseName}</code>
         </div>
 
-        <div className="evaluation-db-url-options">
-          <label className={`evaluation-db-url-option ${mode === 'default' ? 'selected' : ''}`}>
-            <input type="radio" name="evaluation-database-url" value="default"
-              checked={mode === 'default'} disabled={busy || !configured}
-              onChange={() => { setMode('default'); setLocalError(''); }} />
-            <span>
-              <b>使用服务端 EVAL_DB_URL</b>
-              <code>{configured ? databaseUrlPreview : '服务端未配置'}</code>
-            </span>
-          </label>
-          <label className={`evaluation-db-url-option ${mode === 'custom' ? 'selected' : ''}`}>
-            <input type="radio" name="evaluation-database-url" value="custom"
-              checked={mode === 'custom'} disabled={busy}
-              onChange={() => { setMode('custom'); setLocalError(''); }} />
-            <span><b>本次使用自定义 URL</b></span>
-          </label>
-          {mode === 'custom' && (
-            <div className="field evaluation-db-custom-url">
-              <label>MySQL URL</label>
-              <input value={customUrl} disabled={busy} autoComplete="off" spellCheck="false"
-                placeholder="mysql://user:password@host:3306"
-                onChange={(event) => { setCustomUrl(event.target.value); setLocalError(''); }} />
+        {lockedChoice ? (
+          <div className="evaluation-db-url-options">
+            <div className="evaluation-db-url-option selected locked">
+              <span>
+                <b>{lockedLabel}</b>
+                <code>{databaseUrlPreview}</code>
+              </span>
             </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="evaluation-db-url-options">
+            <label className={`evaluation-db-url-option ${mode === 'default' ? 'selected' : ''}`}>
+              <input type="radio" name="evaluation-database-url" value="default"
+                checked={mode === 'default'} disabled={busy || !configured}
+                onChange={() => { setMode('default'); setLocalError(''); }} />
+              <span>
+                <b>使用服务端 EVAL_DB_URL</b>
+                <code>{configured ? databaseUrlPreview : '服务端未配置'}</code>
+              </span>
+            </label>
+            <label className={`evaluation-db-url-option ${mode === 'custom' ? 'selected' : ''}`}>
+              <input type="radio" name="evaluation-database-url" value="custom"
+                checked={mode === 'custom'} disabled={busy}
+                onChange={() => { setMode('custom'); setLocalError(''); }} />
+              <span><b>本次使用自定义 URL</b></span>
+            </label>
+            {mode === 'custom' && (
+              <div className="field evaluation-db-custom-url">
+                <label>MySQL URL</label>
+                <input value={customUrl} disabled={busy} autoComplete="off" spellCheck="false"
+                  placeholder="mysql://user:password@host:3306"
+                  onChange={(event) => { setCustomUrl(event.target.value); setLocalError(''); }} />
+              </div>
+            )}
+          </div>
+        )}
 
         <p className="project-db-create-hint">
-          请确认所选连接与当前 NL2SQL 服务指向同一 MySQL 服务器。服务端预览已隐藏密码；自定义 URL 只用于当前项目的本次操作，不会保存，也不会修改 EVAL_DB_URL。
+          {lockedChoice
+            ? '导入将直接使用上方已确认连接；连接预览已隐藏密码。'
+            : '请确认所选连接与当前 NL2SQL 服务指向同一 MySQL 服务器。服务端预览已隐藏密码；自定义 URL 只用于当前项目的本次操作，不会保存，也不会修改 EVAL_DB_URL。'}
           目标数据库始终使用上方 Scene，URL 中已有的数据库路径不会覆盖它。
         </p>
         {(localError || error) && <div className="lerr">{localError || error}</div>}

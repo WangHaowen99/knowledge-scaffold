@@ -9,13 +9,13 @@ import EvaluationDatabaseUrlConfirmModal from './EvaluationDatabaseUrlConfirmMod
 export default function EvaluationDatabaseImportPanel({
   projectId,
   dataSource,
+  databaseUrlSelection,
   onContinue,
 }) {
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [run, setRun] = useState(null);
-  const [replaceConfirmed, setReplaceConfirmed] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [targetLoading, setTargetLoading] = useState(false);
   const [targetRequest, setTargetRequest] = useState(null);
@@ -52,7 +52,6 @@ export default function EvaluationDatabaseImportPanel({
     setBusy(false);
     setError('');
     setRun(null);
-    setReplaceConfirmed(false);
     setHistoryLoading(true);
     setTargetLoading(false);
     setTargetRequest(null);
@@ -73,12 +72,13 @@ export default function EvaluationDatabaseImportPanel({
 
   const requestSubmit = async () => {
     if (!file) { setError('请选择 Excel 文件'); return; }
-    if (!replaceConfirmed) { setError('请先确认同名表替换规则'); return; }
     const requestContext = contextKey;
     setTargetLoading(true); setError(''); setTargetError('');
     try {
       const response = await getEvaluationDatabaseTarget(projectId);
-      if (contextRef.current === requestContext) setTargetRequest(response);
+      if (contextRef.current === requestContext) {
+        setTargetRequest({ ...response, lockedSelection: databaseUrlSelection || null });
+      }
     } catch (targetLoadError) {
       if (contextRef.current === requestContext) {
         setError(`读取数据库连接失败：${targetLoadError.message}`);
@@ -97,14 +97,12 @@ export default function EvaluationDatabaseImportPanel({
       if (contextRef.current !== requestContext) return;
       setRun(response.run);
       setFile(null);
-      setReplaceConfirmed(false);
       setTargetRequest(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (importError) {
       if (contextRef.current !== requestContext) return;
       if (importError.status === 409 && importError.data?.run) {
         setRun(importError.data.run);
-        setReplaceConfirmed(false);
         setTargetRequest(null);
         setError(importError.message);
       } else {
@@ -124,17 +122,21 @@ export default function EvaluationDatabaseImportPanel({
             MySQL · {database}
           </div>
         </div>
-        <label className={`btn ${controlsDisabled ? 'disabled' : ''}`}>
-          {running ? '后台导入中…' : '选择 Excel'}
-          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" hidden disabled={controlsDisabled}
-            onChange={(event) => {
-              setFile(event.target.files?.[0] || null);
-              setReplaceConfirmed(false);
-              setError('');
-              setRun(null);
-              setTargetRequest(null);
-            }} />
-        </label>
+        <div className="edi-heading-actions">
+          <label className={`btn ${controlsDisabled ? 'disabled' : ''}`}>
+            {running ? '后台导入中…' : '选择 Excel'}
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" hidden disabled={controlsDisabled}
+              onChange={(event) => {
+                setFile(event.target.files?.[0] || null);
+                setError('');
+                setRun(null);
+                setTargetRequest(null);
+              }} />
+          </label>
+          <button className="btn btn-p" disabled={controlsDisabled || !file} onClick={requestSubmit}>
+            {targetLoading ? '读取配置中…' : busy ? '提交中…' : running ? '后台导入中…' : '开始导入'}
+          </button>
+        </div>
       </div>
 
       {file && (
@@ -142,7 +144,7 @@ export default function EvaluationDatabaseImportPanel({
           <div><b>文件</b>{file.name}</div>
           <div>{(file.size / 1024).toFixed(1)} KB</div>
           <button className="btn btn-sm" disabled={controlsDisabled} onClick={() => {
-            setFile(null); setRun(null); setReplaceConfirmed(false);
+            setFile(null); setRun(null);
             setTargetRequest(null); setTargetError('');
             if (fileInputRef.current) fileInputRef.current.value = '';
           }}>移除</button>
@@ -162,18 +164,6 @@ export default function EvaluationDatabaseImportPanel({
       {run?.status === 'failed' && (
         <div className="lerr">后台导入失败{run.error ? `：${run.error}` : ''}，请重新选择 Excel 后重试。</div>
       )}
-
-      <div className="gi-execute edi-execute">
-        <button className="btn btn-p" disabled={controlsDisabled || !file || !replaceConfirmed} onClick={requestSubmit}>
-          {targetLoading ? '读取配置中…' : busy ? '提交中…' : running ? '后台导入中…' : '开始后台导入'}
-        </button>
-      </div>
-      <label className="ev-bind-toggle edi-replace-confirmation">
-        <input type="checkbox" checked={replaceConfirmed} disabled={controlsDisabled || !file}
-          onChange={(event) => { setReplaceConfirmed(event.target.checked); setError(''); }} />
-        我确认：Excel 中的每个 Sheet 会替换目标数据库中的同名表
-      </label>
-      <div className="ds-field-hint">上传完成后在后台全量写入；每个 Sheet 写入一张同名表，目标库中的同名表会被替换。</div>
       {onContinue && (
         <div className="gi-continue">
           <span>{running ? '评测库仍在写入，完成后才能运行评测。' : '评测数据可现在导入，也可以稍后回到本步骤继续导入。'}</span>
@@ -184,11 +174,13 @@ export default function EvaluationDatabaseImportPanel({
       {targetRequest && (
         <EvaluationDatabaseUrlConfirmModal
           title="确认 Excel 导入数据库"
-          message="请确认服务端 EVAL_DB_URL 是否为当前 NL2SQL 服务实际指向的评测库；也可以仅为本次导入指定其他 MySQL URL。"
+          message="请确认所选连接是当前 NL2SQL 服务实际指向的评测库。本次导入会在后台全量写入 Excel 数据，每个 Sheet 写入一张同名表，目标库中的同名表会被替换。"
           databaseName={database}
           configured={targetRequest.configured}
-          databaseUrlPreview={targetRequest.databaseUrlPreview}
-          confirmLabel="确认并开始导入"
+          databaseUrlPreview={targetRequest.lockedSelection?.databaseUrlPreview || targetRequest.databaseUrlPreview}
+          confirmLabel="确认并导入"
+          selectionLocked={Boolean(targetRequest.lockedSelection) || targetRequest.configured}
+          lockedSelection={targetRequest.lockedSelection}
           busy={busy}
           error={targetError}
           onCancel={() => { if (!busy) { setTargetRequest(null); setTargetError(''); } }}
