@@ -13,6 +13,7 @@ import {
   useNativeFilePicker,
 } from './lib/browserInterop';
 import { DIR_ICONS, DIR_LABELS, findDirEntries } from './hooks/useKbBrowser';
+import { packageDisplayLabel } from './lib/packagePresentation';
 import Markdown from '../../shared/ui/Markdown';
 import { ToastNotice } from '../../shared/ui/feedback';
 import { EmptyState, Modal, ScopeTabs, StatusTag } from '../../shared/ui/primitives';
@@ -30,11 +31,12 @@ const KB_TABS = [
 export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [], traceMetadata = {} }) {
   const { workspaceId } = useAuthContext();
   const {
-    pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
+    packages, pkgsLoading, packagesError, retryPackages, pkg, pkgId, selectPkg,
+    tree, treeLoading, treeError, retryTree, sel, selectDir, selectFile,
     canActivate, canManage, viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, setBusinessCheckpointEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
     clearOperationNotice, opBusy, opNotice,
-    importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge, retryPackages,
+    importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge,
     importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
     resolveImportConflict, retryImport, reopenImportConflict, cancelImport,
   } = kb;
@@ -136,6 +138,10 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
     setFileNotice('');
     setCheckpointDialog('');
   }, [pkgId, versionOverride, workspaceId]);
+
+  useEffect(() => {
+    setFilter('');
+  }, [pkgId, workspaceId]);
 
   const importDialog = (
     <ImportFlowDialog state={importFlow} onAcknowledge={setImportAcknowledged}
@@ -262,9 +268,23 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   };
 
   if (!pkg) {
+    const title = pkgsLoading
+      ? '正在加载知识包…'
+      : packagesError
+        ? '知识包加载失败'
+        : packages.length
+          ? '请选择知识包'
+          : '暂无知识包';
+    const description = packagesError
+      || (pkgsLoading
+        ? '正在读取当前工作空间的知识包列表。'
+        : packages.length
+          ? '选择知识包后可浏览版本、目录与文件内容。'
+          : '导入知识包后，可在这里统一浏览和管理内容。');
     return (
       <>
-        <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、数据源、本体图和进化任务将在这里统一管理。" /></div>
+        <div className="kbx"><EmptyState title={title} description={description}
+          action={packagesError ? <button className="btn" type="button" onClick={() => retryPackages()}>重新加载</button> : undefined} /></div>
         {importDialog}
       </>
     );
@@ -273,7 +293,14 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   return (
     <div className="kbwrap">
       <div className="kb-toolbar">
-        <span className="kb-tb-name">{pkg.name || pkgId}</span>
+        <label className="kb-tb-package">切换知识包
+          <select aria-label="切换知识包" value={pkgId || ''} disabled={pkgsLoading}
+            title={packageDisplayLabel(pkg)} onChange={(event) => selectPkg(event.target.value)}>
+            {packages.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>{packageDisplayLabel(candidate)}</option>
+            ))}
+          </select>
+        </label>
         <StatusTag status={pkg.enabled ? 'enabled' : 'disabled'}>{pkg.enabled ? '已启用' : '已禁用'}</StatusTag>
         <StatusTag status={checkpointEnabled ? 'enabled' : 'disabled'}>
           CheckPoint {checkpointEnabled ? '已开启' : '已关闭'}
@@ -308,7 +335,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
 
       {activeTab === 'files' && (
         <div className="kbx">
-          <div className="col2" style={{ width: 320 }}>
+          <div className="col2">
             <div className="kb-crumbs">
               <button onClick={() => selectDir('')} className={!sel.dir ? 'cur' : ''}>{pkg.name || pkgId}</button>
               {crumbs.map((crumb, index) => {
@@ -325,8 +352,10 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
             {!viewingActive && <div className="ro-banner">历史版本只读。需要修改时先设为激活版本。</div>}
             {sel.dir === 'assets' && <div className="ro-banner">Assets 支持浏览和下载，在线编辑与上传已关闭。</div>}
             {treeLoading && <div className="empty">加载中…</div>}
-            {!treeLoading && !shown.length && <EmptyState compact title="该目录暂无内容" />}
-            {shown.map((entry) => entry.type === 'dir' ? (
+            {!treeLoading && treeError && <EmptyState compact title="目录加载失败" description={treeError}
+              action={<button className="btn" type="button" onClick={retryTree}>重新加载</button>} />}
+            {!treeLoading && !treeError && !shown.length && <EmptyState compact title="该目录暂无内容" />}
+            {!treeLoading && !treeError && shown.map((entry) => entry.type === 'dir' ? (
               <button type="button" key={entry.path} className="lrow" onClick={() => selectDir(entry.path)}>
                 <span className="ln">{DIR_ICONS[entry.name] || '▸'} {entry.name}/ <small>{DIR_LABELS[entry.name] || ''}</small></span>
                 <span className="ld">{(entry.children || []).length} 项</span>
