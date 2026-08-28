@@ -164,6 +164,72 @@ test('graph import mapping：无关系映射时仍校验并统计全部实体', 
   });
 });
 
+test('graph import mapping：按对象主键合并主 Sheet 与一对一扩展 Sheet', () => {
+  const schema = {
+    packageVersion: '1.0.0',
+    objects: [{
+      key: 'Entity', title: '合成实体', label: 'Entity', defaultSheet: 'EntityBase',
+      primaryKey: ['entity_id'],
+      propertyMappings: [
+        { property: 'entity_id', sourceColumn: 'base_id' },
+        { property: 'name', sourceColumn: 'base_name' },
+        { property: 'detail', sourceColumn: 'detail_text' },
+      ],
+      sources: [
+        {
+          sheet: 'EntityBase', role: 'primary' as const,
+          propertyMappings: [
+            { property: 'entity_id', sourceColumn: 'base_id' },
+            { property: 'name', sourceColumn: 'base_name' },
+          ],
+        },
+        {
+          sheet: 'EntityExtension', role: 'extension' as const,
+          propertyMappings: [
+            { property: 'entity_id', sourceColumn: 'extension_id' },
+            { property: 'detail', sourceColumn: 'detail_text' },
+          ],
+        },
+      ],
+    }],
+    valueBindings: [],
+    relations: [],
+  };
+  const tables = parseExcel(workbookBuffer({
+    EntityBase: [
+      ['base_id', 'base_name'],
+      ['E-001', '实体一'],
+      ['E-002', '实体二'],
+    ],
+    EntityExtension: [
+      ['extension_id', 'detail_text'],
+      ['E-001', '补充信息'],
+      ['E-999', '无主表记录'],
+    ],
+  }));
+
+  const result = validateGraphImportMapping(schema, tables, { relations: [] });
+  assert.equal(result.nodeCount, 2);
+  assert.deepEqual(result.entities[0].rows.map((row) => row.properties), [
+    { entity_id: 'E-001', name: '实体一', detail: '补充信息' },
+    { entity_id: 'E-002', name: '实体二' },
+  ]);
+  assert.match(result.warnings.join('\n'), /扩展 Sheet.*1 行未匹配主表实例/u);
+
+  const duplicated = parseExcel(workbookBuffer({
+    EntityBase: [['base_id', 'base_name'], ['E-001', '实体一']],
+    EntityExtension: [
+      ['extension_id', 'detail_text'],
+      ['E-001', '补充一'],
+      ['E-001', '补充二'],
+    ],
+  }));
+  assert.throws(
+    () => validateGraphImportMapping(schema, duplicated, { relations: [] }),
+    /主键重复.*拆分为独立对象或关系/u,
+  );
+});
+
 test('graph import mapping：零实例计划区分空 Sheet、无映射字段和映射列全空', () => {
   const schema = { ...graphSchema, objects: [graphSchema.objects[0]], relations: [] };
   const checks = [
@@ -266,9 +332,6 @@ test('graph import schema：支持多实体投影并以稳定 key 生成映射',
     } : { ...object, sourceTable: 'BOMItemNode' }),
   };
   const files = renderPackage(spec);
-  files['objects/index.md'] = files['objects/index.md']
-    .replace('| Part | 设备零件 | 零件 | PartNode |', '| Part | 设备零件 | 零件 | PartImport |')
-    .replace('| BOMItem | BOM 行 | BOM 行 | BOMItemNode |', '| BOMItem | BOM 行 | BOM 行 | BOMImport |');
   const rawMapping = JSON.parse(files['mappings/object-data-mappings.json']);
   rawMapping.objects.Part.providers = { neo4j: { label: 'MappingLabelMustNotWin' } };
   files['mappings/object-data-mappings.json'] = JSON.stringify(rawMapping);
@@ -277,14 +340,20 @@ test('graph import schema：支持多实体投影并以稳定 key 生成映射',
   assert.deepEqual(extracted.objects.map((object) => ({
     key: object.key, label: object.label, sheet: object.defaultSheet,
   })), [
-    { key: 'Part', label: 'Part', sheet: 'PartImport' },
-    { key: 'BOMItem', label: 'BOMItem', sheet: 'BOMImport' },
+    { key: 'Part', label: 'Part', sheet: 'PartNode' },
+    { key: 'BOMItem', label: 'BOMItem', sheet: 'BOMItemNode' },
   ]);
   assert.equal(extracted.objects[0].propertyMappings[0].sourceColumn, 'PART_ID');
   assert.deepEqual(extracted.relations, [{
     id: 'Part|contains|BOMItem|0', sourceObject: 'Part', relationName: 'contains',
     targetObject: 'BOMItem', note: '包含 BOM 行',
   }]);
+  const tamperedMapping = structuredClone(rawMapping);
+  tamperedMapping.objects.Part.sources[0].fields.part_id.source_column = 'ALTERED_ID';
+  assert.throws(() => extractGraphImportSchema(spec, {
+    ...files,
+    'mappings/object-data-mappings.json': JSON.stringify(tamperedMapping),
+  }), /sources\[0\].*字段映射.*对象规格不一致/u);
   assert.throws(() => extractGraphImportSchema(spec, {
     ...files,
     'objects/index.md': files['objects/index.md'].replace(' | 来源Sheet |', ' |'),

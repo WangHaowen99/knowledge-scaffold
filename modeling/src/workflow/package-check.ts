@@ -25,7 +25,13 @@ import {
 } from './package-contract.js';
 import { packageMappingResource } from './package-data-source.js';
 import { validateMermaidSource } from './mermaid-source-contract.js';
-import { sourceRefsFor, tableSourceFor, tableSourcesFor } from './source-references.js';
+import {
+  sourceRefsFor,
+  tableFieldBindingsFor,
+  tableSourceFor,
+  tableSourceRoleFor,
+  tableSourcesFor,
+} from './source-references.js';
 import { duplicateScriptEntrypoints, normalizeCompetencyQuestion, questionsMatch } from './spec-validation.js';
 import type { PackageFiles } from './package-render.js';
 import { validateGeneratedScriptSafety } from './script-safety.js';
@@ -234,11 +240,6 @@ export function runRuleChecks(
       add('警告', '来源待确认', o.key,
         `对象「${o.title || o.key}」没有绑定 Sheet 或文档，可能是外部输入或专家定义对象`,
         `请专家确认对象 ${o.key} 是否为运行时输入；如需查数，再补充来源表或文档`);
-    }
-    if (tableSourcesFor(o).length > 1) {
-      add('警告', '多表映射待确认', o.key,
-        `对象「${o.title || o.key}」同时引用 ${tableSourcesFor(o).map((source) => source.table).join('、')}，字段按来源表并集校验`,
-        `请专家确认对象 ${o.key} 是否应拆分，或在数据源绑定阶段核对多表关联关系`);
     }
     if (!o.fields?.length) add('错误', '对象不完整', o.key, `对象「${o.title || o.key}」没有任何字段`, `为对象 ${o.key} 补充字段清单`);
     if ((o.description ?? '').trim().length < 10) add('提示', '描述过简', o.key, `对象「${o.title || o.key}」描述过短，可能造成消费歧义`, `为对象 ${o.key} 补充业务描述（用途、口径、边界）`);
@@ -526,6 +527,7 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
         const specObjects = new Map((spec.objects ?? []).map((object) => [mappingObjectName(object), object]));
         for (const object of spec.objects ?? []) {
           const objectKey = mappingObjectName(object);
+          const tableSources = tableSourcesFor(object);
           const tableSource = tableSourceFor(object);
           const objectPath = `objects/${object.key}.md`;
           const detail = parseStructuredFrontmatter(files[objectPath] ?? '');
@@ -538,16 +540,34 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
             add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 声明了来源表「${tableSource.table}」，但最终 mapping 中缺少 object key ${objectKey}`);
           }
           if (tableSource) {
-            if (indexSource && indexSource !== tableSource.table) {
-              add('错误', '对象来源不一致', 'objects/index.md', `对象 ${object.key} 的来源 Sheet 应为「${tableSource.table}」（当前：「${indexSource}」）`);
+            const expectedIndexSource = tableSources.map((source) => source.table).join('、');
+            if (indexSource && indexSource !== expectedIndexSource) {
+              add('错误', '对象来源不一致', 'objects/index.md', `对象 ${object.key} 的来源 Sheet 应为「${expectedIndexSource}」（当前：「${indexSource}」）`);
             }
-            if (!detailSources.includes(`表格：${tableSource.table}`)) {
-              add('错误', '对象来源不一致', objectPath, `对象 ${object.key} 声明了来源表「${tableSource.table}」，但详情 sources 未包含对应表格来源`);
+            const missingDetailSources = tableSources.filter((source) => (
+              !detailSources.includes(`表格：${source.table}`)
+            ));
+            if (missingDetailSources.length) {
+              add('错误', '对象来源不一致', objectPath, `对象 ${object.key} 声明了来源表「${missingDetailSources.map((source) => source.table).join('、')}」，但详情 sources 未包含对应表格来源`);
             }
             if (!runtimeMapping
               || detailMapping?.provider_alias !== runtimeMapping.provider_alias
               || detailMapping?.resource !== runtimeMapping.resource) {
               add('错误', '对象来源不一致', objectPath, `对象 ${object.key} 的详情 mapping 与结构化数据映射不一致`);
+            }
+            const expectedRuntimeSources = tableSources.map((source) => ({
+              role: tableSourceRoleFor(object, source),
+              resource: source.table,
+              ...(source.documentId ? { document_id: source.documentId } : {}),
+              fields: Object.fromEntries(tableFieldBindingsFor(object, source).map((binding) => [
+                binding.fieldKey,
+                { source_column: binding.sourceColumn },
+              ])),
+            }));
+            if (runtimeMapping
+              && (runtimeMapping.sources !== undefined || tableSources.length > 1)
+              && JSON.stringify(runtimeMapping.sources) !== JSON.stringify(expectedRuntimeSources)) {
+              add('错误', '对象来源不一致', 'mappings/object-data-mappings.json', `对象 ${object.key} 的逐来源 Sheet、角色或字段映射与对象规格不一致`);
             }
           } else {
             const detailTableSources = detailSources.filter((source) => source.startsWith('表格：'));

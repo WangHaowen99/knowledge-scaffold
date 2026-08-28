@@ -3,12 +3,20 @@ export interface GraphImportPropertyMapping {
   sourceColumn: string;
 }
 
+export interface GraphImportObjectSourceSchema {
+  sheet: string;
+  role: 'primary' | 'extension';
+  propertyMappings: GraphImportPropertyMapping[];
+}
+
 export interface GraphImportObjectSchema {
   key: string;
   title: string;
   label: string;
   defaultSheet: string;
   propertyMappings: GraphImportPropertyMapping[];
+  primaryKey?: string[];
+  sources?: GraphImportObjectSourceSchema[];
 }
 
 export interface GraphImportRelationSchema {
