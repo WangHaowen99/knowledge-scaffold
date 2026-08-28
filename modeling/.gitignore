@@ -12,3 +12,4 @@ frontend-dist/
 .scratch/
 frontend/public/.scratch/
 frontend/.smoke/
+.agent-runtime/

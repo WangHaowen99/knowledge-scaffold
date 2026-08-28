@@ -136,6 +136,7 @@ export default function SettingsModal({ onClose, user, projectId, tab: tabProp =
           {loadErr
             ? <div className="empty">配置加载失败：{loadErr} <button type="button" className="btn" onClick={load}>重试</button></div>
             : <div className="empty">加载中…</div>}
+          <div className="foot"><button type="button" className="btn" onClick={onClose}>关闭</button></div>
         </div>
       </SettingsModalOverlay>
     );
@@ -393,6 +394,8 @@ function McpTab({ projectId }) {
   const [creating, setCreating] = useState(false);
   const [revokingId, setRevokingId] = useState('');
   const [loadErr, setLoadErr] = useState('');
+  const [tokenLoadErr, setTokenLoadErr] = useState('');
+  const [canManageTokens, setCanManageTokens] = useState(false);
   const [msg, setMsg] = useState('');
   const [form, setForm] = useState({
     name: '',
@@ -405,12 +408,22 @@ function McpTab({ projectId }) {
     if (mode === 'initial') setLoading(true);
     else setRefreshing(true);
     try {
-      const [status, listed] = await Promise.all([
+      const [statusResult, tokenResult] = await Promise.allSettled([
         getProjectMcpRuntimeStatus(projectId),
         listProjectMcpTokens(projectId),
       ]);
-      setRuntime(status);
-      setTokens(Array.isArray(listed.tokens) ? listed.tokens : []);
+      if (statusResult.status === 'rejected') throw statusResult.reason;
+      setRuntime(statusResult.value);
+      if (tokenResult.status === 'fulfilled') {
+        setTokens(Array.isArray(tokenResult.value.tokens) ? tokenResult.value.tokens : []);
+        setCanManageTokens(true);
+        setTokenLoadErr('');
+      } else {
+        setTokens([]);
+        setIssued(null);
+        setCanManageTokens(false);
+        setTokenLoadErr(tokenResult.reason?.message || '当前账号无权管理 MCP Token');
+      }
       setLoadErr('');
     } catch (e) {
       setLoadErr(e.message || 'MCP 配置加载失败');
@@ -426,6 +439,8 @@ function McpTab({ projectId }) {
     setIssued(null);
     setMsg('');
     setLoadErr('');
+    setTokenLoadErr('');
+    setCanManageTokens(false);
     setForm({
       name: '',
       expiresInSeconds: '',
@@ -462,6 +477,10 @@ function McpTab({ projectId }) {
   };
 
   const createToken = async () => {
+    if (!canManageTokens) {
+      setMsg('当前账号无权创建 MCP Token');
+      return;
+    }
     if (!form.name.trim()) {
       setMsg('token 名称必填');
       return;
@@ -534,6 +553,7 @@ function McpTab({ projectId }) {
       </div>
 
       {loadErr && <div className="cfg-test bad">最近一次刷新失败：{loadErr}</div>}
+      {tokenLoadErr && <div className="cfg-mcp-note">连接信息可正常查看；Token 仅对项目负责人或建模成员开放管理。</div>}
       {msg && <div className={`cfg-test ${msg.startsWith('✓') ? 'ok' : 'bad'}`}>{msg}</div>}
       {loopbackBaseUrl && (
         <div className="cfg-mcp-note">
@@ -543,11 +563,14 @@ function McpTab({ projectId }) {
 
       <div className="cfg-mcp-section">
         <div className="cfg-mcp-summary">
-          <span className="tag tag-ok">已启用</span>
+          <span className={`tag ${runtime.running ? 'tag-ok' : 'tag-draft'}`}>
+            {runtime.running ? '运行中' : '未运行'}
+          </span>
           <span className="tag tag-lang">{runtime.transport}</span>
           <span className="tag tag-lang">{runtime.server_name}@{runtime.server_version}</span>
           <span className="tag tag-lang">{runtime.protocol_versions.join(' / ')}</span>
         </div>
+        {!runtime.running && <div className="cfg-test bad">{runtime.detail || 'MCP 服务当前不可用'}</div>}
         <div className="field">
           <label>endpoint ID</label>
           <div className="cfg-mcp-copy-row">
@@ -578,7 +601,7 @@ function McpTab({ projectId }) {
                   {toolset?.tools?.length ? `工具：${toolset.tools.join('、')}` : '当前没有可用工具'}
                 </div>
                 <div className="cfg-mcp-meta">
-                  进入该 toolset 至少需要：{Array.isArray(toolset?.required_scopes) && toolset.required_scopes.length
+                  该 toolset 使用的 scope：{Array.isArray(toolset?.required_scopes) && toolset.required_scopes.length
                     ? toolset.required_scopes.join('、')
                     : '无'}
                 </div>
@@ -588,7 +611,7 @@ function McpTab({ projectId }) {
         </div>
       </div>
 
-      <div className="cfg-mcp-section">
+      {canManageTokens && <div className="cfg-mcp-section">
         <div className="cfg-mcp-title-row">
           <div className="cfg-mcp-title-sm">新建 Token</div>
           <div className="cfg-mcp-meta">
@@ -633,9 +656,9 @@ function McpTab({ projectId }) {
             {creating ? '创建中…' : '创建 Token'}
           </button>
         </div>
-      </div>
+      </div>}
 
-      {issued && (
+      {canManageTokens && issued && (
         <div className="cfg-mcp-section">
           <div className="cfg-mcp-title-row">
             <div className="cfg-mcp-title-sm">刚创建的 Token</div>
@@ -652,7 +675,7 @@ function McpTab({ projectId }) {
         </div>
       )}
 
-      <div className="cfg-mcp-section">
+      {canManageTokens && <div className="cfg-mcp-section">
         <div className="cfg-mcp-title-row">
           <div className="cfg-mcp-title-sm">现有 Token</div>
           <div className="cfg-mcp-meta">仅展示未吊销 token；调用成功后会更新最近使用时间。</div>
@@ -686,10 +709,10 @@ function McpTab({ projectId }) {
             ))}
           </div>
         ) : <div className="empty">当前还没有可用 MCP token</div>}
-      </div>
+      </div>}
 
       <div className="cfg-mcp-note">
-        外部 Agent 连接顺序建议固定为：`server/discover` -> `tools/list` -> `tools/call`。旧客户端如果仍走 `initialize`，当前服务也兼容。
+        外部 Agent 连接顺序建议固定为：server/discover → tools/list → tools/call。旧客户端如果仍走 initialize，当前服务也兼容。
       </div>
     </div>
   );

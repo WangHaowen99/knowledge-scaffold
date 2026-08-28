@@ -276,6 +276,15 @@ CREATE INDEX IF NOT EXISTS idx_project_mcp_tokens_project
 CREATE INDEX IF NOT EXISTS idx_project_mcp_tokens_subject
   ON project_mcp_tokens(subject_username, project_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS modeling_mcp_runtime (
+  singleton_id  INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+  instance_id   TEXT NOT NULL,
+  status        TEXT NOT NULL CHECK (status IN ('running', 'stopped')),
+  started_at    TEXT NOT NULL,
+  heartbeat_at  TEXT NOT NULL,
+  detail        TEXT
+);
+
 CREATE TABLE IF NOT EXISTS wf_nodes (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
