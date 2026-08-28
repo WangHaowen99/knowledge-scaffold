@@ -15,8 +15,7 @@ export type ModelingMcpHttpTransport = 'streamable-http' | 'sse';
 export type ModelingMcpScope =
   | 'ontology.read'
   | 'ontology.change.validate'
-  | 'ontology.change.apply'
-  | 'ontology.change.review';
+  | 'ontology.change.apply';
 
 export const MODELING_MCP_SERVER_INFO = {
   name: 'knowledge-scaffold-modeling-mcp',
@@ -125,14 +124,13 @@ const VALID_SCOPES: readonly ModelingMcpScope[] = [
   'ontology.read',
   'ontology.change.validate',
   'ontology.change.apply',
-  'ontology.change.review',
 ] as const;
 const DEFAULT_SCOPES: readonly ModelingMcpScope[] = ['ontology.read'];
 const MCP_RUNTIME_STALE_MS = 30_000;
 const MCP_TOKEN_SECRET_MIN_CHARS = 32;
 const TOOLSET_SCOPE_REQUIREMENTS: Record<ModelingMcpToolset, readonly ModelingMcpScope[]> = {
   read: ['ontology.read'],
-  change: ['ontology.change.validate', 'ontology.change.apply', 'ontology.change.review'],
+  change: ['ontology.change.validate', 'ontology.change.apply'],
 };
 
 let signingSecretCache: Uint8Array | null = null;
@@ -493,8 +491,7 @@ function normalizeTokenTtlSeconds(value: number | undefined): number {
 function describeScope(scope: ModelingMcpScope): string {
   if (scope === 'ontology.read') return '读取当前项目的本体资源。';
   if (scope === 'ontology.change.validate') return '同步预校验本体资源修改，不写入。';
-  if (scope === 'ontology.change.apply') return '执行获准的本体资源写操作。';
-  return '提交、确认或退回需要人工复核的本体修改。';
+  return '执行本体资源写操作，并在校验通过后直接生成正式 revision。';
 }
 
 function signingSecret(): Uint8Array {

@@ -65,10 +65,11 @@ async function call(project: ReturnType<typeof createProject>, toolName: string,
 
 function assertBlockingAdvice(result: Record<string, any>, affectedType?: string) {
   assert.equal(result.ok, false);
-  const blocking = (result.impacts ?? []).filter((item: any) => item.level === 'blocking');
+  const blocking = (result.issues ?? []).filter((item: any) => item.level === 'blocking');
   assert.ok(blocking.length > 0);
   for (const item of blocking) {
     assert.ok(String(item.code || '').trim());
+    assert.ok(String(item.phase || '').trim());
     assert.ok(String(item.target || '').trim());
     assert.ok(String(item.message || '').trim());
     assert.ok(String(item.suggestion || '').trim());
@@ -81,16 +82,21 @@ function assertBlockingAdvice(result: Record<string, any>, affectedType?: string
 function assertBlockedSubmission(error: unknown) {
   assert.ok(error instanceof ModelingMcpToolError);
   assert.equal(error.code, 'SUBMISSION_BLOCKED');
-  assertBlockingAdvice({ ok: false, ...(error.details as Record<string, unknown>) });
+  assert.equal(error.details.reason_code, 'SUBMISSION_BLOCKED');
+  assert.ok(error.details.resource);
+  assertBlockingAdvice({ ok: false, issues: error.details.issues, affected_resources: error.details.affected_resources });
   return true;
 }
 
 test('Operation/Rule 工具注册到现有 read/change toolset', () => {
   const tools = toolNamesByToolset();
-  assert.equal(tools.read.length, 8);
-  assert.equal(tools.change.length, 14);
+  assert.equal(tools.read.length, 6);
+  assert.equal(tools.change.length, 9);
+  assert.ok(tools.read.includes('list_ontology_objects'));
   assert.ok(tools.read.includes('list_ontology_operations'));
   assert.ok(tools.read.includes('get_ontology_rule'));
+  assert.ok(tools.change.includes('validate_ontology_object_change'));
+  assert.ok(tools.change.includes('update_ontology_object'));
   assert.ok(tools.change.includes('validate_ontology_operation_rule_change'));
   assert.ok(tools.change.includes('delete_ontology_rule'));
 });
@@ -100,7 +106,6 @@ test('Object/Operation/Rule MCP schema 与知识包 Unicode key 规则一致', (
   const changeTools = toolDefinitionsFor('change', [
     'ontology.change.validate',
     'ontology.change.apply',
-    'ontology.change.review',
   ]);
   const patternFor = (toolName: string, field: string, tools = readTools) => {
     const tool = tools.find((item) => item.name === toolName)!;
@@ -133,6 +138,8 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     payload: rulePayload,
   });
   assert.equal(validated.ok, true);
+  assert.equal(validated.resource.id, 'rule:record_valid');
+  assert.equal(Array.isArray(validated.issues), true);
 
   const createdRule = await call(project, 'create_ontology_rule', {
     expected_revision: seeded.revision.oid,
@@ -169,6 +176,7 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     resource_id: 'rule:record_valid',
   });
   assertBlockingAdvice(ruleDeleteAnalysis, 'operation');
+  assert.ok(ruleDeleteAnalysis.issues.some((item: any) => item.code === 'RULE_DELETE_BLOCKED_BY_OPERATION'));
 
   await assert.rejects(
     () => call(project, 'delete_ontology_rule', {
@@ -189,6 +197,7 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     resource_id: 'operation:read_record',
   });
   assertBlockingAdvice(operationDeleteAnalysis, 'rule');
+  assert.ok(operationDeleteAnalysis.issues.some((item: any) => item.code === 'OPERATION_DELETE_BLOCKED_BY_RULE'));
   await assert.rejects(
     () => call(project, 'delete_ontology_operation', {
       expected_revision: linkedRule.revision,

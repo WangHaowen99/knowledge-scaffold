@@ -50,6 +50,8 @@ export interface OntologyObjectMutationPreview {
     relationOps: { addTargets: string[]; updateIds: string[]; removeIds: string[] };
   };
   patchChanges: Record<string, unknown>;
+  nextSpec?: PackageSpec;
+  nextSpecObject?: SpecObject;
   nextObject: {
     id: string;
     key: string;
@@ -168,6 +170,8 @@ export function previewOntologyObjectMutation(
       },
     },
     patchChanges,
+    nextSpec,
+    nextSpecObject: nextObject,
     nextObject: {
       id: `object:${nextObject.key}`,
       key: nextObject.key,
@@ -209,6 +213,8 @@ function emptyPreview(objectKey: string, issues: OntologyValidationIssue[]): Ont
       relationOps: { addTargets: [], updateIds: [], removeIds: [] },
     },
     patchChanges: {},
+    nextSpec: undefined,
+    nextSpecObject: undefined,
     nextObject: {
       id: `object:${objectKey}`,
       key: objectKey,

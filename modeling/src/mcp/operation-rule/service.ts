@@ -13,12 +13,17 @@ import { getActivePackageDraft } from '../../workflow/package-draft.js';
 import { parseRenderedPackageFiles } from '../../workflow/package-import.js';
 import { renderPackage } from '../../workflow/package-render.js';
 import { coverageFor } from '../../workflow/spec-validation.js';
-import { ModelingMcpToolError } from '../tool-error.js';
+import {
+  ModelingMcpToolError,
+  type ModelingMcpToolDetails,
+  type ModelingMcpToolIssue,
+  type ModelingMcpToolIssueLevel,
+  type ModelingMcpToolResourceRef,
+} from '../tool-error.js';
 
 type ResourceType = 'operation' | 'rule';
 type MutationAction = 'create' | 'update' | 'delete';
-type ImpactLevel = 'blocking' | 'warning' | 'info';
-
+type ImpactLevel = ModelingMcpToolIssueLevel;
 interface MutationCommand {
   resourceType: ResourceType;
   action: MutationAction;
@@ -27,18 +32,12 @@ interface MutationCommand {
   payload?: Record<string, unknown>;
 }
 
-interface Impact {
-  code: string;
-  level: ImpactLevel;
-  target: string;
-  message: string;
-  suggestion: string;
-}
+type Impact = ModelingMcpToolIssue;
 
 interface AnalysisResult {
   ok: boolean;
   revision: string;
-  resource: { type: ResourceType; key: string };
+  resource: ModelingMcpToolResourceRef;
   changed_paths: string[];
   affected_resources: Array<{ type: string; key: string; relation?: string }>;
   historical_problem_count: number;
@@ -71,16 +70,26 @@ export class OperationRuleMcpService {
     username: string,
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (toolName === 'list_ontology_operations') return this.list(project, args, 'operation');
-    if (toolName === 'get_ontology_operation') return this.get(project, args, 'operation');
-    if (toolName === 'list_ontology_rules') return this.list(project, args, 'rule');
-    if (toolName === 'get_ontology_rule') return this.get(project, args, 'rule');
-    if (toolName === 'validate_ontology_operation_rule_change') {
-      return this.publicAnalysis(await this.analyze(project, commandFromAnalyze(args)));
+    try {
+      if (toolName === 'list_ontology_operations') return this.list(project, args, 'operation');
+      if (toolName === 'get_ontology_operation') return this.get(project, args, 'operation');
+      if (toolName === 'list_ontology_rules') return this.list(project, args, 'rule');
+      if (toolName === 'get_ontology_rule') return this.get(project, args, 'rule');
+      if (toolName === 'validate_ontology_operation_rule_change') {
+        return this.publicAnalysis(await this.analyze(project, commandFromAnalyze(args)));
+      }
+      const command = commandFromWriteTool(toolName, args);
+      if (command) return this.submit(project, username, command);
+      throw new ModelingMcpToolError(
+        'MCP_TOOL_NOT_FOUND',
+        `未知 Operation/Rule 工具：${toolName}`,
+        404,
+        [],
+        { phase: 'input', reason_code: 'MCP_TOOL_NOT_FOUND', retryable: false },
+      );
+    } catch (error) {
+      throw mapArtifactError(error, { phase: 'load' });
     }
-    const command = commandFromWriteTool(toolName, args);
-    if (command) return this.submit(project, username, command);
-    throw new ModelingMcpToolError('MCP_TOOL_NOT_FOUND', `未知 Operation/Rule 工具：${toolName}`, 404);
   }
 
   private async list(project: Project, args: Record<string, unknown>, type: ResourceType) {
@@ -129,8 +138,18 @@ export class OperationRuleMcpService {
         'SUBMISSION_BLOCKED',
         '修改未通过确定性检查',
         422,
-        ['根据 impacts 和 field_errors 修正后重新提交'],
-        { impacts: analysis.impacts, field_errors: analysis.field_errors, revision: analysis.revision },
+        ['根据 issues 和 field_errors 修正后重新提交'],
+        {
+          phase: 'validate',
+          resource: analysis.resource,
+          reason_code: 'SUBMISSION_BLOCKED',
+          field_errors: analysis.field_errors,
+          issues: analysis.impacts,
+          changed_paths: analysis.changed_paths,
+          affected_resources: analysis.affected_resources,
+          historical_problem_count: analysis.historical_problem_count,
+          retryable: false,
+        } satisfies ModelingMcpToolDetails,
       );
     }
     try {
@@ -147,29 +166,40 @@ export class OperationRuleMcpService {
         },
       });
       return {
-        resource: command.resourceType === 'operation'
+        resource: analysis.resource,
+        [command.resourceType]: command.resourceType === 'operation'
           ? publicOperation(analysis.resourceValue as SpecOperation)
           : publicRule(analysis.resourceValue as SpecRule),
         previous_revision: command.expectedRevision,
         revision: saved.revision.oid,
         changed_paths: analysis.changed_paths,
+        affected_resources: analysis.affected_resources,
         warnings: analysis.impacts.filter((impact) => impact.level !== 'blocking'),
+        historical_problem_count: analysis.historical_problem_count,
         display: { text: `${actionSummary(command)}，已生成正式修订` },
       };
     } catch (error) {
-      throw mapArtifactError(error);
+      throw mapArtifactError(error, { phase: 'persist', resource: analysis.resource });
     }
   }
 
   private async analyze(project: Project, command: MutationCommand): Promise<AnalysisResult> {
     const current = await this.artifacts.readPackageFiles(project.id);
+    const resource = resourceRef(command);
     if (current.revision.oid !== command.expectedRevision) {
       throw new ModelingMcpToolError(
         'REVISION_CONFLICT',
         '知识包内容已更新，请刷新后重试',
         409,
         ['重新读取资源和 revision 后再次分析'],
-        { expected_revision: command.expectedRevision, actual_revision: current.revision.oid },
+        {
+          phase: 'load',
+          resource,
+          reason_code: 'REVISION_CONFLICT',
+          expected_revision: command.expectedRevision,
+          actual_revision: current.revision.oid,
+          retryable: true,
+        } satisfies ModelingMcpToolDetails,
       );
     }
     const impacts: Impact[] = [];
@@ -240,7 +270,7 @@ export class OperationRuleMcpService {
     return {
       ok: !normalizedImpacts.some((currentImpact) => currentImpact.level === 'blocking'),
       revision: current.revision.oid,
-      resource: { type: command.resourceType, key: command.key },
+      resource,
       changed_paths: changedPaths,
       affected_resources: affectedResources,
       historical_problem_count: Math.max(0, listSpecIntegrityProblems(current.spec).length),
@@ -310,7 +340,7 @@ export class OperationRuleMcpService {
       affected_resources: analysis.affected_resources,
       historical_problem_count: analysis.historical_problem_count,
       field_errors: analysis.field_errors,
-      impacts: analysis.impacts,
+      issues: analysis.impacts,
       display: { text: analysis.ok ? '修改通过确定性检查，可以提交' : '修改存在阻塞项，请修正后重试' },
     };
   }
@@ -372,7 +402,7 @@ function normalizeOperation(keyValue: string, payload: Record<string, unknown>, 
     'title', 'description', 'inputs', 'outputs', 'flow', 'related_objects', 'uses_rules', 'uses_metrics', 'notes',
     ...OPERATION_READ_ONLY_FIELDS,
   ]);
-  rejectReadOnly(payload, OPERATION_READ_ONLY_FIELDS, Boolean(existing));
+  rejectReadOnly(payload, OPERATION_READ_ONLY_FIELDS, Boolean(existing), 'operation');
   const key = validateKey(keyValue, '操作');
   const title = patchText(payload, 'title', existing?.title, true);
   const description = patchText(payload, 'description', existing?.description, true);
@@ -414,7 +444,7 @@ function normalizeRule(keyValue: string, payload: Record<string, unknown>, exist
     'title', 'description', 'applies_to_objects', 'applies_to_operations', 'content', 'conditions', 'exceptions',
     ...RULE_READ_ONLY_FIELDS,
   ]);
-  rejectReadOnly(payload, RULE_READ_ONLY_FIELDS, Boolean(existing));
+  rejectReadOnly(payload, RULE_READ_ONLY_FIELDS, Boolean(existing), 'rule');
   const key = validateKey(keyValue, '规则');
   const title = patchText(payload, 'title', existing?.title, true);
   const description = patchText(payload, 'description', existing?.description, false);
@@ -478,7 +508,7 @@ function operationDeleteImpacts(spec: PackageSpec, key: string): Impact[] {
   for (const rule of spec.rules ?? []) {
     if (!(rule.appliesToOperations ?? []).includes(key)) continue;
     impacts.push(impact(
-      'RESOURCE_IN_USE', 'blocking', `rule:${rule.key}.applies_to_operations`,
+      'OPERATION_DELETE_BLOCKED_BY_RULE', 'blocking', `rule:${rule.key}.applies_to_operations`,
       `Rule ${rule.key} 仍引用 Operation ${key}`,
       `先更新 Rule ${rule.key}，移除或替换该 Operation 引用`,
     ));
@@ -486,7 +516,7 @@ function operationDeleteImpacts(spec: PackageSpec, key: string): Impact[] {
   for (const script of spec.scripts ?? []) {
     if (script.boundOperation !== key) continue;
     impacts.push(impact(
-      'RESOURCE_IN_USE', 'blocking', `script:${script.key}.bound_operation`,
+      'OPERATION_DELETE_BLOCKED_BY_SCRIPT', 'blocking', `script:${script.key}.bound_operation`,
       `Script ${script.key} 仍绑定 Operation ${key}`,
       `先通过现有 Modeling 脚本入口解除 Script ${script.key} 的绑定`,
     ));
@@ -498,7 +528,7 @@ function ruleDeleteImpacts(spec: PackageSpec, key: string): Impact[] {
   return spec.operations
     .filter((operation) => (operation.usesRules ?? []).includes(key))
     .map((operation) => impact(
-      'RESOURCE_IN_USE', 'blocking', `operation:${operation.key}.uses_rules`,
+      'RULE_DELETE_BLOCKED_BY_OPERATION', 'blocking', `operation:${operation.key}.uses_rules`,
       `Operation ${operation.key} 仍引用 Rule ${key}`,
       `先更新 Operation ${operation.key}，移除或替换该 Rule 引用`,
     ));
@@ -642,7 +672,12 @@ function rejectUnknown(payload: Record<string, unknown>, allowed: Iterable<strin
   if (unknown.length) throw new ModelingMcpToolError('INVALID_INPUT', `不支持的字段：${unknown.join('、')}`, 400);
 }
 
-function rejectReadOnly(payload: Record<string, unknown>, fields: Set<string>, update: boolean): void {
+function rejectReadOnly(
+  payload: Record<string, unknown>,
+  fields: Set<string>,
+  update: boolean,
+  resourceType: ResourceType,
+): void {
   const present = Object.keys(payload).filter((key) => fields.has(key));
   if (!present.length) return;
   throw new ModelingMcpToolError(
@@ -650,7 +685,13 @@ function rejectReadOnly(payload: Record<string, unknown>, fields: Set<string>, u
     `${present.join('、')} ${update ? '不可修改' : '由服务端维护，不能在创建时指定'}`,
     422,
     ['从 payload 中移除只读字段'],
-    { fields: present },
+    {
+      phase: 'validate',
+      resource: { type: resourceType, id: `${resourceType}:${payload.key ?? ''}`.replace(/:$/u, ''), key: String(payload.key ?? '').trim() },
+      reason_code: resourceType === 'operation' ? 'OPERATION_FIELD_READ_ONLY' : 'RULE_FIELD_READ_ONLY',
+      fields: present,
+      retryable: false,
+    } satisfies ModelingMcpToolDetails,
   );
 }
 
@@ -713,7 +754,11 @@ function decodeCursor(value: unknown, revision: string, type: ResourceType): num
     return integer(parsed.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   } catch {
     throw new ModelingMcpToolError(
-      'REVISION_CONFLICT', '分页游标对应的 revision 已变化，请从第一页重新读取', 409,
+      'REVISION_CONFLICT',
+      '分页游标对应的 revision 已变化，请从第一页重新读取',
+      409,
+      [],
+      { phase: 'load', reason_code: 'REVISION_CONFLICT', retryable: true },
     );
   }
 }
@@ -729,8 +774,15 @@ function findingIdentity(finding: CheckFinding): string {
   return finding.fingerprint || [finding.source, finding.category, finding.target, finding.code ?? '', finding.message].join('|');
 }
 
-function impact(code: string, level: ImpactLevel, target: string, message: string, suggestion: string): Impact {
-  return { code, level, target, message, suggestion };
+function impact(
+  code: string,
+  level: ImpactLevel,
+  target: string,
+  message: string,
+  suggestion: string,
+  phase: Impact['phase'] = 'validate',
+): Impact {
+  return { code, phase, level, target, message, suggestion };
 }
 
 function dedupeImpacts(values: Impact[]): Impact[] {
@@ -744,13 +796,21 @@ function dedupeImpacts(values: Impact[]): Impact[] {
 
 function normalizeInputError(command: MutationCommand, error: unknown): Impact {
   if (error instanceof ModelingMcpToolError) {
-    return impact(error.code, 'blocking', resourceTarget(command), error.message, error.next[0] || '修正输入后重试');
+    return impact(reasonCodeForToolError(command, error), 'blocking', resourceTarget(command), error.message, error.next[0] || '修正输入后重试', error.details.phase === 'input' ? 'input' : 'validate');
   }
-  return impact('INVALID_INPUT', 'blocking', resourceTarget(command), errorMessage(error), '修正输入后重试');
+  return impact('INVALID_INPUT', 'blocking', resourceTarget(command), errorMessage(error), '修正输入后重试', 'input');
 }
 
 function resourceTarget(command: MutationCommand): string {
   return `${command.resourceType}:${command.key}`;
+}
+
+function resourceRef(command: MutationCommand): ModelingMcpToolResourceRef {
+  return {
+    type: command.resourceType,
+    id: `${command.resourceType}:${command.key}`,
+    key: command.key,
+  };
 }
 
 function suggestionForIntegrityProblem(problem: string): string {
@@ -766,25 +826,105 @@ function actionSummary(command: MutationCommand): string {
 
 function resourceNotFound(type: ResourceType, key: string): ModelingMcpToolError {
   return new ModelingMcpToolError(
-    'RESOURCE_NOT_FOUND', `${type === 'operation' ? 'Operation' : 'Rule'} ${key} 不存在`, 404,
+    'RESOURCE_NOT_FOUND',
+    `${type === 'operation' ? 'Operation' : 'Rule'} ${key} 不存在`,
+    404,
+    [],
+    {
+      phase: 'load',
+      resource: { type, id: `${type}:${key}`, key },
+      reason_code: type === 'operation' ? 'OPERATION_NOT_FOUND' : 'RULE_NOT_FOUND',
+      retryable: false,
+    } satisfies ModelingMcpToolDetails,
   );
 }
 
-function mapArtifactError(error: unknown): ModelingMcpToolError {
+function mapArtifactError(
+  error: unknown,
+  context: { phase: 'input' | 'load' | 'validate' | 'persist'; resource?: ModelingMcpToolResourceRef },
+): ModelingMcpToolError {
   if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
     return new ModelingMcpToolError(
-      'REVISION_CONFLICT', '知识包内容已更新，请刷新后重试', 409,
+      'REVISION_CONFLICT',
+      '知识包内容已更新，请刷新后重试',
+      409,
       ['重新读取资源和 revision 后再次分析'],
-      { expected_revision: error.details?.expectedRevision, actual_revision: error.details?.actualRevision },
+      {
+        phase: context.phase,
+        ...(context.resource ? { resource: context.resource } : {}),
+        reason_code: 'REVISION_CONFLICT',
+        expected_revision: error.details?.expectedRevision,
+        actual_revision: error.details?.actualRevision,
+        retryable: true,
+      } satisfies ModelingMcpToolDetails,
+    );
+  }
+  if (error instanceof ArtifactRepositoryError && error.code === 'revision_not_found') {
+    return new ModelingMcpToolError(
+      'RESOURCE_NOT_FOUND',
+      '指定的 revision 不存在',
+      404,
+      ['使用最新 revision 或从第一页重新读取'],
+      {
+        phase: context.phase,
+        ...(context.resource ? { resource: context.resource } : {}),
+        reason_code: 'REVISION_NOT_FOUND',
+        retryable: false,
+      } satisfies ModelingMcpToolDetails,
     );
   }
   if (error instanceof PackageArtifactStoreError && error.code === 'commit_in_progress') {
     return new ModelingMcpToolError(
-      'PROJECT_WRITE_BUSY', '知识包正在保存，请稍后重试', 409, ['短暂退避后重试；若 revision 已变化则重新分析'],
+      'PROJECT_WRITE_BUSY',
+      '知识包正在保存，请稍后重试',
+      409,
+      ['短暂退避后重试；若 revision 已变化则重新分析'],
+      {
+        phase: context.phase,
+        ...(context.resource ? { resource: context.resource } : {}),
+        reason_code: 'PROJECT_WRITE_BUSY',
+        retryable: true,
+      } satisfies ModelingMcpToolDetails,
     );
   }
-  if (error instanceof ModelingMcpToolError) return error;
+  if (error instanceof PackageArtifactStoreError && ['package_not_found', 'revision_has_no_package'].includes(error.code)) {
+    return new ModelingMcpToolError(
+      'RESOURCE_NOT_FOUND',
+      '当前项目还没有可用的知识包版本',
+      404,
+      ['先生成或导入知识包后再调用 MCP 工具'],
+      {
+        phase: context.phase,
+        ...(context.resource ? { resource: context.resource } : {}),
+        reason_code: 'PACKAGE_NOT_FOUND',
+        retryable: false,
+      } satisfies ModelingMcpToolDetails,
+    );
+  }
+  if (error instanceof ModelingMcpToolError) {
+    if (error.details.phase) return error;
+    return new ModelingMcpToolError(error.code, error.message, error.statusCode, error.next, {
+      phase: context.phase,
+      ...(context.resource ? { resource: context.resource } : {}),
+      reason_code: error.code,
+      retryable: error.code === 'REVISION_CONFLICT' || error.code === 'PROJECT_WRITE_BUSY',
+      ...error.details,
+    });
+  }
   throw error;
+}
+
+function reasonCodeForToolError(command: MutationCommand, error: ModelingMcpToolError): string {
+  if (error.code === 'RESOURCE_ALREADY_EXISTS') {
+    return command.resourceType === 'operation' ? 'OPERATION_ALREADY_EXISTS' : 'RULE_ALREADY_EXISTS';
+  }
+  if (error.code === 'RESOURCE_NOT_FOUND') {
+    return command.resourceType === 'operation' ? 'OPERATION_NOT_FOUND' : 'RULE_NOT_FOUND';
+  }
+  if (error.code === 'FIELD_READ_ONLY') {
+    return command.resourceType === 'operation' ? 'OPERATION_FIELD_READ_ONLY' : 'RULE_FIELD_READ_ONLY';
+  }
+  return error.code;
 }
 
 function assertUnique(values: string[], label: string): void {
