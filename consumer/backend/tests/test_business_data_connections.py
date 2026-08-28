@@ -523,14 +523,83 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
     assert response.status_code == 200
     assert response.json()["success"] is True
     assert calls == [{
-        "url": "https://nl2sql.example.com/api/v1/query",
+        "url": "https://nl2sql.example.com/api/v1/sql",
         "headers": {"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
-        "json": {"question": "连接测试", "scene": "example"},
+        "json": {"sql": "SELECT 1", "scene": "example"},
         "timeout": 10,
     }]
 
 
-def test_nl2sql_template_allows_empty_token_for_schema_save_and_probe(tmp_path, monkeypatch):
+def test_nl2sql_schemas_require_token_and_scene(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    provider_schemas = client.get(
+        "/agentic/business-data/provider-schemas",
+        headers=headers,
+    ).json()
+    schemas = {item["name"]: item for item in provider_schemas["providers"]}
+
+    for provider_name in ("nl2sql_http", "nl2sql_template"):
+        fields = {
+            field["name"]: field
+            for field in schemas[provider_name]["fields"]
+        }
+        assert fields["token"]["required"] is True
+        assert fields["token"]["secret"] is True
+        assert fields["scene"]["required"] is True
+
+
+@pytest.mark.parametrize("provider", ["nl2sql_http", "nl2sql_template"])
+@pytest.mark.parametrize(
+    ("missing_field", "expected_detail"),
+    [
+        ("token", "访问 Token 不能为空"),
+        ("scene", "不能为空"),
+    ],
+)
+def test_nl2sql_new_config_rejects_missing_required_fields_for_save_and_probe(
+    tmp_path,
+    monkeypatch,
+    provider,
+    missing_field,
+    expected_detail,
+):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    config = {
+        "url": "https://nl2sql.example.com/",
+        "token": "secret-token",
+        "scene": "example",
+        "timeout_seconds": 120,
+    }
+    config.pop(missing_field)
+    payload = {
+        "mode": "direct_provider",
+        "provider": provider,
+        "config": config,
+    }
+
+    saved = client.put(
+        "/agentic/ontologies/demo-ontology/data-source",
+        headers=headers,
+        json=payload,
+    )
+    tested = client.post(
+        "/agentic/ontologies/demo-ontology/data-source/test",
+        headers=headers,
+        json=payload,
+    )
+
+    assert saved.status_code == 400
+    assert expected_detail in saved.json()["detail"]
+    assert tested.status_code == 400
+    assert expected_detail in tested.json()["detail"]
+
+
+@pytest.mark.parametrize("provider", ["nl2sql_http", "nl2sql_template"])
+def test_nl2sql_edit_preserves_existing_token_and_probes_sql(
+    tmp_path,
+    monkeypatch,
+    provider,
+):
     client, headers = _build_test_client(tmp_path, monkeypatch)
     calls = []
 
@@ -551,39 +620,117 @@ def test_nl2sql_template_allows_empty_token_for_schema_save_and_probe(tmp_path, 
         return FakeResponse()
 
     monkeypatch.setattr(requests.Session, "post", fake_post)
-    provider_schemas = client.get(
-        "/agentic/business-data/provider-schemas",
-        headers=headers,
-    ).json()
-    template_schema = next(
-        item for item in provider_schemas["providers"] if item["name"] == "nl2sql_template"
-    )
-    token_field = next(field for field in template_schema["fields"] if field["name"] == "token")
-    assert token_field["required"] is False
-
-    config = {
+    initial = {
         "url": "https://nl2sql.example.com/",
-        "token": "",
+        "token": "secret-token",
         "scene": "example",
         "timeout_seconds": 120,
     }
     saved = client.put(
         "/agentic/ontologies/demo-ontology/data-source",
         headers=headers,
-        json={"mode": "direct_provider", "provider": "nl2sql_template", "config": config},
+        json={
+            "mode": "direct_provider",
+            "provider": provider,
+            "config": initial,
+        },
     )
     assert saved.status_code == 200
-    assert saved.json()["source"]["config"]["has_token"] is False
 
-    tested = _test_candidate(client, headers, "nl2sql_template", config)
+    edited = {key: value for key, value in initial.items() if key != "token"}
+    updated = client.put(
+        "/agentic/ontologies/demo-ontology/data-source",
+        headers=headers,
+        json={
+            "mode": "direct_provider",
+            "provider": provider,
+            "config": edited,
+        },
+    )
+    tested = _test_candidate(client, headers, provider, edited)
+
+    assert updated.status_code == 200
+    assert updated.json()["source"]["config"]["has_token"] is True
     assert tested.status_code == 200
     assert tested.json()["success"] is True
     assert calls == [{
-        "url": "https://nl2sql.example.com/api/v1/query",
-        "headers": {"Content-Type": "application/json"},
-        "json": {"question": "连接测试", "scene": "example"},
+        "url": "https://nl2sql.example.com/api/v1/sql",
+        "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer secret-token",
+        },
+        "json": {"sql": "SELECT 1", "scene": "example"},
         "timeout": 10,
     }]
+
+
+@pytest.mark.parametrize("provider", ["nl2sql_http", "nl2sql_template"])
+@pytest.mark.parametrize(
+    ("missing_field", "expected_detail"),
+    [
+        ("token", "访问 Token 不能为空"),
+        ("scene", "不能为空"),
+    ],
+)
+def test_legacy_nl2sql_config_is_rejected_before_saved_probe_and_runtime(
+    tmp_path,
+    monkeypatch,
+    provider,
+    missing_field,
+    expected_detail,
+):
+    from agent.tools.business_data.resolver import (
+        BusinessDataConnectionError,
+        resolve_business_data_source,
+    )
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    valid_config = {
+        "url": "https://nl2sql.example.com/",
+        "token": "secret-token",
+        "scene": "example",
+        "timeout_seconds": 120,
+    }
+    saved = client.put(
+        "/agentic/ontologies/demo-ontology/data-source",
+        headers=headers,
+        json={
+            "mode": "direct_provider",
+            "provider": provider,
+            "config": valid_config,
+        },
+    )
+    assert saved.status_code == 200
+
+    source_path = get_workspace_paths("demo").workspace_dir / "ontology-data-sources.json"
+    document = json.loads(source_path.read_text(encoding="utf-8"))
+    document["sources"]["demo-ontology"]["config"].pop(missing_field)
+    source_path.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        requests.Session,
+        "post",
+        lambda *_args, **_kwargs: calls.append(True),
+    )
+
+    tested = client.post(
+        "/agentic/ontologies/demo-ontology/data-source/test",
+        headers=headers,
+        json={},
+    )
+
+    assert tested.status_code == 400
+    assert expected_detail in tested.json()["detail"]
+    assert calls == []
+    with pytest.raises(BusinessDataConnectionError, match=expected_detail):
+        resolve_business_data_source(
+            workspace_id="demo",
+            ontology_id="demo-ontology",
+        )
 
 
 def test_data_source_test_route_probes_mindsdb_anonymous_service(tmp_path, monkeypatch):

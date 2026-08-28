@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
+import json  # noqa: F401
 
-import requests
+import requests  # noqa: F401
 
 from shared_capabilities.business_data import (
     AuthSpec,
@@ -71,6 +71,14 @@ def _connection(provider, *, auth=None, options=None):
     )
 
 
+def _nl2sql_connection(*, auth=None, options=None):
+    return _connection(
+        "nl2sql_http",
+        auth=auth or AuthSpec(type="bearer", token="token-x"),
+        options={"scene": "scene-x", **dict(options or {})},
+    )
+
+
 def test_nl2sql_query_uses_explicit_connection_and_normalizes_result():
     session = _Session(
         _Response(
@@ -117,7 +125,7 @@ def test_nl2sql_query_uses_explicit_connection_and_normalizes_result():
 
 def test_nl2sql_invalid_json_is_a_failed_result_and_external_session_is_not_closed():
     session = _Session(_Response(ValueError("secret-token must not leak")))
-    provider = NL2SQLProvider(_connection("nl2sql_http"), session=session)
+    provider = NL2SQLProvider(_nl2sql_connection(), session=session)
     result = provider.query("find one")
     provider.close()
     assert result.success is False
@@ -128,7 +136,7 @@ def test_nl2sql_invalid_json_is_a_failed_result_and_external_session_is_not_clos
 
 def test_nl2sql_preserves_all_non_contract_response_fields_in_metadata():
     provider = NL2SQLProvider(
-        _connection("nl2sql_http"),
+        _nl2sql_connection(),
         session=_Session(
             _Response(
                 {
@@ -157,9 +165,7 @@ def test_nl2sql_preserves_all_non_contract_response_fields_in_metadata():
 
 def test_nl2sql_http_error_redacts_endpoint_and_token():
     provider = NL2SQLProvider(
-        _connection(
-            "nl2sql_http", auth=AuthSpec(type="bearer", token="token-x")
-        ),
+        _nl2sql_connection(),
         session=_Session(
             _Response(
                 {"detail": "token-x rejected by https://provider.example.com"},
@@ -174,6 +180,77 @@ def test_nl2sql_http_error_redacts_endpoint_and_token():
     assert "token-x" not in result.error
     assert "https://provider.example.com" not in result.error
     assert "[REDACTED]" in result.error
+
+
+def test_nl2sql_rejects_missing_required_contract_before_network():
+    cases = [
+        (
+            _connection(
+                "nl2sql_http",
+                auth=AuthSpec(type="none"),
+                options={"scene": "scene-x"},
+            ),
+            "访问 Token 不能为空",
+        ),
+        (
+            _connection(
+                "nl2sql_http",
+                auth=AuthSpec(type="bearer", token="token-x"),
+            ),
+            "Scene 不能为空",
+        ),
+    ]
+
+    for connection, expected_error in cases:
+        session = _Session(_Response({"success": True}))
+        result = NL2SQLProvider(connection, session=session).query("find one")
+
+        assert result == ProviderResult(
+            success=False,
+            error=expected_error,
+            metadata={"error_code": "invalid_configuration"},
+        )
+        assert session.requests == []
+
+
+def test_nl2sql_probe_executes_select_one_through_sql_endpoint():
+    session = _Session(_Response({"success": True}))
+    provider = NL2SQLProvider(
+        _nl2sql_connection(options={"timeout_seconds": 88}),
+        session=session,
+    )
+
+    result = provider.probe(timeout_seconds=10)
+
+    assert result == ProviderResult(
+        success=True,
+        message="NL2SQL HTTP 服务连接正常",
+    )
+    assert session.requests == [
+        (
+            "POST",
+            "https://provider.example.com/api/v1/sql",
+            {
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer token-x",
+                },
+                "json": {"sql": "SELECT 1", "scene": "scene-x"},
+                "timeout": 10,
+            },
+        )
+    ]
+
+
+def test_nl2sql_probe_requires_explicit_success_true():
+    session = _Session(_Response({"data": [{"value": 1}]}))
+    result = NL2SQLProvider(
+        _nl2sql_connection(),
+        session=session,
+    ).probe()
+
+    assert result.success is False
+    assert result.error == "未知错误"
 
 
 def test_mindsdb_sql_authenticates_and_normalizes_result():

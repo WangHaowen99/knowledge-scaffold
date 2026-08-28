@@ -7,9 +7,10 @@ from typing import Any, Dict, Optional
 
 from agent.tools.business_data.ontology_sources_store import (
     MODE_DIRECT_PROVIDER,
-    build_ontology_business_data_summary,
     get_ontology_data_source,
 )
+from agent.tools.business_data.provider_config_codec import normalize_source_config
+from agent.tools.business_data.provider_registry import BusinessDataProviderError
 
 
 class BusinessDataConnectionError(ValueError):
@@ -60,12 +61,21 @@ def resolve_business_data_source(
         raise BusinessDataConnectionError(
             "本体 '{}' 的业务数据源配置无效".format(resolved_ontology_id)
         )
+    try:
+        config = normalize_source_config(source.provider, source.config)
+    except BusinessDataProviderError as exc:
+        raise BusinessDataConnectionError(
+            "本体 '{}' 的业务数据源配置无效: {}".format(
+                resolved_ontology_id,
+                exc,
+            )
+        ) from exc
 
     return ResolvedBusinessDataSource(
         ontology_id=source.ontology_id,
         mode=source.mode,
         provider=source.provider,
-        config=dict(source.config),
+        config=config,
     )
 
 

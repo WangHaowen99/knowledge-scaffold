@@ -36,10 +36,10 @@ class NL2SQLProvider:
         return self._post("/api/v1/sql", body)
 
     def probe(self, timeout_seconds: float | None = None) -> ProviderResult:
-        body: dict[str, Any] = {"question": "连接测试"}
+        body: dict[str, Any] = {"sql": "SELECT 1"}
         self._append_scene(body)
         result = self._post(
-            "/api/v1/query", body, timeout_override=timeout_seconds or 10
+            "/api/v1/sql", body, timeout_override=timeout_seconds or 10
         )
         if result.success:
             return ProviderResult(success=True, message="NL2SQL HTTP 服务连接正常")
@@ -67,6 +67,13 @@ class NL2SQLProvider:
         *,
         timeout_override: float | None = None,
     ) -> ProviderResult:
+        contract_error = self._required_contract_error()
+        if contract_error:
+            return ProviderResult(
+                success=False,
+                error=contract_error,
+                metadata={"error_code": "invalid_configuration"},
+            )
         try:
             response = self._session.post(
                 self.connection.endpoint + path,
@@ -107,6 +114,14 @@ class NL2SQLProvider:
             self.connection.auth.token,
             self.connection.auth.password,
         ), metadata=metadata)
+
+    def _required_contract_error(self) -> str:
+        token = str(self.connection.auth.token or "").strip()
+        if self.connection.auth.type != "bearer" or not token:
+            return "访问 Token 不能为空"
+        if not str(self.connection.options.get("scene") or "").strip():
+            return "Scene 不能为空"
+        return ""
 
     def _safe_detail(self, response: Any) -> str:
         return sanitize_public_text(
