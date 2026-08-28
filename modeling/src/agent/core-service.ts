@@ -1500,7 +1500,9 @@ export class AgentCoreService {
       throw new AgentCoreError('INVALID_READING_MODE', '阅读方式不正确', ['选择按需读取或全文精读'], 400);
     }
     try {
-      if (purpose === 'term') validateTermTables(document.tables ?? []);
+      if (purpose === 'term') validateTermTables(document.tables ?? [], {
+        dataSourceType: getProjectPackageDataSourceSelection(projectId).dataSourceType,
+      });
       const updated = updateDocumentDirectives(document.id, {
         purpose: purpose as NonNullable<typeof document.purpose>,
         readingMode: readingMode as NonNullable<typeof document.readingMode>,
