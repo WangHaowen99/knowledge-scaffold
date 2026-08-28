@@ -40,6 +40,25 @@ export interface ImportedPackageArchive {
 
 type Frontmatter = Record<string, any>;
 
+const CJK_TEXT = /[\u3400-\u9fff]/u;
+
+export function decodeLegacyZipEntryName(value: string): string {
+  const name = String(value ?? '');
+  if (!/[^\u0000-\u007f]/u.test(name)) return name;
+  const bytes: number[] = [];
+  for (const character of name) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code > 0xff) return name;
+    bytes.push(code);
+  }
+  try {
+    const decoded = new TextDecoder('gb18030', { fatal: true }).decode(Uint8Array.from(bytes));
+    return CJK_TEXT.test(decoded) ? decoded : name;
+  } catch {
+    return name;
+  }
+}
+
 function safeArchivePath(value: string): string {
   const normalized = String(value || '').replaceAll('\\', '/').replace(/^\.\//, '');
   const parts = normalized.split('/');
@@ -94,7 +113,7 @@ function archiveFiles(bytes: Uint8Array): {
   try {
     entries = unzipSync(bytes, {
       filter(file) {
-        const rawName = String(file.name ?? '').replaceAll('\\', '/');
+        const rawName = decodeLegacyZipEntryName(String(file.name ?? '')).replaceAll('\\', '/');
         const directory = rawName.endsWith('/');
         const path = safeArchivePath(directory ? rawName.slice(0, -1) : rawName);
         if (directory) return false;
@@ -122,7 +141,7 @@ function archiveFiles(bytes: Uint8Array): {
   let total = 0;
   const normalized = new Map<string, Uint8Array>();
   for (const [rawPath, content] of rawFiles) {
-    const path = safeArchivePath(rawPath);
+    const path = safeArchivePath(decodeLegacyZipEntryName(rawPath));
     if (path.startsWith('__MACOSX/') || path.endsWith('/.DS_Store')) continue;
     total += content.byteLength;
     if (total > MAX_ARCHIVE_BYTES) throw new Error('知识包 ZIP 解压后超过 64 MB');

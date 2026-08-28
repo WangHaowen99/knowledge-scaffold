@@ -149,16 +149,41 @@ function progressActivity(event, previous = null) {
   };
 }
 
+function rejectedMessage(result, fallback) {
+  if (result.status !== 'rejected') return '';
+  return result.reason instanceof Error && result.reason.message
+    ? result.reason.message
+    : fallback;
+}
+
+export function resolveWorkbenchBootstrapResults(results) {
+  const [snapshotResult, agentResult, candidateResult] = results;
+  if (snapshotResult.status === 'rejected') throw snapshotResult.reason;
+
+  const warnings = [
+    rejectedMessage(agentResult, '建模助手暂时不可用'),
+    rejectedMessage(candidateResult, '候选修改暂时不可用'),
+  ].filter(Boolean);
+  return {
+    snapshot: snapshotResult.value,
+    agent: agentResult.status === 'fulfilled' ? agentResult.value : {},
+    candidate: candidateResult.status === 'fulfilled' ? candidateResult.value : { files: [] },
+    agentAvailable: agentResult.status === 'fulfilled',
+    warning: warnings.join('；'),
+  };
+}
+
 /* ---- actions ---- */
 export const actions = {
   async bootstrap(projectId) {
     store.set({ demo: false, projectId, loading: true, error: '' });
     try {
-      const [snapshot, agent, candidate] = await Promise.all([
+      const settled = await Promise.allSettled([
         getSnapshot(projectId),
         getAgentState(projectId),
         getCandidateDiff(projectId),
       ]);
+      const { snapshot, agent, candidate, agentAvailable, warning } = resolveWorkbenchBootstrapResults(settled);
       const initialPath = snapshot.files.find((path) => path.endsWith('.mmd'))
         || snapshot.files.find((path) => path.endsWith('.md'))
         || snapshot.files[0]
@@ -193,13 +218,14 @@ export const actions = {
         interaction: agent.interaction,
         activity,
         loading: false,
+        error: warning,
         selectedPath: ['flow', 'file', 'diff'].includes(focus.kind) ? focus.target : initialPath,
         focus,
         replayUntilSeq: Number(agent.lastSeq) || 0,
       });
       if (initialPath) void actions.loadFile(initialPath);
       if (snapshot.materials[0]?.id) void actions.loadMaterial(snapshot.materials[0].id);
-      return { snapshot, agent };
+      return { snapshot, agent, agentAvailable };
     } catch (error) {
       store.set({ loading: false, error: error instanceof Error ? error.message : '工作台加载失败' });
       throw error;

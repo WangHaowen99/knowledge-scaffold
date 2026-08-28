@@ -66,6 +66,43 @@ ensure_release_modeling_service_token() {
     log "Modeling service token is ready (value is not printed)"
 }
 
+ensure_release_modeling_mcp_token_secret() {
+    local bundle_root="$1" env_file="${1}/backend/.env" example_file="${1}/backend/.env.example"
+    local secret temp_file
+    if [ ! -f "${env_file}" ]; then
+        [ -f "${example_file}" ] || die "Consumer environment template not found: ${example_file}"
+        cp "${example_file}" "${env_file}"
+        chmod 600 "${env_file}"
+    fi
+    secret="${MODELING_MCP_TOKEN_SECRET:-$(env_get "${env_file}" MODELING_MCP_TOKEN_SECRET)}"
+    if [ -z "${secret}" ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            secret="$(openssl rand -hex 32)"
+        elif command -v python3 >/dev/null 2>&1; then
+            secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+        else
+            die "Cannot generate MODELING_MCP_TOKEN_SECRET: openssl or Python 3 is required"
+        fi
+    fi
+    [ "${#secret}" -ge 32 ] || die "MODELING_MCP_TOKEN_SECRET must contain at least 32 characters"
+    temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || die "Cannot update ${env_file}"
+    chmod 600 "${temp_file}"
+    awk -v secret="${secret}" '
+        BEGIN { updated = 0 }
+        /^MODELING_MCP_TOKEN_SECRET=/ {
+            if (!updated) { print "MODELING_MCP_TOKEN_SECRET=" secret; updated = 1 }
+            next
+        }
+        { print }
+        END { if (!updated) print "MODELING_MCP_TOKEN_SECRET=" secret }
+    ' "${env_file}" > "${temp_file}" || { rm -f "${temp_file}"; die "Cannot update ${env_file}"; }
+    mv "${temp_file}" "${env_file}"
+    chmod 600 "${env_file}"
+    MODELING_MCP_TOKEN_SECRET="${secret}"
+    export MODELING_MCP_TOKEN_SECRET
+    log "Modeling MCP token secret is ready (value is not printed)"
+}
+
 CONSUMER_ONLY=0
 MODELING_ONLY=0
 
@@ -114,6 +151,7 @@ fi
 
 BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ensure_release_modeling_service_token "${BUNDLE_ROOT}"
+ensure_release_modeling_mcp_token_secret "${BUNDLE_ROOT}"
 
 if [ "${MODELING_ONLY}" = "0" ]; then
     [ -f "${CONSUMER_DEPLOY}" ] || die "Consumer deploy script not found: ${CONSUMER_DEPLOY}"

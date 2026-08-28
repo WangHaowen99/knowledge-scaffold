@@ -521,7 +521,12 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
             continue;
           }
           const expectedResource = packageMappingResource(spec, object);
-          if (v.resource && v.resource !== expectedResource) {
+          const compatibleResources = new Set([expectedResource]);
+          if (!spec.dataSourceType) {
+            const legacyTableResource = tableSourceFor(object)?.table;
+            if (legacyTableResource) compatibleResources.add(legacyTableResource);
+          }
+          if (v.resource && !compatibleResources.has(v.resource)) {
             add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping resource 应为 ${expectedResource}（当前：${v.resource}）`);
           }
 

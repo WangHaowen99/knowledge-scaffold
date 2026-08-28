@@ -817,20 +817,43 @@ export class AgentCoreService {
       const latest = this.readOntologyObjectAuditPage(context.project.id, objectId, objectPath, {
         limit: 1,
       }).items[0] ?? null;
-      const stage = String(current?.stage ?? latest?.status ?? 'idle');
+      const currentStage = String(current?.stage ?? '');
+      const reviewRequestedAt = Date.parse(String(
+        (current?.review_request as Record<string, unknown> | undefined)?.requested_at ?? '',
+      ));
+      const latestDecidedAt = Date.parse(String(latest?.decided_at ?? ''));
+      const workspaceChange = workspace ? this.db.prepare(`SELECT MAX(updated_at) AS updated_at
+        FROM agent_candidate_changes WHERE project_id = ? AND run_id = ? AND path = ?`)
+        .get(context.project.id, workspace.run_id, objectPath) as { updated_at?: string | null } | undefined : undefined;
+      const workspaceChangeAt = Date.parse(String(workspaceChange?.updated_at ?? ''));
+      const latestStatus = String(latest?.status ?? '');
+      const latestDecisionWins = ['draft', 'draft_locked', 'review_requested'].includes(currentStage)
+        && ['accepted', 'rejected', 'revision_requested', 'superseded'].includes(latestStatus)
+        && Number.isFinite(latestDecidedAt)
+        && (!Number.isFinite(workspaceChangeAt) || latestDecidedAt >= workspaceChangeAt)
+        && (!Number.isFinite(reviewRequestedAt) || latestDecidedAt >= reviewRequestedAt);
+      const stage = latestDecisionWins ? latestStatus : String(current?.stage ?? (latestStatus || 'idle'));
+      const projectPendingCandidateCount = Number((this.db.prepare(`SELECT COUNT(*) AS count
+        FROM artifact_candidate_revisions WHERE project_id = ? AND status = 'pending'`)
+        .get(context.project.id) as any)?.count ?? 0);
+      const objectPendingCandidateCount = this.objectPendingCandidateCount(context.project.id, objectPath);
+      const objectScopeExclusive = current?.object_scope_exclusive !== false;
       return {
         object_id: objectId,
         object_key: element.key,
         stage,
-        current: current ?? {
+        current: current ? { ...current, stage } : {
           stage,
           base_revision: latest?.base_revision ?? '',
           candidate_revision: latest?.candidate_revision ?? null,
           accepted_revision: latest?.accepted_revision ?? null,
         },
         latest_record: latest,
-        pending_candidate_count: Number((this.db.prepare(`SELECT COUNT(*) AS count FROM artifact_candidate_revisions
-          WHERE project_id = ? AND status = 'pending'`).get(context.project.id) as any)?.count ?? 0),
+        pending_candidate_count: objectPendingCandidateCount,
+        object_pending_candidate_count: objectPendingCandidateCount,
+        project_pending_candidate_count: projectPendingCandidateCount,
+        blocked_by_other_candidate: !objectScopeExclusive
+          || (objectPendingCandidateCount === 0 && projectPendingCandidateCount > 0),
         display: {
           text: stage === 'idle'
             ? `对象《${element.title}》当前没有待处理的复核记录`
@@ -840,6 +863,13 @@ export class AgentCoreService {
     } catch (error) {
       throw normalizeStudioAgentError(error);
     }
+  }
+
+  private objectPendingCandidateCount(projectId: string, objectPath: string): number {
+    const rows = this.db.prepare(`SELECT groups_json FROM artifact_candidate_revisions
+      WHERE project_id = ? AND status = 'pending'`).all(projectId) as Array<{ groups_json: string }>;
+    return rows.filter((row) => parseObjects(row.groups_json)
+      .some((group) => candidateGroupTouchesPath(group, objectPath))).length;
   }
 
   private async listOntologyObjectAuditRecords(context: AgentToolContext, args: Record<string, unknown>) {
@@ -877,22 +907,26 @@ export class AgentCoreService {
     if (workspace.candidate_id) {
       try {
         const candidate = await this.artifacts.getCandidateRevision(context.project.id, workspace.candidate_id);
+        const candidateRow = this.db.prepare(`SELECT id, project_id, base_revision_oid, status, cause, summary,
+            actor_kind, actor_name, groups_json, selected_group_ids_json, accepted_revision_oid,
+            decision_cause, decision_summary, decision_actor_kind, decision_actor_name, decision_note,
+            created_at, decided_at
+          FROM artifact_candidate_revisions WHERE id = ? AND project_id = ?`).get(
+          candidate.id,
+          context.project.id,
+        ) as Record<string, unknown> | undefined;
         const record = this.auditRecordFromCandidateRow(
           context.project.id,
           objectId,
           objectPath,
-          this.db.prepare(`SELECT id, project_id, base_revision_oid, status, cause, summary, actor_kind, actor_name,
-            groups_json, selected_group_ids_json, accepted_revision_oid,
-            decision_cause, decision_summary, decision_actor_kind, decision_actor_name, decision_note,
-            created_at, decided_at
-            FROM artifact_candidate_revisions WHERE id = ? AND project_id = ?`).get(
-            candidate.id,
-            context.project.id,
-          ) as Record<string, unknown> | undefined,
+          candidateRow,
         );
         if (record) {
+          const conflictingPaths = candidateOtherBusinessPaths(candidateRow?.groups_json, objectPath);
           return {
-            stage: record.status === 'pending' ? 'awaiting_confirmation' : record.status,
+            stage: conflictingPaths.length
+              ? 'scope_conflict'
+              : record.status === 'pending' ? 'awaiting_confirmation' : record.status,
             workspace_owner: workspace.owner,
             base_revision: candidate.baseRevision,
             candidate_revision: candidate.id,
@@ -901,6 +935,8 @@ export class AgentCoreService {
             review: record.review,
             created_at: record.created_at,
             validation_receipt: this.candidateValidationReceiptView(candidate.id),
+            object_scope_exclusive: conflictingPaths.length === 0,
+            conflicting_paths: conflictingPaths,
           };
         }
       } catch {
@@ -923,13 +959,16 @@ export class AgentCoreService {
     const stage = reviewEvent
       ? 'review_requested'
       : workspace.owner === context.username ? 'draft' : 'draft_locked';
+    const conflictingPaths = otherWorkspaceBusinessPaths(allChanges, objectPath);
     return {
-      stage,
+      stage: conflictingPaths.length ? 'scope_conflict' : stage,
       workspace_owner: workspace.owner,
       base_revision: workspace.base_revision_oid,
       working_revision: workingRevision,
       changed_paths: [...new Set(changeGroups.flatMap((group) => group.impact))].sort(),
       change_groups: changeGroups,
+      object_scope_exclusive: conflictingPaths.length === 0,
+      conflicting_paths: conflictingPaths,
       ...(reviewEvent ? {
         review_request: {
           event_id: reviewEvent.eventId,
@@ -4480,6 +4519,24 @@ function candidateGroupTouchesPath(group: Record<string, unknown>, path: string)
   return candidateGroupChangedPaths(group).includes(path);
 }
 
+function candidateOtherBusinessPaths(groupsValue: unknown, objectPath: string): string[] {
+  return [...new Set(parseObjects(groupsValue)
+    .flatMap(candidateGroupChangedPaths)
+    .filter((path) => isBusinessDetailPath(path) && path !== objectPath))]
+    .sort();
+}
+
+function otherWorkspaceBusinessPaths(changes: ChangeRow[], objectPath: string): string[] {
+  return [...new Set(changes
+    .map((change) => change.path)
+    .filter((path) => isBusinessDetailPath(path) && path !== objectPath))]
+    .sort();
+}
+
+function isBusinessDetailPath(path: string): boolean {
+  return /^(?:objects|operations|rules|metrics|scripts)\/(?!index\.md$).+/u.test(path);
+}
+
 function workspaceGroupTier(paths: string[]): Tier {
   if (paths.some((path) => path.startsWith('rules/'))) return 'caliber';
   if (paths.some((path) => path.startsWith('scripts/'))) return 'script';
@@ -4664,7 +4721,13 @@ function ontologyObjectPayload(element: StudioElement) {
 
 function objectIdArg(value: unknown): string {
   const normalized = String(value ?? '').trim();
-  if (/^object:[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$/u.test(normalized)) return normalized;
+  if (normalized.startsWith('object:')) {
+    try {
+      return `object:${validateKey(normalized.slice('object:'.length), '对象')}`;
+    } catch {
+      // Normalize all invalid IDs to the stable public error below.
+    }
+  }
   throw new AgentCoreError(
     'INVALID_INPUT',
     'object_id 必须是 object:key',

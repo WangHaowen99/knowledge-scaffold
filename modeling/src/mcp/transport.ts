@@ -13,6 +13,7 @@ import {
   type ModelingMcpToolset,
   verifyProjectMcpToken,
 } from './service.js';
+import { ModelingMcpToolError, publicMcpToolError } from './tool-error.js';
 import { executeModelingMcpTool, toolDefinitionByName, toolDefinitionsFor } from './toolset.js';
 
 type JsonRpcId = string | number | null;
@@ -35,16 +36,21 @@ const JSONRPC_AUTH_ERROR = -32001;
 const SSE_SESSION_NOT_FOUND = 'Session not found';
 const MAX_SSE_SESSIONS = 10_000;
 const SSE_HEARTBEAT_MS = 15_000;
+const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
+const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
 
 interface SseSessionRecord {
   sessionId: string;
   endpointId: string;
   toolset: ModelingMcpToolset;
+  tokenId: string;
+  username: string;
   send: (event: 'endpoint' | 'message', data: string) => void;
 }
 
 export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
-  app.get('/:mcpEndpointId/:toolset/mcp', async (_request, reply) => {
+  app.get('/:mcpEndpointId/:toolset/mcp', async (request, reply) => {
+    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('streamable-http')) {
       return reply.code(404).send({ error: '当前未启用 Streamable HTTP transport' });
     }
@@ -52,7 +58,8 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
     return reply.code(405).send({ error: '当前只支持 POST Streamable HTTP 调用' });
   });
 
-  app.delete('/:mcpEndpointId/:toolset/mcp', async (_request, reply) => {
+  app.delete('/:mcpEndpointId/:toolset/mcp', async (request, reply) => {
+    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('streamable-http')) {
       return reply.code(404).send({ error: '当前未启用 Streamable HTTP transport' });
     }
@@ -61,6 +68,7 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   });
 
   app.post('/:mcpEndpointId/:toolset/mcp', async (request, reply) => {
+    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('streamable-http')) {
       return sendRpcError(reply, null, 404, JSONRPC_METHOD_NOT_FOUND, '当前未启用 Streamable HTTP transport');
     }
@@ -91,22 +99,27 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       return reply.code(200).send(rpcResultEnvelope(rpc.id ?? null, result));
     } catch (error) {
       if (error instanceof ModelingMcpError) {
-        return sendRpcError(reply, rpc.id ?? null, error.statusCode, JSONRPC_AUTH_ERROR, error.message);
+        return sendRpcError(reply, rpc.id ?? null, error.statusCode, JSONRPC_AUTH_ERROR, error.message, {
+          code: error.code,
+        });
       }
       if (error instanceof RpcProtocolError) {
         return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message);
       }
+      request.log.error({ err: error }, 'MCP Streamable HTTP 请求执行失败');
       return sendRpcError(
         reply,
         rpc.id ?? null,
         500,
         JSONRPC_INTERNAL_ERROR,
-        error instanceof Error ? error.message : String(error),
+        'MCP 服务内部错误',
+        { code: 'MCP_INTERNAL_ERROR' },
       );
     }
   });
 
   app.get('/:mcpEndpointId/:toolset/sse', async (request, reply) => {
+    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('sse')) {
       return reply.code(404).send({ error: '当前未启用 SSE transport' });
     }
@@ -115,17 +128,21 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       return reply.code(404).send({ error: '未知 MCP toolset' });
     }
     try {
-      await verifyProjectMcpToken({
+      const verified = await verifyProjectMcpToken({
         bearerToken: bearerToken(request.headers.authorization),
         endpointId: String((request.params as any).mcpEndpointId ?? ''),
         minimumAccess: toolset === 'change' ? 'write' : 'read',
       });
+      (request as FastifyRequest & { mcpPrincipal?: { tokenId: string; username: string } }).mcpPrincipal = {
+        tokenId: verified.tokenId,
+        username: verified.username,
+      };
     } catch (error) {
       if (error instanceof ModelingMcpError) {
         return reply.code(error.statusCode).send({
           jsonrpc: '2.0',
           id: null,
-          error: { code: JSONRPC_AUTH_ERROR, message: error.message },
+          error: { code: JSONRPC_AUTH_ERROR, message: error.message, data: { code: error.code } },
         });
       }
       throw error;
@@ -160,15 +177,21 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
     };
 
     try {
-      sessionId = sseSessions.create(endpointId, toolset, send).sessionId;
+      const principal = (request as FastifyRequest & {
+        mcpPrincipal?: { tokenId: string; username: string };
+      }).mcpPrincipal;
+      if (!principal) throw new ModelingMcpError('MCP_AUTH_REQUIRED', '缺少 MCP 会话身份', 401);
+      sessionId = sseSessions.create(endpointId, toolset, principal, send).sessionId;
     } catch (error) {
       raw.statusCode = error instanceof ModelingMcpError ? error.statusCode : 500;
       raw.setHeader('Content-Type', 'application/json; charset=utf-8');
+      if (!(error instanceof ModelingMcpError)) request.log.error({ err: error }, 'MCP SSE 会话创建失败');
       raw.end(JSON.stringify(
         rpcErrorEnvelope(
           null,
-          error instanceof ModelingMcpError ? JSONRPC_INTERNAL_ERROR : JSONRPC_INTERNAL_ERROR,
-          error instanceof Error ? error.message : String(error),
+          JSONRPC_INTERNAL_ERROR,
+          error instanceof ModelingMcpError ? error.message : 'MCP 服务内部错误',
+          { code: error instanceof ModelingMcpError ? error.code : 'MCP_INTERNAL_ERROR' },
         ),
       ));
       return;
@@ -189,6 +212,7 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   });
 
   const sseMessageHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('sse')) {
       return sendRpcError(reply, null, 404, JSONRPC_METHOD_NOT_FOUND, '当前未启用 SSE transport');
     }
@@ -216,6 +240,9 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
         endpointId,
         minimumAccess: toolset === 'change' ? 'write' : 'read',
       });
+      if (session.tokenId !== verified.tokenId || session.username !== verified.username) {
+        throw new ModelingMcpError('MCP_SESSION_PRINCIPAL_MISMATCH', 'SSE session 与当前 Token 不匹配', 403);
+      }
       const result = await dispatchMcpRequest({ rpc, protocolMode, toolset, verified });
       if (result !== undefined) {
         session.send('message', JSON.stringify(rpcResultEnvelope(rpc.id ?? null, result)));
@@ -226,17 +253,21 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       return reply.code(202).send();
     } catch (error) {
       if (error instanceof ModelingMcpError) {
-        return sendRpcError(reply, rpc.id ?? null, error.statusCode, JSONRPC_AUTH_ERROR, error.message);
+        return sendRpcError(reply, rpc.id ?? null, error.statusCode, JSONRPC_AUTH_ERROR, error.message, {
+          code: error.code,
+        });
       }
       if (error instanceof RpcProtocolError) {
         return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message);
       }
+      request.log.error({ err: error }, 'MCP SSE 请求执行失败');
       return sendRpcError(
         reply,
         rpc.id ?? null,
         500,
         JSONRPC_INTERNAL_ERROR,
-        error instanceof Error ? error.message : String(error),
+        'MCP 服务内部错误',
+        { code: 'MCP_INTERNAL_ERROR' },
       );
     }
   };
@@ -265,10 +296,13 @@ async function dispatchMcpRequest(input: {
 
   if (rpc.method === 'server/discover') {
     return {
+      resultType: 'complete',
       supportedVersions: [config.mcp.protocolVersion, config.mcp.legacyProtocolVersion],
       capabilities: { tools: { listChanged: false } },
       instructions: `当前 endpoint 只暴露 ${toolset} toolset，请通过 tools/list 查看当前 token 可用工具。`,
-      _meta: { serverInfo: MODELING_MCP_SERVER_INFO },
+      ttlMs: 300_000,
+      cacheScope: 'private',
+      _meta: { [SERVER_INFO_META_KEY]: MODELING_MCP_SERVER_INFO },
     };
   }
 
@@ -289,7 +323,7 @@ async function dispatchMcpRequest(input: {
         tools,
         ttlMs: 300_000,
         cacheScope: 'private',
-        _meta: { serverInfo: MODELING_MCP_SERVER_INFO },
+        _meta: { [SERVER_INFO_META_KEY]: MODELING_MCP_SERVER_INFO },
       };
     }
     return { tools };
@@ -326,7 +360,7 @@ async function dispatchMcpRequest(input: {
         ? modernToolResult(payload)
         : legacyToolResult(payload);
     } catch (error) {
-      if (error instanceof AgentCoreError) {
+      if (error instanceof AgentCoreError || error instanceof ModelingMcpToolError) {
         return protocolMode === 'modern'
           ? modernToolErrorResult(error)
           : legacyToolErrorResult(error);
@@ -348,8 +382,8 @@ function rpcResultEnvelope(id: JsonRpcId, result: Record<string, unknown>) {
   return { jsonrpc: '2.0', id, result };
 }
 
-function rpcErrorEnvelope(id: JsonRpcId, code: number, message: string) {
-  return { jsonrpc: '2.0', id, error: { code, message } };
+function rpcErrorEnvelope(id: JsonRpcId, code: number, message: string, data?: Record<string, unknown>) {
+  return { jsonrpc: '2.0', id, error: { code, message, ...(data ? { data } : {}) } };
 }
 
 function parseJsonRpcPayload(body: unknown):
@@ -381,31 +415,39 @@ function detectProtocolMode(rpc: JsonRpcRequestPayload, headers: Record<string, 
   const headerVersion = headerValue(headers['mcp-protocol-version']);
   const metaVersion = rpcMetaProtocolVersion(rpc);
   if (rpc.method === 'initialize') return 'legacy';
-  if (!headerVersion && !metaVersion) return 'legacy';
+  if (!metaVersion && (!headerVersion || headerVersion === config.mcp.legacyProtocolVersion)) return 'legacy';
   return 'modern';
 }
 
 function validateModernTransportHeaders(request: FastifyRequest, rpc: JsonRpcRequestPayload): void {
   const protocolVersion = headerValue(request.headers['mcp-protocol-version']);
-  if (!protocolVersion) {
-    throw new RpcProtocolError('缺少 MCP-Protocol-Version 请求头', 400, JSONRPC_HEADER_MISMATCH);
-  }
-  if (protocolVersion !== config.mcp.protocolVersion) {
+  if (protocolVersion && protocolVersion !== config.mcp.protocolVersion) {
     throw new RpcProtocolError(`当前仅支持协议版本 ${config.mcp.protocolVersion}`, 400, JSONRPC_HEADER_MISMATCH);
   }
   const rpcVersion = rpcMetaProtocolVersion(rpc);
   if (rpcVersion !== config.mcp.protocolVersion) {
     throw new RpcProtocolError('请求体 _meta 协议版本与服务端不匹配', 400, JSONRPC_HEADER_MISMATCH);
   }
+  const meta = rpc.params._meta;
+  const clientCapabilities = meta && typeof meta === 'object' && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>)[CLIENT_CAPABILITIES_META_KEY]
+    : undefined;
+  if (!clientCapabilities || typeof clientCapabilities !== 'object' || Array.isArray(clientCapabilities)) {
+    throw new RpcProtocolError(
+      `请求体 _meta.${CLIENT_CAPABILITIES_META_KEY} 必须是对象`,
+      400,
+      JSONRPC_INVALID_PARAMS,
+    );
+  }
 
   const methodHeader = decodeHeaderSentinel(headerValue(request.headers['mcp-method']));
-  if (!methodHeader || methodHeader !== rpc.method) {
+  if (methodHeader && methodHeader !== rpc.method) {
     throw new RpcProtocolError('Mcp-Method 请求头与 JSON-RPC method 不一致', 400, JSONRPC_HEADER_MISMATCH);
   }
   if (rpc.method === 'tools/call') {
     const toolNameHeader = decodeHeaderSentinel(headerValue(request.headers['mcp-name']));
     const toolName = String(rpc.params.name ?? '').trim();
-    if (!toolNameHeader || toolNameHeader !== toolName) {
+    if (toolNameHeader && toolNameHeader !== toolName) {
       throw new RpcProtocolError('Mcp-Name 请求头与 tools/call.name 不一致', 400, JSONRPC_HEADER_MISMATCH);
     }
   }
@@ -419,7 +461,7 @@ function modernToolResult(payload: Record<string, unknown>): Record<string, unkn
       text: toolText(payload),
     }],
     structuredContent: payload,
-    _meta: { serverInfo: MODELING_MCP_SERVER_INFO },
+    _meta: { [SERVER_INFO_META_KEY]: MODELING_MCP_SERVER_INFO },
   };
 }
 
@@ -434,35 +476,37 @@ function legacyToolResult(payload: Record<string, unknown>): Record<string, unkn
   };
 }
 
-function modernToolErrorResult(error: AgentCoreError): Record<string, unknown> {
+function modernToolErrorResult(error: AgentCoreError | ModelingMcpToolError): Record<string, unknown> {
+  const publicError = toolErrorPayload(error);
   return {
     resultType: 'complete',
     content: [{
       type: 'text',
-      text: error.message,
+      text: publicError.message,
     }],
     structuredContent: {
-      code: error.code,
-      error: error.message,
-      next: error.next,
-      details: error.details,
+      code: publicError.code,
+      error: publicError.message,
+      next: publicError.next,
+      details: publicError.details,
     },
     isError: true,
-    _meta: { serverInfo: MODELING_MCP_SERVER_INFO },
+    _meta: { [SERVER_INFO_META_KEY]: MODELING_MCP_SERVER_INFO },
   };
 }
 
-function legacyToolErrorResult(error: AgentCoreError): Record<string, unknown> {
+function legacyToolErrorResult(error: AgentCoreError | ModelingMcpToolError): Record<string, unknown> {
+  const publicError = toolErrorPayload(error);
   return {
     content: [{
       type: 'text',
-      text: error.message,
+      text: publicError.message,
     }],
     structuredContent: {
-      code: error.code,
-      error: error.message,
-      next: error.next,
-      details: error.details,
+      code: publicError.code,
+      error: publicError.message,
+      next: publicError.next,
+      details: publicError.details,
     },
     isError: true,
   };
@@ -527,8 +571,54 @@ function sendRpcError(
   statusCode: number,
   code: number,
   message: string,
+  data?: Record<string, unknown>,
 ): FastifyReply {
-  return reply.code(statusCode).send(rpcErrorEnvelope(id, code, message));
+  return reply.code(statusCode).send(rpcErrorEnvelope(id, code, message, data));
+}
+
+function originAllowed(request: FastifyRequest): boolean {
+  const origin = headerValue(request.headers.origin);
+  if (!origin) return true;
+  return config.mcp.allowedOrigins.includes(origin);
+}
+
+function sendOriginRejected(reply: FastifyReply): FastifyReply {
+  return sendRpcError(
+    reply,
+    null,
+    403,
+    JSONRPC_AUTH_ERROR,
+    '请求 Origin 不在允许列表中',
+    { code: 'MCP_ORIGIN_FORBIDDEN' },
+  );
+}
+
+function toolErrorPayload(error: AgentCoreError | ModelingMcpToolError) {
+  if (error instanceof ModelingMcpToolError) return publicMcpToolError(error);
+  return {
+    code: error.code,
+    message: error.message,
+    next: [...error.next],
+    details: safePublicDetails(error.details),
+  };
+}
+
+function safePublicDetails(value: unknown, depth = 0): any {
+  if (depth > 8) return '<redacted>';
+  if (Array.isArray(value)) return value.slice(0, 200).map((item) => safePublicDetails(item, depth + 1));
+  if (value && typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (/^(?:technical|stack|sql|token|authorization|secret)$/iu.test(key)) continue;
+      output[key] = safePublicDetails(item, depth + 1);
+    }
+    return output;
+  }
+  if (typeof value === 'string'
+    && (/(?:^|\s)[A-Za-z]:\\/u.test(value) || /\/(?:home|var|data|run)\//u.test(value))) {
+    return '<redacted>';
+  }
+  return value;
 }
 
 class RpcProtocolError extends Error {
@@ -548,6 +638,7 @@ class SseSessionRegistry {
   create(
     endpointId: string,
     toolset: ModelingMcpToolset,
+    principal: { tokenId: string; username: string },
     send: SseSessionRecord['send'],
   ): SseSessionRecord {
     if (this.sessions.size >= MAX_SSE_SESSIONS) {
@@ -556,7 +647,7 @@ class SseSessionRegistry {
     while (true) {
       const sessionId = randomBytes(16).toString('hex');
       if (this.sessions.has(sessionId)) continue;
-      const session = { sessionId, endpointId, toolset, send };
+      const session = { sessionId, endpointId, toolset, ...principal, send };
       this.sessions.set(sessionId, session);
       return session;
     }

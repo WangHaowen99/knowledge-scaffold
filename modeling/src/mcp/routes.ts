@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import { canReadProject, canWriteProject, getProject } from '../projects/repo.js';
 import {
@@ -78,12 +78,13 @@ export function registerProjectMcpManagementRoutes(app: FastifyInstance): void {
   });
 }
 
-function sendMcpError(reply: { code: (statusCode: number) => { send: (body: Record<string, unknown>) => unknown } }, error: unknown) {
+function sendMcpError(reply: FastifyReply, error: unknown) {
   if (error instanceof ModelingMcpError) {
     return reply.code(error.statusCode).send({ code: error.code, error: error.message });
   }
+  reply.log.error({ err: error }, 'MCP 管理接口执行失败');
   return reply.code(500).send({
     code: 'MCP_INTERNAL_ERROR',
-    error: error instanceof Error ? error.message : String(error),
+    error: 'MCP 服务内部错误',
   });
 }

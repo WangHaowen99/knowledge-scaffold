@@ -86,15 +86,36 @@ test('admin LLM 默认配置的测试与保存按钮等宽并右对齐', async (
 test('settings modal: 项目上下文会暴露 MCP 接入 tab 并接线到项目级 API', async () => {
   const { readFileSync } = await import('node:fs');
   const app = readFileSync(new URL('../frontend/src/App.jsx', import.meta.url), 'utf8');
+  const workbench = readFileSync(new URL('../frontend/src/workbench/App.jsx', import.meta.url), 'utf8');
+  const workbenchTopBar = readFileSync(new URL('../frontend/src/workbench/shell/TopBar.jsx', import.meta.url), 'utf8');
   const settings = readFileSync(new URL('../frontend/src/SettingsModal.jsx', import.meta.url), 'utf8');
   const api = readFileSync(new URL('../frontend/src/api.js', import.meta.url), 'utf8');
   const styles = readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
+  const mcpTabSource = settings.slice(settings.indexOf('function McpTab'));
+  const parentSource = settings.slice(0, settings.indexOf('function McpTab'));
 
   assert.match(app, /<SettingsModal user=\{user\} projectId=\{projectId\} tab=\{settingsTab\}/);
+  assert.match(workbench, /<SettingsModal/);
+  assert.match(workbench, /projectId=\{store\.get\(\)\.projectId\}/);
+  assert.match(workbench, /tab="mcp"/);
+  assert.match(workbench, /\(await me\(\)\)\.user/);
+  assert.match(workbench, /createPortal/);
+  assert.match(workbench, /className="mwr wb-settings-host"/);
+  assert.match(workbench, /window\.history\.pushState/);
+  assert.match(workbench, /window\.addEventListener\('popstate'/);
+  assert.match(workbenchTopBar, /onOpenMcpSettings/);
+  assert.match(workbenchTopBar, />MCP/);
   assert.match(settings, /projectId, tab: tabProp = 'llm'/);
+  assert.match(settings, /配置加载失败：\{loadErr\}[\s\S]*onClick=\{onClose\}>关闭<\/button>/);
   assert.match(settings, /\{projectId && <button className=\{tab === 'mcp' \? 'on' : ''\} onClick=\{\(\) => setTab\('mcp'\)\}>MCP 接入<\/button>\}/);
   assert.match(settings, /getProjectMcpRuntimeStatus\(projectId\)/);
   assert.match(settings, /listProjectMcpTokens\(projectId\)/);
+  assert.match(settings, /Promise\.allSettled/);
+  assert.match(settings, /setCanManageTokens\(false\)/);
+  assert.match(mcpTabSource, /const \[tokenLoadErr, setTokenLoadErr\] = useState\(''\)/);
+  assert.match(mcpTabSource, /const \[canManageTokens, setCanManageTokens\] = useState\(false\)/);
+  assert.doesNotMatch(parentSource, /setTokenLoadErr|setCanManageTokens/);
+  assert.match(settings, /连接信息可正常查看；Token 仅对项目负责人或建模成员开放管理/);
   assert.match(settings, /createProjectMcpToken\(projectId, draft\)/);
   assert.match(settings, /revokeProjectMcpToken\(projectId, tokenId\)/);
   assert.match(settings, /MODELING_MCP_PUBLIC_BASE_URL/);
@@ -105,4 +126,11 @@ test('settings modal: 项目上下文会暴露 MCP 接入 tab 并接线到项目
   assert.match(api, /export const revokeProjectMcpToken = \(id, tokenId\) => api\(`\$\{P\(id\)\}\/mcp\/tokens\/\$\{encodeURIComponent\(tokenId\)\}`/);
   assert.match(styles, /\.cfg-mcp \{ display: grid; gap: 14px; \}/);
   assert.match(styles, /\.cfg-mcp-token-row \{/);
+});
+
+test('仓库忽略 Modeling Agent runtime，并且误提交的 Object 调研文档已删除', async () => {
+  const { existsSync, readFileSync } = await import('node:fs');
+  const ignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
+  assert.match(ignore, /^\.agent-runtime\/$/mu);
+  assert.equal(existsSync(new URL('../docs/mcp-ontology-model-research.md', import.meta.url)), false);
 });
