@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react';
+import { displayPackageEntryName } from '../../legacyArchiveFilename.js';
 import { store, actions } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import FlowView from './FlowView.jsx';
@@ -25,14 +26,14 @@ const selMaterials = (s) => s.materials;
 const NODE_LABEL = { D2: '安全库存判断', B: '查询可用库存', E: '生成采购建议', A: '校验备件编码' };
 
 const TITLES = {
-  flow: (f) => f.target.split('/').pop(),
-  diff: (f) => f.target.split('/').pop() || '候选修改',
+  flow: (f) => displayPackageEntryName(f.target),
+  diff: (f) => displayPackageEntryName(f.target) || '候选修改',
   doc: (f) => f.target,
   impact: () => '影响分析',
   conflict: (f) => f.target || '多来源融合',
   gates: () => '正式发布门禁',
   evaluation: () => '正式评测',
-  file: (f) => f.target.split('/').pop(),
+  file: (f) => displayPackageEntryName(f.target),
   studio: () => '知识包 Studio',
 };
 const SUBS = {

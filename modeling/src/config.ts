@@ -21,6 +21,17 @@ function normalizeMcpTransportEnv(key: string, fallback: 'both' | 'streamable-ht
   return fallback;
 }
 
+function booleanEnv(key: string, fallback: boolean): boolean {
+  const value = env(key, fallback ? 'true' : 'false').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
+  if (['0', 'false', 'no', 'off'].includes(value)) return false;
+  return fallback;
+}
+
+function csvEnv(key: string, fallback: string): string[] {
+  return [...new Set(env(key, fallback).split(',').map((item) => item.trim()).filter(Boolean))];
+}
+
 const evaluationLlmModel = env('MODELING_EVALUATION_LLM_MODEL');
 
 export const config = {
@@ -75,10 +86,15 @@ export const config = {
     scene: env('MODELING_EVAL_BINDING_SCENE'),
   },
   mcp: {
-    host: env('MODELING_MCP_HOST', '0.0.0.0'),
+    host: env('MODELING_MCP_HOST', '127.0.0.1'),
     port: Number(env('MODELING_MCP_PORT', '5188')),
     transport: normalizeMcpTransportEnv('MODELING_MCP_TRANSPORT', 'both'),
     publicBaseUrl: env('MODELING_MCP_PUBLIC_BASE_URL').replace(/\/+$/, ''),
+    allowedOrigins: csvEnv(
+      'MODELING_MCP_ALLOWED_ORIGINS',
+      'http://localhost:5100,http://127.0.0.1:5100',
+    ),
+    operationRuleEnabled: booleanEnv('MODELING_MCP_OPERATION_RULE_ENABLED', false),
     tokenSecret: env('MODELING_MCP_TOKEN_SECRET'),
     tokenIssuer: env('MODELING_MCP_TOKEN_ISSUER', 'knowledge-scaffold-modeling'),
     tokenAudience: env('MODELING_MCP_TOKEN_AUDIENCE', 'knowledge-scaffold-modeling-mcp'),

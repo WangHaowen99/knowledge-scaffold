@@ -61,15 +61,15 @@ function confirmationReceipt(preflight: { json(): any }) {
 async function seedProject(projectId: string) {
   insertDocument({
     projectId,
-    filename: 'customer.xlsx',
+    filename: 'synthetic_records.xlsx',
     kind: 'excel',
     parseStatus: 'parsed',
     tables: [{
       name: 'ods_customer',
       rowCount: 1,
       fields: [
-        { name: 'customer_id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 },
-        { name: 'customer_name', inferredType: 'string', sampleValues: ['张三'], distinctRatio: 1 },
+        { name: 'customer_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1 },
+        { name: 'customer_name', inferredType: 'string', sampleValues: ['person_0001'], distinctRatio: 1 },
         { name: 'customer_level', inferredType: 'string', sampleValues: ['A'], distinctRatio: 0.4 },
       ],
     }],
@@ -390,6 +390,18 @@ test('对象模型工具支持查询 review 状态与审计记录', async (t) =>
   });
   assert.equal(rejected.statusCode, 200, rejected.body);
   assert.equal(rejected.json().rejected, true);
+
+  const rejectedStatus = await tool(app, project.id, 'get_ontology_object_review_status', {
+    object_id: 'object:customer',
+  });
+  assert.equal(rejectedStatus.statusCode, 200, rejectedStatus.body);
+  assert.equal(rejectedStatus.json().stage, 'rejected');
+  assert.equal(rejectedStatus.json().current.stage, 'rejected');
+
+  const retainedDraft = await tool(app, project.id, 'get_ontology_object', {
+    object_id: 'object:customer',
+  });
+  assert.deepEqual(retainedDraft.json().object.metadata.aliases, ['客户主档', '客户对象']);
 
   const auditFirstPage = await tool(app, project.id, 'list_ontology_object_audit_records', {
     object_id: 'object:customer',

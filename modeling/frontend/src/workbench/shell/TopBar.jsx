@@ -1,3 +1,5 @@
+import { Settings } from 'lucide-react';
+
 import { store, actions, SCENES } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import { project } from '../lib/mock/fixtures.js';
@@ -15,7 +17,7 @@ const selInteraction = (s) => s.interaction;
 const selRun = (s) => s.run;
 const selWorkflow = (s) => s.workflow;
 
-export default function TopBar() {
+export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
   const scene = useStore(store, selScene);
   const activity = useStore(store, selActivity);
   const demo = useStore(store, selDemo);
@@ -105,6 +107,14 @@ export default function TopBar() {
 
       {!demo && (
         <>
+          <button
+            className="btn btn-ghost"
+            disabled={settingsLoading}
+            onClick={onOpenMcpSettings}
+            title="打开当前项目的 MCP 接入配置"
+          >
+            <Settings size={13} />MCP
+          </button>
           <button className="btn btn-ghost" onClick={() => void exportPackage()} title="导出当前已确认知识包">
             <Icon name="download" size={13} />导出
           </button>

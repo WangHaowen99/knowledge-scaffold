@@ -1,5 +1,15 @@
+import { createHash } from 'node:crypto';
+
 import { AgentCoreService } from '../agent/core-service.js';
+import { config } from '../config.js';
 import type { Project } from '../types.js';
+import { KEY_SCHEMA_DESCRIPTION, KEY_SCHEMA_PATTERN } from '../workflow/keys.js';
+import { OBJECT_REVIEW_MCP_TOOLS, ObjectReviewScopeService } from './object-review-scope.js';
+import { OperationRuleMcpService } from './operation-rule/service.js';
+import {
+  isOperationRuleTool,
+  OPERATION_RULE_TOOL_DEFINITIONS,
+} from './operation-rule/tool-definitions.js';
 import type { ModelingMcpScope, ModelingMcpToolset } from './service.js';
 
 export interface ModelingMcpToolDefinition {
@@ -13,7 +23,14 @@ export interface ModelingMcpToolDefinition {
   internalToolName: string;
 }
 
-const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
+const KEY_PATTERN_BODY = KEY_SCHEMA_PATTERN.slice(1, -1);
+const OBJECT_ID_SCHEMA = {
+  type: 'string',
+  pattern: `^object:${KEY_PATTERN_BODY}$`,
+  description: `对象 ID，格式 object:key；${KEY_SCHEMA_DESCRIPTION}`,
+};
+
+const OBJECT_TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
   {
     name: 'list_ontology_objects',
     title: '列出对象模型',
@@ -45,7 +62,7 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
       type: 'object',
       required: ['object_id'],
       properties: {
-        object_id: { type: 'string', pattern: '^object:[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$' },
+        object_id: OBJECT_ID_SCHEMA,
         working_revision: { type: 'string', description: '可选，指定当前读取的工作修订。' },
       },
       additionalProperties: false,
@@ -62,7 +79,7 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
       type: 'object',
       required: ['object_id'],
       properties: {
-        object_id: { type: 'string', pattern: '^object:[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$' },
+        object_id: OBJECT_ID_SCHEMA,
       },
       additionalProperties: false,
     },
@@ -78,7 +95,7 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
       type: 'object',
       required: ['object_id'],
       properties: {
-        object_id: { type: 'string', pattern: '^object:[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$' },
+        object_id: OBJECT_ID_SCHEMA,
         status: {
           type: 'string',
           enum: ['pending', 'accepted', 'revision_requested', 'rejected', 'superseded'],
@@ -131,8 +148,9 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
     internalToolName: 'submit_ontology_object_review',
     inputSchema: {
       type: 'object',
-      required: ['expected_revision', 'client_mutation_id'],
+      required: ['object_id', 'expected_revision', 'client_mutation_id'],
       properties: {
+        object_id: OBJECT_ID_SCHEMA,
         expected_revision: { type: 'string' },
         client_mutation_id: { type: 'string' },
       },
@@ -148,7 +166,10 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
     internalToolName: 'prepare_confirmation_groups',
     inputSchema: {
       type: 'object',
-      properties: {},
+      required: ['object_id'],
+      properties: {
+        object_id: OBJECT_ID_SCHEMA,
+      },
       additionalProperties: false,
     },
   },
@@ -161,8 +182,9 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
     internalToolName: 'request_confirmation_preflight',
     inputSchema: {
       type: 'object',
-      required: ['change_groups'],
+      required: ['object_id', 'change_groups'],
       properties: {
+        object_id: OBJECT_ID_SCHEMA,
         summary: { type: 'string', description: '可选，本次确认摘要。' },
         change_groups: confirmationGroupsSchema(),
       },
@@ -179,6 +201,7 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
     inputSchema: {
       type: 'object',
       required: [
+        'object_id',
         'summary',
         'change_groups',
         'expected_candidate_revision',
@@ -187,6 +210,7 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
         'review',
       ],
       properties: {
+        object_id: OBJECT_ID_SCHEMA,
         summary: { type: 'string' },
         change_groups: confirmationGroupsSchema(),
         expected_candidate_revision: { type: 'string' },
@@ -206,8 +230,9 @@ const TOOL_DEFINITIONS: readonly ModelingMcpToolDefinition[] = [
     internalToolName: 'request_confirmation_rejected',
     inputSchema: {
       type: 'object',
-      required: ['expected_candidate_revision', 'review'],
+      required: ['object_id', 'expected_candidate_revision', 'review'],
       properties: {
+        object_id: OBJECT_ID_SCHEMA,
         expected_candidate_revision: { type: 'string' },
         review: confirmationReviewSchema(false),
       },
@@ -220,21 +245,22 @@ export function toolDefinitionsFor(
   toolset: ModelingMcpToolset,
   scopes: readonly ModelingMcpScope[],
 ): ModelingMcpToolDefinition[] {
-  return TOOL_DEFINITIONS
+  return activeToolDefinitions()
     .filter((tool) => tool.toolset === toolset && scopes.includes(tool.requiredScope))
     .map((tool) => ({ ...tool, inputSchema: structuredClone(tool.inputSchema) }));
 }
 
 export function toolNamesByToolset(): Record<ModelingMcpToolset, string[]> {
+  const definitions = activeToolDefinitions();
   return {
-    read: TOOL_DEFINITIONS.filter((tool) => tool.toolset === 'read').map((tool) => tool.name),
-    change: TOOL_DEFINITIONS.filter((tool) => tool.toolset === 'change').map((tool) => tool.name),
+    read: definitions.filter((tool) => tool.toolset === 'read').map((tool) => tool.name),
+    change: definitions.filter((tool) => tool.toolset === 'change').map((tool) => tool.name),
   };
 }
 
 export function toolDefinitionByName(name: string): ModelingMcpToolDefinition | null {
   const normalized = String(name ?? '').trim();
-  return TOOL_DEFINITIONS.find((tool) => tool.name === normalized) ?? null;
+  return activeToolDefinitions().find((tool) => tool.name === normalized) ?? null;
 }
 
 export async function executeModelingMcpTool(input: {
@@ -246,13 +272,50 @@ export async function executeModelingMcpTool(input: {
 }): Promise<Record<string, unknown>> {
   const tool = toolDefinitionByName(input.toolName);
   if (!tool) throw new Error(`未知 MCP 工具: ${input.toolName}`);
+  if (isOperationRuleTool(tool.name)) {
+    return new OperationRuleMcpService().execute(
+      tool.name,
+      input.project,
+      input.username,
+      input.argumentsValue,
+    );
+  }
   const service = new AgentCoreService();
+  if (OBJECT_REVIEW_MCP_TOOLS.has(tool.name)) {
+    return new ObjectReviewScopeService().execute(
+      tool.name,
+      input.project,
+      input.argumentsValue,
+      (internalToolName, internalArgs) => service.invoke({
+        project: input.project,
+        runId: stableMcpRunId(input.project.id, input.username),
+        username: input.username,
+      }, internalToolName, internalArgs) as Promise<Record<string, unknown>>,
+      tool.internalToolName,
+    );
+  }
   const result = await service.invoke({
     project: input.project,
-    runId: `mcp-${tool.toolset}-${input.tokenId}`,
+    runId: stableMcpRunId(input.project.id, input.username),
     username: input.username,
   }, tool.internalToolName, input.argumentsValue);
   return result as Record<string, unknown>;
+}
+
+function activeToolDefinitions(): readonly ModelingMcpToolDefinition[] {
+  return config.mcp.operationRuleEnabled
+    ? [...OBJECT_TOOL_DEFINITIONS, ...OPERATION_RULE_TOOL_DEFINITIONS]
+    : OBJECT_TOOL_DEFINITIONS;
+}
+
+function stableMcpRunId(projectId: string, username: string): string {
+  const digest = createHash('sha256')
+    .update(projectId)
+    .update('\0')
+    .update(username)
+    .digest('hex')
+    .slice(0, 24);
+  return `mcp-${digest}`;
 }
 
 function objectPatchSchema(requireExpectedRevision: boolean): Record<string, unknown> {
@@ -260,7 +323,7 @@ function objectPatchSchema(requireExpectedRevision: boolean): Record<string, unk
     type: 'object',
     required: requireExpectedRevision ? ['object_id', 'expected_revision'] : ['object_id'],
     properties: {
-      object_id: { type: 'string', pattern: '^object:[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$' },
+      object_id: OBJECT_ID_SCHEMA,
       expected_revision: { type: 'string' },
       metadata: { type: 'object', additionalProperties: true },
       field_ops: {

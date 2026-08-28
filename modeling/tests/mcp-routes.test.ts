@@ -11,10 +11,11 @@ process.env.DATA_DIR ||= mkdtempSync(join(tmpdir(), 'modeling-mcp-routes-'));
 const [
   { registerProjectMcpManagementRoutes },
   { registerProjectMcpTransportRoutes },
-  { createProject },
+  { createProject, setProjectMember },
   { getPackageArtifactStore },
   { insertDocument },
-  { issueProjectMcpToken },
+  { issueProjectMcpToken, markModelingMcpRuntimeRunning, markModelingMcpRuntimeStopped },
+  { executeModelingMcpTool },
 ] = await Promise.all([
   import('../src/mcp/routes.js'),
   import('../src/mcp/transport.js'),
@@ -22,6 +23,7 @@ const [
   import('../src/artifacts/runtime.js'),
   import('../src/documents/repo.js'),
   import('../src/mcp/service.js'),
+  import('../src/mcp/toolset.js'),
 ]);
 
 function managementApp(t: test.TestContext, username = 'alice') {
@@ -44,15 +46,15 @@ function transportApp(t: test.TestContext) {
 async function seedProject(projectId: string) {
   insertDocument({
     projectId,
-    filename: 'customer.xlsx',
+    filename: 'synthetic_records.xlsx',
     kind: 'excel',
     parseStatus: 'parsed',
     tables: [{
       name: 'ods_customer',
       rowCount: 1,
       fields: [
-        { name: 'customer_id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 },
-        { name: 'customer_name', inferredType: 'string', sampleValues: ['张三'], distinctRatio: 1 },
+        { name: 'customer_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1 },
+        { name: 'customer_name', inferredType: 'string', sampleValues: ['person_0001'], distinctRatio: 1 },
         { name: 'customer_level', inferredType: 'string', sampleValues: ['A'], distinctRatio: 0.4 },
       ],
     }],
@@ -117,6 +119,8 @@ function modernMeta() {
   return {
     _meta: {
       'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+      'io.modelcontextprotocol/clientCapabilities': {},
+      'io.modelcontextprotocol/clientInfo': { name: 'synthetic-test-client', version: '1.0.0' },
     },
   };
 }
@@ -167,6 +171,8 @@ test('项目 MCP 管理接口可查询状态并管理 token', async (t) => {
   assert.equal(status.statusCode, 200, status.body);
   assert.match(status.json().endpoint_id, /^[0-9a-f]{16}$/u);
   assert.equal(status.json().transport, 'both');
+  assert.equal(status.json().configured, true);
+  assert.equal(status.json().running, false);
   assert.equal(status.json().server_name, 'knowledge-scaffold-modeling-mcp');
   assert.equal(status.json().server_version, '0.2.0');
   assert.equal(status.json().token_policy.min_ttl_seconds, 300);
@@ -176,6 +182,16 @@ test('项目 MCP 管理接口可查询状态并管理 token', async (t) => {
     status.json().urls.map((item: any) => `${item.toolset}:${item.transport}`),
     ['read:streamable-http', 'change:streamable-http', 'read:sse', 'change:sse'],
   );
+
+  markModelingMcpRuntimeRunning('synthetic-mcp-instance', 'synthetic heartbeat');
+  const runningStatus = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/mcp/runtime/status`,
+  });
+  assert.equal(runningStatus.statusCode, 200, runningStatus.body);
+  assert.equal(runningStatus.json().running, true);
+  assert.equal(runningStatus.json().enabled, true);
+  markModelingMcpRuntimeStopped('synthetic-mcp-instance', 'synthetic stop');
 
   const created = await app.inject({
     method: 'POST',
@@ -190,6 +206,14 @@ test('项目 MCP 管理接口可查询状态并管理 token', async (t) => {
   assert.ok(created.json().token);
   assert.equal(created.json().token_summary.scopes[0], 'ontology.read');
   assert.equal(created.json().endpoint_id, status.json().endpoint_id);
+
+  const emptyScopes = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/mcp/tokens`,
+    payload: { name: 'empty scopes', scopes: [], expires_in_seconds: 3600 },
+  });
+  assert.equal(emptyScopes.statusCode, 400, emptyScopes.body);
+  assert.equal(emptyScopes.json().code, 'MCP_SCOPE_INVALID');
 
   const listed = await app.inject({
     method: 'GET',
@@ -250,7 +274,25 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
     },
   });
   assert.equal(discover.statusCode, 200, discover.body);
+  assert.equal(discover.json().result.resultType, 'complete');
   assert.equal(discover.json().result.supportedVersions[0], '2026-07-28');
+  assert.equal(discover.json().result._meta['io.modelcontextprotocol/serverInfo'].name, 'knowledge-scaffold-modeling-mcp');
+
+  const sdkCompatibleDiscover = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      accept: 'application/json, text/event-stream',
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'sdk-compatible-discover',
+      method: 'server/discover',
+      params: modernMeta(),
+    },
+  });
+  assert.equal(sdkCompatibleDiscover.statusCode, 200, sdkCompatibleDiscover.body);
 
   const toolsList = await app.inject({
     method: 'POST',
@@ -410,6 +452,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
         ...modernMeta(),
         name: 'submit_ontology_object_review',
         arguments: {
+          object_id: 'object:customer',
           expected_revision: applied.json().result.structuredContent.working_revision,
           client_mutation_id: 'mcp-route-review-1',
         },
@@ -433,7 +476,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
       params: {
         ...modernMeta(),
         name: 'prepare_ontology_object_confirmation_groups',
-        arguments: {},
+        arguments: { object_id: 'object:customer' },
       },
     },
   });
@@ -458,6 +501,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
         ...modernMeta(),
         name: 'preflight_ontology_object_confirmation',
         arguments: {
+          object_id: 'object:customer',
           summary: '确认 MCP 路由写入的对象模型修改',
           change_groups: prepared.json().result.structuredContent.change_groups,
         },
@@ -466,6 +510,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   });
   assert.equal(preflight.statusCode, 200, preflight.body);
   const receipt = preflight.json().result.structuredContent.validation_receipt;
+  assert.ok(receipt, preflight.body);
 
   const confirmed = await app.inject({
     method: 'POST',
@@ -482,6 +527,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
         ...modernMeta(),
         name: 'confirm_ontology_object_review',
         arguments: {
+          object_id: 'object:customer',
           summary: '确认 MCP 路由写入的对象模型修改',
           change_groups: prepared.json().result.structuredContent.change_groups,
           expected_candidate_revision: receipt.candidateRevision,
@@ -562,6 +608,97 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   });
   assert.equal(mismatch.statusCode, 400, mismatch.body);
   assert.match(mismatch.json().error.message, /Mcp-Name/u);
+
+  const missingCapabilities = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      ...modernHeaders('tools/list'),
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 13,
+      method: 'tools/list',
+      params: {
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+      },
+    },
+  });
+  assert.equal(missingCapabilities.statusCode, 400, missingCapabilities.body);
+  assert.match(missingCapabilities.json().error.message, /clientCapabilities/u);
+
+  const forbiddenOrigin = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      origin: 'https://example.org',
+      ...modernHeaders('tools/list'),
+    },
+    payload: { jsonrpc: '2.0', id: 14, method: 'tools/list', params: modernMeta() },
+  });
+  assert.equal(forbiddenOrigin.statusCode, 403, forbiddenOrigin.body);
+  assert.equal(forbiddenOrigin.json().error.data.code, 'MCP_ORIGIN_FORBIDDEN');
+});
+
+test('项目 Viewer 可读取 MCP runtime，但不能读取或管理 token', async (t) => {
+  const project = createProject({ owner: 'owner_a', name: 'MCP Viewer', runtime: 'agent' });
+  setProjectMember(project.id, project.owner, 'viewer_a', 'viewer');
+  await seedProject(project.id);
+  const app = managementApp(t, 'viewer_a');
+
+  const status = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/mcp/runtime/status`,
+  });
+  assert.equal(status.statusCode, 200, status.body);
+  assert.ok(status.json().endpoint_id);
+  assert.ok(status.json().urls.length > 0);
+
+  const tokens = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/mcp/tokens`,
+  });
+  assert.equal(tokens.statusCode, 404, tokens.body);
+});
+
+test('同一用户轮换 MCP token 后继续原 candidate，不丢失未确认修改', async () => {
+  const project = createProject({ owner: 'alice', name: 'MCP token 轮换', runtime: 'agent' });
+  await seedProject(project.id);
+  const listed = await executeModelingMcpTool({
+    toolName: 'list_ontology_objects',
+    project,
+    username: 'alice',
+    tokenId: 'token-before-rotation',
+    argumentsValue: {},
+  });
+  const first = await executeModelingMcpTool({
+    toolName: 'apply_ontology_object_patch',
+    project,
+    username: 'alice',
+    tokenId: 'token-before-rotation',
+    argumentsValue: {
+      object_id: 'object:customer',
+      expected_revision: listed.working_revision,
+      metadata: { aliases: ['客户主档', 'synthetic_alias_a'] },
+      client_mutation_id: 'rotation-before',
+    },
+  });
+  const second = await executeModelingMcpTool({
+    toolName: 'apply_ontology_object_patch',
+    project,
+    username: 'alice',
+    tokenId: 'token-after-rotation',
+    argumentsValue: {
+      object_id: 'object:customer',
+      expected_revision: first.working_revision,
+      metadata: { aliases: ['客户主档', 'synthetic_alias_b'] },
+      client_mutation_id: 'rotation-after',
+    },
+  });
+  assert.equal(second.candidate, true);
+  assert.notEqual(second.working_revision, first.working_revision);
 });
 
 test('项目 MCP transport 支持 SSE 握手、消息投递和 session 绑定', async (t) => {
