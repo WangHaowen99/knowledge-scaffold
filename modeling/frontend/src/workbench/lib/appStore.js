@@ -4,6 +4,8 @@ import * as F from './mock/fixtures.js';
 import {
   answerAgent,
   cancelAgent,
+  confirmMaterialPurposeReview as confirmMaterialPurposeReviewRequest,
+  confirmMaterialPurposeReviews as confirmMaterialPurposeReviewsRequest,
   getAgentState,
   getCandidateDiff,
   getMaterial,
@@ -91,6 +93,7 @@ export const store = createStore(initial);
 
 const UPLOAD_POLL_INTERVAL_MS = 800;
 const UPLOAD_POLL_TIMEOUT_MS = 11 * 60_000;
+const PURPOSE_REVIEW_CONTINUATION = '我已确认本批全部资料的明确用途和表格 Sheet 处理方式。现在开始按确认结果读取资料、形成建模目标；需要全文精读的资料继续按已保存设置执行。';
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 let optimisticSequence = 0;
 const optimisticId = (kind) => `optimistic-${kind}-${Date.now()}-${optimisticSequence += 1}`;
@@ -110,6 +113,19 @@ const mergeUploadMaterials = (materials, uploads) => [
     readingMode: item.readingMode || 'on_demand',
   })),
 ];
+
+export function pendingMaterialPurposeReviews(materials) {
+  return (materials || []).filter((item) => item.parseStatus === 'parsed'
+    && item.purposeReview?.status === 'pending');
+}
+
+export function nextReadyMaterialPurposeReview(materials, currentId = '') {
+  const pending = pendingMaterialPurposeReviews(materials)
+    .filter((item) => item.purposeReview?.suggestedBy === 'agent');
+  if (!pending.length) return null;
+  const currentIndex = pending.findIndex((item) => item.id === currentId);
+  return pending[currentIndex >= 0 ? (currentIndex + 1) % pending.length : 0];
+}
 
 export function packageUploadFollowUp(sources) {
   if (!sources?.length) return '';
@@ -231,13 +247,24 @@ export const actions = {
       throw error;
     }
   },
-  async refreshSnapshot() {
+  async refreshSnapshot(options = {}) {
     const { projectId } = store.get();
     if (!projectId) return;
     const [snapshot, candidate] = await Promise.all([
       getSnapshot(projectId),
       getCandidateDiff(projectId),
     ]);
+    const materialContents = { ...store.get().materialContents };
+    for (const material of snapshot.materials) {
+      if (!materialContents[material.id]) continue;
+      materialContents[material.id] = {
+        ...materialContents[material.id],
+        purpose: material.purpose,
+        readingMode: material.readingMode,
+        directiveRevision: material.directiveRevision,
+        purposeReview: material.purposeReview,
+      };
+    }
     store.set({
       project: snapshot.project,
       revision: snapshot.revision,
@@ -245,10 +272,24 @@ export const actions = {
       packageStatus: snapshot.packageStatus || null,
       files: snapshot.files,
       materials: snapshot.materials,
+      materialContents,
       candidateDiff: candidate.files || [],
       confirmPolicy: snapshot.confirmPolicy || [],
       packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
     });
+    if (options.openPurposeReview && store.get().follow) {
+      const material = nextReadyMaterialPurposeReview(snapshot.materials, store.get().selectedMaterial);
+      if (material) {
+        store.set({
+          leftTab: 'mat',
+          selectedMaterial: material.id,
+          focus: { kind: 'doc', target: material.id },
+          follow: false,
+          pendingFocus: null,
+        });
+        void actions.loadMaterial(material.id);
+      }
+    }
   },
   async loadFile(path) {
     const { projectId } = store.get();
@@ -337,8 +378,8 @@ export const actions = {
               : state.activity,
         trace: mergeToolTrace(state.trace, event, seq),
       }));
-      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation'].includes(event.name)) {
-        void actions.refreshSnapshot();
+      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation', 'set_material_directive'].includes(event.name)) {
+        void actions.refreshSnapshot({ openPurposeReview: event.name === 'set_material_directive' });
       }
     }
     if (eventType === 'message') {
@@ -516,7 +557,7 @@ export const actions = {
       return { messages };
     });
   },
-  async send(text) {
+  async send(text, options = {}) {
     const value = String(text || '').trim();
     const { projectId } = store.get();
     if (!projectId || !value) return;
@@ -529,7 +570,7 @@ export const actions = {
       blocks: [{ type: 'text', text: value }],
     });
     try {
-      const result = await steerAgent(projectId, value);
+      const result = await steerAgent(projectId, value, options);
       if (result.run) store.set({ run: result.run, error: '' });
       return result;
     } catch (error) {
@@ -751,17 +792,19 @@ export const actions = {
     }));
     try {
       const result = await updateMaterialDirectives(projectId, documentId, {
-        purpose: next.purpose,
-        readingMode: next.readingMode,
+        ...(Object.hasOwn(patch, 'purpose') ? { purpose: next.purpose } : {}),
+        ...(Object.hasOwn(patch, 'readingMode') ? { readingMode: next.readingMode } : {}),
         expectedDirectiveRevision: Number(current.directiveRevision || 0),
       });
+      const confirmed = { ...result.document, purposeReview: result.purposeReview };
       store.set((state) => ({
-        materials: state.materials.map((item) => item.id === documentId ? { ...item, ...result.document } : item),
+        materials: state.materials.map((item) => item.id === documentId ? { ...item, ...confirmed } : item),
         materialContents: state.materialContents[documentId]
-          ? { ...state.materialContents, [documentId]: { ...state.materialContents[documentId], ...result.document } }
+          ? { ...state.materialContents, [documentId]: { ...state.materialContents[documentId], ...confirmed } }
           : state.materialContents,
       }));
-      if (current.parseStatus === 'parsed') {
+      const existingReviewPending = current.purposeReview?.status === 'pending';
+      if (current.parseStatus === 'parsed' && !existingReviewPending) {
         const request = next.readingMode === 'full'
           ? `请全文精读《${current.filename || current.name}》，并按“${materialPurposeLabel(next.purpose)}”使用；完成后主动更新受影响的建模阶段。`
           : `请按需读取《${current.filename || current.name}》，并按“${materialPurposeLabel(next.purpose)}”使用后主动继续。`;
@@ -770,6 +813,112 @@ export const actions = {
       return result.document;
     } catch (error) {
       store.set({ materials, uploads, materialContents, messages, error: error instanceof Error ? error.message : '资料设置保存失败' });
+      return null;
+    }
+  },
+  async confirmMaterialPurposeReview(documentId, purpose, sheetDecisions) {
+    const { projectId, materials, uploads, materialContents, messages } = store.get();
+    if (!projectId || !documentId) return null;
+    const current = materialContents[documentId]
+      || materials.find((item) => item.id === documentId)
+      || uploads.find((item) => item.documentId === documentId);
+    if (!current) return null;
+    try {
+      const result = await confirmMaterialPurposeReviewRequest(projectId, documentId, {
+        purpose,
+        sheetDecisions,
+        expectedDirectiveRevision: Number(current.directiveRevision || 0),
+      });
+      const confirmed = { ...result.document, purposeReview: result.purposeReview };
+      const apply = (item) => item.id === documentId || item.documentId === documentId
+        ? { ...item, ...confirmed }
+        : item;
+      store.set((state) => ({
+        materials: state.materials.map(apply),
+        uploads: state.uploads.map(apply),
+        materialContents: state.materialContents[documentId]
+          ? { ...state.materialContents, [documentId]: { ...state.materialContents[documentId], ...confirmed } }
+          : state.materialContents,
+        messages: state.messages.map((message) => ({
+          ...message,
+          blocks: (message.blocks || []).map((block) => block.type === 'upload'
+            ? { ...block, files: (block.files || []).map(apply) }
+            : block),
+        })),
+        error: '',
+      }));
+      const progress = result.purposeReviewProgress;
+      const remaining = pendingMaterialPurposeReviews(store.get().materials);
+      if (progress?.allConfirmed !== true) {
+        const pendingCount = Number.isSafeInteger(progress?.pendingCount)
+          ? progress.pendingCount
+          : remaining.length;
+        store.set({ statusText: `资料用途已确认，尚有 ${pendingCount} 份待确认` });
+        const next = nextReadyMaterialPurposeReview(remaining, documentId);
+        if (next) actions.selectMaterial(next.id);
+      } else {
+        store.set({ statusText: '全部资料用途已确认' });
+        void actions.send(
+          PURPOSE_REVIEW_CONTINUATION,
+          { purposeReviewCompleted: true },
+        );
+      }
+      return confirmed;
+    } catch (error) {
+      store.set({
+        materials,
+        uploads,
+        materialContents,
+        messages,
+        error: error instanceof Error ? error.message : '资料用途确认失败',
+      });
+      return null;
+    }
+  },
+  async confirmAllMaterialPurposeReviews() {
+    const pending = pendingMaterialPurposeReviews(store.get().materials);
+    if (!pending.length) return null;
+    if (pending.some((item) => item.purposeReview?.suggestedBy !== 'agent')) {
+      store.set({ error: '仍有资料用途正在分析，请等待助手完成建议' });
+      return null;
+    }
+    const { projectId } = store.get();
+    if (!projectId) return null;
+    try {
+      const result = await confirmMaterialPurposeReviewsRequest(projectId, pending.map((item) => ({
+        documentId: item.id,
+        expectedDirectiveRevision: Number(item.directiveRevision || 0),
+      })));
+      const confirmedById = new Map((result.documents || []).map((item) => [
+        item.document.id,
+        { ...item.document, purposeReview: item.purposeReview },
+      ]));
+      const apply = (item) => {
+        const confirmed = confirmedById.get(item.id || item.documentId);
+        return confirmed ? { ...item, ...confirmed } : item;
+      };
+      store.set((state) => ({
+        materials: state.materials.map(apply),
+        uploads: state.uploads.map(apply),
+        materialContents: Object.fromEntries(Object.entries(state.materialContents)
+          .map(([id, item]) => [id, apply(item)])),
+        messages: state.messages.map((message) => ({
+          ...message,
+          blocks: (message.blocks || []).map((block) => block.type === 'upload'
+            ? { ...block, files: (block.files || []).map(apply) }
+            : block),
+        })),
+        error: '',
+      }));
+      if (result.purposeReviewProgress?.allConfirmed === true) {
+        store.set({ statusText: '全部资料用途已确认' });
+        void actions.send(PURPOSE_REVIEW_CONTINUATION, { purposeReviewCompleted: true });
+      } else {
+        store.set({ statusText: `资料用途已确认，尚有 ${result.purposeReviewProgress?.pendingCount || 0} 份待确认` });
+      }
+      return result;
+    } catch (error) {
+      store.set({ error: error instanceof Error ? error.message : '资料用途批量确认失败' });
       return null;
     }
   },

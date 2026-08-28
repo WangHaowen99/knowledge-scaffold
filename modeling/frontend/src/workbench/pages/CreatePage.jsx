@@ -5,7 +5,7 @@ import Icon from '../ui/Icon.jsx';
 
 export function initialUploadOptions(files) {
   return {
-    followUp: false,
+    followUp: true,
     directivesByName: Object.fromEntries(files.map((item) => [item.name, {
       purpose: item.purpose,
       readingMode: item.readingMode,
@@ -13,8 +13,7 @@ export function initialUploadOptions(files) {
   };
 }
 
-/* 唯一的全屏上传页。之后补资料一律在对话流里做。
-   三条原则：不问分类、传完立刻解析并反馈、可以不传直接开始。 */
+/* 唯一的全屏上传页。之后补资料一律在对话流里做。 */
 export default function CreatePage() {
   const [over, setOver] = useState(false);
   const [files, setFiles] = useState([]);
@@ -89,9 +88,7 @@ export default function CreatePage() {
       window.history.replaceState(null, '', `${url.pathname}${url.search}#/workbench`);
       window.dispatchEvent(new HashChangeEvent('hashchange'));
       if (initialUpload) {
-        void initialUpload.then(({ parsed, failed }) => actions.send(
-          `请开始为“${result.project.name}”建模。初始资料解析成功 ${parsed}/${files.length}${failed ? `，${failed} 份失败，请立即说明并继续处理可读资料` : ''}。请遵循每份资料的用途和阅读设置，主动确认目标并持续推进下一步。`,
-        )).catch((cause) => {
+        void initialUpload.catch((cause) => {
           store.set({ error: cause instanceof Error ? cause.message : '初始资料上传失败' });
         });
       }

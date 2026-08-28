@@ -5,6 +5,7 @@ import type {
   GraphImportMapping,
   GraphImportObjectDiagnostic,
   GraphImportObjectSchema,
+  GraphImportObjectSourceSchema,
   GraphImportPackageSchema,
   GraphImportRelationPlan,
   GraphImportValidation,
@@ -111,7 +112,7 @@ function inferenceWarning(
   return `${prefix} 存在超过 Neo4j FLOAT 精度的数值，已按字符串导入`;
 }
 
-function buildEntityPlan(
+function buildSingleSourceEntityPlan(
   tables: DataDictTable[],
   profilesBySheet: Map<string, GraphImportColumnProfile[]>,
   object: GraphImportEntitySchema,
@@ -179,6 +180,167 @@ function buildEntityPlan(
       rows,
     },
   };
+}
+
+function keyedRecordKey(objectKey: string, values: string[]): string {
+  return `node:${objectKey}:key:${values.map((value) => encodeURIComponent(value)).join('|')}`;
+}
+
+function mappedColumns(
+  object: GraphImportObjectSchema,
+  source: GraphImportObjectSourceSchema,
+  table: DataDictTable,
+  profiles: GraphImportColumnProfile[],
+): { columns: TypedMappedColumn[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const columns = source.propertyMappings.flatMap((mapping) => {
+    const index = table.fields.findIndex((field) => field.name === mapping.sourceColumn);
+    if (index < 0) {
+      warnings.push(
+        `实体「${object.key}」属性 ${mapping.property} 对应的 Excel 字段「${mapping.sourceColumn}」不存在，已忽略`,
+      );
+      return [];
+    }
+    const profile = profiles[index];
+    warnings.push(...profile.issues.map((issue) => inferenceWarning(object.key, mapping.property, issue)));
+    return [{ ...mapping, index, profile }];
+  });
+  return { columns, warnings };
+}
+
+function buildMultiSourceEntityPlan(
+  tables: DataDictTable[],
+  profilesBySheet: Map<string, GraphImportColumnProfile[]>,
+  object: GraphImportObjectSchema,
+): BuiltEntity {
+  const sources = object.sources ?? [];
+  const primary = sources.find((source) => source.role === 'primary');
+  if (!primary) throw new Error(`实体「${object.key}」缺少 primary 主表`);
+  const primaryKey = object.primaryKey ?? [];
+  if (!primaryKey.length) throw new Error(`实体「${object.key}」缺少跨 Sheet 合并主键`);
+
+  const sourceContexts = [primary, ...sources.filter((source) => source !== primary)].map((source) => {
+    const table = tables.find((item) => item.name === source.sheet);
+    if (!table) throw new Error(`实体「${object.key}」固定 Sheet「${source.sheet}」不存在于 Excel`);
+    if (!table.rows) throw new Error(`实体「${object.key}」固定 Sheet「${source.sheet}」没有可导入的数据行`);
+    const mapped = mappedColumns(object, source, table, profilesBySheet.get(table.name)!);
+    const byProperty = new Map(mapped.columns.map((item) => [item.property, item]));
+    const missingKeys = primaryKey.filter((key) => !byProperty.has(key));
+    if (missingKeys.length) {
+      throw new Error(`实体「${object.key}」的 Sheet「${source.sheet}」缺少主键映射：${missingKeys.join('、')}`);
+    }
+    return { source, table, ...mapped, byProperty };
+  });
+
+  const warnings = sourceContexts.flatMap((item) => item.warnings);
+  const rowsByIdentity = new Map<string, GraphImportEntityPlan['rows'][number]>();
+  const recordKeyByRowIndex = new Map<number, string>();
+  const propertyTypes: Record<string, GraphImportColumnProfile['type']> = {};
+  const propertyNames: string[] = [];
+  for (const context of sourceContexts) {
+    for (const column of context.columns) {
+      if (!(column.property in propertyTypes)) {
+        propertyTypes[column.property] = column.profile.type;
+        propertyNames.push(column.property);
+      }
+    }
+  }
+
+  for (const [sourceIndex, context] of sourceContexts.entries()) {
+    const identitiesInSource = new Set<string>();
+    let skippedBlankKeys = 0;
+    let skippedUnmatched = 0;
+    for (const [rowIndex, row] of context.table.rows!.entries()) {
+      const values = Object.fromEntries(context.columns.map((mapping) => [
+        mapping.property,
+        graphImportCellValue(context.table, rowIndex, mapping.index, mapping.profile.type),
+      ]));
+      const keyValues = primaryKey.map((key) => String(values[key] ?? '').trim());
+      if (keyValues.some((value) => !value)) {
+        skippedBlankKeys += 1;
+        continue;
+      }
+      const identity = JSON.stringify(keyValues);
+      if (identitiesInSource.has(identity)) {
+        throw new Error(
+          `实体「${object.key}」的 Sheet「${context.source.sheet}」主键重复；该表不是一对一扩展表，应拆分为独立对象或关系`,
+        );
+      }
+      identitiesInSource.add(identity);
+      if (sourceIndex === 0) {
+        const properties = Object.fromEntries(Object.entries(values).filter(([, value]) => String(value ?? '') !== ''));
+        if (!Object.keys(properties).length) continue;
+        const recordKey = keyedRecordKey(object.key, keyValues);
+        rowsByIdentity.set(identity, { recordKey, properties });
+        recordKeyByRowIndex.set(rowIndex, recordKey);
+        continue;
+      }
+      const target = rowsByIdentity.get(identity);
+      if (!target) {
+        skippedUnmatched += 1;
+        continue;
+      }
+      for (const [property, value] of Object.entries(values)) {
+        if (primaryKey.includes(property) || String(value ?? '') === '') continue;
+        target.properties[property] = value;
+      }
+    }
+    if (skippedBlankKeys) {
+      warnings.push(`实体「${object.key}」的 Sheet「${context.source.sheet}」有 ${skippedBlankKeys} 行主键为空，已跳过`);
+    }
+    if (skippedUnmatched) {
+      warnings.push(`实体「${object.key}」的扩展 Sheet「${context.source.sheet}」有 ${skippedUnmatched} 行未匹配主表实例，已跳过`);
+    }
+  }
+
+  const primaryContext = sourceContexts[0];
+  let diagnostic: GraphImportObjectDiagnostic | undefined;
+  if (!primaryContext.table.rows!.length) {
+    diagnostic = {
+      objectKey: object.key,
+      sheet: primary.sheet,
+      code: 'GRAPH_IMPORT_EMPTY_SHEET',
+      message: `实体「${object.key}」绑定的主 Sheet「${primary.sheet}」没有数据行`,
+    };
+  } else if (!primaryContext.columns.length) {
+    diagnostic = {
+      objectKey: object.key,
+      sheet: primary.sheet,
+      code: 'GRAPH_IMPORT_NO_MAPPED_COLUMNS',
+      message: `实体「${object.key}」在主 Sheet「${primary.sheet}」中没有可用的映射字段`,
+    };
+  } else if (!rowsByIdentity.size) {
+    diagnostic = {
+      objectKey: object.key,
+      sheet: primary.sheet,
+      code: 'GRAPH_IMPORT_NO_IMPORTABLE_ROWS',
+      message: `实体「${object.key}」在主 Sheet「${primary.sheet}」中没有主键完整的可导入数据`,
+    };
+  }
+  return {
+    warnings,
+    recordKeyByRowIndex,
+    diagnostic,
+    plan: {
+      objectKey: object.key,
+      label: object.label,
+      sheet: primary.sheet,
+      propertyNames,
+      propertyTypes,
+      rows: [...rowsByIdentity.values()],
+    },
+  };
+}
+
+function buildEntityPlan(
+  tables: DataDictTable[],
+  profilesBySheet: Map<string, GraphImportColumnProfile[]>,
+  object: GraphImportEntitySchema,
+): BuiltEntity {
+  if ('sources' in object && (object.sources?.length ?? 0) > 1) {
+    return buildMultiSourceEntityPlan(tables, profilesBySheet, object);
+  }
+  return buildSingleSourceEntityPlan(tables, profilesBySheet, object);
 }
 
 function relationPlan(

@@ -79,6 +79,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "upsert_rule",
     "upsert_operation",
     "bind_object_source",
+    "bind_object_sources",
     "discard_rejected_candidate_changes",
     "regroup_changes",
     "create_package_fusion_plan",
@@ -91,6 +92,10 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
+PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
+    "get_project_state", "list_documents", "read_document", "list_tables", "describe_table",
+    "set_material_directive", "read_file", "list_skill", "focus", "notify",
+})
 PHASE_ORDER = tuple(PHASE_LABELS)
 
 
@@ -106,6 +111,9 @@ class LiveRun:
     required_tools: set[str] = field(default_factory=set)
     attempted_tools: set[str] = field(default_factory=set)
     observed_tools: set[str] = field(default_factory=set)
+    required_material_directives: set[str] = field(default_factory=set)
+    observed_material_directives: set[str] = field(default_factory=set)
+    allowed_tools: frozenset[str] | None = None
     proof_retries: int = 0
     release_reentry_authorized: bool = False
     release_declined: bool = False
@@ -119,12 +127,28 @@ class LiveRun:
     validation_repair: CandidateValidationRepairState = field(default_factory=CandidateValidationRepairState)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     inflight_core_calls: set[asyncio.Task[Any]] = field(default_factory=set)
+    deferred_purpose_continuation: tuple[int, str, str] | None = None
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
     terminal_attempts = live.required_tools & FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL
     successful_results = live.required_tools - terminal_attempts
-    return (terminal_attempts - live.attempted_tools) | (successful_results - live.observed_tools)
+    missing = (terminal_attempts - live.attempted_tools) | (successful_results - live.observed_tools)
+    if live.required_material_directives - live.observed_material_directives:
+        missing.add("set_material_directive")
+    return missing
+
+
+def _missing_material_directives(live: LiveRun) -> set[str]:
+    return live.required_material_directives - live.observed_material_directives
+
+
+def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
+    return (
+        bool(live.required_material_directives)
+        and live.allowed_tools == PURPOSE_REVIEW_ALLOWED_TOOLS
+        and not _missing_required_tools(live)
+    )
 
 
 class _ReasoningEmitter:
@@ -367,6 +391,8 @@ class AgentService:
         baseline_revision: str = "",
         publish_user_message: bool = True,
         required_tools: set[str] | None = None,
+        required_material_directives: set[str] | None = None,
+        allowed_tools: frozenset[str] | None = None,
         release_reentry_authorized: bool | None = None,
         confirmation_required: bool = False,
     ) -> dict[str, Any]:
@@ -406,6 +432,8 @@ class AgentService:
             project_id=project_id,
             token=token,
             required_tools=intent_required_tools,
+            required_material_directives=set(required_material_directives or ()),
+            allowed_tools=allowed_tools,
             release_reentry_authorized=(
                 release_reentry_authorized
                 if release_reentry_authorized is not None
@@ -487,15 +515,26 @@ class AgentService:
             return {"accepted": True, "duplicate": True, "continued": False}
 
         parsed_events = [item for item in terminal_events if item.get("status") == "parsed"]
+        purpose_review_names = {
+            str(item.get("filename")) for item in parsed_events
+            if item.get("purposeReviewRequired") is True and str(item.get("filename") or "").strip()
+        }
         prompt = self._material_batch_prompt(terminal_events)
-        required_tools = {"analyze_material_impact"} if parsed_events else set()
-        if any(item.get("readingMode") == "full" for item in parsed_events):
-            required_tools.add("read_documents_fully")
+        if purpose_review_names:
+            required_tools = {"set_material_directive"}
+            allowed_tools = PURPOSE_REVIEW_ALLOWED_TOOLS
+        else:
+            required_tools = {"analyze_material_impact"} if parsed_events else set()
+            if any(item.get("readingMode") == "full" for item in parsed_events):
+                required_tools.add("read_documents_fully")
+            allowed_tools = None
         await self._continue_for_external_event(
             project_id=project_id,
             token=token,
             prompt=prompt,
             required_tools=required_tools,
+            required_material_directives=purpose_review_names,
+            allowed_tools=allowed_tools,
             event=aggregate,
         )
         self.store.mark_material_batch_continued(project_id, batch_id)
@@ -789,6 +828,20 @@ class AgentService:
             for item in parsed
         )
         full_read_names = [str(item.get("filename")) for item in parsed if item.get("readingMode") == "full"]
+        purpose_review_names = [
+            str(item.get("filename")) for item in parsed if item.get("purposeReviewRequired") is True
+        ]
+        if purpose_review_names:
+            return (
+                f"服务端资料批次已经全部结束：解析成功 {len(parsed)}/{len(events)}，失败 {len(failed)} 份。"
+                f"以下资料尚未确认用途：{purpose_review_names!r}。这是独立的用途预判轮。"
+                "逐份轻量预判用途：先使用资料清单中的文件名、类型和目录；普通文档只有判断依据不足时才按需读取开头片段，"
+                "表格只读取全部 Sheet 结构而不读取全量数据行。逐份提交明确的文件级用途，不能保留为“由助手决定”；"
+                "表格同时提交全部 Sheet 建议。完成所有建议后定位第一份待确认资料，立即结束本轮并等待用户逐份确认。"
+                "本轮禁止执行影响分析、全文精读、候选写入、目标确认或阶段推进；全文精读设置留到全部用途确认后执行。"
+                + ("说明失败资料的补救方式，且不要假装已经读到正文。" if failed else "")
+                + "内部返回字段、参数名和调用步骤只供运行时使用，绝不能向用户复述。"
+            )
         return (
             f"服务端资料批次已经全部结束：解析成功 {len(parsed)}/{len(events)}，失败 {len(failed)} 份。"
             f"逐份调用 analyze_material_impact 核对成功资料：{impact_calls or '没有可分析的成功资料'}。"
@@ -809,6 +862,8 @@ class AgentService:
         prompt: str,
         required_tools: set[str],
         event: dict[str, Any],
+        required_material_directives: set[str] | None = None,
+        allowed_tools: frozenset[str] | None = None,
         confirmation_required: bool = False,
     ) -> None:
         run = self.store.active_run(project_id)
@@ -819,6 +874,8 @@ class AgentService:
                 message=prompt,
                 publish_user_message=False,
                 required_tools=required_tools,
+                required_material_directives=required_material_directives,
+                allowed_tools=allowed_tools,
                 release_reentry_authorized=True,
                 confirmation_required=confirmation_required,
             )
@@ -840,6 +897,8 @@ class AgentService:
                 await self._resume(
                     run, token, {interaction.tool_call_id: answer},
                     required_tools=required_tools,
+                    required_material_directives=required_material_directives,
+                    allowed_tools=allowed_tools,
                     release_reentry_authorized=True,
                     confirmation_required=confirmation_required,
                 )
@@ -850,6 +909,8 @@ class AgentService:
                 run, token, {interaction.tool_call_id: answer},
                 restore_interaction=interaction,
                 required_tools=required_tools,
+                required_material_directives=required_material_directives,
+                allowed_tools=allowed_tools,
                 release_reentry_authorized=True,
                 confirmation_required=confirmation_required,
             )
@@ -858,6 +919,8 @@ class AgentService:
             await self._resume(
                 run, token, {}, steering=prompt,
                 required_tools=required_tools,
+                required_material_directives=required_material_directives,
+                allowed_tools=allowed_tools,
                 release_reentry_authorized=True,
                 confirmation_required=confirmation_required,
             )
@@ -866,6 +929,8 @@ class AgentService:
             await self._continue(
                 run, token, prompt,
                 required_tools=required_tools,
+                required_material_directives=required_material_directives,
+                allowed_tools=allowed_tools,
                 release_reentry_authorized=True,
                 confirmation_required=confirmation_required,
             )
@@ -877,6 +942,9 @@ class AgentService:
         live.token = token
         live.stable_read_cache.clear()
         live.required_tools.update(required_tools)
+        live.required_material_directives.update(required_material_directives or ())
+        if allowed_tools is not None:
+            live.allowed_tools = allowed_tools
         live.release_reentry_authorized = True
         live.confirmation_required = live.confirmation_required or confirmation_required
         await live.steering.put(prompt)
@@ -1051,7 +1119,14 @@ class AgentService:
             autonomous_seed=True,
         )
 
-    async def steer(self, *, project_id: str, token: str, text: str) -> dict[str, Any]:
+    async def steer(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        text: str,
+        purpose_review_completed: bool = False,
+    ) -> dict[str, Any]:
         _require_project_and_token(project_id, token)
         message = text.strip()
         if not message:
@@ -1101,6 +1176,20 @@ class AgentService:
         live = self._live.get(run.id)
         if live is None or execution not in {RUN_QUEUED, RUN_RUNNING}:
             raise AgentRuntimeError("RUN_NOT_STEERABLE", "当前运行暂时不能接收插话", status=409)
+        if purpose_review_completed and live.allowed_tools == PURPOSE_REVIEW_ALLOWED_TOOLS:
+            if live.deferred_purpose_continuation is None:
+                steering_id = self.store.queue_steering(project_id, run.id, message)
+                live.deferred_purpose_continuation = (steering_id, token, message)
+                self.events.publish(project_id, run.id, "message", {
+                    "role": "user",
+                    "blocks": [{"type": "text", "text": message}],
+                    "delivery": "after_purpose_review",
+                })
+            return {
+                "mode": "after_purpose_review",
+                "runId": run.id,
+                "delivery": "after_purpose_review",
+            }
         steering_id = self.store.queue_steering(project_id, run.id, message)
         live.token = token
         live.stable_read_cache.clear()
@@ -1224,6 +1313,13 @@ class AgentService:
         arguments: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
+        if name == "set_material_directive":
+            document = result.get("document") if isinstance(result.get("document"), dict) else {}
+            filename = str(document.get("filename") or arguments.get("filename") or "").strip()
+            if filename:
+                live.observed_material_directives.add(filename)
+            if result.get("requiresUserConfirmation") is True:
+                return
         if name not in {"set_material_directive", "read_documents_fully"}:
             return
         purposes: list[str] = []
@@ -1348,6 +1444,8 @@ class AgentService:
         steering: str = "",
         restore_interaction: InteractionRecord | None = None,
         required_tools: set[str] | None = None,
+        required_material_directives: set[str] | None = None,
+        allowed_tools: frozenset[str] | None = None,
         release_declined: bool = False,
         release_reentry_authorized: bool = False,
         confirmation_required: bool = False,
@@ -1377,6 +1475,8 @@ class AgentService:
             token=token,
             restore_interaction=restore_interaction,
             required_tools=set(required_tools or ()),
+            required_material_directives=set(required_material_directives or ()),
+            allowed_tools=allowed_tools,
             release_reentry_authorized=release_reentry_authorized,
             release_declined=release_declined,
             confirmation_required=confirmation_required,
@@ -1398,6 +1498,8 @@ class AgentService:
         prompt: str,
         *,
         required_tools: set[str] | None = None,
+        required_material_directives: set[str] | None = None,
+        allowed_tools: frozenset[str] | None = None,
         release_reentry_authorized: bool = False,
         confirmation_required: bool = False,
         autonomous_seed: bool = False,
@@ -1418,6 +1520,8 @@ class AgentService:
             project_id=run.project_id,
             token=token,
             required_tools=set(required_tools or ()),
+            required_material_directives=set(required_material_directives or ()),
+            allowed_tools=allowed_tools,
             release_reentry_authorized=release_reentry_authorized,
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
@@ -1530,6 +1634,7 @@ class AgentService:
                         live.run_id, call_id, name, arguments, result,
                     ),
                     stable_read_cache=live.stable_read_cache,
+                    allowed_tools=live.allowed_tools,
                     confirmation_required=live.confirmation_required,
                     release_declined=live.release_declined,
                     validation_repair=live.validation_repair,
@@ -1555,9 +1660,11 @@ class AgentService:
                     if live.proof_retries < 2:
                         live.proof_retries += 1
                         required = "、".join(sorted(missing_tools))
+                        missing_directives = sorted(_missing_material_directives(live))
                         current_query = (
                             f"服务端尚未观察到本轮必须执行的工具：{required}。"
-                            "不要声称已经运行、重试、完成或生成轮次；立即调用该工具，以真实返回为准继续。"
+                            + (f"尚未提交明确用途建议的资料：{missing_directives!r}。" if missing_directives else "")
+                            + "不要声称已经运行、重试、完成或生成轮次；立即调用该工具，以真实返回为准继续。"
                         )
                         continue
                     result = {
@@ -1565,6 +1672,10 @@ class AgentService:
                         "output": "助手没有完成这项明确要求，本轮已停止；已经确认的内容保持不变。",
                         "streamed": False,
                     }
+                if result.get("result_type") == "success" and _purpose_review_suggestions_complete(live):
+                    result = await self._ensure_visible_result(live, run, result)
+                    self._settle(live, run, result)
+                    return
                 if (
                     result.get("result_type") == "success"
                     and context.confirmation_claimed_in_text
@@ -1685,6 +1796,30 @@ class AgentService:
                 self.events.publish(run.project_id, run.id, "status", {"status": RUN_FAILED, "text": "本次处理未完成", "error": visible_error})
         finally:
             self._live.pop(run.id, None)
+            deferred = live.deferred_purpose_continuation
+            run_cancelled = self.store.require_run(run.id).status == RUN_CANCELLED
+            if deferred is not None and not self._shutting_down and not run_cancelled:
+                steering_id, token, message = deferred
+                try:
+                    await self.start_run(
+                        project_id=run.project_id,
+                        token=token,
+                        message=message,
+                        publish_user_message=False,
+                    )
+                    self.store.mark_steering_delivered(steering_id)
+                except Exception as error:  # noqa: BLE001
+                    logger.exception(
+                        "Could not start post-purpose-review run for project %s",
+                        run.project_id,
+                    )
+                    self.events.publish(run.project_id, run.id, "message", {
+                        "role": "assistant",
+                        "blocks": [{
+                            "type": "error",
+                            "text": "资料用途已经确认，但后续建模轮次未能启动，请从当前进展重试。",
+                        }],
+                    })
 
     def _made_autonomous_progress(self, project_id: str, after: int) -> bool:
         return any(

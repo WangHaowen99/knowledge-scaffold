@@ -123,6 +123,33 @@ export interface DataDictTable {
   cellRows?: DataDictCell[][];
 }
 
+export type MaterialPurpose = 'auto' | 'goal' | 'schema' | 'evidence' | 'term';
+export type MaterialSheetSemanticRole = 'schema' | 'evidence' | 'ignore';
+export type MaterialSheetImportDisposition = 'object' | 'relationship' | 'derived' | 'reference' | 'ignore';
+
+export interface MaterialSheetPurposeDecision {
+  sheet: string;
+  semanticRole: MaterialSheetSemanticRole;
+  importDisposition: MaterialSheetImportDisposition;
+  reason?: string;
+}
+
+export interface MaterialPurposeReview {
+  documentId: string;
+  projectId: string;
+  contentHash: string;
+  status: 'pending' | 'confirmed';
+  suggestedPurpose: MaterialPurpose;
+  sheetSuggestions: MaterialSheetPurposeDecision[];
+  suggestedBy: 'system' | 'agent' | 'user';
+  confirmedPurpose?: Exclude<MaterialPurpose, 'auto'>;
+  sheetDecisions: MaterialSheetPurposeDecision[];
+  confirmedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt?: string;
+}
+
 export interface DocumentRecord {
   id: string;
   projectId: string;
@@ -130,7 +157,7 @@ export interface DocumentRecord {
   revisionNo?: number;
   filename: string;
   kind: 'markdown' | 'text' | 'pdf' | 'word' | 'excel' | 'csv' | 'unknown';
-  purpose?: 'auto' | 'goal' | 'schema' | 'evidence' | 'term';
+  purpose?: MaterialPurpose;
   readingMode?: 'on_demand' | 'full';
   directiveRevision?: number;
   parseStatus: 'pending' | 'parsed' | 'failed';
@@ -326,11 +353,20 @@ export interface SpecRelation {
   note?: string;
   evidence?: string[];
 }
+export type TableSourceRole = 'primary' | 'extension';
+export interface TableSourceFieldBinding {
+  fieldKey: string;
+  sourceColumn: string;
+}
 export interface TableSourceRef {
   kind: 'table';
   documentId?: string;
   table: string;
   columns?: string[];
+  /** 多 Sheet 对象必须显式声明唯一主表，其余来源只能作为一对一扩展表。 */
+  role?: TableSourceRole;
+  /** 逐来源字段映射；多 Sheet 对象不使用 SpecField.sourceColumn 的单表兼容值。 */
+  fieldBindings?: TableSourceFieldBinding[];
 }
 export interface DocumentSourceAnchor {
   heading?: string;
