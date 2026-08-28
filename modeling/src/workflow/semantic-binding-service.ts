@@ -28,6 +28,12 @@ export interface SemanticBindingApplyResult {
   appliedFieldRefs: string[];
 }
 
+export interface SemanticBindingClearResult {
+  spec: PackageSpec;
+  clearedBindings: number;
+  clearedFieldRefs: number;
+}
+
 function cloneSpec(spec: PackageSpec): PackageSpec {
   return JSON.parse(JSON.stringify(spec)) as PackageSpec;
 }
@@ -162,5 +168,26 @@ export function applySemanticBindingSelection(
     spec,
     appliedBindings,
     appliedFieldRefs,
+  };
+}
+
+export function clearSemanticBindings(baseSpec: PackageSpec): SemanticBindingClearResult {
+  const spec = cloneSpec(baseSpec);
+  const clearedBindings = spec.valueBindings?.length ?? 0;
+  if (clearedBindings) delete spec.valueBindings;
+
+  let clearedFieldRefs = 0;
+  for (const object of spec.objects ?? []) {
+    for (const field of object.fields ?? []) {
+      if (!field.valueBindingRef) continue;
+      delete field.valueBindingRef;
+      clearedFieldRefs += 1;
+    }
+  }
+
+  return {
+    spec,
+    clearedBindings,
+    clearedFieldRefs,
   };
 }

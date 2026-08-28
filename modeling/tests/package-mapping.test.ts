@@ -12,6 +12,7 @@ import { renderPackage } from '../src/workflow/package-render.js';
 import { suggestSemanticBindings, suggestSemanticFieldRefs } from '../src/workflow/semantic-binding.js';
 import {
   applySemanticBindingSelection,
+  clearSemanticBindings,
   previewSemanticBindingCandidates,
 } from '../src/workflow/semantic-binding-service.js';
 import { validateTermTables } from '../src/workflow/term-table.js';
@@ -762,4 +763,33 @@ test('semantic binding：批量确认后写入 value_bindings 和字段引用', 
   assert.equal(applied.spec.objects[0].fields[0].valueBindingRef, suggestion.key);
   assert.equal(mappings.value_bindings[suggestion.key].resource, '机场中文代号');
   assert.equal(mappings.objects.airport.fields.ARP_CD.value_binding_ref, suggestion.key);
+});
+
+test('semantic binding：清空已确认 binding 时同步清除字段引用', () => {
+  const spec: PackageSpec = {
+    id: 'term-clear-demo', name: 'term clear demo', description: 'term clear demo',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
+    valueBindings: [
+      { key: 'item-code', providerAlias: 'data', resource: 'item_terms', valueField: 'ITEM_CODE', semanticField: 'ITEM_NAME' },
+    ],
+    objects: [{
+      key: 'item', title: '物料', description: '物料',
+      sourceTable: 'item', primaryKey: ['ITEM_CODE'],
+      fields: [
+        { key: 'ITEM_CODE', sourceColumn: 'ITEM_CODE', valueBindingRef: 'item-code' },
+        { key: 'CATEGORY_CODE', sourceColumn: 'CATEGORY_CODE' },
+      ],
+    }],
+    operations: [],
+  };
+
+  const cleared = clearSemanticBindings(spec);
+  const mappings = JSON.parse(renderPackage(cleared.spec)['mappings/object-data-mappings.json']);
+
+  assert.equal(cleared.clearedBindings, 1);
+  assert.equal(cleared.clearedFieldRefs, 1);
+  assert.equal(cleared.spec.valueBindings, undefined);
+  assert.equal(cleared.spec.objects[0].fields[0].valueBindingRef, undefined);
+  assert.equal(mappings.value_bindings, undefined);
+  assert.equal(mappings.objects.item.fields.ITEM_CODE.value_binding_ref, undefined);
 });
