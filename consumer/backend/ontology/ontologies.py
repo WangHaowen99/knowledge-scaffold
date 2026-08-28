@@ -22,6 +22,7 @@ logger = logging.getLogger("ontology.ontologies")
 SELECTED_ONTOLOGY_CONTEXT_START = "<Selected-Ontology>"
 SELECTED_ONTOLOGY_CONTEXT_END = "</Selected-Ontology>"
 ONTOLOGY_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ONTOLOGY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ONTOLOGY_SHARED_MANIFEST_NAME = "manifest.yaml"
 ONTOLOGY_VERSIONS_DIR_NAME = "versions"
 SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS = frozenset({"0.1", "0.2"})
@@ -140,6 +141,13 @@ class OntologyLoader:
         ):
             logger.error(
                 "Ontology manifest must declare kind=ontology-package and a supported schema version: %s",
+                manifest_path,
+            )
+            return None
+        if not is_valid_ontology_version(selected_version) or selected_version not in versions:
+            logger.error(
+                "Ontology version '%s' is not declared by manifest: %s",
+                selected_version,
                 manifest_path,
             )
             return None
@@ -689,12 +697,20 @@ def get_runtime_ontology_manifest(
     workspace_id: Optional[str] = None,
 ) -> Optional[OntologyManifest]:
     normalized_id = str(ontology_id or "").strip()
-    if not normalized_id:
+    if not ONTOLOGY_ID_PATTERN.fullmatch(normalized_id):
         return None
-    ontology_dir = get_workspace_ontologies_root(workspace_id) / normalized_id
+    ontologies_root = get_workspace_ontologies_root(workspace_id).resolve()
+    ontology_dir = (ontologies_root / normalized_id).resolve()
+    try:
+        ontology_dir.relative_to(ontologies_root)
+    except ValueError:
+        return None
     if not ontology_dir.is_dir():
         return None
-    return OntologyLoader.load_ontology(ontology_dir, version=version)
+    ontology = OntologyLoader.load_ontology(ontology_dir, version=version)
+    if ontology is None or ontology.id != normalized_id:
+        return None
+    return ontology
 
 
 def get_sole_enabled_ontology_id(

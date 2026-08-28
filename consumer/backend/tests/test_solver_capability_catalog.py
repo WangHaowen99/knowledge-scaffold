@@ -467,7 +467,7 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
     v02_manifest = _write_solver_package(source2, version="2.0.0")
     ontology_dir = tmp_path / "installed"
 
-    version1 = routes._install_ontology_version_package(
+    version1, _revision1 = routes._install_ontology_version_package(
         source_root=source1,
         ontology_dir=ontology_dir,
         ontology_id=v01_manifest["id"],
@@ -475,8 +475,9 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
         ontology_description=v01_manifest["description"],
         target_version="1.0.0",
         existed=False,
+        workspace_id="default",
     )
-    version2 = routes._install_ontology_version_package(
+    version2, _revision2 = routes._install_ontology_version_package(
         source_root=source2,
         ontology_dir=ontology_dir,
         ontology_id=v02_manifest["id"],
@@ -485,6 +486,7 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
         ontology_description=v02_manifest["description"],
         target_version="2.0.0",
         existed=True,
+        workspace_id="default",
     )
     assert (version1 / "manifest.yaml").is_file()
     assert (version2 / "manifest.yaml").is_file()
@@ -563,6 +565,7 @@ def test_unknown_schema_is_rejected_by_persistent_version_paths(tmp_path, monkey
             ontology_description=manifest["description"],
             target_version="1.0.0",
             existed=False,
+            workspace_id="default",
         )
 # solver-chunk-27
 
@@ -953,6 +956,7 @@ Invalid runtime-bound operation.
             ontology_description=manifest["description"],
             target_version="1.0.0",
             existed=False,
+            workspace_id="default",
         )
     assert not installed.exists()
 

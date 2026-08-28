@@ -33,6 +33,12 @@ DETERMINISTIC_LOCK_VERSION = 2
 _SUPPORTED_DETERMINISTIC_LOCK_VERSIONS = frozenset({1, DETERMINISTIC_LOCK_VERSION})
 MAX_SCHEMA_BYTES = 256 * 1024
 _EXECUTION_FIELDS = frozenset({"type", "parser", "input_schema", "output_schema"})
+_DETERMINISTIC_EXECUTION_OWNER = "deterministic"
+_SOLVER_EXECUTION_OWNER = "solver_workflow"
+_VALIDATION_EXECUTION_OWNER = "validation_workflow"
+_PROTECTED_EXECUTION_OWNERS = frozenset(
+    {_DETERMINISTIC_EXECUTION_OWNER, _VALIDATION_EXECUTION_OWNER}
+)
 _DATA_ACCESS_VALUES = frozenset({"none", "workspace_provider"})
 _FRONTMATTER_END = re.compile(r"\r?\n---(?:\r?\n|$)")
 _NONDETERMINISTIC_CALL_PREFIXES = (
@@ -219,6 +225,7 @@ def protected_operation_keys(ontology_dir: Path) -> frozenset[str]:
     result: set[str] = set()
     all_operation_keys: set[str] = set()
     root = Path(ontology_dir)
+    package_schema_version = _execution_package_schema_version(root)
     operations_dir = root / "operations"
     if operations_dir.is_dir():
         for path in _markdown_files(operations_dir):
@@ -234,10 +241,17 @@ def protected_operation_keys(ontology_dir: Path) -> frozenset[str]:
             if key:
                 all_operation_keys.add(key)
             all_operation_keys.update(aliases)
-            # Declaration presence is the opt-in boundary.  Classification must
-            # fail closed before strict validation so a scalar, list, or unknown
-            # type cannot reopen the legacy operation/handler execution paths.
-            if "execution" not in frontmatter:
+            try:
+                execution_owner = _execution_declaration_owner(
+                    path,
+                    frontmatter,
+                    package_schema_version=package_schema_version,
+                )
+            except DeterministicPackageError:
+                # Invalid declarations remain protected until strict validation
+                # can report the stable package error.
+                execution_owner = _DETERMINISTIC_EXECUTION_OWNER
+            if execution_owner not in _PROTECTED_EXECUTION_OWNERS:
                 continue
             if key:
                 result.add(key)
@@ -274,6 +288,7 @@ def is_protected_operation_descriptor(
     """Classify the resolved operation descriptor instead of its lookup token."""
     root = Path(ontology_dir).resolve()
     path = Path(descriptor_path).resolve()
+    package_schema_version = _execution_package_schema_version(root)
     try:
         path.relative_to((root / "operations").resolve())
     except ValueError:
@@ -285,7 +300,15 @@ def is_protected_operation_descriptor(
         if _has_suspected_execution_declaration(path):
             return True
         frontmatter = {}
-    if "execution" in frontmatter:
+    try:
+        execution_owner = _execution_declaration_owner(
+            path,
+            frontmatter,
+            package_schema_version=package_schema_version,
+        )
+    except DeterministicPackageError:
+        return True
+    if execution_owner in _PROTECTED_EXECUTION_OWNERS:
         return True
     tokens = {
         str(frontmatter.get("key") or path.stem).strip(),
@@ -746,12 +769,13 @@ def _validate_deterministic_operations(
     ontology_dir: Path,
 ) -> tuple[DeterministicOperationSpec, ...]:
     root = Path(ontology_dir).resolve()
+    package_schema_version = _execution_package_schema_version(root)
     operations_dir = root / "operations"
     scripts_dir = root / "scripts"
     if not operations_dir.is_dir():
         return ()
 
-    operation_records: list[tuple[Path, dict[str, Any]]] = []
+    operation_records: list[tuple[Path, dict[str, Any], Optional[str]]] = []
     all_tokens: dict[str, list[str]] = {}
     operation_key_sources: dict[str, list[Path]] = {}
     deterministic_declared_keys: set[str] = set()
@@ -760,9 +784,14 @@ def _validate_deterministic_operations(
         operation_key = str(frontmatter.get("key") or operation_path.stem).strip()
         if not operation_key:
             continue
-        operation_records.append((operation_path, frontmatter))
+        execution_owner = _execution_declaration_owner(
+            operation_path,
+            frontmatter,
+            package_schema_version=package_schema_version,
+        )
+        operation_records.append((operation_path, frontmatter, execution_owner))
         operation_key_sources.setdefault(operation_key, []).append(operation_path)
-        if "execution" in frontmatter:
+        if execution_owner == _DETERMINISTIC_EXECUTION_OWNER:
             deterministic_declared_keys.add(operation_key)
         for token in (operation_key, *_aliases(frontmatter.get("aliases"), strict=False)):
             normalized = normalize_operation_token(token)
@@ -796,8 +825,8 @@ def _validate_deterministic_operations(
             script_records.append((descriptor_path, _read_frontmatter_lenient(descriptor_path)))
 
     specs: list[DeterministicOperationSpec] = []
-    for operation_path, frontmatter in operation_records:
-        if "execution" not in frontmatter:
+    for operation_path, frontmatter, execution_owner in operation_records:
+        if execution_owner != _DETERMINISTIC_EXECUTION_OWNER:
             continue
         execution = frontmatter.get("execution")
         if not isinstance(execution, Mapping):
@@ -1405,6 +1434,63 @@ def _read_optional_execution_frontmatter(path: Path) -> dict[str, Any]:
         if _has_suspected_execution_declaration(path):
             raise
         return {}
+
+
+def _execution_declaration_owner(
+    path: Path,
+    frontmatter: Mapping[str, Any],
+    *,
+    package_schema_version: Optional[str],
+) -> Optional[str]:
+    if "execution" not in frontmatter:
+        return None
+    execution = frontmatter.get("execution")
+    if not isinstance(execution, Mapping):
+        raise DeterministicPackageError(
+            "execution_declaration_invalid",
+            "Operation '{}' execution must be a mapping.".format(path.name),
+        )
+
+    has_type = "type" in execution
+    has_mode = "mode" in execution
+    if has_type and has_mode:
+        raise DeterministicPackageError(
+            "execution_declaration_invalid",
+            "Operation '{}' execution has conflicting type and mode discriminators.".format(
+                path.name
+            ),
+        )
+    if has_type and str(execution.get("type") or "").strip().casefold() == "deterministic":
+        return _DETERMINISTIC_EXECUTION_OWNER
+    execution_mode = str(execution.get("mode") or "").strip() if has_mode else ""
+    if execution_mode == "solver_workflow":
+        if package_schema_version != "0.2":
+            raise DeterministicPackageError(
+                "execution_declaration_invalid",
+                "Operation '{}' solver_workflow requires package schema_version 0.2.".format(
+                    path.name
+                ),
+            )
+        return _SOLVER_EXECUTION_OWNER
+    if execution_mode == "validation_workflow":
+        return _VALIDATION_EXECUTION_OWNER
+    raise DeterministicPackageError(
+        "execution_declaration_invalid",
+        "Operation '{}' execution discriminator is unsupported.".format(path.name),
+    )
+
+
+def _execution_package_schema_version(root: Path) -> Optional[str]:
+    manifest_path = Path(root) / "manifest.yaml"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        return None
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    if not isinstance(manifest, Mapping):
+        return None
+    return str(manifest.get("schema_version") or "").strip() or None
 
 
 def _has_suspected_execution_declaration(path: Path) -> bool:

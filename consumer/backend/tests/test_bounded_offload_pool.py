@@ -185,7 +185,7 @@ def test_offload_pool_propagates_context_and_run_observability(monkeypatch):
         try:
             assert await pool.run(
                 marker.get,
-                run_id="run-observed",
+                profile_run_id="run-observed",
             ) == "request-context"
         finally:
             marker.reset(context_reset_handle)
@@ -204,5 +204,28 @@ def test_offload_pool_propagates_context_and_run_observability(monkeypatch):
         assert pool.metrics()["closed"] is True
         with pytest.raises(OffloadPoolClosed):
             await pool.run(lambda: "rejected")
+
+    asyncio.run(scenario())
+
+
+def test_run_forwards_business_run_id_keyword():
+    async def scenario():
+        pool = BoundedOffloadPool(
+            name="business-run-id",
+            max_workers=1,
+            max_pending=1,
+            capacity_wait_seconds=0.1,
+            operation_timeout_seconds=1,
+        )
+
+        def operation(*, run_id: str) -> str:
+            return run_id
+
+        try:
+            assert await pool.run(operation, run_id="business-run") == "business-run"
+        finally:
+            assert await pool.close(
+                deadline=asyncio.get_running_loop().time() + 0.5
+            )
 
     asyncio.run(scenario())

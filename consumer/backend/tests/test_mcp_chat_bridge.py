@@ -609,6 +609,8 @@ def test_workflow_bridge_rebinds_and_revalidates_token_ontology(
         manager.context.arguments["selected_ontology_id"]
         == "knowledge_package_demo"
     )
+    assert manager.context.arguments["selected_ontology_version"] == "1.0.0"
+    assert manager.context.arguments["selected_version"] == "1.0.0"
 
 
 def test_workflow_bridge_rejects_context_conflicting_with_token_ontology(tmp_path):
@@ -733,6 +735,55 @@ def test_workflow_bridge_reuses_locked_session_ontology(
         "selected_ontology_id": "knowledge_package_b",
         "selected_ontology_version": "2.1.0",
         "selected_version": "2.1.0",
+    }
+
+
+def test_workflow_bridge_bound_token_preserves_locked_session_version(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    monkeypatch.setattr(
+        "api.routes.get_orchestrator",
+        lambda: _OntologyOrchestrator(
+            session_metadata={
+                "selected_ontology_id": "knowledge_package_demo",
+                "selected_ontology_version": "1.0.0",
+            }
+        ),
+    )
+
+    def validate_available(**kwargs):
+        captured.update(kwargs)
+        return kwargs.get("ontology_version") or "2.0.0"
+
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.validate_runtime_ontology_availability",
+        validate_available,
+    )
+    manager = _Manager()
+
+    body, status_code = _execute(
+        tmp_path,
+        manager,
+        scope=_scope(ontology_id="knowledge_package_demo"),
+        payload={
+            "request": "synthetic question",
+            "session_id": "session_demo_locked_bound",
+        },
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert captured == {
+        "workspace_id": "workspace_demo",
+        "ontology_id": "knowledge_package_demo",
+        "ontology_version": "1.0.0",
+    }
+    assert manager.context.arguments == {
+        "selected_ontology_id": "knowledge_package_demo",
+        "selected_ontology_version": "1.0.0",
+        "selected_version": "1.0.0",
     }
 
 

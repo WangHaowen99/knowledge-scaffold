@@ -82,7 +82,7 @@ class BoundedOffloadPool:
         *args: Any,
         timeout: float | None = None,
         capacity_timeout: float | None = None,
-        run_id: str | None = None,
+        profile_run_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
         with self._state_lock:
@@ -106,7 +106,9 @@ class BoundedOffloadPool:
 
         loop = asyncio.get_running_loop()
         context = copy_context()
-        profile_current_thread = _resolve_thread_profiler() if run_id else None
+        profile_current_thread = (
+            _resolve_thread_profiler() if profile_run_id else None
+        )
         pending_released = threading.Event()
         started = threading.Event()
 
@@ -119,7 +121,7 @@ class BoundedOffloadPool:
         def call() -> Any:
             if profile_current_thread is None:
                 return function(*args, **kwargs)
-            with profile_current_thread(run_id):
+            with profile_current_thread(profile_run_id):
                 return function(*args, **kwargs)
 
         def invoke() -> Any:

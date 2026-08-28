@@ -213,11 +213,31 @@ async def execute_mcp_chat_workflow_async(
                         merged_arguments[key] = value
                 arguments = merged_arguments
         if scope.ontology_id and selected_ontology_id:
-            await short_io.run(
-                validate_runtime_ontology_availability,
-                workspace_id=scope.workspace_id,
-                ontology_id=selected_ontology_id,
-            )
+            requested_ontology_version = str(
+                context_values.get("selected_ontology_version")
+                or context_values.get("selected_version")
+                or ""
+            ).strip()
+            selected_ontology_version = str(
+                await short_io.run(
+                    validate_runtime_ontology_availability,
+                    workspace_id=scope.workspace_id,
+                    ontology_id=selected_ontology_id,
+                    ontology_version=requested_ontology_version or None,
+                )
+                or ""
+            ).strip()
+            if selected_ontology_version:
+                context_values["selected_ontology_version"] = (
+                    selected_ontology_version
+                )
+                context_values["selected_version"] = selected_ontology_version
+                merged_arguments = dict(arguments or {})
+                merged_arguments["selected_ontology_version"] = (
+                    selected_ontology_version
+                )
+                merged_arguments["selected_version"] = selected_ontology_version
+                arguments = merged_arguments
     except _MCPOntologySelectionRequired as exc:
         return _workflow_error(
             "MCP_ONTOLOGY_SELECTION_REQUIRED",
@@ -796,9 +816,6 @@ def _resolve_mcp_ontology_context(
     context: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     resolved = dict(context or {})
-    if str(resolved.get("selected_ontology_id") or "").strip():
-        return resolved
-
     locked = _locked_session_ontology_context(
         orchestrator,
         username=scope.username,
@@ -806,7 +823,19 @@ def _resolve_mcp_ontology_context(
         session_id=session_id,
     )
     if locked:
+        requested_id = str(resolved.get("selected_ontology_id") or "").strip()
+        locked_id = str(locked.get("selected_ontology_id") or "").strip()
+        if requested_id and requested_id != locked_id:
+            raise MCPOntologyBindingError(
+                "MCP_ONTOLOGY_SCOPE_MISMATCH",
+                "MCP chat session ontology does not match the requested ontology.",
+                status_code=403,
+                error_type="auth_error",
+            )
         resolved.update(locked)
+        return resolved
+
+    if str(resolved.get("selected_ontology_id") or "").strip():
         return resolved
 
     registry = get_ontology_registry(workspace_id=scope.workspace_id)

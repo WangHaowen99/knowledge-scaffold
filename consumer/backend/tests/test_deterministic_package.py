@@ -88,6 +88,45 @@ def _write_package(root, *, execution=True, data_access="none", aliases=None):
     )
 
 
+def _write_solver_only_package(root, *, schema_version="0.2"):
+    (root / "operations").mkdir(parents=True)
+    (root / "manifest.yaml").write_text(
+        'schema_version: "{}"\n'.format(schema_version),
+        encoding="utf-8",
+    )
+    (root / "operations" / "query.md").write_text(
+        "---\n"
+        "resource: operation\n"
+        "key: query\n"
+        "aliases:\n"
+        "  - Query Solver\n"
+        "execution:\n"
+        "  mode: solver_workflow\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+
+def _write_validation_only_package(root):
+    (root / "operations").mkdir(parents=True)
+    (root / "manifest.yaml").write_text(
+        'schema_version: "0.1"\n',
+        encoding="utf-8",
+    )
+    (root / "operations" / "validate-query.md").write_text(
+        "---\n"
+        "resource: operation\n"
+        "key: validate_query\n"
+        "aliases:\n"
+        "  - Validate Query\n"
+        "execution:\n"
+        "  mode: validation_workflow\n"
+        "  validates_operation: query\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+
 def test_package_without_execution_keeps_legacy_catalog_and_has_no_lock(tmp_path):
     _write_package(tmp_path, execution=False)
 
@@ -108,6 +147,58 @@ def test_package_without_execution_keeps_legacy_catalog_and_has_no_lock(tmp_path
             ],
         }
     ]
+
+
+def test_solver_workflow_does_not_create_deterministic_specs(tmp_path):
+    _write_solver_only_package(tmp_path)
+
+    assert validate_and_lock_deterministic_operations(tmp_path) == ()
+    assert load_deterministic_operation_specs(tmp_path, require_lock=False) == ()
+    assert not (tmp_path / DETERMINISTIC_LOCK_NAME).exists()
+
+
+def test_solver_workflow_operation_keys_are_not_deterministic_protected(tmp_path):
+    _write_solver_only_package(tmp_path)
+
+    assert protected_operation_keys(tmp_path) == frozenset()
+
+
+def test_validation_workflow_skips_deterministic_specs_but_stays_protected(tmp_path):
+    _write_validation_only_package(tmp_path)
+
+    assert validate_and_lock_deterministic_operations(tmp_path) == ()
+    assert load_deterministic_operation_specs(tmp_path, require_lock=False) == ()
+    assert not (tmp_path / DETERMINISTIC_LOCK_NAME).exists()
+    assert protected_operation_keys(tmp_path) == frozenset(
+        {"validate_query", "Validate Query"}
+    )
+
+
+@pytest.mark.parametrize(
+    "manifest_text",
+    (
+        'schema_version: "0.1"\n',
+        None,
+        "schema_version: [\n",
+    ),
+    ids=("v01", "missing", "malformed"),
+)
+def test_solver_workflow_requires_readable_v02_package_manifest(
+    tmp_path,
+    manifest_text,
+):
+    _write_solver_only_package(tmp_path)
+    manifest_path = tmp_path / "manifest.yaml"
+    if manifest_text is None:
+        manifest_path.unlink()
+    else:
+        manifest_path.write_text(manifest_text, encoding="utf-8")
+
+    with pytest.raises(DeterministicPackageError) as exc:
+        load_deterministic_operation_specs(tmp_path, require_lock=False)
+
+    assert exc.value.code == "execution_declaration_invalid"
+    assert protected_operation_keys(tmp_path) == frozenset({"query", "Query Solver"})
 
 
 def test_valid_deterministic_package_generates_stable_lock_and_hides_handler(tmp_path):
@@ -1058,7 +1149,7 @@ def test_new_version_install_regenerates_lock_for_evolved_snapshot(tmp_path):
     )
 
     ontology_dir = tmp_path / "ontologies" / "demo"
-    installed = _install_ontology_version_package(
+    installed, _mutation_revision = _install_ontology_version_package(
         source_root=source,
         ontology_dir=ontology_dir,
         ontology_id="demo",
@@ -1066,6 +1157,7 @@ def test_new_version_install_regenerates_lock_for_evolved_snapshot(tmp_path):
         ontology_description="",
         target_version="2.0.0",
         existed=False,
+        workspace_id="default",
     )
 
     installed_specs = load_deterministic_operation_specs(
