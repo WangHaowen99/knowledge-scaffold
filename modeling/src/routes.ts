@@ -212,6 +212,7 @@ import {
   previewSemanticBindingCandidates,
 } from './workflow/semantic-binding-service.js';
 import { validateTermTables } from './workflow/term-table.js';
+import { getProjectPackageDataSourceSelection } from './workflow/package-data-source-selection.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
   `semantic_binding_ignored:${projectId}:${revision}`;
@@ -234,6 +235,12 @@ function semanticBindingPreview(projectId: string, revision: string, spec: any, 
     bindingCount: 0,
     fieldRefCount: 0,
   };
+}
+
+function validateProjectTermTables(projectId: string, tables: DataDictTable[]): void {
+  validateTermTables(tables, {
+    dataSourceType: getProjectPackageDataSourceSelection(projectId).dataSourceType,
+  });
 }
 
 export interface RegisterRoutesOptions {
@@ -455,7 +462,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     }
     if (!parsed.error && pending.purpose === 'term') {
       try {
-        validateTermTables(parsed.tables ?? []);
+        validateProjectTermTables(pending.projectId, parsed.tables ?? []);
       } catch (error) {
         parsed = { error: error instanceof Error ? error.message : String(error) };
       }
@@ -922,7 +929,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           try {
             const parsed = await parseDocumentIsolated(kind, buffer, filename);
             if (parsed.error) throw new Error(parsed.error);
-            validateTermTables(parsed.tables ?? []);
+            validateProjectTermTables(p.id, parsed.tables ?? []);
           } catch (error) {
             return reply.code(400).send({ error: error instanceof Error ? error.message : '术语表格式不正确' });
           }
@@ -986,7 +993,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         if (purpose === 'term' && !['excel', 'csv'].includes(document.kind)) {
           return reply.code(400).send({ error: '只有 Excel 或 CSV 表格可以指定为术语表' });
         }
-        if (purpose === 'term') validateTermTables(document.tables ?? []);
+        if (purpose === 'term') validateProjectTermTables(project.id, document.tables ?? []);
         const expectedDirectiveRevision = Number((req.body as any)?.expectedDirectiveRevision);
         if (!Number.isSafeInteger(expectedDirectiveRevision) || expectedDirectiveRevision < 0) {
           return reply.code(400).send({ error: '缺少有效的资料设置版本，请刷新后重试' });
