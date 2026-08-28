@@ -561,6 +561,15 @@ test('semantic binding：术语表校验跳过空值并阻止非法 sheet 与一
   ]), /对应多个 semantic/);
 });
 
+test('semantic binding：Neo4j 数据源下术语表字段名必须符合属性名格式', () => {
+  const termTable = dataTable('status_terms', ['STATUS_CODE', 'STATUS_NAME', '别名/禁用写法'], [
+    { STATUS_CODE: 'A', STATUS_NAME: '启用', '别名/禁用写法': '有效' },
+  ], 'term');
+
+  assert.throws(() => validateTermTables([termTable], { dataSourceType: 'neo4j' }), /不能作为 Neo4j 属性名/);
+  assert.doesNotThrow(() => validateTermTables([termTable], { dataSourceType: 'nl2sql' }));
+});
+
 test('semantic binding：同一资源表多组 code/name 按通用字段词干配对', () => {
   const spec: PackageSpec = {
     id: 'entity-demo', name: 'entity demo', description: 'entity demo',
