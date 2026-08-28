@@ -442,6 +442,18 @@ def test_mindsdb_chunk_events_preserve_pre_refactor_branch_priority_and_content(
             [("final", "查询成功，未匹配到数据。")],
         ),
         (
+            {"type": "data", "content": "", "is_task_complete": True},
+            [("final", "查询成功，未匹配到数据。")],
+        ),
+        (
+            {"output": "final answer", "is_task_complete": True},
+            [("final", "final answer")],
+        ),
+        (
+            {"output": "", "is_task_complete": True},
+            [("done", "查询流程结束")],
+        ),
+        (
             {"output": "", "content": "content is not output"},
             [],
         ),
