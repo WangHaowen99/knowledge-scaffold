@@ -517,18 +517,6 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
         )
         return [{"type": "start", "content": content or "开始执行本体探索"}]
 
-    if chunk_type in {"end", "done"} or chunk.get("is_task_complete") is True:
-        return [{"type": "done", "content": "查询流程结束"}]
-
-    if chunk_type == "sql":
-        return []
-
-    if chunk_type == "context":
-        context = _collect_chunk_text(chunk)
-        if not context or _should_skip_context_chunk(context):
-            return []
-        return [{"type": "intermediate", "content": context}]
-
     if chunk_type == "data":
         # MindsDB 2026.7 emits the final Agent answer in ``text`` while older
         # versions used ``content``. Accept both shapes so a successful remote
@@ -544,9 +532,23 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
         output = str(chunk.get("output") or "").strip() or _collect_messages_text(
             chunk.get("messages")
         )
-        if not output:
+        if output:
+            return [{"type": "final", "content": _extract_final_content(output)}]
+
+    if chunk_type in {"end", "done"} or chunk.get("is_task_complete") is True:
+        return [{"type": "done", "content": "查询流程结束"}]
+
+    if "output" in chunk:
+        return []
+
+    if chunk_type == "sql":
+        return []
+
+    if chunk_type == "context":
+        context = _collect_chunk_text(chunk)
+        if not context or _should_skip_context_chunk(context):
             return []
-        return [{"type": "final", "content": _extract_final_content(output)}]
+        return [{"type": "intermediate", "content": context}]
 
     actions = chunk.get("actions")
     if isinstance(actions, list):
