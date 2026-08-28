@@ -214,6 +214,61 @@ def test_selected_ontology_stamps_first_and_locked_turns(
     ]
 
 
+def test_requested_ontology_version_skips_active_registry_resolution(
+    tmp_path,
+    monkeypatch,
+):
+    _write_ontology_manifest()
+
+    def fail_registry_lookup(**_kwargs):
+        raise AssertionError("an explicit ontology version must not rescan active state")
+
+    monkeypatch.setattr(
+        "ontology.ontologies.get_ontology_registry",
+        fail_registry_lookup,
+    )
+    _orchestrator, adapter = _services(tmp_path)
+    prepared = _prepare_and_finalize(
+        adapter,
+        _context(
+            run_id="run-explicit-version",
+            session_id="session-explicit-version",
+            turn_id=1,
+            arguments={
+                "selected_ontology_id": ONTOLOGY_ID,
+                "selected_ontology_version": ACTIVE_VERSION,
+            },
+        ),
+    )
+
+    assert prepared.arguments["selected_ontology_id"] == ONTOLOGY_ID
+    assert prepared.arguments["selected_ontology_version"] == ACTIVE_VERSION
+
+
+def test_requested_ontology_version_rejects_undeclared_installed_revision(
+    tmp_path,
+):
+    _write_ontology_manifest()
+    ontology_dir = get_workspace_ontologies_root(WORKSPACE_ID) / ONTOLOGY_ID
+    residual_version = ontology_dir / "versions" / "0.9.0"
+    residual_version.mkdir(parents=True)
+
+    _orchestrator, adapter = _services(tmp_path)
+    with pytest.raises(ValueError, match="Invalid selected ontology version"):
+        _prepare_and_finalize(
+            adapter,
+            _context(
+                run_id="run-undeclared-version",
+                session_id="session-undeclared-version",
+                turn_id=1,
+                arguments={
+                    "selected_ontology_id": ONTOLOGY_ID,
+                    "selected_ontology_version": "0.9.0",
+                },
+            ),
+        )
+
+
 def test_tool_loaded_ontology_stamps_version_at_finalize(tmp_path):
     _write_ontology_manifest()
     read_documents = merge_read_documents_registry(

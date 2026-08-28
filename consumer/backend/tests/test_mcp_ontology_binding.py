@@ -103,6 +103,32 @@ def test_runtime_rejects_disabled_bound_package(monkeypatch):
     assert exc_info.value.code == "MCP_ONTOLOGY_UNAVAILABLE"
 
 
+def test_runtime_validates_requested_version_instead_of_current_active(monkeypatch):
+    ontology = _ontology()
+    ontology.active_version = "2.0.0"
+    ontology.versions = ["1.0.0", "2.0.0"]
+    loaded_versions = []
+    monkeypatch.setattr(
+        "ontology.ontologies.get_ontology_registry",
+        lambda **_kwargs: SimpleNamespace(get_ontology=lambda _ontology_id: ontology),
+    )
+    monkeypatch.setattr(
+        "ontology.ontologies.get_runtime_ontology_manifest",
+        lambda _ontology_id, *, version, **_kwargs: (
+            loaded_versions.append(version) or ontology
+        ),
+    )
+
+    selected = validate_runtime_ontology_availability(
+        workspace_id="workspace_demo",
+        ontology_id="knowledge_package_demo",
+        ontology_version="1.0.0",
+    )
+
+    assert selected == "1.0.0"
+    assert loaded_versions == ["1.0.0"]
+
+
 def test_effective_ontology_resolution_preserves_legacy_and_rejects_conflicts():
     assert resolve_effective_ontology_id(
         token_ontology_id="knowledge_package_demo",

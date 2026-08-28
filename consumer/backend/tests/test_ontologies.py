@@ -220,6 +220,86 @@ def test_runtime_loader_rejects_legacy_manifest(tmp_path):
     assert OntologyLoader.load_ontology(ontology_dir) is None
 
 
+def test_runtime_loader_rejects_installed_version_missing_from_root_manifest(
+    tmp_path,
+):
+    from ontology.ontologies import OntologyLoader
+
+    ontology_dir = tmp_path / "versioned"
+    for version in ("1.0.0", "2.0.0"):
+        version_dir = ontology_dir / "versions" / version
+        version_dir.mkdir(parents=True)
+        (version_dir / "manifest.yaml").write_text(
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: versioned\n"
+            "name: Versioned\n"
+            "description: Versioned package\n"
+            f"version: {version}\n"
+            "language: zh-CN\n",
+            encoding="utf-8",
+        )
+    (ontology_dir / "manifest.yaml").write_text(
+        "kind: ontology-package\n"
+        "schema_version: 0.1\n"
+        "id: versioned\n"
+        "name: Versioned\n"
+        "description: Versioned package\n"
+        "version: 2.0.0\n"
+        "active_version: 2.0.0\n"
+        "versions: [2.0.0]\n"
+        "language: zh-CN\n",
+        encoding="utf-8",
+    )
+
+    assert OntologyLoader.load_ontology(ontology_dir, version="2.0.0") is not None
+    assert OntologyLoader.load_ontology(ontology_dir, version="1.0.0") is None
+
+
+def test_runtime_manifest_lookup_rejects_unsafe_or_mismatched_ontology_id(
+    tmp_path,
+    monkeypatch,
+):
+    from ontology.ontologies import get_runtime_ontology_manifest
+
+    workspace_paths = _create_demo_workspace(
+        tmp_path,
+        monkeypatch,
+        workspace_id="runtime-lookup",
+    )
+
+    def write_manifest(root, ontology_id):
+        root.mkdir(parents=True)
+        (root / "manifest.yaml").write_text(
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            f"id: {ontology_id}\n"
+            f"name: {ontology_id}\n"
+            "description: Runtime lookup fixture\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n",
+            encoding="utf-8",
+        )
+
+    write_manifest(workspace_paths.ontologies_dir.parent / "outside", "outside")
+    write_manifest(workspace_paths.ontologies_dir / "requested", "different")
+
+    assert (
+        get_runtime_ontology_manifest(
+            "../outside",
+            workspace_id="runtime-lookup",
+        )
+        is None
+    )
+    assert (
+        get_runtime_ontology_manifest(
+            "requested",
+            workspace_id="runtime-lookup",
+        )
+        is None
+    )
+
+
 def test_build_ontologies_section_honors_selected_ontology(tmp_path, monkeypatch):
     import ontology.ontologies as ontologies_module
     from ontology.ontologies import build_ontologies_section
@@ -579,7 +659,10 @@ def test_v01_preload_records_include_active_version_indexes(tmp_path, monkeypatc
 
     records = build_selected_ontology_preload_records("demo-v01", turn_id=3)
     record_paths = {record["path"] for record in records}
-    assert any(path.endswith("ontologies/demo-v01/manifest.yaml") for path in record_paths)
+    assert any(
+        path.endswith("ontologies/demo-v01/versions/2.0.0/manifest.yaml")
+        for path in record_paths
+    )
     for relative_path in (
         "index.md",
         "objects/index.md",

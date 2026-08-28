@@ -141,8 +141,9 @@ def validate_runtime_ontology_availability(
     *,
     workspace_id: str,
     ontology_id: str,
+    ontology_version: str | None = None,
 ) -> str:
-    """Revalidate a bound ontology and return its current active version."""
+    """Revalidate a bound ontology and return the requested or active version."""
     from ontology.ontologies import (
         get_ontology_registry,
         get_runtime_ontology_manifest,
@@ -153,6 +154,7 @@ def validate_runtime_ontology_availability(
     registry = get_ontology_registry(workspace_id=normalized_workspace_id)
     ontology = registry.get_ontology(normalized_ontology_id)
     active_version = str(getattr(ontology, "active_version", "") or "").strip()
+    selected_version = str(ontology_version or active_version).strip()
     versions = {
         str(version or "").strip()
         for version in list(getattr(ontology, "versions", []) or [])
@@ -161,17 +163,17 @@ def validate_runtime_ontology_availability(
     runtime_manifest = (
         get_runtime_ontology_manifest(
             normalized_ontology_id,
-            version=active_version,
+            version=selected_version,
             workspace_id=normalized_workspace_id,
         )
-        if ontology is not None and active_version
+        if ontology is not None and selected_version
         else None
     )
     availability_checks = (
         ontology is not None,
         bool(getattr(ontology, "enabled", False)),
-        bool(active_version),
-        active_version in versions,
+        bool(selected_version),
+        selected_version in versions,
         runtime_manifest is not None,
     )
     if not all(availability_checks):
@@ -181,7 +183,7 @@ def validate_runtime_ontology_availability(
             status_code=409,
             error_type="configuration_error",
         )
-    return active_version
+    return selected_version
 
 
 def resolve_effective_ontology_id(

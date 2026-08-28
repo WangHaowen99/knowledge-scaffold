@@ -99,9 +99,11 @@ def test_backend_and_compose_do_not_package_or_mount_sandbox_runtime():
     assert "COPY sdk/sandbox-python-sdk" not in backend_dockerfile
     assert "python agent/direct_execution/build_revision.py" in backend_dockerfile
     assert "--output /app/.app-runtime-revision" in backend_dockerfile
-    assert backend_dockerfile.index("COPY . .") < backend_dockerfile.index(
+    build_revision_index = backend_dockerfile.index(
         "python agent/direct_execution/build_revision.py"
     )
+    assert backend_dockerfile.index("COPY consumer/backend/ ./") < build_revision_index
+    assert backend_dockerfile.index("COPY contracts/solver_services/") < build_revision_index
     assert all("onto-sandbox-runtime" not in compose for compose in compose_files)
     assert all("/app/sandbox-runtime:ro" not in compose for compose in compose_files)
     assert all("/app/config" not in compose for compose in compose_files)

@@ -4316,12 +4316,18 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
     }
     events = []
     observer = RecordingObserver()
+    snapshots = []
+
+    async def persist_snapshot(snapshot):
+        await asyncio.sleep(0)
+        snapshots.append(snapshot)
 
     final_state = _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
         observer=observer,
+        snapshot_callback=persist_snapshot,
     )
 
     assert final_state["pending_user_interaction"]["id"] == "interaction_1"
@@ -4358,6 +4364,8 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
         if event.type == RuntimeEventType.AGENT_ITERATION_FINISHED
     ]
     assert [payload["status"] for payload in trace_iteration_finished] == ["terminal_tool_batch"]
+    assert len(snapshots) == 3
+    assert snapshots[-1]["pending_user_interaction"]["id"] == "interaction_1"
 
 
 def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch):
