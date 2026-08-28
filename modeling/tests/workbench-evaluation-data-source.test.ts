@@ -26,11 +26,16 @@ const workbenchEntry = readFileSync(
 test('新工作台评测准备页复用完整数据源组件并保持 Agent 状态独立', () => {
   assert.match(evaluationView, /import DataSourcePanel from ['"]\.\.\/\.\.\/DataSourcePanel\.jsx['"]/);
   assert.match(evaluationView, /<DataSourcePanel[\s\S]*saveDataSourceRequest=\{saveEvaluationDataSource\}[\s\S]*onAdvance=\{onSaved\}/);
+  assert.doesNotMatch(evaluationView, /quickExcelImport/);
   assert.doesNotMatch(evaluationView, /function ConnectionForm|function DataSourceInput/);
 
   assert.match(dataSourcePanel, /saveDataSourceRequest = saveDataSource/);
   assert.match(dataSourcePanel, /request: \(\) => saveDataSourceRequest\(/);
   assert.match(dataSourcePanel, /<EvaluationDatabaseImportPanel/);
+  assert.match(dataSourcePanel, /databaseUrlSelection=\{projectDatabaseSelection\}/);
+  assert.match(dataSourcePanel, /saved\.config\?\.scene === projectEvaluationDatabaseName\(projectId\)/);
+  assert.match(dataSourcePanel, /当前使用已有 NL2SQL Scene，将直接查询该数据源/);
+  assert.doesNotMatch(dataSourcePanel, /QuickEvaluationDatabaseImport/);
   assert.match(workbenchEntry, /import ['"]\.\.\/styles\.css['"]/);
 });
 
