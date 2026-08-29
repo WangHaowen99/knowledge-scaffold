@@ -170,6 +170,9 @@ export const getSemanticBindingSuggestions = (id) => api(`${P(id)}/package/seman
 export const applySemanticBindings = (id, input) => api(`${P(id)}/package/semantic-bindings/apply`, {
   method: 'POST', body: JSON.stringify(input),
 });
+export const clearSemanticBindings = (id, input) => api(`${P(id)}/package/semantic-bindings/clear`, {
+  method: 'POST', body: JSON.stringify(input),
+});
 export const ignoreSemanticBindings = (id, input) => api(`${P(id)}/package/semantic-bindings/ignore`, {
   method: 'POST', body: JSON.stringify(input),
 });
