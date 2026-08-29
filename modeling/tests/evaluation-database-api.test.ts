@@ -1,11 +1,20 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   createProjectEvaluationDatabase,
   importEvaluationDatabase,
 } from '../frontend/src/api.js';
 
 const originalFetch = globalThis.fetch;
+const importPanel = readFileSync(
+  new URL('../frontend/src/EvaluationDatabaseImportPanel.jsx', import.meta.url),
+  'utf8',
+);
+const urlConfirmModal = readFileSync(
+  new URL('../frontend/src/EvaluationDatabaseUrlConfirmModal.jsx', import.meta.url),
+  'utf8',
+);
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -52,4 +61,12 @@ test('评测库导入 API 使用弹窗返回的自定义数据库连接', async 
   assert.equal(requestBody?.get('database_url_mode'), 'custom');
   assert.equal(requestBody?.get('database_url'), 'mysql://user:password@mysql.local:3306');
   assert.equal(requestBody?.get('custom_database_url'), null);
+});
+
+test('Excel 导入确认复用已配置的服务端连接展示模式', () => {
+  assert.match(importPanel, /selectionLocked=\{Boolean\(targetRequest\.lockedSelection\) \|\| targetRequest\.configured\}/);
+  assert.match(importPanel, /lockedSelection=\{targetRequest\.lockedSelection\}/);
+  assert.match(urlConfirmModal, /使用已确认的服务端 EVAL_DB_URL/);
+  assert.match(urlConfirmModal, /使用已确认的本次自定义 URL/);
+  assert.match(urlConfirmModal, /databaseUrl: lockedChoice\.mode === 'custom' \? lockedChoice\.databaseUrl : ''/);
 });

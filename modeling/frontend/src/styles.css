@@ -680,12 +680,19 @@ body { background: #f2f4f8; overflow: hidden; }
 }
 .mwr .field-control-row--scene > input { min-width: 0; }
 .mwr .field-control-row--scene > .btn { min-width: 184px; white-space: nowrap; }
+.mwr .ds-panel-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.mwr .ds-panel-actions > span { margin-right: 4px; }
+.mwr .ds-panel-actions .btn,
+.mwr .edi-heading-actions .btn {
+  min-width: 128px; min-height: 38px; display: inline-flex; align-items: center; justify-content: center; text-align: center;
+}
 .mwr .evaluation-db-url-modal { width: min(640px, calc(100vw - 32px)); }
 .mwr .evaluation-db-url-options { display: grid; gap: 8px; margin: 12px 0 10px; }
 .mwr .evaluation-db-url-option {
   display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 9px;
   border: 1px solid var(--hair); border-radius: 7px; padding: 10px 12px; background: #fff; cursor: pointer;
 }
+.mwr .evaluation-db-url-option.locked { grid-template-columns: minmax(0, 1fr); cursor: default; }
 .mwr .evaluation-db-url-option.selected { border-color: #8db7eb; background: #f4f8fd; }
 .mwr .evaluation-db-url-option:has(input:disabled) { color: var(--muted); cursor: not-allowed; }
 .mwr .evaluation-db-url-option input {
@@ -1732,6 +1739,9 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .gi-warnings { grid-column: 1 / -1; color: #8a5a14; font-size: 11.5px; overflow-wrap: anywhere; }
 .mwr .gi-execute { display: grid; grid-template-columns: minmax(280px, 1fr) auto; align-items: end; gap: 12px; margin-top: 12px; padding: 12px; border: 1px solid #b7e2cd; background: #f5fbf8; border-radius: 11px; }
 .mwr .gi-execute .field { margin: 0; }
+.mwr .edi-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.mwr .edi-panel .btn { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; text-align: center; }
+.mwr .gi-filebar .btn { min-width: 128px; }
 .mwr .gi-history { margin-top: 16px; }
 .mwr .gi-history-title { font-size: 12.5px; font-weight: 700; margin-bottom: 7px; }
 .mwr .gi-history-row { display: grid; grid-template-columns: auto minmax(110px, 1fr) auto auto; align-items: center; gap: 8px 12px; border-top: 1px solid #ebecf0; padding: 8px 2px; font-size: 11.5px; }
@@ -1740,6 +1750,7 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .tag.gi-done { background: #e2f5ed; color: #0e6b4a; }
 .mwr .tag.gi-failed { background: #f9e4e2; color: #a8322c; }
 .mwr .tag.gi-running { background: #e3ecfa; color: var(--blue-dd); }
+.mwr .edi-panel .gi-continue { border-top: 1px solid var(--hair); padding-top: 14px; }
 .mwr .gi-continue { display: flex; align-items: center; justify-content: flex-end; gap: 14px; margin-top: 16px; }
 .mwr .gi-continue span { color: var(--muted); font-size: 12px; }
 

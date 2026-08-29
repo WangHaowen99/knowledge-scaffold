@@ -12,6 +12,7 @@ import { renderPackage } from '../src/workflow/package-render.js';
 import { suggestSemanticBindings, suggestSemanticFieldRefs } from '../src/workflow/semantic-binding.js';
 import {
   applySemanticBindingSelection,
+  clearSemanticBindings,
   previewSemanticBindingCandidates,
 } from '../src/workflow/semantic-binding-service.js';
 import { validateTermTables } from '../src/workflow/term-table.js';
@@ -406,58 +407,58 @@ test('package mapping format：术语 binding 引用和 provider 必须合法', 
 
 test('semantic binding：知识结构抽取出对象字段后先推荐 binding，再推荐字段关联', () => {
   const spec: PackageSpec = {
-    id: 'airport-demo', name: 'airport demo', description: 'airport demo',
+    id: 'item-demo', name: 'item demo', description: 'item demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
     objects: [
       {
-        key: 'flight', title: '航班', description: '航班',
-        sourceTable: 'flight', fields: [
-          { key: 'LATEST_DEP_ARP_CD', sourceColumn: 'LATEST_DEP_ARP_CD' },
-          { key: 'LATEST_ARV_ARP_CD', sourceColumn: 'LATEST_ARV_ARP_CD' },
+        key: 'transaction', title: '交易', description: '交易',
+        sourceTable: 'transaction', fields: [
+          { key: 'PRIMARY_ITEM_CODE', sourceColumn: 'PRIMARY_ITEM_CODE' },
+          { key: 'BACKUP_ITEM_CODE', sourceColumn: 'BACKUP_ITEM_CODE' },
         ],
       },
       {
-        key: 'airport', title: '机场能力', description: '机场能力',
-        sourceTable: 'airport', fields: [
-          { key: 'ARP_CD', sourceColumn: 'ARP_CD' },
-          { key: 'ACTYPE_SALE', sourceColumn: 'ACTYPE_SALE' },
+        key: 'item', title: '物料', description: '物料',
+        sourceTable: 'item', fields: [
+          { key: 'ITEM_CODE', sourceColumn: 'ITEM_CODE' },
+          { key: 'CATEGORY_CODE', sourceColumn: 'CATEGORY_CODE' },
         ],
       },
     ],
     operations: [],
   };
   const tables = [
-    dataTable('flight', ['LATEST_DEP_ARP_CD', 'LATEST_ARV_ARP_CD'], [
-      { LATEST_DEP_ARP_CD: 'CAN', LATEST_ARV_ARP_CD: 'CGO' },
-      { LATEST_DEP_ARP_CD: 'LUX', LATEST_ARV_ARP_CD: 'CAN' },
+    dataTable('transaction', ['PRIMARY_ITEM_CODE', 'BACKUP_ITEM_CODE'], [
+      { PRIMARY_ITEM_CODE: 'I001', BACKUP_ITEM_CODE: 'I002' },
+      { PRIMARY_ITEM_CODE: 'I003', BACKUP_ITEM_CODE: 'I001' },
     ]),
-    dataTable('airport', ['ARP_CD', 'ACTYPE_SALE'], [
-      { ARP_CD: 'CAN', ACTYPE_SALE: '789' },
-      { ARP_CD: 'CGO', ACTYPE_SALE: '789' },
-      { ARP_CD: 'LUX', ACTYPE_SALE: '789' },
+    dataTable('item', ['ITEM_CODE', 'CATEGORY_CODE'], [
+      { ITEM_CODE: 'I001', CATEGORY_CODE: 'C01' },
+      { ITEM_CODE: 'I002', CATEGORY_CODE: 'C01' },
+      { ITEM_CODE: 'I003', CATEGORY_CODE: 'C02' },
     ]),
-    dataTable('机场中文代号', ['ARP_CD', '机场名', '英文名'], [
-      { ARP_CD: 'CAN', 机场名: '广州白云国际机场', 英文名: 'Guangzhou Baiyun' },
-      { ARP_CD: 'CGO', 机场名: '郑州新郑国际机场', 英文名: 'Zhengzhou Xinzheng' },
-      { ARP_CD: 'LUX', 机场名: '卢森堡芬德尔机场', 英文名: 'Luxembourg Findel' },
+    dataTable('item_lookup', ['ITEM_CODE', 'ITEM_NAME', 'ITEM_ALIAS'], [
+      { ITEM_CODE: 'I001', ITEM_NAME: '物料一', ITEM_ALIAS: 'A1' },
+      { ITEM_CODE: 'I002', ITEM_NAME: '物料二', ITEM_ALIAS: 'A2' },
+      { ITEM_CODE: 'I003', ITEM_NAME: '物料三', ITEM_ALIAS: 'A3' },
     ]),
   ];
 
   const suggestions = suggestSemanticBindings(spec, tables);
-  const airport = suggestions.find((item) => item.resource === '机场中文代号' && item.valueField === 'ARP_CD');
+  const item = suggestions.find((candidate) => candidate.resource === 'item_lookup' && candidate.valueField === 'ITEM_CODE');
 
-  assert.ok(airport);
-  assert.equal(airport.semanticField, '机场名');
-  assert.deepEqual(airport.aliasFields, []);
-  assert.deepEqual(airport.candidateFieldRefs, []);
+  assert.ok(item);
+  assert.equal(item.semanticField, 'ITEM_NAME');
+  assert.deepEqual(item.aliasFields, []);
+  assert.deepEqual(item.candidateFieldRefs, []);
 
   const withBinding = applySemanticBindingSelection(spec, tables, {
-    bindingKeys: [airport.key],
+    bindingKeys: [item.key],
     fieldRefs: [],
   }).spec;
   const fieldRefs = suggestSemanticFieldRefs(withBinding, tables);
-  const expectedFieldRefs = ['airport.ARP_CD', 'flight.LATEST_ARV_ARP_CD', 'flight.LATEST_DEP_ARP_CD']
-    .map((ref) => `${ref}->${airport.key}`)
+  const expectedFieldRefs = ['item.ITEM_CODE', 'transaction.BACKUP_ITEM_CODE', 'transaction.PRIMARY_ITEM_CODE']
+    .map((ref) => `${ref}->${item.key}`)
     .sort();
   assert.deepEqual(
     fieldRefs.map((ref) => `${ref.objectKey}.${ref.fieldKey}->${ref.bindingKey}`).sort(),
@@ -467,15 +468,15 @@ test('semantic binding：知识结构抽取出对象字段后先推荐 binding�
 
 test('semantic binding：知识结构尚未抽取对象字段时不推荐 binding', () => {
   const spec: PackageSpec = {
-    id: 'airport-demo', name: 'airport demo', description: 'airport demo',
+    id: 'item-demo', name: 'item demo', description: 'item demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
     objects: [],
     operations: [],
   };
   const tables = [
-    dataTable('机场中文代号', ['ARP_CD', '机场名'], [
-      { ARP_CD: 'CAN', 机场名: '广州白云国际机场' },
-      { ARP_CD: 'CGO', 机场名: '郑州新郑国际机场' },
+    dataTable('item_lookup', ['ITEM_CODE', 'ITEM_NAME'], [
+      { ITEM_CODE: 'I001', ITEM_NAME: '物料一' },
+      { ITEM_CODE: 'I002', ITEM_NAME: '物料二' },
     ]),
   ];
 
@@ -488,13 +489,13 @@ test('semantic binding：知识结构尚未抽取对象字段时不推荐 bindin
   const modeledPreview = previewSemanticBindingCandidates({
     ...spec,
     objects: [{
-      key: 'airport', title: '机场能力', description: '机场能力',
-      sourceTable: 'airport',
-      fields: [{ key: 'ARP_CD', sourceColumn: 'ARP_CD' }],
+      key: 'item', title: '物料', description: '物料',
+      sourceTable: 'item',
+      fields: [{ key: 'ITEM_CODE', sourceColumn: 'ITEM_CODE' }],
     }],
   }, tables);
   assert.equal(modeledPreview.bindingCount, 1);
-  assert.equal(modeledPreview.suggestions[0]?.resource, '机场中文代号');
+  assert.equal(modeledPreview.suggestions[0]?.resource, 'item_lookup');
 });
 
 test('semantic binding：上传术语表后按固定列顺序生成 binding 并保留 alias 字段', () => {
@@ -561,34 +562,43 @@ test('semantic binding：术语表校验跳过空值并阻止非法 sheet 与一
   ]), /对应多个 semantic/);
 });
 
-test('semantic binding：同一资源表多组 code/name 按字段语义配对', () => {
+test('semantic binding：Neo4j 数据源下术语表字段名必须符合属性名格式', () => {
+  const termTable = dataTable('status_terms', ['STATUS_CODE', 'STATUS_NAME', '别名/禁用写法'], [
+    { STATUS_CODE: 'A', STATUS_NAME: '启用', '别名/禁用写法': '有效' },
+  ], 'term');
+
+  assert.throws(() => validateTermTables([termTable], { dataSourceType: 'neo4j' }), /不能作为 Neo4j 属性名/);
+  assert.doesNotThrow(() => validateTermTables([termTable], { dataSourceType: 'nl2sql' }));
+});
+
+test('semantic binding：同一资源表多组 code/name 按通用字段词干配对', () => {
   const spec: PackageSpec = {
-    id: 'airport-demo', name: 'airport demo', description: 'airport demo',
+    id: 'entity-demo', name: 'entity demo', description: 'entity demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
     objects: [{
-      key: 'airport', title: '机场能力', description: '机场能力',
-      sourceTable: 'airport', fields: [
-        { key: 'ARP_CD', sourceColumn: 'ARP_CD' },
-        { key: 'COUNTRY_CODE', sourceColumn: 'COUNTRY_CODE' },
+      key: 'record', title: '记录', description: '记录',
+      sourceTable: 'record', fields: [
+        { key: 'REGION_CODE', sourceColumn: 'REGION_CODE' },
+        { key: 'MARKET_CODE', sourceColumn: 'MARKET_CODE' },
       ],
     }],
     operations: [],
   };
   const tables = [
-    dataTable('airport', ['ARP_CD', 'COUNTRY_CODE'], [
-      { ARP_CD: 'CAN', COUNTRY_CODE: 'CN' },
-      { ARP_CD: 'LUX', COUNTRY_CODE: 'LU' },
+    dataTable('record', ['REGION_CODE', 'MARKET_CODE'], [
+      { REGION_CODE: 'R01', MARKET_CODE: 'M01' },
+      { REGION_CODE: 'R02', MARKET_CODE: 'M02' },
     ]),
-    dataTable('机场中文', ['ARP_CD', 'COUNTRY_REGION_CODE', '国家', '机场名'], [
-      { ARP_CD: 'CAN', COUNTRY_REGION_CODE: 'CN', 国家: '中国', 机场名: '广州白云国际机场' },
-      { ARP_CD: 'LUX', COUNTRY_REGION_CODE: 'LU', 国家: '卢森堡', 机场名: '卢森堡芬德尔机场' },
+    dataTable('entity_lookup', ['REGION_CODE', 'MARKET_CODE', 'REGION_NAME', 'MARKET_NAME'], [
+      { REGION_CODE: 'R01', MARKET_CODE: 'M01', REGION_NAME: '区域一', MARKET_NAME: '市场一' },
+      { REGION_CODE: 'R02', MARKET_CODE: 'M02', REGION_NAME: '区域二', MARKET_NAME: '市场二' },
     ]),
   ];
 
   const suggestions = suggestSemanticBindings(spec, tables);
   const pairs = suggestions.map((item) => `${item.valueField}->${item.semanticField}`).sort();
 
-  assert.deepEqual(pairs, ['ARP_CD->机场名', 'COUNTRY_REGION_CODE->国家']);
+  assert.deepEqual(pairs, ['MARKET_CODE->MARKET_NAME', 'REGION_CODE->REGION_NAME']);
   assert.deepEqual(suggestions.flatMap((item) => item.candidateFieldRefs), []);
 
   const withBindings = applySemanticBindingSelection(spec, tables, {
@@ -597,30 +607,77 @@ test('semantic binding：同一资源表多组 code/name 按字段语义配对',
   }).spec;
   const fieldRefs = suggestSemanticFieldRefs(withBindings, tables);
 
-  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'airport' && ref.fieldKey === 'ARP_CD'
-    && ref.bindingKey === suggestions.find((item) => item.valueField === 'ARP_CD')?.key));
-  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'airport' && ref.fieldKey === 'COUNTRY_CODE'
-    && ref.bindingKey === suggestions.find((item) => item.valueField === 'COUNTRY_REGION_CODE')?.key));
+  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'record' && ref.fieldKey === 'REGION_CODE'
+    && ref.bindingKey === suggestions.find((item) => item.valueField === 'REGION_CODE')?.key));
+  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'record' && ref.fieldKey === 'MARKET_CODE'
+    && ref.bindingKey === suggestions.find((item) => item.valueField === 'MARKET_CODE')?.key));
 });
 
 test('semantic binding：业务对象表不作为术语绑定资源表', () => {
   const spec: PackageSpec = {
-    id: 'route-demo', name: 'route demo', description: 'route demo',
+    id: 'movement-demo', name: 'movement demo', description: 'movement demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
     objects: [{
-      key: 'flight_route', title: '航线', description: '航线',
-      sourceTable: 'flight_route',
+      key: 'movement_record', title: '流转记录', description: '流转记录',
+      sourceTable: 'movement_record',
       fields: [
-        { key: 'DEP_ARP_CD', sourceColumn: 'DEP_ARP_CD' },
-        { key: 'ARV_ARP_CD', sourceColumn: 'ARV_ARP_CD' },
+        { key: 'SOURCE_CODE', sourceColumn: 'SOURCE_CODE' },
+        { key: 'TARGET_CODE', sourceColumn: 'TARGET_CODE' },
       ],
     }],
     operations: [],
   };
   const tables = [
-    dataTable('flight_route', ['DEP_ARP_CD', 'ARV_ARP_CD'], [
-      { DEP_ARP_CD: 'CAN', ARV_ARP_CD: 'CGO' },
-      { DEP_ARP_CD: 'CGO', ARV_ARP_CD: 'LUX' },
+    dataTable('movement_record', ['SOURCE_CODE', 'TARGET_CODE'], [
+      { SOURCE_CODE: 'S01', TARGET_CODE: 'T01' },
+      { SOURCE_CODE: 'S02', TARGET_CODE: 'T02' },
+    ]),
+  ];
+
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
+});
+
+test('semantic binding：普通业务表仅字段命中术语特征时不推荐 binding', () => {
+  const spec: PackageSpec = {
+    id: 'business-demo', name: 'business demo', description: 'business demo',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
+    objects: [{
+      key: 'business_record', title: '业务记录', description: '业务记录',
+      sourceTable: 'business_record',
+      fields: [
+        { key: 'CUSTOMER_ID', sourceColumn: 'CUSTOMER_ID' },
+        { key: 'CUSTOMER_NAME', sourceColumn: 'CUSTOMER_NAME' },
+        { key: 'PROJECT_CODE', sourceColumn: 'PROJECT_CODE' },
+        { key: 'PROJECT_NAME', sourceColumn: 'PROJECT_NAME' },
+      ],
+    }],
+    operations: [],
+  };
+  const tables = [
+    dataTable('business_record', ['CUSTOMER_ID', 'CUSTOMER_NAME', 'PROJECT_CODE', 'PROJECT_NAME'], [
+      { CUSTOMER_ID: 'C001', CUSTOMER_NAME: '客户一', PROJECT_CODE: 'P001', PROJECT_NAME: '项目一' },
+      { CUSTOMER_ID: 'C002', CUSTOMER_NAME: '客户二', PROJECT_CODE: 'P002', PROJECT_NAME: '项目二' },
+    ]),
+  ];
+
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
+});
+
+test('semantic binding：code/name 字段缺少一致前缀时不推荐 binding', () => {
+  const spec: PackageSpec = {
+    id: 'lookup-demo', name: 'lookup demo', description: 'lookup demo',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
+    objects: [{
+      key: 'business_record', title: '业务记录', description: '业务记录',
+      sourceTable: 'business_record',
+      fields: [{ key: 'CODE', sourceColumn: 'CODE' }],
+    }],
+    operations: [],
+  };
+  const tables = [
+    dataTable('status_lookup', ['CODE', 'NAME'], [
+      { CODE: 'A', NAME: '启用' },
+      { CODE: 'I', NAME: '停用' },
     ]),
   ];
 
@@ -706,4 +763,33 @@ test('semantic binding：批量确认后写入 value_bindings 和字段引用', 
   assert.equal(applied.spec.objects[0].fields[0].valueBindingRef, suggestion.key);
   assert.equal(mappings.value_bindings[suggestion.key].resource, '机场中文代号');
   assert.equal(mappings.objects.airport.fields.ARP_CD.value_binding_ref, suggestion.key);
+});
+
+test('semantic binding：清空已确认 binding 时同步清除字段引用', () => {
+  const spec: PackageSpec = {
+    id: 'term-clear-demo', name: 'term clear demo', description: 'term clear demo',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
+    valueBindings: [
+      { key: 'item-code', providerAlias: 'data', resource: 'item_terms', valueField: 'ITEM_CODE', semanticField: 'ITEM_NAME' },
+    ],
+    objects: [{
+      key: 'item', title: '物料', description: '物料',
+      sourceTable: 'item', primaryKey: ['ITEM_CODE'],
+      fields: [
+        { key: 'ITEM_CODE', sourceColumn: 'ITEM_CODE', valueBindingRef: 'item-code' },
+        { key: 'CATEGORY_CODE', sourceColumn: 'CATEGORY_CODE' },
+      ],
+    }],
+    operations: [],
+  };
+
+  const cleared = clearSemanticBindings(spec);
+  const mappings = JSON.parse(renderPackage(cleared.spec)['mappings/object-data-mappings.json']);
+
+  assert.equal(cleared.clearedBindings, 1);
+  assert.equal(cleared.clearedFieldRefs, 1);
+  assert.equal(cleared.spec.valueBindings, undefined);
+  assert.equal(cleared.spec.objects[0].fields[0].valueBindingRef, undefined);
+  assert.equal(mappings.value_bindings, undefined);
+  assert.equal(mappings.objects.item.fields.ITEM_CODE.value_binding_ref, undefined);
 });

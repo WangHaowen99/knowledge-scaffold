@@ -23,7 +23,6 @@ import {
 import DataSourceConnectionFields from './DataSourceConnectionFields.jsx';
 import EvaluationDatabaseUrlConfirmModal from './EvaluationDatabaseUrlConfirmModal.jsx';
 import EvaluationDatabaseImportPanel from './EvaluationDatabaseImportPanel.jsx';
-import QuickEvaluationDatabaseImport from './QuickEvaluationDatabaseImport.jsx';
 import GraphImportPanel from './GraphImportPanel.jsx';
 import { PACKAGE_DATA_SOURCE_DETAIL, PACKAGE_DATA_SOURCE_HELP } from './package-data-source.js';
 import Tour from './Tour.jsx';
@@ -103,7 +102,26 @@ function pairText(property, value) {
   return property && value ? `${property} = ${value}` : '未配置';
 }
 
-export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRequest = saveDataSource, quickExcelImport = false }) {
+function projectEvaluationDatabaseName(projectId) {
+  const normalized = String(projectId || '').trim().replace(/[^a-zA-Z0-9_]/g, '_');
+  return normalized ? `mv_shadow_${normalized}`.slice(0, 60) : '';
+}
+
+function isNl2SqlProvider(provider) {
+  return ['nl2sql_template', 'nl2sql_http'].includes(provider);
+}
+
+function databaseUrlPreview(databaseUrl) {
+  try {
+    const parsed = new URL(String(databaseUrl || '').trim());
+    if (parsed.password) parsed.password = '******';
+    return parsed.toString();
+  } catch {
+    return '自定义 MySQL URL';
+  }
+}
+
+export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRequest = saveDataSource }) {
   const [form, setForm] = useState(null);
   const [saved, setSaved] = useState(null);
   const [providerSelectionChanged, setProviderSelectionChanged] = useState(false);
@@ -114,6 +132,7 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
   const [databaseCreationRequest, setDatabaseCreationRequest] = useState(null);
   const [creatingDatabase, setCreatingDatabase] = useState(false);
   const [databaseCreationError, setDatabaseCreationError] = useState('');
+  const [projectDatabaseSelection, setProjectDatabaseSelection] = useState(null);
   const projectContextRef = useRef(projectId);
   const providerRevisionRef = useRef(0);
   projectContextRef.current = projectId;
@@ -125,6 +144,7 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
     setForm(null); setSaved(null); setProviderSelectionChanged(false); setBusy(false);
     setSyncingOntologyId(false); setErr(''); setMessage('');
     setDatabaseCreationRequest(null); setCreatingDatabase(false); setDatabaseCreationError('');
+    setProjectDatabaseSelection(null);
     void runGraphImportContextRequest({
       contextKey,
       isCurrent: (key) => active && projectContextRef.current === key,
@@ -153,6 +173,7 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
     setSyncingOntologyId(false);
     setDatabaseCreationRequest(null);
     setDatabaseCreationError('');
+    setProjectDatabaseSelection(null);
     setErr('');
     setMessage('');
   };
@@ -194,6 +215,13 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
       if (outcome.kind === 'stale') return;
       const result = outcome.value;
       setForm((current) => applyCreatedProjectDatabaseScene(current, result.database));
+      setProjectDatabaseSelection({
+        mode: selection.mode,
+        databaseUrl: selection.mode === 'custom' ? selection.databaseUrl : '',
+        databaseUrlPreview: selection.mode === 'custom'
+          ? databaseUrlPreview(selection.databaseUrl)
+          : databaseCreationRequest?.databaseUrlPreview || '',
+      });
       setMessage(result.created
         ? `项目数据库已创建：${result.database}`
         : `项目数据库已存在，已直接使用：${result.database}`);
@@ -265,11 +293,6 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
     <div>
       <Tour scene={DATA_SOURCE_TOUR_SCENE} steps={dataSourceTourSteps(form.provider)} autoStart={false} />
       {err && <div className="lerr">{err}</div>}
-      {quickExcelImport && <QuickEvaluationDatabaseImport projectId={projectId}
-        onConfigured={(dataSource) => {
-          setSaved(dataSource); setForm(dataSourceToForm(dataSource));
-          setProviderSelectionChanged(false); setMessage('已自动创建项目数据库并保存数据源连接');
-        }} onContinue={() => onAdvance?.(saved)} />}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
         <label className="ev-bind-toggle">
           <input type="checkbox" checked={form.mode === 'connection'}
@@ -296,7 +319,7 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 14 }}>
+      <div className="ds-panel-actions">
         {message && <span style={{ color: 'var(--good)', fontSize: 12.5 }}>{message}</span>}
         {form.mode === 'connection' && (
           <button type="button" className="btn" disabled={busy || syncingOntologyId || creatingDatabase}
@@ -319,13 +342,21 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
           </div>
         </>
       )}
-      {!quickExcelImport && !providerSelectionChanged && saved?.mode === 'connection'
-        && ['nl2sql_template', 'nl2sql_http'].includes(saved.provider) && (
+      {!providerSelectionChanged && saved?.mode === 'connection' && isNl2SqlProvider(saved.provider)
+        && saved.config?.scene === projectEvaluationDatabaseName(projectId) && (
         <EvaluationDatabaseImportPanel
           projectId={projectId}
           dataSource={saved}
+          databaseUrlSelection={projectDatabaseSelection}
           onContinue={() => onAdvance?.(saved)}
         />
+      )}
+      {!providerSelectionChanged && saved?.mode === 'connection' && isNl2SqlProvider(saved.provider)
+        && saved.config?.scene !== projectEvaluationDatabaseName(projectId) && (
+        <div className="gi-continue">
+          <span>当前使用已有 NL2SQL Scene，将直接查询该数据源；如需导入 Excel，请先使用项目专用数据库。</span>
+          <button className="btn btn-p" onClick={() => onAdvance?.(saved)}>进入评测用例录入 →</button>
+        </div>
       )}
       {databaseCreationRequest && (
         <EvaluationDatabaseUrlConfirmModal
