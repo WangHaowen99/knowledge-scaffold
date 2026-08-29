@@ -1,1 +1,1 @@
-export { packageDisplayLabel } from './components/kbTreeState.js';
+export { packageDisplayLabel } from './lib/packagePresentation.js';

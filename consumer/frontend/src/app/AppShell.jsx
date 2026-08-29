@@ -11,7 +11,6 @@ import ChatHistorySidebar from '../features/chat/ChatHistorySidebar';
 import LoginPage from '../features/auth/LoginPage';
 import { requiresWorkspaceData } from '../features/auth/accessState';
 import { useAuthContext } from '../features/auth/useAuthContext';
-import KbSidebarTree from '../features/knowledge/components/KbSidebarTree';
 import { useNativeFilePicker } from '../features/knowledge/lib/browserInterop';
 import useKbBrowser from '../features/knowledge/hooks/useKbBrowser';
 import { SkeletonState, ToastNotice } from '../shared/ui/feedback';
@@ -232,7 +231,6 @@ export default function AppShell() {
             <MessageSquarePlus className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">新建对话</span>
           </button>
           {navBtn('kb', PackageOpen, '知识包工作台', 'nav-kb')}
-          {surface === 'kb' && workspaceDataReady && <KbSidebarTree kb={kb} />}
           <div className="grp">管理</div>
           {navBtn('config', Settings2, '配置中心', 'nav-config')}
           {can('observability.global') && (

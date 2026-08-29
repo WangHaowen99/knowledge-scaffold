@@ -10,13 +10,21 @@ process.env.MODELING_MCP_OPERATION_RULE_ENABLED = 'true';
 const [
   { createProject },
   { getPackageArtifactStore },
+  { getAuthoringState },
+  { getDb },
   { config },
+  { createOrGetPackageDraft },
+  { OperationRuleMcpService },
   { executeModelingMcpTool, toolDefinitionsFor, toolNamesByToolset },
   { ModelingMcpToolError },
 ] = await Promise.all([
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
+  import('../src/authoring/state.js'),
+  import('../src/db/index.js'),
   import('../src/config.js'),
+  import('../src/workflow/package-draft.js'),
+  import('../src/mcp/operation-rule/service.js'),
   import('../src/mcp/toolset.js'),
   import('../src/mcp/tool-error.js'),
 ]);
@@ -63,12 +71,32 @@ async function call(project: ReturnType<typeof createProject>, toolName: string,
   });
 }
 
+function revisionEventsSince(projectId: string, afterSeq: number) {
+  return getAuthoringState().replay(projectId, afterSeq).events.filter((event) => (
+    event.type === 'package.revision.created'
+  ));
+}
+
+function assertRevisionEvent(
+  projectId: string,
+  afterSeq: number,
+  expected: { revisionId: string; cause: string; resource: { type: string; id: string; key: string } },
+) {
+  const events = revisionEventsSince(projectId, afterSeq);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].payload.revisionId, expected.revisionId);
+  assert.equal(events[0].payload.cause, expected.cause);
+  assert.deepEqual(events[0].payload.resource, expected.resource);
+  assert.equal(events[0].payload.source, 'mcp');
+}
+
 function assertBlockingAdvice(result: Record<string, any>, affectedType?: string) {
   assert.equal(result.ok, false);
-  const blocking = (result.impacts ?? []).filter((item: any) => item.level === 'blocking');
+  const blocking = (result.issues ?? []).filter((item: any) => item.level === 'blocking');
   assert.ok(blocking.length > 0);
   for (const item of blocking) {
     assert.ok(String(item.code || '').trim());
+    assert.ok(String(item.phase || '').trim());
     assert.ok(String(item.target || '').trim());
     assert.ok(String(item.message || '').trim());
     assert.ok(String(item.suggestion || '').trim());
@@ -81,16 +109,58 @@ function assertBlockingAdvice(result: Record<string, any>, affectedType?: string
 function assertBlockedSubmission(error: unknown) {
   assert.ok(error instanceof ModelingMcpToolError);
   assert.equal(error.code, 'SUBMISSION_BLOCKED');
-  assertBlockingAdvice({ ok: false, ...(error.details as Record<string, unknown>) });
+  assert.equal(error.details.reason_code, 'SUBMISSION_BLOCKED');
+  assert.ok(error.details.resource);
+  assertBlockingAdvice({ ok: false, issues: error.details.issues, affected_resources: error.details.affected_resources });
   return true;
+}
+
+async function setPackageStatus(projectId: string, status: 'draft' | 'review' | 'released') {
+  const artifacts = getPackageArtifactStore();
+  const current = await artifacts.readPackageFiles(projectId);
+  return artifacts.savePackageVersion(projectId, {
+    expectedRevision: current.revision.oid,
+    spec: { ...current.spec, status },
+    coverage: current.coverage,
+    note: `切换知识包状态到 ${status}`,
+    action: {
+      cause: 'mcp_operation_rule_status_seed',
+      summary: `切换知识包状态到 ${status}`,
+      actorKind: 'system',
+      actorName: '测试系统',
+    },
+  });
+}
+
+function insertPendingCandidate(projectId: string, baseRevision: string) {
+  const now = new Date().toISOString();
+  getDb().prepare(`INSERT INTO artifact_candidate_revisions (
+    id, project_id, base_revision_oid, status, cause, summary, actor_kind, actor_name,
+    groups_json, selected_group_ids_json, created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    `cr_${projectId}`,
+    projectId,
+    baseRevision,
+    'pending',
+    'mcp_operation_rule_candidate_seed',
+    'synthetic pending candidate',
+    'user',
+    '测试系统',
+    '[]',
+    '[]',
+    now,
+  );
 }
 
 test('Operation/Rule 工具注册到现有 read/change toolset', () => {
   const tools = toolNamesByToolset();
-  assert.equal(tools.read.length, 8);
-  assert.equal(tools.change.length, 14);
+  assert.equal(tools.read.length, 6);
+  assert.equal(tools.change.length, 9);
+  assert.ok(tools.read.includes('list_ontology_objects'));
   assert.ok(tools.read.includes('list_ontology_operations'));
   assert.ok(tools.read.includes('get_ontology_rule'));
+  assert.ok(tools.change.includes('validate_ontology_object_change'));
+  assert.ok(tools.change.includes('update_ontology_object'));
   assert.ok(tools.change.includes('validate_ontology_operation_rule_change'));
   assert.ok(tools.change.includes('delete_ontology_rule'));
 });
@@ -100,7 +170,6 @@ test('Object/Operation/Rule MCP schema 与知识包 Unicode key 规则一致', (
   const changeTools = toolDefinitionsFor('change', [
     'ontology.change.validate',
     'ontology.change.apply',
-    'ontology.change.review',
   ]);
   const patternFor = (toolName: string, field: string, tools = readTools) => {
     const tool = tools.find((item) => item.name === toolName)!;
@@ -133,14 +202,23 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     payload: rulePayload,
   });
   assert.equal(validated.ok, true);
+  assert.equal(validated.resource.id, 'rule:record_valid');
+  assert.equal(Array.isArray(validated.issues), true);
 
+  let beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const createdRule = await call(project, 'create_ontology_rule', {
     expected_revision: seeded.revision.oid,
     key: 'record_valid',
     ...rulePayload,
   });
   assert.notEqual(createdRule.revision, seeded.revision.oid);
+  assertRevisionEvent(project.id, beforeEventSeq, {
+    revisionId: createdRule.revision,
+    cause: 'modeling_mcp_rule_create',
+    resource: { type: 'rule', id: 'rule:record_valid', key: 'record_valid' },
+  });
 
+  beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const createdOperation = await call(project, 'create_ontology_operation', {
     expected_revision: createdRule.revision,
     key: 'read_record',
@@ -155,11 +233,22 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     notes: [],
   });
   assert.notEqual(createdOperation.revision, createdRule.revision);
+  assertRevisionEvent(project.id, beforeEventSeq, {
+    revisionId: createdOperation.revision,
+    cause: 'modeling_mcp_operation_create',
+    resource: { type: 'operation', id: 'operation:read_record', key: 'read_record' },
+  });
 
+  beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const linkedRule = await call(project, 'update_ontology_rule', {
     expected_revision: createdOperation.revision,
     rule_id: 'rule:record_valid',
     changes: { applies_to_operations: ['read_record'] },
+  });
+  assertRevisionEvent(project.id, beforeEventSeq, {
+    revisionId: linkedRule.revision,
+    cause: 'modeling_mcp_rule_update',
+    resource: { type: 'rule', id: 'rule:record_valid', key: 'record_valid' },
   });
 
   const ruleDeleteAnalysis = await call(project, 'validate_ontology_operation_rule_change', {
@@ -169,6 +258,7 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     resource_id: 'rule:record_valid',
   });
   assertBlockingAdvice(ruleDeleteAnalysis, 'operation');
+  assert.ok(ruleDeleteAnalysis.issues.some((item: any) => item.code === 'RULE_DELETE_BLOCKED_BY_OPERATION'));
 
   await assert.rejects(
     () => call(project, 'delete_ontology_rule', {
@@ -189,6 +279,7 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     resource_id: 'operation:read_record',
   });
   assertBlockingAdvice(operationDeleteAnalysis, 'rule');
+  assert.ok(operationDeleteAnalysis.issues.some((item: any) => item.code === 'OPERATION_DELETE_BLOCKED_BY_RULE'));
   await assert.rejects(
     () => call(project, 'delete_ontology_operation', {
       expected_revision: linkedRule.revision,
@@ -215,27 +306,161 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
   });
   assertBlockingAdvice(ruleUpdateAnalysis);
 
+  beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const detachedRule = await call(project, 'update_ontology_rule', {
     expected_revision: linkedRule.revision,
     rule_id: 'rule:record_valid',
     changes: { applies_to_operations: [] },
   });
+  assertRevisionEvent(project.id, beforeEventSeq, {
+    revisionId: detachedRule.revision,
+    cause: 'modeling_mcp_rule_update',
+    resource: { type: 'rule', id: 'rule:record_valid', key: 'record_valid' },
+  });
 
+  beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const updatedOperation = await call(project, 'update_ontology_operation', {
     expected_revision: detachedRule.revision,
     operation_id: 'operation:read_record',
     changes: { uses_rules: [] },
   });
+  assertRevisionEvent(project.id, beforeEventSeq, {
+    revisionId: updatedOperation.revision,
+    cause: 'modeling_mcp_operation_update',
+    resource: { type: 'operation', id: 'operation:read_record', key: 'read_record' },
+  });
+
+  beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const deletedRule = await call(project, 'delete_ontology_rule', {
     expected_revision: updatedOperation.revision,
     rule_id: 'rule:record_valid',
   });
+  assertRevisionEvent(project.id, beforeEventSeq, {
+    revisionId: deletedRule.revision,
+    cause: 'modeling_mcp_rule_delete',
+    resource: { type: 'rule', id: 'rule:record_valid', key: 'record_valid' },
+  });
+
+  beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
+  const deletedOperation = await call(project, 'delete_ontology_operation', {
+    expected_revision: deletedRule.revision,
+    operation_id: 'operation:read_record',
+  });
+  assertRevisionEvent(project.id, beforeEventSeq, {
+    revisionId: deletedOperation.revision,
+    cause: 'modeling_mcp_operation_delete',
+    resource: { type: 'operation', id: 'operation:read_record', key: 'read_record' },
+  });
   const current = await getPackageArtifactStore().readPackageFiles(project.id);
-  assert.equal(current.revision.oid, deletedRule.revision);
+  assert.equal(current.revision.oid, deletedOperation.revision);
   assert.equal((current.spec.rules ?? []).some((item) => item.key === 'record_valid'), false);
-  assert.equal(current.spec.operations[0].usesRules?.length ?? 0, 0);
-  assert.ok(current.files['operations/read_record.md']);
+  assert.equal(current.spec.operations.some((item) => item.key === 'read_record'), false);
+  assert.equal(current.spec.operations.length, 0);
+  assert.equal(current.files['operations/read_record.md'], undefined);
   assert.equal(current.files['rules/record_valid.md'], undefined);
+});
+
+test('Operation/Rule 缺失引用在分析和提交阶段均阻塞且零写入', async () => {
+  const project = createProject({ owner: 'operator_missing_ref', name: 'Missing reference guards', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+
+  const operationPayload = {
+    title: '缺失引用操作',
+    description: '验证缺失 Object 和 Rule 引用。',
+    inputs: [{ param: 'record_id', cn_name: '记录编号', type: 'string', required: true }],
+    outputs: [{ field: 'result', cn_name: '结果', type: 'string' }],
+    flow: ['使用 record_id 读取 missing_object', '执行 missing_rule', '返回 result'],
+    related_objects: ['missing_object'],
+    uses_rules: ['missing_rule'],
+    uses_metrics: [],
+    notes: [],
+  };
+  const operationAnalysis = await call(project, 'validate_ontology_operation_rule_change', {
+    expected_revision: seeded.revision.oid,
+    resource_type: 'operation',
+    action: 'create',
+    resource_id: 'operation:missing_reference_operation',
+    payload: operationPayload,
+  });
+  assertBlockingAdvice(operationAnalysis);
+  assert.match(JSON.stringify(operationAnalysis.issues), /missing_object/u);
+  assert.match(JSON.stringify(operationAnalysis.issues), /missing_rule/u);
+  await assert.rejects(
+    () => call(project, 'create_ontology_operation', {
+      expected_revision: seeded.revision.oid,
+      key: 'missing_reference_operation',
+      ...operationPayload,
+    }),
+    assertBlockedSubmission,
+  );
+
+  const rulePayload = {
+    title: '缺失引用规则',
+    description: '验证缺失 Object 和 Operation 引用。',
+    applies_to_objects: ['missing_object'],
+    applies_to_operations: ['missing_operation'],
+    content: '仅用于合成缺失引用测试。',
+  };
+  const ruleAnalysis = await call(project, 'validate_ontology_operation_rule_change', {
+    expected_revision: seeded.revision.oid,
+    resource_type: 'rule',
+    action: 'create',
+    resource_id: 'rule:missing_reference_rule',
+    payload: rulePayload,
+  });
+  assertBlockingAdvice(ruleAnalysis);
+  assert.match(JSON.stringify(ruleAnalysis.issues), /missing_object/u);
+  assert.match(JSON.stringify(ruleAnalysis.issues), /missing_operation/u);
+  await assert.rejects(
+    () => call(project, 'create_ontology_rule', {
+      expected_revision: seeded.revision.oid,
+      key: 'missing_reference_rule',
+      ...rulePayload,
+    }),
+    assertBlockedSubmission,
+  );
+
+  const current = await getPackageArtifactStore().readPackageFiles(project.id);
+  assert.equal(current.revision.oid, seeded.revision.oid);
+  assert.equal(current.spec.operations.length, 0);
+  assert.equal((current.spec.rules ?? []).length, 0);
+});
+
+test('旧 revision 提交返回冲突且不覆盖最新内容', async () => {
+  const project = createProject({ owner: 'operator_stale_revision', name: 'Stale revision guard', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const createdRule = await call(project, 'create_ontology_rule', {
+    expected_revision: seeded.revision.oid,
+    key: 'current_rule',
+    title: '当前规则',
+    content: '建立新的正式 revision。',
+    applies_to_objects: ['record'],
+  });
+
+  await assert.rejects(
+    () => call(project, 'create_ontology_operation', {
+      expected_revision: seeded.revision.oid,
+      key: 'stale_operation',
+      title: '过期操作',
+      description: '使用旧 revision 的提交。',
+      inputs: [],
+      outputs: [],
+      flow: ['返回空结果'],
+      related_objects: ['record'],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelingMcpToolError);
+      assert.equal(error.code, 'REVISION_CONFLICT');
+      assert.equal(error.details.expected_revision, seeded.revision.oid);
+      assert.equal(error.details.actual_revision, createdRule.revision);
+      return true;
+    },
+  );
+
+  const current = await getPackageArtifactStore().readPackageFiles(project.id);
+  assert.equal(current.revision.oid, createdRule.revision);
+  assert.deepEqual((current.spec.rules ?? []).map((item) => item.key), ['current_rule']);
+  assert.equal(current.spec.operations.length, 0);
 });
 
 test('同一正式 revision 并发写最多一个成功', async () => {
@@ -255,4 +480,92 @@ test('同一正式 revision 并发写最多一个成功', async () => {
   assert.ok(['REVISION_CONFLICT', 'PROJECT_WRITE_BUSY'].includes(rejected.reason.code));
   const current = await getPackageArtifactStore().readPackageFiles(project.id);
   assert.equal((current.spec.rules ?? []).length, 1);
+});
+
+test('Operation/Rule MCP 写入同样受包状态与编辑忙碌态门禁约束', async () => {
+  const releasedProject = createProject({ owner: 'operator_c', name: 'Operation Rule status gate', runtime: 'agent' });
+  await seedProject(releasedProject.id);
+  const released = await setPackageStatus(releasedProject.id, 'released');
+
+  const releasedValidation = await call(releasedProject, 'validate_ontology_operation_rule_change', {
+    expected_revision: released.revision.oid,
+    resource_type: 'rule',
+    action: 'create',
+    resource_id: 'rule:record_valid',
+    payload: { title: '记录有效规则', content: '记录编号存在时有效。', applies_to_objects: ['record'] },
+  });
+  assert.equal(releasedValidation.ok, false);
+  assert.ok(releasedValidation.issues.some((item: any) => item.code === 'PACKAGE_NOT_EDITABLE'));
+
+  const draftProject = createProject({ owner: 'operator_d', name: 'Operation Rule package draft gate', runtime: 'agent' });
+  const seededWithDraft = await seedProject(draftProject.id);
+  await createOrGetPackageDraft(draftProject.id, draftProject.owner);
+  const draftValidation = await call(draftProject, 'validate_ontology_operation_rule_change', {
+    expected_revision: seededWithDraft.revision.oid,
+    resource_type: 'rule',
+    action: 'create',
+    resource_id: 'rule:record_valid',
+    payload: { title: '记录有效规则', content: '记录编号存在时有效。', applies_to_objects: ['record'] },
+  });
+  assert.equal(draftValidation.ok, false);
+  assert.ok(draftValidation.issues.some((item: any) => item.code === 'PROJECT_EDITING_BUSY'));
+  assert.ok(draftValidation.issues.some((item: any) => item.target === 'package_draft'));
+
+  const pendingCandidateProject = createProject({
+    owner: 'operator_e',
+    name: 'Operation Rule pending candidate gate',
+    runtime: 'agent',
+  });
+  const seededWithPending = await seedProject(pendingCandidateProject.id);
+  insertPendingCandidate(pendingCandidateProject.id, seededWithPending.revision.oid);
+  await assert.rejects(
+    () => call(pendingCandidateProject, 'create_ontology_rule', {
+      expected_revision: seededWithPending.revision.oid,
+      key: 'record_valid',
+      title: '记录有效规则',
+      content: '记录编号存在时有效。',
+      applies_to_objects: ['record'],
+    }),
+    (error: unknown) => {
+      assertBlockedSubmission(error);
+      assert.ok((error as ModelingMcpToolError).details.issues.some((item: any) => item.target === 'candidate'));
+      return true;
+    },
+  );
+});
+
+test('Operation/Rule MCP revision 事件发布失败时仍返回已提交 revision', async () => {
+  const project = createProject({
+    owner: 'event_warning_rule',
+    name: 'Operation Rule event warning',
+    runtime: 'agent',
+  });
+  const seeded = await seedProject(project.id);
+  const artifacts = getPackageArtifactStore();
+  const service = new OperationRuleMcpService(getDb(), artifacts, () => {
+    throw new Error('synthetic revision event failure');
+  });
+  const originalConsoleError = console.error;
+  const loggedErrors: unknown[][] = [];
+  console.error = (...args: unknown[]) => { loggedErrors.push(args); };
+
+  try {
+    const result = await service.execute('create_ontology_rule', project, project.owner, {
+      expected_revision: seeded.revision.oid,
+      key: 'event_warning_rule',
+      title: '事件降级规则',
+      content: '事件发布失败不影响正式 revision。',
+      applies_to_objects: ['record'],
+    }) as Record<string, any>;
+
+    assert.notEqual(result.revision, seeded.revision.oid);
+    assert.ok(result.warnings.some((item: any) => item.code === 'REVISION_EVENT_PUBLISH_FAILED'));
+    assert.ok(result.warnings.some((item: any) => item.level === 'warning' && item.phase === 'persist'));
+    const current = await artifacts.readPackageFiles(project.id);
+    assert.equal(current.revision.oid, result.revision);
+    assert.ok((current.spec.rules ?? []).some((item) => item.key === 'event_warning_rule'));
+    assert.equal(loggedErrors.length, 1);
+  } finally {
+    console.error = originalConsoleError;
+  }
 });
