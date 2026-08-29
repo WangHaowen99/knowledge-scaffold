@@ -14,6 +14,11 @@ import { parseRenderedPackageFiles } from '../../workflow/package-import.js';
 import { renderPackage } from '../../workflow/package-render.js';
 import { coverageFor } from '../../workflow/spec-validation.js';
 import {
+  publishModelingMcpRevisionEvent,
+  tryPublishModelingMcpRevisionEvent,
+  type ModelingMcpRevisionEventPublisher,
+} from '../package-revision-event.js';
+import {
   ModelingMcpToolError,
   type ModelingMcpToolDetails,
   type ModelingMcpToolIssue,
@@ -62,6 +67,7 @@ export class OperationRuleMcpService {
   constructor(
     private readonly db: DatabaseSync = getDb(),
     private readonly artifacts = getPackageArtifactStore(),
+    private readonly publishRevisionEvent: ModelingMcpRevisionEventPublisher = publishModelingMcpRevisionEvent,
   ) {}
 
   async execute(
@@ -153,18 +159,28 @@ export class OperationRuleMcpService {
       );
     }
     try {
+      const cause = `modeling_mcp_${command.resourceType}_${command.action}`;
       const saved = await this.artifacts.savePackageVersion(project.id, {
         expectedRevision: command.expectedRevision,
         spec: analysis.nextSpec,
         coverage: analysis.coverage,
         note: actionSummary(command),
         action: {
-          cause: `modeling_mcp_${command.resourceType}_${command.action}`,
+          cause,
           summary: actionSummary(command),
           actorKind: 'user',
           actorName: username,
         },
       });
+      const eventWarning = tryPublishModelingMcpRevisionEvent({
+        projectId: project.id,
+        revisionId: saved.revision.oid,
+        packageVersion: saved.packageVersion,
+        cause,
+        resource: analysis.resource,
+      }, this.publishRevisionEvent);
+      const warnings = analysis.impacts.filter((impact) => impact.level !== 'blocking');
+      if (eventWarning) warnings.push(eventWarning);
       return {
         resource: analysis.resource,
         [command.resourceType]: command.resourceType === 'operation'
@@ -174,7 +190,7 @@ export class OperationRuleMcpService {
         revision: saved.revision.oid,
         changed_paths: analysis.changed_paths,
         affected_resources: analysis.affected_resources,
-        warnings: analysis.impacts.filter((impact) => impact.level !== 'blocking'),
+        warnings,
         historical_problem_count: analysis.historical_problem_count,
         display: { text: `${actionSummary(command)}，已生成正式修订` },
       };

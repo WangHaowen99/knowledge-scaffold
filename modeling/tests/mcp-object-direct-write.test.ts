@@ -9,13 +9,21 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-mcp-object-direct-')
 const [
   { createProject },
   { getPackageArtifactStore },
+  { getDb },
   { insertDocument },
+  { getAuthoringState },
+  { createOrGetPackageDraft },
+  { ObjectMcpService },
   { executeModelingMcpTool, toolNamesByToolset },
   { ModelingMcpToolError },
 ] = await Promise.all([
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
+  import('../src/db/index.js'),
   import('../src/documents/repo.js'),
+  import('../src/authoring/state.js'),
+  import('../src/workflow/package-draft.js'),
+  import('../src/mcp/object/service.js'),
   import('../src/mcp/toolset.js'),
   import('../src/mcp/tool-error.js'),
 ]);
@@ -93,6 +101,63 @@ async function call(project: ReturnType<typeof createProject>, toolName: string,
   });
 }
 
+function revisionEventsSince(projectId: string, afterSeq: number) {
+  return getAuthoringState().replay(projectId, afterSeq).events.filter((event) => (
+    event.type === 'package.revision.created'
+  ));
+}
+
+async function setPackageStatus(projectId: string, status: 'draft' | 'review' | 'released') {
+  const artifacts = getPackageArtifactStore();
+  const current = await artifacts.readPackageFiles(projectId);
+  return artifacts.savePackageVersion(projectId, {
+    expectedRevision: current.revision.oid,
+    spec: { ...current.spec, status },
+    coverage: current.coverage,
+    note: `切换知识包状态到 ${status}`,
+    action: {
+      cause: 'mcp_object_direct_status_seed',
+      summary: `切换知识包状态到 ${status}`,
+      actorKind: 'system',
+      actorName: '测试系统',
+    },
+  });
+}
+
+function insertCandidateChange(projectId: string) {
+  const now = new Date().toISOString();
+  getDb().prepare(`INSERT INTO agent_candidate_changes (
+    project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
+  ) VALUES (?,?,?,'write',?,'mcp-object-test','[]',NULL,?)`)
+    .run(projectId, `run-${projectId}`, 'objects/customer.md', '# synthetic candidate change', now);
+}
+
+function insertPendingCandidate(projectId: string, baseRevision: string) {
+  const now = new Date().toISOString();
+  getDb().prepare(`INSERT INTO artifact_candidate_revisions (
+    id, project_id, base_revision_oid, status, cause, summary, actor_kind, actor_name,
+    groups_json, selected_group_ids_json, created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    `cr_${projectId}`,
+    projectId,
+    baseRevision,
+    'pending',
+    'mcp_object_direct_candidate_seed',
+    'synthetic pending candidate',
+    'user',
+    '测试系统',
+    '[]',
+    '[]',
+    now,
+  );
+}
+
+function assertBusyValidation(result: Record<string, any>, target: string) {
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((item: any) => item.code === 'PROJECT_EDITING_BUSY'));
+  assert.ok(result.issues.some((item: any) => item.target === target));
+}
+
 test('Object MCP 工具集已收敛为 read + validate + direct update', () => {
   const tools = toolNamesByToolset();
   assert.deepEqual(tools.read, ['list_ontology_objects', 'get_ontology_object']);
@@ -139,6 +204,7 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
   assert.equal(validated.next_object.fields.length, 3);
   assert.equal(validated.next_object.relations[0].label, '服务订单');
 
+  const beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const updated = await call(project, 'update_ontology_object', mutation);
   assert.equal(updated.resource.id, 'object:customer');
   assert.notEqual(updated.revision, seeded.revision.oid);
@@ -150,6 +216,17 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
     { type: 'object', key: 'customer' },
     { type: 'object', key: 'order', relation: 'relation' },
   ]);
+  const [revisionEvent] = revisionEventsSince(project.id, beforeEventSeq);
+  assert.equal(revisionEvent?.type, 'package.revision.created');
+  assert.equal(revisionEvent?.payload.revisionId, updated.revision);
+  assert.equal(revisionEvent?.payload.cause, 'modeling_mcp_object_update');
+  assert.equal(revisionEvent?.payload.packageVersion, seeded.packageVersion);
+  assert.deepEqual(revisionEvent?.payload.resource, {
+    type: 'object',
+    id: 'object:customer',
+    key: 'customer',
+  });
+  assert.equal(revisionEvent?.payload.source, 'mcp');
 
   const after = await call(project, 'get_ontology_object', {
     object_id: 'object:customer',
@@ -218,4 +295,127 @@ test('Object MCP 细化返回主键删除、关系目标非法和 revision 冲�
       return true;
     },
   );
+});
+
+test('Object MCP 在非 draft/review 知识包上阻止直写', async () => {
+  const project = createProject({ owner: 'carol', name: 'Object MCP status gate', runtime: 'agent' });
+  await seedProject(project.id);
+  const released = await setPackageStatus(project.id, 'released');
+  const mutation = {
+    object_id: 'object:customer',
+    expected_revision: released.revision.oid,
+    metadata: { aliases: ['客户主档', '锁定版本'] },
+  };
+
+  const validated = await call(project, 'validate_ontology_object_change', mutation);
+  assert.equal(validated.ok, false);
+  assert.ok(validated.issues.some((item: any) => item.code === 'PACKAGE_NOT_EDITABLE'));
+  assert.ok(validated.issues.some((item: any) => item.target === 'package.status'));
+
+  await assert.rejects(
+    () => call(project, 'update_ontology_object', mutation),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelingMcpToolError);
+      assert.equal(error.code, 'SUBMISSION_BLOCKED');
+      assert.ok((error.details.issues as any[]).some((item) => item.code === 'PACKAGE_NOT_EDITABLE'));
+      return true;
+    },
+  );
+});
+
+test('Object MCP 在人工草稿存在时阻止直写', async () => {
+  const project = createProject({ owner: 'dave', name: 'Object MCP package draft gate', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  await createOrGetPackageDraft(project.id, project.owner);
+  const mutation = {
+    object_id: 'object:customer',
+    expected_revision: seeded.revision.oid,
+    metadata: { aliases: ['客户主档', '草稿冲突'] },
+  };
+
+  const validated = await call(project, 'validate_ontology_object_change', mutation);
+  assertBusyValidation(validated, 'package_draft');
+
+  await assert.rejects(
+    () => call(project, 'update_ontology_object', mutation),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelingMcpToolError);
+      assert.equal(error.code, 'SUBMISSION_BLOCKED');
+      assert.ok((error.details.issues as any[]).some((item) => item.target === 'package_draft'));
+      return true;
+    },
+  );
+});
+
+test('Object MCP 在 candidate/review 变更存在时阻止直写', async () => {
+  const candidateChangeProject = createProject({
+    owner: 'erin',
+    name: 'Object MCP candidate change gate',
+    runtime: 'agent',
+  });
+  const seededWithCandidateChange = await seedProject(candidateChangeProject.id);
+  insertCandidateChange(candidateChangeProject.id);
+  const mutation = {
+    object_id: 'object:customer',
+    expected_revision: seededWithCandidateChange.revision.oid,
+    metadata: { aliases: ['客户主档', '候选冲突'] },
+  };
+
+  const validated = await call(candidateChangeProject, 'validate_ontology_object_change', mutation);
+  assertBusyValidation(validated, 'candidate');
+
+  await assert.rejects(
+    () => call(candidateChangeProject, 'update_ontology_object', mutation),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelingMcpToolError);
+      assert.equal(error.code, 'SUBMISSION_BLOCKED');
+      assert.ok((error.details.issues as any[]).some((item) => item.target === 'candidate'));
+      return true;
+    },
+  );
+
+  const pendingCandidateProject = createProject({
+    owner: 'frank',
+    name: 'Object MCP pending candidate gate',
+    runtime: 'agent',
+  });
+  const seededWithPending = await seedProject(pendingCandidateProject.id);
+  insertPendingCandidate(pendingCandidateProject.id, seededWithPending.revision.oid);
+
+  const pendingValidated = await call(pendingCandidateProject, 'validate_ontology_object_change', {
+    object_id: 'object:customer',
+    expected_revision: seededWithPending.revision.oid,
+    metadata: { aliases: ['客户主档', '待确认候选'] },
+  });
+  assertBusyValidation(pendingValidated, 'candidate');
+});
+
+test('Object MCP revision 事件发布失败时仍返回已提交 revision', async () => {
+  const project = createProject({ owner: 'event_warning_object', name: 'Object MCP event warning', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const artifacts = getPackageArtifactStore();
+  const service = new ObjectMcpService(getDb(), artifacts, () => {
+    throw new Error('synthetic revision event failure');
+  });
+  const originalConsoleError = console.error;
+  const loggedErrors: unknown[][] = [];
+  console.error = (...args: unknown[]) => { loggedErrors.push(args); };
+
+  try {
+    const result = await service.execute('update_ontology_object', project, project.owner, {
+      object_id: 'object:customer',
+      expected_revision: seeded.revision.oid,
+      metadata: { aliases: ['客户主档', '事件降级验证'] },
+    }) as Record<string, any>;
+
+    assert.notEqual(result.revision, seeded.revision.oid);
+    assert.ok(result.warnings.some((item: any) => item.code === 'REVISION_EVENT_PUBLISH_FAILED'));
+    assert.ok(result.warnings.some((item: any) => item.level === 'warning' && item.phase === 'persist'));
+    const current = await artifacts.readPackageFiles(project.id);
+    assert.equal(current.revision.oid, result.revision);
+    assert.ok(current.spec.objects.find((item) => item.key === 'customer')?.aliases?.includes('事件降级验证'));
+    assert.equal(loggedErrors.length, 1);
+  } finally {
+    console.error = originalConsoleError;
+  }
 });

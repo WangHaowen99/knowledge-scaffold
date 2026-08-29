@@ -14,11 +14,13 @@ const [
   { registerProjectMcpTransportRoutes },
   { createProject },
   { getPackageArtifactStore },
+  { getAuthoringState },
   { issueProjectMcpToken },
 ] = await Promise.all([
   import('../src/mcp/transport.js'),
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
+  import('../src/authoring/state.js'),
   import('../src/mcp/service.js'),
 ]);
 
@@ -84,6 +86,12 @@ async function rpc(
     headers: { authorization: `Bearer ${token}`, ...headers(method, toolName) },
     payload: { jsonrpc: '2.0', id, method, params: { ...meta(), ...params } },
   });
+}
+
+function revisionEventsSince(projectId: string, afterSeq: number) {
+  return getAuthoringState().replay(projectId, afterSeq).events.filter((event) => (
+    event.type === 'package.revision.created'
+  ));
 }
 
 test('Operation/Rule 与 Object 共用 Modeling MCP toolset 和 scope 门禁', async (t) => {
@@ -235,6 +243,55 @@ test('Operation/Rule 与 Object 共用 Modeling MCP toolset 和 scope 门禁', a
   );
   assert.equal(created.statusCode, 200, created.body);
   assert.notEqual(created.json().result.structuredContent.revision, seeded.revision.oid);
+  const [revisionEvent] = revisionEventsSince(project.id, 0);
+  assert.equal(revisionEvent?.payload.revisionId, created.json().result.structuredContent.revision);
+  assert.equal(revisionEvent?.payload.cause, 'modeling_mcp_rule_create');
+  assert.deepEqual(revisionEvent?.payload.resource, {
+    type: 'rule',
+    id: 'rule:record_valid',
+    key: 'record_valid',
+  });
+  assert.equal(revisionEvent?.payload.source, 'mcp');
+
+  const beforeOperationEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
+  const createdOperation = await rpc(
+    app,
+    changeUrl,
+    apply.token,
+    5,
+    'tools/call',
+    {
+      name: 'create_ontology_operation',
+      arguments: {
+        expected_revision: created.json().result.structuredContent.revision,
+        key: 'read_record',
+        title: '读取记录',
+        description: '根据记录编号读取记录。',
+        inputs: [{ param: 'record_id', cn_name: '记录编号', type: 'string', required: true }],
+        outputs: [{ field: 'result', cn_name: '记录结果', type: 'record' }],
+        flow: ['读取 object:record', '按 rule:record_valid 判断记录有效性', '返回 result'],
+        related_objects: ['record'],
+        uses_rules: ['record_valid'],
+        uses_metrics: [],
+        notes: [],
+      },
+    },
+    'create_ontology_operation',
+  );
+  assert.equal(createdOperation.statusCode, 200, createdOperation.body);
+  assert.notEqual(
+    createdOperation.json().result.structuredContent.revision,
+    created.json().result.structuredContent.revision,
+  );
+  const [operationEvent] = revisionEventsSince(project.id, beforeOperationEventSeq);
+  assert.equal(operationEvent?.payload.revisionId, createdOperation.json().result.structuredContent.revision);
+  assert.equal(operationEvent?.payload.cause, 'modeling_mcp_operation_create');
+  assert.deepEqual(operationEvent?.payload.resource, {
+    type: 'operation',
+    id: 'operation:read_record',
+    key: 'read_record',
+  });
+  assert.equal(operationEvent?.payload.source, 'mcp');
 });
 
 test('官方 MCP v2 Client 可发现并调用 Operation/Rule 工具', async (t) => {

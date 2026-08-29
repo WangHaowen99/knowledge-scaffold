@@ -978,8 +978,9 @@ test('自动重查挂在工作区而不是体检面板，评测与诊断页签�
 });
 
 test('访谈题卡打开事件立即回源会话', () => {
-  assert.match(packageWorkspaceSource, /event\?\.type === 'authoring\.interaction\.opened'/);
-  assert.match(packageWorkspaceSource, /else void load\(\{ advance: true \}\)/);
+  assert.match(packageWorkspaceSource, /planPackageWorkspaceProjectEvent\(\{/);
+  assert.match(packageWorkspaceSource, /workspaceDirty:\s*workspaceDirtyRef\.current/);
+  assert.match(packageWorkspaceSource, /if \(plan\.immediateLoad\) void load\(\{ advance: true \}\)/);
   assert.match(packageWorkspaceSource, /options\?\.advance === true \? advanceProjectSession : getProjectSession/);
 });
 

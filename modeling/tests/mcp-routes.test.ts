@@ -14,6 +14,7 @@ const [
   { createProject, setProjectMember },
   { getPackageArtifactStore },
   { insertDocument },
+  { getAuthoringState },
   { issueProjectMcpToken, markModelingMcpRuntimeRunning, markModelingMcpRuntimeStopped },
   { executeModelingMcpTool },
 ] = await Promise.all([
@@ -22,6 +23,7 @@ const [
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
   import('../src/documents/repo.js'),
+  import('../src/authoring/state.js'),
   import('../src/mcp/service.js'),
   import('../src/mcp/toolset.js'),
 ]);
@@ -159,6 +161,12 @@ function createSseReader(stream: ReadableStream<Uint8Array>) {
   };
 }
 
+function revisionEventsSince(projectId: string, afterSeq: number) {
+  return getAuthoringState().replay(projectId, afterSeq).events.filter((event) => (
+    event.type === 'package.revision.created'
+  ));
+}
+
 test('项目 MCP 管理接口可查询状态并管理 token', async (t) => {
   const project = createProject({ owner: 'alice', name: 'MCP 管理路由', runtime: 'agent' });
   const app = managementApp(t);
@@ -256,6 +264,22 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
     subjectUsername: 'alice',
     issuedBy: 'alice',
     scopes: ['ontology.change.validate', 'ontology.change.apply'],
+    ttlSeconds: 3600,
+  });
+  const validateOnlyIssued = await issueProjectMcpToken({
+    projectId: project.id,
+    name: 'validate-only token',
+    subjectUsername: 'alice',
+    issuedBy: 'alice',
+    scopes: ['ontology.change.validate'],
+    ttlSeconds: 3600,
+  });
+  const applyOnlyIssued = await issueProjectMcpToken({
+    projectId: project.id,
+    name: 'apply-only token',
+    subjectUsername: 'alice',
+    issuedBy: 'alice',
+    scopes: ['ontology.change.apply'],
     ttlSeconds: 3600,
   });
 
@@ -363,6 +387,71 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
     ],
   );
 
+  const validateOnlyTools = await app.inject({
+    method: 'POST',
+    url: `/${validateOnlyIssued.endpoint.endpointId}/change/mcp`,
+    headers: {
+      authorization: `Bearer ${validateOnlyIssued.token}`,
+      ...modernHeaders('tools/list'),
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'validate-only-tools',
+      method: 'tools/list',
+      params: modernMeta(),
+    },
+  });
+  assert.equal(validateOnlyTools.statusCode, 200, validateOnlyTools.body);
+  assert.deepEqual(
+    validateOnlyTools.json().result.tools.map((tool: any) => tool.name),
+    ['validate_ontology_object_change'],
+  );
+
+  const applyOnlyTools = await app.inject({
+    method: 'POST',
+    url: `/${applyOnlyIssued.endpoint.endpointId}/change/mcp`,
+    headers: {
+      authorization: `Bearer ${applyOnlyIssued.token}`,
+      ...modernHeaders('tools/list'),
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'apply-only-tools',
+      method: 'tools/list',
+      params: modernMeta(),
+    },
+  });
+  assert.equal(applyOnlyTools.statusCode, 200, applyOnlyTools.body);
+  assert.deepEqual(
+    applyOnlyTools.json().result.tools.map((tool: any) => tool.name),
+    ['update_ontology_object'],
+  );
+
+  const validateOnlyCannotWrite = await app.inject({
+    method: 'POST',
+    url: `/${validateOnlyIssued.endpoint.endpointId}/change/mcp`,
+    headers: {
+      authorization: `Bearer ${validateOnlyIssued.token}`,
+      ...modernHeaders('tools/call', 'update_ontology_object'),
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'validate-only-write',
+      method: 'tools/call',
+      params: {
+        ...modernMeta(),
+        name: 'update_ontology_object',
+        arguments: {
+          object_id: 'object:customer',
+          expected_revision: revision,
+          metadata: { aliases: ['客户主档', '不会生效'] },
+        },
+      },
+    },
+  });
+  assert.equal(validateOnlyCannotWrite.statusCode, 403, validateOnlyCannotWrite.body);
+  assert.equal(validateOnlyCannotWrite.json().error.data.code, 'MCP_SCOPE_FORBIDDEN');
+
   const validated = await app.inject({
     method: 'POST',
     url: `/${changeIssued.endpoint.endpointId}/change/mcp`,
@@ -397,6 +486,32 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.equal(validated.json().result.structuredContent.ok, true);
   assert.equal(validated.json().result.structuredContent.resource.id, 'object:customer');
 
+  const applyOnlyCannotValidate = await app.inject({
+    method: 'POST',
+    url: `/${applyOnlyIssued.endpoint.endpointId}/change/mcp`,
+    headers: {
+      authorization: `Bearer ${applyOnlyIssued.token}`,
+      ...modernHeaders('tools/call', 'validate_ontology_object_change'),
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'apply-only-validate',
+      method: 'tools/call',
+      params: {
+        ...modernMeta(),
+        name: 'validate_ontology_object_change',
+        arguments: {
+          object_id: 'object:customer',
+          expected_revision: revision,
+          metadata: { aliases: ['客户主档', '不会预校验'] },
+        },
+      },
+    },
+  });
+  assert.equal(applyOnlyCannotValidate.statusCode, 403, applyOnlyCannotValidate.body);
+  assert.equal(applyOnlyCannotValidate.json().error.data.code, 'MCP_SCOPE_FORBIDDEN');
+
+  const beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const updated = await app.inject({
     method: 'POST',
     url: `/${changeIssued.endpoint.endpointId}/change/mcp`,
@@ -431,6 +546,15 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.notEqual(updated.json().result.structuredContent.revision, revision);
   assert.equal(updated.json().result.structuredContent.resource.id, 'object:customer');
   assert.equal(updated.json().result.structuredContent.object.fields.length, 3);
+  const [revisionEvent] = revisionEventsSince(project.id, beforeEventSeq);
+  assert.equal(revisionEvent?.payload.revisionId, updated.json().result.structuredContent.revision);
+  assert.equal(revisionEvent?.payload.cause, 'modeling_mcp_object_update');
+  assert.deepEqual(revisionEvent?.payload.resource, {
+    type: 'object',
+    id: 'object:customer',
+    key: 'customer',
+  });
+  assert.equal(revisionEvent?.payload.source, 'mcp');
 
   const after = await app.inject({
     method: 'POST',

@@ -23,6 +23,11 @@ import { parseRenderedPackageFiles } from '../../workflow/package-import.js';
 import { renderPackage } from '../../workflow/package-render.js';
 import { coverageFor } from '../../workflow/spec-validation.js';
 import {
+  publishModelingMcpRevisionEvent,
+  tryPublishModelingMcpRevisionEvent,
+  type ModelingMcpRevisionEventPublisher,
+} from '../package-revision-event.js';
+import {
   ModelingMcpToolError,
   type ModelingMcpToolDetails,
   type ModelingMcpToolIssue,
@@ -73,6 +78,7 @@ export class ObjectMcpService {
   constructor(
     private readonly db: DatabaseSync = getDb(),
     private readonly artifacts = getPackageArtifactStore(),
+    private readonly publishRevisionEvent: ModelingMcpRevisionEventPublisher = publishModelingMcpRevisionEvent,
   ) {}
 
   async execute(
@@ -159,18 +165,28 @@ export class ObjectMcpService {
       );
     }
     try {
+      const cause = 'modeling_mcp_object_update';
       const saved = await this.artifacts.savePackageVersion(project.id, {
         expectedRevision: command.expectedRevision,
         spec: analysis.nextSpec,
         coverage: analysis.coverage,
         note: objectActionSummary(command),
         action: {
-          cause: 'modeling_mcp_object_update',
+          cause,
           summary: objectActionSummary(command),
           actorKind: 'user',
           actorName: username,
         },
       });
+      const eventWarning = tryPublishModelingMcpRevisionEvent({
+        projectId: project.id,
+        revisionId: saved.revision.oid,
+        packageVersion: saved.packageVersion,
+        cause,
+        resource: analysis.resource,
+      }, this.publishRevisionEvent);
+      const warnings = analysis.issues.filter((issue) => issue.level !== 'blocking');
+      if (eventWarning) warnings.push(eventWarning);
       return {
         resource: analysis.resource,
         object: publicObject(analysis.objectValue, analysis.nextSpec),
@@ -178,7 +194,7 @@ export class ObjectMcpService {
         revision: saved.revision.oid,
         changed_paths: analysis.changed_paths,
         affected_resources: analysis.affected_resources,
-        warnings: analysis.issues.filter((issue) => issue.level !== 'blocking'),
+        warnings,
         impact_summary: analysis.impact_summary,
         normalized_mutation: analysis.normalized_mutation,
         historical_problem_count: analysis.historical_problem_count,
