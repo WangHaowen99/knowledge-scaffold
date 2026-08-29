@@ -127,6 +127,52 @@ test('Operation/Rule 与 Object 共用 Modeling MCP toolset 和 scope 门禁', a
   assert.ok(readTools.includes('list_ontology_operations'));
   assert.ok(readTools.includes('get_ontology_rule'));
 
+  const validateCannotRead = await rpc(app, readUrl, validate.token, 20, 'tools/list', {});
+  assert.equal(validateCannotRead.statusCode, 403, validateCannotRead.body);
+  assert.equal(validateCannotRead.json().error.data.code, 'MCP_SCOPE_FORBIDDEN');
+
+  const readCannotValidate = await rpc(
+    app,
+    changeUrl,
+    read.token,
+    21,
+    'tools/call',
+    {
+      name: 'validate_ontology_operation_rule_change',
+      arguments: {
+        expected_revision: seeded.revision.oid,
+        resource_type: 'rule',
+        action: 'create',
+        resource_id: 'rule:record_valid',
+        payload: { title: '记录有效规则', content: '记录编号存在时有效。' },
+      },
+    },
+    'validate_ontology_operation_rule_change',
+  );
+  assert.equal(readCannotValidate.statusCode, 403, readCannotValidate.body);
+  assert.equal(readCannotValidate.json().error.data.code, 'MCP_SCOPE_FORBIDDEN');
+
+  const applyCannotValidate = await rpc(
+    app,
+    changeUrl,
+    apply.token,
+    22,
+    'tools/call',
+    {
+      name: 'validate_ontology_operation_rule_change',
+      arguments: {
+        expected_revision: seeded.revision.oid,
+        resource_type: 'rule',
+        action: 'create',
+        resource_id: 'rule:record_valid',
+        payload: { title: '记录有效规则', content: '记录编号存在时有效。' },
+      },
+    },
+    'validate_ontology_operation_rule_change',
+  );
+  assert.equal(applyCannotValidate.statusCode, 403, applyCannotValidate.body);
+  assert.equal(applyCannotValidate.json().error.data.code, 'MCP_SCOPE_FORBIDDEN');
+
   const validation = await rpc(
     app,
     changeUrl,

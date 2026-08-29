@@ -475,6 +475,57 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.equal(legacyInitialize.statusCode, 200, legacyInitialize.body);
   assert.equal(legacyInitialize.json().result.protocolVersion, '2025-11-25');
 
+  const legacyListObjects = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      'mcp-protocol-version': '2025-11-25',
+      accept: 'application/json, text/event-stream',
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'legacy-list-objects',
+      method: 'tools/call',
+      params: {
+        name: 'list_ontology_objects',
+        arguments: { query: 'customer', limit: 10 },
+      },
+    },
+  });
+  assert.equal(legacyListObjects.statusCode, 200, legacyListObjects.body);
+  const legacyListResult = legacyListObjects.json().result;
+  assert.equal(legacyListResult.isError, false);
+  const legacyListText = JSON.parse(legacyListResult.content[0].text);
+  assert.equal(legacyListText.revision, legacyListResult.structuredContent.revision);
+  assert.equal(legacyListText.total, 1);
+  assert.equal(legacyListText.items[0].object_id, 'object:customer');
+
+  const legacyMissingObject = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      'mcp-protocol-version': '2025-11-25',
+      accept: 'application/json, text/event-stream',
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'legacy-missing-object',
+      method: 'tools/call',
+      params: {
+        name: 'get_ontology_object',
+        arguments: { object_id: 'object:missing' },
+      },
+    },
+  });
+  assert.equal(legacyMissingObject.statusCode, 200, legacyMissingObject.body);
+  const legacyErrorResult = legacyMissingObject.json().result;
+  assert.equal(legacyErrorResult.isError, true);
+  const legacyErrorText = JSON.parse(legacyErrorResult.content[0].text);
+  assert.equal(legacyErrorText.code, 'RESOURCE_NOT_FOUND');
+  assert.equal(legacyErrorText.code, legacyErrorResult.structuredContent.code);
+
   const mismatch = await app.inject({
     method: 'POST',
     url: `/${readIssued.endpoint.endpointId}/read/mcp`,

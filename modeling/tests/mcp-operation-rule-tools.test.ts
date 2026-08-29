@@ -239,12 +239,119 @@ test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', a
     expected_revision: updatedOperation.revision,
     rule_id: 'rule:record_valid',
   });
+  const deletedOperation = await call(project, 'delete_ontology_operation', {
+    expected_revision: deletedRule.revision,
+    operation_id: 'operation:read_record',
+  });
   const current = await getPackageArtifactStore().readPackageFiles(project.id);
-  assert.equal(current.revision.oid, deletedRule.revision);
+  assert.equal(current.revision.oid, deletedOperation.revision);
   assert.equal((current.spec.rules ?? []).some((item) => item.key === 'record_valid'), false);
-  assert.equal(current.spec.operations[0].usesRules?.length ?? 0, 0);
-  assert.ok(current.files['operations/read_record.md']);
+  assert.equal(current.spec.operations.some((item) => item.key === 'read_record'), false);
+  assert.equal(current.files['operations/read_record.md'], undefined);
   assert.equal(current.files['rules/record_valid.md'], undefined);
+});
+
+test('Operation/Rule 缺失引用在分析和提交阶段均阻塞且零写入', async () => {
+  const project = createProject({ owner: 'operator_missing_ref', name: 'Missing reference guards', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+
+  const operationPayload = {
+    title: '缺失引用操作',
+    description: '验证缺失 Object 和 Rule 引用。',
+    inputs: [{ param: 'record_id', cn_name: '记录编号', type: 'string', required: true }],
+    outputs: [{ field: 'result', cn_name: '结果', type: 'string' }],
+    flow: ['使用 record_id 读取 missing_object', '执行 missing_rule', '返回 result'],
+    related_objects: ['missing_object'],
+    uses_rules: ['missing_rule'],
+    uses_metrics: [],
+    notes: [],
+  };
+  const operationAnalysis = await call(project, 'validate_ontology_operation_rule_change', {
+    expected_revision: seeded.revision.oid,
+    resource_type: 'operation',
+    action: 'create',
+    resource_id: 'operation:missing_reference_operation',
+    payload: operationPayload,
+  });
+  assertBlockingAdvice(operationAnalysis);
+  assert.match(JSON.stringify(operationAnalysis.issues), /missing_object/u);
+  assert.match(JSON.stringify(operationAnalysis.issues), /missing_rule/u);
+  await assert.rejects(
+    () => call(project, 'create_ontology_operation', {
+      expected_revision: seeded.revision.oid,
+      key: 'missing_reference_operation',
+      ...operationPayload,
+    }),
+    assertBlockedSubmission,
+  );
+
+  const rulePayload = {
+    title: '缺失引用规则',
+    description: '验证缺失 Object 和 Operation 引用。',
+    applies_to_objects: ['missing_object'],
+    applies_to_operations: ['missing_operation'],
+    content: '仅用于合成缺失引用测试。',
+  };
+  const ruleAnalysis = await call(project, 'validate_ontology_operation_rule_change', {
+    expected_revision: seeded.revision.oid,
+    resource_type: 'rule',
+    action: 'create',
+    resource_id: 'rule:missing_reference_rule',
+    payload: rulePayload,
+  });
+  assertBlockingAdvice(ruleAnalysis);
+  assert.match(JSON.stringify(ruleAnalysis.issues), /missing_object/u);
+  assert.match(JSON.stringify(ruleAnalysis.issues), /missing_operation/u);
+  await assert.rejects(
+    () => call(project, 'create_ontology_rule', {
+      expected_revision: seeded.revision.oid,
+      key: 'missing_reference_rule',
+      ...rulePayload,
+    }),
+    assertBlockedSubmission,
+  );
+
+  const current = await getPackageArtifactStore().readPackageFiles(project.id);
+  assert.equal(current.revision.oid, seeded.revision.oid);
+  assert.equal(current.spec.operations.length, 0);
+  assert.equal((current.spec.rules ?? []).length, 0);
+});
+
+test('旧 revision 提交返回冲突且不覆盖最新内容', async () => {
+  const project = createProject({ owner: 'operator_stale_revision', name: 'Stale revision guard', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const createdRule = await call(project, 'create_ontology_rule', {
+    expected_revision: seeded.revision.oid,
+    key: 'current_rule',
+    title: '当前规则',
+    content: '建立新的正式 revision。',
+    applies_to_objects: ['record'],
+  });
+
+  await assert.rejects(
+    () => call(project, 'create_ontology_operation', {
+      expected_revision: seeded.revision.oid,
+      key: 'stale_operation',
+      title: '过期操作',
+      description: '使用旧 revision 的提交。',
+      inputs: [],
+      outputs: [],
+      flow: ['返回空结果'],
+      related_objects: ['record'],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelingMcpToolError);
+      assert.equal(error.code, 'REVISION_CONFLICT');
+      assert.equal(error.details.expected_revision, seeded.revision.oid);
+      assert.equal(error.details.actual_revision, createdRule.revision);
+      return true;
+    },
+  );
+
+  const current = await getPackageArtifactStore().readPackageFiles(project.id);
+  assert.equal(current.revision.oid, createdRule.revision);
+  assert.deepEqual((current.spec.rules ?? []).map((item) => item.key), ['current_rule']);
+  assert.equal(current.spec.operations.length, 0);
 });
 
 test('同一正式 revision 并发写最多一个成功', async () => {
