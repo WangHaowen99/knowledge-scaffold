@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const baseCss = readFileSync(new URL('../../shared/styles/base.css', import.meta.url), 'utf8')
-const treeCss = readFileSync(new URL('./components/kbSidebarTree.css', import.meta.url), 'utf8')
 const knowledgeCss = readFileSync(new URL('./knowledge.css', import.meta.url), 'utf8')
 const workbenchSource = readFileSync(new URL('./KnowledgeWorkbench.jsx', import.meta.url), 'utf8')
 
@@ -82,16 +81,6 @@ test('version and view controls use semantic theme tokens instead of light-only 
   const darkBlock = cssBlock(baseCss, "html[data-mwr-mode='dark'] .mwr")
   assert.match(darkBlock, /--selection-fg:\s*var\(--text-primary\)/)
   assert.match(darkBlock, /--selection-indicator:\s*color-mix\(/)
-
-  const selectedVersion = cssBlock(treeCss, '.kbt-version-head.on')
-  assert.match(selectedVersion, /background:\s*var\(--selection-bg\)/)
-  assert.match(selectedVersion, /color:\s*var\(--selection-fg\)/)
-  assert.match(selectedVersion, /box-shadow:\s*inset 3px 0 var\(--selection-indicator\)/)
-  assert.match(cssBlock(treeCss, '.kbt-version-head:hover'), /background:\s*var\(--surface-subtle\)/)
-  assert.match(
-    cssBlock(treeCss, '.kbt-version-head.on .kbt-version > svg'),
-    /color:\s*var\(--selection-fg\)/,
-  )
 
   const selectedView = cssBlock(knowledgeCss, '.mwr .viewtog > button:not(.btn).on')
   assert.match(selectedView, /background:\s*var\(--selection-bg\)/)

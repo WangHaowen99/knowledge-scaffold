@@ -20,6 +20,7 @@ import {
 import { store } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import EvidenceLinks from '../center/EvidenceLinks.jsx';
+import { getProjectSession } from '../../authoring-api.js';
 import {
   batchStudioElements,
   applyStudioDeletions,
@@ -45,12 +46,22 @@ import {
   studioVisibleElementId,
   writeStudioSession,
 } from './studio-model.js';
+import { useProjectEvents } from '../../projectEventStream.jsx';
+import { createProjectEventReplayGate } from '../../projectEventReplay.js';
 import StudioGraph from './StudioGraph.jsx';
+import {
+  createStudioProjectEventBaseline,
+  planStudioProjectEvent,
+  planStudioWindowRefresh,
+  studioHasPendingLocalEdits,
+  studioRefreshNoticeMessage,
+} from './studioRefresh.js';
 import './studio.css';
 
 const selProjectId = (state) => state.projectId;
 const selMaterials = (state) => state.materials;
 const KIND_ICON = { object: Boxes, operation: Workflow, rule: Scale, metric: Gauge, concept: Network };
+const STUDIO_REFRESH_DEBOUNCE_MS = 200;
 
 export default function StudioView({ focus }) {
   const projectId = useStore(store, selProjectId);
@@ -58,8 +69,16 @@ export default function StudioView({ focus }) {
   const [session, setSession] = useState(() => initialStudioSession(projectId));
   const [createKind, setCreateKind] = useState('');
   const [deleteIds, setDeleteIds] = useState([]);
+  const [externalRefreshNotice, setExternalRefreshNotice] = useState({ pending: false, message: '', revisionId: '' });
+  const [projectEventBaseline, setProjectEventBaseline] = useState({ projectId: '', cursor: 0, ready: false });
   const sessionRef = useRef(session);
   const requestRef = useRef(0);
+  const refreshStateRef = useRef({ gate: null, loadTimer: null });
+  const deferredRefreshRef = useRef(null);
+  const localEditsRef = useRef(studioHasPendingLocalEdits(session));
+  const externalRefreshNoticeRef = useRef(externalRefreshNotice);
+
+  useEffect(() => { externalRefreshNoticeRef.current = externalRefreshNotice; }, [externalRefreshNotice]);
 
   const update = useCallback((patch, historyMode = 'replace') => {
     const previous = sessionRef.current;
@@ -70,6 +89,14 @@ export default function StudioView({ focus }) {
     if (historyMode) writeBrowserHistory(next, historyMode, projectId);
     return next;
   }, [projectId]);
+  const setExternalNotice = useCallback((next) => {
+    externalRefreshNoticeRef.current = next;
+    setExternalRefreshNotice(next);
+  }, []);
+  const clearExternalNotice = useCallback(() => {
+    if (!externalRefreshNoticeRef.current.pending) return;
+    setExternalNotice({ pending: false, message: '', revisionId: '' });
+  }, [setExternalNotice]);
 
   const markRequestFailure = useCallback((error) => {
     const failure = studioError(error);
@@ -126,17 +153,53 @@ export default function StudioView({ focus }) {
         view: previous.view === 'entry' && !selectedElementId ? previous.returnView : previous.view,
         details: revisionChanged ? {} : previous.details,
       });
+      deferredRefreshRef.current = null;
+      clearExternalNotice();
       if (selectedElementId) await loadDetail(selectedElementId, list.workingRevision);
     } catch (error) {
       if (requestRef.current === requestId) markRequestFailure(error);
     }
-  }, [loadDetail, markRequestFailure, projectId, update]);
+  }, [clearExternalNotice, loadDetail, markRequestFailure, projectId, update]);
+  const scheduleStudioRefresh = useCallback(() => {
+    const state = refreshStateRef.current;
+    if (state.loadTimer) return;
+    state.loadTimer = setTimeout(() => {
+      state.loadTimer = null;
+      void loadStudio();
+    }, STUDIO_REFRESH_DEBOUNCE_MS);
+  }, [loadStudio]);
 
   useEffect(() => {
     const cached = initialStudioSession(projectId);
     writeStudioSession(projectId, cached);
     sessionRef.current = cached;
     setSession(cached);
+    localEditsRef.current = studioHasPendingLocalEdits(cached);
+    deferredRefreshRef.current = null;
+    setExternalNotice({ pending: false, message: '', revisionId: '' });
+  }, [projectId, setExternalNotice]);
+
+  useEffect(() => {
+    let active = true;
+    setProjectEventBaseline({ projectId: '', cursor: 0, ready: false });
+    if (!projectId) {
+      return () => { active = false; };
+    }
+    void getProjectSession(projectId)
+      .then((snapshot) => {
+        if (!active) return;
+        setProjectEventBaseline(createStudioProjectEventBaseline({
+          projectId,
+          snapshot,
+        }));
+      })
+      .catch(() => {
+        if (!active) return;
+        setProjectEventBaseline(createStudioProjectEventBaseline({
+          projectId,
+        }));
+      });
+    return () => { active = false; };
   }, [projectId]);
 
   useEffect(() => {
@@ -172,9 +235,77 @@ export default function StudioView({ focus }) {
   }, [focus, loadDetail, update]);
 
   useEffect(() => {
+    if (!projectEventBaseline.ready || projectEventBaseline.projectId !== projectId) return undefined;
     void loadStudio();
-    return () => { requestRef.current += 1; };
-  }, [loadStudio]);
+    return () => {
+      requestRef.current += 1;
+      if (refreshStateRef.current.loadTimer) clearTimeout(refreshStateRef.current.loadTimer);
+      refreshStateRef.current.loadTimer = null;
+    };
+  }, [loadStudio, projectEventBaseline.projectId, projectEventBaseline.ready, projectId]);
+
+  const entryDraftDirty = studioHasPendingLocalEdits(session);
+  useEffect(() => {
+    localEditsRef.current = entryDraftDirty;
+    if (!entryDraftDirty && deferredRefreshRef.current) {
+      scheduleStudioRefresh();
+    }
+  }, [entryDraftDirty, scheduleStudioRefresh]);
+
+  useEffect(() => {
+    if (!projectEventBaseline.ready || projectEventBaseline.projectId !== projectId) {
+      refreshStateRef.current.gate = null;
+      return undefined;
+    }
+    refreshStateRef.current.gate = createProjectEventReplayGate(projectEventBaseline.cursor);
+    return () => {
+      refreshStateRef.current.gate = null;
+    };
+  }, [projectEventBaseline.cursor, projectEventBaseline.projectId, projectEventBaseline.ready, projectId]);
+
+  const handleProjectEvent = useCallback((event) => {
+    const state = refreshStateRef.current;
+    state.gate ??= createProjectEventReplayGate(projectEventBaseline.cursor);
+    const plan = planStudioProjectEvent({
+      event,
+      gate: state.gate,
+      localEdits: localEditsRef.current,
+      currentRevision: sessionRef.current.workingRevision,
+    });
+    state.gate = plan.gate;
+    if (plan.deferLoad) {
+      deferredRefreshRef.current = { revisionId: plan.revisionId || '' };
+      setExternalNotice({
+        pending: true,
+        message: studioRefreshNoticeMessage(plan.revisionId),
+        revisionId: plan.revisionId || '',
+      });
+      return;
+    }
+    if (plan.scheduleLoad) {
+      deferredRefreshRef.current = null;
+      scheduleStudioRefresh();
+    }
+  }, [projectEventBaseline.cursor, scheduleStudioRefresh, setExternalNotice]);
+
+  useEffect(() => {
+    const refresh = () => {
+      const plan = planStudioWindowRefresh({ localEdits: localEditsRef.current });
+      if (plan.deferLoad) {
+        deferredRefreshRef.current = { revisionId: '' };
+        setExternalNotice({
+          pending: true,
+          message: studioRefreshNoticeMessage(''),
+          revisionId: '',
+        });
+        return;
+      }
+      deferredRefreshRef.current = null;
+      scheduleStudioRefresh();
+    };
+    window.addEventListener('mw-package-updated', refresh);
+    return () => window.removeEventListener('mw-package-updated', refresh);
+  }, [scheduleStudioRefresh, setExternalNotice]);
 
   const navigate = useCallback((view, elementId = sessionRef.current.selectedElementId) => {
     const next = {
@@ -268,59 +399,94 @@ export default function StudioView({ focus }) {
     }
   }, [markRequestFailure, projectId, update]);
 
-  if (session.phase === 'loading' || session.phase === 'idle') return <StudioLoading />;
+  const projectEventsReady = projectEventBaseline.ready && projectEventBaseline.projectId === projectId;
+  const projectEvents = projectEventsReady ? (
+    <StudioProjectEvents
+      key={projectId}
+      projectId={projectId}
+      initialCursor={projectEventBaseline.cursor}
+      onEvent={handleProjectEvent}
+    />
+  ) : null;
+
+  if (session.phase === 'loading' || session.phase === 'idle') {
+    return <>
+      {projectEvents}
+      <StudioLoading />
+    </>;
+  }
   if (session.phase === 'error' && !session.schema) {
-    return <StudioFailure failure={session.error} onRetry={loadStudio} />;
+    return <>
+      {projectEvents}
+      <StudioFailure failure={session.error} onRetry={loadStudio} />
+    </>;
   }
   if (session.phase === 'conflict' && !session.schema) {
-    return <StudioConflict failure={session.error} onReload={loadStudio} />;
+    return <>
+      {projectEvents}
+      <StudioConflict failure={session.error} onReload={loadStudio} />
+    </>;
   }
 
   return (
-    <div className="studio-root">
-      {(session.phase === 'conflict' || session.phase === 'error') && (
-        <StudioBanner failure={session.error} conflict={session.phase === 'conflict'} onRetry={loadStudio} />
-      )}
-      {session.studioWarnings?.length > 0 && (
-        <StudioWarningBanner warnings={session.studioWarnings} count={session.studioWarningCount}
-          onDismiss={() => update({ studioWarnings: [], studioWarningCount: 0 })} />
-      )}
-      <StudioAccessBanner access={session.schema?.access} />
-      <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={loadStudio} />
-      {session.elements.length === 0 ? (
-        <StudioEmpty schema={session.schema} onCreate={setCreateKind} onRefresh={loadStudio} />
-      ) : session.view === 'graph' ? (
-        <StudioGraph session={session} update={update} onOpen={openDetail} focus={focus} />
-      ) : session.view === 'table' ? (
-        <StudioTable session={session} update={update} onOpen={openDetail} onLoadMore={loadMore}
-          onCreate={setCreateKind} onDelete={setDeleteIds} onMutation={applyMutation} projectId={projectId} focus={focus} />
-      ) : (
-        <StudioEntry session={session} update={update} onBack={() => navigate(session.returnView || 'graph')}
-          onOpenRelation={(elementId) => openDetail(elementId, session.returnView)}
-          onDelete={(elementId) => setDeleteIds([elementId])}
-          onMutation={applyMutation} projectId={projectId} />
-      )}
-      {createKind && (
-        <StudioCreateDialog kind={createKind} session={session} projectId={projectId}
-          materials={materials}
-          onClose={() => setCreateKind('')}
-          onCreated={async (response) => {
-            await applyMutation(response);
-            setCreateKind('');
-            openDetail(response.element.id, 'table');
-          }} />
-      )}
-      {deleteIds.length > 0 && (
-        <StudioDeleteDialog projectId={projectId} session={session} elementIds={deleteIds}
-          onClose={() => setDeleteIds([])}
-          onDeleted={async (response) => {
-            await applyMutation(response);
-            setDeleteIds([]);
-            navigate('table', '');
-          }} />
-      )}
-    </div>
+    <>
+      {projectEvents}
+      <div className="studio-root">
+        {externalRefreshNotice.pending && (
+          <StudioExternalRefreshBanner message={externalRefreshNotice.message} onReload={loadStudio} />
+        )}
+        {(session.phase === 'conflict' || session.phase === 'error') && (
+          <StudioBanner failure={session.error} conflict={session.phase === 'conflict'} onRetry={loadStudio} />
+        )}
+        {session.studioWarnings?.length > 0 && (
+          <StudioWarningBanner warnings={session.studioWarnings} count={session.studioWarningCount}
+            onDismiss={() => update({ studioWarnings: [], studioWarningCount: 0 })} />
+        )}
+        <StudioAccessBanner access={session.schema?.access} />
+        <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={loadStudio} />
+        {session.elements.length === 0 ? (
+          <StudioEmpty schema={session.schema} onCreate={setCreateKind} onRefresh={loadStudio} />
+        ) : session.view === 'graph' ? (
+          <StudioGraph session={session} update={update} onOpen={openDetail} focus={focus} />
+        ) : session.view === 'table' ? (
+          <StudioTable session={session} update={update} onOpen={openDetail} onLoadMore={loadMore}
+            onCreate={setCreateKind} onDelete={setDeleteIds} onMutation={applyMutation} projectId={projectId} focus={focus} />
+        ) : (
+          <StudioEntry session={session} update={update} onBack={() => navigate(session.returnView || 'graph')}
+            onOpenRelation={(elementId) => openDetail(elementId, session.returnView)}
+            onDelete={(elementId) => setDeleteIds([elementId])}
+            onMutation={applyMutation} projectId={projectId} />
+        )}
+        {createKind && (
+          <StudioCreateDialog kind={createKind} session={session} projectId={projectId}
+            materials={materials}
+            onClose={() => setCreateKind('')}
+            onCreated={async (response) => {
+              await applyMutation(response);
+              setCreateKind('');
+              openDetail(response.element.id, 'table');
+            }} />
+        )}
+        {deleteIds.length > 0 && (
+          <StudioDeleteDialog projectId={projectId} session={session} elementIds={deleteIds}
+            onClose={() => setDeleteIds([])}
+            onDeleted={async (response) => {
+              await applyMutation(response);
+              setDeleteIds([]);
+              navigate('table', '');
+            }} />
+        )}
+      </div>
+    </>
   );
+}
+
+function StudioProjectEvents({ projectId, initialCursor, onEvent }) {
+  useProjectEvents(projectId, onEvent, {
+    enabled: Boolean(projectId),
+    initialCursor,
+  });
+  return null;
 }
 
 function initialStudioSession(projectId) {
@@ -1196,6 +1362,13 @@ function StudioBanner({ failure, conflict, onRetry }) {
   return <div className={`studio-banner ${conflict ? 'conflict' : 'error'}`} role="alert">
     <AlertCircle size={14} /><span>{conflict ? '知识包已变化，当前画面保留供核对。' : failure?.message}</span>
     <button className="btn btn-sm" onClick={onRetry}>{conflict ? '载入当前版本' : '重试'}</button>
+  </div>;
+}
+
+function StudioExternalRefreshBanner({ message, onReload }) {
+  return <div className="studio-banner warning" role="status">
+    <AlertCircle size={14} /><span>{message}</span>
+    <button className="btn btn-sm" onClick={onReload}>载入最新版本</button>
   </div>;
 }
 

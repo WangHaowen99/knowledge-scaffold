@@ -469,7 +469,7 @@ function legacyToolResult(payload: Record<string, unknown>): Record<string, unkn
   return {
     content: [{
       type: 'text',
-      text: toolText(payload),
+      text: JSON.stringify(payload, null, 2),
     }],
     structuredContent: payload,
     isError: false,
@@ -497,17 +497,18 @@ function modernToolErrorResult(error: AgentCoreError | ModelingMcpToolError): Re
 
 function legacyToolErrorResult(error: AgentCoreError | ModelingMcpToolError): Record<string, unknown> {
   const publicError = toolErrorPayload(error);
+  const structuredContent = {
+    code: publicError.code,
+    error: publicError.message,
+    next: publicError.next,
+    details: publicError.details,
+  };
   return {
     content: [{
       type: 'text',
-      text: publicError.message,
+      text: JSON.stringify(structuredContent, null, 2),
     }],
-    structuredContent: {
-      code: publicError.code,
-      error: publicError.message,
-      next: publicError.next,
-      details: publicError.details,
-    },
+    structuredContent,
     isError: true,
   };
 }
