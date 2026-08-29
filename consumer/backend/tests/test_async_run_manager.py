@@ -1708,6 +1708,82 @@ def test_truncated_terminal_projection_persists_partial_output(tmp_path):
     asyncio.run(run_test())
 
 
+def test_retriable_failure_persists_resume_history_and_public_action(tmp_path):
+    async def run_test():
+        class _SyntheticOrchestrator:
+            def __init__(self):
+                self.chat_store = ChatStore(str(tmp_path / "chat"))
+                self.execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+            def _get_stores(self, username, workspace_id):
+                assert username == "operator_a"
+                assert workspace_id == "workspace_demo"
+                return self.chat_store, self.execution_store
+
+        class _RecoverableRuntime:
+            async def astream(self, context):
+                yield RuntimeEvent(
+                    event_type="turn.finished",
+                    status="failed",
+                    run_id=context.run_id,
+                    session_id=context.session_id,
+                    turn_id=context.turn_id,
+                    payload={
+                        "status": "failed",
+                        "error": {
+                            "error_code": "MODEL_PROVIDER_ERROR",
+                            "message": "模型服务暂时不可用",
+                            "retriable": True,
+                            "source": "model",
+                            "details": {"http_status": 503},
+                        },
+                        "recovery": {
+                            "action": "continue",
+                            "label": "继续执行",
+                            "message": "Continue from the preserved context.",
+                        },
+                        "history_messages": [
+                            {"role": "user", "content": "synthetic request"},
+                            {"role": "assistant", "content": "synthetic progress"},
+                        ],
+                    },
+                )
+
+            async def cancel(self, run_id, reason):
+                del run_id, reason
+                return True
+
+        orchestrator = _SyntheticOrchestrator()
+        service = AsyncExecutionService(
+            _RecoverableRuntime(),
+            session_adapter=OrchestratorSessionAdapter(lambda: orchestrator),
+        )
+        manager = AsyncRunManager(service)
+        await manager.create_run(_context("run_recoverable_failure"), _scope())
+
+        failed = await _wait_for_status(
+            manager,
+            "run_recoverable_failure",
+            RunStatus.FAILED,
+        )
+        history = orchestrator.execution_store.get_llm_context("session_demo")
+        terminal = [
+            event
+            for event in await manager.repository.list_after(
+                "run_recoverable_failure",
+                0,
+            )
+            if event.event_type == "turn.finished"
+        ][0]
+
+        assert failed.result.recovery.action == "continue"
+        assert [message["role"] for message in history] == ["user", "assistant"]
+        assert terminal.payload["recovery"]["action"] == "continue"
+        assert "history_messages" not in terminal.payload
+
+    asyncio.run(run_test())
+
+
 def test_terminal_projection_failure_still_releases_session_context():
     async def run_test():
         adapter = OrchestratorSessionAdapter(lambda: SimpleNamespace())

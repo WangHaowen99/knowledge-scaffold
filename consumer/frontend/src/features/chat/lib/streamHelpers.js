@@ -470,7 +470,13 @@ const extractTurnFinishedOutput = (payload = {}, publicStatus = 'completed') => 
       ? publicErrorMessage(payload.error, '运行失败')
       : null,
     errorCode,
+    errorRetriable: payload.error && typeof payload.error === 'object'
+      ? payload.error.retriable === true
+      : false,
     cancelReason: payload.cancel_reason || null,
+    recovery: payload.recovery && typeof payload.recovery === 'object'
+      ? payload.recovery
+      : null,
   };
 };
 
@@ -562,8 +568,14 @@ const finalizeTurnState = (next, publicStatus, payload, eventTs) => {
   if (terminal.errorCode) {
     next.meta = { ...(next.meta || {}), error_code: terminal.errorCode };
   }
+  if (terminal.errorRetriable) {
+    next.meta = { ...(next.meta || {}), error_retriable: true };
+  }
   if (terminal.cancelReason) {
     next.meta = { ...(next.meta || {}), cancel_reason: terminal.cancelReason };
+  }
+  if (terminal.recovery) {
+    next.meta = { ...(next.meta || {}), recovery: terminal.recovery };
   }
 
   return next;
