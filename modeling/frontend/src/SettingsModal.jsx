@@ -20,9 +20,8 @@ const LLM_FIELD_SUFFIXES = [
 ];
 const DEFAULT_MCP_SCOPE_OPTIONS = [
   { scope: 'ontology.read', label: 'ontology.read', description: '读取对象列表与对象详情。' },
-  { scope: 'ontology.change.validate', label: 'ontology.change.validate', description: '只做修改预校验，不落草稿。' },
-  { scope: 'ontology.change.apply', label: 'ontology.change.apply', description: '把对象模型修改写入 candidate 草稿。' },
-  { scope: 'ontology.change.review', label: 'ontology.change.review', description: '提交复核，并执行最终确认或退回。' },
+  { scope: 'ontology.change.validate', label: 'ontology.change.validate', description: '只做修改预校验，不写入正式 revision。' },
+  { scope: 'ontology.change.apply', label: 'ontology.change.apply', description: '执行本体模型修改，并在校验通过后直接生成新的正式 revision。' },
 ];
 
 function llmFormKey(purpose, suffix) {

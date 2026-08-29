@@ -38,10 +38,11 @@ import {
   isConstructionInteraction,
 } from './constructionInteraction.js';
 import CandidateRevisionPanel, { CandidateRevisionCanvas } from './CandidateRevisionPanel.jsx';
+import { createProjectEventReplayGate } from './projectEventReplay.js';
 import {
-  advanceProjectEventReplayGate,
-  createProjectEventReplayGate,
-} from './projectEventReplay.js';
+  planPackageWorkspaceProjectEvent,
+  planPackageWorkspaceWindowRefresh,
+} from './packageWorkspaceRefresh.js';
 import {
   isProgressOnlyMessageEvent,
   liveAiConstructionMessage,
@@ -55,13 +56,6 @@ import {
   confirmUnsavedNavigation,
   protectUnsavedBeforeUnload,
 } from './flowchartNavigationGuard.js';
-
-// 候选修订列表只在这些事件后才会变化，不必跟着每一条项目事件重取
-const CANDIDATE_EVENT_TYPES = new Set([
-  'package.candidate.created',
-  'package.revision.created',
-  'optimization.expert_review.resolved',
-]);
 
 const TABS = [
   ['edit', '编辑与检查'],
@@ -344,10 +338,9 @@ export default function PackageWorkspace({
   }, [activeTab, deliveryView, embedded, loadRevisions]);
   useEffect(() => {
     const refresh = () => {
-      scheduleLoad();
-      if (activeTab === 'versions' || (embedded && activeTab === 'release' && deliveryView === 'versions')) {
-        void loadRevisions();
-      }
+      const plan = planPackageWorkspaceWindowRefresh({ activeTab, embedded, deliveryView });
+      if (plan.scheduleLoad) scheduleLoad();
+      if (plan.loadRevisions) void loadRevisions();
     };
     window.addEventListener('mw-package-updated', refresh);
     window.addEventListener('mw-package-check-updated', refresh);
@@ -359,27 +352,24 @@ export default function PackageWorkspace({
   const handleProjectEvent = (event) => {
     const store = eventStateRef.current;
     store.gate ??= createProjectEventReplayGate(sessionCursorRef.current);
-    if (CANDIDATE_EVENT_TYPES.has(String(event?.type ?? ''))) {
-      setCandidateRefreshKey((value) => value + 1);
-    }
-    const replay = advanceProjectEventReplayGate(store.gate, event);
-    store.gate = replay.gate;
-    const refreshWhenSafe = () => {
-      if (workspaceDirtyRef.current) {
-        deferredRefreshRef.current = true;
-        return;
-      }
-      scheduleLoad();
-    };
+    const plan = planPackageWorkspaceProjectEvent({
+      event,
+      gate: store.gate,
+      workspaceDirty: workspaceDirtyRef.current,
+      activeTab,
+      embedded,
+      deliveryView,
+    });
+    store.gate = plan.gate;
+    if (plan.candidateRefresh) setCandidateRefreshKey((value) => value + 1);
+    if (plan.deferLoad) deferredRefreshRef.current = true;
+    if (plan.loadRevisions) void loadRevisions();
     // 题卡打开事件就是后端已切到 waiting 的信号。立即回源会话，不等普通事件的
     // 200ms 防抖，保证 waiting 状态与 pendingInteraction 在同一轮渲染中到达。
-    if (event?.type === 'authoring.interaction.opened' && !replay.historical) {
-      if (workspaceDirtyRef.current) deferredRefreshRef.current = true;
-      else void load({ advance: true });
-    }
+    if (plan.immediateLoad) void load({ advance: true });
     // 消息随事件内联送达，先贴上去让回显立即可见；任务图等其余状态仍按需回源。
     const liveMessage = liveAiConstructionMessage(event);
-    if (liveMessage && !replay.historical) {
+    if (liveMessage && !plan.historical) {
       setSession((current) => current ? {
         ...current,
         aiConstructionMessages: upsertAiConstructionMessage(
@@ -389,7 +379,7 @@ export default function PackageWorkspace({
       } : current);
       if (isProgressOnlyMessageEvent(event)) return;
     }
-    if (replay.refresh) refreshWhenSafe();
+    if (plan.scheduleLoad) scheduleLoad();
   };
 
   useProjectEvents(projectId, handleProjectEvent, { enabled: sessionReady });
