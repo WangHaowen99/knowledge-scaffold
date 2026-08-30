@@ -23,6 +23,8 @@ ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 ValidationRepairSave = Callable[[dict[str, Any]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
+# Keep the outer tool deadline beyond the core client's 1800-second deadline.
+FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
 LEADER_TABLE_SAMPLE_ROWS = 5
 TABLE_FIELD_SAMPLE_VALUES = 3
@@ -1532,6 +1534,10 @@ class CoreTool(Tool):
                 name=spec.name,
                 description=spec.description,
                 input_params=spec.input_schema,
+                properties=(
+                    {"resilience": {"timeout_s": FULL_READ_TOOL_TIMEOUT_SECONDS}}
+                    if spec.name == "read_documents_fully" else {}
+                ),
                 parallel_safe=spec.parallel_safe,
             )
         )

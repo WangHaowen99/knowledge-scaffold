@@ -8,6 +8,7 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from modeling_agent.agent import _system_prompt, build_model, context_engine_config
 from modeling_agent.rails import (
     AskRail,
@@ -225,6 +226,20 @@ async def test_interrupted_stream_marks_partial_message_incomplete(settings) -> 
     done = [event for event in events if event.kind == "message_done"]
     assert len(done) == 1
     assert done[0].payload["incomplete"] is True
+
+
+async def test_full_document_read_declares_long_running_timeout() -> None:
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "read_documents_fully")
+    tool = CoreTool(spec, ToolContext(
+        project_id="project_timeout",
+        run_id="run_timeout",
+        token="token",
+        gateway=FakeGateway({}),
+        emit=lambda *_args: None,
+    ))
+
+    assert tool.card.properties["resilience"]["timeout_s"] == 1830.0
+    assert AbilityManager._resolve_call_timeout(tool.card) == 1830.0
 
 
 async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() -> None:
