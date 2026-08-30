@@ -155,13 +155,14 @@ test('package mapping format：纯渲染产物符合语义 mapping 契约', () =
   assert.deepEqual(runFormatChecks(spec, renderPackage(spec)), []);
 });
 
-test('package mapping contract：mapping 是允许空 objects 的必选文件', () => {
+test('package mapping contract：mapping 只在物理 Schema 模式下生成', () => {
   const contract = packageGenerationContract();
 
-  assert.equal(contract.validatorVersion, 'package-contract-v5');
-  assert.ok(contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
-  assert.equal(contract.packageFormat.mappings.required, true);
-  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, true);
+  assert.equal(contract.validatorVersion, 'package-contract-v6');
+  assert.ok(!contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
+  assert.equal(contract.packageFormat.mappings.required, 'when_physical_schema_exists');
+  assert.equal(contract.packageFormat.mappings.forbidden, 'when_physical_schema_absent');
+  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, false);
 });
 
 test('package mapping format：mapping 缺失或为空时阻断知识包', () => {
@@ -183,13 +184,11 @@ test('package mapping format：mapping 缺失或为空时阻断知识包', () =>
   )));
 });
 
-test('package mapping format：无物理对象时允许空 objects 映射', () => {
+test('package mapping format：无物理对象时不生成 mapping', () => {
   const spec = packageSpec();
   spec.objects = [];
   const files = renderPackage(spec);
-  const mappings = JSON.parse(files['mappings/object-data-mappings.json']);
-
-  assert.deepEqual(mappings.objects, {});
+  assert.equal(files['mappings/object-data-mappings.json'], undefined);
   assert.deepEqual(runFormatChecks(spec, files), []);
 });
 

@@ -63,6 +63,13 @@ import {
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
 import { renderPackage } from '../workflow/package-render.js';
+import {
+  expectedSchemaObjects,
+  OBJECT_DATA_MAPPING_PATH,
+  packageNeedsObjectDataMapping,
+  schemaObjectPolicyIssues,
+  schemaTables,
+} from '../workflow/schema-object-policy.js';
 import { validateKey, validateSpecKeys } from '../workflow/keys.js';
 import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import {
@@ -148,6 +155,7 @@ const DOMAIN_TOOL_NAMES = new Set([
   'list_domain_resources', 'get_domain_resource',
   'create_object', 'create_rule', 'create_operation', 'create_metric',
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
+  'sync_schema_objects',
   'patch_object_source_binding',
   'preview_domain_delete', 'delete_domain_resource',
 ]);
@@ -524,6 +532,7 @@ export class AgentCoreService {
 
   private async invokeRaw(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
     if (DOMAIN_TOOL_NAMES.has(tool) || CHANGE_CONTROL_TOOLS.has(tool)) this.adoptDomainToolContract(context);
+    this.assertObjectSourceToolMode(context.project.id, tool, args);
     if (CHANGE_SET_DOMAIN_TOOLS.has(tool)
       && this.changeControl.activePlan(context.project.id, context.runId)) {
       throw new AgentCoreError(
@@ -579,6 +588,13 @@ export class AgentCoreService {
         args,
         domainTargetKey(args.resource_id),
         () => this.patchObjectSourceBinding(workspace, context, args),
+      );
+      case 'sync_schema_objects': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        '__schema__',
+        () => this.syncSchemaObjects(workspace, context, args),
       );
       case 'delete_domain_resource': return this.runPlannedDirectTask(
         context,
@@ -791,6 +807,11 @@ export class AgentCoreService {
   private async createChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
     try {
       const working = await this.workbenchStudioFiles(context.project, context.username);
+      const sourcePolicy = this.normalizeObjectSourcePlan(
+        context.project.id,
+        args.mode,
+        args.tasks,
+      );
       const plan = this.changeControl.createPlan({
         projectId: context.project.id,
         runId: context.runId,
@@ -798,16 +819,140 @@ export class AgentCoreService {
         mode: args.mode,
         expectedRevision: args.expected_revision,
         currentRevision: working.workingRevision,
-        tasks: args.tasks,
+        tasks: sourcePolicy.tasks,
       });
       return {
         plan,
+        object_source_policy: {
+          mode: sourcePolicy.mode,
+          schema_table_count: sourcePolicy.schemaTableCount,
+          object_generation: sourcePolicy.mode === 'schema'
+            ? 'deterministic_schema_sync'
+            : 'virtual_objects_only',
+        },
         display: { text: plan.approval_status === 'pending'
           ? `已建立 ${plan.task_count} 项受控建模计划，等待你批准后再写入`
           : `已建立 ${plan.task_count} 项受控建模计划，写入前会逐项核对范围` },
       };
     } catch (error) {
       throw normalizeChangeControlError(error);
+    }
+  }
+
+  private normalizeObjectSourcePlan(projectId: string, rawMode: unknown, rawTasks: unknown) {
+    const mode = String(rawMode ?? 'expert_edit');
+    const physicalTables = schemaTables(this.tables(projectId));
+    const sourceMode = physicalTables.length ? 'schema' : 'virtual';
+    if (!Array.isArray(rawTasks)) {
+      return { tasks: rawTasks, mode: sourceMode, schemaTableCount: physicalTables.length };
+    }
+    const tasks = rawTasks.map((task) => (
+      task && typeof task === 'object' && !Array.isArray(task)
+        ? { ...(task as Record<string, unknown>) }
+        : task
+    ));
+    const toolsFor = (task: unknown) => (
+      task && typeof task === 'object' && !Array.isArray(task)
+        && Array.isArray((task as Record<string, unknown>).allowed_tools)
+        ? (task as Record<string, unknown>).allowed_tools as unknown[]
+        : []
+    ).map(String);
+
+    if (!physicalTables.length) {
+      const forbidden = tasks.find((task) => toolsFor(task).some((tool) => (
+        tool === 'sync_schema_objects' || tool === 'patch_object_source_binding'
+      )));
+      if (forbidden) {
+        throw new AgentCoreError(
+          'PHYSICAL_SCHEMA_REQUIRED',
+          '项目没有明确标记为数据 Schema 的资料，只能生成不绑定物理表的虚拟对象',
+          ['移除 Schema 同步和物理绑定任务；虚拟对象不得生成 mapping'],
+          409,
+          { retryable: false, object_source_mode: 'virtual' },
+        );
+      }
+      return { tasks, mode: sourceMode, schemaTableCount: 0 };
+    }
+
+    const createsPhysicalObject = (task: unknown) => toolsFor(task).includes('create_object');
+    if (mode !== 'generation' && tasks.some(createsPhysicalObject)) {
+      throw new AgentCoreError(
+        'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE',
+        '项目已有确定数据 Schema，不能由模型另行创建对象',
+        ['使用 sync_schema_objects 按全部 Sheet 确定性同步，或只修改现有对象的非物理元数据'],
+        409,
+        { retryable: false, object_source_mode: 'schema', schema_table_count: physicalTables.length },
+      );
+    }
+    if (mode !== 'generation') {
+      return { tasks, mode: sourceMode, schemaTableCount: physicalTables.length };
+    }
+
+    const replacedKeys = new Set<string>();
+    const retained = tasks.filter((task) => {
+      const tools = toolsFor(task);
+      const replaced = tools.some((tool) => (
+        tool === 'create_object' || tool === 'patch_object_source_binding' || tool === 'sync_schema_objects'
+      ));
+      if (replaced && task && typeof task === 'object' && !Array.isArray(task)) {
+        replacedKeys.add(String((task as Record<string, unknown>).client_key ?? ''));
+      }
+      return !replaced;
+    });
+    const schemaTaskKey = 'schema_object_sync';
+    const normalized = retained.map((task) => {
+      if (!task || typeof task !== 'object' || Array.isArray(task)) return task;
+      const record = task as Record<string, unknown>;
+      const dependencies = Array.isArray(record.depends_on) ? record.depends_on.map(String) : [];
+      return {
+        ...record,
+        depends_on: [...new Set([
+          schemaTaskKey,
+          ...dependencies.filter((dependency) => !replacedKeys.has(dependency)),
+        ])],
+      };
+    });
+    return {
+      mode: sourceMode,
+      schemaTableCount: physicalTables.length,
+      tasks: [{
+        client_key: schemaTaskKey,
+        title: `按 ${physicalTables.length} 张 Schema Sheet 同步物理对象`,
+        resource_kind: 'binding',
+        target_key: '__schema__',
+        allowed_tools: ['sync_schema_objects'],
+        depends_on: [],
+        acceptance: '每张 Schema Sheet 恰好对应一个对象，字段、主键、物理来源和 mapping 全部由平台确定性生成',
+        required: true,
+      }, ...normalized],
+    };
+  }
+
+  private assertObjectSourceToolMode(
+    projectId: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ): void {
+    const hasSchema = schemaTables(this.tables(projectId)).length > 0;
+    if (hasSchema && (tool === 'create_object' || tool === 'upsert_object')) {
+      throw new AgentCoreError(
+        'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE',
+        '项目已有确定数据 Schema，对象只能按物理 Sheet 由平台同步生成',
+        ['使用 sync_schema_objects；不要创建、合并或省略 Sheet 对象'],
+        409,
+        { retryable: false, object_source_mode: 'schema' },
+      );
+    }
+    const virtualBindingAttempt = ['sync_schema_objects', 'patch_object_source_binding', 'bind_object_source'].includes(tool)
+      || (tool === 'upsert_object' && (args.schema_source !== undefined || args.source !== undefined));
+    if (!hasSchema && virtualBindingAttempt) {
+      throw new AgentCoreError(
+        'PHYSICAL_SCHEMA_REQUIRED',
+        '项目没有确定数据 Schema，虚拟对象不能绑定物理表或生成 mapping',
+        ['保留虚拟对象，不设置 sourceTable、table source 或 mapping'],
+        409,
+        { retryable: false, object_source_mode: 'virtual' },
+      );
     }
   }
 
@@ -833,6 +978,31 @@ export class AgentCoreService {
 
   private reviseChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
     try {
+      const active = this.changeControl.activePlan(context.project.id, context.runId);
+      const additions = Array.isArray(args.add_tasks) ? args.add_tasks : [];
+      const addedTools = additions.flatMap((task) => (
+        task && typeof task === 'object' && !Array.isArray(task)
+          && Array.isArray((task as Record<string, unknown>).allowed_tools)
+          ? ((task as Record<string, unknown>).allowed_tools as unknown[]).map(String)
+          : []
+      ));
+      const hasSchema = schemaTables(this.tables(context.project.id)).length > 0;
+      const forbidden = hasSchema
+        ? addedTools.some((tool) => tool === 'create_object'
+          || (active?.mode === 'generation'
+            && ['sync_schema_objects', 'patch_object_source_binding'].includes(tool)))
+        : addedTools.some((tool) => ['sync_schema_objects', 'patch_object_source_binding'].includes(tool));
+      if (forbidden) {
+        throw new AgentCoreError(
+          hasSchema ? 'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE' : 'PHYSICAL_SCHEMA_REQUIRED',
+          hasSchema
+            ? '计划修订不能绕过已确定 Schema 的对象同步边界'
+            : '没有确定数据 Schema 时不能追加物理绑定任务',
+          [hasSchema ? '保留原计划中的 Schema 同步任务' : '只追加不绑定物理表的虚拟对象任务'],
+          409,
+          { retryable: false, object_source_mode: hasSchema ? 'schema' : 'virtual' },
+        );
+      }
       const plan = this.changeControl.revisePlan({
         projectId: context.project.id,
         runId: context.runId,
@@ -957,6 +1127,7 @@ export class AgentCoreService {
         taskId,
         tool,
         receiptId: text(args.mutation_id, 'mutation_id'),
+        resultingRevision: String(result.working_revision ?? ''),
       });
       return { ...result, plan };
     } catch (error) {
@@ -979,6 +1150,15 @@ export class AgentCoreService {
       const input = action.arguments;
       const kind = action.tool.split('_').at(-1) as DomainKind;
       if (action.tool.startsWith('create_')) {
+        if (kind === 'object' && schemaTables(this.tables(context.project.id)).length) {
+          throw new AgentCoreError(
+            'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE',
+            'Schema 模式不接受模型创建对象，必须先执行计划中的 Schema 同步任务',
+            ['调用 get_change_plan 读取 sync_schema_objects 任务并执行'],
+            409,
+            { retryable: false, object_source_mode: 'schema' },
+          );
+        }
         creates.push({ kind, key: domainKey(input.key, domainKindLabel(kind)), values: domainCreateValues(kind, input) });
         operations.push(action.tool);
         actionCount += 1;
@@ -1470,6 +1650,130 @@ export class AgentCoreService {
       mutation_id: mutationId,
       resource: domainResourcePayload(nextElement),
       candidate: true,
+    };
+    this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
+    return response;
+  }
+
+  private async syncSchemaObjects(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const tool = 'sync_schema_objects';
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    new StudioReadService(workingPackage).assertRevision(text(args.expected_revision, 'expected_revision'));
+    const tables = schemaTables(this.tables(context.project.id));
+    if (!tables.length) {
+      throw new AgentCoreError(
+        'PHYSICAL_SCHEMA_REQUIRED',
+        '没有找到明确标记为数据 Schema 的已解析 Sheet',
+        ['先在资料设置中把确定的 Excel 或 CSV 标记为数据 Schema'],
+        409,
+        { retryable: false },
+      );
+    }
+
+    const current = await this.overlay(workspace);
+    const physical = expectedSchemaObjects(tables);
+    const nextSpec = validateSpecKeys(canonicalizePackageSpec({
+      ...current.spec,
+      objects: physical.map((item) => item.object),
+    }));
+    const rendered = renderPackage(nextSpec);
+    const mapping = rendered[OBJECT_DATA_MAPPING_PATH];
+    if (!mapping) {
+      throw new AgentCoreError(
+        'SCHEMA_MAPPING_MISSING',
+        '确定性编译没有生成 Schema 对象 mapping',
+        [],
+        500,
+      );
+    }
+    const objectPaths = physical.map((item) => `objects/${item.object.key}.md`);
+    const expectedObjectPaths = new Set(objectPaths);
+    const staleObjectPaths = Object.keys(current.files).filter((path) => (
+      /^objects\/[^/]+\.md$/u.test(path)
+      && path !== 'objects/index.md'
+      && !expectedObjectPaths.has(path)
+    ));
+    const detailPath = objectPaths[0];
+    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
+    await this.discardFrozenCandidate(workspace, context, 'Schema 物理对象重新同步，旧确认请求已失效');
+
+    this.db.exec('SAVEPOINT agent_schema_object_sync');
+    try {
+      for (const path of objectPaths) {
+        this.upsertChange(workspace, {
+          path,
+          kind: 'write',
+          content: rendered[path],
+          groupId: 'schema_objects',
+          evidence: [],
+          reason: '根据已确认数据 Schema 确定性生成物理对象',
+        });
+      }
+      for (const path of staleObjectPaths) {
+        this.upsertChange(workspace, {
+          path,
+          kind: 'delete',
+          content: null,
+          groupId: 'schema_objects',
+          evidence: [],
+          reason: 'Schema 模式移除不对应物理 Sheet 的派生对象',
+        });
+      }
+      for (const path of ['objects/index.md', OBJECT_DATA_MAPPING_PATH]) {
+        this.upsertChange(workspace, {
+          path,
+          kind: 'write',
+          content: rendered[path],
+          groupId: COMPILED_RESOURCES_GROUP,
+          evidence: [],
+          reason: 'Schema 对象确定性编译产物',
+        });
+      }
+      this.upsertChange(workspace, {
+        path: INTERNAL_SPEC_CHANGE_PATH,
+        kind: 'write',
+        content: `${JSON.stringify(nextSpec, null, 2)}\n`,
+        groupId: COMPILED_RESOURCES_GROUP,
+        evidence: [],
+        reason: 'Schema 对象确定性编译的语义规格',
+      });
+      this.db.exec('RELEASE SAVEPOINT agent_schema_object_sync');
+    } catch (error) {
+      this.db.exec('ROLLBACK TO SAVEPOINT agent_schema_object_sync');
+      this.db.exec('RELEASE SAVEPOINT agent_schema_object_sync');
+      throw error;
+    }
+
+    const nextWorking = await this.workbenchStudioFiles(context.project, context.username);
+    const response = {
+      ok: true,
+      deterministic: true,
+      mutation_id: mutationId,
+      working_revision: nextWorking.workingRevision,
+      schema_table_count: tables.length,
+      object_count: physical.length,
+      removed_derived_object_count: staleObjectPaths.length,
+      objects: physical.map(({ table, object }) => ({
+        resource_id: `object:${object.key}`,
+        key: object.key,
+        title: object.title,
+        document_id: table.documentId,
+        table: table.name,
+        field_count: object.fields.length,
+        primary_key: object.primaryKey ?? [],
+      })),
+      rendered_paths: [...objectPaths, 'objects/index.md', OBJECT_DATA_MAPPING_PATH],
+      candidate: true,
+      display: { text: `已按 ${tables.length} 张 Schema Sheet 确定性同步 ${physical.length} 个物理对象及 mapping` },
     };
     this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
     return response;
@@ -2650,6 +2954,7 @@ export class AgentCoreService {
         purpose: purpose as NonNullable<typeof document.purpose>,
         readingMode: readingMode as NonNullable<typeof document.readingMode>,
       });
+      const currentSchemaTables = schemaTables(this.tables(projectId));
       return {
         document: {
           id: updated.id, filename: updated.filename, kind: updated.kind,
@@ -2669,6 +2974,16 @@ export class AgentCoreService {
             })),
           })),
         } : {}),
+        objectSourcePolicy: currentSchemaTables.length ? {
+          mode: 'schema',
+          schemaTableCount: currentSchemaTables.length,
+          rule: '一张 Schema Sheet 恰好对应一个物理对象；禁止派生对象，字段、binding 和 mapping 由平台同步',
+          requiredTool: 'sync_schema_objects',
+        } : {
+          mode: 'virtual',
+          schemaTableCount: 0,
+          rule: '只允许不绑定物理表的虚拟对象，不生成 mapping',
+        },
         recommendedPhase: purpose === 'goal' ? 'goal' : ['schema', 'term'].includes(purpose) ? 'knowledge' : null,
         display: {
           text: `已将《${updated.filename}》设为${materialPurposeLabel(updated.purpose)}，${updated.readingMode === 'full' ? '需要全文精读' : '默认按需读取'}`,
@@ -3124,11 +3439,16 @@ export class AgentCoreService {
     const objectIndex = objects.findIndex((item) => item.key === key);
     if (objectIndex >= 0) objects[objectIndex] = nextObject;
     else objects.push(nextObject);
-    const renderedPaths = [`objects/${key}.md`, 'objects/index.md', 'mappings/object-data-mappings.json'];
+    const nextSpec = { ...current.spec, objects };
+    const renderedPaths = [
+      `objects/${key}.md`,
+      'objects/index.md',
+      ...(packageNeedsObjectDataMapping(nextSpec) ? [OBJECT_DATA_MAPPING_PATH] : []),
+    ];
     await this.stageCompiledSpec(
       workspace,
       context,
-      { ...current.spec, objects },
+      nextSpec,
       renderedPaths,
       changeGroupId(args.change_group, 'change_group'),
       compiledEvidence,
@@ -3424,6 +3744,7 @@ export class AgentCoreService {
         400,
       );
     }
+    const current = await this.overlay(workspace);
     await this.discardFrozenCandidate(workspace, context, '领域结构继续修改，旧确认请求已失效');
     this.db.exec('SAVEPOINT agent_domain_compile');
     try {
@@ -3444,6 +3765,17 @@ export class AgentCoreService {
           groupId: path === detailPath ? changeGroup : COMPILED_RESOURCES_GROUP,
           evidence,
           reason,
+        });
+      }
+      if (rendered[OBJECT_DATA_MAPPING_PATH] === undefined
+        && Object.hasOwn(current.files, OBJECT_DATA_MAPPING_PATH)) {
+        this.upsertChange(workspace, {
+          path: OBJECT_DATA_MAPPING_PATH,
+          kind: 'delete',
+          content: null,
+          groupId: COMPILED_RESOURCES_GROUP,
+          evidence: [],
+          reason: '虚拟对象模式不生成物理数据 mapping',
         });
       }
       this.upsertChange(workspace, {
@@ -3484,8 +3816,7 @@ export class AgentCoreService {
         { managedPath: path, requiredTool: 'bind_object_source' },
       );
     }
-    if (MANAGED_DOMAIN_MARKDOWN.test(path)
-      && (this.usesDomainToolContract(context) || this.usesScriptContract(context))) {
+    if (MANAGED_DOMAIN_MARKDOWN.test(path)) {
       const kind = path.split('/', 1)[0].replace(/s$/u, '');
       const requiredTool = path.endsWith('/index.md') ? `create_${kind} / patch_${kind}` : `patch_${kind}`;
       throw new AgentCoreError(
@@ -3637,8 +3968,7 @@ export class AgentCoreService {
 
   private async deleteFile(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
     const path = packagePath(text(args.path, 'path'));
-    if (MANAGED_DOMAIN_MARKDOWN.test(path)
-      && (this.usesDomainToolContract(context) || this.usesScriptContract(context))) {
+    if (MANAGED_DOMAIN_MARKDOWN.test(path) || path === OBJECT_DATA_MAPPING_PATH) {
       throw new AgentCoreError(
         'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
         `${path} 是领域编译器受管文件，不能按路径删除`,
@@ -4602,13 +4932,54 @@ export class AgentCoreService {
   private async assertCandidateFormatValid(workspace: WorkspaceRow, changes: ChangeRow[]) {
     const candidate = await this.overlay(workspace, changes);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
+    this.assertObjectSourcePolicy(workspace, candidate, changes.map((change) => change.path));
     this.assertPackageFilesValid(base, candidate);
   }
 
   private async assertFrozenCandidateValid(workspace: WorkspaceRow, candidate: PackageCandidateRevision) {
     const preview = await this.artifacts.previewCandidateRevision(workspace.project_id, candidate.id);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, candidate.baseRevision);
+    this.assertObjectSourcePolicy(
+      workspace,
+      preview,
+      candidate.groups.flatMap((group) => group.changes).map((change) => publicPath(change.path)),
+    );
     this.assertPackageFilesValid(base, preview);
+  }
+
+  private assertObjectSourcePolicy(
+    workspace: WorkspaceRow,
+    candidate: Pick<PackageArtifactFiles, 'spec' | 'files'>,
+    changedPaths: string[],
+  ): void {
+    const plan = this.changeControl.activePlan(workspace.project_id, workspace.run_id);
+    const touchesObjects = changedPaths.some((path) => (
+      path === INTERNAL_SPEC_CHANGE_PATH
+      || path === OBJECT_DATA_MAPPING_PATH
+      || /^objects\//u.test(path)
+    ));
+    const physicalTables = schemaTables(this.tables(workspace.project_id));
+    if (plan?.mode !== 'generation' && !(physicalTables.length && touchesObjects)) return;
+    const issues = schemaObjectPolicyIssues(
+      candidate.spec,
+      knowledgePackageFiles(candidate.files),
+      this.tables(workspace.project_id),
+    );
+    if (!issues.length) return;
+    throw new AgentCoreError(
+      'CANDIDATE_OBJECT_SOURCE_POLICY_INVALID',
+      `对象来源策略校验未通过：${issues.map((issue) => issue.message).join('；')}`,
+      [physicalTables.length
+        ? '重新执行 sync_schema_objects，禁止手工创建、合并或遗漏 Sheet 对象'
+        : '移除物理来源和 mapping，只保留不绑定物理表的虚拟对象'],
+      422,
+      {
+        retryable: false,
+        object_source_mode: physicalTables.length ? 'schema' : 'virtual',
+        findingCount: issues.length,
+        findings: issues,
+      },
+    );
   }
 
   private assertPackageFilesValid(

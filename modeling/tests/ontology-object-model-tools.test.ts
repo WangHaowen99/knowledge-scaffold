@@ -419,11 +419,11 @@ test('领域资源工具支持四类资源增量修改、幂等重放、哈希�
     primary_key: ['order_id'],
     evidence: [`material:${tableDocument.sourceKey}#synthetic_records`],
   });
-  assert.equal(boundObject.statusCode, 200, boundObject.body);
-  assert.equal(boundObject.json().resource.values.fields[0].sourceColumn, 'record_id');
+  assert.equal(boundObject.statusCode, 409, boundObject.body);
+  assert.equal(boundObject.json().code, 'PHYSICAL_SCHEMA_REQUIRED');
 
   const createdRule = await tool(app, project.id, 'create_rule', {
-    expected_revision: boundObject.json().working_revision,
+    expected_revision: patchedObject.json().working_revision,
     mutation_id: 'synthetic-create-rule-v2',
     reason: 'Create a synthetic rule',
     key: 'synthetic_policy',
@@ -961,69 +961,113 @@ test('Change Plan 用一个原子 Change Set 完成跨类型修改并可重放�
   assert.deepEqual(completedPlan.json().plan.tasks.map((item: any) => item.status), ['accepted', 'accepted']);
 });
 
-test('Change Plan 对绑定类独立工具强制任务对账并推进同一份校验计划', async (t) => {
-  const project = createProject({ owner: 'alice', name: '合成绑定计划对账', runtime: 'agent' });
+test('Schema 生成计划由 Core 注入全量同步任务并逐 Sheet 原子生成对象和 mapping', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成 Schema 全量同步', runtime: 'agent' });
   const app = appFor(t);
-  await seedProject(project.id);
-  const runId = `run-binding-plan-${project.id}`;
-  const tableDocument = insertDocument({
+  const runId = `run-schema-sync-${project.id}`;
+  const schemaDocument = insertDocument({
     projectId: project.id,
-    filename: 'synthetic_binding_plan.xlsx',
+    filename: 'synthetic_schema.xlsx',
     kind: 'excel',
     parseStatus: 'parsed',
+    purpose: 'schema',
     tables: [{
-      name: 'synthetic_binding_plan',
+      name: 'synthetic_customer',
       rowCount: 1,
       fields: [
-        { name: 'order_id', inferredType: 'string', sampleValues: ['order_0001'], distinctRatio: 1 },
+        { name: 'customer_id', inferredType: 'string', sampleValues: ['customer_0001'], distinctRatio: 1 },
+        { name: 'customer_name', inferredType: 'string', sampleValues: ['synthetic_name'], distinctRatio: 1 },
+      ],
+    }, {
+      name: 'synthetic_empty',
+      rowCount: 0,
+      fields: [
+        { name: 'empty_id', inferredType: 'string', sampleValues: [], distinctRatio: 0 },
+        { name: 'empty_note', inferredType: 'string', sampleValues: [], distinctRatio: 0 },
       ],
     }],
   });
+  const artifacts = getPackageArtifactStore();
+  const initialized = await artifacts.initializeDraftPackage(project.id, {
+    id: `schema-sync-${project.id}`,
+    name: '合成 Schema 全量同步',
+    description: '只使用合成表结构验证',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initialized.revision.oid,
+    spec: {
+      ...structuredClone(initialized.spec),
+      objects: [{
+        key: 'legacy_derived', title: '旧派生对象', description: '同步时必须删除',
+        fields: [{ key: 'legacy_id', cnName: '旧编号', type: 'string' }],
+      }],
+      operations: [], rules: [], metrics: [], scripts: [],
+    },
+    coverage: initialized.coverage,
+    note: '建立待同步的合成基线',
+    action: {
+      cause: 'schema_sync_seeded',
+      summary: '建立待同步的合成基线',
+      actorKind: 'system',
+      actorName: '测试系统',
+    },
+  });
+
   const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
-  const order = listed.json().items.find((item: any) => item.key === 'order');
   const planResponse = await tool(app, project.id, 'create_change_plan', {
-    goal: '只重绑一个合成订单对象的数据源',
-    mode: 'expert_edit',
+    goal: '按已确认数据 Schema 生成全部物理对象',
+    mode: 'generation',
     expected_revision: listed.json().working_revision,
     tasks: [{
-      client_key: 'bind-order', title: '重绑合成订单', resource_kind: 'binding',
-      target_key: 'order', allowed_tools: ['patch_object_source_binding'],
-      acceptance: '两个字段完整映射且 order_id 为主键',
+      client_key: 'model-created-object', title: '让模型创建合成对象', resource_kind: 'object',
+      target_key: 'model_object', allowed_tools: ['create_object'],
+      acceptance: '生成对象',
     }],
   }, runId);
   assert.equal(planResponse.statusCode, 200, planResponse.body);
   const plan = planResponse.json().plan;
-  const argumentsWithoutTask = {
-    resource_id: 'object:order',
-    expected_revision: listed.json().working_revision,
-    expected_resource_hash: order.resource_hash,
-    mutation_id: 'synthetic-binding-plan-1',
-    reason: '验证独立工具必须绑定计划任务',
-    document_id: tableDocument.id,
-    table: 'synthetic_binding_plan',
-    field_bindings: [
-      { field_key: 'order_id', source_column: 'order_id' },
-    ],
-    primary_key: ['order_id'],
-    evidence: [`material:${tableDocument.sourceKey}#synthetic_binding_plan`],
-  };
-  const missingTask = await tool(app, project.id, 'patch_object_source_binding', argumentsWithoutTask, runId);
-  assert.equal(missingTask.statusCode, 400, missingTask.body);
+  assert.equal(planResponse.json().object_source_policy.mode, 'schema');
+  assert.equal(planResponse.json().object_source_policy.schema_table_count, 2);
+  assert.equal(plan.tasks.length, 1);
+  assert.deepEqual(plan.tasks[0].allowed_tools, ['sync_schema_objects']);
+  assert.equal(plan.tasks[0].target_key, '__schema__');
 
-  const bound = await tool(app, project.id, 'patch_object_source_binding', {
-    ...argumentsWithoutTask,
+  const approved = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
+    payload: { approved: true },
+  });
+  assert.equal(approved.statusCode, 200, approved.body);
+
+  const synced = await tool(app, project.id, 'sync_schema_objects', {
     plan_task_id: plan.tasks[0].id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'synthetic-schema-sync-1',
+    reason: '按全部合成 Schema Sheet 确定性同步',
   }, runId);
-  assert.equal(bound.statusCode, 200, bound.body);
-  assert.equal(bound.json().plan.tasks[0].status, 'staged');
-  assert.equal(bound.json().resource.values.fields[0].sourceColumn, 'order_id');
+  assert.equal(synced.statusCode, 200, synced.body);
+  assert.equal(synced.json().object_count, 2);
+  assert.equal(synced.json().removed_derived_object_count, 1);
+  assert.deepEqual(synced.json().objects.map((item: any) => item.table), [
+    'synthetic_customer', 'synthetic_empty',
+  ]);
+  assert.ok(synced.json().objects.every((item: any) => item.document_id === schemaDocument.id));
+  assert.equal(synced.json().plan.tasks[0].status, 'staged');
+  assert.equal(synced.json().plan.expected_revision, synced.json().working_revision);
 
   const validated = await tool(app, project.id, 'validate_change_set', {
     plan_id: plan.id,
-    summary: '核对合成对象数据绑定',
+    summary: '核对全部 Schema Sheet 对象及 mapping',
   }, runId);
   assert.equal(validated.statusCode, 200, validated.body);
   assert.equal(validated.json().plan.tasks[0].status, 'validated');
+  const mapping = await tool(app, project.id, 'read_file', {
+    path: 'mappings/object-data-mappings.json',
+  }, runId);
+  assert.equal(mapping.statusCode, 200, mapping.body);
+  assert.equal(Object.keys(JSON.parse(mapping.json().content).objects).length, 2);
+  const legacy = await tool(app, project.id, 'read_file', { path: 'objects/legacy_derived.md' }, runId);
+  assert.equal(legacy.statusCode, 404, legacy.body);
 });
 
 test('Change Set 最后一项失败时整批不落候选，计划外动作和漏项校验均被阻断', async (t) => {

@@ -13,7 +13,7 @@ export const CHANGE_SET_DOMAIN_TOOLS = new Set([
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
 ]);
 export const CHANGE_PLAN_DIRECT_TOOLS = new Set([
-  'patch_object_source_binding', 'delete_domain_resource', 'stage_script_source',
+  'sync_schema_objects', 'patch_object_source_binding', 'delete_domain_resource', 'stage_script_source',
 ]);
 const CHANGE_PLAN_ALLOWED_TOOLS = new Set([
   ...CHANGE_SET_DOMAIN_TOOLS,
@@ -344,6 +344,7 @@ export class ChangeControlStore {
     taskId: string;
     tool: string;
     receiptId: string;
+    resultingRevision?: string;
   }) {
     const plan = this.activePlan(input.projectId, input.runId);
     if (!plan) return null;
@@ -355,8 +356,10 @@ export class ChangeControlStore {
     if (Number(result.changes) !== 1) {
       throw new ChangeControlError('CHANGE_PLAN_TASK_ALREADY_SETTLED', '计划任务状态已经变化，请重新读取计划', 409);
     }
-    this.db.prepare('UPDATE agent_change_plans SET version = version + 1, updated_at = ? WHERE id = ?')
-      .run(timestamp, plan.id);
+    this.db.prepare(`UPDATE agent_change_plans SET version = version + 1,
+      expected_revision = CASE WHEN ? <> '' THEN ? ELSE expected_revision END,
+      updated_at = ? WHERE id = ?`)
+      .run(input.resultingRevision ?? '', input.resultingRevision ?? '', timestamp, plan.id);
     this.event(input.projectId, input.runId, plan.id, null, 'plan.direct_task_staged', '受控独立任务已形成待确认修改', {
       taskId: input.taskId, tool: input.tool, receiptId: input.receiptId,
     });

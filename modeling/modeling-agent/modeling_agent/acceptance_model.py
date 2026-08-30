@@ -170,6 +170,19 @@ def _domain_turn(
                 return _tool("get_change_plan", {"plan_id": plan.get("id", "")}, available)
         return PlannedTurn(content="建模计划已经保存，批准前不会生成候选修改。")
 
+    schema_tasks = [
+        task for task in plan.get("tasks", [])
+        if isinstance(task, Mapping) and "sync_schema_objects" in (task.get("allowed_tools") or [])
+    ]
+    schema_syncs = [call for call in calls if call.name == "sync_schema_objects"]
+    if schema_tasks and not schema_syncs:
+        return _tool("sync_schema_objects", {
+            "plan_task_id": schema_tasks[0].get("id", ""),
+            "expected_revision": plan.get("expected_revision", ""),
+            "mutation_id": "acceptance-schema-sync-1",
+            "reason": "按全部合成 Schema Sheet 确定性同步物理对象",
+        }, available)
+
     for kind in targets:
         if not _has_resource_list(calls, kind):
             return _tool("list_domain_resources", {"kind": kind}, available)
@@ -198,10 +211,17 @@ def _domain_turn(
     staged_boundary = max(
         [call.index for call in staged if call.result.get("status") in {"staged", "validated", "waiting_user"}]
         + [call.index for call in receipts if isinstance(call.result.get("change_set"), Mapping)
-           and call.result["change_set"].get("status") in {"staged", "validated", "waiting_user"}],
+           and call.result["change_set"].get("status") in {"staged", "validated", "waiting_user"}]
+        + [call.index for call in schema_syncs if call.result.get("ok") is True],
         default=-1,
     )
-    if staged_boundary < 0:
+    pending_domain_tasks = [
+        task for task in plan.get("tasks", [])
+        if isinstance(task, Mapping)
+        and str(task.get("resource_kind") or "") in RESOURCE_KEYS
+        and str(task.get("status") or "pending") == "pending"
+    ]
+    if staged_boundary < 0 or (pending_domain_tasks and not staged):
         return _tool("stage_change_set", _change_set_arguments(effective_prompt, plan, calls, generation), available)
 
     validated = [call for call in calls if call.name == "validate_change_set"]
@@ -568,11 +588,12 @@ def _is_script_request(prompt: str, scenario: str) -> bool:
 
 
 def _is_binding_request(prompt: str, scenario: str) -> bool:
-    return scenario == "SCN-BINDING" or "绑定到 synthetic_members" in prompt
+    del scenario
+    return "绑定到 synthetic_members" in prompt
 
 
 def _is_generation(prompt: str, scenario: str) -> bool:
-    if scenario not in {"SCN-GENERATION", "SCN-LONG"}:
+    if scenario not in {"SCN-GENERATION", "SCN-LONG", "SCN-BINDING"}:
         return False
     return any(marker in prompt for marker in ("生成", "建立完整", "根据", "开始长资料建模", "启动长资料分析"))
 

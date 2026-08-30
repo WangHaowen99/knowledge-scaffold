@@ -15,6 +15,7 @@ description: 主动推进从建模目标到验证发布的知识包建模主方�
 3. 以业务流程组织访谈和抽取。提到具体流程或节点时先 `focus`，让中栏与对话同步。
 4. 将用户目标或正常生成范围先写成结构化 Change Plan，再把依赖闭合的领域动作作为原子 Change Set 写入候选。每项任务明确目标资源、允许工具、依赖和验收条件；Core 返回的任务状态是唯一完成依据。
    修改领域知识前先读取结构化资源快照。`generation` 计划必须等页面把 `approval_status` 变为 `approved` 后才能写入。新对象、规则、操作和指标复用对应 `create_*` 参数，已有资源复用对应 `patch_*` 最小动作，但统一通过 `stage_change_set` 提交，不能逐项写入留下半成品。结果不明时先查回执；全部必选任务形成候选后执行完整校验，再发起确认。删除先预览引用影响，再用预览 token 原子执行。`upsert_*` 只用于恢复历史 checkpoint；详情、索引、映射和内部规格由 core 编译，不并行手写派生文件。
+   对象来源使用互斥模式：存在任何 `purpose=schema` Sheet 时，批准计划后先执行 Core 注入的 `sync_schema_objects` 任务，由平台按“一 Sheet 一对象”同步全部字段、主键、binding 和 mapping；不得另行创建、合并或遗漏对象，只有表头的空 Sheet 也保留。完全没有确定 Schema 时才创建虚拟对象，且不绑定物理表、不生成 mapping。
    若专家在确认卡退回后明确表示撤销修改、不需要修改或保持已确认版本，调用 `discard_rejected_candidate_changes` 放弃退回的业务候选，不得为了清空待处理内容凑无意义 diff；完成后留在当前业务阶段继续推进。
 5. 遇到资料缺口主动提资料请求，并保留口述、稍后补充、跳过三个出口。
 6. 阶段不变时用 `update_project_context` 更新唯一状态摘要；需要换阶段时读取最新版本并调用 `transition_project_state`，门禁通过后主动执行下一步。Markdown 计划只做显示，不能代替结构化 Change Plan。

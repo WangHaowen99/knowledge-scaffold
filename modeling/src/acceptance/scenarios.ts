@@ -12,7 +12,7 @@ export const ACCEPTANCE_SCENARIOS = [
   ['SCN-CLOSED', '闭域资源', '对象、规则、操作和指标均含可定位边界'],
   ['SCN-AMBIGUOUS', '同名歧义', '不同稳定 key 使用相同可见名称'],
   ['SCN-REFERENCES', '引用影响', '包含被引用对象和无引用指标'],
-  ['SCN-BINDING', '数据映射', '三字段对象及主键明确的合成表'],
+  ['SCN-BINDING', 'Schema 对象同步', '九张 Sheet 必须生成九个物理对象并完整绑定'],
   ['SCN-GENERATION', '正常生成', '三份互不冲突的合成建模资料'],
   ['SCN-LONG', '长资料', '较长重复章节及三项独立校验关注点'],
   ['SCN-SCRIPT', '脚本生成', '待绑定脚本的合成汇总操作'],
@@ -116,13 +116,8 @@ function scenarioSpec(id: AcceptanceScenarioId, base: PackageSpec): PackageSpec 
       ...base,
       version: '1.0.0', status: 'review', dataSourceType: 'nl2sql',
       objects: [{
-        key: 'synthetic_member', title: '测试对象', description: '等待重新绑定的三字段合成对象。',
-        primaryKey: ['member_id'],
-        fields: [
-          { key: 'member_id', cnName: '编号', type: 'string', required: true },
-          { key: 'member_name', cnName: '名称', type: 'string' },
-          { key: 'member_level', cnName: '等级', type: 'string' },
-        ],
+        key: 'legacy_derived_summary', title: '旧派生汇总', description: 'Schema 同步后必须被移除。',
+        fields: [{ key: 'legacy_id', cnName: '旧编号', type: 'string', required: true }],
       }],
       operations: [], rules: [], metrics: [], scripts: [],
     };
@@ -162,15 +157,26 @@ function scenarioSpec(id: AcceptanceScenarioId, base: PackageSpec): PackageSpec 
 function seedDocuments(project: Project, id: AcceptanceScenarioId): void {
   if (id === 'SCN-BINDING') {
     insertDocument({
-      projectId: project.id, filename: 'synthetic_members.xlsx', kind: 'excel', parseStatus: 'parsed', purpose: 'schema',
-      tables: [{
-        name: 'synthetic_members', rowCount: 3,
+      projectId: project.id, filename: 'synthetic_schema_workbook.xlsx', kind: 'excel',
+      parseStatus: 'parsed', purpose: 'schema',
+      tables: Array.from({ length: 9 }, (_, index) => ({
+        name: `schema_sheet_${String(index + 1).padStart(2, '0')}`,
+        rowCount: index === 8 ? 0 : 2,
         fields: [
-          { name: 'member_id', inferredType: 'string', sampleValues: ['member_001'], distinctRatio: 1 },
-          { name: 'member_name', inferredType: 'string', sampleValues: ['synthetic_name_001'], distinctRatio: 1 },
-          { name: 'member_level', inferredType: 'string', sampleValues: ['A'], distinctRatio: 0.67 },
+          {
+            name: `record_${String(index + 1).padStart(2, '0')}_id`,
+            inferredType: 'string' as const,
+            sampleValues: index === 8 ? [] : [`record_${index + 1}_001`],
+            distinctRatio: index === 8 ? 0 : 1,
+          },
+          {
+            name: 'synthetic_value',
+            inferredType: 'string' as const,
+            sampleValues: index === 8 ? [] : [`value_${index + 1}`],
+            distinctRatio: index === 8 ? 0 : 0.5,
+          },
         ],
-      }],
+      })),
     });
     return;
   }

@@ -826,11 +826,15 @@ function mergeMappings(
       if (files[objectPath]) files[objectPath] = updateMappingFrontmatter(files[objectPath], merged);
     }
   }
-  files['mappings/object-data-mappings.json'] = `${JSON.stringify({
-    schema_version: '0.1',
-    default_provider_alias: 'fusion',
-    objects,
-  }, null, 2)}\n`;
+  if (Object.keys(objects).length) {
+    files['mappings/object-data-mappings.json'] = `${JSON.stringify({
+      schema_version: '0.1',
+      default_provider_alias: 'fusion',
+      objects,
+    }, null, 2)}\n`;
+  } else {
+    delete files['mappings/object-data-mappings.json'];
+  }
   return [...providers.values()].sort((left, right) => (
     left.sourceId.localeCompare(right.sourceId) || left.originalAlias.localeCompare(right.originalAlias)
   ));

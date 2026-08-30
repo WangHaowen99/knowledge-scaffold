@@ -86,8 +86,7 @@ test('文档来源能渲染，但不会生成数据 mapping', () => {
   assert.equal(documentSourcesFor(product).length, 1);
 
   const files = renderPackage(spec([product]));
-  const mappings = JSON.parse(files['mappings/object-data-mappings.json']);
-  assert.deepEqual(mappings.objects, {});
+  assert.equal(files['mappings/object-data-mappings.json'], undefined);
   assert.doesNotMatch(files['objects/Product.md'], /^mapping:/m);
   assert.match(
     files['objects/Product.md'],

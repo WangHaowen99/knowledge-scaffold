@@ -2112,8 +2112,8 @@ OpenJiuwen Runner、工具注册、Core 领域工具和事件流可以连通，�
 
 | 验证层 | 结果 | 说明 |
 | --- | --- | --- |
-| Core 全量测试 | 1,641/1,641 通过 | 包含领域工具、Change Plan/Set、回执、确认、评测、代理和历史行为 |
-| Agent 镜像测试 | 144/144 通过 | 在安装锁定 OpenJiuwen 版本的镜像 test stage 内执行 |
+| Core 全量测试 | 1,646/1,646 通过 | 包含领域工具、Change Plan/Set、Schema 来源策略、回执、确认、评测、代理和历史行为 |
+| Agent 镜像测试 | 145/145 通过 | 在安装锁定 OpenJiuwen 版本的镜像 test stage 内执行 |
 | TypeScript 类型检查和生产构建 | 通过 | Core 生产构建和 schema 复制完成 |
 | 前端 smoke 和生产构建 | 通过 | 包含恢复消息持久化、布局、确认、评测和版本恢复 |
 | 浏览器计划约束 | 3/3 通过 | 61 条计划不包含接口、脚本注入、存储或数据库操作 |
@@ -2142,3 +2142,20 @@ cs 部署前已通过 SQLite 在线 `VACUUM INTO` 创建一致性快照。替换
 代价也已出现：每批修改多了状态读取、计划、Hash、预检和回执查询，单次简单修改会增加少量延迟；Core、RuntimeStore、
 OpenJiuwen checkpoint 三套持久状态需要维护关联；严格浏览器套件本身运行时间较长。当前选择接受这些开销，
 因为它们换来可恢复、可审计和不会静默改错。后续优化应优先减少重复只读探索和并行化独立读取，不能删除事务、Hash 或确认门禁。
+
+### 10.10 数据 Schema 与虚拟对象互斥策略
+
+对象来源现在只有两种互斥模式，不再由模型自行混用：
+
+| 条件 | 改造前 | 改造后 |
+| --- | --- | --- |
+| 存在任意已解析且 `purpose=schema` 的 Sheet | 模型可能挑选部分 Sheet、合并多个 Sheet，或额外生成派生对象；mapping 依赖后续手工绑定 | Core 把生成计划规范化为唯一 `sync_schema_objects` 任务；每张 Sheet 恰好生成一个物理对象，字段、主键、来源和 mapping 确定性生成，只有表头的空 Sheet 也必须保留 |
+| 完全没有确定数据 Schema | 模型可能把普通 Excel 表误当物理 Schema，生成 `sourceTable/sourceColumn` 和空 mapping | 只允许虚拟对象；服务端清除表来源、字段物理列和 value binding，不生成 mapping 文件 |
+
+Schema 模式下，模型不能调用 `create_object`、旧 `upsert_object` 或 `write_file` 绕过同步；候选确认前还会再次按当前资料核对 Sheet 集合、对象集合、全部字段、来源版本和 mapping。少 Sheet、多对象、错误绑定、缺 mapping 任一情况都会阻断确认。重新同步会在同一事务内删除不对应物理 Sheet 的旧派生对象，并更新对象索引、内部规格和 mapping。
+
+无 Schema 模式下，`patch_object_source_binding`、`bind_object_source` 和 Schema 同步工具会被拒绝。mapping 从知识包必选文件改为条件文件：有物理 Schema 时必须存在，没有物理 Schema 时必须不存在。Agent 主链和旧 M2 批生成在保存前执行同一来源策略，避免旧入口成为旁路。
+
+该策略使用纯合成数据验证：本地 61/61 条浏览器用例通过；9 Sheet 场景连续 3 次均生成 9 个已绑定对象并移除旧派生对象；无 Schema 场景连续验证对象正常生成且 mapping 数量为 0。cs 部署后又执行 8 次严格浏览器旅程，Schema 3/3、无 Schema 5/5，全部通过。报告位于 `modeling/tmp/browser-acceptance-cs/schema-object-policy-strict/report.json`，测试产物不纳入版本库。
+
+部署不会自动接受或重写存量业务候选。此前已经生成错误对象的项目应先在确认卡退回或放弃旧候选，再重新发起对象生成；新一轮计划会按当前数据 Schema 确定性重建。

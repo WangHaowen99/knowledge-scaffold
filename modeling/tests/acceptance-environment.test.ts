@@ -50,20 +50,23 @@ test('十个浏览器验收场景都能建立独立的正式知识包基线', as
   assert.equal(getProjectDataSource(evaluation.project.id)?.mode, 'none');
 });
 
-test('SCN-BINDING 基线保留待绑定对象和独立目标表', async () => {
+test('SCN-BINDING 提供九张 Schema Sheet 和一个待移除派生对象', async () => {
   const result = await createAcceptanceScenario('binding_contract_user', 'SCN-BINDING');
   const current = await getPackageArtifactStore().readPackageFiles(result.project.id);
-  const object = current.spec.objects.find((item) => item.key === 'synthetic_member');
+  const object = current.spec.objects.find((item) => item.key === 'legacy_derived_summary');
 
   assert.ok(object);
   assert.equal(object.sourceTable, undefined);
   assert.deepEqual(object.sourceRefs ?? [], []);
   assert.ok(object.fields.every((field) => field.sourceColumn === undefined));
+  assert.equal(current.files['mappings/object-data-mappings.json'], undefined);
 
   const documents = listDocuments(result.project.id);
   assert.equal(documents.length, 1);
-  assert.equal(documents[0]?.filename, 'synthetic_members.xlsx');
-  assert.equal(documents[0]?.tables[0]?.name, 'synthetic_members');
+  assert.equal(documents[0]?.filename, 'synthetic_schema_workbook.xlsx');
+  assert.equal(documents[0]?.purpose, 'schema');
+  assert.equal(documents[0]?.tables.length, 9);
+  assert.equal(documents[0]?.tables[8]?.rowCount, 0);
 });
 
 test('故障一次启用只消费一次，同运行粘性不会增加浏览器消费次数', () => {

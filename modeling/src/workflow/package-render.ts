@@ -22,6 +22,7 @@ import {
   PACKAGE_MANIFEST_SCHEMA_VERSION,
   PACKAGE_STATUSES,
 } from './package-contract.js';
+import { packageNeedsObjectDataMapping } from './schema-object-policy.js';
 
 // PackageSpec → 标准知识包文件集（遵循 consumer 当前知识包导入格式）。
 // 返回 { path: content } 映射，供落盘或打 zip。
@@ -403,7 +404,9 @@ export function renderPackage(spec: PackageSpec, options: RenderPackageOptions =
     files[`scripts/${script.key}.md`] = scriptMd(script);
     files[`scripts/${script.entrypoint}`] = script.sourceCode.endsWith('\n') ? script.sourceCode : `${script.sourceCode}\n`;
   }
-  files['mappings/object-data-mappings.json'] = mappingsJson(s);
+  if (packageNeedsObjectDataMapping(s)) {
+    files['mappings/object-data-mappings.json'] = mappingsJson(s);
+  }
   for (const o of s.objects) files[`objects/${o.key}.md`] = objectMd(s, o);
   for (const op of s.operations) files[`operations/${op.key}.md`] = operationMd(op);
   return files;

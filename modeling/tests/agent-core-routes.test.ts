@@ -148,58 +148,25 @@ async function confirmProcess(app: ReturnType<typeof Fastify>, projectId: string
 
 async function confirmKnowledge(app: ReturnType<typeof Fastify>, projectId: string, runId: string) {
   const group = { id: 'prerequisite-knowledge', tier: 'structural', title: '确认知识内容' };
-  const indexGroup = { id: 'prerequisite-knowledge-index', tier: 'index', title: '同步知识索引' };
-  const written = await tool(app, projectId, 'write_file', {
-    path: 'objects/prerequisite.md',
-    content: `---
-resource: object
-key: prerequisite
-title: 前置对象
-description: 用于建立脚本测试的已确认知识前置。
-sources:
-  - 文档：用户口述 / 已确认脚本前置
----
-# 业务定义
-
-用于建立脚本测试的已确认知识前置。
-
-# 字段
-
-| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 |
-| --- | --- | --- | --- | --- | --- |
-| value | 数值 | number | 是 | 待计算数值 | 输入值 |
-
-# 查询边界
-
-只使用用户明确输入的数值。
-`,
-    change_group: group.id, evidence: ['user-decision:test-knowledge'],
+  const written = await tool(app, projectId, 'upsert_object', {
+    key: 'prerequisite',
+    title: '前置对象',
+    description: '用于建立脚本测试的已确认知识前置。',
+    query_boundary: '只使用用户明确输入的数值。',
+    fields: [{ key: 'value', cn_name: '数值', type: 'number', required: true }],
+    relations: [],
+    change_group: group.id,
+    evidence: ['user-decision:test-knowledge'],
   }, runId);
   assert.equal(written.statusCode, 200, written.body);
-  const index = await tool(app, projectId, 'write_file', {
-    path: 'objects/index.md',
-    content: `---
-resource: object_index
-key: objects
-title: 对象目录
----
-# 对象目录
-
-| object key | 标题 | 说明 | 来源Sheet |
-| --- | --- | --- | --- |
-| prerequisite | 前置对象 | 用于建立脚本测试的已确认知识前置 | — |
-`,
-    change_group: indexGroup.id, evidence: [],
-  }, runId);
-  assert.equal(index.statusCode, 200, index.body);
   const preflight = await tool(app, projectId, 'request_confirmation_preflight', {
-    summary: group.title, change_groups: [group, indexGroup],
+    summary: group.title, change_groups: [group],
   }, runId);
   assert.equal(preflight.statusCode, 200, preflight.body);
   const confirmed = await tool(app, projectId, 'request_confirmation', {
-    summary: group.title, change_groups: [group, indexGroup],
+    summary: group.title, change_groups: [group],
     ...confirmationReceipt(preflight),
-    review: { approved: true, review_mode: 'full', selected_groups: [group.id, indexGroup.id] },
+    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
 }
@@ -237,7 +204,7 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
 
   assert.equal(claimed.statusCode, 200, claimed.body);
   const contract = claimed.json().packageContract;
-  assert.equal(contract.validatorVersion, 'package-contract-v5');
+  assert.equal(contract.validatorVersion, 'package-contract-v6');
   assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
   assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
   assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
@@ -247,9 +214,10 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
   ]);
   assert.match(contract.authoring.goalEvidence.invariants.join('\n'), /正文中的每个 material token/u);
   assert.match(contract.validators.packageFormat, /^package-format-/u);
-  assert.ok(contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
-  assert.equal(contract.packageFormat.mappings.required, true);
-  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, true);
+  assert.ok(!contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
+  assert.equal(contract.packageFormat.mappings.required, 'when_physical_schema_exists');
+  assert.equal(contract.packageFormat.mappings.forbidden, 'when_physical_schema_absent');
+  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, false);
   assert.equal(contract.validators.mermaidSource, 'mermaid-source-v1');
   assert.deepEqual(contract.packageFormat.diagrams, {
     pathPattern: 'diagrams/*.mmd',
@@ -350,7 +318,7 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
     change_group: 'early-knowledge', evidence: [],
   }, runId);
   assert.equal(earlyKnowledge.statusCode, 409, earlyKnowledge.body);
-  assert.equal(earlyKnowledge.json().gate, 'process_confirmed');
+  assert.equal(earlyKnowledge.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
 
   await confirmGoal(app, project.id, runId);
   const diagram = await tool(app, project.id, 'write_file', {
@@ -377,27 +345,14 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
   }, runId);
   assert.equal(processConfirmed.statusCode, 200, processConfirmed.body);
 
-  const knowledge = await tool(app, project.id, 'write_file', {
-    path: 'objects/after-process.md', content: `---
-resource: object
-key: after-process
-title: 流程确认后的对象
-description: 用于验证流程确认后的知识写入。
----
-# 业务定义
-
-流程确认后才允许建立该对象。
-
-# 字段
-
-| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 |
-| --- | --- | --- | --- | --- | --- |
-
-# 查询边界
-
-只验证阶段门禁。
-`,
-    change_group: 'knowledge-after-process', evidence: [],
+  const knowledge = await tool(app, project.id, 'upsert_object', {
+    key: 'after_process',
+    title: '流程确认后的对象',
+    description: '用于验证流程确认后的结构化知识写入。',
+    fields: [{ key: 'record_id', cn_name: '记录编号', type: 'string', required: true }],
+    relations: [],
+    evidence: ['user-decision:process-confirmed'],
+    change_group: 'knowledge-after-process',
   }, runId);
   assert.equal(knowledge.statusCode, 200, knowledge.body);
   const script = await tool(app, project.id, 'write_file', {
@@ -890,8 +845,35 @@ test('删除尚未确认的新增文件会撤销候选写入和变更组', async
   assert.equal(preflight.json().code, 'NO_CANDIDATE');
 });
 
-test('Agent 不能删除必选的 object data mapping', async (t) => {
+test('物理对象 mapping 是编译产物，Agent 不能按路径删除', async (t) => {
   const project = createProject({ owner: 'alice', name: '保护数据映射', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const current = await artifacts.initializeDraftPackage(project.id, {
+    id: `mapping-delete-${project.id}`,
+    name: '保护数据映射',
+    description: '测试 mapping 编译产物保护',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: current.revision.oid,
+    spec: {
+      ...structuredClone(current.spec),
+      objects: [{
+        key: 'synthetic_record', title: '合成记录', description: '只用于 mapping 删除保护测试。',
+        sourceTable: 'synthetic_records',
+        sourceRefs: [{ kind: 'table', table: 'synthetic_records' }],
+        primaryKey: ['record_id'],
+        fields: [{
+          key: 'record_id', cnName: '记录编号', type: 'string', required: true, sourceColumn: 'record_id',
+        }],
+      }],
+    },
+    coverage: current.coverage,
+    note: '建立物理 mapping 测试基线',
+    action: {
+      cause: 'test.mapping_seeded', summary: '建立物理 mapping 测试基线',
+      actorKind: 'system', actorName: 'test',
+    },
+  });
   const app = appFor(t);
   const runId = `run-${project.id}`;
   const path = 'mappings/object-data-mappings.json';
@@ -905,7 +887,7 @@ test('Agent 不能删除必选的 object data mapping', async (t) => {
   }, runId);
 
   assert.equal(blocked.statusCode, 409, blocked.body);
-  assert.equal(blocked.json().code, 'REQUIRED_FILE_DELETE_FORBIDDEN');
+  assert.equal(blocked.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
   assert.equal(getDb().prepare(`SELECT kind FROM agent_candidate_changes
     WHERE project_id = ? AND run_id = ? AND path = ?`).get(project.id, runId, path), undefined);
   const after = await tool(app, project.id, 'read_file', { path }, runId);
@@ -913,13 +895,13 @@ test('Agent 不能删除必选的 object data mapping', async (t) => {
   assert.equal(after.json().content, before.json().content);
 });
 
-test('导入基线缺失 mapping 不能被历史问题豁免', async (t) => {
-  const project = createProject({ owner: 'alice', name: '历史映射缺失', runtime: 'agent' });
+test('虚拟对象模式缺失 mapping 是合法状态', async (t) => {
+  const project = createProject({ owner: 'alice', name: '虚拟对象无映射', runtime: 'agent' });
   const artifacts = getPackageArtifactStore();
   const initial = await artifacts.initializeDraftPackage(project.id, {
-    id: 'legacy-mapping-missing',
-    name: '历史映射缺失',
-    description: '验证必选 mapping 不受基线豁免',
+    id: 'virtual-without-mapping',
+    name: '虚拟对象无映射',
+    description: '验证虚拟对象不需要 mapping',
   });
   const importedFiles = renderPackage(initial.spec);
   delete importedFiles['mappings/object-data-mappings.json'];
@@ -969,16 +951,11 @@ test('导入基线缺失 mapping 不能被历史问题豁免', async (t) => {
   ) VALUES (?,?,?,?,?,NULL)`)
     .run(candidate.id, 'unrelated-manifest', 'index', '更新知识包说明', '[]');
 
-  const blocked = await tool(app, project.id, 'request_confirmation_preflight', {
+  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '确认无关的 manifest 修改',
     change_groups: [{ id: 'unrelated-manifest', tier: 'index', title: '更新知识包说明' }],
   }, runId);
-  assert.equal(blocked.statusCode, 409, blocked.body);
-  assert.equal(blocked.json().code, 'CANDIDATE_FORMAT_INVALID');
-  assert.ok(blocked.json().findings.some((finding: any) => (
-    finding.path === 'mappings/object-data-mappings.json'
-    && finding.category === '必选文件缺失'
-  )));
+  assert.equal(preflight.statusCode, 200, preflight.body);
 });
 
 test('大校验报告无损落库且只按页进入 Agent 上下文', async (t) => {
@@ -1084,7 +1061,7 @@ test('少量超长 finding 也按字符预算压缩且原文仍可分页读取',
   assert.equal(page.json().findings[0].path, path);
 });
 
-test('领域工具原子编译操作、规则和对象数据映射并随候选接受', async (t) => {
+test('无 Schema 时领域工具编译操作和规则，但拒绝对象物理绑定与 mapping', async (t) => {
   const project = createProject({ owner: 'alice', name: '领域工具编译', runtime: 'agent' });
   const artifacts = getPackageArtifactStore();
   const initial = await artifacts.initializeDraftPackage(project.id, {
@@ -1177,8 +1154,8 @@ test('领域工具原子编译操作、规则和对象数据映射并随候选�
     evidence: [`material:${material.id}`],
     change_group: bindingGroup.id,
   }, runId);
-  assert.equal(duplicateSourceBinding.statusCode, 400, duplicateSourceBinding.body);
-  assert.equal(duplicateSourceBinding.json().code, 'INVALID_DOMAIN_PAYLOAD');
+  assert.equal(duplicateSourceBinding.statusCode, 409, duplicateSourceBinding.body);
+  assert.equal(duplicateSourceBinding.json().code, 'PHYSICAL_SCHEMA_REQUIRED');
 
   const binding = await tool(app, project.id, 'bind_object_source', {
     key: 'inventory_item',
@@ -1192,8 +1169,8 @@ test('领域工具原子编译操作、规则和对象数据映射并随候选�
     evidence: [`material:${material.id}`],
     change_group: bindingGroup.id,
   }, runId);
-  assert.equal(binding.statusCode, 200, binding.body);
-  assert.equal(binding.json().boundFields, 2);
+  assert.equal(binding.statusCode, 409, binding.body);
+  assert.equal(binding.json().code, 'PHYSICAL_SCHEMA_REQUIRED');
 
   const directMapping = await tool(app, project.id, 'write_file', {
     path: 'mappings/object-data-mappings.json',
@@ -1206,13 +1183,13 @@ test('领域工具原子编译操作、规则和对象数据映射并随候选�
 
   const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '确认领域工具生成的知识',
-    change_groups: [operationGroup, ruleGroup, bindingGroup],
+    change_groups: [operationGroup, ruleGroup],
   }, runId);
   assert.equal(preflight.statusCode, 200, preflight.body);
   assert.equal(preflight.json().atomic_selection, true);
   const partial = await tool(app, project.id, 'request_confirmation', {
     summary: '只接受部分领域知识',
-    change_groups: [operationGroup, ruleGroup, bindingGroup],
+    change_groups: [operationGroup, ruleGroup],
     ...confirmationReceipt(preflight),
     review: {
       approved: true,
@@ -1222,15 +1199,15 @@ test('领域工具原子编译操作、规则和对象数据映射并随候选�
   }, runId);
   assert.equal(partial.statusCode, 409, partial.body);
   assert.equal(partial.json().code, 'DOMAIN_CANDIDATE_PARTIAL_SELECTION_FORBIDDEN');
-  assert.deepEqual(partial.json().missing.sort(), [bindingGroup.id, ruleGroup.id].sort());
+  assert.deepEqual(partial.json().missing.sort(), [ruleGroup.id]);
   const accepted = await tool(app, project.id, 'request_confirmation', {
     summary: '确认领域工具生成的知识',
-    change_groups: [operationGroup, ruleGroup, bindingGroup],
+    change_groups: [operationGroup, ruleGroup],
     ...confirmationReceipt(preflight),
     review: {
       approved: true,
       review_mode: 'full',
-      selected_groups: [operationGroup.id, ruleGroup.id, bindingGroup.id],
+      selected_groups: [operationGroup.id, ruleGroup.id],
     },
   }, runId);
   assert.equal(accepted.statusCode, 200, accepted.body);
@@ -1241,10 +1218,9 @@ test('领域工具原子编译操作、规则和对象数据映射并随候选�
   const storedObject = current.spec.objects.find((item) => item.key === 'inventory_item');
   assert.deepEqual(storedOperation?.relatedObjects, ['inventory_item']);
   assert.deepEqual(storedRule?.appliesToOperations, ['query_inventory']);
-  assert.equal(storedObject?.fields[0].sourceColumn, 'record_id');
-  assert.equal(storedObject?.fields[1].sourceColumn, 'available_qty');
-  const mappings = JSON.parse(current.files['mappings/object-data-mappings.json']);
-  assert.equal(mappings.objects.inventory_item.resource, 'inventory_rows');
+  assert.equal(storedObject?.fields[0].sourceColumn, undefined);
+  assert.equal(storedObject?.fields[1].sourceColumn, undefined);
+  assert.equal(current.files['mappings/object-data-mappings.json'], undefined);
   const rendered = renderPackage(current.spec);
   for (const path of [
     'objects/inventory_item.md',
@@ -1253,11 +1229,10 @@ test('领域工具原子编译操作、规则和对象数据映射并随候选�
     'operations/index.md',
     'rules/inventory_available.md',
     'rules/index.md',
-    'mappings/object-data-mappings.json',
   ]) assert.equal(current.files[path], rendered[path]);
 });
 
-test('upsert_object 原子生成对象详情、索引、语义规格和数据绑定', async (t) => {
+test('无 Schema 时 upsert_object 不能通过 source 参数生成物理绑定', async (t) => {
   const project = createProject({ owner: 'alice', name: '对象领域工具编译', runtime: 'agent' });
   const artifacts = getPackageArtifactStore();
   const initial = await artifacts.initializeDraftPackage(project.id, {
@@ -1314,37 +1289,11 @@ test('upsert_object 原子生成对象详情、索引、语义规格和数据绑
     evidence: [`material:${material.id}`],
     change_group: group.id,
   }, runId);
-  assert.equal(upserted.statusCode, 200, upserted.body);
-  assert.deepEqual(upserted.json().renderedPaths, [
-    'objects/marketing_lead.md',
-    'objects/index.md',
-    'mappings/object-data-mappings.json',
-  ]);
-
-  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
-    summary: group.title,
-    change_groups: [group],
-  }, runId);
-  assert.equal(preflight.statusCode, 200, preflight.body);
-  const accepted = await tool(app, project.id, 'request_confirmation', {
-    summary: group.title,
-    change_groups: [group],
-    ...confirmationReceipt(preflight),
-    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
-  }, runId);
-  assert.equal(accepted.statusCode, 200, accepted.body);
-
+  assert.equal(upserted.statusCode, 409, upserted.body);
+  assert.equal(upserted.json().code, 'PHYSICAL_SCHEMA_REQUIRED');
   const current = await artifacts.readPackageFiles(project.id);
-  const storedObject = current.spec.objects.find((item) => item.key === 'marketing_lead');
-  assert.equal(storedObject?.fields[0].sourceColumn, 'lead_id');
-  assert.equal(storedObject?.fields[1].sourceColumn, 'lead_name');
-  assert.deepEqual(storedObject?.primaryKey, ['id']);
-  const mappings = JSON.parse(current.files['mappings/object-data-mappings.json']);
-  assert.equal(mappings.objects.marketing_lead.resource, 'lead_rows');
-  const rendered = renderPackage(current.spec);
-  for (const path of upserted.json().renderedPaths) {
-    assert.equal(current.files[path], rendered[path]);
-  }
+  assert.equal(current.spec.objects.some((item) => item.key === 'marketing_lead'), false);
+  assert.equal(current.files['mappings/object-data-mappings.json'], undefined);
 });
 
 test('退回并放弃领域候选会同时清除隐藏编译规格', async (t) => {
@@ -1408,7 +1357,7 @@ test('退回并放弃领域候选会同时清除隐藏编译规格', async (t) =
 });
 
 
-test('有可读资料时扫描件解析失败只告警，不永久阻塞建模门禁', async (t) => {
+test('有可读资料时扫描件解析失败只告警，非受管说明仍可引用资料', async (t) => {
   const project = createProject({ owner: 'alice', name: '资料解析门禁' });
   const readable = insertDocumentRevision({
     projectId: project.id,
@@ -1430,7 +1379,7 @@ test('有可读资料时扫描件解析失败只告警，不永久阻塞建模�
   await confirmProcess(app, project.id, runId);
 
   const written = await tool(app, project.id, 'write_file', {
-    path: 'rules/procurement.md',
+    path: 'mappings/procurement-evidence.txt',
     content: `---
 resource: rule
 key: procurement
@@ -1456,7 +1405,7 @@ evidence:
     url: `/api/projects/${project.id}/materials/${readable.document.id}/referrers`,
   });
   assert.equal(referrers.statusCode, 200, referrers.body);
-  assert.equal(referrers.json().referrers[0].path, 'rules/procurement.md');
+  assert.equal(referrers.json().referrers[0].path, 'mappings/procurement-evidence.txt');
 
   const located = await app.inject({
     method: 'GET',
@@ -1725,7 +1674,7 @@ test('表格资料通过确定性工具完整生成数据集候选，不让模�
   assert.equal(diff.json().files[0].path, 'datasets/data.csv');
 });
 
-test('导入基线的历史格式问题不迫使增量候选重写无关知识文件', async (t) => {
+test('导入基线的历史受管对象也必须通过结构化 Patch 修改', async (t) => {
   const project = createProject({ owner: 'alice', name: '历史格式增量' });
   const artifacts = getPackageArtifactStore();
   const initial = await artifacts.initializeDraftPackage(project.id, {
@@ -1778,37 +1727,8 @@ canonical_key: legacy-warehouse
     change_group: 'increment_object',
     evidence: ['user-decision:legacy-increment'],
   }, runId);
-  assert.equal(written.statusCode, 200, written.body);
-
-  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
-    summary: '确认仓库容量口径更新',
-    change_groups: [{ id: 'increment_object', tier: 'structural', title: '仓库对象更新' }],
-  }, runId);
-  assert.equal(preflight.statusCode, 200, preflight.body);
-  assert.equal(preflight.json().change_groups[0].id, 'increment_object');
-
-  const confirmed = await tool(app, project.id, 'request_confirmation', {
-    summary: '确认仓库容量口径更新',
-    change_groups: [{ id: 'increment_object', tier: 'structural', title: '仓库对象更新' }],
-    ...confirmationReceipt(preflight),
-    review: { approved: true, review_mode: 'full', selected_groups: ['increment_object'] },
-  }, runId);
-  assert.equal(confirmed.statusCode, 200, confirmed.body);
-
-  const changedLegacyScript = await tool(app, project.id, 'write_file', {
-    path: 'scripts/legacy_lookup.py',
-    content: 'print("changed legacy")\n',
-    change_group: 'increment_script',
-    evidence: ['user-decision:legacy-script-change'],
-  }, runId);
-  assert.equal(changedLegacyScript.statusCode, 200, changedLegacyScript.body);
-  const scriptPreflight = await tool(app, project.id, 'request_confirmation_preflight', {
-    summary: '确认历史脚本修改',
-    change_groups: [{ id: 'increment_script', tier: 'script', title: '历史脚本修改' }],
-  }, runId);
-  assert.equal(scriptPreflight.statusCode, 409, scriptPreflight.body);
-  assert.equal(scriptPreflight.json().code, 'SCRIPT_TEST_REQUIRED');
-  assert.match(scriptPreflight.json().reason, /当前版本测试/u);
+  assert.equal(written.statusCode, 409, written.body);
+  assert.equal(written.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
 });
 
 test('来源知识包先缩范围和阻断引用断裂，裁决后只写候选并保留 provenance', async (t) => {
@@ -1931,7 +1851,7 @@ test('候选写入只接受能命中项目资料的 material 证据', async (t) 
   assert.equal(valid.statusCode, 200, valid.body);
 });
 
-test('业务操作只能建立在已确认流程上', async (t) => {
+test('受管操作文件不能用 write_file 绕过领域编译器', async (t) => {
   const project = createProject({ owner: 'alice', name: '流程前置门禁' });
   const app = appFor(t);
   const runId = `run-${project.id}`;
@@ -1944,7 +1864,7 @@ test('业务操作只能建立在已确认流程上', async (t) => {
     evidence: [],
   }, runId);
   assert.equal(blocked.statusCode, 409, blocked.body);
-  assert.equal(blocked.json().gate, 'process_confirmed');
+  assert.equal(blocked.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
 
   const diagram = await tool(app, project.id, 'write_file', {
     path: 'diagrams/procurement.mmd',
@@ -2005,7 +1925,8 @@ evidence:
     change_group: 'operation',
     evidence: ['diagrams/procurement.mmd'],
   }, runId);
-  assert.equal(allowed.statusCode, 200, allowed.body);
+  assert.equal(allowed.statusCode, 409, allowed.body);
+  assert.equal(allowed.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
 });
 
 test('知识条目拒绝写入 consumer 不读取的通用目录', async (t) => {
@@ -2133,7 +2054,7 @@ test('表格全文精读从原文件覆盖超过普通解析上限的全部行',
   assert.equal(response.json().documents[0].schema[0].rowCount, 2_105);
 });
 
-test('规则目录索引按 index 层级确认而不是业务口径', async (t) => {
+test('规则目录索引只能由领域编译器同步，不能手工指定确认层级', async (t) => {
   const project = createProject({ owner: 'alice', name: '规则索引层级' });
   const app = appFor(t);
   const runId = `run-${project.id}`;
@@ -2155,16 +2076,11 @@ title: 规则目录
     change_group: 'rule-index',
     evidence: [],
   }, runId);
-  assert.equal(written.statusCode, 200, written.body);
-
-  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
-    summary: '确认规则索引',
-    change_groups: [{ id: 'rule-index', tier: 'index', title: '规则索引' }],
-  }, runId);
-  assert.equal(preflight.statusCode, 200, preflight.body);
+  assert.equal(written.statusCode, 409, written.body);
+  assert.equal(written.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
 });
 
-test('知识文件快速校验拒绝扁平引用键并接受嵌套引用结构', async (t) => {
+test('受管知识 Markdown 不能绕过结构化领域工具', async (t) => {
   const project = createProject({ owner: 'alice', name: '知识 Markdown 门禁' });
   const app = appFor(t);
   const runId = `run-${project.id}`;
@@ -2201,7 +2117,9 @@ sources:
     change_group: objectGroup,
     evidence: ['user-decision:feedstock'],
   }, runId);
-  assert.equal(objectWritten.statusCode, 200, objectWritten.body);
+  assert.equal(objectWritten.statusCode, 409, objectWritten.body);
+  assert.equal(objectWritten.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
+  return;
   const invalidMetric = await tool(app, project.id, 'write_file', {
     path: 'metrics/quality.md',
     content: `---
@@ -2389,7 +2307,7 @@ test('平台保留 manifest 管理字段，底层预检仍把详细错误返回�
   assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
   assert.equal(receipt.baseRevision, current.revision.oid);
   assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
-  assert.equal(receipt.validatorVersion, 'package-contract-v5');
+  assert.equal(receipt.validatorVersion, 'package-contract-v6');
 });
 
 test('最终确认会校验用户实际选中的变更组快照', async (t) => {

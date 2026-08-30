@@ -12,7 +12,7 @@ TOOL_NAMES = {
     "get_project_state", "list_documents", "read_documents_fully", "list_tables", "describe_table",
     "list_domain_resources", "get_domain_resource", "create_change_plan", "get_change_plan",
     "stage_change_set", "get_change_set_receipt", "validate_change_set", "request_confirmation",
-    "patch_object_source_binding", "define_script_contract", "get_script_contract",
+    "sync_schema_objects", "patch_object_source_binding", "define_script_contract", "get_script_contract",
     "stage_script_source", "run_script_test", "ask",
     "discard_rejected_candidate_changes",
 }
@@ -172,15 +172,28 @@ def test_generation_uses_real_document_receipt_as_evidence() -> None:
     ]
 
 
-def test_same_name_columns_are_complete_binding_not_target_ambiguity() -> None:
+def test_schema_generation_executes_core_injected_sync_task() -> None:
     messages = [{
         "role": "user",
-        "content": "把测试对象绑定到 synthetic_members，三个对象字段分别绑定同名列。",
+        "content": "按九张数据 Schema Sheet 重新生成全部对象。",
     }]
     state_ready(messages)
+    completed(messages, "create_change_plan", {}, {"plan": {
+        "id": "cp-schema", "mode": "generation", "approval_status": "approved",
+        "expected_revision": "rev-schema", "goal": "按数据 Schema 生成全部对象",
+        "tasks": [{
+            "id": "task-schema", "resource_kind": "binding", "target_key": "__schema__",
+            "allowed_tools": ["sync_schema_objects"], "status": "pending",
+        }],
+    }})
     turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
-    assert turn.name == "list_domain_resources"
-    assert turn.arguments == {"kind": "object", "query": "synthetic_member"}
+    assert turn.name == "sync_schema_objects"
+    assert turn.arguments == {
+        "plan_task_id": "task-schema",
+        "expected_revision": "rev-schema",
+        "mutation_id": "acceptance-schema-sync-1",
+        "reason": "按全部合成 Schema Sheet 确定性同步物理对象",
+    }
 
 
 def test_generated_script_exposes_structured_function_contract() -> None:

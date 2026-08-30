@@ -28,6 +28,7 @@ import {
 } from '../workflow/ontology-model-validation.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
 import { renderPackage } from '../workflow/package-render.js';
+import { OBJECT_DATA_MAPPING_PATH } from '../workflow/schema-object-policy.js';
 import {
   STUDIO_SCHEMA,
   StudioReadService,
@@ -989,7 +990,11 @@ function applyMutation(
   const compilerChangedPaths = [...new Set([
     ...Object.keys(previousRendered),
     ...Object.keys(rendered),
-  ])].filter((path) => previousRendered[path] !== rendered[path]);
+    ...(Object.hasOwn(workingFiles, OBJECT_DATA_MAPPING_PATH) ? [OBJECT_DATA_MAPPING_PATH] : []),
+  ])].filter((path) => (
+    previousRendered[path] !== rendered[path]
+    || (path === OBJECT_DATA_MAPPING_PATH && workingFiles[path] !== rendered[path])
+  ));
   for (const path of compilerChangedPaths) {
     if (path in rendered) nextFiles[path] = rendered[path];
     else delete nextFiles[path];
