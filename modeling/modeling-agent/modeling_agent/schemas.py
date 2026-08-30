@@ -25,6 +25,8 @@ class RunRecord:
     status: str
     prompt: str
     token_fingerprint: str
+    # 新运行只暴露收敛后的领域工具；迁移前的 checkpoint 保留旧工具面。
+    tool_profile: str = "domain-v2"
     # Core 签发的短期、run 级凭据，只用于服务重启后接续同一工作区。
     # 它不是业务状态，也绝不能进入 public()。
     run_credential: str = ""

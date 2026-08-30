@@ -388,6 +388,13 @@ def _recover_from_error(
         plan = _latest_plan(calls)
         if plan:
             return _tool("validate_change_set", {"plan_id": plan.get("id", ""), "summary": "有限重试同一校验问题"}, available)
+    if code == "MANAGED_FILE_REQUIRES_DOMAIN_TOOL":
+        required_tool = str(latest.result.get("requiredTool") or "")
+        if (
+            latest.result.get("requiredAction") == "redirect_tool"
+            and required_tool in available
+        ):
+            return _tool(required_tool, dict(latest.arguments), available)
     return None
 
 

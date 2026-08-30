@@ -20,6 +20,7 @@ export const ACCEPTANCE_FAULTS = [
   ['F16', '下一轮生成在业务批次间等待继续或停止'],
   ['F17', '下一次助手消息在创建运行前可重试失败'],
   ['F18', '下一次知识包文件读取失败'],
+  ['F19', '下一次 Schema 对象同步先返回结构化工具转向'],
 ] as const;
 
 export type AcceptanceFaultId = typeof ACCEPTANCE_FAULTS[number][0];
@@ -205,6 +206,25 @@ export function acceptanceAgentToolBefore(
   }
   if (tool === 'stage_change_set' && takeAcceptanceFault(owner, 'F07', runId)) {
     return toolFailure(503, 'CHANGE_SET_ATOMIC_ROLLBACK', '最后一项应用前发生故障，当前 Change Set 已整批回滚', ['从当前业务批次重试'], { retryable: true, rolledBack: true });
+  }
+  if (tool === 'sync_schema_objects' && takeAcceptanceFault(owner, 'F19', runId)) {
+    return toolFailure(
+      409,
+      'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+      '对象数据映射是受管文件，已转入 Schema 对象同步自动恢复',
+      ['按当前计划重新执行确定性的 Schema 对象同步'],
+      {
+        retryable: false,
+        requiredAction: 'redirect_tool',
+        requiredTool: 'sync_schema_objects',
+        targetKind: 'schema_objects',
+        issueId: `agent-issue-acceptance-${runId}`,
+        recoveryAction: {
+          id: 'resume_schema_object_sync',
+          label: '自动完成 Schema 对象同步',
+        },
+      },
+    );
   }
   if (tool === 'validate_change_set' && takeAcceptanceFault(owner, 'F08', runId)) {
     return toolFailure(409, 'CHANGE_PLAN_INCOMPLETE', '任务清单还有必选项未完成，不能提前生成整批确认', ['返回计划补齐未完成任务'], { retryable: false, incompleteTasks: ['必选任务 3'] });

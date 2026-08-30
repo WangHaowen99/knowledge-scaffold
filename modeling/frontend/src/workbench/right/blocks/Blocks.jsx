@@ -28,16 +28,19 @@ export function Block({ block }) {
 function ErrorBlock({ block }) {
   const [busy, setBusy] = useState('');
   const run = async (action) => {
-    if (action.id !== 'retry' || busy) return;
+    if (!action?.id || busy) return;
     setBusy(action.id);
     try {
-      await actions.send(action.message || '请从已保存的当前进展继续，先核对计划和写入回执，不要重复已经完成的修改。');
+      if (block.issueId) await actions.resumeIssue(block.issueId, action.id);
+      else await actions.send(action.message || '请从已保存的当前进展继续，先核对计划和写入回执，不要重复已经完成的修改。');
     } finally {
       setBusy('');
     }
   };
+  const repairing = block.status === 'repairing';
   return (
-    <div className="card card-stale">
+    <div className={`card ${repairing ? 'card-wait' : 'card-stale'}`}>
+      <div className="card-h">{repairing ? '系统正在自动修正' : '当前问题需要处理'}</div>
       <div className="card-b">
         <div>{userFacingText(block.text)}</div>
         {Array.isArray(block.actions) && block.actions.length > 0 && (

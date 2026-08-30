@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,7 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     try:
         store.create_run(run("run_1"))
+        assert store.require_run("run_1").tool_profile == "domain-v2"
         queued = store.project_state("project_demo")
         assert queued.state == "intake:queued"
         assert queued.run_id == "run_1"
@@ -55,6 +57,34 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
             ("intake:queued", "intake:running"),
             ("intake:running", "intake:suspended"),
         ]
+    finally:
+        store.close()
+
+
+def test_store_migrates_existing_checkpoints_to_legacy_tool_profile(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-runtime.sqlite"
+    db = sqlite3.connect(path)
+    db.execute("""CREATE TABLE agent_runs (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL,
+      status TEXT NOT NULL, prompt TEXT NOT NULL, token_fingerprint TEXT NOT NULL,
+      baseline_revision TEXT NOT NULL DEFAULT '', candidate_revision TEXT NOT NULL DEFAULT '',
+      interaction_id TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '',
+      error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )""")
+    db.execute(
+        "INSERT INTO agent_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "run_legacy", "project_legacy", "legacy-session", "suspended", "继续建模",
+            "000000000000", "", "", "", "", "", "2026-08-30T00:00:00Z",
+            "2026-08-30T00:00:00Z",
+        ),
+    )
+    db.commit()
+    db.close()
+
+    store = RuntimeStore(path)
+    try:
+        assert store.require_run("run_legacy").tool_profile == "legacy-v1"
     finally:
         store.close()
 
@@ -117,6 +147,33 @@ def test_validation_repair_state_survives_runtime_store_restart(tmp_path: Path) 
         assert restored.current_round_id == "model-2"
         assert restored.last_report["validationReportIds"] == ["report-persisted"]
         assert restored.last_report["findingCount"] == 18
+    finally:
+        reopened.close()
+
+
+def test_technical_tool_redirect_survives_restart_until_resolved(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_redirect"))
+    recovery = {
+        "issueId": "agent-issue-synthetic",
+        "requiredTool": "patch_object_source_binding",
+        "targetKind": "object_binding",
+    }
+    store.save_technical_recovery(
+        "run_redirect", "agent-issue-synthetic", recovery,
+    )
+    store.close()
+
+    reopened = RuntimeStore(path)
+    try:
+        assert reopened.technical_recoveries("run_redirect") == {
+            "agent-issue-synthetic": recovery,
+        }
+        reopened.resolve_technical_recoveries(
+            "run_redirect", ["agent-issue-synthetic"],
+        )
+        assert reopened.technical_recoveries("run_redirect") == {}
     finally:
         reopened.close()
 
@@ -445,10 +502,13 @@ async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
         "repairAttempt": 1,
         "repairRoundId": "unscoped",
         "findingCount": 1,
+        "issueId": result["issueId"],
+        "issueStatus": "repairing",
+        "resolvedIssueIds": [],
     }), ("progress", {
         "activityId": "after-tool:call_goal_evidence",
         "text": "建模目标中的资料依据还不能打开原文",
-        "detail": "当前操作已经结束，正在规划下一项可执行工作",
+        "detail": "正在核对失败原因和可恢复的下一步",
         "phase": "planning",
         "counters": {},
     })]
@@ -487,7 +547,7 @@ async def test_goal_write_reports_body_material_token_missing_from_evidence() ->
 
 
 @pytest.mark.asyncio
-async def test_repair_stop_emits_one_blocker_and_keeps_recovery_tools_available() -> None:
+async def test_repair_stop_does_not_freeze_unrelated_dependency_failures() -> None:
     events: list[tuple[str, dict]] = []
 
     async def state_action(_name: str, _arguments: dict) -> dict:
@@ -530,12 +590,12 @@ async def test_repair_stop_emits_one_blocker_and_keeps_recovery_tools_available(
     await rail.before_tool_call(second)  # type: ignore[arg-type]
     await activity.after_tool_call(second)  # type: ignore[arg-type]
 
-    assert json.loads(first.inputs.tool_result)["error"] == "CANDIDATE_REPAIR_STOPPED"
-    assert json.loads(second.inputs.tool_result)["suppressTrace"] is True
-    assert len(events) == 2
-    assert events[0][1]["phase"] == "blocked"
-    assert events[1][0] == "progress"
-    assert events[1][1]["detail"] == "正在核对失败原因和可恢复的下一步"
+    assert json.loads(first.inputs.tool_result)["error"] == "WRITE_PHASE_MISMATCH"
+    assert json.loads(second.inputs.tool_result)["error"] == "WRITE_PHASE_MISMATCH"
+    assert context.validation_repair.stopped is True
+    assert context.validation_repair.attempts == 2
+    assert len(events) == 4
+    assert [event[1]["phase"] for event in events if event[0] == "tool"] == ["waiting", "waiting"]
 
     for tool_name in ("delete_file", "discard_rejected_candidate_changes"):
         recovery = SimpleNamespace(

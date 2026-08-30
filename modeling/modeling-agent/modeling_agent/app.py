@@ -23,6 +23,10 @@ class SteerBody(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
 
 
+class ResumeIssueBody(BaseModel):
+    actionId: str = Field(min_length=1, max_length=100)
+
+
 class AnswerBody(BaseModel):
     answer: dict[str, Any]
 
@@ -99,6 +103,16 @@ def create_app(service: AgentService) -> Starlette:
             project_id=request.path_params["project_id"],
             token=_require_token(request),
             text=body.message,
+        )
+        return JSONResponse(result, status_code=202)
+
+    async def resume_issue(request: Request) -> JSONResponse:
+        body = _validate(ResumeIssueBody, await _body(request))
+        result = await service.resume_issue(
+            project_id=request.path_params["project_id"],
+            token=_require_token(request),
+            issue_id=request.path_params["issue_id"],
+            action_id=body.actionId,
         )
         return JSONResponse(result, status_code=202)
 
@@ -189,6 +203,7 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/projects/{project_id}/state", state, methods=["GET"]),
         Route("/v1/projects/{project_id}/runs", start, methods=["POST"]),
         Route("/v1/projects/{project_id}/steer", steer, methods=["POST"]),
+        Route("/v1/projects/{project_id}/issues/{issue_id}/resume", resume_issue, methods=["POST"]),
         Route("/v1/projects/{project_id}/cancel", cancel, methods=["POST"]),
         Route("/v1/projects/{project_id}/stream", stream, methods=["GET"]),
         Route("/v1/projects/{project_id}/interactions/{interaction_id}/answer", answer, methods=["POST"]),

@@ -53,12 +53,28 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     validation = {spec.name for spec in core_tool_specs_for_phase("validation")}
     increment = {spec.name for spec in core_tool_specs_for_phase("increment")}
 
-    assert {"list_domain_resources", "patch_object", "create_metric"} <= knowledge
+    assert {
+        "list_domain_resources", "stage_change_set", "sync_schema_objects",
+        "patch_object_source_binding",
+    } <= knowledge
+    assert not {"write_file", "delete_file", "patch_object", "create_metric", "upsert_object"} & knowledge
+    assert "update_work_notes" in knowledge and "update_plan" not in knowledge
     assert "run_evaluation" not in knowledge
     assert "create_package_fusion_plan" not in knowledge
     assert "patch_rule" not in validation
     assert {"run_script_test", "run_evaluation", "get_evaluation_results"} <= validation
-    assert {"patch_operation", "analyze_material_impact", "compile_package_fusion_plan"} <= increment
+    assert {
+        "stage_change_set", "sync_schema_objects", "patch_object_source_binding",
+        "analyze_material_impact", "compile_package_fusion_plan",
+    } <= increment
+    assert not {"patch_operation", "upsert_operation", "bind_object_source"} & increment
+    legacy = {
+        spec.name for spec in core_tool_specs_for_phase(
+            "knowledge", tool_profile="legacy-v1",
+        )
+    }
+    assert {"write_file", "patch_object", "create_metric", "upsert_object", "bind_object_source"} <= legacy
+    assert "update_plan" in legacy
     intake_recovery = {
         spec.name for spec in core_tool_specs_for_phase(
             "intake", frozenset({"run_evaluation", "compile_package_fusion_plan"}),
@@ -488,24 +504,66 @@ async def test_candidate_validation_repair_aggregates_parallel_files_as_one_roun
     ]
 
 
-async def test_candidate_validation_repair_stops_after_three_distinct_model_rounds() -> None:
+async def test_candidate_validation_repair_gives_distinct_findings_separate_budgets() -> None:
     state = CandidateValidationRepairState()
 
-    for attempt in range(1, 4):
-        state.begin_round(f"model-{attempt}")
+    issue_ids = set()
+    for round_number in range(1, 4):
+        state.begin_round(f"model-{round_number}")
         result = state.record({
             "error": "CANDIDATE_FORMAT_INVALID",
             "validatorVersion": "package-v1",
-            "findings": [{"ruleId": f"rule-{attempt}", "path": f"file-{attempt}.md"}],
+            "findings": [{"ruleId": f"rule-{round_number}", "path": f"file-{round_number}.md"}],
         })
-        assert result["repairAttempt"] == attempt
+        assert result["repairAttempt"] == 1
         assert result["repairStopped"] is False
+        issue_ids.add(result["issueId"])
 
     state.begin_round("model-4")
-    assert state.attempts == 3
+    assert state.attempts == 1
     assert state.repeated_findings is False
+    assert state.stopped is False
+    assert len(issue_ids) == 3
+
+
+async def test_candidate_validation_repair_remembers_issue_across_alternating_findings() -> None:
+    state = CandidateValidationRepairState()
+    report_a = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:alternating-a",
+    }
+    report_b = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:alternating-b",
+    }
+
+    state.begin_round("model-1")
+    state.record(report_a)
+    state.begin_round("model-2")
+    state.record(report_b)
+    state.begin_round("model-3")
+    repeated_a = state.record(report_a)
+
+    assert repeated_a["repairAttempt"] == 2
+    assert repeated_a["repairStopped"] is False
+
+    state.begin_round("model-4")
+    assert state.issue_attempts == {
+        "sha256:alternating-a": 2,
+        "sha256:alternating-b": 1,
+    }
     assert state.stopped is True
-    assert state.blocked_result()["repairStopped"] is True
+    assert state.blocked_result("sha256:alternating-a")["repairStopped"] is True
+
+    unrelated = state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:alternating-c",
+    })
+    assert unrelated["repairAttempt"] == 1
+    assert unrelated["repairStopped"] is False
 
 
 async def test_candidate_validation_repair_stops_on_repeated_round_and_recovery_resets() -> None:
@@ -556,6 +614,27 @@ async def test_successful_candidate_write_does_not_reset_validation_episode() ->
     assert state.stopped is False
 
 
+async def test_successful_full_validation_resolves_all_open_issue_ids() -> None:
+    state = CandidateValidationRepairState()
+    state.begin_round("model-1")
+    first = state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "rule-a", "path": "objects/a.md"}],
+    })
+    second = state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "rule-b", "path": "rules/b.md"}],
+    })
+
+    assert state.record_success("write_file") == []
+    assert state.record_success("validate_change_set") == [
+        first["issueId"], second["issueId"],
+    ]
+    assert state.open_issue_ids == []
+
+
 async def test_compact_validation_report_without_inline_findings_enters_repair_state() -> None:
     gateway = FakeGateway({
         "write_file": {
@@ -594,6 +673,156 @@ async def test_compact_validation_report_without_inline_findings_enters_repair_s
     assert "findings" not in result
     assert result["repairAttempt"] == 1
     assert "get_validation_findings" in result["instruction"]
+
+
+async def test_managed_file_failure_requires_domain_tool_and_resolves_same_issue() -> None:
+    issue_id = "agent-issue-synthetic-binding"
+    gateway = FakeGateway({
+        "write_file": {
+            "error": "MANAGED_FILE_REQUIRES_DOMAIN_TOOL",
+            "reason": "对象数据映射是受管文件，不能直接写入",
+            "requiredAction": "redirect_tool",
+            "requiredTool": "patch_object_source_binding",
+            "targetKind": "object_binding",
+            "issueId": issue_id,
+            "retryable": False,
+        },
+        "patch_object_source_binding": {
+            "ok": True,
+            "display": {"text": "对象与数据表绑定完成"},
+        },
+    })
+    required: list[tuple[str, dict]] = []
+    recoveries: dict[str, dict] = {}
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+        require_tool=lambda name, recovery: required.append((name, recovery)),
+        technical_recoveries=recoveries,
+    )
+    write_spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+    rejected = json.loads(await CoreTool(write_spec, context).invoke({
+        "path": "mappings/object-data-mappings.json",
+        "content": "{}",
+        "change_group": "synthetic_binding",
+        "evidence": [],
+    }))
+
+    assert rejected["issueId"] == issue_id
+    assert rejected["issueStatus"] == "repairing"
+    assert rejected["tracePhase"] == "repairing"
+    assert required[0][0] == "patch_object_source_binding"
+    assert recoveries[issue_id]["targetKind"] == "object_binding"
+
+    binding_spec = next(
+        item for item in CORE_TOOL_SPECS if item.name == "patch_object_source_binding"
+    )
+    repaired = json.loads(await CoreTool(binding_spec, context).invoke({}))
+    assert repaired["issueStatus"] == "resolved"
+    assert repaired["resolvedIssueIds"] == [issue_id]
+    assert recoveries == {}
+
+
+async def test_ask_rejects_technical_question_while_recovery_tool_is_available() -> None:
+    issue_id = "agent-issue-synthetic-binding"
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        technical_recoveries={
+            issue_id: {
+                "issueId": issue_id,
+                "requiredTool": "patch_object_source_binding",
+                "targetKind": "object_binding",
+            },
+        },
+    )
+    tool_call = type("Call", (), {
+        "arguments": json.dumps({
+            "question": "当前环境无法补写，请让管理员处理吗？",
+            "kind": "clarification",
+            "evidence": [],
+        }, ensure_ascii=False),
+    })()
+
+    decision = await AskRail(context).resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    result = json.loads(decision.tool_result)
+    assert result["error"] == "TECHNICAL_RECOVERY_REQUIRED"
+    assert result["issueId"] == issue_id
+    assert result["issueStatus"] == "repairing"
+    assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+
+
+async def test_structured_issue_action_resumes_terminal_run_without_fake_user_message(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("patch_object_source_binding", {})],
+        [],
+    ], final="对象与来源表已经重新绑定。")
+    runtime = service(settings, model, FakeGateway({
+        "patch_object_source_binding": {
+            "ok": True,
+            "display": {"text": "对象与来源表绑定完成"},
+        },
+    }))
+    await runtime.startup()
+    try:
+        old = runtime.store.create_run(RunRecord(
+            id="run_old_issue",
+            project_id="project_issue_resume",
+            session_id="old-session",
+            status="queued",
+            prompt="历史建模",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(old.id, status="completed")
+        state = runtime.store.project_state(old.project_id)
+        runtime.store.transition_project_state(
+            old.project_id,
+            expected_revision=state.revision,
+            next_state="knowledge:completed",
+            cause="test_fixture",
+            actor_run_id=old.id,
+        )
+        issue_id = "agent-issue-synthetic-resume"
+        runtime.store.save_technical_recovery(old.id, issue_id, {
+            "issueId": issue_id,
+            "requiredTool": "patch_object_source_binding",
+            "targetKind": "object_binding",
+            "actionId": "resume_object_binding",
+        })
+
+        resumed = await runtime.resume_issue(
+            project_id=old.project_id,
+            token="token_resume",
+            issue_id=issue_id,
+            action_id="resume_object_binding",
+        )
+        new_run_id = resumed["run"]["id"]
+        settled = await wait_for_status(
+            runtime, new_run_id, {"completed", "suspended", "failed"}, timeout=10,
+        )
+
+        assert resumed["mode"] == "new_run"
+        assert settled["status"] == "completed"
+        events = runtime.store.events_after(old.project_id, 0)
+        assert not any(
+            event.run_id == new_run_id and event.kind == "message"
+            and event.payload.get("role") == "user"
+            for event in events
+        )
+        assert any(
+            event.run_id == new_run_id and event.kind == "tool"
+            and issue_id in event.payload.get("resolvedIssueIds", [])
+            for event in events
+        )
+        assert runtime.store.technical_recoveries(old.id) == {}
+    finally:
+        await runtime.shutdown()
 
 
 async def test_tool_context_applies_repair_policy_from_package_contract() -> None:
@@ -2547,7 +2776,7 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         "validatorVersion": "package-contract-v2",
     }
     assert context.validation_repair.candidate_revision == "candidate_goal"
-    assert context.validation_repair.attempts == 2
+    assert context.validation_repair.attempts == 0
     assert events == [
         ("focus", {"target": {"kind": "diff", "target": ".modeling/goal.md"}}),
     ]

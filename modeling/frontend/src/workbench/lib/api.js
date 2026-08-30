@@ -119,6 +119,10 @@ export const startAgent = (id, message, baselineRevision = '') => api(`${P(id)}/
 export const steerAgent = (id, message) => api(`${P(id)}/agent/steer`, {
   method: 'POST', body: JSON.stringify({ message }),
 });
+export const resumeAgentIssue = (id, issueId, actionId) => api(
+  `${P(id)}/agent/issues/${encodeURIComponent(issueId)}/resume`,
+  { method: 'POST', body: JSON.stringify({ actionId }) },
+);
 export const answerAgent = (id, interactionId, answer) => api(
   `${P(id)}/agent/interactions/${encodeURIComponent(interactionId)}/answer`,
   { method: 'POST', body: JSON.stringify({ answer }) },

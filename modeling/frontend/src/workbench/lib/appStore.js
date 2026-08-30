@@ -13,6 +13,7 @@ import {
   locateEvidence as getEvidenceLocation,
   getSnapshot,
   steerAgent,
+  resumeAgentIssue,
   updateConfirmPolicy,
   updateMaterialDirectives,
   uploadMaterial,
@@ -387,19 +388,46 @@ export const actions = {
               : state.activity,
         trace: mergeToolTrace(state.trace, event, seq),
       }));
-      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation', 'discard_rejected_candidate_changes'].includes(event.name)) {
+      const resolvedIssueIds = new Set((event.resolvedIssueIds || []).map(String).filter(Boolean));
+      if (resolvedIssueIds.size) {
+        store.set((state) => ({
+          messages: state.messages.filter((message) => !message.blocks?.some((block) => (
+            block.type === 'error' && resolvedIssueIds.has(String(block.issueId || ''))
+          ))),
+        }));
+      }
+      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_work_notes', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation', 'discard_rejected_candidate_changes'].includes(event.name)) {
         void actions.refreshSnapshot();
       }
-      if (event.code && ['repairing', 'failed', 'blocked', 'rejected'].includes(event.phase)) {
+      if (event.code && (!replaying || event.issueId)
+        && ['repairing', 'failed', 'blocked', 'rejected'].includes(event.phase)) {
+        const issueId = String(event.issueId || '');
+        const recoveryAction = event.recoveryAction && typeof event.recoveryAction === 'object'
+          ? {
+            ...event.recoveryAction,
+            message: event.recoveryAction.message
+              || '请按当前问题的确定性恢复步骤继续，只处理仍未完成的部分。',
+          }
+          : null;
         actions.appendMessage({
-          id: `tool-alert-${event.runId || 'run'}-${event.toolCallId || event.name || seq}`,
+          id: issueId
+            ? `tool-issue-${event.runId || 'run'}-${issueId}`
+            : `tool-alert-${event.runId || 'run'}-${event.toolCallId || event.name || seq}`,
           role: 'assistant',
           createdAt,
           blocks: [{
             type: 'error',
+            issueId,
+            status: event.issueStatus || event.phase,
             text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
-            actions: event.repairStopped
-              ? [{ id: 'retry', label: '从当前进展继续' }]
+            actions: recoveryAction
+              ? [recoveryAction]
+              : event.repairStopped
+              ? [{
+                id: 'review_validation_findings',
+                label: '检查校验明细',
+                message: '请读取当前问题的校验明细，只处理仍未解决的 finding，再从已保存进展继续。',
+              }]
               : [],
           }],
         });
@@ -641,6 +669,22 @@ export const actions = {
           recovery: '输入内容仍保留在发送框中，请检查后重试。',
         },
       }));
+      return null;
+    }
+  },
+  async resumeIssue(issueId, actionId) {
+    const { projectId } = store.get();
+    if (!projectId || !issueId || !actionId) return null;
+    try {
+      const result = await resumeAgentIssue(projectId, issueId, actionId);
+      if (result.run) store.set({ run: result.run, error: '' });
+      return result;
+    } catch (error) {
+      store.set({ error: {
+        scope: 'issue_recovery',
+        message: error instanceof Error ? error.message : '当前问题恢复失败',
+        recovery: '问题状态可能已经变化，请刷新后查看当前有效状态。',
+      } });
       return null;
     }
   },
@@ -1053,6 +1097,9 @@ export function mergeToolTrace(trace, event, seq) {
     repairAttempt: event.repairAttempt ?? null,
     repairRoundId: event.repairRoundId || '',
     findingCount: Number(event.findingCount) || 0,
+    issueId: event.issueId || '',
+    issueStatus: event.issueStatus || '',
+    resolvedIssueIds: event.resolvedIssueIds || [],
     segmentCount: 1,
     toolCallIds: toolCallId ? [toolCallId] : [],
   };

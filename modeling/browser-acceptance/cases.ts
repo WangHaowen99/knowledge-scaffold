@@ -239,6 +239,14 @@ export const browserAcceptanceCases: BrowserAcceptanceCase[] = [
     ] },
     strictRepeats: 3,
   },
+  confirmationCase('E2E-TOOL-03', '受管文件拒绝后自动转向 Schema 对象同步', 'SCN-BINDING', '按已设置的九张数据 Schema Sheet 重新生成全部对象；一张 Sheet 对应一个对象，不生成派生对象。', {
+    fault: 'F19',
+    approvePlan: true,
+    after: [
+      { action: 'assertNotText', text: '当前环境无法' },
+      { action: 'assertNotText', text: '对象数据映射是受管文件' },
+    ],
+  }),
 
   {
     id: 'E2E-GEN-01', title: '写资源前必须形成受控建模计划',
@@ -523,6 +531,7 @@ export const browserAcceptanceCases: BrowserAcceptanceCase[] = [
 export const requiredBrowserAcceptanceIds = [
   'E2E-BOOT-01',
   ...Array.from({ length: 11 }, (_, index) => `E2E-EDIT-${String(index + 1).padStart(2, '0')}`),
+  'E2E-TOOL-03',
   ...Array.from({ length: 8 }, (_, index) => `E2E-GEN-${String(index + 1).padStart(2, '0')}`),
   ...Array.from({ length: 4 }, (_, index) => `E2E-VAL-${String(index + 1).padStart(2, '0')}`),
   ...Array.from({ length: 7 }, (_, index) => `E2E-REL-${String(index + 1).padStart(2, '0')}`),

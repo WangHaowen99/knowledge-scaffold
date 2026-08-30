@@ -463,7 +463,7 @@ test('Agent 候选写入只在确认后形成 Git 修订，并留下复核方式
   assert.match(diff.json().files[0].after, /采购判断/u);
   assert.equal((await store.current(project.id))?.revision.oid, base!.revision.oid);
 
-  const plan = await tool(app, project.id, 'update_plan', { markdown: '- [ ] 确认采购判断目标' });
+  const plan = await tool(app, project.id, 'update_work_notes', { markdown: '- [ ] 确认采购判断目标' });
   assert.equal(plan.statusCode, 200, plan.body);
   getDb().prepare(`UPDATE agent_candidate_changes SET group_id = '__runtime_context'
     WHERE project_id = ? AND run_id = 'run-agent-1' AND path = '.modeling/plan.md'`).run(project.id);
@@ -1179,7 +1179,10 @@ test('无 Schema 时领域工具编译操作和规则，但拒绝对象物理绑
     evidence: [],
   }, runId);
   assert.equal(directMapping.statusCode, 409, directMapping.body);
-  assert.equal(directMapping.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
+  assert.equal(directMapping.json().code, 'PHYSICAL_SCHEMA_REQUIRED');
+  assert.equal(directMapping.json().object_source_mode, 'virtual');
+  assert.equal(directMapping.json().requiredAction, undefined);
+  assert.equal(directMapping.json().requiredTool, undefined);
 
   const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '确认领域工具生成的知识',

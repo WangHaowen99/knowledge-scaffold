@@ -30,7 +30,12 @@ from .settings import Settings
 from .store import RuntimeStore, token_fingerprint
 from .tools import CandidateValidationRepairState, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
-from .workflows import build_execution_brief_workflow, execution_brief_prompt
+from .workflows import (
+    build_execution_brief_workflow,
+    build_tool_redirect_workflow,
+    execution_brief_prompt,
+    tool_redirect_prompt,
+)
 
 logger = logging.getLogger("modeling_agent")
 INTERJECTION_CONTINUATION_PREFIX = "interjection-continuation:"
@@ -83,6 +88,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "discard_change_set",
     "analyze_material_impact",
     "stage_tabular_dataset",
+    "update_work_notes",
     "write_file",
     "upsert_object",
     "delete_file",
@@ -97,6 +103,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "patch_rule",
     "patch_operation",
     "patch_metric",
+    "sync_schema_objects",
     "patch_object_source_binding",
     "delete_domain_resource",
     "define_script_contract",
@@ -121,6 +128,7 @@ class LiveRun:
     run_id: str
     project_id: str
     token: str
+    tool_profile: str = "domain-v2"
     steering: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
     task: asyncio.Task | None = None
     bundle: AgentBundle | None = None
@@ -128,7 +136,7 @@ class LiveRun:
     required_tools: set[str] = field(default_factory=set)
     attempted_tools: set[str] = field(default_factory=set)
     observed_tools: set[str] = field(default_factory=set)
-    proof_retries: int = 0
+    proof_retries: dict[str, int] = field(default_factory=dict)
     release_reentry_authorized: bool = False
     release_declined: bool = False
     confirmation_required: bool = False
@@ -142,6 +150,7 @@ class LiveRun:
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     inflight_core_calls: set[asyncio.Task[Any]] = field(default_factory=set)
     plan_approval_required: bool = False
+    technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -392,6 +401,8 @@ class AgentService:
         required_tools: set[str] | None = None,
         release_reentry_authorized: bool | None = None,
         confirmation_required: bool = False,
+        technical_recoveries: dict[str, dict[str, Any]] | None = None,
+        validation_repair_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         _require_project_and_token(project_id, token)
         prompt = message.strip()
@@ -409,6 +420,12 @@ class AgentService:
                 baseline_revision=baseline_revision,
             )
         )
+        for issue_id, recovery in (technical_recoveries or {}).items():
+            self.store.save_technical_recovery(run_id, issue_id, recovery)
+        if validation_repair_snapshot:
+            self.store.save_validation_repair_state(
+                run_id, validation_repair_snapshot,
+            )
         self._publish_state(project_id, run_id)
         try:
             claimed = await self._claim_workspace(project_id=project_id, run_id=run_id, token=token)
@@ -428,6 +445,7 @@ class AgentService:
             run_id=run_id,
             project_id=project_id,
             token=token,
+            tool_profile=run.tool_profile,
             required_tools=intent_required_tools,
             release_reentry_authorized=(
                 release_reentry_authorized
@@ -442,6 +460,7 @@ class AgentService:
                 or _autonomous_work_requested(prompt)
             ),
             validation_repair=self._validation_repair_state(run_id),
+            technical_recoveries=self.store.technical_recoveries(run_id),
         )
         self._live[run_id] = live
         state_snapshot = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
@@ -1135,6 +1154,114 @@ class AgentService:
         self.events.publish(project_id, run.id, "message", {"role": "user", "blocks": [{"type": "text", "text": message}], "delivery": "next_tool_boundary"})
         return {"mode": "steering", "runId": run.id, "delivery": "next_tool_boundary"}
 
+    async def resume_issue(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        issue_id: str,
+        action_id: str,
+    ) -> dict[str, Any]:
+        _require_project_and_token(project_id, token)
+        normalized_issue = str(issue_id or "").strip()
+        normalized_action = str(action_id or "").strip()
+        if not normalized_issue or not normalized_action:
+            raise AgentRuntimeError(
+                "ISSUE_ACTION_INVALID", "恢复动作缺少问题身份或动作标识", status=400,
+            )
+        state = self.store.project_state(project_id)
+        run = self.store.active_run(project_id) or (
+            self.store.get_run(state.run_id) if state.run_id else None
+        )
+        if run is None or run.project_id != project_id:
+            raise AgentRuntimeError("ISSUE_NOT_FOUND", "当前没有可恢复的问题", status=404)
+
+        technical = self.store.technical_recoveries(run.id).get(normalized_issue)
+        repair_snapshot = self.store.validation_repair_state(run.id) or {}
+        repair_issue_ids = {
+            str(item) for item in repair_snapshot.get("openIssueIds", []) if str(item).strip()
+        }
+        last_report = repair_snapshot.get("lastReport")
+        if isinstance(last_report, dict) and last_report.get("issueId"):
+            repair_issue_ids.add(str(last_report["issueId"]))
+
+        if technical is not None:
+            expected_action = str(technical.get("actionId") or "resume_required_tool")
+            if normalized_action != expected_action:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "当前问题的恢复动作已经变化，请刷新后重试", status=409,
+                )
+            required_tools = {str(technical.get("requiredTool") or "").strip()}
+            required_tools.discard("")
+            recovery_prompt = (
+                "页面请求继续一个仍然有效的系统恢复问题。不要把它当成用户业务发言；"
+                "立即按已持久化的 required tool 恢复，成功后重新校验候选。"
+            )
+            initial_recoveries = {normalized_issue: technical}
+            initial_repair = None
+        elif normalized_issue in repair_issue_ids:
+            if normalized_action != "review_validation_findings":
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "当前问题的恢复动作已经变化，请刷新后重试", status=409,
+                )
+            required_tools = {"get_validation_summary"}
+            recovery_prompt = (
+                "页面请求继续当前校验问题。不要重做已经完成的修改；先读取最新校验摘要和分页明细，"
+                "只处理仍未解决的 finding，随后执行完整候选校验。"
+            )
+            initial_recoveries = None
+            initial_repair = repair_snapshot
+        else:
+            raise AgentRuntimeError(
+                "ISSUE_ACTION_STALE", "这个问题已经解决或被后续状态替代", status=409,
+            )
+
+        execution = self._execution(project_id, run.id)
+        interaction = self.store.pending_interaction(project_id)
+        if interaction is not None and interaction.run_id == run.id:
+            raise AgentRuntimeError(
+                "ISSUE_WAITING_INTERACTION",
+                "当前还有一项业务决定等待处理，请先完成该决定",
+                status=409,
+            )
+        if execution in {RUN_SUSPENDED, RUN_WAITING}:
+            resumed = await self._continue(
+                run,
+                token,
+                recovery_prompt,
+                required_tools=required_tools,
+                autonomous_seed=True,
+            )
+            return {"mode": "checkpoint_resume", "run": resumed, "issueId": normalized_issue}
+        live = self._live.get(run.id)
+        if live is not None and execution in {RUN_QUEUED, RUN_RUNNING}:
+            live.token = token
+            live.required_tools.update(required_tools)
+            if technical is not None:
+                live.technical_recoveries[normalized_issue] = technical
+            live.stable_read_cache.clear()
+            await live.steering.put(recovery_prompt)
+            return {
+                "mode": "steering",
+                "runId": run.id,
+                "issueId": normalized_issue,
+                "delivery": "next_tool_boundary",
+            }
+
+        started = await self.start_run(
+            project_id=project_id,
+            token=token,
+            message=recovery_prompt,
+            publish_user_message=False,
+            required_tools=required_tools,
+            release_reentry_authorized=True,
+            technical_recoveries=initial_recoveries,
+            validation_repair_snapshot=initial_repair,
+        )
+        if technical is not None:
+            self.store.resolve_technical_recoveries(run.id, [normalized_issue])
+        return {"mode": "new_run", "run": started, "issueId": normalized_issue}
+
     async def _state_action(
         self,
         live: LiveRun,
@@ -1430,18 +1557,25 @@ class AgentService:
             updates["token_fingerprint"] = token_fingerprint(token)
         self.store.update_run(run.id, **updates)
         self._publish_state(run.project_id, run.id)
+        technical_recoveries = self.store.technical_recoveries(run.id)
         live = LiveRun(
             run_id=run.id,
             project_id=run.project_id,
             token=token,
+            tool_profile=run.tool_profile,
             restore_interaction=restore_interaction,
-            required_tools=set(required_tools or ()),
+            required_tools=set(required_tools or ()) | {
+                str(item.get("requiredTool") or "")
+                for item in technical_recoveries.values()
+                if str(item.get("requiredTool") or "").strip()
+            },
             release_reentry_authorized=release_reentry_authorized,
             release_declined=release_declined,
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
             validation_repair=self._validation_repair_state(run.id),
+            technical_recoveries=technical_recoveries,
         )
         if steering:
             await live.steering.put(steering)
@@ -1472,16 +1606,23 @@ class AgentService:
             error="",
         )
         self._publish_state(run.project_id, run.id)
+        technical_recoveries = self.store.technical_recoveries(run.id)
         live = LiveRun(
             run_id=run.id,
             project_id=run.project_id,
             token=token,
-            required_tools=set(required_tools or ()),
+            tool_profile=run.tool_profile,
+            required_tools=set(required_tools or ()) | {
+                str(item.get("requiredTool") or "")
+                for item in technical_recoveries.values()
+                if str(item.get("requiredTool") or "").strip()
+            },
             release_reentry_authorized=release_reentry_authorized,
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
             validation_repair=self._validation_repair_state(run.id),
+            technical_recoveries=technical_recoveries,
         )
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
@@ -1573,6 +1714,18 @@ class AgentService:
                             live.observed_tools.add(name)
                     self.events.publish(live.project_id, live.run_id, kind, payload)
 
+                def require_tool(name: str, recovery: dict[str, Any]) -> None:
+                    normalized = str(name or "").strip()
+                    if not normalized:
+                        return
+                    live.required_tools.add(normalized)
+                    issue_id = str(recovery.get("issueId") or "").strip()
+                    if issue_id:
+                        live.technical_recoveries[issue_id] = dict(recovery)
+                        self.store.save_technical_recovery(
+                            live.run_id, issue_id, dict(recovery),
+                        )
+
                 context = ToolContext(
                     project_id=live.project_id,
                     run_id=live.run_id,
@@ -1580,7 +1733,13 @@ class AgentService:
                     gateway=self._gateway,
                     emit=emit,
                     phase=self.store.project_state(run.project_id).state.partition(":")[0],
+                    tool_profile=live.tool_profile,
                     required_tools=frozenset(live.required_tools),
+                    require_tool=require_tool,
+                    resolve_issues=lambda issue_ids: self.store.resolve_technical_recoveries(
+                        live.run_id, issue_ids,
+                    ),
+                    technical_recoveries=live.technical_recoveries,
                     state_action=lambda name, arguments: self._state_action(live, name, arguments),
                     after_core_tool=lambda name, arguments, result: self._after_core_tool(
                         live, name, arguments, result,
@@ -1643,12 +1802,12 @@ class AgentService:
                     return
                 missing_tools = _missing_required_tools(live)
                 if result.get("result_type") == "success" and missing_tools:
-                    if live.proof_retries < 2:
-                        live.proof_retries += 1
-                        required = "、".join(sorted(missing_tools))
-                        current_query = (
-                            f"服务端尚未观察到本轮必须执行的工具：{required}。"
-                            "不要声称已经运行、重试、完成或生成轮次；立即调用该工具，以真实返回为准继续。"
+                    proof_key = "|".join(sorted(missing_tools))
+                    used_proof_retries = live.proof_retries.get(proof_key, 0)
+                    if used_proof_retries < 2:
+                        live.proof_retries[proof_key] = used_proof_retries + 1
+                        current_query = await self._required_tool_prompt(
+                            live, run, Runner, missing_tools,
                         )
                         continue
                     result = {
@@ -1965,6 +2124,48 @@ class AgentService:
             raise AgentRuntimeError(
                 "EXECUTION_BRIEF_WORKFLOW_INVALID",
                 "恢复摘要没有形成有效结果",
+                status=500,
+            )
+        return prompt
+
+    async def _required_tool_prompt(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        runner: Any,
+        missing_tools: set[str],
+    ) -> str:
+        matching = [
+            recovery for recovery in live.technical_recoveries.values()
+            if str(recovery.get("requiredTool") or "") in missing_tools
+        ]
+        if not matching:
+            required = "、".join(sorted(missing_tools))
+            return (
+                f"服务端尚未观察到本轮必须执行的工具：{required}。"
+                "不要声称已经运行、重试、完成或生成轮次；立即调用该工具，以真实返回为准继续。"
+            )
+        recovery = matching[0]
+        state = self.store.project_state(run.project_id).public()
+        payload = {
+            "issueId": recovery.get("issueId"),
+            "requiredTool": recovery.get("requiredTool"),
+            "targetKind": recovery.get("targetKind"),
+            "sourceTool": recovery.get("sourceTool"),
+            "projectPhase": state.get("phase"),
+            "candidateRevision": run.candidate_revision or None,
+            "requiredTools": sorted(missing_tools),
+        }
+        output = await runner.run_workflow(
+            build_tool_redirect_workflow(),
+            {"payload_json": json.dumps(payload, ensure_ascii=False, sort_keys=True)},
+            session=f"{run.session_id}:tool-redirect:{payload['issueId']}",
+        )
+        prompt = tool_redirect_prompt(output)
+        if not prompt:
+            raise AgentRuntimeError(
+                "TOOL_REDIRECT_WORKFLOW_INVALID",
+                "领域工具恢复流程没有形成有效步骤",
                 status=500,
             )
         return prompt

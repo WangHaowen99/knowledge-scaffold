@@ -235,7 +235,7 @@ class WriteSafetyRail(AgentRail):
         "compile_package_fusion_plan", "discard_rejected_candidate_changes",
         "create_object", "create_rule", "create_operation", "create_metric",
         "patch_object", "patch_rule", "patch_operation", "patch_metric",
-        "patch_object_source_binding",
+        "sync_schema_objects", "patch_object_source_binding",
         "delete_domain_resource",
         "stage_script_source",
     })
@@ -254,12 +254,6 @@ class WriteSafetyRail(AgentRail):
         repair_recovery = (
             self._context.validation_repair.stopped and name in self.RECOVERY_TOOLS
         )
-        if self._context.validation_repair.stopped and not repair_recovery:
-            result = self._context.validation_repair.blocked_result()
-            if not self._context.validation_repair.claim_stop_notice():
-                result["suppressTrace"] = True
-            _skip_tool(ctx, result)
-            return
         args = _call_args(ctx)
         mermaid_findings = _mermaid_source_findings(name, args)
         if mermaid_findings:
@@ -360,10 +354,10 @@ class WriteSafetyRail(AgentRail):
                 "改用不含特殊字符的包内相对路径或资源 key 后重试"
                 if unsafe else "先完成当前阶段的人工确认；Agent 会在进入对应业务阶段后自动继续"
             ],
-            repair_scope="recovery" if repair_recovery else "candidate",
+            retryable=False,
+            repair_scope="recovery" if repair_recovery else ("tool" if unsafe else "dependency"),
         )
-        if not repair_recovery:
-            result = self._context.validation_repair.decorate(result)
+        result["tracePhase"] = "rejected" if unsafe else "waiting"
         _skip_tool(ctx, result)
 
 
@@ -398,7 +392,7 @@ def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> st
     if tool in {
         "create_object", "create_rule", "create_operation", "create_metric",
         "patch_object", "patch_rule", "patch_operation", "patch_metric",
-        "patch_object_source_binding",
+        "sync_schema_objects", "patch_object_source_binding",
         "delete_domain_resource",
     }:
         return "领域知识只能在知识建模或增量建模阶段修改" if phase not in {"knowledge", "increment"} else ""
@@ -437,12 +431,12 @@ class InterjectionSafetyRail(AgentRail):
     MUTATING_TOOLS = frozenset({
         "create_change_plan", "revise_change_plan", "stage_change_set",
         "validate_change_set", "discard_change_set",
-        "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_plan",
+        "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_work_notes", "update_plan",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "discard_rejected_candidate_changes",
         "create_object", "create_rule", "create_operation", "create_metric",
         "patch_object", "patch_rule", "patch_operation", "patch_metric",
-        "patch_object_source_binding",
+        "sync_schema_objects", "patch_object_source_binding",
         "delete_domain_resource",
         "define_script_contract", "stage_script_source",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
@@ -608,6 +602,38 @@ class AskRail(BaseInterruptRail):
         del auto_confirm_config
         arguments = _arguments_from_call(tool_call)
         if user_input is None:
+            if self._context and self._context.technical_recoveries:
+                question = str(arguments.get("question") or "")
+                evidence = arguments.get("evidence")
+                if _claims_missing_capability(question) or not _is_business_ambiguity(
+                    question,
+                    evidence if isinstance(evidence, list) else [],
+                ):
+                    recovery = next(iter(self._context.technical_recoveries.values()))
+                    result = _validation_report(
+                        "TECHNICAL_RECOVERY_REQUIRED",
+                        "tool-capability-v1",
+                        [_finding(
+                            "interaction.technical_recovery.required",
+                            "",
+                            "当前问题已有系统可执行的恢复动作，不能转成用户业务问题",
+                            "先完成系统指定的恢复动作；只有资料存在真实字段或口径歧义时才能提问",
+                            actual={"requiredTool": recovery.get("requiredTool")},
+                        )],
+                        instruction=(
+                            "不要声称环境无法处理，也不要询问用户如何解决技术失败；"
+                            f"立即执行恢复动作 {recovery.get('requiredTool')}。"
+                        ),
+                        display="系统正在自动恢复当前修改",
+                        retryable=False,
+                        repair_scope="interaction",
+                    )
+                    result.update({
+                        "issueId": recovery.get("issueId"),
+                        "issueStatus": "repairing",
+                        "suppressTrace": True,
+                    })
+                    return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
             if (
                 self._context
                 and self._context.confirmation_required
@@ -672,6 +698,25 @@ class AskRail(BaseInterruptRail):
                 ensure_ascii=False,
             )
         )
+
+
+def _claims_missing_capability(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    return any(phrase in normalized for phrase in (
+        "环境无法", "当前环境不能", "平台无法", "无法补写", "人工补写",
+        "等待管理员", "管理员处理", "系统不支持", "没有权限修改",
+    ))
+
+
+def _is_business_ambiguity(question: str, evidence: list[Any]) -> bool:
+    normalized = re.sub(r"\s+", "", str(question or ""))
+    has_subject = any(word in normalized for word in (
+        "字段", "主键", "口径", "业务含义", "对应关系", "范围", "优先级",
+    ))
+    has_ambiguity = any(word in normalized for word in (
+        "歧义", "无法确定", "多个", "二选一", "请选择", "哪一个", "哪种",
+    ))
+    return has_subject and has_ambiguity and any(str(item).strip() for item in evidence)
 
 
 class ConfirmationRail(BaseInterruptRail):
@@ -792,9 +837,20 @@ class ConfirmationRail(BaseInterruptRail):
                 if preflight.get("retryable") is True:
                     preflight = self._context.validation_repair.decorate(preflight)
                 return self.reject(tool_result=json.dumps(preflight, ensure_ascii=False))
+            resolved_issue_ids = self._context.validation_repair.resolve_open_issues()
             self._context.validation_repair.scope_candidate_revision(
                 str(preflight.get("candidate_revision") or "")
             )
+            if resolved_issue_ids:
+                if self._context.resolve_issues is not None:
+                    self._context.resolve_issues(resolved_issue_ids)
+                self._context.emit("tool", {
+                    "name": "request_confirmation_preflight",
+                    "phase": "completed",
+                    "summary": "候选校验已通过",
+                    "issueStatus": "resolved",
+                    "resolvedIssueIds": resolved_issue_ids,
+                })
             validation_receipt = preflight.get("validation_receipt")
             receipt_arguments = {
                 "expected_candidate_revision": preflight.get("candidate_revision"),
@@ -1201,7 +1257,15 @@ class ActivityRail(AgentRail):
             "repairAttempt": result.get("repairAttempt"),
             "repairRoundId": str(result.get("repairRoundId") or ""),
             "findingCount": int(result.get("findingCount") or 0),
+            "issueId": str(result.get("issueId") or ""),
+            "issueStatus": str(result.get("issueStatus") or ""),
+            "resolvedIssueIds": [
+                str(item) for item in result.get("resolvedIssueIds") or [] if str(item).strip()
+            ],
         }
+        recovery_action = result.get("recoveryAction")
+        if isinstance(recovery_action, Mapping):
+            payload["recoveryAction"] = dict(recovery_action)
         trace_group_id = tool_trace_group_id(name, _call_args(ctx))
         if trace_group_id:
             payload["traceGroupId"] = trace_group_id
@@ -1223,7 +1287,7 @@ class ActivityRail(AgentRail):
             "text": summary,
             "detail": (
                 "正在核对失败原因和可恢复的下一步"
-                if phase in {"failed", "blocked", "rejected"}
+                if phase in {"failed", "blocked", "rejected", "repairing"}
                 else "当前操作已经结束，正在规划下一项可执行工作"
             ),
             "phase": "planning",

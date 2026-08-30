@@ -337,6 +337,9 @@ test('领域资源工具支持四类资源增量修改、幂等重放、哈希�
   });
   assert.equal(managedWrite.statusCode, 409, managedWrite.body);
   assert.equal(managedWrite.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
+  assert.equal(managedWrite.json().requiredAction, 'redirect_tool');
+  assert.equal(managedWrite.json().requiredTool, 'patch_object');
+  assert.match(managedWrite.json().issueId, /^agent-issue-[a-f0-9]{20}$/u);
 
   const managedDelete = await tool(app, project.id, 'delete_file', {
     path: 'metrics/index.md',
@@ -1038,6 +1041,20 @@ test('Schema 生成计划由 Core 注入全量同步任务并逐 Sheet 原子生
     payload: { approved: true },
   });
   assert.equal(approved.statusCode, 200, approved.body);
+
+  const directMapping = await tool(app, project.id, 'write_file', {
+    path: 'mappings/object-data-mappings.json',
+    content: '{}',
+    change_group: 'manual-schema-mapping',
+    evidence: [],
+  }, runId);
+  assert.equal(directMapping.statusCode, 409, directMapping.body);
+  assert.equal(directMapping.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
+  assert.equal(directMapping.json().requiredAction, 'redirect_tool');
+  assert.equal(directMapping.json().requiredTool, 'sync_schema_objects');
+  assert.equal(directMapping.json().targetKind, 'schema_objects');
+  assert.equal(directMapping.json().recoveryAction.id, 'resume_schema_object_sync');
+  assert.match(directMapping.json().issueId, /^agent-issue-[a-f0-9]{20}$/u);
 
   const synced = await tool(app, project.id, 'sync_schema_objects', {
     plan_task_id: plan.tasks[0].id,

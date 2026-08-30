@@ -123,3 +123,14 @@ test('相同校验指纹重试一次后确定性停止，脚本故障返回逐�
   assert.equal(script?.payload.failed, 2);
   assert.equal(Array.isArray(script?.payload.results), true);
 });
+
+test('Schema 对象同步结构化转向只注入一次并携带稳定恢复动作', () => {
+  armAcceptanceFault('binding_owner', 'F19');
+  const first = acceptanceAgentToolBefore('binding_owner', 'run-binding', 'sync_schema_objects');
+  assert.equal(first?.payload.requiredAction, 'redirect_tool');
+  assert.equal(first?.payload.requiredTool, 'sync_schema_objects');
+  assert.equal((first?.payload.recoveryAction as any)?.id, 'resume_schema_object_sync');
+  assert.equal(acceptanceAgentToolBefore(
+    'binding_owner', 'run-binding', 'sync_schema_objects',
+  ), null);
+});

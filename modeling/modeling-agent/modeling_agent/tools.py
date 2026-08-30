@@ -22,6 +22,8 @@ ConfirmationGuard = Callable[[], bool]
 ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 ValidationRepairSave = Callable[[dict[str, Any]], None]
+RequireTool = Callable[[str, dict[str, Any]], None]
+ResolveIssues = Callable[[list[str]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 # Keep the outer tool deadline beyond the core client's 1800-second deadline.
 FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
@@ -84,6 +86,9 @@ VALIDATION_REPAIR_RESET_TOOLS = frozenset({
     "discard_rejected_candidate_changes",
     "request_confirmation",
 })
+VALIDATION_REPAIR_RESOLUTION_TOOLS = VALIDATION_REPAIR_RESET_TOOLS | {
+    "validate_change_set",
+}
 
 TOOL_WORK_DETAILS = {
     "list_documents": "先盘点可用资料，再确定需要精读的范围",
@@ -127,7 +132,11 @@ class ToolContext:
     gateway: CoreGateway
     emit: EventSink
     phase: str = ""
+    tool_profile: str = "domain-v2"
     required_tools: frozenset[str] = frozenset()
+    require_tool: RequireTool | None = None
+    resolve_issues: ResolveIssues | None = None
+    technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_action: StateAction | None = None
     after_core_tool: AfterCoreTool | None = None
     confirmation_guard: ConfirmationGuard | None = None
@@ -174,6 +183,11 @@ class CandidateValidationRepairState:
     current_reports: list[dict[str, Any]] = field(default_factory=list)
     current_round_progress: bool = False
     stop_notice_emitted: bool = False
+    open_issue_ids: list[str] = field(default_factory=list)
+    issue_attempts: dict[str, int] = field(default_factory=dict)
+    stopped_fingerprints: list[str] = field(default_factory=list)
+    blocked_reports: dict[str, dict[str, Any]] = field(default_factory=dict)
+    stop_notice_fingerprints: list[str] = field(default_factory=list)
     max_attempts: int = 3
     stop_on_repeated_fingerprint: bool = True
     on_change: ValidationRepairSave | None = field(default=None, repr=False, compare=False)
@@ -186,13 +200,40 @@ class CandidateValidationRepairState:
         on_change: ValidationRepairSave | None = None,
     ) -> CandidateValidationRepairState:
         raw = snapshot if isinstance(snapshot, Mapping) else {}
+        attempts = _non_negative_int(raw.get("attempts"))
+        last_fingerprint = str(raw.get("lastFingerprint") or "")
+        issue_attempts = {
+            str(key): _non_negative_int(value)
+            for key, value in _mapping_dict(raw.get("issueAttempts")).items()
+            if str(key).strip() and _non_negative_int(value) > 0
+        }
+        if not issue_attempts and last_fingerprint and attempts > 0:
+            issue_attempts[last_fingerprint] = attempts
+        stopped_fingerprints = [
+            str(item) for item in raw.get("stoppedFingerprints", []) if str(item).strip()
+        ]
+        if not stopped_fingerprints and bool(raw.get("stopped")) and last_fingerprint:
+            stopped_fingerprints = [last_fingerprint]
+        blocked_reports = {
+            str(key): dict(value)
+            for key, value in _mapping_dict(raw.get("blockedReports")).items()
+            if str(key).strip() and isinstance(value, Mapping)
+        }
+        last_report = _mapping_dict(raw.get("lastReport"))
+        if stopped_fingerprints and last_report and not blocked_reports:
+            blocked_reports[stopped_fingerprints[0]] = dict(last_report)
+        stop_notice_fingerprints = [
+            str(item) for item in raw.get("stopNoticeFingerprints", []) if str(item).strip()
+        ]
+        if not stop_notice_fingerprints and bool(raw.get("stopNoticeEmitted")):
+            stop_notice_fingerprints = list(stopped_fingerprints[:1])
         state = cls(
             candidate_revision=str(raw.get("candidateRevision") or ""),
-            attempts=_non_negative_int(raw.get("attempts")),
-            last_fingerprint=str(raw.get("lastFingerprint") or ""),
+            attempts=attempts,
+            last_fingerprint=last_fingerprint,
             repeated_findings=bool(raw.get("repeatedFindings")),
-            stopped=bool(raw.get("stopped")),
-            last_report=_mapping_dict(raw.get("lastReport")),
+            stopped=bool(stopped_fingerprints),
+            last_report=last_report,
             current_round_id=str(raw.get("currentRoundId") or ""),
             current_reports=[
                 dict(item) for item in raw.get("currentReports", [])
@@ -200,6 +241,13 @@ class CandidateValidationRepairState:
             ],
             current_round_progress=bool(raw.get("currentRoundProgress")),
             stop_notice_emitted=bool(raw.get("stopNoticeEmitted")),
+            open_issue_ids=[
+                str(item) for item in raw.get("openIssueIds", []) if str(item).strip()
+            ],
+            issue_attempts=issue_attempts,
+            stopped_fingerprints=list(dict.fromkeys(stopped_fingerprints)),
+            blocked_reports=blocked_reports,
+            stop_notice_fingerprints=list(dict.fromkeys(stop_notice_fingerprints)),
             max_attempts=max(1, _positive_int(raw.get("maxAttempts"), 3)),
             stop_on_repeated_fingerprint=bool(
                 raw.get("stopOnRepeatedFindingFingerprint", True)
@@ -220,6 +268,11 @@ class CandidateValidationRepairState:
             "currentReports": self.current_reports,
             "currentRoundProgress": self.current_round_progress,
             "stopNoticeEmitted": self.stop_notice_emitted,
+            "openIssueIds": self.open_issue_ids,
+            "issueAttempts": self.issue_attempts,
+            "stoppedFingerprints": self.stopped_fingerprints,
+            "blockedReports": self.blocked_reports,
+            "stopNoticeFingerprints": self.stop_notice_fingerprints,
             "maxAttempts": self.max_attempts,
             "stopOnRepeatedFindingFingerprint": self.stop_on_repeated_fingerprint,
         }
@@ -248,30 +301,67 @@ class CandidateValidationRepairState:
     def _finalize_round(self) -> None:
         if self.current_reports:
             report = _aggregate_validation_reports(self.current_reports)
-            fingerprint = _validation_report_fingerprint(report)
-            self.attempts += 1
-            self.repeated_findings = bool(
-                self.last_fingerprint and fingerprint == self.last_fingerprint
+            round_states: list[tuple[str, int, bool, bool, dict[str, Any]]] = []
+            seen: set[str] = set()
+            for current_report in self.current_reports:
+                fingerprint = _validation_report_fingerprint(current_report)
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+                previous_attempts = self.issue_attempts.get(fingerprint, 0)
+                attempt = previous_attempts + 1
+                repeated = previous_attempts > 0
+                stopped = (
+                    self.stop_on_repeated_fingerprint and repeated
+                ) or attempt >= self.max_attempts
+                self.issue_attempts[fingerprint] = attempt
+                if stopped and fingerprint not in self.stopped_fingerprints:
+                    self.stopped_fingerprints.append(fingerprint)
+                round_states.append((
+                    fingerprint, attempt, repeated, stopped, current_report,
+                ))
+
+            aggregate_fingerprint = _validation_report_fingerprint(report)
+            representative = next(
+                (item for item in round_states if item[3]),
+                round_states[0],
             )
-            self.last_fingerprint = fingerprint
-            self.stopped = (
-                self.stop_on_repeated_fingerprint and self.repeated_findings
-            ) or self.attempts >= self.max_attempts
+            (
+                fingerprint,
+                self.attempts,
+                _repeated,
+                _stopped,
+                representative_report,
+            ) = representative
+            self.repeated_findings = any(item[2] for item in round_states)
+            self.stopped = bool(self.stopped_fingerprints)
+            self.last_fingerprint = fingerprint if self.stopped else aggregate_fingerprint
+            self.stop_notice_emitted = (
+                fingerprint in self.stop_notice_fingerprints if self.stopped else False
+            )
+            issue_id = _validation_issue_id(self.candidate_revision, fingerprint)
             self.last_report = {
                 **report,
-                "retryable": not self.stopped,
+                "retryable": not _stopped,
+                "issueId": issue_id,
+                "issueStatus": "blocked" if _stopped else "repairing",
                 "repairAttempt": self.attempts,
                 "repairRoundId": self.current_round_id,
-                "findingFingerprint": fingerprint,
+                "findingFingerprint": self.last_fingerprint,
                 "repeatedFinding": self.repeated_findings,
-                "repairStopped": self.stopped,
+                "repairStopped": _stopped,
             }
-            if self.stopped:
+            if _stopped:
                 self.last_report["instruction"] = (
                     "自动修正已停止：相同 findings 再次出现，或已达到契约规定的 "
                     f"{self.max_attempts} 轮上限。"
                     "保留完整 findings，并等待用户决定是调整范围还是撤销候选。"
                 )
+                self.blocked_reports[fingerprint] = {
+                    **dict(representative_report),
+                    **self.last_report,
+                    "findingFingerprint": fingerprint,
+                }
         self.current_reports = []
         self.current_round_progress = False
         self._notify_change()
@@ -279,9 +369,26 @@ class CandidateValidationRepairState:
     def record(self, report: Mapping[str, Any]) -> dict[str, Any]:
         if not self.current_round_id:
             self.begin_round("unscoped")
-        if self.stopped:
-            blocked = self.blocked_result()
+        fingerprint = _validation_report_fingerprint(report)
+        if fingerprint in self.stopped_fingerprints:
+            self.last_fingerprint = fingerprint
+            self.attempts = self.issue_attempts.get(fingerprint, self.max_attempts)
+            self.repeated_findings = self.attempts > 1
+            self.stopped = True
+            self.last_report = {
+                **dict(report),
+                "issueId": _validation_issue_id(self.candidate_revision, fingerprint),
+                "findingFingerprint": fingerprint,
+                "repairAttempt": self.attempts,
+                "repairRoundId": self.current_round_id,
+                "repeatedFinding": self.repeated_findings,
+                "repairStopped": True,
+            }
+            self.blocked_reports[fingerprint] = dict(self.last_report)
+            blocked = self.blocked_result(fingerprint)
             return {
+                "issueId": blocked["issueId"],
+                "issueStatus": "blocked",
                 "repairAttempt": blocked["repairAttempt"],
                 "repairRoundId": blocked["repairRoundId"],
                 "findingFingerprint": blocked["findingFingerprint"],
@@ -290,10 +397,14 @@ class CandidateValidationRepairState:
             }
         normalized = dict(report)
         self.current_reports.append(normalized)
-        fingerprint = _validation_report_fingerprint(normalized)
+        issue_id = _validation_issue_id(self.candidate_revision, fingerprint)
+        if issue_id not in self.open_issue_ids:
+            self.open_issue_ids.append(issue_id)
         self._notify_change()
         return {
-            "repairAttempt": self.attempts + 1,
+            "issueId": issue_id,
+            "issueStatus": "repairing",
+            "repairAttempt": self.issue_attempts.get(fingerprint, 0) + 1,
             "repairRoundId": self.current_round_id,
             "findingFingerprint": fingerprint,
             "repeatedFinding": False,
@@ -314,27 +425,47 @@ class CandidateValidationRepairState:
         self.current_reports = []
         self.current_round_progress = False
         self.stop_notice_emitted = False
+        self.open_issue_ids = []
+        self.issue_attempts = {}
+        self.stopped_fingerprints = []
+        self.blocked_reports = {}
+        self.stop_notice_fingerprints = []
         if not preserve_round:
             self.candidate_revision = ""
         self._notify_change()
 
-    def record_success(self, tool_name: str) -> None:
-        if tool_name in VALIDATION_REPAIR_RESET_TOOLS:
-            self._reset_episode(preserve_round=True)
-        elif tool_name in VALIDATION_REPAIR_PROGRESS_TOOLS:
+    def record_success(self, tool_name: str) -> list[str]:
+        if tool_name in VALIDATION_REPAIR_RESOLUTION_TOOLS:
+            return self.resolve_open_issues()
+        if tool_name in VALIDATION_REPAIR_PROGRESS_TOOLS:
             self.current_round_progress = True
             self._notify_change()
+        return []
 
-    def blocked_result(self) -> dict[str, Any]:
-        report = dict(self.last_report)
+    def resolve_open_issues(self) -> list[str]:
+        resolved = list(dict.fromkeys(self.open_issue_ids))
+        self._reset_episode(preserve_round=True)
+        return resolved
+
+    def blocked_result(self, fingerprint: str = "") -> dict[str, Any]:
+        selected = str(fingerprint or "").strip()
+        if selected not in self.stopped_fingerprints:
+            selected = next(iter(self.stopped_fingerprints), self.last_fingerprint)
+        report = dict(self.blocked_reports.get(selected) or self.last_report)
+        issue_id = str(report.get("issueId") or _validation_issue_id(
+            self.candidate_revision, selected,
+        ))
+        attempts = self.issue_attempts.get(selected, self.attempts)
         return {
             **report,
             "error": "CANDIDATE_REPAIR_STOPPED",
             "retryable": False,
-            "repairAttempt": self.attempts,
+            "issueId": issue_id,
+            "issueStatus": "blocked",
+            "repairAttempt": attempts,
             "repairRoundId": str(report.get("repairRoundId") or self.current_round_id),
-            "findingFingerprint": self.last_fingerprint,
-            "repeatedFinding": self.repeated_findings,
+            "findingFingerprint": selected,
+            "repeatedFinding": attempts > 1,
             "repairStopped": True,
             "tracePhase": "blocked",
             "instruction": (
@@ -342,19 +473,31 @@ class CandidateValidationRepairState:
                 "但不要继续生成新的候选文件，直到用户决定下一步。"
             ),
             "display": {"text": "候选自动修正已停止，需要检查校验明细"},
+            "recoveryAction": {
+                "id": "review_validation_findings",
+                "label": "检查校验明细",
+                "message": "请读取当前问题的校验明细，只处理仍未解决的 finding，再从已保存进展继续。",
+            },
         }
 
     def claim_stop_notice(self) -> bool:
-        if self.stop_notice_emitted:
+        fingerprint = (
+            self.last_fingerprint
+            if self.last_fingerprint in self.stopped_fingerprints
+            else next(iter(self.stopped_fingerprints), self.last_fingerprint)
+        )
+        if fingerprint in self.stop_notice_fingerprints:
             return False
+        if fingerprint:
+            self.stop_notice_fingerprints.append(fingerprint)
         self.stop_notice_emitted = True
         self._notify_change()
         return True
 
     def decorate(self, report: Mapping[str, Any]) -> dict[str, Any]:
-        if self.stopped:
-            return self.blocked_result()
         repair = self.record(report)
+        if repair.get("repairStopped") is True:
+            return self.blocked_result()
         decorated = {**report, **repair}
         existing_instruction = str(report.get("instruction") or "").strip()
         repair_instruction = (
@@ -386,6 +529,11 @@ def _validation_report_fingerprint(report: Mapping[str, Any]) -> str:
     }
     encoded = json.dumps(fingerprint_source, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _validation_issue_id(candidate_revision: str, fingerprint: str) -> str:
+    encoded = f"{candidate_revision or 'working'}\0{fingerprint or 'unknown'}"
+    return f"candidate-issue-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:20]}"
 
 
 def _fingerprint_values(values: list[str]) -> str:
@@ -1422,7 +1570,8 @@ CORE_TOOL_SPECS = (
         ("rev_a", "rev_b"),
         display="正在生成变更对照",
     ),
-    ToolSpec("update_plan", "更新 .modeling/plan.md 的工作拆解；不得在计划里声明当前业务阶段、门禁状态或复制项目状态。", {"markdown": STRING}, ("markdown",), False, "正在更新工作拆解"),
+    ToolSpec("update_work_notes", "更新 .modeling/plan.md 的工作笔记；它不代表受控建模计划、业务阶段或门禁状态。", {"markdown": STRING}, ("markdown",), False, "正在更新工作笔记"),
+    ToolSpec("update_plan", "仅供历史 checkpoint 恢复：更新 .modeling/plan.md 工作笔记。新运行使用 update_work_notes。", {"markdown": STRING}, ("markdown",), False, "正在恢复历史工作笔记"),
     ToolSpec(
         "define_script_contract",
         "先定义脚本的绑定操作、CLI 参数、结构化输出、超时和执行边界；这一步不写源码或候选文件。",
@@ -1637,10 +1786,48 @@ class CoreTool(Tool):
         finally:
             if self.context.inflight_core_calls is not None:
                 self.context.inflight_core_calls.discard(call)
+        redirect = _tool_redirect(result)
+        if redirect is not None:
+            issue_id = str(redirect["issueId"])
+            required_tool = str(redirect["requiredTool"])
+            recovery = {
+                **redirect,
+                "sourceTool": self.spec.name,
+                "arguments": arguments,
+            }
+            self.context.technical_recoveries[issue_id] = recovery
+            if self.context.require_tool is not None:
+                self.context.require_tool(required_tool, recovery)
+            result = {
+                **result,
+                "issueId": issue_id,
+                "issueStatus": "repairing",
+                "tracePhase": "repairing",
+            }
         if _is_retryable_validation_failure(self.spec.name, result):
             result = self.context.validation_repair.decorate(result)
         elif not result.get("error"):
-            self.context.validation_repair.record_success(self.spec.name)
+            resolved_validation_issue_ids = self.context.validation_repair.record_success(
+                self.spec.name,
+            )
+            resolved_issue_ids = [
+                issue_id for issue_id, recovery in self.context.technical_recoveries.items()
+                if str(recovery.get("requiredTool") or "") == self.spec.name
+            ]
+            for issue_id in resolved_issue_ids:
+                self.context.technical_recoveries.pop(issue_id, None)
+            resolved_issue_ids = list(dict.fromkeys([
+                *resolved_validation_issue_ids,
+                *resolved_issue_ids,
+            ]))
+            if resolved_issue_ids:
+                if self.context.resolve_issues is not None:
+                    self.context.resolve_issues(resolved_issue_ids)
+                result = {
+                    **result,
+                    "issueStatus": "resolved",
+                    "resolvedIssueIds": resolved_issue_ids,
+                }
         if not result.get("error") and self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
         return json.dumps(_compact_source_result(self.spec.name, result), ensure_ascii=False)
@@ -1670,6 +1857,34 @@ def _is_retryable_validation_failure(name: str, result: Mapping[str, Any]) -> bo
     return has_retryable_error and (
         isinstance(result.get("findings"), list) or has_report
     )
+
+
+def _tool_redirect(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    if result.get("error") is None or result.get("requiredAction") != "redirect_tool":
+        return None
+    required_tool = str(result.get("requiredTool") or "").strip()
+    if not required_tool:
+        return None
+    issue_id = str(result.get("issueId") or "").strip()
+    if not issue_id:
+        source = json.dumps({
+            "error": result.get("error"),
+            "requiredTool": required_tool,
+            "targetKind": result.get("targetKind"),
+            "managedPath": result.get("managedPath"),
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        issue_id = f"tool-issue-{hashlib.sha256(source.encode('utf-8')).hexdigest()[:20]}"
+    recovery_action = result.get("recoveryAction")
+    action_id = str(
+        recovery_action.get("id")
+        if isinstance(recovery_action, Mapping) else "resume_required_tool"
+    ).strip() or "resume_required_tool"
+    return {
+        "issueId": issue_id,
+        "requiredTool": required_tool,
+        "targetKind": str(result.get("targetKind") or ""),
+        "actionId": action_id,
+    }
 
 
 def _bounded_positive_integer(value: Any, maximum: int) -> int:
@@ -1965,7 +2180,11 @@ class RequestReleaseTool(CoreTool):
 
 
 def build_tools(context: ToolContext) -> list[Tool]:
-    core_specs = core_tool_specs_for_phase(context.phase, context.required_tools)
+    core_specs = core_tool_specs_for_phase(
+        context.phase,
+        context.required_tools,
+        tool_profile=context.tool_profile,
+    )
     return [
         *(ProjectStateTool(spec, context) for spec in PROJECT_STATE_TOOL_SPECS),
         *(CoreTool(spec, context) for spec in core_specs),
@@ -1998,29 +2217,49 @@ EVALUATION_PHASE_TOOLS = frozenset({"run_evaluation", "get_evaluation_results", 
 SCRIPT_PHASE_TOOLS = frozenset({
     "define_script_contract", "get_script_contract", "stage_script_source", "run_script_test",
 })
+LEGACY_TOOL_ALIASES = frozenset({
+    "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
+    "update_plan",
+})
+CHANGE_SET_DIRECT_ACTION_TOOLS = frozenset({
+    "create_object", "create_rule", "create_operation", "create_metric",
+    "patch_object", "patch_rule", "patch_operation", "patch_metric",
+})
 
 
 def core_tool_specs_for_phase(
     phase: str,
     required_tools: frozenset[str] = frozenset(),
+    *,
+    tool_profile: str = "domain-v2",
 ) -> tuple[ToolSpec, ...]:
     """Keep production Leader schemas aligned with the current business phase.
 
     An empty phase preserves the full surface for old tests and recovery callers that do not
     carry project state yet. Explicit read-only subagents continue to use build_core_tools.
     """
+    legacy_profile = tool_profile == "legacy-v1"
     if not phase:
-        return CORE_TOOL_SPECS
+        return tuple(
+            spec for spec in CORE_TOOL_SPECS
+            if legacy_profile or spec.name not in LEGACY_TOOL_ALIASES
+        )
     allowed_domain = phase in {"knowledge", "increment"}
     allowed_fusion = phase == "increment"
     allowed_evaluation = phase in {"validation", "evaluation", "release"}
     return tuple(
         spec for spec in CORE_TOOL_SPECS
-        if spec.name in required_tools
+        if (legacy_profile or spec.name not in LEGACY_TOOL_ALIASES)
+        and (spec.name in required_tools
         or ((spec.name not in DOMAIN_PHASE_TOOLS or allowed_domain)
         and (spec.name not in FUSION_PHASE_TOOLS or allowed_fusion)
         and (spec.name not in EVALUATION_PHASE_TOOLS or allowed_evaluation)
-        and (spec.name not in SCRIPT_PHASE_TOOLS or phase in {"validation", "increment"}))
+        and (spec.name not in SCRIPT_PHASE_TOOLS or phase in {"validation", "increment"})))
+        and not (
+            not legacy_profile
+            and phase in {"knowledge", "increment"}
+            and spec.name in CHANGE_SET_DIRECT_ACTION_TOOLS | {"write_file", "delete_file"}
+        )
     )
 
 

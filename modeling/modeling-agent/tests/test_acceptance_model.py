@@ -196,6 +196,31 @@ def test_schema_generation_executes_core_injected_sync_task() -> None:
     }
 
 
+def test_managed_file_redirect_retries_required_schema_tool() -> None:
+    messages = [{
+        "role": "user",
+        "content": "按九张数据 Schema Sheet 重新生成全部对象。",
+    }]
+    state_ready(messages)
+    arguments = {
+        "plan_task_id": "task-schema",
+        "expected_revision": "rev-schema",
+        "mutation_id": "acceptance-schema-sync-1",
+        "reason": "按全部合成 Schema Sheet 确定性同步物理对象",
+    }
+    completed(messages, "sync_schema_objects", arguments, {
+        "error": "MANAGED_FILE_REQUIRES_DOMAIN_TOOL",
+        "requiredAction": "redirect_tool",
+        "requiredTool": "sync_schema_objects",
+        "issueId": "agent-issue-synthetic-schema",
+    })
+
+    turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+
+    assert turn.name == "sync_schema_objects"
+    assert turn.arguments == arguments
+
+
 def test_generated_script_exposes_structured_function_contract() -> None:
     namespace: dict[str, object] = {"__name__": "synthetic_contract_test"}
     exec(compile(_script_source(False), "synthetic_summary.py", "exec"), namespace)

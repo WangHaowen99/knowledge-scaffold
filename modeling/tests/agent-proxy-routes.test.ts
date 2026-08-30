@@ -62,6 +62,44 @@ test('Agent 代理校验项目归属并透传登录身份与输入', async (t) =
   assert.equal(calls.length, 1);
 });
 
+test('问题恢复动作按项目和问题身份结构化转发', async (t) => {
+  const project = createProject({ owner: 'alice', name: '问题恢复代理' });
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify({ mode: 'resumed', runId: 'run-recovery' }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const app = appFor(t);
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/issues/issue%20binding/resume`,
+    headers: { authorization: 'Bearer recovery-token' },
+    payload: { actionId: 'resume_required_tool' },
+  });
+
+  assert.equal(response.statusCode, 202, response.body);
+  assert.match(calls[0].url, new RegExp(
+    `/v1/projects/${project.id}/issues/issue%20binding/resume$`,
+  ));
+  assert.equal((calls[0].init?.headers as Record<string, string>).authorization, 'Bearer recovery-token');
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    actionId: 'resume_required_tool',
+  });
+
+  const deniedApp = appFor(t, 'bob');
+  const denied = await deniedApp.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/issues/issue-binding/resume`,
+    payload: { actionId: 'resume_required_tool' },
+  });
+  assert.equal(denied.statusCode, 404);
+  assert.equal(calls.length, 1);
+});
+
 test('交互回答始终带项目作用域转发', async (t) => {
   const project = createProject({ owner: 'alice', name: '回答作用域' });
   let forwarded = '';

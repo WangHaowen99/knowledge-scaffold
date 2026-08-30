@@ -37,6 +37,19 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/steer`, 'POST', id);
   });
 
+  app.post('/api/projects/:id/agent/issues/:issueId/resume', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const issueId = encodeURIComponent(String((request.params as any).issueId ?? ''));
+    return proxyJson(
+      request,
+      reply,
+      `/v1/projects/${encodeURIComponent(id)}/issues/${issueId}/resume`,
+      'POST',
+      id,
+    );
+  });
+
   app.post('/api/projects/:id/agent/cancel', async (request, reply) => (
     proxyJson(request, reply, `/v1/projects/${projectId(request)}/cancel`, 'POST')
   ));

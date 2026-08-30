@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   status TEXT NOT NULL,
   prompt TEXT NOT NULL,
   token_fingerprint TEXT NOT NULL,
+  tool_profile TEXT NOT NULL DEFAULT 'domain-v2',
   run_credential TEXT NOT NULL DEFAULT '',
   baseline_revision TEXT NOT NULL DEFAULT '',
   candidate_revision TEXT NOT NULL DEFAULT '',
@@ -160,6 +161,17 @@ CREATE TABLE IF NOT EXISTS agent_validation_repair_state (
   updated_at TEXT NOT NULL
 );
 
+-- 受管文件被拒绝后的确定性工具转向也必须跨服务重启保留。
+CREATE TABLE IF NOT EXISTS agent_technical_recoveries (
+  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  issue_id TEXT NOT NULL,
+  state_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, issue_id)
+);
+
 -- SDK 内部重试对业务层不可见。这里记录应用层恢复是否已经使用、何时允许再次执行，
 -- 防止服务重启或模型上下文切换后把同一个失败操作无限重放。
 CREATE TABLE IF NOT EXISTS agent_retry_ledger (
@@ -200,6 +212,11 @@ class RuntimeStore:
         if "run_credential" not in columns:
             self._db.execute(
                 "ALTER TABLE agent_runs ADD COLUMN run_credential TEXT NOT NULL DEFAULT ''"
+            )
+        if "tool_profile" not in columns:
+            # 数据库中已有的运行可能仍持有旧工具调用 checkpoint，不能强制切换 schema。
+            self._db.execute(
+                "ALTER TABLE agent_runs ADD COLUMN tool_profile TEXT NOT NULL DEFAULT 'legacy-v1'"
             )
         self._db.commit()
 
@@ -378,9 +395,9 @@ class RuntimeStore:
             self._db.execute(
                 """INSERT INTO agent_runs
                 (id, project_id, session_id, status, prompt, token_fingerprint,
-                 run_credential, baseline_revision, candidate_revision, interaction_id,
+                 tool_profile, run_credential, baseline_revision, candidate_revision, interaction_id,
                  result, error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _run_values(run),
             )
             self._transition_project_state_locked(
@@ -416,6 +433,7 @@ class RuntimeStore:
             "session_id",
             "status",
             "token_fingerprint",
+            "tool_profile",
             "run_credential",
             "baseline_revision",
             "candidate_revision",
@@ -466,6 +484,48 @@ class RuntimeStore:
                 (run_id, operation_id),
             ).fetchone()
         return _retry_entry_from_row(row) if row else None
+
+    def save_technical_recovery(
+        self,
+        run_id: str,
+        issue_id: str,
+        recovery: dict[str, Any],
+    ) -> None:
+        timestamp = now_iso()
+        with self._lock, self._db:
+            self.require_run(run_id)
+            self._db.execute(
+                """INSERT INTO agent_technical_recoveries (
+                run_id, issue_id, state_json, status, created_at, updated_at
+                ) VALUES (?, ?, ?, 'active', ?, ?)
+                ON CONFLICT(run_id, issue_id) DO UPDATE SET
+                  state_json = excluded.state_json,
+                  status = 'active',
+                  updated_at = excluded.updated_at""",
+                (run_id, issue_id, _json(recovery), timestamp, timestamp),
+            )
+
+    def technical_recoveries(self, run_id: str) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT issue_id, state_json FROM agent_technical_recoveries
+                WHERE run_id = ? AND status = 'active' ORDER BY created_at, issue_id""",
+                (run_id,),
+            ).fetchall()
+        return {str(row["issue_id"]): _object(row["state_json"]) for row in rows}
+
+    def resolve_technical_recoveries(self, run_id: str, issue_ids: list[str]) -> None:
+        normalized = [str(item).strip() for item in issue_ids if str(item).strip()]
+        if not normalized:
+            return
+        placeholders = ",".join("?" for _item in normalized)
+        with self._lock, self._db:
+            self._db.execute(
+                f"""UPDATE agent_technical_recoveries
+                SET status = 'resolved', updated_at = ?
+                WHERE run_id = ? AND issue_id IN ({placeholders})""",
+                (now_iso(), run_id, *normalized),
+            )
 
     def record_retry(
         self,
@@ -967,6 +1027,7 @@ def _run_values(run: RunRecord) -> tuple[Any, ...]:
         run.status,
         run.prompt,
         run.token_fingerprint,
+        run.tool_profile,
         run.run_credential,
         run.baseline_revision,
         run.candidate_revision,
@@ -986,6 +1047,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         status=row["status"],
         prompt=row["prompt"],
         token_fingerprint=row["token_fingerprint"],
+        tool_profile=row["tool_profile"],
         run_credential=row["run_credential"],
         baseline_revision=row["baseline_revision"],
         candidate_revision=row["candidate_revision"],

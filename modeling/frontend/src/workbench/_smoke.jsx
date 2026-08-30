@@ -1318,6 +1318,38 @@ try {
   console.log('✓ 工具自动恢复过程持久显示');
 } catch (e) { console.log('✗ 工具自动恢复记录:', e.message); bad++; }
 
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-issue', toolCallId: 'call-managed-write',
+  name: 'write_file', phase: 'repairing', code: 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+  issueId: 'issue-binding', issueStatus: 'repairing', summary: '对象数据映射已阻止，正在自动修正',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-issue', toolCallId: 'call-managed-write-again',
+  name: 'write_file', phase: 'repairing', code: 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+  issueId: 'issue-binding', issueStatus: 'repairing', summary: '正在读取对象和来源表',
+  createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const issues = store.get().messages.filter((message) => message.id === 'tool-issue-run-issue-issue-binding');
+  const html = renderToString(<Block block={issues[0]?.blocks?.[0]} />);
+  if (issues.length !== 1 || !issues[0].blocks[0].text.includes('正在读取对象')
+    || !html.includes('系统正在自动修正') || !html.includes('card-wait')) {
+    throw new Error('同一问题没有原位更新，或自动修正态仍显示为红色阻塞');
+  }
+  actions.handleEvent({
+    eventType: 'tool', seq: 3, runId: 'run-issue', toolCallId: 'call-binding',
+    name: 'patch_object_source_binding', phase: 'completed', issueStatus: 'resolved',
+    resolvedIssueIds: ['issue-binding'], summary: '对象与数据表绑定完成',
+    createdAt: '2026-01-01T00:00:02Z',
+  });
+  if (store.get().messages.some((message) => message.id === 'tool-issue-run-issue-issue-binding')) {
+    throw new Error('已解决问题仍占据主对话');
+  }
+  console.log('✓ 工具问题按生命周期原位更新并在解决后收起');
+} catch (e) { console.log('✗ 工具问题生命周期:', e.message); bad++; }
+
 store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null, drawerOpen: true });
 actions.handleEvent({
   eventType: 'tool', seq: 1, runId: 'run-trace', toolCallId: 'call-read',

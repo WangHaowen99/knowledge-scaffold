@@ -655,6 +655,7 @@ export class AgentCoreService {
       case 'read_package_source_file': return this.readPackageSourceFile(workspace, args);
       case 'stage_package_merge': return this.stagePackageMerge(workspace, context, args);
       case 'diff': return this.diff(workspace, args);
+      case 'update_work_notes':
       case 'update_plan': return this.updateRuntimeFile(workspace, context, '.modeling/plan.md', args);
       case 'request_confirmation_preflight': return this.preflightWithChangePlan(workspace, context, args);
       case 'request_confirmation': return this.confirm(workspace, context, args);
@@ -3808,12 +3809,55 @@ export class AgentCoreService {
       );
     }
     if (path === 'mappings/object-data-mappings.json') {
+      const physicalTables = schemaTables(this.tables(context.project.id));
+      if (!physicalTables.length) {
+        throw new AgentCoreError(
+          'PHYSICAL_SCHEMA_REQUIRED',
+          '项目没有确定数据 Schema，虚拟对象不能写入物理数据 mapping',
+          ['移除 mapping 修改；只保留不绑定物理表的虚拟对象'],
+          409,
+          {
+            managedPath: path,
+            object_source_mode: 'virtual',
+            retryable: false,
+          },
+        );
+      }
+      const active = this.changeControl.activePlan(context.project.id, context.runId);
+      const plan = active
+        ? this.changeControl.snapshot(context.project.id, context.runId, active.id)
+        : null;
+      const planTools = new Set(
+        plan?.tasks.flatMap((task) => task.allowed_tools) ?? [],
+      );
+      const requiredTool = planTools.has('patch_object_source_binding')
+        && !planTools.has('sync_schema_objects')
+        ? 'patch_object_source_binding'
+        : 'sync_schema_objects';
+      const schemaSync = requiredTool === 'sync_schema_objects';
+      const issueId = stableAgentIssueId(
+        schemaSync ? 'managed-schema-objects' : 'managed-object-binding',
+        path,
+      );
       throw new AgentCoreError(
         'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
         '对象数据映射是受管文件，不能直接写入',
-        ['创建或修改对象时使用结构化对象工具；已有对象重绑时使用 bind_object_source，由核心重新生成映射'],
+        [schemaSync
+          ? '读取当前计划后使用 sync_schema_objects，由核心按全部 Schema Sheet 重新生成对象与 mapping'
+          : '读取当前计划、对象资源和来源表后，使用 patch_object_source_binding 由核心重新生成对象与 mapping'],
         409,
-        { managedPath: path, requiredTool: 'bind_object_source' },
+        {
+          managedPath: path,
+          requiredAction: 'redirect_tool',
+          requiredTool,
+          targetKind: schemaSync ? 'schema_objects' : 'object_binding',
+          issueId,
+          retryable: false,
+          recoveryAction: {
+            id: schemaSync ? 'resume_schema_object_sync' : 'resume_object_binding',
+            label: schemaSync ? '自动完成 Schema 对象同步' : '自动完成对象绑定',
+          },
+        },
       );
     }
     if (MANAGED_DOMAIN_MARKDOWN.test(path)) {
@@ -3827,6 +3871,11 @@ export class AgentCoreService {
         {
           managedPath: path,
           requiredTool,
+          ...(!path.endsWith('/index.md') ? {
+            requiredAction: 'redirect_tool',
+            targetKind: `${kind}_resource`,
+            issueId: stableAgentIssueId(`managed-${kind}`, path),
+          } : {}),
           contractVersion: DOMAIN_TOOL_CONTRACT_VERSION,
           retryable: false,
         },
@@ -3840,7 +3889,10 @@ export class AgentCoreService {
         409,
         {
           managedPath: path,
+          requiredAction: 'redirect_tool',
           requiredTool: 'stage_script_source',
+          targetKind: 'script_source',
+          issueId: stableAgentIssueId('managed-script', path),
           contractVersion: 'script-contract-v1',
           retryable: false,
         },
@@ -3976,7 +4028,10 @@ export class AgentCoreService {
         409,
         {
           managedPath: path,
+          requiredAction: 'redirect_tool',
           requiredTool: 'preview_domain_delete',
+          targetKind: 'domain_delete',
+          issueId: stableAgentIssueId('managed-domain-delete', path),
           contractVersion: DOMAIN_TOOL_CONTRACT_VERSION,
           retryable: false,
         },
@@ -3990,7 +4045,10 @@ export class AgentCoreService {
         409,
         {
           managedPath: path,
+          requiredAction: 'redirect_tool',
           requiredTool: 'stage_script_source',
+          targetKind: 'script_source',
+          issueId: stableAgentIssueId('managed-script-delete', path),
           contractVersion: 'script-contract-v1',
           retryable: false,
         },
@@ -6302,6 +6360,10 @@ function packagePath(value: string): string {
     throw new AgentCoreError('WRITE_UNSAFE', '知识包路径必须是安全的包内相对路径', ['改用不含空段、反斜杠或 .. 的相对路径'], 400);
   }
   return path;
+}
+
+function stableAgentIssueId(kind: string, target: string): string {
+  return `agent-issue-${createHash('sha256').update(`${kind}\0${target}`).digest('hex').slice(0, 20)}`;
 }
 
 function domainTargetKey(value: unknown): string {
