@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import { canReadProject, canWriteProject } from '../projects/repo.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
+import { takeAcceptanceFault } from '../acceptance/faults.js';
 
 export function registerAgentProxyRoutes(app: FastifyInstance): void {
   app.get('/api/projects/:id/agent/state', async (request, reply) => {
@@ -20,13 +21,21 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/state`, 'GET', id);
   });
 
-  app.post('/api/projects/:id/agent/runs', async (request, reply) => (
-    proxyJson(request, reply, `/v1/projects/${projectId(request)}/runs`, 'POST')
-  ));
+  app.post('/api/projects/:id/agent/runs', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const acceptanceFailure = takeAcceptanceMessageFailure(request, reply, id);
+    if (acceptanceFailure) return acceptanceFailure;
+    return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/runs`, 'POST', id);
+  });
 
-  app.post('/api/projects/:id/agent/steer', async (request, reply) => (
-    proxyJson(request, reply, `/v1/projects/${projectId(request)}/steer`, 'POST')
-  ));
+  app.post('/api/projects/:id/agent/steer', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const acceptanceFailure = takeAcceptanceMessageFailure(request, reply, id);
+    if (acceptanceFailure) return acceptanceFailure;
+    return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/steer`, 'POST', id);
+  });
 
   app.post('/api/projects/:id/agent/cancel', async (request, reply) => (
     proxyJson(request, reply, `/v1/projects/${projectId(request)}/cancel`, 'POST')
@@ -83,6 +92,19 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
       reply.raw.destroy(error as Error);
     });
     bridge.pipe(reply.raw);
+  });
+}
+
+function takeAcceptanceMessageFailure(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  projectIdValue: string,
+) {
+  if (!takeAcceptanceFault(request.user!.username, 'F17', `message:${projectIdValue}:${Date.now()}`)) return null;
+  return reply.code(503).send({
+    code: 'AGENT_RUN_CREATE_RETRYABLE',
+    error: '消息暂时没有发送成功，输入内容已保留，请重试',
+    retryable: true,
   });
 }
 

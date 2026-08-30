@@ -202,20 +202,40 @@ test('浏览器旅程只接受受控前端动作并拒绝直接 API 调用', () 
       { action: 'click', text: '新建项目' },
       { action: 'fill', selector: 'input', value: '通用测试项目' },
       { action: 'assertText', text: 'AI辅助构建' },
+      { action: 'assertNotText', text: '原始内部错误' },
+      { action: 'assertVisible', selector: 'button[aria-label="发送"]' },
+      { action: 'assertLayout' },
+      { action: 'clickAll', selector: '.wb-review-group' },
+      { action: 'reviewAndAccept', timeoutMs: 60_000 },
+      { action: 'reload' },
       { action: 'guidedConstruction', timeoutMs: 60_000 },
     ],
+  }));
+});
+
+test('浏览器旅程数量断言必须提供确定的选择器和整数', () => {
+  assert.throws(() => validateJourneyPlan({
+    name: 'invalid-count', steps: [{ action: 'assertCount', selector: '.candidate' }],
+  }), /整数 expectedCount/);
+  assert.doesNotThrow(() => validateJourneyPlan({
+    name: 'valid-count', steps: [{ action: 'assertCount', selector: '.candidate', expectedCount: 1 }],
   }));
 });
 
 test('上传步骤必须引用仓库外运行时文件而不是内嵌内容', () => {
   assert.throws(() => validateJourneyPlan({
     name: 'invalid-upload',
-    steps: [{ action: 'upload', selector: 'input[type=file]', content: 'embedded' }],
+    steps: [{ action: 'upload', triggerText: '选择文件', content: 'embedded' }],
   }), /上传步骤必须提供 file 或 fileEnv/);
+
+  assert.throws(() => validateJourneyPlan({
+    name: 'hidden-upload',
+    steps: [{ action: 'upload', selector: 'input[type=file]', file: '/tmp/input.zip' }],
+  }), /可见的 triggerSelector 或 triggerText/);
 });
 
 test('浏览器旅程可以从环境变量一次选择多份建模资料且不回显路径', () => {
-  const step = { action: 'upload', selector: 'input[type=file]', filesEnv: 'E2E_MATERIAL_FILES' } as const;
+  const step = { action: 'upload', triggerText: '选择资料', filesEnv: 'E2E_MATERIAL_FILES' } as const;
   const files = resolveJourneyFiles(step, {
     E2E_MATERIAL_FILES: JSON.stringify(['/tmp/material-a.md', '/tmp/material-b.xlsx']),
   });
@@ -226,11 +246,13 @@ test('浏览器旅程可以从环境变量一次选择多份建模资料且不�
   assert.doesNotThrow(() => validateJourneyPlan({ name: 'multi-upload', steps: [step] }));
 });
 
-test('浏览器旅程上传隐藏文件控件时不要求控件可见', async () => {
+test('浏览器旅程上传时必须点击可见入口并等待原生文件选择器', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => (
     readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
   ));
-  assert.match(source, /targetElement\(page, step, \{ visible: false \}\)/);
+  assert.match(source, /waitForFileChooser/);
+  assert.match(source, /triggerSelector/);
+  assert.doesNotMatch(source, /\.uploadFile\(/);
 });
 
 test('浏览器旅程在操作页面前会关闭首次功能引导遮罩', async () => {
@@ -249,19 +271,23 @@ test('浏览器旅程会为隔离页面上下文安装转译辅助函数', async
   assert.match(source, /globalThis\.__name/);
 });
 
-test('浏览器旅程替换 React 受控输入时使用原生 value setter 并派发 input 事件', async () => {
+test('浏览器旅程替换受控输入时只使用鼠标和键盘', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => (
     readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
   ));
-  assert.match(source, /HTMLInputElement\.prototype/);
-  assert.match(source, /dispatchEvent\(new Event\('input', \{ bubbles: true \}\)\)/);
+  assert.match(source, /keyboard\.down\('Control'\)/);
+  assert.match(source, /keyboard\.up\('Control'\)/);
+  assert.match(source, /press\('Backspace'\)/);
+  assert.doesNotMatch(source, /HTMLInputElement\.prototype/);
+  assert.doesNotMatch(source, /dispatchEvent\(/);
 });
 
-test('浏览器旅程点击前把控件滚入视口并由页面元素触发 React 点击事件', async () => {
+test('浏览器旅程由浏览器鼠标点击控件，不在页面脚本中调用 DOM click', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => (
     readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
   ));
-  assert.match(source, /node\.scrollIntoView\(\{ block: 'center', inline: 'center' \}\)/);
-  assert.match(source, /node\.click\(\)/);
+  assert.match(source, /ElementHandle<HTMLElement>\)\.click\(\)/);
+  assert.doesNotMatch(source, /node\.click\(\)/);
+  assert.doesNotMatch(source, /button\?\.click\(\)/);
   assert.match(source, /item\.querySelectorAll\('\*'\)/);
 });

@@ -46,6 +46,7 @@ _CONFIRMATION_CARD_CLAIMS = (
 MERMAID_SOURCE_VALIDATOR_VERSION = "mermaid-source-v1"
 _STABLE_READ_TOOLS = frozenset({"get_evaluation_results"})
 _STABLE_READ_INVALIDATORS = frozenset({"run_evaluation"})
+_CONTEXT_DEPENDENT_RECEIPT_TOOLS = frozenset({"run_script_test"})
 
 
 def requests_explicit_decision(text: str) -> bool:
@@ -227,6 +228,8 @@ def _contract_validator_version(
 class WriteSafetyRail(AgentRail):
     priority = 100
     WRITE_TOOLS = frozenset({
+        "create_change_plan", "revise_change_plan", "stage_change_set",
+        "validate_change_set", "discard_change_set",
         "write_file", "delete_file", "import_zip", "stage_package_merge",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "compile_package_fusion_plan", "discard_rejected_candidate_changes",
@@ -237,7 +240,7 @@ class WriteSafetyRail(AgentRail):
         "stage_script_source",
     })
     RECOVERY_TOOLS = frozenset({
-        "delete_file", "delete_domain_resource", "discard_rejected_candidate_changes",
+        "delete_file", "delete_domain_resource", "discard_rejected_candidate_changes", "discard_change_set",
     })
 
     def __init__(self, context: ToolContext) -> None:
@@ -390,6 +393,8 @@ def _mermaid_source_findings(tool: str, arguments: dict[str, Any]) -> list[dict[
 
 
 def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> str:
+    if tool in {"stage_change_set", "validate_change_set"}:
+        return "受控领域修改只能在知识建模或增量建模阶段执行" if phase not in {"knowledge", "increment"} else ""
     if tool in {
         "create_object", "create_rule", "create_operation", "create_metric",
         "patch_object", "patch_rule", "patch_operation", "patch_metric",
@@ -430,6 +435,8 @@ def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> st
 class InterjectionSafetyRail(AgentRail):
     priority = 110
     MUTATING_TOOLS = frozenset({
+        "create_change_plan", "revise_change_plan", "stage_change_set",
+        "validate_change_set", "discard_change_set",
         "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_plan",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "discard_rejected_candidate_changes",
@@ -484,7 +491,11 @@ class ToolBoundaryRail(AgentRail):
         name = _tool_name(ctx)
         arguments = _call_args(ctx)
         call_id = _tool_call_id(ctx)
-        if call_id and self._context.tool_receipt_lookup is not None:
+        if (
+            call_id
+            and name not in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
+            and self._context.tool_receipt_lookup is not None
+        ):
             result = self._context.tool_receipt_lookup(name, call_id, arguments)
             if result is not None:
                 ctx.extra["_tool_receipt_replayed"] = True
@@ -511,6 +522,7 @@ class ToolBoundaryRail(AgentRail):
             )
         if (
             ctx.extra.get("_tool_receipt_replayed")
+            or _tool_name(ctx) in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
             or self._context.tool_receipt_save is None
         ):
             return
@@ -1194,6 +1206,18 @@ class ActivityRail(AgentRail):
         if trace_group_id:
             payload["traceGroupId"] = trace_group_id
         self._emit("tool", payload)
+        plan = result.get("plan")
+        if name in {"create_change_plan", "get_change_plan", "revise_change_plan", "validate_change_set"} \
+                and isinstance(plan, Mapping):
+            self._emit("change_plan", {"plan": dict(plan)})
+        if name in {"stage_change_set", "get_change_set_receipt", "discard_change_set"}:
+            change_set = result.get("change_set") if isinstance(result.get("change_set"), Mapping) else {
+                key: result.get(key) for key in (
+                    "change_set_id", "plan_id", "mutation_id", "status", "working_revision"
+                ) if result.get(key) is not None
+            }
+            if change_set:
+                self._emit("change_set", {"changeSet": dict(change_set)})
         self._emit("progress", {
             "activityId": f"after-tool:{_tool_call_id(ctx) or uuid.uuid4().hex[:12]}",
             "text": summary,

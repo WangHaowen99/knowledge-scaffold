@@ -364,6 +364,9 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'agent_candidate_workspaces', 'credential_hash', 'TEXT');
   ensureColumn(db, 'agent_candidate_workspaces', 'credential_expires_at', 'TEXT');
   ensureColumn(db, 'agent_candidate_workspaces', 'package_data_source_type', "TEXT NOT NULL DEFAULT 'neo4j'");
+  ensureColumn(db, 'agent_change_plans', 'approval_status', "TEXT NOT NULL DEFAULT 'approved'");
+  ensureColumn(db, 'agent_change_plans', 'approved_by', 'TEXT');
+  ensureColumn(db, 'agent_change_plans', 'approved_at', 'TEXT');
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
   ensureColumn(db, 'generation_batch_checkpoints', 'dependency_hash', "TEXT NOT NULL DEFAULT ''");

@@ -647,6 +647,114 @@ CREATE TABLE IF NOT EXISTS agent_domain_tool_adoptions (
   PRIMARY KEY (project_id, run_id)
 );
 
+-- 模型只负责提出任务，计划状态由 Change Set、校验和用户确认的确定性事实推进。
+CREATE TABLE IF NOT EXISTS agent_change_plans (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id            TEXT NOT NULL,
+  goal              TEXT NOT NULL,
+  mode              TEXT NOT NULL CHECK (mode IN ('expert_edit', 'generation')),
+  status            TEXT NOT NULL CHECK (status IN ('active', 'completed', 'failed', 'cancelled')),
+  approval_status   TEXT NOT NULL DEFAULT 'approved'
+                    CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+  approved_by       TEXT,
+  approved_at       TEXT,
+  version           INTEGER NOT NULL DEFAULT 1,
+  expected_revision TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_change_plans_run
+  ON agent_change_plans(project_id, run_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_change_plan_tasks (
+  id                 TEXT PRIMARY KEY,
+  plan_id            TEXT NOT NULL REFERENCES agent_change_plans(id) ON DELETE CASCADE,
+  client_key         TEXT NOT NULL,
+  ordinal            INTEGER NOT NULL,
+  title              TEXT NOT NULL,
+  resource_kind      TEXT NOT NULL CHECK (resource_kind IN ('object', 'rule', 'operation', 'metric', 'script', 'binding', 'other')),
+  target_key         TEXT NOT NULL,
+  allowed_tools_json TEXT NOT NULL,
+  depends_on_json    TEXT NOT NULL,
+  acceptance         TEXT NOT NULL,
+  required           INTEGER NOT NULL CHECK (required IN (0, 1)),
+  status             TEXT NOT NULL CHECK (status IN ('pending', 'staged', 'validated', 'waiting_user', 'accepted', 'rejected', 'failed', 'cancelled', 'skipped')),
+  change_set_id      TEXT,
+  updated_at         TEXT NOT NULL,
+  UNIQUE (plan_id, client_key),
+  UNIQUE (plan_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_change_plan_tasks_plan
+  ON agent_change_plan_tasks(plan_id, ordinal);
+
+-- staging 表示结果尚待结算；同一 mutation_id + request_hash 可安全重放或查询。
+CREATE TABLE IF NOT EXISTS agent_change_sets (
+  id                 TEXT PRIMARY KEY,
+  project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id             TEXT NOT NULL,
+  plan_id            TEXT NOT NULL REFERENCES agent_change_plans(id) ON DELETE CASCADE,
+  mutation_id        TEXT NOT NULL,
+  request_hash       TEXT NOT NULL,
+  expected_revision  TEXT NOT NULL,
+  resulting_revision TEXT,
+  candidate_revision TEXT,
+  group_id           TEXT,
+  status             TEXT NOT NULL CHECK (status IN ('staging', 'staged', 'validated', 'waiting_user', 'accepted', 'rejected', 'failed', 'discarded', 'cancelled')),
+  actions_json       TEXT NOT NULL,
+  receipt_json       TEXT,
+  error_json         TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  UNIQUE (project_id, mutation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_change_sets_plan
+  ON agent_change_sets(plan_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_change_control_events (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id      TEXT NOT NULL,
+  plan_id     TEXT NOT NULL REFERENCES agent_change_plans(id) ON DELETE CASCADE,
+  change_set_id TEXT,
+  event_type  TEXT NOT NULL,
+  summary     TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_change_control_events_plan
+  ON agent_change_control_events(plan_id, created_at);
+
+-- 浏览器黑盒验收专用的一次性故障开关。仅在显式验收模式下由可见页面读写，
+-- 不保存任意代码、地址或请求内容，也不会在生产模式下提供路由。
+CREATE TABLE IF NOT EXISTS acceptance_faults (
+  owner          TEXT NOT NULL,
+  fault_id       TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'closed'
+                 CHECK (status IN ('armed', 'consumed', 'closed')),
+  consumed_count INTEGER NOT NULL DEFAULT 0,
+  effect_count   INTEGER NOT NULL DEFAULT 0,
+  active_run_id  TEXT,
+  armed_at       TEXT,
+  consumed_at    TEXT,
+  closed_at      TEXT,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (owner, fault_id)
+);
+CREATE INDEX IF NOT EXISTS idx_acceptance_faults_owner_status
+  ON acceptance_faults(owner, status, updated_at);
+
+-- 浏览器验收项目的隔离标记。只有显式创建的合成项目才能使用确定性验收模型，
+-- 普通项目即使部署时开启验收页面也始终沿用用户或平台的真实模型配置。
+CREATE TABLE IF NOT EXISTS acceptance_projects (
+  project_id   TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  owner        TEXT NOT NULL,
+  scenario_id  TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_acceptance_projects_owner
+  ON acceptance_projects(owner, created_at DESC);
+
 -- 脚本先定义结构化契约，再提交源码。契约绑定操作资源哈希，避免在操作变化后继续复用旧约束。
 CREATE TABLE IF NOT EXISTS agent_script_contract_drafts (
   project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

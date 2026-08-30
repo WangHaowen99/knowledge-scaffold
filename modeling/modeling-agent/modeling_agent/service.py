@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -20,6 +21,7 @@ from .schemas import (
     RUN_FAILED,
     RUN_QUEUED,
     RUN_RUNNING,
+    RUN_STOPPING,
     RUN_SUSPENDED,
     RUN_WAITING,
     RunRecord,
@@ -28,6 +30,7 @@ from .settings import Settings
 from .store import RuntimeStore, token_fingerprint
 from .tools import CandidateValidationRepairState, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
+from .workflows import build_execution_brief_workflow, execution_brief_prompt
 
 logger = logging.getLogger("modeling_agent")
 INTERJECTION_CONTINUATION_PREFIX = "interjection-continuation:"
@@ -69,8 +72,15 @@ REASONING_EVENT_BATCH_CHARS = 160
 COMPACT_SUMMARY_MAX_TOKENS = 4_096
 COMPACT_SUMMARY_TIMEOUT_SECONDS = 60.0
 MAX_TOOL_SUMMARIES = 60
+MAX_MODEL_RECOVERY_ATTEMPTS = 1
+MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
+    "create_change_plan",
+    "revise_change_plan",
+    "stage_change_set",
+    "validate_change_set",
+    "discard_change_set",
     "analyze_material_impact",
     "stage_tabular_dataset",
     "write_file",
@@ -131,6 +141,7 @@ class LiveRun:
     validation_repair: CandidateValidationRepairState = field(default_factory=CandidateValidationRepairState)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     inflight_core_calls: set[asyncio.Task[Any]] = field(default_factory=set)
+    plan_approval_required: bool = False
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -867,8 +878,8 @@ class AgentService:
             )
             return
         if execution == RUN_SUSPENDED:
-            await self._resume(
-                run, token, {}, steering=prompt,
+            await self._continue(
+                run, token, prompt,
                 required_tools=required_tools,
                 release_reentry_authorized=True,
                 confirmation_required=confirmation_required,
@@ -1093,11 +1104,10 @@ class AgentService:
 
         if execution == RUN_SUSPENDED:
             steering_id = self.store.queue_steering(project_id, run.id, message)
-            resumed = await self._resume(
+            resumed = await self._continue(
                 run,
                 token,
-                {},
-                steering=message,
+                message,
                 required_tools=_required_tools_for_user_intent(message),
                 autonomous_seed=True,
             )
@@ -1236,6 +1246,37 @@ class AgentService:
         arguments: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
+        if name == "create_change_plan":
+            consume = getattr(self._gateway, "acceptance_fault", None)
+            fault: dict[str, Any] = {}
+            if callable(consume):
+                try:
+                    value = await consume(
+                        project_id=live.project_id,
+                        run_id=live.run_id,
+                        token=live.token,
+                        fault_id="F16",
+                    )
+                    fault = value if isinstance(value, dict) else {}
+                except Exception:  # noqa: BLE001 - acceptance controls never affect production
+                    fault = {}
+            if fault.get("active") is True:
+                plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+                if plan:
+                    self.events.publish(live.project_id, live.run_id, "change_plan", {"plan": plan})
+                self.events.publish(live.project_id, live.run_id, "progress", {
+                    "activityId": f"acceptance-batch-wait:{live.run_id}",
+                    "text": "当前业务批次已暂停，等待继续或停止",
+                    "detail": "建模计划已经保存，尚未开始第一批写入",
+                    "phase": "waiting_checkpoint",
+                    "counters": {},
+                })
+                await live.cancel_event.wait()
+                raise asyncio.CancelledError
+            plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+            if plan.get("approval_status") == "pending":
+                live.plan_approval_required = True
+            return
         if name not in {"set_material_directive", "read_documents_fully"}:
             return
         purposes: list[str] = []
@@ -1323,7 +1364,12 @@ class AgentService:
         live = self._live.get(run.id)
         if live:
             live.cancel_event.set()
-        updated = self.store.update_run(run.id, status=RUN_CANCELLED, error="用户已停止运行")
+        self.store.update_run(run.id, status=RUN_STOPPING, error="")
+        self.events.publish(project_id, run.id, "status", {
+            "status": RUN_STOPPING,
+            "text": "正在停止并核对已经发出的修改",
+        })
+        self._publish_state(project_id, run.id)
         try:
             await asyncio.wait_for(
                 self._gateway.call(
@@ -1347,6 +1393,7 @@ class AgentService:
                     task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        updated = self.store.update_run(run.id, status=RUN_CANCELLED, error="用户已停止运行")
         self._publish_state(project_id, run.id)
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
         return self._run_public(updated, self.store.project_state(project_id))
@@ -1414,7 +1461,7 @@ class AgentService:
         confirmation_required: bool = False,
         autonomous_seed: bool = False,
     ) -> dict[str, Any]:
-        if self._execution(run.project_id, run.id) != RUN_WAITING:
+        if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
         claimed = await self._claim_workspace(project_id=run.project_id, run_id=run.id, token=token)
         self.store.update_run(
@@ -1494,7 +1541,11 @@ class AgentService:
                     run_id=live.run_id,
                     token=live.token,
                 )
-                model = build_model(self.settings.with_runtime_llm(runtime_llm))
+                if runtime_llm.get("acceptanceDriver") is True:
+                    from .acceptance_model import AcceptanceModel
+                    model = AcceptanceModel(str(runtime_llm.get("acceptanceScenario") or ""))
+                else:
+                    model = build_model(self.settings.with_runtime_llm(runtime_llm))
             self.store.update_run(run.id, status=RUN_RUNNING)
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
@@ -1503,6 +1554,7 @@ class AgentService:
             continuations = 0
             decision_card_retries = 0
             confirmation_card_retries = 0
+            model_operation_seq = 0
             current_query = query
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
@@ -1563,7 +1615,32 @@ class AgentService:
                     "status",
                     {"status": RUN_RUNNING, "text": "助手正在执行下一步" if continuations else "助手正在建模"},
                 )
-                result = await self._run_streaming(live, run, Runner, current_query)
+                model_operation_seq += 1
+                result = await self._run_model_operation(
+                    live,
+                    run,
+                    Runner,
+                    current_query,
+                    operation_id=f"model-stream-{model_operation_seq:04d}",
+                )
+                if live.plan_approval_required:
+                    output = str(result.get("output") or "").strip()
+                    self.store.update_run(
+                        run.id,
+                        status=RUN_SUSPENDED,
+                        result=output,
+                        error="",
+                    )
+                    self._publish_state(run.project_id, run.id)
+                    self.events.publish(run.project_id, run.id, "checkpoint", {
+                        "id": run.session_id,
+                        "revision": run.candidate_revision or run.baseline_revision,
+                    })
+                    self.events.publish(run.project_id, run.id, "status", {
+                        "status": RUN_SUSPENDED,
+                        "text": "等待你批准当前建模计划",
+                    })
+                    return
                 missing_tools = _missing_required_tools(live)
                 if result.get("result_type") == "success" and missing_tools:
                     if live.proof_retries < 2:
@@ -1675,7 +1752,7 @@ class AgentService:
                     {"status": RUN_SUSPENDED, "text": "服务正在重启，已保留当前进展"},
                 )
                 self._publish_state(run.project_id, run.id)
-            elif execution != RUN_CANCELLED:
+            elif execution not in {RUN_CANCELLED, RUN_STOPPING}:
                 self.store.update_run(run.id, status=RUN_CANCELLED, error="运行被停止")
                 self._publish_state(run.project_id, run.id)
             raise
@@ -1687,7 +1764,9 @@ class AgentService:
                 error.message
                 if isinstance(error, AgentRuntimeError) and error.code == "LLM_NOT_CONFIGURED"
                 else (
-                    "模型响应等待超时；之前已经完成的处理和候选修改均已保留，请从当前进展重试。"
+                    "模型上下文超过本轮可用范围；之前已经完成的处理和候选修改均已保留，请从当前进展重试。"
+                    if _is_context_limit_exception(error)
+                    else "模型响应等待超时；之前已经完成的处理和候选修改均已保留，请从当前进展重试。"
                     if _is_timeout_exception(error)
                     else "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
                 )
@@ -1707,6 +1786,188 @@ class AgentService:
             and event.payload.get("name") in AUTONOMOUS_PROGRESS_TOOLS
             for event in self.store.events_after(project_id, after, limit=1_000)
         )
+
+    async def _run_model_operation(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        runner: Any,
+        query: Any,
+        *,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        acceptance_fault = await self._consume_acceptance_model_fault(run, live.token)
+        acceptance_attempt = 0
+        while True:
+            try:
+                if acceptance_fault == "F01":
+                    acceptance_attempt += 1
+                    raise TimeoutError("acceptance first visible chunk timeout")
+                if acceptance_fault == "F02":
+                    acceptance_attempt += 1
+                    if acceptance_attempt == 1:
+                        self._publish_acceptance_partial_message(run)
+                    raise TimeoutError("acceptance stream idle timeout")
+                result = await self._run_streaming(live, run, runner, query)
+            except asyncio.CancelledError:
+                entry = self.store.retry_entry(run.id, operation_id)
+                if entry and entry.get("status") == "retrying":
+                    self.store.settle_retry(run.id, operation_id, "cancelled")
+                raise
+            except Exception as error:  # noqa: BLE001 - only classified failures are recovered
+                category = _recoverable_model_failure(error)
+                if not category or live.cancel_event.is_set():
+                    raise
+                current = self.store.retry_entry(run.id, operation_id)
+                used = int(current.get("attempt") or 0) if current else 0
+                if used >= MAX_MODEL_RECOVERY_ATTEMPTS:
+                    self.store.settle_retry(
+                        run.id,
+                        operation_id,
+                        "exhausted",
+                        last_error=f"{type(error).__name__}: {error}",
+                    )
+                    raise
+                fingerprint = _error_fingerprint(error)
+                entry = self.store.record_retry(
+                    run.id,
+                    operation_id,
+                    category=category,
+                    max_attempts=MAX_MODEL_RECOVERY_ATTEMPTS,
+                    error_fingerprint=fingerprint,
+                    last_error=f"{type(error).__name__}: {error}",
+                    delay_seconds=MODEL_RECOVERY_DELAY_SECONDS,
+                )
+                attempt = int(entry.get("attempt") or 1)
+                recovery_session = f"project:{run.project_id}:run:{run.id}:recovery:{attempt}:{uuid.uuid4().hex[:8]}"
+                self.store.update_run(run.id, session_id=recovery_session)
+                run.session_id = recovery_session
+                live.stable_read_cache.clear()
+                query = await self._model_recovery_prompt(
+                    live, run, runner, category, operation_id,
+                )
+                label = "上下文已收拢" if category == "context_limit" else "模型响应超时"
+                self.events.publish(run.project_id, run.id, "recovery", {
+                    "operationId": operation_id,
+                    "category": category,
+                    "attempt": attempt,
+                    "maxAttempts": MAX_MODEL_RECOVERY_ATTEMPTS,
+                    "status": "retrying",
+                    "text": f"{label}，正在从已保存进展恢复（{attempt}/{MAX_MODEL_RECOVERY_ATTEMPTS}）",
+                    "errorFingerprint": fingerprint,
+                })
+                self.events.publish(run.project_id, run.id, "progress", {
+                    "activityId": f"model-recovery:{run.id}:{operation_id}",
+                    "text": "正在从已保存进展恢复",
+                    "detail": f"{label}，已保留完成项并核对写入回执",
+                    "phase": "recovery",
+                    "counters": {
+                        "current": attempt,
+                        "total": MAX_MODEL_RECOVERY_ATTEMPTS,
+                    },
+                })
+                self.events.publish(run.project_id, run.id, "status", {
+                    "status": RUN_RUNNING,
+                    "text": f"{label}，正在从已保存进展恢复（{attempt}/{MAX_MODEL_RECOVERY_ATTEMPTS}）",
+                })
+                await asyncio.sleep(MODEL_RECOVERY_DELAY_SECONDS)
+                continue
+
+            entry = self.store.retry_entry(run.id, operation_id)
+            if entry and entry.get("status") == "retrying":
+                settled = self.store.settle_retry(run.id, operation_id, "succeeded") or entry
+                self.events.publish(run.project_id, run.id, "recovery", {
+                    "operationId": operation_id,
+                    "category": settled.get("category"),
+                    "attempt": settled.get("attempt"),
+                    "maxAttempts": settled.get("maxAttempts"),
+                    "status": "succeeded",
+                    "text": "已从保存的进展继续",
+                })
+            return result
+
+    async def _consume_acceptance_model_fault(
+        self,
+        run: RunRecord,
+        token: str,
+    ) -> str:
+        consume = getattr(self._gateway, "acceptance_fault", None)
+        if not callable(consume):
+            return ""
+        for fault_id in ("F01", "F02"):
+            try:
+                result = await consume(
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    token=token,
+                    fault_id=fault_id,
+                )
+            except Exception:  # noqa: BLE001 - acceptance controls never affect production
+                return ""
+            if isinstance(result, dict) and result.get("active") is True:
+                return fault_id
+        return ""
+
+    def _publish_acceptance_partial_message(self, run: RunRecord) -> None:
+        message_id = f"stream_{run.id}_acceptance_partial"
+        self.events.publish(run.project_id, run.id, "message_delta", {
+            "messageId": message_id,
+            "role": "assistant",
+            "delta": "已定位合成资源，正在准备后续修改",
+        })
+        self.events.publish(run.project_id, run.id, "message_done", {
+            "messageId": message_id,
+            "role": "assistant",
+            "incomplete": True,
+        })
+
+    async def _model_recovery_prompt(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        runner: Any,
+        category: str,
+        operation_id: str,
+    ) -> str:
+        state = self.store.project_state(run.project_id).public()
+        completed_facts = [
+            sanitize_visible_text(item)[:300]
+            for item in live.tool_summaries[-20:]
+            if sanitize_visible_text(item).strip()
+        ]
+        brief = {
+            "briefVersion": "execution-brief-v1",
+            "recoveryReason": category,
+            "operation": operation_id,
+            "userGoal": sanitize_visible_text(run.prompt)[:2_000],
+            "projectState": {
+                "phase": state.get("phase"),
+                "execution": state.get("execution"),
+                "revision": state.get("revision"),
+                "summary": sanitize_visible_text(str(state.get("summary") or ""))[:4_000],
+                "openQuestions": [
+                    sanitize_visible_text(str(item))[:300]
+                    for item in list(state.get("openQuestions") or [])[:10]
+                ],
+            },
+            "candidateRevision": run.candidate_revision or None,
+            "requiredTools": sorted(live.required_tools),
+            "completedRequiredTools": sorted(live.observed_tools & live.required_tools),
+            "recentCompletedFacts": completed_facts,
+        }
+        output = await runner.run_workflow(
+            build_execution_brief_workflow(),
+            {"payload_json": json.dumps(brief, ensure_ascii=False, sort_keys=True)},
+            session=f"{run.session_id}:execution-brief",
+        )
+        prompt = execution_brief_prompt(output)
+        if not prompt:
+            raise AgentRuntimeError(
+                "EXECUTION_BRIEF_WORKFLOW_INVALID",
+                "恢复摘要没有形成有效结果",
+                status=500,
+            )
+        return prompt
 
     def _autonomous_continuation_prompt(self, project_id: str) -> str:
         state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
@@ -1911,6 +2172,7 @@ class AgentService:
         emitted = False
         held_parts: list[str] = []
         model_events = 0
+        stream_completed = False
 
         def publish_visible(raw_text: str) -> None:
             nonlocal emitted
@@ -1950,11 +2212,15 @@ class AgentService:
                     publish_visible(delta)
                 elif chunk_type == "answer":
                     model_events += 1
+                    framework_error = _stream_error_text(chunk)
+                    if framework_error:
+                        raise RuntimeError(framework_error)
                     answer = _chunk_text(chunk)
                     if answer:
                         answer_parts.append(answer)
                 elif chunk_type == "__interaction__":
                     interaction = _interaction_from_stream(run, getattr(chunk, "payload", None))
+            stream_completed = True
         finally:
             reasoning.finish()
             if not _missing_required_tools(live):
@@ -1974,6 +2240,7 @@ class AgentService:
                 self.events.publish(run.project_id, run.id, "message_done", {
                     "messageId": message_id,
                     "role": "assistant",
+                    "incomplete": not stream_completed,
                 })
 
         if interaction is not None:
@@ -2172,6 +2439,18 @@ def _chunk_text(chunk: Any) -> str:
     return str(value or "")
 
 
+def _stream_error_text(chunk: Any) -> str:
+    payload = getattr(chunk, "payload", None)
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [payload, payload.get("output")]
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("result_type") != "error":
+            continue
+        return str(candidate.get("output") or candidate.get("error") or "模型执行失败").strip()
+    return ""
+
+
 def _is_timeout_exception(error: BaseException) -> bool:
     current: BaseException | None = error
     for _depth in range(4):
@@ -2183,6 +2462,42 @@ def _is_timeout_exception(error: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _is_context_limit_exception(error: BaseException) -> bool:
+    current: BaseException | None = error
+    markers = (
+        "context length",
+        "context_length",
+        "context window",
+        "maximum context",
+        "max context",
+        "too many tokens",
+        "token limit",
+        "上下文过长",
+        "上下文长度",
+    )
+    for _depth in range(4):
+        if current is None:
+            break
+        message = str(current).lower()
+        if any(marker in message for marker in markers):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _recoverable_model_failure(error: BaseException) -> str:
+    if _is_context_limit_exception(error):
+        return "context_limit"
+    if _is_timeout_exception(error):
+        return "model_timeout"
+    return ""
+
+
+def _error_fingerprint(error: BaseException) -> str:
+    value = f"{type(error).__name__}:{str(error).strip()}".encode("utf-8", errors="replace")
+    return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
 
 def _describe_interrupts(result: dict[str, Any]) -> list[dict[str, Any]]:

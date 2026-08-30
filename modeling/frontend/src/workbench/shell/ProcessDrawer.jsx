@@ -71,8 +71,10 @@ export default function ProcessDrawer({ onClose }) {
     const restored = await restoreRevision(projectId, payload);
     setSelectedRevision(''); setDiff(undefined);
     await actions.refreshSnapshot();
+    store.set({
+      statusText: `${restoredVersionMessage(restored.packageVersion, target)} 助手保持空闲。`,
+    });
     onClose();
-    await actions.send(restoredVersionMessage(restored.packageVersion, target));
   };
 
   return (
@@ -80,7 +82,7 @@ export default function ProcessDrawer({ onClose }) {
       <section style={S.panel} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="过程">
         <div className="wb-head" style={{ height: 40 }}>
           <div className="seg" aria-label="过程内容">
-            <button className={tab === 'trace' ? 'on' : ''} onClick={() => setTab('trace')}>运行轨迹</button>
+            <button className={tab === 'trace' ? 'on' : ''} onClick={() => setTab('trace')}>活动记录</button>
             {!demo && <button className={tab === 'versions' ? 'on' : ''} onClick={() => setTab('versions')}>版本历史</button>}
           </div>
           {tab === 'trace' && <span className="t-xs">{demo ? '67 项处理 · 4 个并行任务 · 12 个保存点' : `${trace.length} 条处理记录`}</span>}
@@ -94,7 +96,7 @@ export default function ProcessDrawer({ onClose }) {
         </div>
         <div className="wb-scroll" style={{ background: 'var(--c-surface)' }}>
           {tab === 'trace' ? <>
-            <div className="wb-trace-list" role="list" aria-label="运行轨迹，最新记录在前">
+            <div className="wb-trace-list" role="list" aria-label="活动记录，最新记录在前">
               {traceRows.map((item, index) => {
                 const status = phasePresentation(item.phase);
                 return (
@@ -194,7 +196,7 @@ export function restoredVersionMessage(packageVersion, target) {
   const label = packageVersion
     ? `v${String(packageVersion).replace(/^v/i, '')}`
     : versionTitle(target);
-  return `我已从版本历史恢复到${label}。请以恢复后的发布结果为准继续，无需重复评测。`;
+  return `已从版本历史恢复到${label}，无需重复评测。`;
 }
 
 export function humanizeTraceSummary(summary, toolName = '') {

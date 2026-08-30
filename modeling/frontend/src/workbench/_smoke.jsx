@@ -595,14 +595,14 @@ store.set({
   run: { id: 'long-running', status: 'running' },
   interaction: null,
   messages: [],
-  activity: { text: '正在核对影响范围', progress: {}, startedAt: Date.now() - 121_000 },
+  activity: { text: '正在核对影响范围', progress: {}, startedAt: Date.now() - 1_000 },
 });
 try {
   const html = renderToString(<ActivityLine />);
   if (!html.includes('停止任务') || !html.includes('wb-act-stop')) {
-    throw new Error('超过两分钟后没有在活动行提供停止出口');
+    throw new Error('运行开始后没有立即在活动行提供停止出口');
   }
-  console.log('✓ Agent 长任务超过两分钟直接提供停止出口');
+  console.log('✓ Agent 运行开始后立即提供停止出口');
 } catch (e) { console.log('✗ Agent 长任务停止出口:', e.message); bad++; }
 
 store.set({
@@ -1184,6 +1184,19 @@ try {
 
 store.set({
   demo: false,
+  fileContents: {},
+  fileErrors: { 'objects/member_profile.md': '当前文件暂时读取失败，项目其他区域仍可正常使用' },
+});
+try {
+  const html = renderToString(<FileView path="objects/member_profile.md" />);
+  if (!html.includes('当前文件暂时不可用') || !html.includes('重试') || !html.includes('建模助手')) {
+    throw new Error('文件读取失败没有提供就地恢复入口');
+  }
+  console.log('✓ 文件读取失败提供就地重试和助手提示');
+} catch (e) { console.log('✗ 文件读取恢复入口:', e.message); bad++; }
+
+store.set({
+  demo: false,
   fileContents: {
     'manifest.yaml': ['id: refinery', 'name: 加氢裂化知识包', 'version: 1.0.0', 'status: released', 'resources:', '  objects: 2', '  operations: 2'].join('\n'),
   },
@@ -1249,9 +1262,9 @@ try {
   if (/deadbeef|request_release|run-|cp-013|工具事件|工具边界/.test(html)) {
     throw new Error('主界面仍暴露运行时实现标识');
   }
-  if (message !== '我已从版本历史恢复到v1.0.0。请以恢复后的发布结果为准继续，无需重复评测。'
+  if (message !== '已从版本历史恢复到v1.0.0，无需重复评测。'
     || /request_|preflight|API|checkpoint|running/.test(message)) {
-    throw new Error('版本恢复没有形成自然业务消息');
+    throw new Error('版本恢复没有形成确定性业务提示');
   }
   if (humanizeTraceSummary('当前项目状态：评测 / running') !== '当前阶段：评测'
     || humanizeTraceSummary('处理完成', 'task_tool') !== '一项子任务已完成，主任务继续处理中'
@@ -1283,6 +1296,27 @@ try {
   }
   console.log('✓ 主流程不暴露运行时实现');
 } catch (e) { console.log('✗ 主流程实现隔离:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-recovery', toolCallId: 'call-change-set',
+  name: 'stage_change_set', phase: 'repairing', code: 'CHANGE_SET_RESULT_UNKNOWN',
+  summary: 'Change Set 已提交，但返回助手的响应丢失；重试前必须先查询当前回执',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-recovery', toolCallId: 'call-receipt',
+  name: 'get_change_set_receipt', phase: 'completed', summary: '已找到原写入回执',
+  createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const recovery = store.get().messages.find((message) => message.id === 'tool-alert-run-recovery-call-change-set');
+  const block = recovery?.blocks?.[0];
+  if (block?.type !== 'error' || !block.text.includes('响应丢失') || block.actions?.length) {
+    throw new Error('自动恢复记录没有在后续成功后留在消息流');
+  }
+  console.log('✓ 工具自动恢复过程持久显示');
+} catch (e) { console.log('✗ 工具自动恢复记录:', e.message); bad++; }
 
 store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null, drawerOpen: true });
 actions.handleEvent({

@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from .schemas import (
     InteractionRecord,
     ProjectAgentState,
     RUN_RUNNING,
+    RUN_STOPPING,
     RUN_SUSPENDED,
     RunRecord,
     RuntimeEvent,
@@ -158,6 +159,26 @@ CREATE TABLE IF NOT EXISTS agent_validation_repair_state (
   state_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- SDK 内部重试对业务层不可见。这里记录应用层恢复是否已经使用、何时允许再次执行，
+-- 防止服务重启或模型上下文切换后把同一个失败操作无限重放。
+CREATE TABLE IF NOT EXISTS agent_retry_ledger (
+  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  operation_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL,
+  error_fingerprint TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'retrying',
+  next_allowed_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, operation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_retry_ledger_run
+  ON agent_retry_ledger(run_id, updated_at DESC);
 """
 
 
@@ -392,6 +413,7 @@ class RuntimeStore:
 
     def update_run(self, run_id: str, **changes: Any) -> RunRecord:
         allowed = {
+            "session_id",
             "status",
             "token_fingerprint",
             "run_credential",
@@ -414,7 +436,9 @@ class RuntimeStore:
             if cursor.rowcount != 1:
                 raise AgentRuntimeError("RUN_NOT_FOUND", "找不到这次 Agent 运行", status=404)
             state = self._ensure_project_state_locked(self.require_run(run_id).project_id)
-            if state.run_id == run_id and any(key in changes for key in ("status", "interaction_id", "error")):
+            if state.run_id == run_id and any(
+                key in changes for key in ("session_id", "status", "interaction_id", "error")
+            ):
                 phase, _separator, execution = state.state.partition(":")
                 next_execution = str(changes.get("status", execution))
                 if next_execution not in _EXECUTIONS:
@@ -422,12 +446,118 @@ class RuntimeStore:
                 self._transition_project_state_locked(
                     state,
                     next_state=f"{phase}:{next_execution}",
-                    cause=f"run_{next_execution}",
+                    cause=(
+                        "execution_session_rotated"
+                        if "session_id" in changes and "status" not in changes
+                        else f"run_{next_execution}"
+                    ),
                     actor_run_id=run_id,
                     interaction_id=str(changes["interaction_id"]) if "interaction_id" in changes else None,
+                    checkpoint_id=str(changes["session_id"]) if "session_id" in changes else None,
                     error=str(changes["error"]) if "error" in changes else None,
                 )
         return self.require_run(run_id)
+
+    def retry_entry(self, run_id: str, operation_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                """SELECT * FROM agent_retry_ledger
+                WHERE run_id = ? AND operation_id = ?""",
+                (run_id, operation_id),
+            ).fetchone()
+        return _retry_entry_from_row(row) if row else None
+
+    def record_retry(
+        self,
+        run_id: str,
+        operation_id: str,
+        *,
+        category: str,
+        max_attempts: int,
+        error_fingerprint: str,
+        last_error: str,
+        delay_seconds: float = 0,
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        next_allowed_at = (
+            datetime.now(UTC) + timedelta(seconds=max(0.0, delay_seconds))
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        with self._lock, self._db:
+            self.require_run(run_id)
+            row = self._db.execute(
+                """SELECT attempt FROM agent_retry_ledger
+                WHERE run_id = ? AND operation_id = ?""",
+                (run_id, operation_id),
+            ).fetchone()
+            attempt = int(row["attempt"] or 0) + 1 if row else 1
+            if attempt > max_attempts:
+                raise AgentRuntimeError(
+                    "RETRY_EXHAUSTED",
+                    "该操作已经达到自动恢复上限",
+                    status=409,
+                    details={"operationId": operation_id, "attempt": attempt - 1},
+                )
+            self._db.execute(
+                """INSERT INTO agent_retry_ledger (
+                run_id, operation_id, category, attempt, max_attempts,
+                error_fingerprint, last_error, status, next_allowed_at,
+                created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'retrying', ?, ?, ?)
+                ON CONFLICT(run_id, operation_id) DO UPDATE SET
+                  category = excluded.category,
+                  attempt = excluded.attempt,
+                  max_attempts = excluded.max_attempts,
+                  error_fingerprint = excluded.error_fingerprint,
+                  last_error = excluded.last_error,
+                  status = 'retrying',
+                  next_allowed_at = excluded.next_allowed_at,
+                  updated_at = excluded.updated_at""",
+                (
+                    run_id,
+                    operation_id,
+                    category,
+                    attempt,
+                    max_attempts,
+                    error_fingerprint,
+                    str(last_error)[:8_000],
+                    next_allowed_at,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        return self.retry_entry(run_id, operation_id) or {}
+
+    def settle_retry(
+        self,
+        run_id: str,
+        operation_id: str,
+        status: str,
+        *,
+        last_error: str | None = None,
+    ) -> dict[str, Any] | None:
+        if status not in {"succeeded", "exhausted", "cancelled"}:
+            raise AgentRuntimeError("RETRY_STATUS_INVALID", "无效的重试结论", status=400)
+        updates = ["status = ?", "next_allowed_at = ''", "updated_at = ?"]
+        values: list[Any] = [status, now_iso()]
+        if last_error is not None:
+            updates.append("last_error = ?")
+            values.append(str(last_error)[:8_000])
+        with self._lock, self._db:
+            self._db.execute(
+                f"""UPDATE agent_retry_ledger SET {', '.join(updates)}
+                WHERE run_id = ? AND operation_id = ?""",
+                (*values, run_id, operation_id),
+            )
+        return self.retry_entry(run_id, operation_id)
+
+    def retry_ledger(self, run_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM agent_retry_ledger
+                WHERE run_id = ? ORDER BY created_at, operation_id""",
+                (run_id,),
+            ).fetchall()
+        return [_retry_entry_from_row(row) for row in rows]
 
     def recover_interrupted(self) -> list[RunRecord]:
         timestamp = now_iso()
@@ -440,8 +570,8 @@ class RuntimeStore:
                 self._ensure_project_state_locked(str(project["project_id"]))
             state_rows = self._db.execute(
                 """SELECT * FROM project_agent_state
-                WHERE state LIKE ? OR state LIKE ?""",
-                (f"%:{RUN_RUNNING}", f"%:{RUN_SUSPENDED}"),
+                WHERE state LIKE ? OR state LIKE ? OR state LIKE ?""",
+                (f"%:{RUN_RUNNING}", f"%:{RUN_STOPPING}", f"%:{RUN_SUSPENDED}"),
             ).fetchall()
             recovered: list[RunRecord] = []
             for state_row in state_rows:
@@ -464,7 +594,7 @@ class RuntimeStore:
                         "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                     ).fetchone()))
                 phase, _separator, execution = state.state.partition(":")
-                if execution == RUN_RUNNING:
+                if execution in {RUN_RUNNING, RUN_STOPPING}:
                     self._transition_project_state_locked(
                         state,
                         next_state=f"{phase}:{RUN_SUSPENDED}",
@@ -878,6 +1008,22 @@ def _arguments_hash(arguments: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _retry_entry_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "runId": str(row["run_id"]),
+        "operationId": str(row["operation_id"]),
+        "category": str(row["category"]),
+        "attempt": int(row["attempt"]),
+        "maxAttempts": int(row["max_attempts"]),
+        "errorFingerprint": str(row["error_fingerprint"]),
+        "lastError": str(row["last_error"]),
+        "status": str(row["status"]),
+        "nextAllowedAt": str(row["next_allowed_at"]),
+        "createdAt": str(row["created_at"]),
+        "updatedAt": str(row["updated_at"]),
+    }
+
+
 def _interaction_from_row(row: sqlite3.Row) -> InteractionRecord:
     return InteractionRecord(
         id=row["id"],
@@ -896,7 +1042,7 @@ def _interaction_from_row(row: sqlite3.Row) -> InteractionRecord:
 _PHASES = frozenset({
     "intake", "goal", "process", "knowledge", "increment", "validation", "evaluation", "release",
 })
-_EXECUTIONS = frozenset({"idle", "queued", "running", "waiting", "suspended", "completed", "failed", "cancelled"})
+_EXECUTIONS = frozenset({"idle", "queued", "running", "stopping", "waiting", "suspended", "completed", "failed", "cancelled"})
 
 
 def _validate_state(value: str) -> None:

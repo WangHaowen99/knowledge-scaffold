@@ -89,6 +89,23 @@ export const login = (username, password) =>
 export const register = (username, email, password) =>
   api('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) });
 export const me = () => api('/api/me');
+export const getAcceptanceEnvironment = () => api('/api/acceptance');
+export const createAcceptanceScenario = (scenarioId) => api(
+  `/api/acceptance/scenarios/${encodeURIComponent(scenarioId)}/create`,
+  { method: 'POST', body: '{}' },
+);
+export const armAcceptanceFault = (faultId) => api(
+  `/api/acceptance/faults/${encodeURIComponent(faultId)}/arm`,
+  { method: 'POST', body: '{}' },
+);
+export const closeAcceptanceFault = (faultId) => api(
+  `/api/acceptance/faults/${encodeURIComponent(faultId)}/close`,
+  { method: 'POST', body: '{}' },
+);
+export const closeAllAcceptanceFaults = () => api(
+  '/api/acceptance/faults/close-all',
+  { method: 'POST', body: '{}' },
+);
 export const listProjects = () => api('/api/projects');
 export const listProjectMembers = (id) => api(`/api/projects/${encodeURIComponent(id)}/members`);
 export const setProjectMember = (id, username, role) => api(`/api/projects/${encodeURIComponent(id)}/members`, {

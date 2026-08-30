@@ -121,6 +121,14 @@ import {
   DomainPatchError,
   type DomainKind,
 } from './domain-resource-mutation.js';
+import {
+  ChangeControlError,
+  ChangeControlStore,
+  CHANGE_PLAN_DIRECT_TOOLS,
+  CHANGE_SET_DOMAIN_TOOLS,
+  parseChangeSetActions,
+  type ChangeSetActionInput,
+} from './change-control.js';
 
 const WORKSPACE_LEASE_MS = 30 * 60 * 1000;
 const RUNTIME_GROUP = 'runtime_context';
@@ -142,6 +150,10 @@ const DOMAIN_TOOL_NAMES = new Set([
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
   'patch_object_source_binding',
   'preview_domain_delete', 'delete_domain_resource',
+]);
+const CHANGE_CONTROL_TOOLS = new Set([
+  'create_change_plan', 'get_change_plan', 'revise_change_plan',
+  'stage_change_set', 'get_change_set_receipt', 'validate_change_set', 'discard_change_set',
 ]);
 const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
 const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
@@ -226,6 +238,7 @@ export class AgentCoreService {
   private readonly validationReports: ValidationReportStore;
   private readonly studioWrites: StudioWriteService;
   private readonly studioReviews: StudioReviewService;
+  private readonly changeControl: ChangeControlStore;
 
   constructor(
     db: DatabaseSync = getDb(),
@@ -236,6 +249,7 @@ export class AgentCoreService {
     this.validationReports = new ValidationReportStore(db);
     this.studioWrites = new StudioWriteService(db, this.artifacts);
     this.studioReviews = new StudioReviewService(db, this.artifacts);
+    this.changeControl = new ChangeControlStore(db);
   }
 
   async workbenchSnapshot(project: Project, username: string) {
@@ -310,6 +324,27 @@ export class AgentCoreService {
       { tier: 'index', mode: 'auto', locked: true, label: '索引同步' },
       { tier: 'script', mode: 'ask', locked: true, label: '脚本' },
     ];
+  }
+
+  respondChangePlan(project: Project, username: string, planId: string, approved: boolean) {
+    try {
+      const plan = this.changeControl.respondPlan({
+        projectId: project.id,
+        planId,
+        username,
+        approved,
+      });
+      return {
+        plan,
+        display: {
+          text: approved
+            ? '已批准这份建模计划，可以按计划开始生成'
+            : '已拒绝这份建模计划，当前计划不会产生修改',
+        },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
   }
 
   workbenchPackageSources(project: Project) {
@@ -488,12 +523,26 @@ export class AgentCoreService {
   }
 
   private async invokeRaw(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
-    if (DOMAIN_TOOL_NAMES.has(tool)) this.adoptDomainToolContract(context);
+    if (DOMAIN_TOOL_NAMES.has(tool) || CHANGE_CONTROL_TOOLS.has(tool)) this.adoptDomainToolContract(context);
+    if (CHANGE_SET_DOMAIN_TOOLS.has(tool)
+      && this.changeControl.activePlan(context.project.id, context.runId)) {
+      throw new AgentCoreError(
+        'CHANGE_PLAN_REQUIRES_CHANGE_SET',
+        '当前运行已经采用受控建模计划，领域修改必须作为原子 Change Set 提交',
+        ['读取当前计划，把对应任务和领域动作一次交给 stage_change_set'],
+        409,
+        { retryable: false, required_tool: 'stage_change_set' },
+      );
+    }
     if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
     if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id);
     switch (tool) {
+      case 'create_change_plan': return this.createChangePlan(context, args);
+      case 'get_change_plan': return this.getChangePlan(context, args);
+      case 'revise_change_plan': return this.reviseChangePlan(context, args);
+      case 'get_change_set_receipt': return this.getChangeSetReceipt(context, args);
       case 'list_domain_resources': return this.listDomainResources(context, args);
       case 'get_domain_resource': return this.getDomainResource(context, args);
       case 'preview_domain_delete': return this.previewDomainDelete(context, args);
@@ -524,10 +573,31 @@ export class AgentCoreService {
       case 'patch_rule': return this.patchDomainResource(context, args, 'rule');
       case 'patch_operation': return this.patchDomainResource(context, args, 'operation');
       case 'patch_metric': return this.patchDomainResource(context, args, 'metric');
-      case 'patch_object_source_binding': return this.patchObjectSourceBinding(workspace, context, args);
-      case 'delete_domain_resource': return this.deleteDomainResource(context, args);
+      case 'patch_object_source_binding': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        domainTargetKey(args.resource_id),
+        () => this.patchObjectSourceBinding(workspace, context, args),
+      );
+      case 'delete_domain_resource': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        singleDomainTargetKey(args.resource_ids),
+        () => this.deleteDomainResource(context, args),
+      );
+      case 'stage_change_set': return this.stageChangeSet(context, args);
+      case 'validate_change_set': return this.validateChangeSet(workspace, context, args);
+      case 'discard_change_set': return this.discardChangeSet(workspace, context, args);
       case 'define_script_contract': return this.defineScriptContract(context, args);
-      case 'stage_script_source': return this.stageScriptSource(workspace, context, args);
+      case 'stage_script_source': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        text(args.script_key, 'script_key'),
+        () => this.stageScriptSource(workspace, context, args),
+      );
       case 'submit_ontology_object_review': return this.submitOntologyObjectReview(context, args);
       case 'stage_tabular_dataset': return this.stageTabularDataset(workspace, context, args);
       case 'list_dir': return this.listDir(workspace, args);
@@ -570,7 +640,7 @@ export class AgentCoreService {
       case 'stage_package_merge': return this.stagePackageMerge(workspace, context, args);
       case 'diff': return this.diff(workspace, args);
       case 'update_plan': return this.updateRuntimeFile(workspace, context, '.modeling/plan.md', args);
-      case 'request_confirmation_preflight': return this.preflight(workspace, context, args);
+      case 'request_confirmation_preflight': return this.preflightWithChangePlan(workspace, context, args);
       case 'request_confirmation': return this.confirm(workspace, context, args);
       case 'request_confirmation_rejected': return this.rejectConfirmation(workspace, context, args);
       case 'release_preflight': return this.releasePreflight(workspace);
@@ -716,6 +786,342 @@ export class AgentCoreService {
   private usesScriptContract(context: AgentToolContext): boolean {
     return Boolean(this.db.prepare(`SELECT 1 FROM agent_script_contract_drafts
       WHERE project_id = ? AND run_id = ? LIMIT 1`).get(context.project.id, context.runId));
+  }
+
+  private async createChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const working = await this.workbenchStudioFiles(context.project, context.username);
+      const plan = this.changeControl.createPlan({
+        projectId: context.project.id,
+        runId: context.runId,
+        goal: args.goal,
+        mode: args.mode,
+        expectedRevision: args.expected_revision,
+        currentRevision: working.workingRevision,
+        tasks: args.tasks,
+      });
+      return {
+        plan,
+        display: { text: plan.approval_status === 'pending'
+          ? `已建立 ${plan.task_count} 项受控建模计划，等待你批准后再写入`
+          : `已建立 ${plan.task_count} 项受控建模计划，写入前会逐项核对范围` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private getChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const plan = this.changeControl.snapshot(
+        context.project.id,
+        context.runId,
+        String(args.plan_id ?? '').trim(),
+      );
+      return {
+        plan,
+        display: {
+          text: plan.remaining_count
+            ? `建模计划还有 ${plan.remaining_count} 项必选任务待完成`
+            : '建模计划的必选任务已经全部形成可校验结果',
+        },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private reviseChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const plan = this.changeControl.revisePlan({
+        projectId: context.project.id,
+        runId: context.runId,
+        planId: args.plan_id,
+        expectedVersion: args.expected_version,
+        reason: args.reason,
+        addTasks: args.add_tasks,
+        skipTaskIds: args.skip_task_ids,
+        scopeApproved: args.scope_approved,
+      });
+      return {
+        plan,
+        display: { text: `建模计划已更新为第 ${plan.version} 版，共 ${plan.task_count} 项任务` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async stageChangeSet(context: AgentToolContext, args: Record<string, unknown>) {
+    let changeSetId = '';
+    try {
+      const planId = text(args.plan_id, 'plan_id');
+      const mutationId = text(args.mutation_id, 'mutation_id');
+      const expectedRevision = text(args.expected_revision, 'expected_revision');
+      const actions = parseChangeSetActions(args.actions);
+      const requestHash = domainMutationRequestHash('change-set', args);
+      const prepared = this.changeControl.prepareChangeSet({
+        projectId: context.project.id,
+        runId: context.runId,
+        planId,
+        mutationId,
+        requestHash,
+        expectedRevision,
+        actions,
+      });
+      changeSetId = prepared.changeSetId;
+      if (prepared.replay) return { ...prepared.replay, replayed: true };
+      if (prepared.staging !== undefined) {
+        const previous = this.changeControl.changeSetContext(context.project.id, context.runId, mutationId);
+        return {
+          ...this.changeControl.changeSetReceipt(context.project.id, context.runId, mutationId),
+          result_unknown: previous.status === 'staging',
+          display: { text: previous.status === 'staging'
+            ? '上一批修改仍在结算，请先查询回执，不要重复提交'
+            : '上一批修改没有生效，请根据失败原因生成新的操作标识' },
+        };
+      }
+      const working = await this.workbenchStudioFiles(context.project, context.username);
+      if (expectedRevision !== working.workingRevision) {
+        throw new AgentCoreError(
+          'REVISION_CONFLICT',
+          '知识包内容已经变化，请重新读取计划目标后生成新的 Change Set',
+          ['读取当前建模计划和资源快照，不要原样重试旧参数'],
+          409,
+          { expected_revision: expectedRevision, current_revision: working.workingRevision, retryable: false },
+        );
+      }
+      const batch = this.compileChangeSetBatch(context, working, actions);
+      const response = await this.studioWrites.batchDomainModel(
+        context.project,
+        context.username,
+        {
+          expectedRevision,
+          clientMutationId: mutationId,
+          editSessionId: changeSetId,
+          creates: batch.creates,
+          patches: batch.patches,
+        },
+        requestHash,
+      );
+      const staged = {
+        ...domainMutationResponse(response, batch.summary),
+        action_count: batch.summary.action_count,
+        operations: batch.summary.operations,
+        change_set_id: changeSetId,
+        plan_id: planId,
+        mutation_id: mutationId,
+        status: 'staged',
+      };
+      this.changeControl.completeChangeSet(changeSetId, staged);
+      return staged;
+    } catch (error) {
+      const normalized = error instanceof ChangeControlError
+        ? normalizeChangeControlError(error)
+        : normalizeDomainAgentError(error);
+      if (changeSetId) {
+        this.changeControl.failChangeSet(changeSetId, {
+          code: normalized.code,
+          message: normalized.message,
+          retryable: normalized.details.retryable === true,
+          details: normalized.details,
+        });
+      }
+      throw normalized;
+    }
+  }
+
+  private async runPlannedDirectTask(
+    context: AgentToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+    targetKey: string,
+    action: () => Promise<Record<string, unknown>>,
+  ) {
+    if (!CHANGE_PLAN_DIRECT_TOOLS.has(tool)) return action();
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (!active) return action();
+    const taskId = text(args.plan_task_id, 'plan_task_id');
+    try {
+      this.changeControl.authorizeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        targetKey,
+      });
+      const result = await action();
+      const plan = this.changeControl.completeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        receiptId: text(args.mutation_id, 'mutation_id'),
+      });
+      return { ...result, plan };
+    } catch (error) {
+      if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
+      throw error;
+    }
+  }
+
+  private compileChangeSetBatch(
+    context: AgentToolContext,
+    working: Awaited<ReturnType<AgentCoreService['workbenchStudioFiles']>>,
+    actions: ChangeSetActionInput[],
+  ) {
+    const studio = new StudioReadService(working);
+    const creates: Array<{ kind: DomainKind; key: string; values: Record<string, unknown> }> = [];
+    const patches: Array<{ elementId: string; changes: Record<string, unknown> }> = [];
+    const operations: string[] = [];
+    let actionCount = 0;
+    for (const action of actions) {
+      const input = action.arguments;
+      const kind = action.tool.split('_').at(-1) as DomainKind;
+      if (action.tool.startsWith('create_')) {
+        creates.push({ kind, key: domainKey(input.key, domainKindLabel(kind)), values: domainCreateValues(kind, input) });
+        operations.push(action.tool);
+        actionCount += 1;
+        continue;
+      }
+      const resourceId = domainResourceIdArg(input.resource_id);
+      const element = studio.detail(resourceId).element;
+      if (element.kind !== kind) {
+        throw new AgentCoreError('DOMAIN_KIND_MISMATCH', 'Change Set 中的工具与资源类型不一致', [], 400, {
+          resource_id: resourceId, expected_kind: kind, actual_kind: element.kind, retryable: false,
+        });
+      }
+      assertDomainResourceHash(element, input.expected_resource_hash, working.workingRevision);
+      if (kind === 'object') {
+        const compiled = compileObjectPatchActions(element, input.actions);
+        const preview = previewOntologyObjectMutation(
+          parseWorkingPackageSpec(working.files),
+          element.key,
+          {
+            metadata: compiled.metadata,
+            field_ops: compiled.field_ops,
+            relation_ops: compiled.relation_ops,
+          },
+          { tables: this.projectTables(context.project.id) },
+        );
+        if (!preview.ok) {
+          throw new AgentCoreError('DOMAIN_PATCH_INVALID', '对象增量修改未通过确定性校验', [], 422, {
+            fieldErrors: preview.fieldErrors,
+            errors: preview.issues,
+            warnings: preview.warnings,
+            retryable: false,
+          });
+        }
+        patches.push({ elementId: resourceId, changes: preview.patchChanges });
+        actionCount += compiled.summary.actionCount;
+        operations.push(...compiled.summary.operations);
+      } else {
+        const compiled = compileDomainPatchActions(element, input.actions);
+        patches.push({ elementId: resourceId, changes: compiled.changes });
+        actionCount += compiled.summary.actionCount;
+        operations.push(...compiled.summary.operations);
+      }
+    }
+    return { creates, patches, summary: { action_count: actionCount, operations } };
+  }
+
+  private async getChangeSetReceipt(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const mutationId = text(args.mutation_id, 'mutation_id');
+      const current = this.changeControl.changeSetContext(context.project.id, context.runId, mutationId);
+      if (current.status === 'staging') {
+        const replay = this.studioWrites.replayDomainMutation(
+          context.project.id,
+          mutationId,
+          current.requestHash,
+        );
+        if (replay) {
+          const staged = {
+            ...domainMutationResponse(replay, {
+              action_count: replay.elements.length || 1,
+              operations: ['reconciled_change_set'],
+            }),
+            change_set_id: current.id,
+            mutation_id: mutationId,
+            status: 'staged',
+            action_count: replay.elements.length || 1,
+            reconciled: true,
+          };
+          this.changeControl.completeChangeSet(current.id, staged);
+        }
+      }
+      const receipt = this.changeControl.changeSetReceipt(context.project.id, context.runId, mutationId);
+      return {
+        change_set: receipt,
+        display: { text: receipt.status === 'staging'
+          ? '这批修改的结果仍未确定，当前禁止重复提交'
+          : `这批修改当前为“${changeSetStatusLabel(String(receipt.status))}”` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async validateChangeSet(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    try {
+      const planId = text(args.plan_id, 'plan_id');
+      this.changeControl.readyForValidation(context.project.id, context.runId, planId);
+      const prepared = await this.prepareConfirmationGroups(workspace);
+      const result = await this.preflight(workspace, context, {
+        summary: String(args.summary ?? '核对完整建模计划'),
+        change_groups: prepared.change_groups,
+      });
+      const plan = this.changeControl.markValidated(context.project.id, context.runId, planId, result);
+      return {
+        plan,
+        validation: result,
+        display: { text: `完整计划的 ${plan.task_count} 项任务已通过校验，可以进入人工审阅` },
+      };
+    } catch (error) {
+      if (error instanceof AgentCoreError) throw error;
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async preflightWithChangePlan(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (active) this.changeControl.readyForValidation(context.project.id, context.runId, active.id);
+    const result = await this.preflight(workspace, context, args);
+    if (active) {
+      this.changeControl.markWaitingUser(
+        context.project.id,
+        context.runId,
+        String(result.candidate_revision ?? ''),
+      );
+    }
+    return result;
+  }
+
+  private discardChangeSet(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    try {
+      const planId = text(args.plan_id, 'plan_id');
+      if (workspace.candidate_id) {
+        throw new AgentCoreError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在页面退回', [], 409);
+      }
+      const result = this.discardRejectedCandidateChanges(workspace);
+      this.changeControl.discardPlan(context.project.id, context.runId, planId);
+      return { ...result, plan_id: planId, display: { text: '已放弃这份计划的待确认修改，正式版本保持不变' } };
+    } catch (error) {
+      if (error instanceof AgentCoreError) throw error;
+      throw normalizeChangeControlError(error);
+    }
   }
 
   private async listDomainResources(context: AgentToolContext, args: Record<string, unknown>) {
@@ -1994,6 +2400,7 @@ export class AgentCoreService {
           existing.run_id,
           context.username,
         );
+      this.changeControl.transferActiveRun(context.project.id, existing.run_id, context.runId);
       this.db.exec('COMMIT');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
@@ -3361,7 +3768,7 @@ export class AgentCoreService {
         };
       }
     }
-    const changes = this.changes(workspace).filter((change) => (
+    const changes = (await this.effectiveChanges(workspace)).filter((change) => (
       !isHiddenCandidateGroup(change.group_id)
     ));
     if (!changes.length) {
@@ -3404,7 +3811,7 @@ export class AgentCoreService {
         400,
       );
     }
-    const changes = this.changes(workspace);
+    const changes = await this.effectiveChanges(workspace);
     const pendingPaths = new Set(changes.map((change) => change.path));
     const confirmed = this.confirmedPaths(workspace.project_id);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
@@ -3444,7 +3851,8 @@ export class AgentCoreService {
         && !candidate.endsWith('/index.md')
       ));
       const knowledgePending = changes.some((change) => (
-        /^(objects|operations|rules|metrics)\//u.test(change.path)
+        !isHiddenCandidateGroup(change.group_id)
+        && /^(objects|operations|rules|metrics)\//u.test(change.path)
       ));
       const knowledgeConfirmed = !knowledgePending && (trustedProcessBaseline
         || (processConfirmed && knowledgePaths.length > 0
@@ -3502,6 +3910,31 @@ export class AgentCoreService {
         workspace.project_id, workspace.run_id, change.path, change.kind, change.content,
         change.groupId, JSON.stringify(change.evidence), change.reason, nowIso(),
       );
+  }
+
+  private async effectiveChanges(workspace: WorkspaceRow): Promise<ChangeRow[]> {
+    const changes = this.changes(workspace);
+    if (!changes.length) return changes;
+    const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
+    const noOpPaths = changes.filter((change) => (
+      change.kind === 'write'
+        ? base.files[change.path] === change.content
+        : !Object.hasOwn(base.files, change.path)
+    )).map((change) => change.path);
+    if (!noOpPaths.length) return changes;
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const remove = this.db.prepare(`DELETE FROM agent_candidate_changes
+        WHERE project_id = ? AND run_id = ? AND path = ?`);
+      for (const path of noOpPaths) remove.run(workspace.project_id, workspace.run_id, path);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+    const removed = new Set(noOpPaths);
+    return changes.filter((change) => !removed.has(change.path));
   }
 
   private async grepPackage(workspace: WorkspaceRow, args: Record<string, unknown>) {
@@ -4008,7 +4441,7 @@ export class AgentCoreService {
     this.db.prepare(`UPDATE agent_candidate_changes SET group_id = ?
       WHERE project_id = ? AND run_id = ? AND group_id = ?`)
       .run(RUNTIME_GROUP, workspace.project_id, workspace.run_id, LEGACY_RUNTIME_GROUP);
-    const changes = this.changes(workspace);
+    const changes = await this.effectiveChanges(workspace);
     const businessIds = [...new Set(changes.map((item) => item.group_id).filter((id) => !isHiddenCandidateGroup(id)))];
     if (!businessIds.length && workspace.candidate_id) {
       const candidate = await this.artifacts.getCandidateRevision(workspace.project_id, workspace.candidate_id);
@@ -4426,6 +4859,12 @@ export class AgentCoreService {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
+    this.changeControl.settlePlan(
+      workspace.project_id,
+      context.runId,
+      'accepted',
+      accepted.candidate.id,
+    );
     return {
       approved: true,
       candidateRevision: accepted.candidate.id,
@@ -4440,9 +4879,10 @@ export class AgentCoreService {
     this.assertExpectedCandidate(workspace, args);
     if (!workspace.candidate_id) return { rejected: true, replayed: true, display: { text: '候选确认已退回' } };
     const candidateId = workspace.candidate_id;
+    const feedback = auditNote(object(args.review).feedback, '专家退回了这批候选');
     await this.artifacts.rejectCandidateRevision(workspace.project_id, {
       candidateId,
-      note: auditNote(object(args.review).feedback, '专家退回了这批候选'),
+      note: feedback,
       action: {
         cause: 'agent_candidate_rejected',
         summary: '退回 Agent 提出的修改',
@@ -4453,7 +4893,13 @@ export class AgentCoreService {
     this.db.prepare(`UPDATE agent_candidate_workspaces SET candidate_id = NULL, updated_at = ?
       WHERE project_id = ? AND run_id = ?`).run(nowIso(), workspace.project_id, workspace.run_id);
     workspace.candidate_id = null;
-    return { rejected: true, candidateRevision: candidateId, display: { text: '候选确认已退回，可继续调整' } };
+    this.changeControl.settlePlan(workspace.project_id, context.runId, 'rejected', candidateId);
+    return {
+      rejected: true,
+      candidateRevision: candidateId,
+      feedback,
+      display: { text: '候选确认已退回，可继续调整' },
+    };
   }
 
   private discardRejectedCandidateChanges(workspace: WorkspaceRow) {
@@ -5487,6 +5933,25 @@ function packagePath(value: string): string {
   return path;
 }
 
+function domainTargetKey(value: unknown): string {
+  const resourceId = domainResourceIdArg(value);
+  return resourceId.slice(resourceId.indexOf(':') + 1);
+}
+
+function singleDomainTargetKey(value: unknown): string {
+  const resourceIds = requiredStringArray(value, 'resource_ids');
+  if (resourceIds.length !== 1) {
+    throw new AgentCoreError(
+      'CHANGE_SET_OUT_OF_SCOPE',
+      '一个受控独立计划任务只能删除一个目标资源',
+      ['把每个删除目标拆成独立计划任务'],
+      409,
+      { retryable: false },
+    );
+  }
+  return domainTargetKey(resourceIds[0]);
+}
+
 function parseWorkingPackageSpec(files: Record<string, string>): PackageSpec {
   const internal = files[INTERNAL_SPEC_CHANGE_PATH];
   return internal ? JSON.parse(internal) as PackageSpec : parseRenderedPackageFiles(files);
@@ -5931,6 +6396,41 @@ function domainResourceIdArg(value: unknown): string {
 
 function domainKindLabel(kind: DomainKind): string {
   return ({ object: '对象', rule: '规则', operation: '操作', metric: '指标' } as const)[kind];
+}
+
+function normalizeChangeControlError(error: unknown): AgentCoreError {
+  if (error instanceof AgentCoreError) return error;
+  if (error instanceof ChangeControlError) {
+    return new AgentCoreError(
+      error.code,
+      error.message,
+      error.details.requires_user_decision
+        ? ['先通过问题卡获得用户决定，再修订原建模计划']
+        : [],
+      error.statusCode,
+      {
+        error_class: error.statusCode === 409 ? 'conflict' : 'deterministic',
+        retryable: false,
+        repairable: error.statusCode < 500,
+        ...error.details,
+      },
+    );
+  }
+  return normalizeDomainAgentError(error);
+}
+
+function changeSetStatusLabel(status: string): string {
+  return ({
+    staging: '正在结算',
+    staged: '已形成候选',
+    validated: '校验通过',
+    waiting_user: '等待确认',
+    accepted: '已接受',
+    rejected: '已退回',
+    failed: '未生效',
+    discarded: '已放弃',
+    cancelled: '已取消',
+  } as Record<string, string>)[status] || '状态未知';
 }
 
 function normalizeDomainAgentError(error: unknown): AgentCoreError {

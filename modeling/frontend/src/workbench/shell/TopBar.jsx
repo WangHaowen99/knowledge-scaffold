@@ -1,4 +1,5 @@
 import { Settings } from 'lucide-react';
+import { useState } from 'react';
 
 import { store, actions, SCENES } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
@@ -28,14 +29,22 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
   const interaction = useStore(store, selInteraction);
   const run = useStore(store, selRun);
   const workflow = useStore(store, selWorkflow);
+  const confirmPolicy = useStore(store, (state) => state.confirmPolicy);
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const [policyConfirming, setPolicyConfirming] = useState(false);
+  const confirmationGroups = interaction?.kind === 'confirmation'
+    ? (interaction.payload?.changeGroups || []).length
+    : 0;
   const counts = demo ? project.counts : {
     flows: files.filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd')).length,
     objects: files.filter((path) => path.startsWith('objects/') && path.endsWith('.md') && !path.endsWith('index.md')).length,
     scripts: files.filter((path) => path.startsWith('scripts/') && path.endsWith('.py')).length,
     pending: interaction ? 1 : 0,
+    pendingGroups: confirmationGroups,
   };
   const incr = scene === 'increment';
-  const running = !interaction && ['queued', 'running'].includes(run?.status);
+  const running = !interaction && ['queued', 'running', 'stopping'].includes(run?.status);
+  const structuralPolicy = confirmPolicy.find((item) => item.tier === 'structural');
   const projectName = demo ? project.name : (realProject?.name || '正在加载项目');
   const exportPackage = async () => {
     try {
@@ -75,15 +84,19 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
           <span className="pill pill-stale">4 项需处理</span>
         </>
       ) : (
-        <span className="pill pill-wait">待确认 {counts.pending}</span>
+        <span className="pill pill-wait wb-priority-status">{counts.pending
+          ? counts.pendingGroups
+            ? `${counts.pending} 个决定 · ${counts.pendingGroups} 组变更`
+            : `${counts.pending} 个决定待处理`
+          : '没有待处理决定'}</span>
       )}
 
       {!demo && workflow?.phaseLabel && (
-        <span className="pill" title={`当前阶段：${workflow.phaseLabel}`}>{workflow.phaseLabel}</span>
+        <span className="pill wb-phase-pill" title={`当前阶段：${workflow.phaseLabel}`}>{workflow.phaseLabel}</span>
       )}
 
       {!interaction && (activity || running) && (
-        <span className="pill pill-agent"><i className="dot-pulse" />助手运行中</span>
+        <span className="pill pill-agent wb-priority-status"><i className="dot-pulse" />{run?.status === 'stopping' ? '正在停止' : '助手运行中'}</span>
       )}
 
       <span className="spacer" />
@@ -115,6 +128,25 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
           >
             <Settings size={13} />MCP
           </button>
+          {structuralPolicy && <div className="wb-policy-menu">
+            <button className="btn btn-ghost" type="button" aria-expanded={policyOpen}
+              onClick={() => { setPolicyOpen((open) => !open); setPolicyConfirming(false); }}
+              title="设置当前项目的确认策略">
+              <Icon name="check" size={13} />确认策略
+            </button>
+            {policyOpen && <section className="wb-policy-pop" role="dialog" aria-label="当前项目确认策略">
+              <div className="wb-policy-pop-head"><b>当前项目确认策略</b><button className="btn btn-ghost btn-sm" type="button" aria-label="关闭确认策略" onClick={() => setPolicyOpen(false)}><Icon name="x" size={12} /></button></div>
+              <p>只影响当前项目的对象、操作和指标结构变更。业务口径与脚本始终需要人工确认，可随时在这里撤销。</p>
+              <div className="wb-policy-pop-state"><span>结构变更</span><b>{structuralPolicy.mode === 'auto' ? '自动接受' : '每次询问'}</b></div>
+              {policyConfirming ? <div className="wb-policy-warning">
+                <b>{structuralPolicy.mode === 'auto' ? '确认恢复每次询问？' : '确认开启自动接受？'}</b>
+                <span>{structuralPolicy.mode === 'auto'
+                  ? '撤销后，下一次结构变更会重新等待你的确认。'
+                  : '开启后，当前项目的结构变更可能跳过人工审阅；业务口径和脚本不受影响。'}</span>
+                <div className="btn-row"><button className="btn btn-sm" type="button" onClick={() => setPolicyConfirming(false)}>取消</button><button className="btn btn-p btn-sm" type="button" onClick={async () => { await actions.setConfirmPolicy('structural', structuralPolicy.mode === 'auto' ? 'ask' : 'auto'); setPolicyConfirming(false); }}>确认更改</button></div>
+              </div> : <button className="btn btn-sm" type="button" onClick={() => setPolicyConfirming(true)}>{structuralPolicy.mode === 'auto' ? '撤销自动接受' : '更改为自动接受'}</button>}
+            </section>}
+          </div>}
           <button className="btn btn-ghost" onClick={() => void exportPackage()} title="导出当前已确认知识包">
             <Icon name="download" size={13} />导出
           </button>

@@ -8,6 +8,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm.model import Model
 from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.rails.skills.skill_use_rail import SkillUseRail
@@ -55,7 +56,9 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 收到插话或反问后，直接用最终自然语言回答并结束这次小回合；服务端会自动恢复仍未解决的原问题。不要在同一小回合再次调用 ask 或 request_confirmation。
 - 候选写完后直接调用 request_confirmation 并只提供面向用户的业务摘要；确认分组由系统按实际路径自动整理，不要猜测或填写变更组 ID，也不要先用 ask 重复询问同一项确认。
 - 知识包生成契约由核心校验器在本轮开始时注入。写候选前必须遵守其中的 requiredFields、platformManagedFields 和目录契约；平台管理字段只能从当前正式文件保留，不能自行重建或猜测。
-- 创建或修改对象、规则、操作和指标时，先用 list_domain_resources/get_domain_resource 取得当前 working revision、resource hash 和稳定子项 ID。新资源分别用 create_object/create_rule/create_operation/create_metric；已有资源只用对应 patch_* 提交最小 actions，并原样带回读取到的 revision 与 resource hash。不得从旧对话记忆盲改，也不得为修改一个子项完整替换资源。对象与数据表重绑使用 patch_object_source_binding，并提交对象全部字段的一一映射和主键，让核心保证映射闭合。删除必须先 preview_domain_delete，再把同一预览 token 交给 delete_domain_resource；引用图变化后重新预览。旧 upsert_* 只为恢复历史 checkpoint 保留，新工作不得使用。对象/规则/操作/指标详情、索引、对象数据映射和内部语义规格都由核心确定性生成，不得用 write_file 手工维护这些受管文件。
+- 不论是用户点名修改还是根据资料正常生成，写领域资源前都必须先调用 create_change_plan：把每个目标资源列成独立任务，声明依赖、允许的领域工具和可验收条件。Core 返回的任务 ID 和状态是唯一完成依据；不得用 Markdown 计划、自然语言清单或模型自述代替。generation 计划的 approval_status=pending 时必须停止写入，等待用户在可见计划卡批准；批准后重新读取计划再继续。范围扩大时先用 ask 获得用户决定，再调用 revise_change_plan 记录原因；范围缩小时只能跳过计划中明确可选的任务。
+- 创建或修改对象、规则、操作和指标时，先用 list_domain_resources/get_domain_resource 取得当前 working revision、resource hash 和稳定子项 ID。新资源使用 create_* 的参数结构，已有资源使用对应 patch_* 的最小 actions，但新计划中不得直接调用这些单项写工具：把 Core 返回的 task_id、白名单 tool 和 arguments 一次交给 stage_change_set，让同一批全部成功或全部不生效。对象与数据表重绑、删除和脚本在 Change Set v1 尚未覆盖时继续使用各自受控工具，并在计划中明确独立任务，绝不能用自由文件写入绕过。旧 upsert_* 只为恢复历史 checkpoint 保留，新工作不得使用。
+- stage_change_set 超时或响应不明时，先用同一 mutation_id 调用 get_change_set_receipt；没有明确回执前禁止重新提交。全部必选任务形成候选后调用 validate_change_set，只有完整计划通过后才调用 request_confirmation。确认分组仍由系统按实际差异生成，不得把部分合法候选说成整份计划完成。
 - 生成脚本必须先读取目标 operation 的 operation_contract_hash，再调用 define_script_contract 明确 CLI 参数、结构化输出、超时、执行边界和证据；随后用 get_script_contract 核对 contract_hash，最后才用 stage_script_source 提交源码。源码、脚本说明、索引和 operation.script 双向绑定由核心原子生成，禁止用 write_file 分别维护。源码通过本地语法、安全、argparse、JSON 输出和占位实现检查后，还必须调用 run_script_test 对当前源码哈希跑真实契约用例；未通过不得发起候选确认。
 - 任一确定性校验失败时先读取 validatorVersion、retryable、findingFingerprint、findingCount 和 findingSummary。小报告直接逐项处理 findings；大报告只按 validationReportId 调用 get_validation_findings 分页读取，每页修完再读下一页，不得把全部页或同一页反复塞回主上下文。逐项按 ruleId、path、message、actual、suggestion 修正后只重新校验一次，不得只处理摘要中的第一条错误，也不得把可自动修复的格式问题交给用户。同一 repairRoundId 或同一次 model_call 下多个报告属于同一修正轮次，必须合并处理，不能按文件重复试错。修正轮数和重复 fingerprint 停止策略以本轮 packageContract.confirmation 为准；普通成功写入不代表校验通过、不能清零轮次。repairStopped=true 时停止生成新候选，但仍可读取、删除或调用 discard_rejected_candidate_changes 撤销候选。
 - 用户在确认卡退回候选，并在反馈中明确表示“撤销修改”“不需要修改”或“保持已确认版本”时，调用 discard_rejected_candidate_changes 放弃退回后残留的业务候选；不要为了清空待处理内容伪造无意义 diff。工具成功后留在原业务阶段，继续处理仍然有效的下一步。
@@ -103,6 +106,21 @@ def build_model(settings: Settings) -> Any:
             top_p=0.1,
             max_tokens=settings.llm_max_tokens,
         ),
+    )
+
+
+def context_engine_config(settings: Settings) -> ContextEngineConfig:
+    return ContextEngineConfig(
+        max_context_message_num=settings.context_max_messages,
+        default_window_message_num=min(
+            settings.context_window_messages,
+            settings.context_max_messages,
+        ),
+        default_window_round_num=settings.context_window_rounds,
+        # 业务记忆来自 Change Plan、回执和 Execution Brief；卸载的长历史不自动回灌。
+        enable_reload=False,
+        enable_tiktoken_counter=False,
+        model_name=settings.llm_model or None,
     )
 
 
@@ -161,6 +179,7 @@ def build_agent(
         # include_tools=False 保证不会额外向模型暴露 shell 或本地文件工具。
         enable_sys_operation=True,
         parallel_tool_calls=False,
+        context_engine_config=context_engine_config(settings),
         enable_read_image_multimodal=False,
         enable_task_planning=False,
     )

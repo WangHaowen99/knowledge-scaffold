@@ -139,6 +139,18 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .llink:hover { color: var(--blue-d); text-decoration: underline; }
 .mwr .llink:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 
+@media (max-width: 720px) {
+  .mwr.login { min-height: 100dvh; height: auto; flex-direction: column; overflow-x: hidden; }
+  .mwr .lbrand { width: 100%; min-width: 0; padding: 24px 22px 20px; overflow: hidden; }
+  .mwr .lbrand .mk { width: 38px; height: 38px; margin-bottom: 14px; border-radius: 10px; }
+  .mwr .lbrand h1 { font-size: 24px; margin-bottom: 6px; }
+  .mwr .lbrand .tg { font-size: 13.5px; line-height: 1.6; }
+  .mwr .lbrand .feats { display: none; }
+  .mwr .lform { width: 100%; align-items: flex-start; padding: 18px 14px 28px; }
+  .mwr .lform > div { width: 100%; }
+  .mwr .lcard { width: 100%; max-width: 420px; margin: 0 auto; padding: 26px 22px 24px; border-radius: 12px; }
+}
+
 /* ---- 应用外壳 ---- */
 .mwr.shell { display: flex; flex-direction: column; height: 100vh; background: #f2f4f8; }
 .mwr .topbar {
@@ -1808,3 +1820,49 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .semantic-binding-refs { display: grid; gap: 7px; margin: 10px 0 0 24px; }
 .mwr .semantic-binding-refs span { display: block; color: #344054; font-weight: 650; overflow-wrap: anywhere; }
 .mwr .semantic-binding-error { margin: 0 14px 12px; padding: 8px 10px; border-radius: 6px; background: #fef3f2; color: #b42318; font-size: 12px; }
+
+/* ---- 仅验收环境可见的合成场景与一次性故障面板 ---- */
+.mwr .acceptance-page { width: min(1180px, 100%); margin: 0 auto; padding: 24px 28px 48px; box-sizing: border-box; }
+.mwr .acceptance-head { min-height: 62px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--hair); padding-bottom: 18px; }
+.mwr .acceptance-head > div { min-width: 0; flex: 1; }
+.mwr .acceptance-head h1 { margin: 0; color: var(--ink); font-size: 22px; letter-spacing: 0; }
+.mwr .acceptance-head p, .mwr .acceptance-band-title p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.mwr .acceptance-alert { display: flex; align-items: center; gap: 9px; margin: 16px 0; border: 1px solid; border-radius: 6px; padding: 10px 12px; font-size: 12.5px; }
+.mwr .acceptance-alert span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.mwr .acceptance-alert.error { border-color: #f2b8b5; background: #fff6f5; color: #9d2721; }
+.mwr .acceptance-alert.success { border-color: #9ed3b7; background: #f3fbf7; color: #12613f; }
+.mwr .acceptance-band { margin-top: 26px; }
+.mwr .acceptance-band-title { display: flex; align-items: flex-start; gap: 10px; padding-bottom: 10px; }
+.mwr .acceptance-band-title > div { min-width: 0; flex: 1; }
+.mwr .acceptance-band-title > .btn { flex: none; }
+.mwr .acceptance-band-title h2 { margin: 0; color: var(--ink); font-size: 16px; letter-spacing: 0; }
+.mwr .acceptance-scenarios, .mwr .acceptance-faults { border-top: 1px solid #d9dde4; }
+.mwr .acceptance-scenario-row { min-height: 66px; display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; align-items: center; gap: 14px; border-bottom: 1px solid #e6e8ec; padding: 10px 4px; }
+.mwr .acceptance-scenario-row code, .mwr .acceptance-fault-row code { color: #255c92; font: 600 11.5px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.mwr .acceptance-scenario-row b, .mwr .acceptance-scenario-row span { display: block; }
+.mwr .acceptance-scenario-row b { color: var(--ink); font-size: 13px; }
+.mwr .acceptance-scenario-row span { margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.mwr .acceptance-fault-head, .mwr .acceptance-fault-row { display: grid; grid-template-columns: minmax(360px, 1fr) 126px 82px 190px; align-items: center; gap: 12px; border-bottom: 1px solid #e6e8ec; padding: 9px 4px; }
+.mwr .acceptance-fault-head { color: var(--muted); background: #f8f9fa; font-size: 11px; font-weight: 650; }
+.mwr .acceptance-fault-row { min-height: 54px; font-size: 12px; }
+.mwr .acceptance-fault-row > div:first-child { min-width: 0; display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 8px; }
+.mwr .acceptance-fault-row > div:first-child span { overflow-wrap: anywhere; }
+.mwr .acceptance-state { width: fit-content; border-radius: 999px; padding: 3px 8px; font-size: 11px; }
+.mwr .acceptance-state.armed { background: #fff1d6; color: #815300; }
+.mwr .acceptance-state.consumed { background: #e5f5ec; color: #146341; }
+.mwr .acceptance-state.closed { background: #eceff3; color: #5f6875; }
+.mwr .acceptance-count { color: var(--ink2); font-variant-numeric: tabular-nums; }
+.mwr .acceptance-fault-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+@media (max-width: 800px) {
+  .mwr .acceptance-page { padding: 16px 14px 36px; }
+  .mwr .acceptance-head { align-items: flex-start; flex-wrap: wrap; }
+  .mwr .acceptance-head > .btn { margin-left: 42px; }
+  .mwr .acceptance-band-title { flex-wrap: wrap; }
+  .mwr .acceptance-band-title > .btn { margin-left: 28px; }
+  .mwr .acceptance-scenario-row { grid-template-columns: 96px minmax(0, 1fr); }
+  .mwr .acceptance-scenario-row > .btn { grid-column: 2; justify-self: start; }
+  .mwr .acceptance-fault-head { display: none; }
+  .mwr .acceptance-fault-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 12px 4px; }
+  .mwr .acceptance-fault-row > div:first-child { grid-column: 1 / -1; }
+  .mwr .acceptance-fault-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}

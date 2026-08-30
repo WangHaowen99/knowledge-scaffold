@@ -6,10 +6,11 @@ import { actions, store } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import {
   addEvaluationTestcase, addEvaluationTestcases, addManualEvaluationSuggestion, applyEvaluationSuggestions,
+  cancelEvaluationRun,
   confirmEvaluationDiagnoses, deleteEvaluationTestcase, diagnoseEvaluation, getEvaluationDataSource,
   getEvaluationOptimizationStatus, getEvaluationRound, listEvaluationDiagnoses, listEvaluationRounds, listEvaluationSuggestions,
   listEvaluationTestcases, proposeEvaluationOptimizations, saveEvaluationDataSource,
-  reviewEvaluationOptimization, updateEvaluationSuggestion, updateEvaluationTestcase,
+  reviewEvaluationOptimization, startEvaluation, updateEvaluationSuggestion, updateEvaluationTestcase,
 } from '../lib/api.js';
 
 const TABS = [['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果']];
@@ -28,6 +29,7 @@ export default function EvaluationView() {
   const [facts, setFacts] = useState({ source: undefined, cases: undefined, rounds: undefined });
   const [round, setRound] = useState(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const loadFacts = useCallback(async () => {
     if (!projectId) return;
     try {
@@ -56,10 +58,11 @@ export default function EvaluationView() {
       <span className="spacer" /><button type="button" className="wb-eval-refresh" title="刷新" aria-label="刷新" onClick={() => { void loadFacts(); if (round?.round?.id) void openRound(round.round.id); }}><RefreshCw size={15} /></button>
     </div>
     {error && <div className="wb-eval-alert stale">{error}</div>}
+    {notice && <div className="wb-eval-alert ok"><Check size={15} />{notice}</div>}
     {loading ? <div className="empty"><LoaderCircle className="wb-spin" size={18} /> 正在读取评测事实</div> : <>
       {tab === 'setup' && <EvaluationSetupPanel projectId={projectId} onSaved={(source) => { setFacts((old) => ({ ...old, source })); setTab('cases'); }} />}
-      {tab === 'cases' && <CasesPanel projectId={projectId} cases={official} suggestedCount={facts.cases.length - official.length} sourceReady={Boolean(facts.source)} onChanged={(cases) => setFacts((old) => ({ ...old, cases }))} onOpenSetup={() => setTab('setup')} onOpenRuns={() => setTab('runs')} />}
-      {tab === 'runs' && <RunsPanel rounds={facts.rounds} current={round} onOpen={(id) => void openRound(id)} />}
+      {tab === 'cases' && <CasesPanel projectId={projectId} cases={official} suggestedCount={facts.cases.length - official.length} sourceReady={Boolean(facts.source)} onChanged={(cases) => setFacts((old) => ({ ...old, cases }))} onOpenSetup={() => setTab('setup')} onStarted={(roundId) => { setNotice('正式评测已创建，只会运行这一轮；进度和停止入口已显示。'); setTab('runs'); void loadFacts(); void openRound(roundId); }} />}
+      {tab === 'runs' && <RunsPanel projectId={projectId} rounds={facts.rounds} current={round} onOpen={(id) => void openRound(id)} onChanged={() => { void loadFacts(); if (round?.round?.id) void openRound(round.round.id); }} />}
     </>}
   </div>;
 }
@@ -68,7 +71,7 @@ export function EvaluationSetupPanel({ projectId, onSaved }) {
   return <section className="wb-eval-section"><div className="wb-eval-section-head"><div className="wb-eval-icon"><Database size={17} /></div><div><h3>评测数据源</h3><p>确定真实问题是否需要查询业务数据</p></div></div><div className="mwr wb-eval-data-source"><DataSourcePanel projectId={projectId} saveDataSourceRequest={saveEvaluationDataSource} onAdvance={onSaved} /></div></section>;
 }
 
-function CasesPanel({ projectId, cases, suggestedCount, sourceReady, onChanged, onOpenSetup, onOpenRuns }) {
+function CasesPanel({ projectId, cases, suggestedCount, sourceReady, onChanged, onOpenSetup, onStarted }) {
   const fileRef = useRef(null);
   const [draft, setDraft] = useState({ question: '', groundTruth: '' });
   const [preview, setPreview] = useState(null);
@@ -78,14 +81,22 @@ function CasesPanel({ projectId, cases, suggestedCount, sourceReady, onChanged, 
   const readFile = async (file) => { if (!file) return; try { setPreview({ name: file.name, cases: parseTestcaseImport(await file.text()) }); setError(''); } catch (cause) { setPreview(null); setError(cause.message); } finally { if (fileRef.current) fileRef.current.value = ''; } };
   const runImport = async () => { setBusy('import'); try { const result = await addEvaluationTestcases(projectId, preview.cases); onChanged(result.testcases || []); setNotice(`已导入 ${result.added} 条，跳过 ${result.skipped} 条重复用例`); setPreview(null); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
   const template = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([testcaseImportTemplateJson()], { type: 'application/json' })); a.download = 'evaluation-cases-template.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
-  const notify = async () => { setBusy('notify'); try { const sent = await actions.send(`我已配置评测数据源并录入 ${cases.length} 条真实业务用例。请读取最新事实，开始正式评测并持续推进。`); if (!sent) throw new Error(store.get().error || '消息发送失败'); onOpenRuns(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
+  const begin = async () => {
+    setBusy('evaluate'); setError(''); setNotice('');
+    try {
+      const result = await startEvaluation(projectId);
+      setNotice('正式评测已创建，只会运行这一轮；进度和停止入口已显示。');
+      onStarted(result.roundId);
+    } catch (cause) { setError(cause.message); }
+    finally { setBusy(''); }
+  };
   return <section className="wb-eval-section wide">
     <div className="wb-eval-section-head compact wb-eval-toolbar"><div><h3>真实业务用例</h3><p>{cases.length} 条参与正式评测{suggestedCount ? `，${suggestedCount} 条助手建议未计入` : ''}</p></div><div className="wb-eval-toolbar-actions">{!sourceReady && <button className="btn btn-sm" onClick={onOpenSetup}>配置数据源</button>}<button className="btn btn-sm" onClick={template}><Download size={14} /> 模板</button><button className="btn btn-sm" onClick={() => fileRef.current?.click()}><Upload size={14} /> 导入 JSON</button><input ref={fileRef} hidden type="file" accept=".json,application/json" onChange={(event) => void readFile(event.target.files?.[0])} /></div></div>
     {preview && <div className="wb-eval-import"><FileJson size={19} /><div><b>{preview.name}</b><span>{preview.cases.length} 条用例，{preview.cases.filter((item) => item.groundTruth).length} 条含参考答案</span></div><button className="btn btn-p btn-sm" disabled={busy === 'import'} onClick={() => void runImport()}>{busy === 'import' ? '导入中…' : '确认导入'}</button><button className="wb-icon-btn" title="取消" onClick={() => setPreview(null)}><X size={15} /></button></div>}
     {notice && <div className="wb-eval-alert ok"><Check size={15} />{notice}</div>}
     <div className="wb-eval-case-list">{cases.map((item, index) => <CaseEditor key={item.id} item={item} index={index} busy={Boolean(busy)} onSave={async (patch) => { setBusy('save'); try { const result = await updateEvaluationTestcase(projectId, item.id, patch); onChanged(result.testcases || []); } catch (cause) { setError(cause.message); } finally { setBusy(''); } }} onDelete={async () => { if (!window.confirm('确定删除这条真实用例吗？')) return; setBusy('delete'); try { await deleteEvaluationTestcase(projectId, item.id); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } }} />)}{!cases.length && <div className="wb-eval-empty">可手工添加，也可导入旧建模工具使用的 JSON 用例文件</div>}</div>
     <div className="wb-eval-add compact"><div className="wb-eval-field-grid"><label><span>业务问题</span><textarea className="input" rows="2" value={draft.question} onChange={(e) => setDraft({ ...draft, question: e.target.value })} placeholder="实际会向知识助手提出的问题" /></label><label><span>参考答案 <small>可留空</small></span><textarea className="input" rows="2" value={draft.groundTruth} onChange={(e) => setDraft({ ...draft, groundTruth: e.target.value })} placeholder="关键结论、步骤或数值" /></label></div><button className="btn btn-sm" disabled={Boolean(busy) || !draft.question.trim()} onClick={() => void add()}><Plus size={14} /> 添加</button></div>
-    {error && <div className="wb-eval-alert stale">{error}</div>}<div className="wb-eval-actions"><button className="btn btn-p" disabled={!sourceReady || !cases.length || Boolean(busy)} onClick={() => void notify()}>{busy === 'notify' ? <LoaderCircle className="wb-spin" size={14} /> : <Send size={14} />} 开始正式评测</button></div>
+    {error && <div className="wb-eval-alert stale">{error}</div>}<div className="wb-eval-actions"><button className="btn btn-p" disabled={!sourceReady || !cases.length || Boolean(busy)} onClick={() => void begin()}>{busy === 'evaluate' ? <LoaderCircle className="wb-spin" size={14} /> : <Send size={14} />} 开始正式评测</button></div>
   </section>;
 }
 
@@ -96,13 +107,22 @@ function CaseEditor({ item, index, busy, onSave, onDelete }) {
 }
 
 export const evaluationScopeLabel = (scope) => scope?.kind === 'fusion_source' ? `来源回归 · ${scope.sourceName || '未命名来源'}` : '正式融合包';
-export function RunsPanel({ rounds, current, onOpen }) {
+export function RunsPanel({ projectId, rounds, current, onOpen, onChanged }) {
   if (!rounds.length) return <div className="wb-eval-empty">助手开始正式评测后，运行进度和结果会显示在这里</div>;
-  return <section className="wb-eval-runs"><div className="wb-eval-round-list">{rounds.map((item) => { const [label, tone] = STATUS[item.status] || [item.status, 'plain']; return <button key={item.id} className={current?.round?.id === item.id ? 'on' : ''} onClick={() => onOpen(item.id)}><span><b>{formatTime(item.createdAt)}</b><small>{evaluationScopeLabel(item.scope)} · v{item.packageVersion}</small></span><span className={`pill pill-${tone}`}>{label}</span></button>; })}</div>{current && <RoundDetail value={current} />}</section>;
+  return <section className="wb-eval-runs"><div className="wb-eval-round-list">{rounds.map((item) => { const [label, tone] = STATUS[item.status] || [item.status, 'plain']; return <button key={item.id} className={current?.round?.id === item.id ? 'on' : ''} onClick={() => onOpen(item.id)}><span><b>{formatTime(item.createdAt)}</b><small>{evaluationScopeLabel(item.scope)} · v{item.packageVersion}</small></span><span className={`pill pill-${tone}`}>{label}</span></button>; })}</div>{current && <RoundDetail projectId={projectId} value={current} onChanged={onChanged} />}</section>;
 }
-function RoundDetail({ value }) {
+function RoundDetail({ projectId, value, onChanged }) {
   const { round, results = [] } = value; const failed = results.filter((item) => item.verdict !== 'pass'); const [statusLabel, statusTone] = STATUS[round.status] || [round.status, 'plain']; const progress = round.progressTotal ? Math.round(round.progressDone / round.progressTotal * 100) : 0;
-  return <div className="wb-eval-round-detail"><div className="wb-eval-round-summary"><div><b>{statusLabel}</b><span>{evaluationScopeLabel(round.scope)} · 通过 {round.passCount}/{round.progressTotal || results.length}</span></div><span className={`pill pill-${statusTone}`}>{round.status === 'running' ? `${progress}%` : statusLabel}</span></div>{round.status === 'running' && <div className="wb-eval-progress"><span style={{ width: `${progress}%` }} /></div>}{failed.length > 0 && ['done', 'failed'].includes(round.status) && <div className="wb-eval-next"><Search size={18} /><div><b>{failed.length} 条用例未通过</b><span>失败回答和判定理由已在下方结果中列出。</span></div></div>}{results.map((result, index) => { const [label, tone] = VERDICT[result.verdict] || ['待判定', 'plain']; return <article className="wb-eval-result" key={result.id}><div><b>{index + 1}. {result.question}</b><span className={`pill pill-${tone}`}>{label}</span></div>{result.finalAnswer && <p><strong>回答</strong>{result.finalAnswer}</p>}{result.reason && <p><strong>判定</strong>{result.reason}</p>}</article>; })}{round.status === 'failed' && round.log && <pre className="wb-eval-log">{round.log}</pre>}</div>;
+  const [stopping, setStopping] = useState(false);
+  const stop = async () => { setStopping(true); try { await cancelEvaluationRun(projectId, round.id); onChanged?.(); } finally { setStopping(false); } };
+  return <div className="wb-eval-round-detail"><div className="wb-eval-round-summary"><div><b>{statusLabel}</b><span>{evaluationScopeLabel(round.scope)} · 通过 {round.passCount}/{round.progressTotal || results.length}</span></div>{round.status === 'running' && <button type="button" className="btn btn-danger btn-sm" disabled={stopping} onClick={() => void stop()}><X size={14} />{stopping ? '停止中…' : '停止评测'}</button>}<span className={`pill pill-${statusTone}`}>{round.status === 'running' ? `${progress}%` : statusLabel}</span></div>{round.status === 'running' && <div className="wb-eval-progress"><span style={{ width: `${progress}%` }} /></div>}{failed.length > 0 && ['done', 'failed'].includes(round.status) && <div className="wb-eval-next"><Search size={18} /><div><b>{failed.length} 条用例未通过</b><span>失败回答和判定理由已在下方结果中列出。</span></div></div>}{round.status === 'failed' && <div className="wb-eval-alert stale"><b>本轮评测没有完成</b><span>{evaluationFailureSummary(round, results)}</span></div>}{results.map((result, index) => { const [label, tone] = VERDICT[result.verdict] || ['待判定', 'plain']; return <article className="wb-eval-result" key={result.id}><div><b>{index + 1}. {result.question}</b><span className={`pill pill-${tone}`}>{label}</span></div>{result.finalAnswer && <p><strong>回答</strong>{result.finalAnswer}</p>}{result.reason && <p><strong>判定</strong>{result.reason}</p>}</article>; })}</div>;
+}
+
+export function evaluationFailureSummary(round, results = []) {
+  const environmentErrors = results.filter((item) => item.verdict === 'error').length;
+  if (environmentErrors) return `${environmentErrors} 条用例遇到运行环境错误，知识包没有因此自动修改。请恢复环境后重试本轮评测。`;
+  if (round?.progressDone < round?.progressTotal) return `已完成 ${round.progressDone || 0}/${round.progressTotal || 0} 条，未完成部分没有生成评测结论。可检查数据源后重新开始。`;
+  return '运行环境未能完成本轮评测。知识包和用例均保持不变，可排除环境问题后重试。';
 }
 
 function DiagnosisPanel({ projectId, round, diagnoses, onChanged, onGoRuns, onAdvance }) {

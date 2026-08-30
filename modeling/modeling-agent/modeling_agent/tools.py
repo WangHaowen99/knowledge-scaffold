@@ -29,6 +29,8 @@ TABLE_FIELD_SAMPLE_VALUES = 3
 TABLE_SAMPLE_VALUE_CHARS = 120
 
 VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
+    "stage_change_set",
+    "validate_change_set",
     "write_file",
     "upsert_object",
     "upsert_rule",
@@ -50,6 +52,8 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "stage_script_source",
 })
 VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
+    "stage_change_set",
+    "validate_change_set",
     "write_file",
     "delete_file",
     "upsert_object",
@@ -72,6 +76,7 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "stage_script_source",
 })
 VALIDATION_REPAIR_RESET_TOOLS = frozenset({
+    "discard_change_set",
     "discard_rejected_candidate_changes",
     "request_confirmation",
 })
@@ -580,6 +585,7 @@ DOMAIN_MUTATION_ENVELOPE = {
     "edit_session_id": MUTATION_ID,
     "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
 }
+PLAN_TASK_ID = {"type": "string", "minLength": 1, "maxLength": 160}
 OBJECT_PATCH_ACTIONS = [
     "set_title", "set_description", "set_aliases", "set_query_boundary",
     "add_field", "update_field", "remove_field",
@@ -603,6 +609,48 @@ METRIC_PATCH_ACTIONS = [
     "upsert_null_policy", "remove_null_policy", "upsert_dimension", "remove_dimension",
     "add_object_reference", "remove_object_reference",
 ]
+
+CHANGE_PLAN_TASK = {
+    "type": "object",
+    "properties": {
+        "client_key": {"type": "string", "minLength": 1, "maxLength": 64},
+        "title": {"type": "string", "minLength": 1, "maxLength": 300},
+        "resource_kind": {
+            "type": "string",
+            "enum": ["object", "rule", "operation", "metric", "script", "binding", "other"],
+        },
+        "target_key": {"type": "string", "minLength": 1, "maxLength": 160},
+        "allowed_tools": {
+            "type": "array", "minItems": 1, "maxItems": 20,
+            "items": {"type": "string", "enum": [
+                "create_object", "create_rule", "create_operation", "create_metric",
+                "patch_object", "patch_rule", "patch_operation", "patch_metric",
+                "patch_object_source_binding", "delete_domain_resource", "stage_script_source",
+            ]},
+        },
+        "depends_on": {"type": "array", "maxItems": 100, "items": STRING},
+        "acceptance": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "required": {"type": "boolean"},
+    },
+    "required": [
+        "client_key", "title", "resource_kind", "target_key", "allowed_tools", "acceptance",
+    ],
+    "additionalProperties": False,
+}
+CHANGE_SET_ACTION = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "tool": {"type": "string", "enum": [
+            "create_object", "create_rule", "create_operation", "create_metric",
+            "patch_object", "patch_rule", "patch_operation", "patch_metric",
+        ]},
+        # Core 根据 tool 再次执行对应领域参数和范围校验。
+        "arguments": {"type": "object", "additionalProperties": True},
+    },
+    "required": ["task_id", "tool", "arguments"],
+    "additionalProperties": False,
+}
 
 
 CORE_TOOL_SPECS = (
@@ -654,6 +702,79 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("list_dir", "列出知识包目录。", {"path": PATH}, ("path",), display="正在查看知识包目录"),
     ToolSpec("read_file", "读取知识包文件。", {"path": PATH}, ("path",), display="正在读取知识文件"),
+    ToolSpec(
+        "create_change_plan",
+        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
+        {
+            "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "mode": {"type": "string", "enum": ["expert_edit", "generation"]},
+            "expected_revision": WORKING_REVISION,
+            "tasks": {"type": "array", "minItems": 1, "maxItems": 100, "items": CHANGE_PLAN_TASK},
+        },
+        ("goal", "mode", "expected_revision", "tasks"),
+        False,
+        "正在建立受控建模计划",
+    ),
+    ToolSpec(
+        "get_change_plan",
+        "读取当前结构化建模计划、Core 分配的任务 ID、完成事实和剩余项。不要用对话记忆猜任务状态。",
+        {"plan_id": STRING},
+        (),
+        True,
+        "正在核对建模计划",
+    ),
+    ToolSpec(
+        "revise_change_plan",
+        "记录范围调整、增加任务或跳过可选任务。执行开始后扩大范围必须先得到用户明确决定。",
+        {
+            "plan_id": STRING,
+            "expected_version": {"type": "integer", "minimum": 1},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "add_tasks": {"type": "array", "maxItems": 100, "items": CHANGE_PLAN_TASK},
+            "skip_task_ids": {"type": "array", "maxItems": 100, "items": STRING},
+            "scope_approved": {"type": "boolean"},
+        },
+        ("plan_id", "expected_version", "reason"),
+        False,
+        "正在记录计划调整",
+    ),
+    ToolSpec(
+        "stage_change_set",
+        "把依赖闭合的一批计划任务作为原子 Change Set 提交。只能使用白名单领域动作；整批成功或整批不生效。",
+        {
+            "plan_id": STRING,
+            "expected_revision": WORKING_REVISION,
+            "mutation_id": MUTATION_ID,
+            "actions": {"type": "array", "minItems": 1, "maxItems": 100, "items": CHANGE_SET_ACTION},
+        },
+        ("plan_id", "expected_revision", "mutation_id", "actions"),
+        False,
+        "正在原子生成待确认修改",
+    ),
+    ToolSpec(
+        "get_change_set_receipt",
+        "查询 Change Set 是否实际提交。超时或响应丢失后必须先查回执，禁止猜测并重复写入。",
+        {"mutation_id": MUTATION_ID},
+        ("mutation_id",),
+        True,
+        "正在核对修改回执",
+    ),
+    ToolSpec(
+        "validate_change_set",
+        "只有计划全部必选任务形成候选后，才对完整批次校验并冻结确认回执。",
+        {"plan_id": STRING, "summary": {"type": "string", "maxLength": 1000}},
+        ("plan_id",),
+        False,
+        "正在校验完整建模计划",
+    ),
+    ToolSpec(
+        "discard_change_set",
+        "放弃尚未进入确认的当前计划和候选修改，不影响已确认版本。",
+        {"plan_id": STRING, "reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        ("plan_id", "reason"),
+        False,
+        "正在放弃待确认修改",
+    ),
     ToolSpec(
         "list_domain_resources",
         "按领域列出当前工作修订中的资源、稳定 ID 和资源哈希。修改前先读取，不要从旧对话盲改。",
@@ -770,6 +891,7 @@ CORE_TOOL_SPECS = (
         "把对象完整绑定到一张已解析数据表。提交全部字段的一一映射和主键；服务端按资源哈希防覆盖并重建对象与 mappings。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
             "resource_id": RESOURCE_ID,
             "expected_resource_hash": RESOURCE_HASH,
             "document_id": STRING,
@@ -838,6 +960,7 @@ CORE_TOOL_SPECS = (
         "使用刚生成的预览 token 原子删除领域资源并清理显式引用；状态变化后 token 自动失效。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
             "resource_ids": {"type": "array", "minItems": 1, "maxItems": 100, "items": RESOURCE_ID},
             "preview_token": STRING,
             "cleanup_references": {"type": "boolean", "const": True},
@@ -1334,6 +1457,7 @@ CORE_TOOL_SPECS = (
         "按已定义契约提交 Python 源码。核心检查语法、安全、argparse、JSON 输出、占位实现和操作双向绑定后，原子生成候选。",
         {
             "script_key": STRING,
+            "plan_task_id": PLAN_TASK_ID,
             "expected_revision": WORKING_REVISION,
             "expected_contract_hash": RESOURCE_HASH,
             "mutation_id": MUTATION_ID,
@@ -1835,6 +1959,8 @@ def build_tools(context: ToolContext) -> list[Tool]:
 
 
 DOMAIN_PHASE_TOOLS = frozenset({
+    "create_change_plan", "get_change_plan", "revise_change_plan",
+    "stage_change_set", "get_change_set_receipt", "validate_change_set", "discard_change_set",
     "list_domain_resources", "get_domain_resource",
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",

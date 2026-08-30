@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getToken, getRefreshToken, clearSession, me, importPackageWorkspace } from './api.js';
+import { getToken, getRefreshToken, clearSession, me, importPackageWorkspace, getAcceptanceEnvironment } from './api.js';
 import LoginPage from './LoginPage.jsx';
+import AcceptancePage from './AcceptancePage.jsx';
 import ProjectList from './ProjectList.jsx';
 import ProjectWorkbenchRouter from './ProjectWorkbenchRouter.jsx';
 import SettingsModal from './SettingsModal.jsx';
@@ -11,11 +12,11 @@ import {
 } from './flowchartNavigationGuard.js';
 
 function initialWorkspaceRoute() {
-  if (typeof window === 'undefined') return { projectId: null, projectKind: 'modeling' };
+  if (typeof window === 'undefined') return { projectId: null, projectKind: 'modeling', acceptance: false };
   const params = new URLSearchParams(window.location.search);
   const projectId = params.get('project');
   const projectKind = params.get('kind') === 'package' ? 'package' : 'modeling';
-  return { projectId, projectKind };
+  return { projectId, projectKind, acceptance: window.location.pathname === '/acceptance' };
 }
 
 function replaceWorkspaceRoute(projectId, projectKind) {
@@ -39,6 +40,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [projectId, setProjectId] = useState(initialRoute.projectId);
   const [projectKind, setProjectKind] = useState(initialRoute.projectKind);
+  const [acceptanceOpen, setAcceptanceOpen] = useState(initialRoute.acceptance);
+  const [acceptanceAvailable, setAcceptanceAvailable] = useState(false);
   const [importingPackage, setImportingPackage] = useState(false);
   const [importError, setImportError] = useState('');
   const [importNotice, setImportNotice] = useState('');
@@ -60,6 +63,13 @@ export default function App() {
         setStatus('out');
       });
   }, []);
+
+  useEffect(() => {
+    if (status !== 'in') return;
+    void getAcceptanceEnvironment()
+      .then(() => setAcceptanceAvailable(true))
+      .catch(() => setAcceptanceAvailable(false));
+  }, [status]);
 
   // 点击菜单外任意处 / 按 Esc 关闭用户菜单。
   // 用捕获阶段 + contains 判断：页面里有组件对 click 调 stopPropagation（如优化建议卡的勾选），冒泡监听会被吞
@@ -106,6 +116,16 @@ export default function App() {
     setProjectId(id);
     setProjectKind(kind);
     replaceWorkspaceRoute(id, kind);
+  };
+
+  const openAcceptance = () => {
+    setAcceptanceOpen(true);
+    window.history.pushState(null, '', '/acceptance');
+  };
+
+  const closeAcceptance = () => {
+    setAcceptanceOpen(false);
+    window.history.pushState(null, '', '/');
   };
 
   const handleProjectUnavailable = useCallback(() => {
@@ -163,13 +183,18 @@ export default function App() {
       <div className="topbar">
         <div className="logo"><span className="mk">知</span>知识包建模工具</div>
         <span className="crumb">
-          {projectId
+          {acceptanceOpen
+            ? '项目 / 浏览器验收场景'
+            : projectId
             ? <><button type="button" className="crumb-link" onClick={closeProject}>项目</button> / 统一建模工作台</>
             : '项目'}
         </span>
         <div className="right">
-          {!projectId && (
+          {!projectId && !acceptanceOpen && (
             <>
+              {acceptanceAvailable && <button type="button" className="tb-btn" onClick={openAcceptance}>
+                验收场景
+              </button>}
               <button className="tb-btn" disabled={importingPackage} onClick={() => packageInputRef.current?.click()}>
                 {importingPackage ? '导入中…' : '导入已有知识包'}
               </button>
@@ -216,13 +241,15 @@ export default function App() {
       {importNotice && <div className="app-global-notice">{importNotice}<button onClick={() => setImportNotice('')}>✕</button></div>}
       {projectAccessNotice && <div className="app-global-notice">{projectAccessNotice}<button onClick={() => setProjectAccessNotice('')}>✕</button></div>}
       <div className="main">
-        {projectId
+        {acceptanceOpen
+          ? <AcceptancePage onOpenProject={openProject} onBack={closeAcceptance} />
+          : projectId
           ? <ProjectWorkbenchRouter projectId={projectId} onUnsavedChange={setWorkspaceDirty}
               onProjectUnavailable={handleProjectUnavailable}
               onAuthenticationRequired={handleAuthenticationRequired} />
           : <ProjectList onOpen={openProject} />}
       </div>
-      {!projectId && <Tour scene="projects" steps={PROJECT_STEPS} />}
+      {!projectId && !acceptanceOpen && <Tour scene="projects" steps={PROJECT_STEPS} />}
       {settingsOpen && <SettingsModal user={user} projectId={projectId} tab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>
   );

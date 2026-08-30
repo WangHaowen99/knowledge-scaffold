@@ -285,6 +285,9 @@ function parseObject(
   const fields: SpecField[] = tableRows(section(body, '字段')).map((row) => ({
     key: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || undefined,
     required: required(row[3] ?? ''), note: row[4] || undefined, alias: normalizeFieldAlias(row[5]),
+    ...(optionalString(objectMapping?.fields?.[row[0] ?? '']?.source_column)
+      ? { sourceColumn: optionalString(objectMapping?.fields?.[row[0] ?? '']?.source_column) }
+      : {}),
     valueBindingRef: optionalString(objectMapping?.fields?.[row[0] ?? '']?.value_binding_ref),
   })).filter((field) => field.key && field.key !== '—');
   const relations = tableRows(section(body, '关系')).map((row) => ({

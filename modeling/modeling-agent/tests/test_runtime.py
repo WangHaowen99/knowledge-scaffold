@@ -8,7 +8,7 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
-from modeling_agent.agent import _system_prompt, build_model
+from modeling_agent.agent import _system_prompt, build_model, context_engine_config
 from modeling_agent.rails import (
     AskRail,
     ConfirmationRail,
@@ -71,6 +71,160 @@ async def test_model_uses_stream_specific_timeouts(settings) -> None:
 
     assert model.model_client_config.stream_first_chunk_timeout == 120.0
     assert model.model_client_config.stream_idle_timeout == 60.0
+
+    context = context_engine_config(settings)
+    assert context.max_context_message_num == 64
+    assert context.default_window_message_num == 48
+    assert context.default_window_round_num == 10
+    assert context.enable_reload is False
+
+
+async def test_model_timeout_uses_one_persisted_recovery_and_new_execution_brief(settings) -> None:
+    class TimeoutThenSuccessModel(ScriptedModel):
+        def __init__(self) -> None:
+            super().__init__([[], []], final="已从保存的计划继续完成。")
+            self.failures = 1
+
+        async def stream(self, *args, **kwargs):  # type: ignore[override]
+            if self.failures:
+                self.failures -= 1
+                self.calls += 1
+                raise TimeoutError("stream first chunk timeout")
+            async for chunk in super().stream(*args, **kwargs):
+                yield chunk
+
+    model = TimeoutThenSuccessModel()
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_model_timeout_recovery",
+            token="token_1",
+            message="继续核对当前建模计划",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        ledger = runtime.store.retry_ledger(started["id"])
+        assert len(ledger) == 1
+        assert ledger[0]["category"] == "model_timeout"
+        assert ledger[0]["attempt"] == 1
+        assert ledger[0]["status"] == "succeeded"
+        assert completed["sessionId"] != started["sessionId"]
+        recovery = [
+            event.payload for event in runtime.store.events_after(
+                "project_model_timeout_recovery", 0,
+            ) if event.kind == "recovery"
+        ]
+        assert [event["status"] for event in recovery] == ["retrying", "succeeded"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_second_model_timeout_exhausts_application_recovery(settings) -> None:
+    class AlwaysTimeoutModel(ScriptedModel):
+        async def stream(self, *_args, **_kwargs):  # type: ignore[override]
+            self.calls += 1
+            if False:
+                yield None
+            raise TimeoutError("stream idle timeout")
+
+    model = AlwaysTimeoutModel([[]])
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_model_timeout_exhausted",
+            token="token_1",
+            message="继续完成当前工作",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "failed"
+        ledger = runtime.store.retry_ledger(started["id"])
+        assert len(ledger) == 1
+        assert ledger[0]["attempt"] == 1
+        assert ledger[0]["status"] == "exhausted"
+        assert model.calls == 2
+        recovery = [
+            event for event in runtime.store.events_after(
+                "project_model_timeout_exhausted", 0,
+            ) if event.kind == "recovery" and event.payload.get("status") == "retrying"
+        ]
+        assert len(recovery) == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_context_limit_is_recovered_in_a_fresh_bounded_session(settings) -> None:
+    class ContextLimitThenSuccessModel(ScriptedModel):
+        def __init__(self) -> None:
+            super().__init__([[], []], final="已根据有界摘要继续。")
+            self.failures = 1
+
+        async def stream(self, *args, **kwargs):  # type: ignore[override]
+            if self.failures:
+                self.failures -= 1
+                self.calls += 1
+                raise ValueError("maximum context length exceeded")
+            async for chunk in super().stream(*args, **kwargs):
+                yield chunk
+
+    runtime = service(settings, ContextLimitThenSuccessModel())
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_context_limit_recovery",
+            token="token_1",
+            message="继续处理长资料中的剩余任务",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        ledger = runtime.store.retry_ledger(started["id"])
+        assert len(ledger) == 1
+        assert ledger[0]["category"] == "context_limit"
+        assert ledger[0]["status"] == "succeeded"
+        transitions = runtime.store._db.execute(  # noqa: SLF001 - checkpoint audit invariant
+            """SELECT cause FROM project_agent_state_transitions
+            WHERE project_id = ? ORDER BY id""",
+            ("project_context_limit_recovery",),
+        ).fetchall()
+        assert any(row["cause"] == "execution_session_rotated" for row in transitions)
+        assert runtime.store.project_state(
+            "project_context_limit_recovery",
+        ).checkpoint_id == completed["sessionId"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_interrupted_stream_marks_partial_message_incomplete(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    run = runtime.store.create_run(RunRecord(
+        id="run_partial_timeout",
+        project_id="project_partial_timeout",
+        session_id="session_partial_timeout",
+        status=RUN_RUNNING,
+        prompt="核对当前计划",
+        token_fingerprint="fingerprint",
+    ))
+    live = LiveRun(run_id=run.id, project_id=run.project_id, token="token_1")
+    live.bundle = SimpleNamespace(agent=object())
+
+    class PartialTimeoutRunner:
+        @staticmethod
+        async def run_agent_streaming(*_args, **_kwargs):
+            yield SimpleNamespace(type="llm_output", payload="这是尚未完成的半段回复")
+            raise TimeoutError("stream idle timeout")
+
+    with pytest.raises(TimeoutError):
+        await runtime._run_streaming(  # noqa: SLF001
+            live, run, PartialTimeoutRunner, "核对当前计划",
+        )
+    events = runtime.store.events_after(run.project_id, 0)
+    done = [event for event in events if event.kind == "message_done"]
+    assert len(done) == 1
+    assert done[0].payload["incomplete"] is True
 
 
 async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() -> None:

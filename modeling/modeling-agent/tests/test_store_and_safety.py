@@ -121,6 +121,50 @@ def test_validation_repair_state_survives_runtime_store_restart(tmp_path: Path) 
         reopened.close()
 
 
+def test_retry_ledger_survives_restart_and_enforces_attempt_limit(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_retry"))
+    first = store.record_retry(
+        "run_retry",
+        "model-stream-0001",
+        category="model_timeout",
+        max_attempts=1,
+        error_fingerprint="sha256:first",
+        last_error="TimeoutError: first chunk timeout",
+        delay_seconds=0.5,
+    )
+    assert first["attempt"] == 1
+    assert first["status"] == "retrying"
+    assert first["nextAllowedAt"]
+    store.close()
+
+    reopened = RuntimeStore(path)
+    try:
+        restored = reopened.retry_entry("run_retry", "model-stream-0001")
+        assert restored is not None
+        assert restored["attempt"] == 1
+        assert restored["errorFingerprint"] == "sha256:first"
+        with pytest.raises(AgentRuntimeError) as caught:
+            reopened.record_retry(
+                "run_retry",
+                "model-stream-0001",
+                category="model_timeout",
+                max_attempts=1,
+                error_fingerprint="sha256:second",
+                last_error="TimeoutError: idle timeout",
+            )
+        assert caught.value.code == "RETRY_EXHAUSTED"
+        settled = reopened.settle_retry(
+            "run_retry", "model-stream-0001", "exhausted", last_error="still timed out",
+        )
+        assert settled is not None
+        assert settled["status"] == "exhausted"
+        assert settled["nextAllowedAt"] == ""
+    finally:
+        reopened.close()
+
+
 def test_validation_repair_state_is_scoped_to_candidate_revision() -> None:
     state = CandidateValidationRepairState()
     state.scope_candidate_revision("candidate-a")
@@ -161,6 +205,35 @@ async def test_tool_boundary_rail_returns_receipt_instead_of_calling_tool_again(
         await rail.before_tool_call(call)  # type: ignore[arg-type]
         assert json.loads(call.inputs.tool_result) == result
         assert call.extra["_tool_receipt_replayed"] is True
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_script_test_never_replays_receipt_across_candidate_source_changes(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.create_run(run("run_script"))
+    arguments = {"script": "scripts/current.py", "cases": [{"input": {}, "expected": {"ok": True}}]}
+    store.save_tool_receipt(
+        "run_script", "call_script_test", "run_script_test", arguments,
+        {"passed": 1, "failed": 0},
+    )
+    context = ToolContext(
+        project_id="project_script",
+        run_id="run_script",
+        token="",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        tool_receipt_lookup=lambda name, call_id, args: store.tool_receipt(
+            "run_script", call_id, name, args,
+        ),
+    )
+    rail = ToolBoundaryRail(context)
+    call = _tool_call_context("run_script_test", arguments, "call_script_test")
+    try:
+        await rail.before_tool_call(call)  # type: ignore[arg-type]
+        assert call.inputs.tool_result is None
+        assert "_tool_receipt_replayed" not in call.extra
     finally:
         store.close()
 

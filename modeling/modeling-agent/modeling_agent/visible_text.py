@@ -13,7 +13,7 @@ _CHECKPOINT_ID = re.compile(r"^cp[-_][A-Za-z0-9-]+$", re.IGNORECASE)
 _HEX_REVISION = re.compile(r"^(?=[a-f0-9]{7,64}$)(?=.*[a-f])[a-f0-9]+$", re.IGNORECASE)
 _STATE_CODE = re.compile(
     r"^(intake|goal|process|knowledge|increment|validation|evaluation|release):"
-    r"(?:idle|queued|running|waiting|suspended|completed|failed|cancelled)$",
+    r"(?:idle|queued|running|stopping|waiting|suspended|completed|failed|cancelled)$",
     re.IGNORECASE,
 )
 _PRIVATE_REASONING = re.compile(
@@ -51,6 +51,13 @@ _TOKEN_LABELS = {
     "stage_tabular_dataset": "同步完整数据表",
     "list_dir": "查看知识包目录",
     "read_file": "读取知识内容",
+    "create_change_plan": "建立建模计划",
+    "get_change_plan": "核对建模计划",
+    "revise_change_plan": "调整建模计划",
+    "stage_change_set": "原子生成待确认修改",
+    "get_change_set_receipt": "核对修改回执",
+    "validate_change_set": "校验完整建模计划",
+    "discard_change_set": "放弃待确认修改",
     "list_domain_resources": "查看领域资源",
     "get_domain_resource": "读取资源快照",
     "create_object": "创建业务对象",

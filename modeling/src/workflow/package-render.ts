@@ -80,6 +80,7 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
   for (const f of o.fields) {
     fields[mappingFieldName(f)] = {
       source: f.key,
+      ...(f.sourceColumn && f.sourceColumn !== f.key ? { source_column: f.sourceColumn } : {}),
       type: f.type || 'string',
       required: !!f.required,
       readable: true,

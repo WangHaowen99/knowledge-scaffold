@@ -214,6 +214,8 @@ import {
 } from './workflow/semantic-binding-service.js';
 import { validateTermTables } from './workflow/term-table.js';
 import { getProjectPackageDataSourceSelection } from './workflow/package-data-source-selection.js';
+import { registerAcceptanceRoutes } from './acceptance/routes.js';
+import { takeAcceptanceFault } from './acceptance/faults.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
   `semantic_binding_ignored:${projectId}:${revision}`;
@@ -597,6 +599,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     registerAgentLlmConfigRoutes(r);
     registerProjectMcpManagementRoutes(r);
+    registerAcceptanceRoutes(r);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
 
@@ -2389,13 +2392,47 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         ? backgroundAuthSessions.remember(req.user!.username, token, refreshToken)
         : backgroundAuthSessions.get(req.user!.username);
       try {
+        const acceptanceRunId = `evaluation:${c.p.id}:${Date.now()}`;
+        const holdUntilStopped = takeAcceptanceFault(req.user!.username, 'F13', acceptanceRunId);
+        const environmentFailure = holdUntilStopped
+          ? null
+          : takeAcceptanceFault(req.user!.username, 'F14', acceptanceRunId);
+        const acceptanceDependencies = holdUntilStopped ? {
+          runRound: async ({ roundId, signal }: { roundId: string; signal: AbortSignal }) => {
+            m3repo.roundPhase(roundId, 'cases');
+            m3repo.roundCaseStarted(roundId);
+            m3repo.roundLog(roundId, '浏览器验收：评测保持运行，等待用户从页面点击停止');
+            await new Promise<void>((resolve, reject) => {
+              if (signal.aborted) { reject(signal.reason); return; }
+              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            });
+          },
+        } : environmentFailure ? {
+          runRound: async ({ roundId, projectId }: { roundId: string; projectId: string; signal: AbortSignal }) => {
+            const cases = m3repo.listTestcases(projectId).filter((item) => item.source === 'manual');
+            m3repo.roundPhase(roundId, 'cases');
+            for (const [index, testcase] of cases.entries()) {
+              m3repo.roundCaseStarted(roundId);
+              m3repo.addResult(roundId, {
+                testcaseId: testcase.id,
+                question: testcase.question,
+                groundTruth: testcase.groundTruth,
+                verdict: 'error',
+                reason: '浏览器验收注入的合成运行环境错误；不得据此修改知识包',
+              });
+              m3repo.roundProgress(roundId, index + 1, 0);
+            }
+            m3repo.roundLog(roundId, '全部用例遇到运行环境错误，知识包和用例均保持不变');
+            m3repo.finishRound(roundId, 'failed');
+          },
+        } : undefined;
         const { roundId } = await startCurrentEvaluation({
           projectId: c.p.id,
           owner: req.user!.username,
           token,
           refreshToken,
           authSession,
-        });
+        }, acceptanceDependencies);
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
       } catch (e) {

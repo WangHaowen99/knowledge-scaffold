@@ -20,6 +20,7 @@ const selInteraction = (s) => s.interaction;
 const selProjectId = (s) => s.projectId;
 const selRevision = (s) => s.revision;
 const selPackageVersion = (s) => s.packageVersion;
+const selStatusText = (s) => s.statusText;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
     const interaction = s.messages[index]?.blocks?.find((block) => block.interaction)?.interaction;
@@ -43,6 +44,7 @@ export default function RightPane() {
   const projectId = useStore(store, selProjectId);
   const revision = useStore(store, selRevision);
   const packageVersion = useStore(store, selPackageVersion);
+  const statusText = useStore(store, selStatusText);
   const interactionId = useStore(store, selPendingInteractionMessageId);
   const scroller = useRef(null);
   const stream = useRef(null);
@@ -65,12 +67,28 @@ export default function RightPane() {
   const restoredInteractionMessage = interaction && !interactionInStream
     ? messageForInteraction(interaction)
     : null;
+  const interactionGroupCount = interaction?.kind === 'confirmation'
+    ? (interaction.payload?.changeGroups || []).length
+    : 0;
+  const focusPendingInteraction = () => {
+    const element = scroller.current;
+    const target = [...(stream.current?.querySelectorAll('[data-interaction-id]') || [])]
+      .find((item) => item.dataset.interactionId === interactionId);
+    if (!element || !target) return;
+    followingTail.current = false;
+    element.scrollTo({ top: Math.max(0, target.offsetTop - 12), behavior: 'smooth' });
+    target.querySelector('button, input, textarea')?.focus({ preventScroll: true });
+  };
 
   useTailLayoutEffect(() => {
     const newInteraction = Boolean(interactionId && interactionId !== previousInteractionId.current);
     previousInteractionId.current = interactionId;
-    if (!followingTail.current && !newInteraction) return;
-    if (newInteraction) followingTail.current = true;
+    if (newInteraction) {
+      followingTail.current = false;
+      requestAnimationFrame(focusPendingInteraction);
+      return;
+    }
+    if (!followingTail.current) return;
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
   }, [user.length, scene, streamTail, activityTail, interactionId]);
 
@@ -94,7 +112,21 @@ export default function RightPane() {
     <>
       <div className="wb-head">
         <b>建模助手</b>
+        {statusText && <span className="wb-head-status ellip" title={statusText}>{userFacingText(statusText)}</span>}
       </div>
+
+      {interaction && (
+        <button type="button" className="wb-current-task" onClick={focusPendingInteraction}>
+          <span className="wb-current-task-dot" aria-hidden="true" />
+          <span>
+            <b>当前待处理决定</b>
+            <small>{interactionGroupCount
+              ? `1 个决定 · ${interactionGroupCount} 组变更`
+              : userFacingText(interaction.payload?.question || '需要你确认后才能继续')}</small>
+          </span>
+          <Icon name="arrow" size={12} />
+        </button>
+      )}
 
       <div ref={scroller} className="wb-scroll"
         onWheel={(event) => { if (event.deltaY < 0) followingTail.current = false; }}
@@ -119,12 +151,15 @@ export default function RightPane() {
           {error && (
             <div className="card card-stale" role="alert">
               <div className="card-h">
-                <b>有一项内容未能读取</b>
+                <b>{errorTitle(error)}</b>
                 <span className="spacer" />
                 <button className="btn btn-ghost" aria-label="关闭错误提示" title="关闭"
                   onClick={actions.clearError}><Icon name="x" size={13} /></button>
               </div>
-              <div className="card-b t-sm">{userFacingText(error)}</div>
+              <div className="card-b t-sm">
+                <div>{userFacingText(errorMessage(error))}</div>
+                {typeof error === 'object' && error?.recovery && <small className="wb-error-recovery">{userFacingText(error.recovery)}</small>}
+              </div>
             </div>
           )}
           {!demo && projectId && revision && packageVersion && (
@@ -161,7 +196,9 @@ function Message({ m }) {
   const system = m.role === 'system';
   const at = m.at || formatTime(m.createdAt);
   return (
-    <div className={`wb-msg${mine ? ' wb-msg-user' : ''}`}>
+    <div className={`wb-msg${mine ? ' wb-msg-user' : ''}${m.sendFailed ? ' wb-msg-failed' : ''}${m.incomplete ? ' wb-msg-incomplete' : ''}`}
+      data-message-id={m.id}
+      data-interaction-id={m.blocks?.find((block) => block.interaction)?.interaction?.id || undefined}>
       <div className="wb-who">
         <b>{mine ? '你' : system ? '资料' : '助手'}</b>{at ? ` · ${at}` : ''}
         {m.focus && (
@@ -174,15 +211,31 @@ function Message({ m }) {
         )}
       </div>
       {mine ? (
-        <div className="wb-bubble">{messageText(m.blocks?.[0], false)}</div>
+        <><div className="wb-bubble">{messageText(m.blocks?.[0], false)}</div>
+          {m.sendFailed && <div className="wb-send-failed" role="status">未发送，内容已保留在输入框</div>}</>
       ) : (
         <div className="wb-msg-assistant-body">
           {m.blocks.map((b, i) => <Block key={i} block={b} />)}
           {m.streaming && <span className="wb-stream-cursor" aria-label="助手正在输出" />}
+          {m.incomplete && <div className="wb-incomplete-note" role="status">这段回复因中断未完成，不作为修改或确认结论</div>}
         </div>
       )}
     </div>
   );
+}
+
+function errorMessage(error) {
+  return typeof error === 'object' && error ? error.message : error;
+}
+
+function errorTitle(error) {
+  const scope = typeof error === 'object' && error ? error.scope : '';
+  return ({
+    send: '消息没有发送成功',
+    write: '修改没有保存成功',
+    confirmation: '确认没有提交成功',
+    evaluation: '评测操作没有完成',
+  })[scope] || '有一项内容暂时不可用';
 }
 
 export function messageText(block = {}, sanitize = true) {

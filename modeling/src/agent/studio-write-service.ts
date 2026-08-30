@@ -94,6 +94,7 @@ interface MutationPlan {
 interface MutationOptions {
   allowObjectFieldWrite?: boolean;
   allowEvidenceWrite?: boolean;
+  allowMixedDomainBatch?: boolean;
 }
 
 interface PreparedCreate extends CreateAction {
@@ -291,6 +292,21 @@ export class StudioWriteService {
       username,
       parseBatchPlan(rawBody),
       requestHash('batch', rawBody),
+    ));
+  }
+
+  batchDomainModel(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+    idempotencyRequestHash: string,
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseBatchPlan(rawBody),
+      idempotencyRequestHash,
+      { allowObjectFieldWrite: true, allowEvidenceWrite: true, allowMixedDomainBatch: true },
     ));
   }
 
@@ -921,7 +937,7 @@ function applyMutation(
     preparedPatches.push({ ...action, ...parsed, normalizedChanges });
   }
 
-  if (plan.isBatch && preparedPatches.length > 1) {
+  if (plan.isBatch && preparedPatches.length > 1 && !options.allowMixedDomainBatch) {
     if (patchKinds.size > 1) {
       for (const action of preparedPatches) {
         errors[fieldPath(action.path, 'elementId')] = '批量编辑只支持同一种知识类型';

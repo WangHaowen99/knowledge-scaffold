@@ -24,6 +24,10 @@ export const getPackageFile = (id, path) => api(
   `${P(id)}/agent/file?path=${encodeURIComponent(path)}`,
 );
 export const getCandidateDiff = (id) => api(`${P(id)}/agent/diff`);
+export const respondChangePlan = (id, planId, approved) => api(
+  `${P(id)}/agent/change-plans/${encodeURIComponent(planId)}/respond`,
+  { method: 'POST', body: JSON.stringify({ approved }) },
+);
 export const listRevisions = (id) => api(`${P(id)}/revisions`);
 export const getRevisionDiff = (id, from, to) => api(
   `${P(id)}/revisions/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
@@ -60,6 +64,12 @@ export const listEvaluationRounds = (id) => api(`${P(id)}/rounds`);
 export const getEvaluationRound = (id, roundId) => api(
   `${P(id)}/rounds/${encodeURIComponent(roundId)}`,
 );
+export const startEvaluation = (id) => api(`${P(id)}/evaluate`, {
+  method: 'POST', body: '{}',
+});
+export const cancelEvaluationRun = (id, roundId) => api(`${P(id)}/evaluate/cancel`, {
+  method: 'POST', body: JSON.stringify({ roundId }),
+});
 export const diagnoseEvaluation = (id, roundId) => api(`${P(id)}/optimize/diagnose`, {
   method: 'POST', body: JSON.stringify({ roundId }),
 });

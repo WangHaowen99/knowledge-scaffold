@@ -653,8 +653,24 @@ if __name__ == "__main__":
   assert.equal(replayed.statusCode, 200, replayed.body);
   assert.equal(replayed.json().replayed, true);
 
+  const revisedSourceCode = sourceCode
+    .replace('result = {"received_keys": sorted(payload.keys())}', 'revised_result = {"received_keys": sorted(payload.keys())}')
+    .replace('{"result": result}', '{"result": revised_result}');
+  const restaged = await tool(app, project.id, 'stage_script_source', {
+    script_key: 'render_synthetic_summary',
+    expected_revision: staged.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'synthetic-stage-script-v2',
+    reason: 'Restage the current synthetic script after a source-only rename',
+    source_code: revisedSourceCode,
+  });
+  assert.equal(restaged.statusCode, 200, restaged.body);
+  assert.notEqual(restaged.json().source_hash, staged.json().source_hash);
+
   const prepared = await tool(app, project.id, 'prepare_confirmation_groups');
   assert.equal(prepared.statusCode, 200, prepared.body);
+  const preparedImpacts = prepared.json().change_groups.flatMap((group: any) => group.impact ?? []);
+  assert.equal(preparedImpacts.includes('operations/index.md'), false);
   const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '确认合成脚本候选',
     change_groups: prepared.json().change_groups,
@@ -801,6 +817,7 @@ test('对象模型工具支持查询 review 状态与审计记录', async (t) =>
   });
   assert.equal(rejected.statusCode, 200, rejected.body);
   assert.equal(rejected.json().rejected, true);
+  assert.equal(rejected.json().feedback, '需要补充字段说明');
 
   const rejectedStatus = await tool(app, project.id, 'get_ontology_object_review_status', {
     object_id: 'object:customer',
@@ -841,4 +858,278 @@ test('对象模型工具支持查询 review 状态与审计记录', async (t) =>
   assert.equal(acceptedOnly.statusCode, 200, acceptedOnly.body);
   assert.equal(acceptedOnly.json().items.length, 1);
   assert.equal(acceptedOnly.json().items[0].status, 'accepted');
+});
+
+test('Change Plan 用一个原子 Change Set 完成跨类型修改并可重放回执', async (t) => {
+  const project = createProject({ owner: 'alice', name: '受控跨资源修改', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-change-set-success-${project.id}`;
+
+  const objects = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  const operations = await tool(app, project.id, 'list_domain_resources', { kind: 'operation' }, runId);
+  assert.equal(objects.statusCode, 200, objects.body);
+  assert.equal(operations.statusCode, 200, operations.body);
+  const revision = objects.json().working_revision as string;
+  const customer = objects.json().items.find((item: any) => item.key === 'customer');
+  const operation = operations.json().items.find((item: any) => item.key === 'render_synthetic_summary');
+
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '同时更新客户对象说明和合成摘要操作说明，其他内容保持不变',
+    mode: 'expert_edit',
+    expected_revision: revision,
+    tasks: [
+      {
+        client_key: 'customer-description', title: '更新客户对象说明', resource_kind: 'object',
+        target_key: 'customer', allowed_tools: ['patch_object'], acceptance: '只改变对象说明',
+      },
+      {
+        client_key: 'operation-description', title: '更新合成摘要操作说明', resource_kind: 'operation',
+        target_key: 'render_synthetic_summary', allowed_tools: ['patch_operation'],
+        depends_on: ['customer-description'], acceptance: '只改变操作说明',
+      },
+    ],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  const stageArguments = {
+    plan_id: plan.id,
+    expected_revision: revision,
+    mutation_id: 'change-set-cross-resource-success',
+    actions: [
+      {
+        task_id: plan.tasks[0].id,
+        tool: 'patch_object',
+        arguments: {
+          resource_id: 'object:customer', expected_resource_hash: customer.resource_hash,
+          actions: [{ op: 'set_description', value: '客户对象说明由原子 Change Set 更新。' }],
+        },
+      },
+      {
+        task_id: plan.tasks[1].id,
+        tool: 'patch_operation',
+        arguments: {
+          resource_id: 'operation:render_synthetic_summary', expected_resource_hash: operation.resource_hash,
+          actions: [{ op: 'set_description', value: '操作说明由同一原子 Change Set 更新。' }],
+        },
+      },
+    ],
+  };
+  const staged = await tool(app, project.id, 'stage_change_set', stageArguments, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().status, 'staged');
+  assert.equal(staged.json().action_count, 2);
+  assert.ok(staged.json().changed_paths.some((path: string) => path === 'objects/customer.md'));
+  assert.ok(staged.json().changed_paths.some((path: string) => path === 'operations/render_synthetic_summary.md'));
+
+  const replayed = await tool(app, project.id, 'stage_change_set', stageArguments, runId);
+  assert.equal(replayed.statusCode, 200, replayed.body);
+  assert.equal(replayed.json().replayed, true);
+  assert.equal(replayed.json().change_set_id, staged.json().change_set_id);
+
+  const currentPlan = await tool(app, project.id, 'get_change_plan', { plan_id: plan.id }, runId);
+  assert.deepEqual(currentPlan.json().plan.tasks.map((item: any) => item.status), ['staged', 'staged']);
+  const receipt = await tool(app, project.id, 'get_change_set_receipt', {
+    mutation_id: 'change-set-cross-resource-success',
+  }, runId);
+  assert.equal(receipt.statusCode, 200, receipt.body);
+  assert.equal(receipt.json().change_set.status, 'staged');
+
+  const validated = await tool(app, project.id, 'validate_change_set', {
+    plan_id: plan.id,
+    summary: '核对跨资源原子修改',
+  }, runId);
+  assert.equal(validated.statusCode, 200, validated.body);
+  assert.deepEqual(validated.json().plan.tasks.map((item: any) => item.status), ['validated', 'validated']);
+  const validation = validated.json().validation;
+  const confirmed = await tool(app, project.id, 'request_confirmation', {
+    summary: '确认跨资源原子修改',
+    change_groups: validation.change_groups,
+    expected_candidate_revision: validation.candidate_revision,
+    expected_candidate_hash: validation.validation_receipt.candidateHash,
+    expected_validator_version: validation.validation_receipt.validatorVersion,
+    review: {
+      approved: true,
+      review_mode: 'full',
+      selected_groups: validation.change_groups.filter((item: any) => !item.autoApproved).map((item: any) => item.id),
+      sampled_groups: [],
+    },
+  }, runId);
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  const completedPlan = await tool(app, project.id, 'get_change_plan', { plan_id: plan.id }, runId);
+  assert.equal(completedPlan.json().plan.status, 'completed');
+  assert.deepEqual(completedPlan.json().plan.tasks.map((item: any) => item.status), ['accepted', 'accepted']);
+});
+
+test('Change Plan 对绑定类独立工具强制任务对账并推进同一份校验计划', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成绑定计划对账', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-binding-plan-${project.id}`;
+  const tableDocument = insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_binding_plan.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'synthetic_binding_plan',
+      rowCount: 1,
+      fields: [
+        { name: 'order_id', inferredType: 'string', sampleValues: ['order_0001'], distinctRatio: 1 },
+      ],
+    }],
+  });
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  const order = listed.json().items.find((item: any) => item.key === 'order');
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '只重绑一个合成订单对象的数据源',
+    mode: 'expert_edit',
+    expected_revision: listed.json().working_revision,
+    tasks: [{
+      client_key: 'bind-order', title: '重绑合成订单', resource_kind: 'binding',
+      target_key: 'order', allowed_tools: ['patch_object_source_binding'],
+      acceptance: '两个字段完整映射且 order_id 为主键',
+    }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  const argumentsWithoutTask = {
+    resource_id: 'object:order',
+    expected_revision: listed.json().working_revision,
+    expected_resource_hash: order.resource_hash,
+    mutation_id: 'synthetic-binding-plan-1',
+    reason: '验证独立工具必须绑定计划任务',
+    document_id: tableDocument.id,
+    table: 'synthetic_binding_plan',
+    field_bindings: [
+      { field_key: 'order_id', source_column: 'order_id' },
+    ],
+    primary_key: ['order_id'],
+    evidence: [`material:${tableDocument.sourceKey}#synthetic_binding_plan`],
+  };
+  const missingTask = await tool(app, project.id, 'patch_object_source_binding', argumentsWithoutTask, runId);
+  assert.equal(missingTask.statusCode, 400, missingTask.body);
+
+  const bound = await tool(app, project.id, 'patch_object_source_binding', {
+    ...argumentsWithoutTask,
+    plan_task_id: plan.tasks[0].id,
+  }, runId);
+  assert.equal(bound.statusCode, 200, bound.body);
+  assert.equal(bound.json().plan.tasks[0].status, 'staged');
+  assert.equal(bound.json().resource.values.fields[0].sourceColumn, 'order_id');
+
+  const validated = await tool(app, project.id, 'validate_change_set', {
+    plan_id: plan.id,
+    summary: '核对合成对象数据绑定',
+  }, runId);
+  assert.equal(validated.statusCode, 200, validated.body);
+  assert.equal(validated.json().plan.tasks[0].status, 'validated');
+});
+
+test('Change Set 最后一项失败时整批不落候选，计划外动作和漏项校验均被阻断', async (t) => {
+  const project = createProject({ owner: 'alice', name: '受控原子失败', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-change-set-failure-${project.id}`;
+  const objects = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  const operations = await tool(app, project.id, 'list_domain_resources', { kind: 'operation' }, runId);
+  const revision = objects.json().working_revision as string;
+  const customer = objects.json().items.find((item: any) => item.key === 'customer');
+  const operation = operations.json().items.find((item: any) => item.key === 'render_synthetic_summary');
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '验证跨资源失败不会留下半成品', mode: 'expert_edit', expected_revision: revision,
+    tasks: [
+      { client_key: 'customer', title: '修改客户', resource_kind: 'object', target_key: 'customer', allowed_tools: ['patch_object'], acceptance: '说明更新' },
+      { client_key: 'operation', title: '修改操作', resource_kind: 'operation', target_key: 'render_synthetic_summary', allowed_tools: ['patch_operation'], acceptance: '说明更新' },
+    ],
+  }, runId);
+  const plan = planResponse.json().plan;
+
+  const outOfScope = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id, expected_revision: revision, mutation_id: 'change-set-out-of-scope',
+    actions: [{
+      task_id: plan.tasks[0].id, tool: 'patch_operation',
+      arguments: { resource_id: 'operation:render_synthetic_summary', expected_resource_hash: operation.resource_hash, actions: [{ op: 'set_description', value: '越界修改' }] },
+    }],
+  }, runId);
+  assert.equal(outOfScope.statusCode, 409, outOfScope.body);
+  assert.equal(outOfScope.json().code, 'CHANGE_SET_OUT_OF_SCOPE');
+
+  const failed = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id, expected_revision: revision, mutation_id: 'change-set-final-action-fails',
+    actions: [
+      {
+        task_id: plan.tasks[0].id, tool: 'patch_object',
+        arguments: { resource_id: 'object:customer', expected_resource_hash: customer.resource_hash, actions: [{ op: 'set_description', value: '不应留下的说明' }] },
+      },
+      {
+        task_id: plan.tasks[1].id, tool: 'patch_operation',
+        arguments: { resource_id: 'operation:render_synthetic_summary', expected_resource_hash: 'sha256:0000000000000000000000000000000000000000000000000000000000000000', actions: [{ op: 'set_description', value: '失败动作' }] },
+      },
+    ],
+  }, runId);
+  assert.equal(failed.statusCode, 409, failed.body);
+  assert.equal(failed.json().code, 'RESOURCE_HASH_CONFLICT');
+
+  const after = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'object:customer', working_revision: revision,
+  }, runId);
+  assert.equal(after.statusCode, 200, after.body);
+  assert.equal(after.json().resource.description, '客户主数据对象。');
+  assert.equal(after.json().working_revision, revision);
+
+  const incomplete = await tool(app, project.id, 'validate_change_set', { plan_id: plan.id }, runId);
+  assert.equal(incomplete.statusCode, 409, incomplete.body);
+  assert.equal(incomplete.json().code, 'CHANGE_PLAN_INCOMPLETE');
+  assert.equal(incomplete.json().incomplete_tasks.length, 2);
+});
+
+test('正常生成计划必须经页面账号批准后才能形成 Change Set', async (t) => {
+  const project = createProject({ owner: 'alice', name: '生成计划批准门禁', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-generation-approval-${project.id}`;
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  const revision = listed.json().working_revision as string;
+  const customer = listed.json().items.find((item: any) => item.key === 'customer');
+  const created = await tool(app, project.id, 'create_change_plan', {
+    goal: '根据合成资料生成更新', mode: 'generation', expected_revision: revision,
+    tasks: [{
+      client_key: 'customer-description', title: '补充客户对象说明', resource_kind: 'object',
+      target_key: 'customer', allowed_tools: ['patch_object'], acceptance: '只补充对象说明',
+    }],
+  }, runId);
+  assert.equal(created.statusCode, 200, created.body);
+  const plan = created.json().plan;
+  assert.equal(plan.approval_status, 'pending');
+
+  const changeSet = {
+    plan_id: plan.id,
+    expected_revision: revision,
+    mutation_id: 'generation-after-visible-approval',
+    actions: [{
+      task_id: plan.tasks[0].id,
+      tool: 'patch_object',
+      arguments: {
+        resource_id: 'object:customer', expected_resource_hash: customer.resource_hash,
+        actions: [{ op: 'set_description', value: '用户批准生成计划后补充的说明。' }],
+      },
+    }],
+  };
+  const blocked = await tool(app, project.id, 'stage_change_set', changeSet, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'CHANGE_PLAN_APPROVAL_REQUIRED');
+
+  const approved = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
+    payload: { approved: true },
+  });
+  assert.equal(approved.statusCode, 200, approved.body);
+  assert.equal(approved.json().plan.approval_status, 'approved');
+  assert.equal(approved.json().plan.approved_by, 'alice');
+
+  const staged = await tool(app, project.id, 'stage_change_set', changeSet, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().status, 'staged');
 });
