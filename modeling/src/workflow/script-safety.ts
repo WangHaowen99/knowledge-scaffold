@@ -82,6 +82,11 @@ export function validateGeneratedScriptSyntax(script: SpecScript): void {
 
 export function validateGeneratedScriptExecutionContract(script: SpecScript): void {
   const source = script.sourceCode;
+  if (/hello[ _-]?world/iu.test(source)
+    || /^\s*pass\s*(?:#.*)?$/mu.test(source)
+    || /\b(?:TODO|FIXME)\b/u.test(source)) {
+    throw new Error(`脚本执行契约检查失败（${script.key}）：包含演示或占位实现`);
+  }
   if (/\b(?:raise\s+)?NotImplementedError\b/.test(source)) {
     throw new Error(`脚本执行契约检查失败（${script.key}）：包含 NotImplementedError 占位数据接口`);
   }
@@ -118,6 +123,13 @@ export function validateGeneratedScriptExecutionContract(script: SpecScript): vo
     }
     if (!source.includes(flag)) {
       throw new Error(`脚本执行契约检查失败（${script.key}）：源码未声明参数 ${flag}`);
+    }
+  }
+  for (const output of script.outputs) {
+    if (!source.includes(`"${output.key}"`) && !source.includes(`'${output.key}'`)) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：源码没有输出契约字段 ${output.key}`,
+      );
     }
   }
 }

@@ -230,8 +230,15 @@ class WriteSafetyRail(AgentRail):
         "write_file", "delete_file", "import_zip", "stage_package_merge",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "compile_package_fusion_plan", "discard_rejected_candidate_changes",
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+        "patch_object_source_binding",
+        "delete_domain_resource",
+        "stage_script_source",
     })
-    RECOVERY_TOOLS = frozenset({"delete_file", "discard_rejected_candidate_changes"})
+    RECOVERY_TOOLS = frozenset({
+        "delete_file", "delete_domain_resource", "discard_rejected_candidate_changes",
+    })
 
     def __init__(self, context: ToolContext) -> None:
         self._context = context
@@ -383,6 +390,15 @@ def _mermaid_source_findings(tool: str, arguments: dict[str, Any]) -> list[dict[
 
 
 def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> str:
+    if tool in {
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+        "patch_object_source_binding",
+        "delete_domain_resource",
+    }:
+        return "领域知识只能在知识建模或增量建模阶段修改" if phase not in {"knowledge", "increment"} else ""
+    if tool == "stage_script_source":
+        return "脚本源码只能在确定性验证或增量建模阶段提交" if phase not in {"validation", "increment"} else ""
     if tool == "compile_package_fusion_plan":
         # 批量融合只消费只读来源和已裁决账本，并生成整体待确认候选；
         # 它不是资料驱动的分阶段建模，不能要求用户先补文档走完整流程。
@@ -417,6 +433,11 @@ class InterjectionSafetyRail(AgentRail):
         "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_plan",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "discard_rejected_candidate_changes",
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+        "patch_object_source_binding",
+        "delete_domain_resource",
+        "define_script_contract", "stage_script_source",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
         "update_project_context", "transition_project_state",
         "run_script_test", "run_evaluation",

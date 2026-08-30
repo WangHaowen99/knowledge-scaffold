@@ -1112,7 +1112,12 @@ export class PackageArtifactStore {
       const contentChanges = selectedCandidateChanges(candidate.groups, selection.selectedGroupIds);
       const candidateTarget = applyCandidateChanges(current, contentChanges);
       const candidateView = this.viewFromSnapshot(candidateTarget);
-      const candidateSpec = parseRenderedPackageFiles(packageTextFiles(candidateTarget.files));
+      // Domain tools stage an authoritative structured spec for fields that Markdown cannot carry.
+      const candidateSpec = contentChanges.some((change) => (
+        change.kind === 'write' && change.path === SPEC_PATH
+      ))
+        ? candidateView.spec
+        : parseRenderedPackageFiles(packageTextFiles(candidateTarget.files));
       validateChangedCandidateScripts(currentView.spec, candidateSpec, candidateTarget, contentChanges);
       const allowedVersions = [currentView.spec.version, packageVersion];
       if (!allowedVersions.includes(candidateSpec.version) || !allowedVersions.includes(candidateView.spec.version)) {

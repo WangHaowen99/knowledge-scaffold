@@ -43,6 +43,8 @@ const MAX_VALIDATION_WARNINGS = 20;
 const MUTATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const KINDS = new Set<StudioKind>(['object', 'operation', 'rule', 'metric']);
 const STUDIO_CHANGE_REASON = '由知识包 Studio 形成的待确认修改';
+const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
+const COMPILED_RESOURCES_GROUP = 'compiled_resources';
 
 interface WorkspaceRow {
   project_id: string;
@@ -90,6 +92,7 @@ interface MutationPlan {
 
 interface MutationOptions {
   allowObjectFieldWrite?: boolean;
+  allowEvidenceWrite?: boolean;
 }
 
 interface PreparedCreate extends CreateAction {
@@ -174,6 +177,32 @@ export class StudioWriteService {
     ));
   }
 
+  createObjectModel(project: Project, username: string, rawBody: unknown): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseCreatePlan(rawBody),
+      requestHash('object-model-create', rawBody),
+      { allowObjectFieldWrite: true },
+    ));
+  }
+
+  createDomainModel(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+    idempotencyRequestHash: string,
+    options: MutationOptions = {},
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseCreatePlan(rawBody),
+      idempotencyRequestHash,
+      { ...options, allowEvidenceWrite: true },
+    ));
+  }
+
   patch(
     project: Project,
     username: string,
@@ -202,6 +231,57 @@ export class StudioWriteService {
       requestHash(`object-model-patch:${elementId}`, rawBody),
       { allowObjectFieldWrite: true },
     ));
+  }
+
+  patchDomainModel(
+    project: Project,
+    username: string,
+    elementId: string,
+    rawBody: unknown,
+    idempotencyRequestHash?: string,
+    options: MutationOptions = {},
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parsePatchPlan(elementId, rawBody),
+      idempotencyRequestHash ?? requestHash(`domain-model-patch:${elementId}`, rawBody),
+      { ...options, allowEvidenceWrite: true },
+    ));
+  }
+
+  deleteDomainModel(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+    idempotencyRequestHash: string,
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseDeletePlan(rawBody),
+      idempotencyRequestHash,
+    ));
+  }
+
+  replayDomainMutation(
+    projectId: string,
+    clientMutationId: string,
+    idempotencyRequestHash: string,
+  ): StudioMutationResponse | null {
+    const receipt = this.db.prepare(`SELECT request_hash, response_json
+      FROM studio_mutation_receipts WHERE project_id = ? AND client_mutation_id = ?`)
+      .get(projectId, clientMutationId) as { request_hash: string; response_json: string } | undefined;
+    if (!receipt) return null;
+    if (receipt.request_hash !== idempotencyRequestHash) {
+      throw new StudioWriteError(
+        'MUTATION_ID_REUSED',
+        '这个操作标识已经用于另一项修改，请生成新的操作标识后重试',
+        409,
+        { clientMutationId },
+      );
+    }
+    return { ...(JSON.parse(receipt.response_json) as StudioMutationResponse), replayed: true };
   }
 
   batch(project: Project, username: string, rawBody: unknown): Promise<StudioMutationResponse> {
@@ -382,6 +462,7 @@ export class StudioWriteService {
           continue;
         }
         const deleted = !(path in mutation.files);
+        const pathGroupId = path === INTERNAL_SPEC_CHANGE_PATH ? COMPILED_RESOURCES_GROUP : groupId;
         this.db.prepare(`INSERT INTO agent_candidate_changes (
           project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
         ) VALUES (?,?,?,?,?,?,'[]',?,?)
@@ -398,7 +479,7 @@ export class StudioWriteService {
             path,
             deleted ? 'delete' : 'write',
             deleted ? null : content,
-            groupId,
+            pathGroupId,
             STUDIO_CHANGE_REASON,
             nowIso(),
           );
@@ -428,25 +509,27 @@ export class StudioWriteService {
       const historicalProblemNote = mutation.historicalProblemCount
         ? `；知识包仍有 ${mutation.historicalProblemCount} 项历史问题，本次未增加历史问题`
         : '';
+      const publicChangedPaths = changedPaths.filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH);
+      const publicStagedPaths = stagedPaths.filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH);
       const response: StudioMutationResponse = {
         workingRevision,
         clientMutationId: plan.envelope.clientMutationId,
         ...(plan.envelope.editSessionId ? { editSessionId: plan.envelope.editSessionId } : {}),
         candidate: true,
-        changeGroup: stagedPaths.length ? {
+        changeGroup: publicStagedPaths.length ? {
           id: groupId,
-          tier: studioGroupTier(stagedPaths),
+          tier: studioGroupTier(publicStagedPaths),
           title: `确认 Studio 的${noun}`,
-          paths: stagedPaths,
+          paths: publicStagedPaths,
         } : null,
-        changedPaths,
+        changedPaths: publicChangedPaths,
         ...(uniqueElements.length === 1 ? { element: uniqueElements[0] } : {}),
         elements: uniqueElements,
         ...(mutation.deletedElementIds.length
           ? { deletedElementIds: mutation.deletedElementIds }
           : {}),
         display: {
-          text: stagedPaths.length
+          text: publicStagedPaths.length
             ? `已形成${noun}的待确认修改，确认后才会保存为新版本${historicalProblemNote}`
             : `已撤销对应的待确认修改，当前版本尚未改变${historicalProblemNote}`,
         },
@@ -819,7 +902,11 @@ function applyMutation(
       action.changes,
       fieldPath(action.path, 'changes'),
       errors,
-      { allowEvidence: false, projectId, allowObjectFieldWrite: options.allowObjectFieldWrite === true },
+      {
+        allowEvidence: options.allowEvidenceWrite === true,
+        projectId,
+        allowObjectFieldWrite: options.allowObjectFieldWrite === true,
+      },
     );
     preparedPatches.push({ ...action, ...parsed, normalizedChanges });
   }
@@ -871,6 +958,7 @@ function applyMutation(
     throw fieldError({ _batch: errorMessage(error) });
   }
   const nextFiles = { ...workingFiles, ...rendered };
+  nextFiles[INTERNAL_SPEC_CHANGE_PATH] = `${JSON.stringify(spec, null, 2)}\n`;
   for (const path of deletedPaths) delete nextFiles[path];
   return {
     files: nextFiles,
@@ -1330,7 +1418,7 @@ function revisionConflict(expectedRevision: string, actualRevision: string): Stu
 
 function workingContentRevision(baseRevision: string, files: Record<string, string>): string {
   const hash = createHash('sha256').update('studio-working-v1\0').update(baseRevision);
-  for (const path of Object.keys(files).sort()) {
+  for (const path of Object.keys(files).filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH).sort()) {
     const content = files[path];
     hash.update('\0').update(String(Buffer.byteLength(path))).update(':').update(path);
     hash.update('\0').update(String(Buffer.byteLength(content))).update(':').update(content);

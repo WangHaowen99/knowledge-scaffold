@@ -623,6 +623,53 @@ CREATE TABLE IF NOT EXISTS studio_mutation_receipts (
   PRIMARY KEY (project_id, client_mutation_id)
 );
 
+-- Agent 领域工具的确定性失败回执。相同请求只有在工作修订或资料依赖变化后才重新执行，
+-- 避免模型通过更换调用 ID 之外的无效重试反复触发同一轮编译和校验。
+CREATE TABLE IF NOT EXISTS agent_domain_mutation_failure_receipts (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  mutation_id         TEXT NOT NULL,
+  request_hash        TEXT NOT NULL,
+  working_revision    TEXT NOT NULL,
+  dependency_revision TEXT NOT NULL,
+  error_json          TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  PRIMARY KEY (project_id, mutation_id, request_hash, working_revision, dependency_revision)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_domain_failure_mutation
+  ON agent_domain_mutation_failure_receipts(project_id, mutation_id, created_at DESC);
+
+-- 运行一旦使用 v2 领域工具，即由领域编译器接管受管路径；历史 checkpoint 未接管时保留兼容窗口。
+CREATE TABLE IF NOT EXISTS agent_domain_tool_adoptions (
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id           TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  adopted_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id)
+);
+
+-- 脚本先定义结构化契约，再提交源码。契约绑定操作资源哈希，避免在操作变化后继续复用旧约束。
+CREATE TABLE IF NOT EXISTS agent_script_contract_drafts (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id              TEXT NOT NULL,
+  script_key          TEXT NOT NULL,
+  operation_hash      TEXT NOT NULL,
+  contract_hash       TEXT NOT NULL,
+  contract_json       TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id, script_key)
+);
+
+-- 非 Studio 结构化工具的成功回执，供脚本契约和源码写入做业务级幂等重放。
+CREATE TABLE IF NOT EXISTS agent_structured_mutation_receipts (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  mutation_id   TEXT NOT NULL,
+  tool          TEXT NOT NULL,
+  request_hash  TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  PRIMARY KEY (project_id, mutation_id)
+);
+
 -- artifact candidate 的 groups_json 保持通用格式；工作台所需的分诊层级与影响提示
 -- 单独保存，避免把 Agent UI 语义耦合进底层 Git 仓库。
 CREATE TABLE IF NOT EXISTS agent_candidate_group_metadata (

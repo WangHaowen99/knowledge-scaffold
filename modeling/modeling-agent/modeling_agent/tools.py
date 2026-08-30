@@ -37,6 +37,17 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
+    "create_object",
+    "create_rule",
+    "create_operation",
+    "create_metric",
+    "patch_object",
+    "patch_rule",
+    "patch_operation",
+    "patch_metric",
+    "patch_object_source_binding",
+    "delete_domain_resource",
+    "stage_script_source",
 })
 VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "write_file",
@@ -48,6 +59,17 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
+    "create_object",
+    "create_rule",
+    "create_operation",
+    "create_metric",
+    "patch_object",
+    "patch_rule",
+    "patch_operation",
+    "patch_metric",
+    "patch_object_source_binding",
+    "delete_domain_resource",
+    "stage_script_source",
 })
 VALIDATION_REPAIR_RESET_TOOLS = frozenset({
     "discard_rejected_candidate_changes",
@@ -95,6 +117,8 @@ class ToolContext:
     token: str
     gateway: CoreGateway
     emit: EventSink
+    phase: str = ""
+    required_tools: frozenset[str] = frozenset()
     state_action: StateAction | None = None
     after_core_tool: AfterCoreTool | None = None
     confirmation_guard: ConfirmationGuard | None = None
@@ -454,6 +478,131 @@ CHANGE_GROUP = {
     "maxLength": 64,
     "description": "同一批相关修改使用相同的简短英文标识，例如 goal 或 process_main",
 }
+RESOURCE_ID = {
+    "type": "string",
+    "pattern": "^(object|rule|operation|metric):[^/\\\\:]+$",
+    "description": "list_domain_resources 或 get_domain_resource 返回的稳定资源标识",
+}
+WORKING_REVISION = {"type": "string", "minLength": 1, "maxLength": 200}
+RESOURCE_HASH = {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+MUTATION_ID = {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    "description": "同一业务修改重试时保持不变的幂等标识",
+}
+DOMAIN_FIELD = {
+    "type": "object",
+    "properties": {
+        "key": STRING, "cn_name": STRING, "type": STRING,
+        "required": {"type": "boolean"}, "note": STRING, "alias": STRING,
+    },
+    "required": ["key", "type", "required"],
+    "additionalProperties": False,
+}
+DOMAIN_RELATION = {
+    "type": "object",
+    "properties": {
+        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING, "description": STRING,
+    },
+    "required": ["target_id"],
+    "additionalProperties": False,
+}
+DOMAIN_ACTION_CHANGES = {
+    "type": "object",
+    "properties": {
+        "key": STRING, "cn_name": STRING, "type": STRING,
+        "required": {"type": "boolean"}, "note": STRING, "alias": STRING,
+        "condition": STRING, "conclusion": STRING,
+        "param": STRING, "field": STRING, "handling": STRING,
+        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING,
+        "description": STRING,
+    },
+    "additionalProperties": False,
+}
+
+
+def domain_action_schema(operations: list[str]) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": operations},
+                "value": {
+                    "oneOf": [STRING, {"type": "array", "items": STRING, "maxItems": 500}],
+                },
+                "token": STRING,
+                "item_id": STRING,
+                "after_id": STRING,
+                "field_key": STRING,
+                "expected_field_hash": RESOURCE_HASH,
+                "relation_id": STRING,
+                "target_id": RESOURCE_ID,
+                "input_key": STRING,
+                "output_key": STRING,
+                "field": {"oneOf": [DOMAIN_FIELD, STRING]},
+                "relation": DOMAIN_RELATION,
+                "condition": {
+                    "type": "object",
+                    "properties": {"condition": STRING, "conclusion": STRING},
+                    "required": ["condition", "conclusion"],
+                    "additionalProperties": False,
+                },
+                "input": {
+                    "type": "object",
+                    "properties": {
+                        "param": STRING, "cn_name": STRING, "type": STRING,
+                        "required": {"type": "boolean"}, "note": STRING,
+                    },
+                    "required": ["param", "type", "required"],
+                    "additionalProperties": False,
+                },
+                "output": {
+                    "type": "object",
+                    "properties": {"field": STRING, "cn_name": STRING, "type": STRING, "note": STRING},
+                    "required": ["field", "type"],
+                    "additionalProperties": False,
+                },
+                "key": STRING,
+                "changes": DOMAIN_ACTION_CHANGES,
+            },
+            "required": ["op"],
+            "additionalProperties": False,
+        },
+    }
+
+
+DOMAIN_MUTATION_ENVELOPE = {
+    "expected_revision": WORKING_REVISION,
+    "mutation_id": MUTATION_ID,
+    "edit_session_id": MUTATION_ID,
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+}
+OBJECT_PATCH_ACTIONS = [
+    "set_title", "set_description", "set_aliases", "set_query_boundary",
+    "add_field", "update_field", "remove_field",
+    "add_relation", "update_relation", "remove_relation",
+]
+RULE_PATCH_ACTIONS = [
+    "set_title", "set_description", "set_content", "attach_evidence", "detach_evidence",
+    "add_condition", "update_condition", "remove_condition",
+    "add_exception", "remove_exception", "add_target", "remove_target",
+]
+OPERATION_PATCH_ACTIONS = [
+    "set_title", "set_description", "attach_evidence", "detach_evidence",
+    "add_input", "update_input", "remove_input", "add_output", "update_output", "remove_output",
+    "insert_step", "update_step", "move_step", "remove_step",
+    "add_reference", "remove_reference", "add_note", "remove_note",
+]
+METRIC_PATCH_ACTIONS = [
+    "set_title", "set_description", "set_caliber", "set_unit", "set_grain",
+    "attach_evidence", "detach_evidence",
+    "add_boundary", "update_boundary", "remove_boundary",
+    "upsert_null_policy", "remove_null_policy", "upsert_dimension", "remove_dimension",
+    "add_object_reference", "remove_object_reference",
+]
 
 
 CORE_TOOL_SPECS = (
@@ -505,6 +654,198 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("list_dir", "列出知识包目录。", {"path": PATH}, ("path",), display="正在查看知识包目录"),
     ToolSpec("read_file", "读取知识包文件。", {"path": PATH}, ("path",), display="正在读取知识文件"),
+    ToolSpec(
+        "list_domain_resources",
+        "按领域列出当前工作修订中的资源、稳定 ID 和资源哈希。修改前先读取，不要从旧对话盲改。",
+        {
+            "kind": {"type": "string", "enum": ["object", "rule", "operation", "metric"]},
+            "working_revision": WORKING_REVISION,
+            "query": STRING,
+            "cursor": STRING,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        ("kind",),
+        display="正在读取领域资源",
+    ),
+    ToolSpec(
+        "get_domain_resource",
+        "读取单个资源的规范化结构、资源哈希、稳定子项 ID 和允许动作。Patch 必须基于本次返回。",
+        {"resource_id": RESOURCE_ID, "working_revision": WORKING_REVISION},
+        ("resource_id",),
+        display="正在读取资源快照",
+    ),
+    ToolSpec(
+        "create_object",
+        "创建业务对象。服务端校验字段与关系，并确定性生成对象详情、索引、映射和内部规格。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING,
+            "aliases": {"type": "array", "items": STRING}, "query_boundary": STRING,
+            "fields": {"type": "array", "minItems": 1, "items": DOMAIN_FIELD},
+            "relations": {"type": "array", "items": DOMAIN_RELATION},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "description", "fields"),
+        False,
+        "正在创建业务对象",
+    ),
+    ToolSpec(
+        "create_rule",
+        "创建业务规则。targets 使用 object:key 或 operation:key；服务端统一校验引用和证据。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING, "content": STRING,
+            "conditions": {"type": "array", "items": {
+                "type": "object", "properties": {"condition": STRING, "conclusion": STRING},
+                "required": ["condition", "conclusion"], "additionalProperties": False,
+            }},
+            "exceptions": {"type": "array", "items": STRING},
+            "targets": {"type": "array", "items": RESOURCE_ID},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "content", "evidence"),
+        False,
+        "正在创建业务规则",
+    ),
+    ToolSpec(
+        "create_operation",
+        "创建业务操作。references 使用对象、规则或指标资源 ID；服务端生成详情与索引。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING,
+            "inputs": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "param": STRING, "cn_name": STRING, "type": STRING,
+                    "required": {"type": "boolean"}, "note": STRING,
+                }, "required": ["param", "type", "required"], "additionalProperties": False,
+            }},
+            "outputs": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "field": STRING, "cn_name": STRING, "type": STRING, "note": STRING,
+                }, "required": ["field", "type"], "additionalProperties": False,
+            }},
+            "flow": {"type": "array", "minItems": 1, "items": STRING},
+            "notes": {"type": "array", "items": STRING},
+            "references": {"type": "array", "items": RESOURCE_ID},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "description", "flow", "evidence"),
+        False,
+        "正在创建业务操作",
+    ),
+    ToolSpec(
+        "create_metric",
+        "创建业务指标。服务端校验口径、边界、对象引用和证据，并生成详情与索引。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING, "unit": STRING, "grain": STRING,
+            "caliber": STRING, "boundaries": {"type": "array", "minItems": 1, "items": STRING},
+            "null_policy": {"type": "array", "items": {
+                "type": "object", "properties": {"field": STRING, "handling": STRING},
+                "required": ["field", "handling"], "additionalProperties": False,
+            }},
+            "dimensions": {"type": "array", "items": {
+                "type": "object", "properties": {"key": STRING, "note": STRING},
+                "required": ["key", "note"], "additionalProperties": False,
+            }},
+            "object_references": {"type": "array", "items": RESOURCE_ID},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "caliber", "boundaries", "evidence"),
+        False,
+        "正在创建业务指标",
+    ),
+    ToolSpec(
+        "patch_object",
+        "按稳定字段 key 和关系 ID 增量修改对象。未出现在 actions 的内容由服务端完整保留。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(OBJECT_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改对象",
+    ),
+    ToolSpec(
+        "patch_object_source_binding",
+        "把对象完整绑定到一张已解析数据表。提交全部字段的一一映射和主键；服务端按资源哈希防覆盖并重建对象与 mappings。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH,
+            "document_id": STRING,
+            "table": STRING,
+            "field_bindings": {"type": "array", "minItems": 1, "items": {
+                "type": "object",
+                "properties": {"field_key": STRING, "source_column": STRING},
+                "required": ["field_key", "source_column"],
+                "additionalProperties": False,
+            }},
+            "primary_key": {"type": "array", "minItems": 1, "items": STRING},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        (
+            "resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason",
+            "document_id", "table", "field_bindings", "primary_key", "evidence",
+        ),
+        False,
+        "正在更新对象数据绑定",
+    ),
+    ToolSpec(
+        "patch_rule",
+        "按稳定子项 ID 增量修改规则条件、例外、引用或元数据，不完整替换规则。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(RULE_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改规则",
+    ),
+    ToolSpec(
+        "patch_operation",
+        "按参数 key 和稳定步骤 ID 增量修改操作，不重传未变化的输入、输出和流程。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(OPERATION_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改操作",
+    ),
+    ToolSpec(
+        "patch_metric",
+        "增量修改指标口径、边界、空值策略、维度和对象引用，未涉及内容保持不变。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(METRIC_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改指标",
+    ),
+    ToolSpec(
+        "preview_domain_delete",
+        "删除前确定性预览入站引用和受影响资源。只生成与当前引用图绑定的预览 token，不写候选。",
+        {
+            "resource_ids": {"type": "array", "minItems": 1, "maxItems": 100, "items": RESOURCE_ID},
+            "expected_revision": WORKING_REVISION,
+        },
+        ("resource_ids", "expected_revision"),
+        display="正在预览删除影响",
+    ),
+    ToolSpec(
+        "delete_domain_resource",
+        "使用刚生成的预览 token 原子删除领域资源并清理显式引用；状态变化后 token 自动失效。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "resource_ids": {"type": "array", "minItems": 1, "maxItems": 100, "items": RESOURCE_ID},
+            "preview_token": STRING,
+            "cleanup_references": {"type": "boolean", "const": True},
+        },
+        ("resource_ids", "expected_revision", "mutation_id", "reason", "preview_token", "cleanup_references"),
+        False,
+        "正在删除领域资源",
+    ),
     ToolSpec(
         "write_file",
         "写入非受管候选文件，不改变已确认版本。规则、操作和对象数据映射优先使用领域工具；change_group 是本轮确认的最小单位。",
@@ -944,6 +1285,65 @@ CORE_TOOL_SPECS = (
         display="正在生成变更对照",
     ),
     ToolSpec("update_plan", "更新 .modeling/plan.md 的工作拆解；不得在计划里声明当前业务阶段、门禁状态或复制项目状态。", {"markdown": STRING}, ("markdown",), False, "正在更新工作拆解"),
+    ToolSpec(
+        "define_script_contract",
+        "先定义脚本的绑定操作、CLI 参数、结构化输出、超时和执行边界；这一步不写源码或候选文件。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "script_key": STRING,
+            "title": STRING,
+            "description": STRING,
+            "operation_id": RESOURCE_ID,
+            "expected_operation_hash": RESOURCE_HASH,
+            "entrypoint": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.py$"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+            "parameters": {"type": "array", "maxItems": 100, "items": {
+                "type": "object", "properties": {
+                    "name": STRING, "flag": {"type": "string", "pattern": "^--[a-z][a-z0-9-]*$"},
+                    "type": STRING, "required": {"type": "boolean"},
+                    "default_value": {"oneOf": [
+                        {"type": "string"}, {"type": "number"}, {"type": "boolean"},
+                    ]},
+                    "description": STRING, "multiple": {"type": "boolean"},
+                }, "required": ["name", "flag", "type", "required"], "additionalProperties": False,
+            }},
+            "outputs": {"type": "array", "minItems": 1, "maxItems": 100, "items": {
+                "type": "object", "properties": {"key": STRING, "type": STRING, "description": STRING},
+                "required": ["key", "type"], "additionalProperties": False,
+            }},
+            "boundaries": {"type": "array", "minItems": 1, "maxItems": 100, "items": STRING},
+            "evidence": {"type": "array", "minItems": 1, "maxItems": 100, "items": STRING},
+        },
+        (
+            "expected_revision", "mutation_id", "reason", "script_key", "title", "description",
+            "operation_id", "expected_operation_hash", "entrypoint", "timeout_seconds",
+            "parameters", "outputs", "boundaries", "evidence",
+        ),
+        False,
+        "正在定义脚本契约",
+    ),
+    ToolSpec(
+        "get_script_contract",
+        "读取当前 run 中已定义的脚本契约和契约哈希，不返回源码。",
+        {"script_key": STRING},
+        ("script_key",),
+        display="正在读取脚本契约",
+    ),
+    ToolSpec(
+        "stage_script_source",
+        "按已定义契约提交 Python 源码。核心检查语法、安全、argparse、JSON 输出、占位实现和操作双向绑定后，原子生成候选。",
+        {
+            "script_key": STRING,
+            "expected_revision": WORKING_REVISION,
+            "expected_contract_hash": RESOURCE_HASH,
+            "mutation_id": MUTATION_ID,
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "source_code": {"type": "string", "minLength": 1, "maxLength": 100000},
+        },
+        ("script_key", "expected_revision", "expected_contract_hash", "mutation_id", "reason", "source_code"),
+        False,
+        "正在校验并提交脚本源码",
+    ),
     ToolSpec(
         "run_script_test",
         "在 JiuwenBox 中运行脚本契约测试。",
@@ -1422,15 +1822,61 @@ class RequestReleaseTool(CoreTool):
 
 
 def build_tools(context: ToolContext) -> list[Tool]:
+    core_specs = core_tool_specs_for_phase(context.phase, context.required_tools)
     return [
         *(ProjectStateTool(spec, context) for spec in PROJECT_STATE_TOOL_SPECS),
-        *(CoreTool(spec, context) for spec in CORE_TOOL_SPECS),
+        *(CoreTool(spec, context) for spec in core_specs),
         FocusTool(context),
         NotifyTool(context),
         AskTool(context.run_id),
         RequestConfirmationTool(context),
-        RequestReleaseTool(context),
+        *([RequestReleaseTool(context)] if context.phase in {"", "evaluation", "release"} else []),
     ]
+
+
+DOMAIN_PHASE_TOOLS = frozenset({
+    "list_domain_resources", "get_domain_resource",
+    "create_object", "create_rule", "create_operation", "create_metric",
+    "patch_object", "patch_rule", "patch_operation", "patch_metric",
+    "patch_object_source_binding",
+    "preview_domain_delete", "delete_domain_resource",
+    "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
+    "stage_tabular_dataset",
+})
+FUSION_PHASE_TOOLS = frozenset({
+    "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",
+    "get_package_fusion_plan", "create_package_fusion_plan", "update_package_fusion_plan",
+    "compile_package_fusion_plan", "analyze_package_merge", "read_package_source_file",
+    "stage_package_merge",
+})
+EVALUATION_PHASE_TOOLS = frozenset({"run_evaluation", "get_evaluation_results", "query_eval_db"})
+SCRIPT_PHASE_TOOLS = frozenset({
+    "define_script_contract", "get_script_contract", "stage_script_source", "run_script_test",
+})
+
+
+def core_tool_specs_for_phase(
+    phase: str,
+    required_tools: frozenset[str] = frozenset(),
+) -> tuple[ToolSpec, ...]:
+    """Keep production Leader schemas aligned with the current business phase.
+
+    An empty phase preserves the full surface for old tests and recovery callers that do not
+    carry project state yet. Explicit read-only subagents continue to use build_core_tools.
+    """
+    if not phase:
+        return CORE_TOOL_SPECS
+    allowed_domain = phase in {"knowledge", "increment"}
+    allowed_fusion = phase == "increment"
+    allowed_evaluation = phase in {"validation", "evaluation", "release"}
+    return tuple(
+        spec for spec in CORE_TOOL_SPECS
+        if spec.name in required_tools
+        or ((spec.name not in DOMAIN_PHASE_TOOLS or allowed_domain)
+        and (spec.name not in FUSION_PHASE_TOOLS or allowed_fusion)
+        and (spec.name not in EVALUATION_PHASE_TOOLS or allowed_evaluation)
+        and (spec.name not in SCRIPT_PHASE_TOOLS or phase in {"validation", "increment"}))
+    )
 
 
 def build_core_tools(context: ToolContext, names: set[str]) -> list[Tool]:

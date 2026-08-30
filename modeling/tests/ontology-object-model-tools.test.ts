@@ -108,7 +108,16 @@ async function seedProject(projectId: string) {
           primaryKey: ['order_id'],
         },
       ],
-      operations: [],
+      operations: [{
+        key: 'render_synthetic_summary',
+        title: '生成合成摘要',
+        description: '把合成输入转换为结构化摘要。',
+        inputs: [{ param: 'input_json', type: 'string', required: true }],
+        outputs: [{ field: 'result', type: 'object' }],
+        flow: ['读取合成输入', '返回结构化摘要'],
+        relatedObjects: ['order'],
+        evidence: [],
+      }],
     },
     coverage: initialized.coverage,
     note: '写入对象模型工具测试基线',
@@ -250,6 +259,358 @@ test('对象模型工具支持预校验、apply、review 和确认生效', async
   assert.equal(after.json().object.fields.length, 3);
   assert.equal(after.json().object.fields[2].key, 'customer_level');
   assert.equal(after.json().object.relations[0].label, '服务订单');
+});
+
+test('领域资源工具支持四类资源增量修改、幂等重放、哈希冲突和引用感知删除', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成领域增量闭环', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const material = insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_policy.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '# Synthetic policy\nOnly synthetic records are used in this test.',
+  });
+  const evidence = [`material:${material.sourceKey}#Synthetic policy`];
+
+  const objects = await tool(app, project.id, 'list_domain_resources', { kind: 'object' });
+  assert.equal(objects.statusCode, 200, objects.body);
+  const order = objects.json().items.find((item: any) => item.resource_id === 'object:order');
+  assert.ok(order?.resource_hash);
+
+  const managedWrite = await tool(app, project.id, 'write_file', {
+    path: 'objects/order.md',
+    content: 'This direct managed write must not be evaluated.',
+    change_group: 'synthetic_direct_write',
+    evidence: [],
+  });
+  assert.equal(managedWrite.statusCode, 409, managedWrite.body);
+  assert.equal(managedWrite.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
+
+  const managedDelete = await tool(app, project.id, 'delete_file', {
+    path: 'metrics/index.md',
+    change_group: 'synthetic_direct_delete',
+    reason: 'This direct managed delete must be rejected.',
+  });
+  assert.equal(managedDelete.statusCode, 409, managedDelete.body);
+  assert.equal(managedDelete.json().requiredTool, 'preview_domain_delete');
+
+  const objectPatch = {
+    resource_id: 'object:order',
+    expected_revision: objects.json().working_revision,
+    expected_resource_hash: order.resource_hash,
+    mutation_id: 'synthetic-object-add-field-v2',
+    reason: 'Add one synthetic status field',
+    actions: [{
+      op: 'add_field',
+      field: { key: 'record_status', cn_name: '记录状态', type: 'string', required: false },
+    }],
+  };
+  const patchedObject = await tool(app, project.id, 'patch_object', objectPatch);
+  assert.equal(patchedObject.statusCode, 200, patchedObject.body);
+  assert.deepEqual(
+    patchedObject.json().resource.values.fields.map((field: any) => field.key),
+    ['order_id', 'record_status'],
+  );
+  assert.match(patchedObject.json().resource.resource_hash, /^sha256:[a-f0-9]{64}$/u);
+
+  const replayed = await tool(app, project.id, 'patch_object', objectPatch);
+  assert.equal(replayed.statusCode, 200, replayed.body);
+  assert.equal(replayed.json().replayed, true);
+  assert.equal(replayed.json().working_revision, patchedObject.json().working_revision);
+
+  const staleHash = await tool(app, project.id, 'patch_object', {
+    ...objectPatch,
+    expected_revision: patchedObject.json().working_revision,
+    mutation_id: 'synthetic-object-stale-hash-v2',
+    actions: [{ op: 'set_description', value: 'A changed synthetic description.' }],
+  });
+  assert.equal(staleHash.statusCode, 409, staleHash.body);
+  assert.equal(staleHash.json().code, 'RESOURCE_HASH_CONFLICT');
+  assert.equal(staleHash.json().retryable, false);
+
+  const repeatedStaleHash = await tool(app, project.id, 'patch_object', {
+    ...objectPatch,
+    expected_revision: patchedObject.json().working_revision,
+    mutation_id: 'synthetic-object-stale-hash-v2',
+    actions: [{ op: 'set_description', value: 'A changed synthetic description.' }],
+  });
+  assert.equal(repeatedStaleHash.statusCode, 409, repeatedStaleHash.body);
+  assert.equal(repeatedStaleHash.json().negative_receipt, true);
+  assert.equal(repeatedStaleHash.json().replayed, true);
+
+  const tableDocument = insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_records_binding.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'synthetic_records',
+      rowCount: 1,
+      fields: [
+        { name: 'record_id', inferredType: 'string', sampleValues: ['synthetic_001'], distinctRatio: 1 },
+        { name: 'record_status', inferredType: 'string', sampleValues: ['ready'], distinctRatio: 1 },
+      ],
+    }],
+  });
+  const boundObject = await tool(app, project.id, 'patch_object_source_binding', {
+    resource_id: 'object:order',
+    expected_revision: patchedObject.json().working_revision,
+    expected_resource_hash: patchedObject.json().resource.resource_hash,
+    mutation_id: 'synthetic-bind-object-v2',
+    reason: 'Bind every synthetic object field to one parsed table',
+    document_id: tableDocument.id,
+    table: 'synthetic_records',
+    field_bindings: [
+      { field_key: 'order_id', source_column: 'record_id' },
+      { field_key: 'record_status', source_column: 'record_status' },
+    ],
+    primary_key: ['order_id'],
+    evidence: [`material:${tableDocument.sourceKey}#synthetic_records`],
+  });
+  assert.equal(boundObject.statusCode, 200, boundObject.body);
+  assert.equal(boundObject.json().resource.values.fields[0].sourceColumn, 'record_id');
+
+  const createdRule = await tool(app, project.id, 'create_rule', {
+    expected_revision: boundObject.json().working_revision,
+    mutation_id: 'synthetic-create-rule-v2',
+    reason: 'Create a synthetic rule',
+    key: 'synthetic_policy',
+    title: '合成规则',
+    description: '仅用于确定性测试。',
+    content: '记录状态满足条件时返回合成结论。',
+    conditions: [{ condition: 'record_status 非空', conclusion: '返回记录状态' }],
+    exceptions: [],
+    targets: ['object:order'],
+    evidence,
+  });
+  assert.equal(createdRule.statusCode, 200, createdRule.body);
+  assert.equal(createdRule.json().resource.id, 'rule:synthetic_policy');
+
+  const patchedRule = await tool(app, project.id, 'patch_rule', {
+    resource_id: 'rule:synthetic_policy',
+    expected_revision: createdRule.json().working_revision,
+    expected_resource_hash: createdRule.json().resource.resource_hash,
+    mutation_id: 'synthetic-patch-rule-v2',
+    reason: 'Add one synthetic exception without replacing the rule',
+    actions: [{ op: 'add_exception', value: 'record_status 为测试保留值时不返回结论' }],
+  });
+  assert.equal(patchedRule.statusCode, 200, patchedRule.body);
+  assert.deepEqual(patchedRule.json().resource.values.exceptions, ['record_status 为测试保留值时不返回结论']);
+
+  const createdMetric = await tool(app, project.id, 'create_metric', {
+    expected_revision: patchedRule.json().working_revision,
+    mutation_id: 'synthetic-create-metric-v2',
+    reason: 'Create a synthetic metric',
+    key: 'synthetic_count',
+    title: '合成记录数',
+    description: '仅统计合成记录。',
+    unit: '条',
+    grain: '状态',
+    caliber: 'COUNT(order_id)',
+    boundaries: ['仅统计测试夹具中的合成记录'],
+    object_references: ['object:order'],
+    evidence,
+  });
+  assert.equal(createdMetric.statusCode, 200, createdMetric.body);
+  assert.equal(createdMetric.json().resource.id, 'metric:synthetic_count');
+
+  const createdOperation = await tool(app, project.id, 'create_operation', {
+    expected_revision: createdMetric.json().working_revision,
+    mutation_id: 'synthetic-create-operation-v2',
+    reason: 'Create a synthetic operation',
+    key: 'summarize_synthetic_records',
+    title: '汇总合成记录',
+    description: '按状态汇总合成记录。',
+    inputs: [{ param: 'record_status', type: 'string', required: false }],
+    outputs: [{ field: 'record_count', type: 'number' }],
+    flow: ['读取合成记录', '按状态汇总并返回结果'],
+    references: ['object:order', 'rule:synthetic_policy', 'metric:synthetic_count'],
+    evidence,
+  });
+  assert.equal(createdOperation.statusCode, 200, createdOperation.body);
+  assert.equal(createdOperation.json().resource.id, 'operation:summarize_synthetic_records');
+
+  const firstStepId = createdOperation.json().resource.editable_items.flow[0].item_id;
+  const patchedOperation = await tool(app, project.id, 'patch_operation', {
+    resource_id: 'operation:summarize_synthetic_records',
+    expected_revision: createdOperation.json().working_revision,
+    expected_resource_hash: createdOperation.json().resource.resource_hash,
+    mutation_id: 'synthetic-patch-operation-v2',
+    reason: 'Insert one step after the stable first step',
+    actions: [{ op: 'insert_step', after_id: firstStepId, value: '校验合成记录状态' }],
+  });
+  assert.equal(patchedOperation.statusCode, 200, patchedOperation.body);
+  assert.deepEqual(patchedOperation.json().resource.values.flow, [
+    '读取合成记录', '校验合成记录状态', '按状态汇总并返回结果',
+  ]);
+
+  const metricSnapshot = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'metric:synthetic_count',
+    working_revision: patchedOperation.json().working_revision,
+  });
+  assert.equal(metricSnapshot.statusCode, 200, metricSnapshot.body);
+  const boundaryId = metricSnapshot.json().resource.editable_items.boundaries[0].item_id;
+  const patchedMetric = await tool(app, project.id, 'patch_metric', {
+    resource_id: 'metric:synthetic_count',
+    expected_revision: metricSnapshot.json().working_revision,
+    expected_resource_hash: metricSnapshot.json().resource.resource_hash,
+    mutation_id: 'synthetic-patch-metric-v2',
+    reason: 'Refine one synthetic boundary',
+    actions: [{ op: 'update_boundary', item_id: boundaryId, value: '只统计有效的合成记录' }],
+  });
+  assert.equal(patchedMetric.statusCode, 200, patchedMetric.body);
+  assert.deepEqual(patchedMetric.json().resource.values.boundaries, ['只统计有效的合成记录']);
+
+  const preview = await tool(app, project.id, 'preview_domain_delete', {
+    resource_ids: ['metric:synthetic_count'],
+    expected_revision: patchedMetric.json().working_revision,
+  });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.json().cleanup_required, true);
+  assert.deepEqual(preview.json().affected_resource_ids, ['operation:summarize_synthetic_records']);
+
+  const deleted = await tool(app, project.id, 'delete_domain_resource', {
+    resource_ids: ['metric:synthetic_count'],
+    expected_revision: preview.json().working_revision,
+    mutation_id: 'synthetic-delete-metric-v2',
+    reason: 'Delete the synthetic metric and remove its explicit reference',
+    preview_token: preview.json().preview_token,
+    cleanup_references: true,
+  });
+  assert.equal(deleted.statusCode, 200, deleted.body);
+  assert.deepEqual(deleted.json().deleted_resource_ids, ['metric:synthetic_count']);
+
+  const operationAfterDelete = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'operation:summarize_synthetic_records',
+    working_revision: deleted.json().working_revision,
+  });
+  assert.equal(operationAfterDelete.statusCode, 200, operationAfterDelete.body);
+  assert.equal(
+    operationAfterDelete.json().resource.relations.some((relation: any) => (
+      relation.target_id === 'metric:synthetic_count'
+    )),
+    false,
+  );
+});
+
+test('脚本工具先固化契约，再原子生成源码、说明、索引和操作绑定', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成脚本契约闭环', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const material = insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_script_contract.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '# Synthetic script contract\nReturn a structured result from synthetic input.',
+  });
+
+  const operations = await tool(app, project.id, 'list_domain_resources', { kind: 'operation' });
+  assert.equal(operations.statusCode, 200, operations.body);
+  const operation = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'operation:render_synthetic_summary',
+    working_revision: operations.json().working_revision,
+  });
+  assert.equal(operation.statusCode, 200, operation.body);
+  assert.match(operation.json().resource.operation_contract_hash, /^sha256:[a-f0-9]{64}$/u);
+
+  const defined = await tool(app, project.id, 'define_script_contract', {
+    expected_revision: operation.json().working_revision,
+    mutation_id: 'synthetic-define-script-v1',
+    reason: 'Define a synthetic script contract before source generation',
+    script_key: 'render_synthetic_summary',
+    title: '生成合成摘要脚本',
+    description: '读取合成 JSON 并返回结构化摘要。',
+    operation_id: 'operation:render_synthetic_summary',
+    expected_operation_hash: operation.json().resource.operation_contract_hash,
+    entrypoint: 'render_synthetic_summary.py',
+    timeout_seconds: 30,
+    parameters: [{
+      name: 'input_json', flag: '--input-json', type: 'string', required: true,
+      description: 'Synthetic JSON input',
+    }],
+    outputs: [{ key: 'result', type: 'object', description: 'Structured synthetic result' }],
+    boundaries: ['只处理显式传入的合成 JSON，不访问网络或本地文件'],
+    evidence: [`material:${material.sourceKey}#Synthetic script contract`],
+  });
+  assert.equal(defined.statusCode, 200, defined.body);
+  assert.equal(defined.json().candidate, false);
+
+  const directSourceWrite = await tool(app, project.id, 'write_file', {
+    path: 'scripts/render_synthetic_summary.py',
+    content: 'print("bypass")',
+    change_group: 'synthetic_script_bypass',
+    evidence: [],
+  });
+  assert.equal(directSourceWrite.statusCode, 409, directSourceWrite.body);
+  assert.equal(directSourceWrite.json().requiredTool, 'stage_script_source');
+
+  const placeholderSource = await tool(app, project.id, 'stage_script_source', {
+    script_key: 'render_synthetic_summary',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'synthetic-stage-placeholder-v1',
+    reason: 'The placeholder must be rejected',
+    source_code: `import argparse\nimport json\n\nparser = argparse.ArgumentParser()\nparser.add_argument("--input-json", required=True)\nparser.parse_args()\nprint(json.dumps({"result": "hello world"}))\n`,
+  });
+  assert.equal(placeholderSource.statusCode, 400, placeholderSource.body);
+  assert.equal(placeholderSource.json().code, 'INVALID_DOMAIN_PAYLOAD');
+  assert.match(placeholderSource.json().reason, /演示或占位实现/u);
+
+  const sourceCode = `import argparse
+import json
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    args = parser.parse_args()
+    payload = json.loads(args.input_json)
+    result = {"received_keys": sorted(payload.keys())}
+    print(json.dumps({"result": result}, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
+`;
+  const staged = await tool(app, project.id, 'stage_script_source', {
+    script_key: 'render_synthetic_summary',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'synthetic-stage-script-v1',
+    reason: 'Stage a contract-compliant synthetic script',
+    source_code: sourceCode,
+  });
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().candidate, true);
+  assert.deepEqual(staged.json().rendered_paths, [
+    'scripts/render_synthetic_summary.md',
+    'scripts/render_synthetic_summary.py',
+    'scripts/index.md',
+    'operations/render_synthetic_summary.md',
+    'operations/index.md',
+    'index.md',
+  ]);
+
+  const replayed = await tool(app, project.id, 'stage_script_source', {
+    script_key: 'render_synthetic_summary',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'synthetic-stage-script-v1',
+    reason: 'Stage a contract-compliant synthetic script',
+    source_code: sourceCode,
+  });
+  assert.equal(replayed.statusCode, 200, replayed.body);
+  assert.equal(replayed.json().replayed, true);
+
+  const prepared = await tool(app, project.id, 'prepare_confirmation_groups');
+  assert.equal(prepared.statusCode, 200, prepared.body);
+  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: '确认合成脚本候选',
+    change_groups: prepared.json().change_groups,
+  });
+  assert.equal(preflight.statusCode, 409, preflight.body);
+  assert.equal(preflight.json().code, 'SCRIPT_TEST_REQUIRED');
 });
 
 test('对象模型工具支持查询 review 状态与审计记录', async (t) => {

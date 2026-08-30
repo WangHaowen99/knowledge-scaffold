@@ -28,6 +28,7 @@ from modeling_agent.tools import (
     RequestConfirmationTool,
     CandidateValidationRepairState,
     ToolContext,
+    core_tool_specs_for_phase,
 )
 
 from conftest import FakeGateway, ScriptedModel, ToolTurn, service
@@ -44,6 +45,25 @@ async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: flo
             return run
         await asyncio.sleep(0.02)
     raise AssertionError(f"run {run_id} did not reach {statuses}")
+
+
+async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
+    knowledge = {spec.name for spec in core_tool_specs_for_phase("knowledge")}
+    validation = {spec.name for spec in core_tool_specs_for_phase("validation")}
+    increment = {spec.name for spec in core_tool_specs_for_phase("increment")}
+
+    assert {"list_domain_resources", "patch_object", "create_metric"} <= knowledge
+    assert "run_evaluation" not in knowledge
+    assert "create_package_fusion_plan" not in knowledge
+    assert "patch_rule" not in validation
+    assert {"run_script_test", "run_evaluation", "get_evaluation_results"} <= validation
+    assert {"patch_operation", "analyze_material_impact", "compile_package_fusion_plan"} <= increment
+    intake_recovery = {
+        spec.name for spec in core_tool_specs_for_phase(
+            "intake", frozenset({"run_evaluation", "compile_package_fusion_plan"}),
+        )
+    }
+    assert {"run_evaluation", "compile_package_fusion_plan"} <= intake_recovery
 
 
 async def test_model_uses_stream_specific_timeouts(settings) -> None:

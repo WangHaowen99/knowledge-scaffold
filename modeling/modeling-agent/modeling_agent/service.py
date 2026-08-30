@@ -79,6 +79,18 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "upsert_rule",
     "upsert_operation",
     "bind_object_source",
+    "create_object",
+    "create_rule",
+    "create_operation",
+    "create_metric",
+    "patch_object",
+    "patch_rule",
+    "patch_operation",
+    "patch_metric",
+    "patch_object_source_binding",
+    "delete_domain_resource",
+    "define_script_contract",
+    "stage_script_source",
     "discard_rejected_candidate_changes",
     "regroup_changes",
     "create_package_fusion_plan",
@@ -1515,6 +1527,8 @@ class AgentService:
                     token=live.token,
                     gateway=self._gateway,
                     emit=emit,
+                    phase=self.store.project_state(run.project_id).state.partition(":")[0],
+                    required_tools=frozenset(live.required_tools),
                     state_action=lambda name, arguments: self._state_action(live, name, arguments),
                     after_core_tool=lambda name, arguments, result: self._after_core_tool(
                         live, name, arguments, result,
@@ -2207,8 +2221,13 @@ def _string_list(value: Any, limit: int) -> list[str]:
 
 
 _EVALUATION_EXECUTION_INTENT = re.compile(
-    r"(?:重试|重新运行|再次运行|立即运行|开始|启动|执行).{0,12}评测|"
-    r"评测.{0,12}(?:重试|重新运行|再次运行|立即运行|开始|启动|执行)",
+    r"(?:重试|重新运行|再次运行|立即运行|运行|开始|启动|执行).{0,12}评测|"
+    r"评测.{0,12}(?:重试|重新运行|再次运行|立即运行|运行|开始|启动|执行)",
+)
+
+_EVALUATION_RESULT_INTENT = re.compile(
+    r"(?:归因|分析|查看|读取|诊断|排查).{0,16}(?:评测|测试).{0,16}(?:失败|结果|错误)|"
+    r"(?:评测|测试).{0,16}(?:失败|结果|错误).{0,16}(?:归因|分析|查看|读取|诊断|排查)",
 )
 
 _FULL_READ_INTENT = re.compile(
@@ -2255,6 +2274,8 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
     required: set[str] = set()
     if _EVALUATION_EXECUTION_INTENT.search(value):
         required.add("run_evaluation")
+    if _EVALUATION_RESULT_INTENT.search(value):
+        required.add("get_evaluation_results")
     if _FULL_READ_INTENT.search(value):
         required.update({"set_material_directive", "read_documents_fully"})
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
