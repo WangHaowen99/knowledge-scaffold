@@ -45,6 +45,7 @@ const KINDS = new Set<StudioKind>(['object', 'operation', 'rule', 'metric']);
 const STUDIO_CHANGE_REASON = '由知识包 Studio 形成的待确认修改';
 const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
 const COMPILED_RESOURCES_GROUP = 'compiled_resources';
+const STUDIO_SPEC_SOURCE_PATH = /^(?:manifest\.yaml|mappings\/object-data-mappings\.json|objects\/.*\.md|operations\/.*\.md|rules\/.*\.md|metrics\/.*\.md|scripts\/)/u;
 
 interface WorkspaceRow {
   project_id: string;
@@ -414,6 +415,11 @@ export class StudioWriteService {
 
       const existingChanges = workspace ? this.changes(workspace) : [];
       const workingFiles = applyChanges(baseFiles, existingChanges);
+      if (!existingChanges.some((change) => (
+        change.path === INTERNAL_SPEC_CHANGE_PATH || STUDIO_SPEC_SOURCE_PATH.test(change.path)
+      ))) {
+        workingFiles[INTERNAL_SPEC_CHANGE_PATH] = serializeInternalSpec(current.spec);
+      }
       const actualRevision = existingChanges.length
         ? workingContentRevision(baseRevision, workingFiles)
         : baseRevision;
@@ -455,7 +461,10 @@ export class StudioWriteService {
       const stagedPaths: string[] = [];
       for (const path of changedPaths) {
         const content = mutation.files[path];
-        if (content === baseFiles[path]) {
+        const baseContent = path === INTERNAL_SPEC_CHANGE_PATH
+          ? serializeInternalSpec(current.spec)
+          : baseFiles[path];
+        if (content === baseContent) {
           this.db.prepare(`DELETE FROM agent_candidate_changes
             WHERE project_id = ? AND run_id = ? AND path = ?`)
             .run(project.id, workspace.run_id, path);
@@ -799,7 +808,7 @@ function applyMutation(
 } {
   let spec: PackageSpec;
   try {
-    spec = structuredClone(parseRenderedPackageFiles(workingFiles));
+    spec = parseWorkingSpec(workingFiles);
   } catch (error) {
     throw new StudioWriteError(
       'INVALID_WORKING_PACKAGE',
@@ -807,6 +816,7 @@ function applyMutation(
       409,
     );
   }
+  const previousSpec = structuredClone(spec);
   const previousIntegrityProblems = listSpecIntegrityProblems(spec);
 
   const errors: Record<string, string> = {};
@@ -951,14 +961,24 @@ function applyMutation(
     });
   }
 
+  let previousRendered: Record<string, string>;
   let rendered: Record<string, string>;
   try {
+    previousRendered = renderPackage(previousSpec, { validateScripts: false });
     rendered = renderPackage(spec, { validateScripts: false });
   } catch (error) {
     throw fieldError({ _batch: errorMessage(error) });
   }
-  const nextFiles = { ...workingFiles, ...rendered };
-  nextFiles[INTERNAL_SPEC_CHANGE_PATH] = `${JSON.stringify(spec, null, 2)}\n`;
+  const nextFiles = { ...workingFiles };
+  const compilerChangedPaths = [...new Set([
+    ...Object.keys(previousRendered),
+    ...Object.keys(rendered),
+  ])].filter((path) => previousRendered[path] !== rendered[path]);
+  for (const path of compilerChangedPaths) {
+    if (path in rendered) nextFiles[path] = rendered[path];
+    else delete nextFiles[path];
+  }
+  nextFiles[INTERNAL_SPEC_CHANGE_PATH] = serializeInternalSpec(spec);
   for (const path of deletedPaths) delete nextFiles[path];
   return {
     files: nextFiles,
@@ -1286,7 +1306,8 @@ function specElementIds(spec: PackageSpec): Set<string> {
 
 function parseWorkingSpec(files: Record<string, string>): PackageSpec {
   try {
-    return structuredClone(parseRenderedPackageFiles(files));
+    const internal = files[INTERNAL_SPEC_CHANGE_PATH];
+    return structuredClone(internal ? JSON.parse(internal) as PackageSpec : parseRenderedPackageFiles(files));
   } catch (error) {
     throw new StudioWriteError(
       'INVALID_WORKING_PACKAGE',
@@ -1294,6 +1315,10 @@ function parseWorkingSpec(files: Record<string, string>): PackageSpec {
       409,
     );
   }
+}
+
+function serializeInternalSpec(spec: PackageSpec): string {
+  return `${JSON.stringify(spec, null, 2)}\n`;
 }
 
 function assertDeleteElementsExist(spec: PackageSpec, elementIds: string[]): void {

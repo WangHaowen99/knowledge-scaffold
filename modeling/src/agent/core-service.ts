@@ -128,6 +128,7 @@ const LEGACY_RUNTIME_GROUP = '__runtime_context';
 const COMPILED_RESOURCES_GROUP = 'compiled_resources';
 const MAX_FILE_CHARS = 1_000_000;
 const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
+const STUDIO_SPEC_SOURCE_PATH = /^(?:manifest\.yaml|mappings\/object-data-mappings\.json|objects\/.*\.md|operations\/.*\.md|rules\/.*\.md|metrics\/.*\.md|scripts\/)/u;
 const PACKAGE_REQUIRED_FILE_SET: ReadonlySet<string> = new Set(PACKAGE_REQUIRED_FILES);
 const AGENT_REQUIRED_FILES: ReadonlySet<string> = new Set([
   '.modeling/goal.md',
@@ -289,6 +290,8 @@ export class AgentCoreService {
     const internalSpecChange = workspaceChanges.find((change) => change.path === INTERNAL_SPEC_CHANGE_PATH);
     if (internalSpecChange?.kind === 'write') {
       studioFiles[INTERNAL_SPEC_CHANGE_PATH] = internalSpecChange.content ?? '';
+    } else if (!workspaceChanges.some((change) => STUDIO_SPEC_SOURCE_PATH.test(change.path))) {
+      studioFiles[INTERNAL_SPEC_CHANGE_PATH] = `${JSON.stringify(packageFiles.spec, null, 2)}\n`;
     }
     return {
       workingRevision: workspaceChanges.length

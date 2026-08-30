@@ -261,6 +261,56 @@ test('对象模型工具支持预校验、apply、review 和确认生效', async
   assert.equal(after.json().object.relations[0].label, '服务订单');
 });
 
+test('领域 Patch 只编译语义受影响路径，并保留无关候选和隐藏规格字段', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成增量编译边界', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-incremental-compiler-${project.id}`;
+
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const unrelatedContent = '# Synthetic retained candidate\n\nThis unrelated candidate must remain byte-for-byte unchanged.\n';
+  const unrelated = await tool(app, project.id, 'write_file', {
+    path: 'index.md',
+    content: unrelatedContent,
+    change_group: 'synthetic_unrelated_candidate',
+    evidence: [],
+  }, runId);
+  assert.equal(unrelated.statusCode, 200, unrelated.body);
+
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  assert.equal(listed.statusCode, 200, listed.body);
+  const order = listed.json().items.find((item: any) => item.resource_id === 'object:order');
+  const customerBefore = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'object:customer',
+    working_revision: listed.json().working_revision,
+  }, runId);
+  assert.equal(customerBefore.statusCode, 200, customerBefore.body);
+  assert.equal(customerBefore.json().resource.values.fields[0].sourceColumn, 'customer_id');
+
+  const patched = await tool(app, project.id, 'patch_object', {
+    resource_id: 'object:order',
+    expected_revision: listed.json().working_revision,
+    expected_resource_hash: order.resource_hash,
+    mutation_id: 'synthetic-scoped-object-patch-v2',
+    reason: 'Change only one synthetic object description',
+    actions: [{ op: 'set_description', value: '仅修改合成订单的描述。' }],
+  }, runId);
+  assert.equal(patched.statusCode, 200, patched.body);
+  assert.deepEqual(patched.json().changed_paths, ['objects/index.md', 'objects/order.md']);
+
+  const retained = await tool(app, project.id, 'read_file', { path: 'index.md' }, runId);
+  assert.equal(retained.statusCode, 200, retained.body);
+  assert.equal(retained.json().content, unrelatedContent);
+  const customerAfter = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'object:customer',
+    working_revision: patched.json().working_revision,
+  }, runId);
+  assert.equal(customerAfter.statusCode, 200, customerAfter.body);
+  assert.equal(customerAfter.json().resource.resource_hash, customerBefore.json().resource.resource_hash);
+  assert.equal(customerAfter.json().resource.values.fields[0].sourceColumn, 'customer_id');
+});
+
 test('领域资源工具支持四类资源增量修改、幂等重放、哈希冲突和引用感知删除', async (t) => {
   const project = createProject({ owner: 'alice', name: '合成领域增量闭环', runtime: 'agent' });
   const app = appFor(t);
