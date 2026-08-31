@@ -75,6 +75,7 @@ test('结构化选择尚未勾选时先选择选项再等待提交按钮解锁',
 test('建模驾驶员同时识别问答表单和候选变更确认卡', () => {
   assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /section\[aria-label="待确认事项"\]/);
   assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /\[data-interaction-id\] \.card\.card-accent/);
+  assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /\[data-interaction-id\] \.card\.card-wait/);
 });
 
 test('可操作待办不会被历史任务卡的进行中快照阻塞', () => {

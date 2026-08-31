@@ -28,6 +28,7 @@ const GUIDED_ACTION_PRIORITY = [
 export const GUIDED_PENDING_INTERACTION_SELECTOR = [
   'section[aria-label="待确认事项"]',
   '[data-interaction-id] .card.card-accent',
+  '[data-interaction-id] .card.card-wait',
 ].join(', ');
 
 export interface GuidedConstructionSnapshot {
@@ -382,8 +383,10 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
         .find((button) => visible(button) && !button.disabled && /提交答案|确认修改|确认|通过|采用建议|接受(?:已选|已查看)/.test(button.textContent ?? ''))
       : undefined;
     const selectableChoice = pending
-      ? [...pending.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
+      ? ([...pending.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
         .find((input) => visible(input) && !input.disabled)
+        ?? [...pending.querySelectorAll<HTMLButtonElement>('button.wb-opt')]
+          .find((button) => visible(button) && !button.disabled && !button.hasAttribute('aria-expanded')))
       : undefined;
     const warningSection = [...document.querySelectorAll<HTMLElement>('.pcheck-warning-acceptance')]
       .find(visible);
@@ -498,20 +501,40 @@ async function answerGuidedInteraction(page: Page) {
 
   if (!groups.length) {
     const inputs = await section.$$('input[type="radio"], input[type="checkbox"]') as ElementHandle<HTMLInputElement>[];
-    let hasChecked = false;
-    for (const input of inputs) {
-      if (await input.evaluate((node) => node.checked)) hasChecked = true;
-    }
-    if (!hasChecked) {
+    if (inputs.length) {
+      let hasChecked = false;
       for (const input of inputs) {
-        if (!(await input.evaluate((node) => node.disabled))) {
-          await input.click();
-          changed = true;
-          break;
+        if (await input.evaluate((node) => node.checked)) hasChecked = true;
+      }
+      if (!hasChecked) {
+        for (const input of inputs) {
+          if (!(await input.evaluate((node) => node.disabled))) {
+            await input.click();
+            changed = true;
+            break;
+          }
         }
       }
+      for (const input of inputs) await input.dispose();
+    } else {
+      const options = await section.$$('button.wb-opt') as ElementHandle<HTMLButtonElement>[];
+      let hasSelected = false;
+      let firstEligible: ElementHandle<HTMLButtonElement> | undefined;
+      for (const option of options) {
+        const state = await option.evaluate((node) => ({
+          disabled: node.disabled,
+          selected: node.getAttribute('aria-pressed') === 'true',
+          requiresText: node.hasAttribute('aria-expanded'),
+        }));
+        if (state.selected) hasSelected = true;
+        if (!firstEligible && !state.disabled && !state.requiresText) firstEligible = option;
+      }
+      if (!hasSelected && firstEligible) {
+        await firstEligible.click();
+        changed = true;
+      }
+      for (const option of options) await option.dispose();
     }
-    for (const input of inputs) await input.dispose();
   }
 
   const reviewButtons = await section.$$('.wb-review-group');
