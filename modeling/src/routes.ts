@@ -2601,18 +2601,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
       }
       try {
-        const result = aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
-          roundId: round.id,
-          packageVersion: round.packageVersion,
-          packageRevisionOid: latest.revision.oid,
-          defects: diagnoses.map((diagnosis) => ({
-            id: diagnosis.id,
-            title: diagnosis.title,
-            summary: diagnosis.summary,
-            target: diagnosis.relatedQuestions[0],
-            suggestedAction: diagnosis.suggestedAction,
-          })),
-        });
+        // 统一 Agent 运行时不维护 legacy AI construction graph；其修缮流程由优化候选
+        // 和 Agent run 承载。Legacy 项目仍登记 evaluation_repair 任务与助手消息。
+        const result = c.p.runtime === 'legacy'
+          ? aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
+            roundId: round.id,
+            packageVersion: round.packageVersion,
+            packageRevisionOid: latest.revision.oid,
+            defects: diagnoses.map((diagnosis) => ({
+              id: diagnosis.id,
+              title: diagnosis.title,
+              summary: diagnosis.summary,
+              target: diagnosis.relatedQuestions[0],
+              suggestedAction: diagnosis.suggestedAction,
+            })),
+          })
+          : null;
         const optimizableIds = diagnoses
           .filter((diagnosis) => !diagnosis.blocking)
           .map((diagnosis) => diagnosis.id);
@@ -2628,8 +2632,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         }
         const currentDiagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, round.id);
         return {
-          aiConstruction: result.aiConstruction,
-          ...(result.message ? { aiConstructionMessage: result.message } : {}),
+          ...(result ? {
+            aiConstruction: result.aiConstruction,
+            ...(result.message ? { aiConstructionMessage: result.message } : {}),
+          } : {}),
           diagnoses: currentDiagnoses,
           canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(currentDiagnoses),
         };
