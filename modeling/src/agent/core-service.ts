@@ -19,6 +19,10 @@ import {
   type AffectedKnowledgeResource,
 } from '../documents/material-impact.js';
 import { getDocumentRawContent, listDocuments, updateDocumentDirectives } from '../documents/repo.js';
+import {
+  findMaterialPurposeReviewProblems,
+  MaterialPurposeReviewStore,
+} from '../documents/material-purpose-review.js';
 import { parseFullTableDocumentIsolated } from '../documents/parse-service.js';
 import { validateTermTables } from '../workflow/term-table.js';
 import { config } from '../config.js';
@@ -47,6 +51,8 @@ import type {
   SpecObject,
   SpecOperation,
   SpecRule,
+  TableSourceRef,
+  MaterialPurpose,
 } from '../types.js';
 import {
   KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
@@ -62,6 +68,7 @@ import {
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
 import { renderPackage } from '../workflow/package-render.js';
+import { tableSourcesFor } from '../workflow/source-references.js';
 import { validateKey, validateSpecKeys } from '../workflow/keys.js';
 import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import {
@@ -195,6 +202,7 @@ export class AgentCoreService {
   private readonly validationReports: ValidationReportStore;
   private readonly studioWrites: StudioWriteService;
   private readonly studioReviews: StudioReviewService;
+  private readonly materialPurposeReviews: MaterialPurposeReviewStore;
 
   constructor(
     db: DatabaseSync = getDb(),
@@ -205,6 +213,7 @@ export class AgentCoreService {
     this.validationReports = new ValidationReportStore(db);
     this.studioWrites = new StudioWriteService(db, this.artifacts);
     this.studioReviews = new StudioReviewService(db, this.artifacts);
+    this.materialPurposeReviews = new MaterialPurposeReviewStore(db);
   }
 
   async workbenchSnapshot(project: Project, username: string) {
@@ -375,6 +384,7 @@ export class AgentCoreService {
       purpose: document.purpose ?? 'auto',
       readingMode: document.readingMode ?? 'on_demand',
       directiveRevision: document.directiveRevision ?? 0,
+      purposeReview: this.materialPurposeReviews.get(document.id),
     };
   }
 
@@ -479,10 +489,12 @@ export class AgentCoreService {
       case 'read_file': return this.readFile(workspace, args);
       case 'get_validation_summary': return this.validationSummary(context, args);
       case 'get_validation_findings': return this.validationFindings(context, args);
+      case 'get_schema_mapping_plan': return this.schemaMappingPlan(workspace);
       case 'upsert_object': return this.upsertObject(workspace, context, args);
       case 'upsert_rule': return this.upsertRule(workspace, context, args);
       case 'upsert_operation': return this.upsertOperation(workspace, context, args);
       case 'bind_object_source': return this.bindObjectSource(workspace, context, args);
+      case 'bind_object_sources': return this.bindObjectSources(workspace, context, args);
       case 'write_file': return this.writeFile(workspace, context, args);
       case 'delete_file': return this.deleteFile(workspace, context, args);
       case 'discard_rejected_candidate_changes': return this.discardRejectedCandidateChanges(workspace);
@@ -1443,6 +1455,7 @@ export class AgentCoreService {
         purpose: document.purpose ?? 'auto',
         readingMode: document.readingMode ?? 'on_demand',
         directiveRevision: document.directiveRevision ?? 0,
+        purposeReview: this.materialPurposeReviews.get(document.id),
         chars: text.length,
         tableCount: document.tables?.length ?? 0,
         outline: text.split('\n').map((line) => line.trim())
@@ -1496,25 +1509,65 @@ export class AgentCoreService {
     if (!['auto', 'goal', 'schema', 'term', 'evidence'].includes(purpose)) {
       throw new AgentCoreError('INVALID_MATERIAL_PURPOSE', '资料用途不正确', ['选择由助手判断、建模目标依据、数据 Schema、术语表或通用业务依据'], 400);
     }
+    if (purpose === 'auto') {
+      throw new AgentCoreError(
+        'MATERIAL_PURPOSE_REQUIRED',
+        '资料用途预判必须给出明确用途，不能继续保留为“由助手判断”',
+        ['根据资料类型、目录、开头片段或 Sheet 结构选择明确用途'],
+        400,
+      );
+    }
     if (!['on_demand', 'full'].includes(readingMode)) {
       throw new AgentCoreError('INVALID_READING_MODE', '阅读方式不正确', ['选择按需读取或全文精读'], 400);
     }
     try {
+      if (purpose === 'schema' && !(document.tables ?? []).length) {
+        throw new Error('只有包含可识别数据表的资料可以指定为数据 Schema');
+      }
       if (purpose === 'term') validateTermTables(document.tables ?? [], {
         dataSourceType: getProjectPackageDataSourceSelection(projectId).dataSourceType,
       });
+      const currentReview = this.materialPurposeReviews.get(document.id);
+      const effectivePurpose = currentReview?.status === 'confirmed'
+        ? currentReview.confirmedPurpose ?? document.purpose ?? 'auto'
+        : purpose;
       const updated = updateDocumentDirectives(document.id, {
-        purpose: purpose as NonNullable<typeof document.purpose>,
+        purpose: effectivePurpose as NonNullable<typeof document.purpose>,
         readingMode: readingMode as NonNullable<typeof document.readingMode>,
       });
+      const purposeReview = updated.parseStatus === 'parsed'
+        ? this.materialPurposeReviews.suggest(updated, {
+          purpose: purpose as MaterialPurpose,
+          sheets: Array.isArray(args.sheet_purposes) ? args.sheet_purposes : [],
+          suggestedBy: 'agent',
+        })
+        : null;
+      const sheetPurposes = purposeReview?.status === 'confirmed'
+        ? purposeReview.sheetDecisions
+        : purposeReview?.sheetSuggestions ?? [];
+      const purposeBySheet = new Map(sheetPurposes.map((item) => [item.sheet, item]));
+      const schemaTables = (updated.tables ?? []).filter((table) => (
+        purposeBySheet.get(table.name)?.semanticRole === 'schema'
+      ));
+      const objectTables = schemaTables.filter((table) => (
+        purposeBySheet.get(table.name)?.importDisposition === 'object'
+      ));
       return {
         document: {
           id: updated.id, filename: updated.filename, kind: updated.kind,
           purpose: updated.purpose, readingMode: updated.readingMode,
+          directiveRevision: updated.directiveRevision,
         },
+        ...(purposeReview ? {
+          purposeReview,
+          requiresUserConfirmation: purposeReview.status !== 'confirmed',
+        } : {}),
         ...(updated.purpose === 'schema' ? {
-          schema: (updated.tables ?? []).map((table) => schemaTableFact(updated, table)),
-          objects: (updated.tables ?? []).map((table) => ({
+          schema: schemaTables.map((table) => ({
+            ...schemaTableFact(updated, table),
+            importDisposition: purposeBySheet.get(table.name)?.importDisposition,
+          })),
+          objects: objectTables.map((table) => ({
             name: table.name,
             source: { documentId: updated.id, filename: updated.filename, sheet: table.name },
             attributes: table.fields.map((field) => ({
@@ -1526,9 +1579,13 @@ export class AgentCoreService {
             })),
           })),
         } : {}),
-        recommendedPhase: purpose === 'goal' ? 'goal' : ['schema', 'term'].includes(purpose) ? 'knowledge' : null,
+        recommendedPhase: updated.purpose === 'goal'
+          ? 'goal'
+          : ['schema', 'term'].includes(updated.purpose ?? '') ? 'knowledge' : null,
         display: {
-          text: `已将《${updated.filename}》设为${materialPurposeLabel(updated.purpose)}，${updated.readingMode === 'full' ? '需要全文精读' : '默认按需读取'}`,
+          text: purposeReview?.status === 'pending'
+            ? `已整理《${updated.filename}》的逐 Sheet 用途建议，等待用户确认`
+            : `已将《${updated.filename}》设为${materialPurposeLabel(updated.purpose)}，${updated.readingMode === 'full' ? '需要全文精读' : '默认按需读取'}`,
         },
       };
     } catch (error) {
@@ -1708,14 +1765,22 @@ export class AgentCoreService {
 
   private listTables(projectId: string) {
     const documents = listDocuments(projectId);
-    const tables = this.tables(projectId).map((table) => ({
-      name: table.name,
-      documentId: table.documentId,
-      filename: documents.find((document) => document.id === table.documentId)?.filename,
-      purpose: table.materialPurpose ?? 'auto',
-      rowCount: table.rowCount,
-      fields: table.fields.length,
-    }));
+    const tables = this.tables(projectId).map((table) => {
+      const review = table.documentId ? this.materialPurposeReviews.get(table.documentId) : null;
+      const purposeDecision = (review?.status === 'confirmed'
+        ? review.sheetDecisions
+        : review?.sheetSuggestions ?? []).find((item) => item.sheet === table.name);
+      return {
+        name: table.name,
+        documentId: table.documentId,
+        filename: documents.find((document) => document.id === table.documentId)?.filename,
+        purpose: table.materialPurpose ?? 'auto',
+        rowCount: table.rowCount,
+        fields: table.fields.length,
+        purposeReviewStatus: review?.status ?? null,
+        purposeDecision: purposeDecision ?? null,
+      };
+    });
     return { tables, display: { text: `已查看 ${tables.length} 张数据表` } };
   }
 
@@ -1921,6 +1986,7 @@ export class AgentCoreService {
     });
     if (!fields.length) throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '对象至少要包含一个字段', [], 400);
     assertUniqueDomainKeys(fields.map((field) => field.key), '对象字段');
+    const existing = current.spec.objects.find((item) => item.key === key);
     const relations = requiredObjectArray(args.relations ?? [], 'relations').map((raw, index) => ({
       relation: text(raw.relation, `relations[${index}].relation`),
       target: domainKey(raw.target, `关系目标 relations[${index}]`),
@@ -1937,10 +2003,55 @@ export class AgentCoreService {
       ...evidence,
       ...relations.flatMap((relation) => relation.evidence ?? []),
     ])];
+    if (args.remove_source !== undefined && typeof args.remove_source !== 'boolean') {
+      throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'remove_source 必须是布尔值', [], 400);
+    }
+    const removeSource = args.remove_source === true;
     const source = args.source === undefined ? undefined : object(args.source);
+    const sourcePlan = args.source_plan === undefined ? undefined : object(args.source_plan);
+    if (source && sourcePlan) {
+      throw new AgentCoreError(
+        'INVALID_OBJECT_SOURCE_BINDING',
+        'source 与 source_plan 不能同时提交',
+        ['单表绑定使用 source；跨 Sheet 对象使用 source_plan'],
+        400,
+      );
+    }
+    if ((source || sourcePlan) && removeSource) {
+      throw new AgentCoreError(
+        'INVALID_OBJECT_SOURCE_BINDING',
+        '数据来源绑定与 remove_source 不能同时提交',
+        ['保留数据来源完成绑定，或只使用 remove_source=true 显式移除绑定'],
+        400,
+      );
+    }
     let sourceRefs: SpecObject['sourceRefs'];
+    let sourceTable: string | undefined;
     let primaryKey: string[] | undefined;
-    if (source) {
+    if (sourcePlan) {
+      if (workspace.package_data_source_type !== 'neo4j') {
+        throw new AgentCoreError(
+          'MULTI_SOURCE_OBJECT_UNSUPPORTED',
+          '只有 Neo4j 图导入支持主表与扩展表组成的跨 Sheet 对象',
+          ['拆分为逐来源对象，或将知识包数据源类型切换为 Neo4j 后重新建模'],
+          400,
+        );
+      }
+      primaryKey = requiredStringArray(sourcePlan.primary_key, 'source_plan.primary_key');
+      assertReferences('对象字段', primaryKey, fields.map((field) => field.key));
+      const parsed = this.parseObjectTableSources(
+        workspace.project_id,
+        fields,
+        requiredObjectArray(sourcePlan.sources, 'source_plan.sources'),
+        primaryKey,
+        'source_plan.sources',
+      );
+      sourceRefs = [
+        ...(existing?.sourceRefs ?? []).filter((item) => item.kind !== 'table'),
+        ...parsed.sources,
+      ];
+      for (const field of fields) field.sourceColumn = parsed.defaultColumns.get(field.key);
+    } else if (source) {
       const documentId = text(source.document_id, 'source.document_id');
       const tableName = text(source.table, 'source.table');
       const document = listDocuments(workspace.project_id).find((item) => item.id === documentId);
@@ -1964,9 +2075,35 @@ export class AgentCoreService {
       assertReferences('对象字段', primaryKey, fields.map((field) => field.key));
       const sourceColumnByField = new Map(bindings.map((item) => [item.fieldKey, item.sourceColumn]));
       for (const field of fields) field.sourceColumn = sourceColumnByField.get(field.key);
-      sourceRefs = [{ kind: 'table', documentId: document.id, table: table.name, columns: bindings.map((item) => item.sourceColumn) }];
+      sourceRefs = [
+        ...(existing?.sourceRefs ?? []).filter((item) => item.kind !== 'table'),
+        { kind: 'table', documentId: document.id, table: table.name, columns: bindings.map((item) => item.sourceColumn) },
+      ];
+    } else if (existing && !removeSource) {
+      const existingFieldKeys = new Set(existing.fields.map((field) => field.key));
+      const fieldKeysChanged = existingFieldKeys.size !== fields.length
+        || fields.some((field) => !existingFieldKeys.has(field.key));
+      if (tableSourcesFor(existing).length && fieldKeysChanged) {
+        throw new AgentCoreError(
+          'OBJECT_SOURCE_REBIND_REQUIRED',
+          '对象字段已经变化，不能沿用原数据源绑定',
+          ['提交完整 source 重新绑定全部字段，或使用 remove_source=true 显式移除原绑定'],
+          409,
+          {
+            previousFields: existing.fields.map((field) => field.key),
+            nextFields: fields.map((field) => field.key),
+          },
+        );
+      }
+      const sourceColumnByField = new Map(existing.fields.map((field) => [field.key, field.sourceColumn]));
+      for (const field of fields) field.sourceColumn = sourceColumnByField.get(field.key);
+      sourceRefs = existing.sourceRefs;
+      sourceTable = existing.sourceTable;
+      primaryKey = existing.primaryKey;
+    } else if (existing && removeSource) {
+      const preservedSources = (existing.sourceRefs ?? []).filter((item) => item.kind !== 'table');
+      sourceRefs = preservedSources.length ? preservedSources : undefined;
     }
-    const existing = current.spec.objects.find((item) => item.key === key);
     const nextObject: SpecObject = {
       key,
       title,
@@ -1975,7 +2112,9 @@ export class AgentCoreService {
       ...(stringArray(args.aliases).length ? { aliases: stringArray(args.aliases) } : {}),
       ...(optionalInputText(args.query_boundary) ? { queryBoundary: optionalInputText(args.query_boundary) } : {}),
       ...(relations.length ? { relations } : {}),
-      ...(sourceRefs ? { sourceRefs, primaryKey } : {}),
+      ...(sourceRefs?.length ? { sourceRefs } : {}),
+      ...(sourceTable ? { sourceTable } : {}),
+      ...(primaryKey?.length ? { primaryKey } : {}),
     };
     const objects = [...current.spec.objects];
     const objectIndex = objects.findIndex((item) => item.key === key);
@@ -1989,7 +2128,7 @@ export class AgentCoreService {
       renderedPaths,
       changeGroupId(args.change_group, 'change_group'),
       compiledEvidence,
-      `对象 ${key} 的结构化定义${source ? '和数据源绑定' : ''}`,
+      `对象 ${key} 的结构化定义${source || sourcePlan ? '和数据源绑定' : removeSource ? '和数据源解绑' : ''}`,
     );
     return {
       ok: true,
@@ -1997,7 +2136,11 @@ export class AgentCoreService {
       element: { kind: 'object', key },
       renderedPaths,
       deterministic: true,
-      display: { text: `${existing ? '已更新' : '已创建'}对象《${title}》${source ? '并完成数据绑定' : ''}` },
+      display: {
+        text: `${existing ? '已更新' : '已创建'}对象《${title}》${source || sourcePlan
+          ? '并完成数据绑定'
+          : removeSource ? '并移除数据绑定' : ''}`,
+      },
     };
   }
 
@@ -2255,6 +2398,235 @@ export class AgentCoreService {
     };
   }
 
+  private async bindObjectSources(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    if (workspace.package_data_source_type !== 'neo4j') {
+      throw new AgentCoreError(
+        'MULTI_SOURCE_OBJECT_UNSUPPORTED',
+        '只有 Neo4j 图导入支持主表与扩展表组成的跨 Sheet 对象',
+        ['拆分为逐来源对象，或将知识包数据源类型切换为 Neo4j 后重新建模'],
+        400,
+      );
+    }
+    const current = await this.overlay(workspace);
+    const key = domainKey(args.key, '对象');
+    const objectIndex = current.spec.objects.findIndex((item) => item.key === key);
+    if (objectIndex < 0) {
+      throw new AgentCoreError('OBJECT_NOT_FOUND', `对象不存在：${key}`, ['先核对对象目录'], 404);
+    }
+    const targetObject = current.spec.objects[objectIndex];
+    const primaryKey = requiredStringArray(args.primary_key, 'primary_key');
+    assertReferences('对象字段', primaryKey, targetObject.fields.map((field) => field.key));
+    const parsed = this.parseObjectTableSources(
+      workspace.project_id,
+      targetObject.fields,
+      requiredObjectArray(args.sources, 'sources'),
+      primaryKey,
+      'sources',
+    );
+    const evidence = requiredStringArray(args.evidence, 'evidence');
+    const nextObject: SpecObject = {
+      ...targetObject,
+      sourceTable: undefined,
+      sourceRefs: [
+        ...(targetObject.sourceRefs ?? []).filter((source) => source.kind !== 'table'),
+        ...parsed.sources,
+      ],
+      primaryKey,
+      fields: targetObject.fields.map((field) => ({
+        ...field,
+        sourceColumn: parsed.defaultColumns.get(field.key),
+      })),
+    };
+    const objects = [...current.spec.objects];
+    objects[objectIndex] = nextObject;
+    const renderedPaths = [
+      `objects/${key}.md`,
+      'objects/index.md',
+      'mappings/object-data-mappings.json',
+    ];
+    await this.stageCompiledSpec(
+      workspace,
+      context,
+      { ...current.spec, objects },
+      renderedPaths,
+      changeGroupId(args.change_group, 'change_group'),
+      evidence,
+      `对象 ${key} 的跨 Sheet 数据源绑定`,
+    );
+    return {
+      ok: true,
+      element: { kind: 'object', key },
+      sources: parsed.sources.map((source) => ({
+        documentId: source.documentId,
+        table: source.table,
+        role: source.role,
+      })),
+      boundFields: parsed.sources.reduce((sum, source) => sum + (source.fieldBindings?.length ?? 0), 0),
+      renderedPaths,
+      deterministic: true,
+      display: { text: `已绑定对象《${targetObject.title}》的 ${parsed.sources.length} 张来源表` },
+    };
+  }
+
+  private parseObjectTableSources(
+    projectId: string,
+    fields: SpecField[],
+    rawSources: Record<string, unknown>[],
+    primaryKey: string[],
+    field: string,
+  ): { sources: TableSourceRef[]; defaultColumns: Map<string, string> } {
+    if (rawSources.length < 2) {
+      throw new AgentCoreError(
+        'INVALID_OBJECT_SOURCE_BINDING',
+        '跨 Sheet 来源计划至少需要一张主表和一张扩展表',
+        ['单表对象使用 source 或 bind_object_source'],
+        400,
+      );
+    }
+    const documents = listDocuments(projectId);
+    const fieldKeys = new Set(fields.map((item) => item.key));
+    const primaryKeys = new Set(primaryKey);
+    const seenSources = new Set<string>();
+    const boundSourcesByField = new Map<string, string[]>();
+    const sources = rawSources.map((raw, index): TableSourceRef => {
+      const prefix = `${field}[${index}]`;
+      const documentId = text(raw.document_id, `${prefix}.document_id`);
+      const tableName = text(raw.table, `${prefix}.table`);
+      const role = String(raw.role ?? '');
+      if (!['primary', 'extension'].includes(role)) {
+        throw new AgentCoreError(
+          'INVALID_OBJECT_SOURCE_BINDING',
+          `${prefix}.role 必须是 primary 或 extension`,
+          [],
+          400,
+        );
+      }
+      const sourceIdentity = `${documentId}\u0000${tableName}`;
+      if (seenSources.has(sourceIdentity)) {
+        throw new AgentCoreError('INVALID_OBJECT_SOURCE_BINDING', '跨 Sheet 来源计划包含重复表', [], 400);
+      }
+      seenSources.add(sourceIdentity);
+      const document = documents.find((item) => item.id === documentId);
+      const table = document?.tables?.find((item) => item.name === tableName);
+      if (!document || document.parseStatus !== 'parsed' || !table) {
+        throw new AgentCoreError(
+          'TABLE_NOT_FOUND',
+          `资料 ${documentId} 中不存在已解析的数据表《${tableName}》`,
+          ['调用 list_tables 核对资料 ID 和表名'],
+          404,
+        );
+      }
+      const bindings = requiredObjectArray(raw.field_bindings, `${prefix}.field_bindings`).map((binding, bindingIndex) => ({
+        fieldKey: text(binding.field_key, `${prefix}.field_bindings[${bindingIndex}].field_key`),
+        sourceColumn: text(binding.source_column, `${prefix}.field_bindings[${bindingIndex}].source_column`),
+      }));
+      assertUniqueDomainKeys(bindings.map((item) => item.fieldKey), `${tableName} 对象字段绑定`);
+      assertUniqueDomainKeys(bindings.map((item) => item.sourceColumn), `${tableName} 来源字段绑定`);
+      assertReferences('对象字段', bindings.map((item) => item.fieldKey), [...fieldKeys]);
+      assertReferences('来源字段', bindings.map((item) => item.sourceColumn), table.fields.map((item) => item.name));
+      const bindingKeys = new Set(bindings.map((item) => item.fieldKey));
+      const missingPrimaryKeys = primaryKey.filter((key) => !bindingKeys.has(key));
+      if (missingPrimaryKeys.length) {
+        throw new AgentCoreError(
+          'INVALID_OBJECT_SOURCE_BINDING',
+          `来源表《${tableName}》缺少主键字段绑定，无法按对象主键合并`,
+          ['为每张主表和扩展表绑定全部对象主键字段'],
+          400,
+          { missingPrimaryKeys },
+        );
+      }
+      for (const binding of bindings) {
+        boundSourcesByField.set(binding.fieldKey, [
+          ...(boundSourcesByField.get(binding.fieldKey) ?? []),
+          tableName,
+        ]);
+      }
+      return {
+        kind: 'table',
+        documentId: document.id,
+        table: table.name,
+        role: role as TableSourceRef['role'],
+        columns: bindings.map((item) => item.sourceColumn),
+        fieldBindings: bindings,
+      };
+    });
+    const primarySources = sources.filter((source) => source.role === 'primary');
+    if (primarySources.length !== 1) {
+      throw new AgentCoreError(
+        'INVALID_OBJECT_SOURCE_BINDING',
+        '跨 Sheet 来源计划必须且只能包含一张 primary 主表',
+        ['将决定对象实例范围的表设为 primary，其余表设为 extension'],
+        400,
+      );
+    }
+    const missingFields = fields.filter((item) => !boundSourcesByField.has(item.key)).map((item) => item.key);
+    const ambiguousFields = fields.filter((item) => (
+      !primaryKeys.has(item.key) && (boundSourcesByField.get(item.key)?.length ?? 0) > 1
+    )).map((item) => item.key);
+    if (missingFields.length || ambiguousFields.length) {
+      throw new AgentCoreError(
+        'INVALID_OBJECT_SOURCE_BINDING',
+        missingFields.length
+          ? '跨 Sheet 来源计划没有覆盖对象全部字段'
+          : '同一非主键字段不能由多张来源表同时提供',
+        ['调整逐来源字段绑定后一次性重新提交完整来源计划'],
+        400,
+        { missingFields, ambiguousFields },
+      );
+    }
+    const defaultColumns = new Map<string, string>();
+    for (const source of [primarySources[0], ...sources.filter((item) => item !== primarySources[0])]) {
+      for (const binding of source.fieldBindings ?? []) {
+        if (!defaultColumns.has(binding.fieldKey)) defaultColumns.set(binding.fieldKey, binding.sourceColumn);
+      }
+    }
+    return { sources, defaultColumns };
+  }
+
+  private async schemaMappingPlan(workspace: WorkspaceRow) {
+    const current = await this.overlay(workspace);
+    const reviews = this.materialPurposeReviews.list(workspace.project_id);
+    const problems = findMaterialPurposeReviewProblems(this.db, workspace.project_id, current.spec);
+    const sheets = reviews.flatMap((review) => review.sheetDecisions.map((decision) => {
+      const mappedObjects = current.spec.objects.filter((item) => tableSourcesFor(item).some((source) => (
+        source.documentId === review.documentId && source.table === decision.sheet
+      ))).map((item) => item.key);
+      const mappingStatus = decision.importDisposition === 'object'
+        ? mappedObjects.length === 0 ? 'unmapped' : mappedObjects.length === 1 ? 'mapped' : 'duplicated'
+        : mappedObjects.length ? 'disposition_mismatch' : 'not_applicable';
+      return {
+        documentId: review.documentId,
+        sheet: decision.sheet,
+        importDisposition: decision.importDisposition,
+        mappedObjects,
+        mappingStatus,
+      };
+    }));
+    const objectSheets = sheets.filter((item) => item.importDisposition === 'object');
+    const mappedObjectSheets = objectSheets.filter((item) => item.mappingStatus === 'mapped');
+    return {
+      complete: problems.length === 0,
+      sheetCount: sheets.length,
+      objectSheetCount: objectSheets.length,
+      mappedObjectSheetCount: mappedObjectSheets.length,
+      unresolvedObjectSheetCount: objectSheets.length - mappedObjectSheets.length,
+      sheets,
+      problems,
+      next: problems.length
+        ? ['完成全部实体 Sheet 的对象来源计划后，再发起候选确认']
+        : ['来源映射台账完整，可以继续候选预检'],
+      display: {
+        text: problems.length
+          ? `数据 Schema 映射计划还有 ${problems.length} 项未完成`
+          : '数据 Schema 与对象来源映射已经对齐',
+      },
+    };
+  }
+
   private async stageCompiledSpec(
     workspace: WorkspaceRow,
     context: AgentToolContext,
@@ -2281,6 +2653,7 @@ export class AgentCoreService {
         400,
       );
     }
+    const currentFiles = (await this.overlay(workspace)).files;
     await this.discardFrozenCandidate(workspace, context, '领域结构继续修改，旧确认请求已失效');
     this.db.exec('SAVEPOINT agent_domain_compile');
     try {
@@ -2294,6 +2667,7 @@ export class AgentCoreService {
             500,
           );
         }
+        if (currentFiles[path] === content) continue;
         this.upsertChange(workspace, {
           path,
           kind: 'write',
@@ -3373,13 +3747,63 @@ export class AgentCoreService {
   private async assertCandidateFormatValid(workspace: WorkspaceRow, changes: ChangeRow[]) {
     const candidate = await this.overlay(workspace, changes);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
+    this.assertMaterialPurposeReviews(workspace.project_id, candidate.spec, {
+      requireObjectMappings: candidateRequiresObjectMappings(changes.map((change) => change.path)),
+    });
     this.assertPackageFilesValid(base, candidate);
   }
 
   private async assertFrozenCandidateValid(workspace: WorkspaceRow, candidate: PackageCandidateRevision) {
     const preview = await this.artifacts.previewCandidateRevision(workspace.project_id, candidate.id);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, candidate.baseRevision);
+    const candidatePaths = candidate.groups.flatMap((group) => (
+      group.changes.map((change) => publicPath(change.path))
+    ));
+    this.assertMaterialPurposeReviews(workspace.project_id, preview.spec, {
+      requireObjectMappings: candidateRequiresObjectMappings(candidatePaths),
+    });
     this.assertPackageFilesValid(base, preview);
+  }
+
+  private assertMaterialPurposeReviews(
+    projectId: string,
+    spec: PackageSpec,
+    options: { requireObjectMappings: boolean },
+  ): void {
+    const allProblems = findMaterialPurposeReviewProblems(this.db, projectId, spec);
+    const problems = options.requireObjectMappings
+      ? allProblems
+      : allProblems.filter((problem) => problem.code === 'MATERIAL_PURPOSE_REVIEW_REQUIRED');
+    if (!problems.length) return;
+    const pending = problems.filter((problem) => problem.code === 'MATERIAL_PURPOSE_REVIEW_REQUIRED');
+    const affectedSheetCount = new Set(problems.flatMap((problem) => (
+      problem.sheet ? [`${problem.documentId}\u0000${problem.sheet}`] : []
+    ))).size;
+    throw new AgentCoreError(
+      pending.length ? 'MATERIAL_PURPOSE_REVIEW_REQUIRED' : 'SCHEMA_SHEET_MAPPING_INCOMPLETE',
+      pending.length
+        ? `建模资料用途尚未确认：${pending.map((problem) => problem.filename).join('、')}`
+        : `数据 Schema 与对象映射不一致：还有 ${affectedSheetCount} 张 Sheet 的结构化对象来源尚未闭环`,
+      pending.length
+        ? ['等待用户在资料页确认文件用途和每张 Sheet 的处置后，再重新发起候选确认']
+        : ['调用 get_schema_mapping_plan 对照完整台账，补齐全部对象来源后再重新发起确认；不要重复提交相同候选'],
+      409,
+      {
+        problems,
+        requiresUserConfirmation: pending.length > 0,
+        retryable: false,
+        validatorVersion: 'material-source-mapping-v2',
+        findingCount: problems.length,
+        findings: problems.map((problem) => ({
+          ruleId: problem.code,
+          path: 'mappings/object-data-mappings.json',
+          message: problem.message,
+          suggestion: pending.length
+            ? '等待用户完成资料用途确认'
+            : '通过对象领域工具补齐该 Sheet 的结构化来源绑定',
+        })),
+      },
+    );
   }
 
   private assertPackageFilesValid(
@@ -3392,7 +3816,12 @@ export class AgentCoreService {
       .filter((finding) => finding.severity === '错误');
     const baselineIdentities = new Set(baselineErrors.map(formatFindingIdentity));
     let candidateSpec = candidate.spec;
-    try { candidateSpec = parseRenderedPackageFiles(candidateFiles); } catch { /* fallback to current spec */ }
+    try {
+      candidateSpec = {
+        ...parseRenderedPackageFiles(candidateFiles),
+        dataSourceType: candidate.spec.dataSourceType,
+      };
+    } catch { /* fallback to current spec */ }
     const introduced = runFormatChecks(candidateSpec, candidateFiles)
       .filter((finding) => finding.severity === '错误')
       .filter((finding) => (
@@ -5037,6 +5466,12 @@ function toArtifactChange(change: ChangeRow): ArtifactChange {
 
 function publicPath(path: string): string {
   return path.startsWith('package/') ? path.slice('package/'.length) : path;
+}
+
+function candidateRequiresObjectMappings(paths: Iterable<string>): boolean {
+  return [...paths].some((path) => (
+    /^(?:objects|operations|rules|metrics|mappings)\//u.test(path)
+  ));
 }
 
 function knowledgePackageFiles(files: Record<string, string>): Record<string, string> {

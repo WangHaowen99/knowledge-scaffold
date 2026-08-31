@@ -16,10 +16,12 @@ import ImpactView from './center/ImpactView.jsx';
 import { Block } from './right/blocks/Blocks.jsx';
 import ActivityLine, { executionStartedAt, visibleRunActivity } from './right/ActivityLine.jsx';
 import Composer, { shouldSendComposerMessage } from './right/Composer.jsx';
-import { messageText } from './right/RightPane.jsx';
+import { MaterialPurposeBatchCard, messageText } from './right/RightPane.jsx';
 import RightPane from './right/RightPane.jsx';
 import {
+  nextReadyMaterialPurposeReview,
   packageUploadFollowUp,
+  pendingMaterialPurposeReviews,
   store,
   actions,
   resolveBootstrapFocus,
@@ -1509,13 +1511,51 @@ try {
     { name: '目标.md', purpose: 'goal', readingMode: 'full' },
     { name: '对象.xlsx', purpose: 'schema', readingMode: 'on_demand' },
   ]);
-  if (options.followUp !== false || options.directivesByName['目标.md']?.readingMode !== 'full'
+  if (options.followUp !== true || options.directivesByName['目标.md']?.readingMode !== 'full'
     || options.directivesByName['对象.xlsx']?.purpose !== 'schema') {
     throw new Error('初始多文件没有共享批次并保留逐份用途');
   }
   renderToString(<App />);
   console.log('✓ 创建页多文件单批上传');
 } catch (e) { console.log('✗ 创建页:', e.message); bad++; }
+
+try {
+  const reviewMaterials = [
+    { id: 'confirmed', parseStatus: 'parsed', purposeReview: { status: 'confirmed', suggestedBy: 'user' } },
+    { id: 'analyzing', parseStatus: 'parsed', purposeReview: { status: 'pending', suggestedBy: 'system' } },
+    { id: 'ready-a', parseStatus: 'parsed', purposeReview: { status: 'pending', suggestedBy: 'agent' } },
+    { id: 'ready-b', parseStatus: 'parsed', purposeReview: { status: 'pending', suggestedBy: 'agent' } },
+  ];
+  if (pendingMaterialPurposeReviews(reviewMaterials).length !== 3
+    || nextReadyMaterialPurposeReview(reviewMaterials)?.id !== 'ready-a'
+    || nextReadyMaterialPurposeReview(reviewMaterials, 'ready-a')?.id !== 'ready-b') {
+    throw new Error('多资料用途确认没有区分分析中、待确认和下一份');
+  }
+  console.log('✓ 多资料用途逐份确认顺序');
+} catch (e) { console.log('✗ 多资料用途确认:', e.message); bad++; }
+
+try {
+  const html = renderToString(<MaterialPurposeBatchCard materials={[
+    {
+      id: 'purpose-a', filename: 'synthetic-goal.md', parseStatus: 'parsed',
+      purposeReview: { status: 'pending', suggestedBy: 'agent', suggestedPurpose: 'goal', sheetSuggestions: [] },
+    },
+    {
+      id: 'purpose-b', filename: 'synthetic-data.xlsx', parseStatus: 'parsed',
+      purposeReview: {
+        status: 'pending', suggestedBy: 'agent', suggestedPurpose: 'schema',
+        sheetSuggestions: [{ sheet: 'internal_sheet_alpha', semanticRole: 'schema', importDisposition: 'object' }],
+      },
+    },
+  ]} />);
+  if (!html.includes('确认资料用途') || !html.includes('synthetic-goal.md')
+    || !html.includes('建模目标依据') || !html.includes('synthetic-data.xlsx')
+    || !html.includes('数据 Schema') || !html.includes('一键确认全部')
+    || html.includes('internal_sheet_alpha')) {
+    throw new Error('批量确认卡没有仅按文件展示助手建议用途');
+  }
+  console.log('✓ 助手提供文件级资料用途批量确认卡');
+} catch (e) { console.log('✗ 资料用途批量确认卡:', e.message); bad++; }
 
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

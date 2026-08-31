@@ -1,6 +1,8 @@
 import {
   api,
   authFetch,
+  confirmDocumentPurposeReview,
+  confirmDocumentPurposeReviews,
   createProject,
   downloadDocument,
   downloadTermTableTemplate,
@@ -106,8 +108,11 @@ export const locateEvidence = (id, reference) => api(
 export const startAgent = (id, message, baselineRevision = '') => api(`${P(id)}/agent/runs`, {
   method: 'POST', body: JSON.stringify({ message, baselineRevision }),
 });
-export const steerAgent = (id, message) => api(`${P(id)}/agent/steer`, {
-  method: 'POST', body: JSON.stringify({ message }),
+export const steerAgent = (id, message, options = {}) => api(`${P(id)}/agent/steer`, {
+  method: 'POST', body: JSON.stringify({
+    message,
+    ...(options.purposeReviewCompleted ? { purposeReviewCompleted: true } : {}),
+  }),
 });
 export const answerAgent = (id, interactionId, answer) => api(
   `${P(id)}/agent/interactions/${encodeURIComponent(interactionId)}/answer`,
@@ -116,6 +121,8 @@ export const answerAgent = (id, interactionId, answer) => api(
 export const cancelAgent = (id) => api(`${P(id)}/agent/cancel`, { method: 'POST', body: '{}' });
 export const uploadMaterial = uploadDocument;
 export const updateMaterialDirectives = updateDocumentDirectives;
+export const confirmMaterialPurposeReview = confirmDocumentPurposeReview;
+export const confirmMaterialPurposeReviews = confirmDocumentPurposeReviews;
 export const getMaterialRevisions = (id) => listMaterialRevisions(id);
 export const downloadMaterial = downloadDocument;
 export const downloadTermTemplate = downloadTermTableTemplate;

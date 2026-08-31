@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { config } from '../config.js';
+import { MaterialPurposeReviewStore } from '../documents/material-purpose-review.js';
 import { canReadProject, canWriteProject } from '../projects/repo.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 
@@ -24,9 +25,25 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     proxyJson(request, reply, `/v1/projects/${projectId(request)}/runs`, 'POST')
   ));
 
-  app.post('/api/projects/:id/agent/steer', async (request, reply) => (
-    proxyJson(request, reply, `/v1/projects/${projectId(request)}/steer`, 'POST')
-  ));
+  app.post('/api/projects/:id/agent/steer', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    if ((request.body as any)?.purposeReviewCompleted === true) {
+      const progress = new MaterialPurposeReviewStore().progress(id);
+      if (!progress.allConfirmed) {
+        return reply.code(409).send({
+          code: 'MATERIAL_PURPOSE_REVIEW_REQUIRED',
+          error: progress.totalCount
+            ? `仍有 ${progress.pendingCount} 份资料用途尚未确认`
+            : '当前没有已完成用途确认的资料批次',
+          purposeReviewProgress: progress,
+        });
+      }
+    }
+    return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/steer`, 'POST', id);
+  });
 
   app.post('/api/projects/:id/agent/cancel', async (request, reply) => (
     proxyJson(request, reply, `/v1/projects/${projectId(request)}/cancel`, 'POST')

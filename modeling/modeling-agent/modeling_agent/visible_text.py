@@ -57,6 +57,8 @@ _TOKEN_LABELS = {
     "upsert_rule": "整理业务规则",
     "upsert_operation": "整理业务操作",
     "bind_object_source": "绑定对象数据来源",
+    "bind_object_sources": "绑定跨 Sheet 对象来源",
+    "get_schema_mapping_plan": "核对数据 Schema 映射计划",
     "get_validation_summary": "查看校验摘要",
     "get_validation_findings": "查看校验明细",
     "discard_rejected_candidate_changes": "放弃已退回的修改",
