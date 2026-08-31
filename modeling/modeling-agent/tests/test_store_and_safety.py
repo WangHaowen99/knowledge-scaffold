@@ -543,6 +543,27 @@ async def test_tool_boundary_reuses_completed_evaluation_read_until_new_round() 
 
 
 @pytest.mark.asyncio
+async def test_optional_evaluation_database_unavailable_stays_in_activity_trace() -> None:
+    events: list[tuple[str, dict]] = []
+    call = _tool_call_context("query_eval_db", {"sql": "SELECT 1"}, "call_eval_db", {
+        "error": "EVAL_DB_TOOL_UNAVAILABLE",
+        "reason": "评测库尚未配置，未执行查询",
+        "retryable": False,
+        "tracePhase": "rejected",
+        "problemVisibility": "activity",
+        "customerSummary": "可选评测库未配置，已跳过本次查询",
+    })
+
+    await ActivityRail(lambda kind, payload: events.append((kind, payload))).after_tool_call(call)  # type: ignore[arg-type]
+
+    tool_event = next(payload for kind, payload in events if kind == "tool")
+    assert tool_event["phase"] == "rejected"
+    assert tool_event["code"] == "EVAL_DB_TOOL_UNAVAILABLE"
+    assert tool_event["problemVisibility"] == "activity"
+    assert tool_event["summary"] == "可选评测库未配置，已跳过本次查询"
+
+
+@pytest.mark.asyncio
 async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
     events: list[tuple[str, dict]] = []
     context = ToolContext(

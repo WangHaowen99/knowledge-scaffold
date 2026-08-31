@@ -216,15 +216,17 @@ function reconcileMaterialParseTerminalEvents(projectId: string): void {
 }
 
 export function reconcileEvaluationTerminalEvents(projectId: string): void {
-  const rows = getDb().prepare(`SELECT id, status, progress_done, progress_total, pass_count,
-      created_at, finished_at
-    FROM eval_rounds
-    WHERE project_id = ? AND status IN ('done', 'failed', 'cancelled')
-      AND NOT EXISTS (
-        SELECT 1 FROM agent_project_event_outbox terminal
-        WHERE terminal.id = 'evaluation:' || eval_rounds.id || ':terminal'
-      )
-    ORDER BY created_at DESC, rowid DESC LIMIT 1`).all(projectId) as any[];
+  const rows = getDb().prepare(`WITH latest_round AS (
+      SELECT id, status, progress_done, progress_total, pass_count, created_at, finished_at
+      FROM eval_rounds
+      WHERE project_id = ?
+      ORDER BY created_at DESC, rowid DESC LIMIT 1
+    )
+    SELECT * FROM latest_round
+    WHERE status IN ('done', 'failed', 'cancelled') AND NOT EXISTS (
+      SELECT 1 FROM agent_project_event_outbox terminal
+      WHERE terminal.id = 'evaluation:' || latest_round.id || ':terminal'
+    )`).all(projectId) as any[];
   for (const row of rows) {
     const roundId = String(row.id);
     enqueueEvaluationTerminalProjectEvent(projectId, {

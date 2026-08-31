@@ -1781,7 +1781,13 @@ CORE_TOOL_SPECS = (
         parallel_safe=False,
         display="正在停止评测",
     ),
-    ToolSpec("query_eval_db", "只读查询评测数据源。", {"sql": STRING}, ("sql",), display="正在查询评测数据"),
+    ToolSpec(
+        "query_eval_db",
+        "只读查询已配置的外接 SQL 评测库；这是可选诊断能力，不代表正式评测记录。未配置时跳过且不要重复调用。",
+        {"sql": STRING},
+        ("sql",),
+        display="正在查询评测数据",
+    ),
 )
 
 PROJECT_STATE_TOOL_SPECS = (

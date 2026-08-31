@@ -336,6 +336,77 @@ test('刷新 Agent 状态会补发最近评测终态到专用入口且只投递�
   assert.equal(outbox.pendingAgentProjectEvents(project.id).length, 0);
 });
 
+test('刷新 Agent 状态只补发最新评测终态，不沿历史轮次继续回灌', async (t) => {
+  const project = createProject({ owner: 'alice', name: '评测终态历史隔离', runtime: 'agent' });
+  const m3 = await import('../src/workflow/m3-repo.js');
+  const older = m3.createRound(project.id, '1.0.0-rc.1', 2);
+  m3.roundProgress(older.id, 2, 1);
+  m3.finishRound(older.id, 'done');
+  const latest = m3.createRound(project.id, '1.0.0-rc.2', 3);
+  m3.roundProgress(latest.id, 3, 3);
+  m3.finishRound(latest.id, 'done');
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).includes('/evaluation-events')) {
+      return new Response(JSON.stringify({ accepted: true, reconciled: true }), {
+        status: 202, headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ state: { phase: 'evaluation' }, lastSeq: 16 }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  });
+  const app = appFor(t);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/projects/${project.id}/agent/state`,
+      headers: { authorization: 'Bearer refresh-token' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+  }
+
+  const eventCalls = calls.filter((call) => call.url.includes('/evaluation-events'));
+  assert.equal(eventCalls.length, 1);
+  assert.equal(JSON.parse(String(eventCalls[0].init?.body)).roundId, latest.id);
+  assert.equal(
+    outbox.pendingAgentProjectEvents(project.id).some((event) => (
+      'roundId' in event && event.roundId === older.id
+    )),
+    false,
+  );
+});
+
+test('最新评测仍在运行时不补发更早的终态', async (t) => {
+  const project = createProject({ owner: 'alice', name: '运行中评测历史隔离', runtime: 'agent' });
+  const m3 = await import('../src/workflow/m3-repo.js');
+  const terminal = m3.createRound(project.id, '1.0.0-rc.1', 2);
+  m3.roundProgress(terminal.id, 2, 2);
+  m3.finishRound(terminal.id, 'done');
+  const running = m3.createRound(project.id, '1.0.0-rc.2', 3);
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify({ state: { phase: 'evaluation' }, lastSeq: 17 }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  });
+  const app = appFor(t);
+
+  const response = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/agent/state`,
+    headers: { authorization: 'Bearer refresh-token' },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(calls.some((call) => call.url.includes('/evaluation-events')), false);
+  assert.equal(outbox.pendingAgentProjectEvents(project.id).length, 0);
+  assert.equal(m3.getRound(running.id)?.status, 'running');
+});
+
 test('旧 Core outbox 迁移后保留资料事件并接受 Studio、融合、导入与评测终态事件', () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY);

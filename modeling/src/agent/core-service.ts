@@ -6398,6 +6398,12 @@ export class AgentCoreService {
         '评测库尚未配置，未执行查询',
         ['配置 EVAL_DB_URL 并导入项目评测数据后重试'],
         409,
+        {
+          retryable: false,
+          tracePhase: 'rejected',
+          problemVisibility: 'activity',
+          customerSummary: '可选评测库未配置，已跳过本次查询',
+        },
       );
     }
     const target = resolveEvaluationDatabaseTarget(projectEvaluationDatabaseName(projectId), config.evalDbUrl);

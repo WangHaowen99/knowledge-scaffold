@@ -2836,6 +2836,24 @@ test('评测启动服从确定性门禁，评测库拒绝写 SQL', async (t) => 
   assert.equal(writeQuery.json().code, 'READ_ONLY_SQL_REQUIRED');
 });
 
+test('可选评测库未配置时只记录活动，不要求用户处理', async (t) => {
+  const project = createProject({ owner: 'alice', name: '可选评测库未配置' });
+  const previousEvalDbUrl = config.evalDbUrl;
+  config.evalDbUrl = '';
+  t.after(() => { config.evalDbUrl = previousEvalDbUrl; });
+  const app = appFor(t);
+
+  const response = await tool(app, project.id, 'query_eval_db', {
+    sql: 'SELECT 1',
+  }, `run-${project.id}`);
+
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'EVAL_DB_TOOL_UNAVAILABLE');
+  assert.equal(response.json().tracePhase, 'rejected');
+  assert.equal(response.json().problemVisibility, 'activity');
+  assert.equal(response.json().retryable, false);
+});
+
 test('Agent 评测忽略转发的旧 Access Token，只接受 Core 托管的可续期会话', async (t) => {
   const [{ backgroundAuthSessions }, { saveProjectDataSource }, m3] = await Promise.all([
     import('../src/auth/background-session.js'),

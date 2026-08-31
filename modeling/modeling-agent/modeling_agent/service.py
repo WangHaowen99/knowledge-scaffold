@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Callable
 
 from .agent import AgentBundle, build_agent, build_model, list_skills
@@ -384,6 +385,13 @@ class AgentService:
         focus_event = self.store.latest_event(project_id, run.id, "focus") if run else None
         restored_focus = focus_event.payload.get("target") if focus_event else None
         public_state = state.public()
+        if (
+            public_state.get("phase") == "evaluation"
+            and _claims_terminal_evaluation(str(public_state.get("summary") or ""))
+        ):
+            latest_evaluation = self.store.latest_presented_evaluation(project_id)
+            if latest_evaluation is not None:
+                public_state["summary"] = _evaluation_terminal_summary(latest_evaluation)
         public_state["phaseLabel"] = PHASE_LABELS.get(public_state["phase"], public_state["phase"])
         return {
             "state": public_state,
@@ -644,11 +652,27 @@ class AgentService:
             raise AgentRuntimeError("INVALID_EVALUATION_EVENT", "评测终态事件不完整", status=400)
 
         inserted = self.store.record_external_event(event_id, project_id, "evaluation_terminal", event)
+        if not self.store.external_event_pending(event_id, project_id):
+            return {"accepted": True, "duplicate": True, "reconciled": False}
+
+        latest = self.store.latest_presented_evaluation(
+            project_id,
+            exclude_event_id=event_id,
+        )
+        if latest is not None and _evaluation_event_is_stale(event, latest):
+            self.store.mark_external_event_continued(event_id, project_id)
+            return {
+                "accepted": True,
+                "duplicate": not inserted,
+                "reconciled": False,
+                "stale": True,
+                "status": status,
+                "roundId": round_id,
+            }
+
         for live in self._live.values():
             if live.project_id == project_id:
                 live.stable_read_cache.clear()
-        if not self.store.external_event_pending(event_id, project_id):
-            return {"accepted": True, "duplicate": True, "reconciled": False}
 
         summary = _evaluation_terminal_summary(event)
         active = self.store.active_run(project_id)
@@ -1712,7 +1736,10 @@ class AgentService:
         public = state.public()
         evaluation = await self._evaluation_status_for_agent(live)
         if evaluation.get("terminal") is True:
-            if _claims_active_evaluation(str(public.get("summary") or "")):
+            if (
+                _claims_active_evaluation(str(public.get("summary") or ""))
+                or _claims_terminal_evaluation(str(public.get("summary") or ""))
+            ):
                 public["summary"] = _evaluation_terminal_summary(evaluation)
             public["openQuestions"] = [
                 item for item in public.get("openQuestions") or []
@@ -3174,13 +3201,46 @@ def _claims_active_evaluation(value: str) -> bool:
     return any(re.search(pattern, text) for pattern in patterns)
 
 
+def _claims_terminal_evaluation(value: str) -> bool:
+    return bool(re.search(
+        r"(?:最近一轮)?正式评测(?:已完成|已停止|已结束)",
+        str(value or ""),
+    ))
+
+
 def _evaluation_terminal_summary(evaluation: dict[str, Any]) -> str:
     status = str(evaluation.get("status") or "failed")
     done = max(0, int(evaluation.get("done") or 0))
     total = max(0, int(evaluation.get("total") or 0))
     passed = max(0, int(evaluation.get("passed") or 0))
     if status == "done":
-        return f"最近一轮正式评测已完成：已执行 {done}/{total} 条，通过 {passed} 条。"
+        return f"正式评测已完成：已执行 {done}/{total} 条，通过 {passed} 条。"
     if status == "cancelled":
-        return f"最近一轮正式评测已停止：已执行 {done}/{total} 条，通过 {passed} 条。"
-    return f"最近一轮正式评测已结束，运行失败：已执行 {done}/{total} 条，通过 {passed} 条。"
+        return f"正式评测已停止：已执行 {done}/{total} 条，通过 {passed} 条。"
+    return f"正式评测已结束，运行失败：已执行 {done}/{total} 条，通过 {passed} 条。"
+
+
+def _evaluation_event_is_stale(
+    incoming: dict[str, Any],
+    latest: dict[str, Any],
+) -> bool:
+    incoming_at = _evaluation_finished_at(incoming)
+    latest_at = _evaluation_finished_at(latest)
+    if latest_at is None:
+        return False
+    if incoming_at is None:
+        return True
+    return incoming_at <= latest_at
+
+
+def _evaluation_finished_at(evaluation: dict[str, Any]) -> datetime | None:
+    value = str(evaluation.get("finishedAt") or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

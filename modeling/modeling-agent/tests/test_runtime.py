@@ -2773,6 +2773,78 @@ async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_c
         await runtime.shutdown()
 
 
+async def test_evaluation_terminal_event_does_not_present_or_apply_older_round(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_order")
+        runtime.store.transition_project_state(
+            "project_evaluation_order",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        latest = {
+            "eventId": "evaluation:round_latest:terminal",
+            "roundId": "round_latest",
+            "status": "done",
+            "done": 5,
+            "total": 5,
+            "passed": 5,
+            "finishedAt": "2026-08-31T10:00:00.000Z",
+        }
+        older = {
+            "eventId": "evaluation:round_older:terminal",
+            "roundId": "round_older",
+            "status": "done",
+            "done": 4,
+            "total": 4,
+            "passed": 3,
+            "finishedAt": "2026-08-31T09:00:00.000Z",
+        }
+
+        applied = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_order", token="token_1", event=latest,
+        )
+        state_after_latest = runtime.store.project_state("project_evaluation_order")
+        ignored = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_order", token="token_1", event=older,
+        )
+
+        assert applied["reconciled"] is True
+        assert ignored["stale"] is True
+        state_after_older = runtime.store.project_state("project_evaluation_order")
+        assert state_after_older.revision == state_after_latest.revision
+        assert state_after_older.summary == state_after_latest.summary
+        assert "5/5" in state_after_older.summary
+        messages = [
+            item.payload for item in runtime.store.events_after("project_evaluation_order", 0)
+            if item.kind == "message" and item.payload.get("externalEventId")
+        ]
+        assert [item["externalEventId"] for item in messages] == [latest["eventId"]]
+        stale_receipt = runtime.store._db.execute(  # noqa: SLF001 - persistence invariant test
+            "SELECT continuation_status, presented_at FROM external_project_events WHERE id = ?",
+            (older["eventId"],),
+        ).fetchone()
+        assert stale_receipt["continuation_status"] == "continued"
+        assert stale_receipt["presented_at"] == ""
+
+        current = runtime.store.project_state("project_evaluation_order")
+        runtime.store.transition_project_state(
+            "project_evaluation_order",
+            expected_revision=current.revision,
+            next_state=current.state,
+            cause="test_stale_projection",
+            summary="最近一轮正式评测已完成：已执行 4/4 条，通过 3 条。",
+        )
+        assert "4/4" in runtime.store.project_state("project_evaluation_order").summary
+        assert "5/5" in runtime.project_state("project_evaluation_order")["state"]["summary"]
+    finally:
+        await runtime.shutdown()
+
+
 async def test_release_is_terminal_for_current_autonomous_run(settings) -> None:
     model = ScriptedModel([
         [ToolTurn("transition_project_state", {

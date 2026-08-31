@@ -1360,6 +1360,21 @@ try {
 
 store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
 actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-optional-tool', toolCallId: 'call-eval-db',
+  name: 'query_eval_db', phase: 'rejected', code: 'EVAL_DB_TOOL_UNAVAILABLE',
+  problemVisibility: 'activity', summary: '可选评测库未配置，已跳过本次查询',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+try {
+  const trace = store.get().trace.find((item) => item.toolCallId === 'call-eval-db');
+  if (store.get().messages.length !== 0 || trace?.phase !== 'rejected') {
+    throw new Error('可选工具不可用仍生成了主对话问题卡，或没有保留活动轨迹');
+  }
+  console.log('✓ 可选工具不可用只保留活动轨迹');
+} catch (e) { console.log('✗ 可选工具不可用展示:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
   eventType: 'tool', seq: 1, runId: 'run-issue', toolCallId: 'call-managed-write',
   name: 'write_file', phase: 'repairing', code: 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
   issueId: 'issue-binding', issueStatus: 'repairing', summary: '对象数据映射已阻止，正在自动修正',

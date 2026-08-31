@@ -988,6 +988,29 @@ class RuntimeStore:
             ).fetchone()
         return bool(row and row["continuation_status"] == "pending")
 
+    def latest_presented_evaluation(
+        self,
+        project_id: str,
+        *,
+        exclude_event_id: str = "",
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT payload_json FROM external_project_events
+                WHERE project_id = ? AND kind = 'evaluation_terminal'
+                  AND presented_at <> '' AND id <> ?""",
+                (project_id, exclude_event_id),
+            ).fetchall()
+        evaluations = [_object(row["payload_json"]) for row in rows]
+        return max(
+            evaluations,
+            key=lambda item: (
+                str(item.get("finishedAt") or ""),
+                str(item.get("roundId") or ""),
+            ),
+            default=None,
+        )
+
     def mark_external_event_continued(self, event_id: str, project_id: str) -> None:
         with self._lock, self._db:
             self._db.execute(
