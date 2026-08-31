@@ -159,7 +159,7 @@ import {
   optimizationCandidateApplyResponse,
   retireOptimizationCandidatesForDiagnosisRerun,
 } from './evaluation/optimization-candidate.js';
-import { buildLlm } from './llm/provider.js';
+import { buildTaskLlm } from './llm/provider.js';
 import { runWithLlmRequest } from './llm/user-context.js';
 import { registerAdminLlmRoutes } from './settings/admin-llm-routes.js';
 import { testLlmConnection } from './settings/llm-connection-test.js';
@@ -2513,7 +2513,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             tables: c.ctx.tables,
             documents: c.ctx.documents,
             roundFailure: round.status === 'failed' ? round.log : undefined,
-          }, buildLlm());
+          }, buildTaskLlm({ maxTokensCap: 12_000 }));
           const diagnoses = diagnosisRepo.replaceFailureDiagnoses(
             c.p.id, round.id, round.packageVersion, version.revisionOid, report.diagnoses,
           );
