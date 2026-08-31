@@ -166,20 +166,21 @@ def delete_project_transfer(
 ) -> None:
     with store._lock:  # noqa: SLF001
         database = store._db  # noqa: SLF001
-        sessions = [
-            str(row["session_id"])
-            for row in database.execute(
-                "SELECT session_id FROM agent_runs WHERE project_id = ?",
-                (project_id,),
-            ).fetchall()
-        ]
-        run_ids = [
-            str(row["id"])
-            for row in database.execute(
-                "SELECT id FROM agent_runs WHERE project_id = ?",
-                (project_id,),
-            ).fetchall()
-        ]
+        session_rows = database.execute(
+            "SELECT session_id FROM agent_runs WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        sessions: list[str] = []
+        for row in session_rows:
+            sessions.append(str(row["session_id"]))
+
+        run_rows = database.execute(
+            "SELECT id FROM agent_runs WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        run_ids: list[str] = []
+        for row in run_rows:
+            run_ids.append(str(row["id"]))
         try:
             database.execute("BEGIN IMMEDIATE")
             if run_ids:

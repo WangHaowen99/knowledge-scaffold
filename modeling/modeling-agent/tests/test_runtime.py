@@ -73,18 +73,15 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
         "analyze_material_impact", "compile_package_fusion_plan",
     } <= increment
     assert not {"patch_operation", "upsert_operation", "bind_object_source"} & increment
-    legacy = {
-        spec.name for spec in core_tool_specs_for_phase(
-            "knowledge", tool_profile="legacy-v1",
-        )
-    }
+    legacy: set[str] = set()
+    for spec in core_tool_specs_for_phase("knowledge", tool_profile="legacy-v1"):
+        legacy.add(spec.name)
     assert {"write_file", "patch_object", "create_metric", "upsert_object", "bind_object_source"} <= legacy
     assert "update_plan" in legacy
-    intake_recovery = {
-        spec.name for spec in core_tool_specs_for_phase(
-            "intake", frozenset({"run_evaluation", "compile_package_fusion_plan"}),
-        )
-    }
+    intake_recovery: set[str] = set()
+    required_tools = frozenset({"run_evaluation", "compile_package_fusion_plan"})
+    for spec in core_tool_specs_for_phase("intake", required_tools):
+        intake_recovery.add(spec.name)
     assert {"run_evaluation", "compile_package_fusion_plan"} <= intake_recovery
 
 
@@ -215,11 +212,10 @@ async def test_model_timeout_uses_one_persisted_recovery_and_new_execution_brief
         assert ledger[0]["attempt"] == 1
         assert ledger[0]["status"] == "succeeded"
         assert completed["sessionId"] != started["sessionId"]
-        recovery = [
-            event.payload for event in runtime.store.events_after(
-                "project_model_timeout_recovery", 0,
-            ) if event.kind == "recovery"
-        ]
+        recovery = []
+        for event in runtime.store.events_after("project_model_timeout_recovery", 0):
+            if event.kind == "recovery":
+                recovery.append(event.payload)
         assert [event["status"] for event in recovery] == ["retrying", "succeeded"]
     finally:
         await runtime.shutdown()
@@ -250,11 +246,10 @@ async def test_second_model_timeout_exhausts_application_recovery(settings) -> N
         assert ledger[0]["attempt"] == 1
         assert ledger[0]["status"] == "exhausted"
         assert model.calls == 2
-        recovery = [
-            event for event in runtime.store.events_after(
-                "project_model_timeout_exhausted", 0,
-            ) if event.kind == "recovery" and event.payload.get("status") == "retrying"
-        ]
+        recovery = []
+        for event in runtime.store.events_after("project_model_timeout_exhausted", 0):
+            if event.kind == "recovery" and event.payload.get("status") == "retrying":
+                recovery.append(event)
         assert len(recovery) == 1
     finally:
         await runtime.shutdown()
@@ -2831,12 +2826,14 @@ async def test_cancel_run_publishes_pending_interaction_closure(settings) -> Non
         assert cancelled["status"] == "cancelled"
         assert runtime.store.get_interaction(interaction.id).status == "cancelled"
         assert runtime.store.pending_interaction("project_cancel_interaction") is None
-        closure_events = [
-            event for event in runtime.store.events_after("project_cancel_interaction", 0)
-            if event.kind == "interaction"
-            and event.payload.get("id") == interaction.id
-            and event.payload.get("status") == "cancelled"
-        ]
+        closure_events = []
+        for event in runtime.store.events_after("project_cancel_interaction", 0):
+            if event.kind != "interaction":
+                continue
+            if event.payload.get("id") != interaction.id:
+                continue
+            if event.payload.get("status") == "cancelled":
+                closure_events.append(event)
         assert len(closure_events) == 1
     finally:
         await runtime.shutdown()
@@ -4290,12 +4287,15 @@ async def test_release_confirmation_executes_core_release_once_after_approval(se
             "request_release",
             {"summary": "确认 19 条真实用例并发布"},
         ) is None
-        assert not any(
-            event.kind == "tool"
-            and event.payload.get("name") == "request_release"
-            and event.payload.get("phase") == "completed"
-            for event in runtime.store.events_after("project_release", 0)
-        )
+        completed_release_events = []
+        for event in runtime.store.events_after("project_release", 0):
+            if event.kind != "tool":
+                continue
+            if event.payload.get("name") != "request_release":
+                continue
+            if event.payload.get("phase") == "completed":
+                completed_release_events.append(event)
+        assert not completed_release_events
 
         await runtime.answer_interaction(
             project_id="project_release",
@@ -4322,13 +4322,14 @@ async def test_release_confirmation_executes_core_release_once_after_approval(se
             {"summary": "确认 19 条真实用例并发布"},
         )
         assert receipt is not None and receipt["released"] is True
-        completed_release_events = [
-            event
-            for event in runtime.store.events_after("project_release", 0)
-            if event.kind == "tool"
-            and event.payload.get("name") == "request_release"
-            and event.payload.get("phase") == "completed"
-        ]
+        completed_release_events = []
+        for event in runtime.store.events_after("project_release", 0):
+            if event.kind != "tool":
+                continue
+            if event.payload.get("name") != "request_release":
+                continue
+            if event.payload.get("phase") == "completed":
+                completed_release_events.append(event)
         assert len(completed_release_events) == 1
     finally:
         await runtime.shutdown()
