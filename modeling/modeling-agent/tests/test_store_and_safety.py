@@ -608,6 +608,7 @@ async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
         "findingCount": 1,
         "issueId": result["issueId"],
         "issueStatus": "repairing",
+        "problemVisibility": "",
         "resolvedIssueIds": [],
     }), ("progress", {
         "activityId": "after-tool:call_goal_evidence",
