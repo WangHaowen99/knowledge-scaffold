@@ -2715,6 +2715,15 @@ test('专家处置只记录下一步提示且不会改写 legacy 工作流节点
     }],
   );
 
+  const listed = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/optimize/diagnoses?roundId=round-resolution-route`,
+    headers,
+  });
+  assert.equal(listed.statusCode, 200, listed.body);
+  assert.equal(listed.json().runningOperation, null);
+  assert.equal(listed.json().runningTask, null);
+
   const response = await app.inject({
     method: 'POST',
     url: `/api/projects/${projectId}/optimize/diagnoses/${diagnosis.id}/resolve`,

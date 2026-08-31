@@ -3,6 +3,7 @@ import type { LlmDeps } from '../llm/provider.js';
 import { makeAgent, runAgentCaptured } from '../workflow/agent.js';
 import type { DataDictTable, PackageSpec } from '../types.js';
 import type { QualityGap } from '../workflow/data-quality.js';
+import { mapWithConcurrency } from '../workflow/generation-planner.js';
 import type { EvalResult } from '../workflow/m3-repo.js';
 import { buildTools } from '../workflow/tools.js';
 import type { EvaluationExecutionTrace } from './trace-client.js';
@@ -306,6 +307,7 @@ const LLM_CATEGORIES = ['testcase_gap', 'data_gap', 'knowledge_gap', 'routing_is
 const REPAIR_SCOPES = ['testcase', 'runtime', 'data', 'package', 'script', 'judge'] as const;
 const SEMANTIC_DIAGNOSIS_BATCH_ITEMS = 4;
 const SEMANTIC_DIAGNOSIS_BATCH_CHARS = 45_000;
+const SEMANTIC_DIAGNOSIS_CONCURRENCY = 4;
 
 function semanticDiagnosisBatches(candidates: EvalResult[]): EvalResult[][] {
   const batches: EvalResult[][] = [];
@@ -349,11 +351,16 @@ async function semanticDiagnoses(
   if (!candidates.length) return [];
   const batches = semanticDiagnosisBatches(candidates);
   if (batches.length > 1) {
-    const diagnoses: FailureDiagnosis[] = [];
-    for (const batch of batches) {
-      diagnoses.push(...await semanticDiagnoses({ ...input, results: batch }, llm, existing));
-    }
-    return diagnoses;
+    const diagnosed = await mapWithConcurrency(
+      batches,
+      SEMANTIC_DIAGNOSIS_CONCURRENCY,
+      (batch) => semanticDiagnoses(
+        { ...input, results: batch },
+        llm,
+        existing,
+      ),
+    );
+    return diagnosed.flat();
   }
 
   const cap: { diagnoses?: FailureDiagnosis[] } = {};

@@ -7,7 +7,7 @@ import LeftPane from './left/LeftPane.jsx';
 import { initialUploadOptions } from './pages/CreatePage.jsx';
 import { documentParagraphs, evidenceHighlight, evidenceLocationOffset } from './center/DocView.jsx';
 import EvidenceLinks from './center/EvidenceLinks.jsx';
-import { EvaluationSetupPanel, evaluationScopeLabel, RunsPanel } from './center/EvaluationView.jsx';
+import { DiagnosisProgress, EvaluationSetupPanel, evaluationScopeLabel, RunsPanel } from './center/EvaluationView.jsx';
 import {
   defaultExpandedEvaluationIds,
   EvaluationResultsList,
@@ -332,6 +332,17 @@ try {
   }
   console.log('✓ 评测准备页挂载共享数据源全链路');
 } catch (e) { console.log('✗ 评测数据源配置:', e.message); bad++; }
+
+try {
+  const html = renderToString(<DiagnosisProgress task={{
+    operation: 'diagnose', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  if (!html.includes('正在分析失败原因') || !html.includes('正在读取失败结果、执行轨迹和独立证据')
+    || !html.includes('已运行') || !html.includes('1 分') || !html.includes('role="status"')) {
+    throw new Error('诊断长任务没有立即显示可恢复的进度反馈');
+  }
+  console.log('✓ 失败诊断长任务显示进度反馈');
+} catch (e) { console.log('✗ 失败诊断进度反馈:', e.message); bad++; }
 
 try {
   const sourceScope = { kind: 'fusion_source', sourceId: 'internal-source-a', sourceName: '线路治理方案' };

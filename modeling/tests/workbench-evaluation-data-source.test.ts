@@ -47,6 +47,10 @@ test('新工作台评测区接入失败诊断和优化建议', () => {
   assert.match(evaluationView, /tab === 'diagnose'[\s\S]*<DiagnosisPanel/);
   assert.match(evaluationView, /tab === 'optimize'[\s\S]*<OptimizationPanel/);
   assert.match(evaluationView, /请先选择一个已结束的评测轮次/);
+  assert.match(evaluationView, /runningOperation/);
+  assert.match(evaluationView, /正在分析失败原因/);
+  assert.match(evaluationView, /setFollowupRefresh\(\(value\) => value \+ 1\)/);
+  assert.doesNotMatch(evaluationView, /wb-stage-number/);
 });
 
 test('新工作台保存数据源只更新 Agent 评测事实', async () => {

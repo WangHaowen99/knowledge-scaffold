@@ -735,7 +735,10 @@
 .wb-stage-head { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-6); }
 .wb-stage-head h3 { margin: 0; font-size: var(--t-xl); }
 .wb-stage-head p { max-width: 640px; margin: 2px 0 0; color: var(--c-muted); font-size: var(--t-sm); }
-.wb-stage-number { width: 24px; height: 24px; display: grid; place-items: center; flex: none; border-radius: 50%; background: var(--c-ink); color: var(--c-surface-1); font-size: var(--t-xs); font-weight: 700; }
+.wb-eval-operation { display: flex; align-items: center; gap: var(--s-3); margin: 0 0 var(--s-5); padding: var(--s-3) var(--s-4); border: 1px solid var(--c-accent-line); border-radius: var(--r-md); background: var(--c-accent-bg); color: var(--c-accent); }
+.wb-eval-operation > div { min-width: 0; }
+.wb-eval-operation b, .wb-eval-operation span { display: block; }
+.wb-eval-operation span { margin-top: 2px; color: var(--c-muted); font-size: var(--t-sm); }
 .wb-diagnosis-list { border-top: 1px solid var(--c-line); }
 .wb-diagnosis { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: var(--s-4); padding: var(--s-5) 0; border-bottom: 1px solid var(--c-line-soft); }
 .wb-diagnosis > label, .wb-suggestion-check { position: relative; padding-top: 2px; cursor: pointer; }

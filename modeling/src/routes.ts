@@ -2540,6 +2540,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return {
         diagnoses,
         canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
+        runningOperation: inFlight.current(`${c.p.id}:optimize`),
+        runningTask: inFlight.status(`${c.p.id}:optimize`),
       };
     });
     // 评测发现的知识包缺陷回流建模：登记成 evaluation_repair 任务并在助手对话里给出下一步。
