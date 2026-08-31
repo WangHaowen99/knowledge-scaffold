@@ -7,6 +7,7 @@ import {
   describeJourneyStep,
   guidedInteractionCanAdvance,
   guidedConstructionIsProcessing,
+  GUIDED_PENDING_INTERACTION_SELECTOR,
   isGuidedInteractionResponse,
   shouldRecoverGuidedRepairConflict,
   nextGuidedIdleIterations,
@@ -35,6 +36,10 @@ test('提交结构化待办时只等待当前交互的响应请求', () => {
     'http://example.test/api/projects/p1/interactions/i1/respond',
     'GET',
   ), false);
+  assert.equal(isGuidedInteractionResponse(
+    'http://example.test/api/projects/p1/agent/interactions/i1/answer',
+    'POST',
+  ), true);
   assert.equal(isGuidedInteractionResponse(
     'http://example.test/api/projects/p1/session',
     'POST',
@@ -67,6 +72,11 @@ test('结构化选择尚未勾选时先选择选项再等待提交按钮解锁',
   }), false);
 });
 
+test('建模驾驶员同时识别问答表单和候选变更确认卡', () => {
+  assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /section\[aria-label="待确认事项"\]/);
+  assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /\[data-interaction-id\] \.card\.card-accent/);
+});
+
 test('可操作待办不会被历史任务卡的进行中快照阻塞', () => {
   assert.equal(guidedConstructionIsProcessing({
     hasSpinner: false,
@@ -81,6 +91,15 @@ test('可操作待办不会被历史任务卡的进行中快照阻塞', () => {
   assert.equal(guidedConstructionIsProcessing({
     hasSpinner: false,
     hasRunningTask: true,
+    hasPendingInteraction: false,
+  }), true);
+});
+
+test('流内长操作存在停止入口时保持等待而不累计空闲次数', () => {
+  assert.equal(guidedConstructionIsProcessing({
+    hasSpinner: false,
+    hasRunningTask: false,
+    hasActiveOperation: true,
     hasPendingInteraction: false,
   }), true);
 });
@@ -209,8 +228,14 @@ test('浏览器旅程只接受受控前端动作并拒绝直接 API 调用', () 
       { action: 'reviewAndAccept', timeoutMs: 60_000 },
       { action: 'reload' },
       { action: 'guidedConstruction', timeoutMs: 60_000 },
+      { action: 'click', text: '进入项目', waitForSelector: '.tabs-fill', maxAttempts: 3 },
     ],
   }));
+
+  assert.throws(() => validateJourneyPlan({
+    name: 'invalid-click-retry',
+    steps: [{ action: 'click', text: '进入项目', maxAttempts: 3 }],
+  }), /重复点击必须提供 waitForSelector/);
 });
 
 test('浏览器旅程数量断言必须提供确定的选择器和整数', () => {
@@ -287,6 +312,7 @@ test('浏览器旅程由浏览器鼠标点击控件，不在页面脚本中调�
     readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
   ));
   assert.match(source, /ElementHandle<HTMLElement>\)\.click\(\)/);
+  assert.match(source, /ElementHandle<HTMLElement>\)\.hover\(\)/);
   assert.doesNotMatch(source, /node\.click\(\)/);
   assert.doesNotMatch(source, /button\?\.click\(\)/);
   assert.match(source, /item\.querySelectorAll\('\*'\)/);

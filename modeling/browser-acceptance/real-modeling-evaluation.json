@@ -8,7 +8,7 @@
     { "action": "click", "text": "登 录", "exact": true },
     { "action": "waitFor", "text": "项目与知识包", "timeoutMs": 30000 },
 
-    { "action": "click", "text": "石油炼化0828", "exact": true, "timeoutMs": 30000 },
+    { "action": "click", "text": "石油炼化0828", "exact": true, "waitForSelector": ".tabs-fill", "maxAttempts": 3, "timeoutMs": 30000 },
     { "action": "waitFor", "selector": "textarea[aria-label=\"给建模助手发送消息\"]", "timeoutMs": 60000 },
     { "action": "waitFor", "selector": ".tabs-fill", "timeoutMs": 120000 },
     { "action": "assertLayout" },
