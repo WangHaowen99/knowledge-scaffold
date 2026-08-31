@@ -150,7 +150,10 @@ def test_owned_workspace_becomes_default_stays_accessible(tmp_path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def test_list_workspaces_hides_other_users_private_workspaces(tmp_path, monkeypatch):
+def test_regular_user_list_provisions_owned_preferred_workspace_and_hides_global_default(
+    tmp_path,
+    monkeypatch,
+):
     client, headers = _build_env(tmp_path, monkeypatch)
     _setup_shared_and_owned(client, headers)
 
@@ -158,14 +161,22 @@ def test_list_workspaces_hides_other_users_private_workspaces(tmp_path, monkeypa
     assert response.status_code == 200
     body = response.json()
     ids = [item["id"] for item in body["workspaces"]]
-    assert ids == ["shared"]
+    assert len(ids) == 1
+    assert "shared" not in ids
     assert body["total"] == 1
     assert body["default_workspace_id"] == "shared"
+    assert body["preferred_workspace_id"] == ids[0]
 
-    shared = body["workspaces"][0]
-    assert shared["owner"] is None
-    assert shared["members"] == []
-    assert shared["role"] is None
+    personal = body["workspaces"][0]
+    assert personal["name"] == "默认工作空间"
+    assert personal["owner"] == "bob"
+    assert personal["members"] == []
+    assert personal["role"] == "admin"
+    assert personal["is_default"] is False
+
+    repeated = client.get("/agentic/workspaces", headers=headers["bob"]).json()
+    assert repeated["preferred_workspace_id"] == body["preferred_workspace_id"]
+    assert [item["id"] for item in repeated["workspaces"]] == ids
 
 
 def test_list_workspaces_owner_and_admin_visibility(tmp_path, monkeypatch):
@@ -174,7 +185,8 @@ def test_list_workspaces_owner_and_admin_visibility(tmp_path, monkeypatch):
 
     alice_body = client.get("/agentic/workspaces", headers=headers["alice"]).json()
     alice_ids = {item["id"] for item in alice_body["workspaces"]}
-    assert alice_ids == {"shared", "alice-ws"}
+    assert alice_ids == {"alice-ws"}
+    assert alice_body["preferred_workspace_id"] == "alice-ws"
     owned = next(item for item in alice_body["workspaces"] if item["id"] == "alice-ws")
     assert owned["owner"] == "alice"
     assert owned["role"] == "admin"
@@ -182,8 +194,23 @@ def test_list_workspaces_owner_and_admin_visibility(tmp_path, monkeypatch):
     admin_body = client.get("/agentic/workspaces", headers=headers["admin"]).json()
     admin_ids = {item["id"] for item in admin_body["workspaces"]}
     assert admin_ids == {"shared", "alice-ws"}
+    assert admin_body["preferred_workspace_id"] == "shared"
+    assert all(item["owner"] != "admin" for item in admin_body["workspaces"])
     admin_owned = next(item for item in admin_body["workspaces"] if item["id"] == "alice-ws")
     assert admin_owned["role"] is None
+
+
+def test_admin_list_does_not_provision_workspace(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+
+    body = client.get("/agentic/workspaces", headers=headers["admin"]).json()
+
+    assert body == {
+        "workspaces": [],
+        "total": 0,
+        "default_workspace_id": None,
+        "preferred_workspace_id": None,
+    }
 
 
 def test_list_workspaces_member_sees_workspace_with_member_role(tmp_path, monkeypatch):
@@ -197,10 +224,53 @@ def test_list_workspaces_member_sees_workspace_with_member_role(tmp_path, monkey
 
     body = client.get("/agentic/workspaces", headers=headers["bob"]).json()
     ids = {item["id"] for item in body["workspaces"]}
-    assert ids == {"shared", "alice-ws"}
+    preferred_id = body["preferred_workspace_id"]
+    assert ids == {"alice-ws", preferred_id}
+    assert body["total"] == 2
+    assert preferred_id != "alice-ws"
     member_item = next(item for item in body["workspaces"] if item["id"] == "alice-ws")
     assert member_item["role"] == "member"
     assert member_item["members"] == ["bob"]
+    preferred = next(
+        item for item in body["workspaces"] if item["id"] == preferred_id
+    )
+    assert preferred["owner"] == "bob"
+    assert preferred["role"] == "admin"
+
+
+def test_concurrent_regular_user_lists_create_one_personal_workspace(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _create_workspace_api(
+        client,
+        headers["admin"],
+        name="Shared WS",
+        workspace_id="shared",
+        owner=None,
+    )
+
+    request_count = 16
+    start_gate = threading.Barrier(request_count)
+
+    def list_workspaces_after_gate():
+        start_gate.wait(timeout=5)
+        return client.get("/agentic/workspaces", headers=headers["bob"])
+
+    executor = ThreadPoolExecutor(max_workers=request_count)
+    futures = [executor.submit(list_workspaces_after_gate) for _ in range(request_count)]
+    try:
+        responses = [future.result(timeout=10) for future in futures]
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    assert all(response.status_code == 200 for response in responses)
+    preferred_ids = {response.json()["preferred_workspace_id"] for response in responses}
+    assert len(preferred_ids) == 1
+
+    from workspace.workspaces import list_workspaces
+
+    owned = [item for item in list_workspaces() if item.get("owner") == "bob"]
+    assert len(owned) == 1
+    assert owned[0]["id"] == preferred_ids.pop()
 
 
 # ---------------------------------------------------------------------------
@@ -655,9 +725,43 @@ def test_regular_user_first_workspace_does_not_become_global_default(tmp_path, m
     assert response.json()["is_default"] is False
     listing = client.get("/agentic/workspaces", headers=headers["alice"]).json()
     assert listing["default_workspace_id"] is None
+    assert listing["preferred_workspace_id"] == "alice-first"
     assert listing["workspaces"][0]["is_default"] is False
     bob_listing = client.get("/agentic/workspaces", headers=headers["bob"]).json()
-    assert bob_listing["workspaces"] == []
+    assert len(bob_listing["workspaces"]) == 1
+    assert bob_listing["workspaces"][0]["owner"] == "bob"
+    assert bob_listing["preferred_workspace_id"] == bob_listing["workspaces"][0]["id"]
+
+
+def test_regular_user_cannot_claim_reserved_personal_workspace_id(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    reserved_id = "home-81b637d8fcd2c6da6359"
+
+    response = client.post(
+        "/agentic/workspaces",
+        json={"name": "Claimed home", "id": reserved_id},
+        headers=headers["bob"],
+    )
+
+    assert response.status_code == 400
+    assert "系统保留前缀" in response.json()["detail"]
+
+    generated_id_response = client.post(
+        "/agentic/workspaces",
+        json={"name": reserved_id},
+        headers=headers["bob"],
+    )
+
+    assert generated_id_response.status_code == 400
+    assert "系统保留前缀" in generated_id_response.json()["detail"]
+
+    allowed_business_id = client.post(
+        "/agentic/workspaces",
+        json={"name": "Home Lab", "id": "home-lab"},
+        headers=headers["bob"],
+    )
+
+    assert allowed_business_id.status_code == 201
 
 
 def test_workspace_owner_can_delete_owned_workspace_but_member_cannot(tmp_path, monkeypatch):
@@ -725,6 +829,7 @@ def _write_legacy_workspace(tmp_path, workspace_id="legacy-ws"):
                 "id": workspace_id,
                 "name": "Legacy WS",
                 "description": "旧版无 owner 字段",
+                "mcp_endpoint_id": "0123456789abcdef",
                 "created_at": "2026-01-01T00:00:00+00:00",
                 "updated_at": "2026-01-01T00:00:00+00:00",
             },
@@ -832,12 +937,12 @@ def test_legacy_workspace_without_owner_fields_still_works(tmp_path, monkeypatch
     _setup_shared_and_owned(client, headers)
     _write_legacy_workspace(tmp_path)
 
-    # list：普通用户可见，owner/members 以默认值补齐
-    body = client.get("/agentic/workspaces", headers=headers["bob"]).json()
-    legacy = next(item for item in body["workspaces"] if item["id"] == "legacy-ws")
-    assert legacy["owner"] is None
-    assert legacy["members"] == []
-    assert legacy["role"] is None
+    # list：普通用户不展示无关系的旧版 ownerless 空间
+    listing = client.get("/agentic/workspaces", headers=headers["bob"])
+    assert listing.status_code == 200
+    assert "legacy-ws" not in {
+        item["id"] for item in listing.json()["workspaces"]
+    }
 
     # get：单查正常
     response = client.get("/agentic/workspaces/legacy-ws", headers=headers["bob"])
