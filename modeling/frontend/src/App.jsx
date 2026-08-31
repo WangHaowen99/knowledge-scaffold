@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getToken, getRefreshToken, clearSession, me, importPackageWorkspace } from './api.js';
+import { Archive } from 'lucide-react';
+import {
+  getToken,
+  getRefreshToken,
+  clearSession,
+  getProjectTransferJob,
+  importPackageWorkspace,
+  me,
+  startProjectTransferImport,
+} from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
 import ProjectWorkbenchRouter from './ProjectWorkbenchRouter.jsx';
@@ -9,6 +18,7 @@ import {
   confirmUnsavedNavigation,
   protectUnsavedBeforeUnload,
 } from './flowchartNavigationGuard.js';
+import { waitForProjectTransferJob } from './projectTransfer.js';
 
 function initialWorkspaceRoute() {
   if (typeof window === 'undefined') return { projectId: null, projectKind: 'modeling' };
@@ -40,6 +50,8 @@ export default function App() {
   const [projectId, setProjectId] = useState(initialRoute.projectId);
   const [projectKind, setProjectKind] = useState(initialRoute.projectKind);
   const [importingPackage, setImportingPackage] = useState(false);
+  const [importingProject, setImportingProject] = useState(false);
+  const [projectImportProgress, setProjectImportProgress] = useState(0);
   const [importError, setImportError] = useState('');
   const [importNotice, setImportNotice] = useState('');
   const [projectAccessNotice, setProjectAccessNotice] = useState('');
@@ -49,6 +61,7 @@ export default function App() {
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const userRef = useRef(null);
   const packageInputRef = useRef(null);
+  const projectTransferInputRef = useRef(null);
 
   useEffect(() => {
     if (!getToken()) { setStatus('out'); return; }
@@ -142,6 +155,21 @@ export default function App() {
     }
   };
 
+  const importTransferredProject = async (file) => {
+    if (!file || importingProject) return;
+    setImportingProject(true); setProjectImportProgress(0); setImportError(''); setImportNotice('');
+    try {
+      const started = await startProjectTransferImport(file);
+      const job = await waitForProjectTransferJob(getProjectTransferJob, started.job.id, {
+        onProgress: (progress) => setProjectImportProgress(Number(progress?.percent) || 0),
+      });
+      window.location.assign(`/workbench.html?project=${encodeURIComponent(job.project.projectId)}`);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '项目导入失败');
+      setImportingProject(false);
+    }
+  };
+
   // 操作引导联动：引导步骤可打开配置中心并切换 tab；引导结束时收起弹窗
   useEffect(() => {
     const open = (e) => { setSettingsTab(e.detail?.tab || 'llm'); setSettingsOpen(true); };
@@ -170,6 +198,18 @@ export default function App() {
         <div className="right">
           {!projectId && (
             <>
+              <button className="tb-btn" disabled={importingProject}
+                title="从其他环境导入完整项目迁移包"
+                onClick={() => projectTransferInputRef.current?.click()}>
+                <Archive />
+                {importingProject ? `导入项目 ${projectImportProgress}%` : '导入项目'}
+              </button>
+              <input ref={projectTransferInputRef} type="file" accept=".zip" hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  void importTransferredProject(file);
+                }} />
               <button className="tb-btn" disabled={importingPackage} onClick={() => packageInputRef.current?.click()}>
                 {importingPackage ? '导入中…' : '导入已有知识包'}
               </button>

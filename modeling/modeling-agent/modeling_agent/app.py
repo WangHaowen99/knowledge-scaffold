@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -70,6 +71,10 @@ class PackageImportEventBody(BaseModel):
     packageVersion: str = Field(min_length=1, max_length=100)
     sourceFilename: str = Field(min_length=1, max_length=500)
     fileCount: int = Field(ge=1, le=100_000)
+
+
+class ProjectTransferBody(BaseModel):
+    payload: dict[str, Any]
 
 
 def create_app(service: AgentService) -> Starlette:
@@ -153,6 +158,21 @@ def create_app(service: AgentService) -> Starlette:
         )
         return JSONResponse(result, status_code=202)
 
+    async def export_project(request: Request) -> JSONResponse:
+        _require_internal_access(request, service.settings.service_token)
+        return JSONResponse(service.export_project_transfer(request.path_params["project_id"]))
+
+    async def import_project(request: Request) -> JSONResponse:
+        _require_internal_access(request, service.settings.service_token)
+        body = _validate(ProjectTransferBody, await _body(request))
+        id_map = service.import_project_transfer(request.path_params["project_id"], body.payload)
+        return JSONResponse({"ok": True, "idMap": id_map}, status_code=201)
+
+    async def delete_project(request: Request) -> JSONResponse:
+        _require_internal_access(request, service.settings.service_token)
+        service.delete_project_transfer(request.path_params["project_id"])
+        return JSONResponse({"ok": True})
+
     async def stream(request: Request) -> StreamingResponse:
         _require_token(request)
         project_id = request.path_params["project_id"]
@@ -196,6 +216,9 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/internal/projects/{project_id}/studio-events", studio_event, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/fusion-events", fusion_event, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/package-import-events", package_import_event, methods=["POST"]),
+        Route("/v1/internal/projects/{project_id}/transfer", export_project, methods=["GET"]),
+        Route("/v1/internal/projects/{project_id}/transfer", import_project, methods=["POST"]),
+        Route("/v1/internal/projects/{project_id}/transfer", delete_project, methods=["DELETE"]),
     ]
     return Starlette(
         routes=routes,
@@ -232,6 +255,16 @@ def _require_token(request: Request) -> str:
     if not token:
         raise AgentRuntimeError("TOKEN_REQUIRED", "需要登录后才能使用建模助手", status=401)
     return token
+
+
+def _require_internal_access(request: Request, expected_service_token: str) -> None:
+    expected = expected_service_token.strip()
+    supplied = request.headers.get("x-modeling-service-token", "").strip()
+    if expected:
+        if supplied and secrets.compare_digest(supplied, expected):
+            return
+        raise AgentRuntimeError("UNAUTHORIZED", "内部服务认证失败", status=401)
+    _require_token(request)
 
 
 def _after_sequence(request: Request) -> int:

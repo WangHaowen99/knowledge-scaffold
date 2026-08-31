@@ -1,10 +1,17 @@
-import { Settings } from 'lucide-react';
+import { useState } from 'react';
+import { Archive, Settings } from 'lucide-react';
 
 import { store, actions, SCENES } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import { project } from '../lib/mock/fixtures.js';
 import Icon from '../ui/Icon.jsx';
 import { downloadPackage } from '../lib/api.js';
+import {
+  downloadProjectTransfer,
+  getProjectTransferJob,
+  startProjectTransferExport,
+} from '../../api.js';
+import { responseDownloadFilename, waitForProjectTransferJob } from '../../projectTransfer.js';
 
 const selScene = (s) => s.scene;
 const selActivity = (s) => s.activity;
@@ -18,6 +25,7 @@ const selRun = (s) => s.run;
 const selWorkflow = (s) => s.workflow;
 
 export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
+  const [transferProgress, setTransferProgress] = useState(null);
   const scene = useStore(store, selScene);
   const activity = useStore(store, selActivity);
   const demo = useStore(store, selDemo);
@@ -53,6 +61,28 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
       window.setTimeout(() => URL.revokeObjectURL(href), 1_000);
     } catch (error) {
       store.set({ error: error instanceof Error ? error.message : '知识包导出失败' });
+    }
+  };
+  const exportProject = async () => {
+    if (transferProgress !== null) return;
+    setTransferProgress(0);
+    try {
+      const started = await startProjectTransferExport(store.get().projectId);
+      const job = await waitForProjectTransferJob(getProjectTransferJob, started.job.id, {
+        onProgress: (progress) => setTransferProgress(Number(progress?.percent) || 0),
+      });
+      const response = await downloadProjectTransfer(job.id);
+      const blob = await response.blob();
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = responseDownloadFilename(response, 'project-transfer.zip');
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 1_000);
+    } catch (error) {
+      store.set({ error: error instanceof Error ? error.message : '项目导出失败' });
+    } finally {
+      setTransferProgress(null);
     }
   };
 
@@ -116,7 +146,11 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
             <Settings size={13} />MCP
           </button>
           <button className="btn btn-ghost" onClick={() => void exportPackage()} title="导出当前已确认知识包">
-            <Icon name="download" size={13} />导出
+            <Icon name="download" size={13} />知识包
+          </button>
+          <button className="btn btn-ghost" disabled={transferProgress !== null}
+            onClick={() => void exportProject()} title="导出完整项目迁移包">
+            <Archive size={13} />{transferProgress === null ? '迁移包' : `${transferProgress}%`}
           </button>
           <button className="btn btn-ghost" onClick={actions.openEvaluation} title="打开正式评测">
             <Icon name="check" size={13} />评测
