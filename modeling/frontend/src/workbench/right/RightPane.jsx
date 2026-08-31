@@ -8,6 +8,7 @@ import Composer from './Composer.jsx';
 import Icon from '../ui/Icon.jsx';
 import { userFacingText } from '../lib/userFacingText.js';
 import SemanticBindingPanel from '../../SemanticBindingPanel.jsx';
+import { ASSISTANT_SCROLL_ACTION, assistantScrollAction } from './scrollPolicy.js';
 
 const selUser = (s) => s.userMessages;
 const selScene = (s) => s.scene;
@@ -21,6 +22,7 @@ const selProjectId = (s) => s.projectId;
 const selRevision = (s) => s.revision;
 const selPackageVersion = (s) => s.packageVersion;
 const selStatusText = (s) => s.statusText;
+const selReplayUntilSeq = (s) => s.replayUntilSeq;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
     const interaction = s.messages[index]?.blocks?.find((block) => block.interaction)?.interaction;
@@ -45,12 +47,18 @@ export default function RightPane() {
   const revision = useStore(store, selRevision);
   const packageVersion = useStore(store, selPackageVersion);
   const statusText = useStore(store, selStatusText);
+  const replayUntilSeq = useStore(store, selReplayUntilSeq);
   const interactionId = useStore(store, selPendingInteractionMessageId);
   const scroller = useRef(null);
   const stream = useRef(null);
   const followingTail = useRef(true);
   const draggingScroll = useRef(false);
   const previousInteractionId = useRef('');
+  const previousProjectId = useRef(projectId);
+  const wasReplayingHistory = useRef(false);
+  const replayingHistory = !demo && Number(replayUntilSeq) > 0;
+  const replayingHistoryRef = useRef(replayingHistory);
+  replayingHistoryRef.current = replayingHistory;
   const base = demo ? CONVERSATIONS[scene] || [] : messages;
   const streamTail = messages.map((message) => {
     const blocks = (message.blocks || []).map((block) => (
@@ -70,27 +78,48 @@ export default function RightPane() {
   const interactionGroupCount = interaction?.kind === 'confirmation'
     ? (interaction.payload?.changeGroups || []).length
     : 0;
-  const focusPendingInteraction = () => {
+  const focusPendingInteraction = (behavior = 'smooth') => {
     const element = scroller.current;
     const target = [...(stream.current?.querySelectorAll('[data-interaction-id]') || [])]
       .find((item) => item.dataset.interactionId === interactionId);
     if (!element || !target) return;
     followingTail.current = false;
-    element.scrollTo({ top: Math.max(0, target.offsetTop - 12), behavior: 'smooth' });
+    const top = Math.max(0, target.offsetTop - 12);
+    if (behavior === 'instant') element.scrollTop = top;
+    else element.scrollTo({ top, behavior: 'smooth' });
     target.querySelector('button, input, textarea')?.focus({ preventScroll: true });
   };
 
   useTailLayoutEffect(() => {
+    const projectChanged = projectId !== previousProjectId.current;
+    if (projectChanged) {
+      previousProjectId.current = projectId;
+      previousInteractionId.current = '';
+      followingTail.current = true;
+      draggingScroll.current = false;
+      wasReplayingHistory.current = false;
+    }
+    const historyJustFinished = wasReplayingHistory.current && !replayingHistory;
+    wasReplayingHistory.current = replayingHistory;
     const newInteraction = Boolean(interactionId && interactionId !== previousInteractionId.current);
+    const scrollAction = assistantScrollAction({
+      replayingHistory,
+      historyJustFinished,
+      followingTail: followingTail.current,
+      hasNewInteraction: newInteraction,
+    });
+    if (scrollAction === ASSISTANT_SCROLL_ACTION.HOLD) return;
     previousInteractionId.current = interactionId;
-    if (newInteraction) {
+    if (scrollAction === ASSISTANT_SCROLL_ACTION.FOCUS_INSTANT
+      || scrollAction === ASSISTANT_SCROLL_ACTION.FOCUS_SMOOTH) {
       followingTail.current = false;
-      requestAnimationFrame(focusPendingInteraction);
+      requestAnimationFrame(() => focusPendingInteraction(
+        scrollAction === ASSISTANT_SCROLL_ACTION.FOCUS_INSTANT ? 'instant' : 'smooth',
+      ));
       return;
     }
-    if (!followingTail.current) return;
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
-  }, [user.length, scene, streamTail, activityTail, interactionId]);
+  }, [user.length, scene, streamTail, activityTail, interactionId, projectId, replayingHistory]);
 
   useTailLayoutEffect(() => {
     const element = scroller.current;
@@ -98,7 +127,9 @@ export default function RightPane() {
     if (!element || !content) return undefined;
 
     const scrollToTail = () => {
-      if (followingTail.current) element.scrollTop = element.scrollHeight;
+      if (!replayingHistoryRef.current && followingTail.current) {
+        element.scrollTop = element.scrollHeight;
+      }
     };
     scrollToTail();
 
@@ -116,7 +147,7 @@ export default function RightPane() {
       </div>
 
       {interaction && (
-        <button type="button" className="wb-current-task" onClick={focusPendingInteraction}>
+        <button type="button" className="wb-current-task" onClick={() => focusPendingInteraction('smooth')}>
           <span className="wb-current-task-dot" aria-hidden="true" />
           <span>
             <b>当前待处理决定</b>
@@ -128,7 +159,7 @@ export default function RightPane() {
         </button>
       )}
 
-      <div ref={scroller} className="wb-scroll"
+      <div ref={scroller} className="wb-scroll" aria-busy={replayingHistory || undefined}
         onWheel={(event) => { if (event.deltaY < 0) followingTail.current = false; }}
         onPointerDown={() => { draggingScroll.current = true; }}
         onPointerUp={() => { draggingScroll.current = false; }}
