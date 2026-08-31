@@ -36,6 +36,11 @@ RESOURCE_KEYS = {
 }
 
 
+def _acceptance_placeholder_api_key() -> str:
+    """Return a deterministic non-secret value required by the model client schema."""
+    return hashlib.sha256(__name__.encode("utf-8")).hexdigest()
+
+
 class AcceptanceModel(Model):
     """Deterministic openJiuwen model used only by marked synthetic browser projects.
 
@@ -47,7 +52,7 @@ class AcceptanceModel(Model):
         template = init_model(
             provider="OpenAI",
             model_name="browser-acceptance-model",
-            api_key="unused",
+            api_key=_acceptance_placeholder_api_key(),
             api_base="http://127.0.0.1:9/unused",
         )
         super().__init__(
@@ -208,19 +213,29 @@ def _domain_turn(
 
     staged = [call for call in calls if call.name == "stage_change_set"]
     receipts = [call for call in calls if call.name == "get_change_set_receipt"]
-    staged_boundary = max(
-        [call.index for call in staged if call.result.get("status") in {"staged", "validated", "waiting_user"}]
-        + [call.index for call in receipts if isinstance(call.result.get("change_set"), Mapping)
-           and call.result["change_set"].get("status") in {"staged", "validated", "waiting_user"}]
-        + [call.index for call in schema_syncs if call.result.get("ok") is True],
-        default=-1,
-    )
-    pending_domain_tasks = [
-        task for task in plan.get("tasks", [])
-        if isinstance(task, Mapping)
-        and str(task.get("resource_kind") or "") in RESOURCE_KEYS
-        and str(task.get("status") or "pending") == "pending"
-    ]
+    staged_indexes: list[int] = []
+    for call in staged:
+        if call.result.get("status") in {"staged", "validated", "waiting_user"}:
+            staged_indexes.append(call.index)
+    for call in receipts:
+        change_set = call.result.get("change_set")
+        if isinstance(change_set, Mapping) and change_set.get("status") in {
+            "staged", "validated", "waiting_user",
+        }:
+            staged_indexes.append(call.index)
+    for call in schema_syncs:
+        if call.result.get("ok") is True:
+            staged_indexes.append(call.index)
+    staged_boundary = max(staged_indexes, default=-1)
+
+    pending_domain_tasks: list[Mapping[str, Any]] = []
+    for task in plan.get("tasks", []):
+        if not isinstance(task, Mapping):
+            continue
+        resource_kind = str(task.get("resource_kind") or "")
+        status = str(task.get("status") or "pending")
+        if resource_kind in RESOURCE_KEYS and status == "pending":
+            pending_domain_tasks.append(task)
     if staged_boundary < 0 or (pending_domain_tasks and not staged):
         return _tool("stage_change_set", _change_set_arguments(effective_prompt, plan, calls, generation), available)
 
@@ -572,16 +587,24 @@ def _decision_turn(prompt: str, available: set[str]) -> PlannedTurn:
 
 
 def _needs_decision(prompt: str) -> bool:
-    return any(marker in prompt for marker in (
+    markers = (
         "同名测试指标", "删除被", "不存在的", "不存在锚点", "TODO", "动态执行",
         "目标不够明确", "没有给出阈值", "不能自行猜测",
-    ))
+    )
+    for marker in markers:
+        if marker in prompt:
+            return True
+    return False
 
 
 def _requests_discard(feedback: str) -> bool:
-    return any(marker in feedback for marker in (
+    markers = (
         "放弃", "撤销", "不需要修改", "不要修改", "保持当前", "保持已确认",
-    ))
+    )
+    for marker in markers:
+        if marker in feedback:
+            return True
+    return False
 
 
 def _status_only(prompt: str) -> bool:
@@ -611,9 +634,13 @@ def _is_generation(prompt: str, scenario: str) -> bool:
 
 def _target_kinds(prompt: str, generation: bool) -> list[str]:
     if generation:
-        selected = [kind for kind, marker in (
+        selected: list[str] = []
+        target_markers = (
             ("object", "对象"), ("rule", "规则"), ("operation", "操作"), ("metric", "指标"),
-        ) if marker in prompt]
+        )
+        for kind, marker in target_markers:
+            if marker in prompt:
+                selected.append(kind)
         return selected or ["object", "rule", "operation", "metric"]
     selected: list[str] = []
     if "会员档案" in prompt:
@@ -729,7 +756,7 @@ def _business_prompt(messages: list[Any]) -> str:
             raw = content.split("# Execution Brief", 1)[1].strip()
             try:
                 goal = str(json.loads(raw).get("userGoal") or "")
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError):
                 goal = ""
             if goal:
                 candidates.append(goal)
