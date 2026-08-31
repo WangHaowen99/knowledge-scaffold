@@ -932,6 +932,7 @@ test('Change Plan 用一个原子 Change Set 完成跨类型修改并可重放�
 
   const currentPlan = await tool(app, project.id, 'get_change_plan', { plan_id: plan.id }, runId);
   assert.deepEqual(currentPlan.json().plan.tasks.map((item: any) => item.status), ['staged', 'staged']);
+  assert.equal(currentPlan.json().plan.expected_revision, staged.json().working_revision);
   const receipt = await tool(app, project.id, 'get_change_set_receipt', {
     mutation_id: 'change-set-cross-resource-success',
   }, runId);

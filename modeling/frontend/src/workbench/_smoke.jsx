@@ -1351,11 +1351,11 @@ actions.handleEvent({
 });
 try {
   const recovery = store.get().messages.find((message) => message.id === 'tool-alert-run-recovery-call-change-set');
-  const block = recovery?.blocks?.[0];
-  if (block?.type !== 'error' || !block.text.includes('响应丢失') || block.actions?.length) {
-    throw new Error('自动恢复记录没有在后续成功后留在消息流');
+  const trace = store.get().trace.find((item) => item.toolCallId === 'call-change-set');
+  if (recovery || trace?.phase !== 'repairing' || !trace.summary.includes('响应丢失')) {
+    throw new Error('自动恢复过程没有仅保留在活动记录');
   }
-  console.log('✓ 工具自动恢复过程持久显示');
+  console.log('✓ 工具自动恢复过程不占用主对话');
 } catch (e) { console.log('✗ 工具自动恢复记录:', e.message); bad++; }
 
 store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
@@ -1373,21 +1373,41 @@ actions.handleEvent({
 });
 try {
   const issues = store.get().messages.filter((message) => message.id === 'tool-issue-run-issue-issue-binding');
-  const html = renderToString(<Block block={issues[0]?.blocks?.[0]} />);
-  if (issues.length !== 1 || !issues[0].blocks[0].text.includes('正在读取对象')
-    || !html.includes('系统正在自动修正') || !html.includes('card-wait')) {
-    throw new Error('同一问题没有原位更新，或自动修正态仍显示为红色阻塞');
+  if (issues.length !== 0) {
+    throw new Error('自动修正中的技术问题仍占据主对话');
   }
   actions.handleEvent({
     eventType: 'tool', seq: 3, runId: 'run-issue', toolCallId: 'call-binding',
+    name: 'patch_object_source_binding', phase: 'waiting', code: 'RECOVERY_EXHAUSTED',
+    issueId: 'issue-binding', issueStatus: 'awaiting_user', problemVisibility: 'recovery',
+    repairStopped: true, summary: '自动处理仍有未完成项，请选择如何处理当前成果。',
+    recoveryActions: [{
+      id: 'retry_from_latest', label: '基于最新内容继续', description: '只处理未完成部分。',
+    }, {
+      id: 'keep_current_progress', label: '保留当前成果，结束本轮', description: '保留已有修改。',
+    }],
+    createdAt: '2026-01-01T00:00:02Z',
+  });
+  const recoveryIssue = store.get().messages.find((message) => message.id === 'tool-issue-run-issue-issue-binding');
+  const html = renderToString(<Block block={recoveryIssue?.blocks?.[0]} />);
+  if (recoveryIssue?.blocks?.[0]?.type !== 'recovery'
+    || !html.includes('请选择后续处理')
+    || !html.includes('基于最新内容继续')
+    || !html.includes('保留当前成果，结束本轮')
+    || html.includes('card-stale')
+    || html.includes('当前问题需要处理')) {
+    throw new Error('自动恢复到达上限后没有形成客户可操作的非红色选择卡');
+  }
+  actions.handleEvent({
+    eventType: 'tool', seq: 4, runId: 'run-issue', toolCallId: 'call-binding-resolved',
     name: 'patch_object_source_binding', phase: 'completed', issueStatus: 'resolved',
     resolvedIssueIds: ['issue-binding'], summary: '对象与数据表绑定完成',
-    createdAt: '2026-01-01T00:00:02Z',
+    createdAt: '2026-01-01T00:00:03Z',
   });
   if (store.get().messages.some((message) => message.id === 'tool-issue-run-issue-issue-binding')) {
     throw new Error('已解决问题仍占据主对话');
   }
-  console.log('✓ 工具问题按生命周期原位更新并在解决后收起');
+  console.log('✓ 自动恢复隐藏且耗尽后提供客户处理出口');
 } catch (e) { console.log('✗ 工具问题生命周期:', e.message); bad++; }
 
 store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null, drawerOpen: true });

@@ -19,10 +19,42 @@ export function Block({ block }) {
     case 'policy':    return <PolicyBlock />;
     case 'preview':   return <PreviewBlock b={block} />;
     case 'error':     return <ErrorBlock block={block} />;
+    case 'recovery':  return <RecoveryBlock block={block} />;
     case 'upload':    return <UploadBlock block={block} />;
     case 'uploadResult': return <UploadResult block={block} />;
     default:          return null;
   }
+}
+
+function RecoveryBlock({ block }) {
+  const [busy, setBusy] = useState('');
+  const run = async (action) => {
+    if (!action?.id || busy) return;
+    setBusy(action.id);
+    try {
+      if (block.issueId) await actions.resumeIssue(block.issueId, action.id);
+      else await actions.send(action.message || '请从已保存的当前进展继续，只处理尚未完成的部分。');
+    } finally {
+      setBusy('');
+    }
+  };
+  return (
+    <div className="card card-wait">
+      <div className="card-h">请选择后续处理</div>
+      <div className="card-b">
+        <div className="wb-text" style={{ marginBottom: 'var(--s-3)' }}>
+          <MarkdownContent>{userFacingText(block.text)}</MarkdownContent>
+        </div>
+        {(block.actions || []).map((action) => (
+          <button key={action.id || action.label} type="button" className="wb-opt"
+            disabled={Boolean(busy)} onClick={() => void run(action)}>
+            <b>{busy === action.id ? '正在处理…' : userFacingText(action.label || '继续')}</b>
+            {action.description && <span>{userFacingText(action.description)}</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ErrorBlock({ block }) {

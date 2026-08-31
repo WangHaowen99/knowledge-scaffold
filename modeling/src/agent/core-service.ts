@@ -1060,7 +1060,17 @@ export class AgentCoreService {
           '知识包内容已经变化，请重新读取计划目标后生成新的 Change Set',
           ['读取当前建模计划和资源快照，不要原样重试旧参数'],
           409,
-          { expected_revision: expectedRevision, current_revision: working.workingRevision, retryable: false },
+          {
+            expected_revision: expectedRevision,
+            current_revision: working.workingRevision,
+            retryable: false,
+            recovery: {
+              owner: 'agent',
+              strategy: 'refresh_change_set',
+              requiredTool: 'stage_change_set',
+              maxAttempts: 2,
+            },
+          },
         );
       }
       const batch = this.compileChangeSetBatch(context, working, actions);

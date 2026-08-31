@@ -1268,38 +1268,7 @@ class AgentService:
         last_report = repair_snapshot.get("lastReport")
         if isinstance(last_report, dict) and last_report.get("issueId"):
             repair_issue_ids.add(str(last_report["issueId"]))
-
-        if technical is not None:
-            expected_action = str(technical.get("actionId") or "resume_required_tool")
-            if normalized_action != expected_action:
-                raise AgentRuntimeError(
-                    "ISSUE_ACTION_STALE", "当前问题的恢复动作已经变化，请刷新后重试", status=409,
-                )
-            required_tools = {str(technical.get("requiredTool") or "").strip()}
-            required_tools.discard("")
-            recovery_prompt = (
-                "页面请求继续一个仍然有效的系统恢复问题。不要把它当成用户业务发言；"
-                "立即按已持久化的 required tool 恢复，成功后重新校验候选。"
-            )
-            initial_recoveries = {normalized_issue: technical}
-            initial_repair = None
-        elif normalized_issue in repair_issue_ids:
-            if normalized_action != "review_validation_findings":
-                raise AgentRuntimeError(
-                    "ISSUE_ACTION_STALE", "当前问题的恢复动作已经变化，请刷新后重试", status=409,
-                )
-            required_tools = {"get_validation_summary"}
-            recovery_prompt = (
-                "页面请求继续当前校验问题。不要重做已经完成的修改；先读取最新校验摘要和分页明细，"
-                "只处理仍未解决的 finding，随后执行完整候选校验。"
-            )
-            initial_recoveries = None
-            initial_repair = repair_snapshot
-        else:
-            raise AgentRuntimeError(
-                "ISSUE_ACTION_STALE", "这个问题已经解决或被后续状态替代", status=409,
-            )
-
+        is_validation_issue = normalized_issue in repair_issue_ids
         execution = self._execution(project_id, run.id)
         interaction = self.store.pending_interaction(project_id)
         if interaction is not None and interaction.run_id == run.id:
@@ -1308,6 +1277,126 @@ class AgentService:
                 "当前还有一项业务决定等待处理，请先完成该决定",
                 status=409,
             )
+
+        if normalized_action == "keep_current_progress":
+            if technical is None and not is_validation_issue:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "这个问题已经解决或被后续状态替代", status=409,
+                )
+            if technical is not None:
+                self.store.resolve_technical_recoveries(run.id, [normalized_issue])
+            if is_validation_issue:
+                self._validation_repair_state(run.id).reset()
+            live = self._live.get(run.id)
+            if live is not None:
+                live.technical_recoveries.pop(normalized_issue, None)
+                if technical is not None:
+                    live.required_tools.discard(str(technical.get("requiredTool") or ""))
+            if execution in {RUN_QUEUED, RUN_RUNNING, RUN_STOPPING}:
+                settled_run = await self.cancel(project_id=project_id)
+            else:
+                updated = self.store.update_run(
+                    run.id,
+                    status=RUN_CANCELLED,
+                    result="已保留当前成果并结束本轮",
+                    error="",
+                )
+                self._publish_state(project_id, run.id)
+                self.events.publish(project_id, run.id, "status", {
+                    "status": RUN_CANCELLED,
+                    "text": "已结束本轮，已完成的候选内容保留",
+                })
+                settled_run = self._run_public(updated, self.store.project_state(project_id))
+            self.events.publish(project_id, run.id, "tool", {
+                "name": "issue_recovery",
+                "phase": "completed",
+                "summary": "已保留当前成果并结束本轮",
+                "issueStatus": "resolved",
+                "resolvedIssueIds": [normalized_issue],
+            })
+            return {
+                "mode": "kept",
+                "run": settled_run,
+                "issueId": normalized_issue,
+                "resolvedIssueIds": [normalized_issue],
+            }
+
+        if technical is not None:
+            available_actions = {
+                str(item.get("id") or "").strip()
+                for item in technical.get("recoveryActions") or []
+                if isinstance(item, dict)
+            }
+            available_actions.add(str(technical.get("actionId") or "resume_required_tool"))
+            available_actions.discard("")
+            if normalized_action not in available_actions:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "当前问题的恢复动作已经变化，请刷新后重试", status=409,
+                )
+            technical = dict(technical)
+            if normalized_action == "retry_from_latest":
+                technical.update({"attempt": 0, "exhausted": False})
+                self.store.save_technical_recovery(run.id, normalized_issue, technical)
+            required_tools = {str(technical.get("requiredTool") or "").strip()}
+            required_tools.discard("")
+            recovery_prompt = (
+                "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
+                "先清除旧参数，重新读取当前建模计划和涉及的资源快照，"
+                "再用新的 mutation_id 生成 Change Set。"
+                "只处理尚未完成的任务，不得原样重放旧参数。"
+                if technical.get("strategy") == "refresh_change_set"
+                else (
+                    "页面请求继续一个仍然有效的系统恢复问题。不要把它当成用户业务发言；"
+                    "立即按已持久化的 required tool 恢复，成功后重新校验候选。"
+                )
+            )
+            initial_recoveries = {normalized_issue: technical}
+            initial_repair = None
+        elif is_validation_issue:
+            if normalized_action != "review_validation_findings":
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "当前问题的恢复动作已经变化，请刷新后重试", status=409,
+                )
+            report_id = str(
+                last_report.get("validationReportId")
+                if isinstance(last_report, dict) else ""
+            ).strip()
+            finding_fingerprint = str(
+                last_report.get("findingFingerprint")
+                if isinstance(last_report, dict) else ""
+            ).strip()
+            self._validation_repair_state(run.id).reset()
+            repair_snapshot = self.store.validation_repair_state(run.id) or {}
+            if report_id:
+                required_tools = {"get_validation_summary"}
+                recovery_prompt = (
+                    "页面请求继续当前校验问题。不要重做已经完成的修改；"
+                    f"先读取校验报告 {report_id} 的最新摘要和分页明细，"
+                    "只处理仍未解决的 finding，随后执行完整候选校验。"
+                )
+            else:
+                required_tools = {"validate_change_set"}
+                recovery_prompt = (
+                    "页面请求继续当前校验问题。不要重做已经完成的修改；"
+                    "先对当前候选重新执行一次完整 Change Set 校验，再只处理仍未解决的 finding。"
+                    f"上一轮问题指纹为 {finding_fingerprint}。"
+                )
+            initial_recoveries = None
+            initial_repair = repair_snapshot
+        else:
+            raise AgentRuntimeError(
+                "ISSUE_ACTION_STALE", "这个问题已经解决或被后续状态替代", status=409,
+            )
+
+        self.events.publish(project_id, run.id, "tool", {
+            "name": "issue_recovery",
+            "phase": "repairing",
+            "summary": "已按你的选择从当前进展继续处理",
+            "code": "RECOVERY_RESUMED",
+            "issueId": normalized_issue,
+            "issueStatus": "repairing",
+            "problemVisibility": "activity",
+        })
         if execution in {RUN_SUSPENDED, RUN_WAITING}:
             resumed = await self._continue(
                 run,
@@ -1901,6 +1990,9 @@ class AgentService:
                     tool_profile=live.tool_profile,
                     required_tools=frozenset(live.required_tools),
                     require_tool=require_tool,
+                    release_required_tool=lambda name: live.required_tools.discard(
+                        str(name or "").strip(),
+                    ),
                     resolve_issues=lambda issue_ids: self.store.resolve_technical_recoveries(
                         live.run_id, issue_ids,
                     ),
@@ -1948,6 +2040,23 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                if context.recovery_waiting or result.get("recovery_wait") is True:
+                    self.store.update_run(
+                        run.id,
+                        status=RUN_SUSPENDED,
+                        result="",
+                        error="",
+                    )
+                    self._publish_state(run.project_id, run.id)
+                    self.events.publish(run.project_id, run.id, "checkpoint", {
+                        "id": run.session_id,
+                        "revision": run.candidate_revision or run.baseline_revision,
+                    })
+                    self.events.publish(run.project_id, run.id, "status", {
+                        "status": RUN_SUSPENDED,
+                        "text": "已保留当前成果，等待你选择后续处理",
+                    })
+                    return
                 if live.plan_approval_required:
                     output = str(result.get("output") or "").strip()
                     self.store.update_run(

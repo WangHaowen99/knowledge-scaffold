@@ -538,8 +538,11 @@ export class ChangeControlStore {
         SET status = 'staged', change_set_id = ?, updated_at = ?
         WHERE plan_id = ? AND id = ? AND status = 'pending'`);
       for (const taskId of actionTaskIds) update.run(row.id, timestamp, row.plan_id, taskId);
-      this.db.prepare(`UPDATE agent_change_plans SET version = version + 1, updated_at = ? WHERE id = ?`)
-        .run(timestamp, row.plan_id);
+      const resultingRevision = String(receipt.working_revision ?? '');
+      this.db.prepare(`UPDATE agent_change_plans SET version = version + 1,
+        expected_revision = CASE WHEN ? <> '' THEN ? ELSE expected_revision END,
+        updated_at = ? WHERE id = ?`)
+        .run(resultingRevision, resultingRevision, timestamp, row.plan_id);
       this.event(row.project_id, row.run_id, row.plan_id, row.id, 'change_set.staged', '计划任务已形成待确认修改', {
         workingRevision: receipt.working_revision, changedPaths: receipt.changed_paths,
       });

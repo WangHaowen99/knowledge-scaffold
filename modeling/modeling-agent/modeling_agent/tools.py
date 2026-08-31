@@ -23,6 +23,7 @@ ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 ValidationRepairSave = Callable[[dict[str, Any]], None]
 RequireTool = Callable[[str, dict[str, Any]], None]
+ReleaseRequiredTool = Callable[[str], None]
 ResolveIssues = Callable[[list[str]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 # Keep the outer tool deadline beyond the core client's 1800-second deadline.
@@ -135,6 +136,7 @@ class ToolContext:
     tool_profile: str = "domain-v2"
     required_tools: frozenset[str] = frozenset()
     require_tool: RequireTool | None = None
+    release_required_tool: ReleaseRequiredTool | None = None
     resolve_issues: ResolveIssues | None = None
     technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_action: StateAction | None = None
@@ -143,6 +145,7 @@ class ToolContext:
     tool_receipt_lookup: ToolReceiptLookup | None = None
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    recovery_waiting: bool = False
     evaluation_cancel_authorized: bool = False
     confirmation_required: bool = False
     interjection_reply_required: bool = False
@@ -462,23 +465,37 @@ class CandidateValidationRepairState:
             "error": "CANDIDATE_REPAIR_STOPPED",
             "retryable": False,
             "issueId": issue_id,
-            "issueStatus": "blocked",
+            "issueStatus": "awaiting_user",
             "repairAttempt": attempts,
             "repairRoundId": str(report.get("repairRoundId") or self.current_round_id),
             "findingFingerprint": selected,
             "repeatedFinding": attempts > 1,
             "repairStopped": True,
-            "tracePhase": "blocked",
+            "tracePhase": "waiting",
+            "problemVisibility": "recovery",
+            "customerSummary": "自动修正仍有未完成项，请选择如何处理当前成果。",
             "instruction": (
-                "自动修正已停止。完整校验报告仍由 core 保留；可以读取、删除或撤销候选，"
-                "但不要继续生成新的候选文件，直到用户决定下一步。"
+                "自动修正已达到上限。完整校验报告仍由 core 保留；停止继续尝试，"
+                "等待用户选择重新检查未完成项，或保留当前成果并结束本轮。"
             ),
-            "display": {"text": "候选自动修正已停止，需要检查校验明细"},
+            "display": {"text": "自动修正仍有未完成项，等待选择后续处理"},
             "recoveryAction": {
                 "id": "review_validation_findings",
-                "label": "检查校验明细",
+                "label": "重新检查并继续",
                 "message": "请读取当前问题的校验明细，只处理仍未解决的 finding，再从已保存进展继续。",
             },
+            "recoveryActions": [
+                {
+                    "id": "review_validation_findings",
+                    "label": "重新检查并继续",
+                    "description": "从已保存进展继续，只处理仍未解决的内容。",
+                },
+                {
+                    "id": "keep_current_progress",
+                    "label": "保留当前成果，结束本轮",
+                    "description": "保留已经完成的候选修改，暂不继续自动修正。",
+                },
+            ],
         }
 
     def claim_stop_notice(self) -> bool:
@@ -1885,6 +1902,9 @@ class CoreTool(Tool):
         finally:
             if self.context.inflight_core_calls is not None:
                 self.context.inflight_core_calls.discard(call)
+        autonomous_recovery = _autonomous_recovery(self.spec.name, arguments, result, self.context)
+        if autonomous_recovery is not None:
+            result = autonomous_recovery
         redirect = _tool_redirect(result)
         if redirect is not None:
             issue_id = str(redirect["issueId"])
@@ -1927,6 +1947,8 @@ class CoreTool(Tool):
                     "issueStatus": "resolved",
                     "resolvedIssueIds": resolved_issue_ids,
                 }
+        if result.get("problemVisibility") == "recovery":
+            self.context.recovery_waiting = True
         if not result.get("error") and self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
         return json.dumps(_compact_source_result(self.spec.name, result), ensure_ascii=False)
@@ -1983,6 +2005,106 @@ def _tool_redirect(result: Mapping[str, Any]) -> dict[str, Any] | None:
         "requiredTool": required_tool,
         "targetKind": str(result.get("targetKind") or ""),
         "actionId": action_id,
+    }
+
+
+def _autonomous_recovery(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    result: Mapping[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | None:
+    recovery_config = result.get("recovery")
+    if (
+        not result.get("error")
+        or not isinstance(recovery_config, Mapping)
+        or str(recovery_config.get("owner") or "") != "agent"
+    ):
+        return None
+    strategy = str(recovery_config.get("strategy") or "refresh_and_retry").strip()
+    required_tool = str(recovery_config.get("requiredTool") or tool_name).strip() or tool_name
+    try:
+        max_attempts = max(1, int(recovery_config.get("maxAttempts") or 2))
+    except (TypeError, ValueError):
+        max_attempts = 2
+    scope = {
+        key: arguments.get(key)
+        for key in ("plan_id", "resource_id", "round_id", "path")
+        if arguments.get(key) is not None
+    }
+    identity = json.dumps({
+        "error": result.get("error"),
+        "sourceTool": tool_name,
+        "strategy": strategy,
+        "scope": scope,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    issue_id = str(result.get("issueId") or "").strip() or (
+        f"agent-recovery-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:20]}"
+    )
+    previous = context.technical_recoveries.get(issue_id, {})
+    previous_attempt = _non_negative_int(previous.get("attempt"))
+    exhausted = previous_attempt >= max_attempts
+    attempt = previous_attempt if exhausted else previous_attempt + 1
+    recovery_actions = [
+        {
+            "id": "retry_from_latest",
+            "label": "基于最新内容继续",
+            "description": "重新同步当前计划和内容，只处理尚未完成的部分。",
+        },
+        {
+            "id": "keep_current_progress",
+            "label": "保留当前成果，结束本轮",
+            "description": "保留已经完成的修改，暂不继续本轮处理。",
+        },
+    ]
+    recovery = {
+        "issueId": issue_id,
+        "requiredTool": required_tool,
+        "sourceTool": tool_name,
+        "strategy": strategy,
+        "actionId": "retry_from_latest",
+        "recoveryActions": recovery_actions,
+        "attempt": attempt,
+        "maxAttempts": max_attempts,
+        "exhausted": exhausted,
+        "scope": scope,
+    }
+    context.technical_recoveries[issue_id] = recovery
+    if context.require_tool is not None:
+        context.require_tool(required_tool, recovery)
+    context.stable_read_cache.clear()
+    if not exhausted:
+        return {
+            **dict(result),
+            "issueId": issue_id,
+            "issueStatus": "repairing",
+            "repairAttempt": attempt,
+            "tracePhase": "repairing",
+            "problemVisibility": "activity",
+            "instruction": (
+                "这是系统可自行恢复的版本冲突。先重新读取当前建模计划和涉及的资源快照，"
+                "再按最新 revision 与 resource hash 生成新的参数和 mutation_id；"
+                "不得原样重放旧 Change Set。"
+            ),
+            "display": {"text": "内容版本已更新，正在同步最新状态后继续"},
+        }
+    if context.release_required_tool is not None:
+        context.release_required_tool(required_tool)
+    return {
+        **dict(result),
+        "issueId": issue_id,
+        "issueStatus": "awaiting_user",
+        "repairAttempt": attempt,
+        "repairStopped": True,
+        "tracePhase": "waiting",
+        "problemVisibility": "recovery",
+        "customerSummary": "自动同步仍未完成，请选择如何处理当前成果。",
+        "instruction": (
+            "自动恢复已达到上限。停止继续尝试并等待用户选择；不要把技术错误或内部参数交给用户。"
+        ),
+        "display": {"text": "自动同步仍未完成，等待选择后续处理"},
+        "recoveryAction": recovery_actions[0],
+        "recoveryActions": recovery_actions,
     }
 
 

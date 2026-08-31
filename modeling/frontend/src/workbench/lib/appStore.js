@@ -392,23 +392,45 @@ export const actions = {
       if (resolvedIssueIds.size) {
         store.set((state) => ({
           messages: state.messages.filter((message) => !message.blocks?.some((block) => (
-            block.type === 'error' && resolvedIssueIds.has(String(block.issueId || ''))
+            ['error', 'recovery'].includes(block.type)
+              && resolvedIssueIds.has(String(block.issueId || ''))
+          ))),
+        }));
+      }
+      if (event.phase === 'repairing' && event.issueId) {
+        store.set((state) => ({
+          messages: state.messages.filter((message) => !message.blocks?.some((block) => (
+            ['error', 'recovery'].includes(block.type)
+              && String(block.issueId || '') === String(event.issueId)
           ))),
         }));
       }
       if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_work_notes', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation', 'discard_rejected_candidate_changes'].includes(event.name)) {
         void actions.refreshSnapshot();
       }
-      if (event.code && (!replaying || event.issueId)
-        && ['repairing', 'failed', 'blocked', 'rejected'].includes(event.phase)) {
+      const automaticRecovery = event.phase === 'repairing' || event.problemVisibility === 'activity';
+      if (!automaticRecovery && event.code && (!replaying || event.issueId)
+        && ['failed', 'blocked', 'rejected', 'waiting'].includes(event.phase)) {
         const issueId = String(event.issueId || '');
-        const recoveryAction = event.recoveryAction && typeof event.recoveryAction === 'object'
-          ? {
-            ...event.recoveryAction,
-            message: event.recoveryAction.message
-              || '请按当前问题的确定性恢复步骤继续，只处理仍未完成的部分。',
-          }
-          : null;
+        const recoveryActions = Array.isArray(event.recoveryActions)
+          ? event.recoveryActions.filter((item) => item && typeof item === 'object')
+          : event.recoveryAction && typeof event.recoveryAction === 'object'
+            ? [event.recoveryAction]
+            : event.repairStopped
+              ? [{
+                id: 'review_validation_findings',
+                label: '重新检查并继续',
+                description: '从已保存进展继续，只处理仍未解决的内容。',
+              }, {
+                id: 'keep_current_progress',
+                label: '保留当前成果，结束本轮',
+                description: '保留已经完成的候选修改，暂不继续自动修正。',
+              }]
+              : [];
+        const recoveryProblem = event.problemVisibility === 'recovery'
+          || event.phase === 'waiting'
+          || event.repairStopped
+          || recoveryActions.length > 0;
         actions.appendMessage({
           id: issueId
             ? `tool-issue-${event.runId || 'run'}-${issueId}`
@@ -416,19 +438,11 @@ export const actions = {
           role: 'assistant',
           createdAt,
           blocks: [{
-            type: 'error',
+            type: recoveryProblem ? 'recovery' : 'error',
             issueId,
             status: event.issueStatus || event.phase,
             text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
-            actions: recoveryAction
-              ? [recoveryAction]
-              : event.repairStopped
-              ? [{
-                id: 'review_validation_findings',
-                label: '检查校验明细',
-                message: '请读取当前问题的校验明细，只处理仍未解决的 finding，再从已保存进展继续。',
-              }]
-              : [],
+            actions: recoveryActions,
           }],
         });
       }
@@ -681,6 +695,12 @@ export const actions = {
     try {
       const result = await resumeAgentIssue(projectId, issueId, actionId);
       if (result.run) store.set({ run: result.run, error: '' });
+      store.set((state) => ({
+        messages: state.messages.filter((message) => !message.blocks?.some((block) => (
+          ['error', 'recovery'].includes(block.type)
+            && String(block.issueId || '') === String(issueId)
+        ))),
+      }));
       return result;
     } catch (error) {
       store.set({ error: {
@@ -1102,6 +1122,8 @@ export function mergeToolTrace(trace, event, seq) {
     findingCount: Number(event.findingCount) || 0,
     issueId: event.issueId || '',
     issueStatus: event.issueStatus || '',
+    problemVisibility: event.problemVisibility || '',
+    recoveryActions: event.recoveryActions || [],
     resolvedIssueIds: event.resolvedIssueIds || [],
     segmentCount: 1,
     toolCallIds: toolCallId ? [toolCallId] : [],

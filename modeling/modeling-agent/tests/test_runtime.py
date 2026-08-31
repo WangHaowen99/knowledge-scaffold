@@ -648,7 +648,13 @@ async def test_candidate_validation_repair_remembers_issue_across_alternating_fi
         "sha256:alternating-b": 1,
     }
     assert state.stopped is True
-    assert state.blocked_result("sha256:alternating-a")["repairStopped"] is True
+    blocked = state.blocked_result("sha256:alternating-a")
+    assert blocked["repairStopped"] is True
+    assert blocked["tracePhase"] == "waiting"
+    assert blocked["problemVisibility"] == "recovery"
+    assert [action["id"] for action in blocked["recoveryActions"]] == [
+        "review_validation_findings", "keep_current_progress",
+    ]
 
     unrelated = state.record({
         "error": "CANDIDATE_FORMAT_INVALID",
@@ -819,6 +825,141 @@ async def test_managed_file_failure_requires_domain_tool_and_resolves_same_issue
     assert recoveries == {}
 
 
+async def test_revision_conflict_auto_recovers_then_offers_customer_actions() -> None:
+    gateway = FakeGateway({
+        "stage_change_set": {
+            "error": "REVISION_CONFLICT",
+            "reason": "知识包内容已经变化，请重新读取计划目标后生成新的 Change Set",
+            "retryable": False,
+            "recovery": {
+                "owner": "agent",
+                "strategy": "refresh_change_set",
+                "requiredTool": "stage_change_set",
+                "maxAttempts": 2,
+            },
+        },
+    })
+    required: list[str] = []
+    released: list[str] = []
+    context = ToolContext(
+        project_id="project_revision_recovery",
+        run_id="run_revision_recovery",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+        require_tool=lambda name, _recovery: required.append(name),
+        release_required_tool=lambda name: released.append(name),
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "stage_change_set")
+    arguments = {
+        "plan_id": "plan_revision_recovery",
+        "expected_revision": "sha256:old",
+        "mutation_id": "revision-recovery-fixture",
+        "actions": [],
+    }
+
+    first = json.loads(await CoreTool(spec, context).invoke(arguments))
+    second = json.loads(await CoreTool(spec, context).invoke(arguments))
+    exhausted = json.loads(await CoreTool(spec, context).invoke(arguments))
+
+    assert first["tracePhase"] == "repairing"
+    assert first["problemVisibility"] == "activity"
+    assert first["repairAttempt"] == 1
+    assert second["tracePhase"] == "repairing"
+    assert second["repairAttempt"] == 2
+    assert exhausted["tracePhase"] == "waiting"
+    assert exhausted["issueStatus"] == "awaiting_user"
+    assert exhausted["problemVisibility"] == "recovery"
+    assert exhausted["repairStopped"] is True
+    assert [action["id"] for action in exhausted["recoveryActions"]] == [
+        "retry_from_latest", "keep_current_progress",
+    ]
+    assert required == ["stage_change_set"] * 3
+    assert released == ["stage_change_set"]
+    recovery = context.technical_recoveries[exhausted["issueId"]]
+    assert recovery["attempt"] == 2
+    assert recovery["exhausted"] is True
+
+
+async def test_revision_recovery_exhaustion_suspends_run_without_error_message(settings) -> None:
+    action = {
+        "task_id": "task_revision_recovery",
+        "tool": "create_object",
+        "arguments": {
+            "key": "revision_recovery_object",
+            "title": "版本恢复对象",
+            "description": "用于验证版本冲突恢复",
+            "fields": [{"key": "id", "type": "string", "required": True}],
+        },
+    }
+    model = ScriptedModel([
+        [ToolTurn("stage_change_set", {
+            "plan_id": "plan_revision_recovery",
+            "expected_revision": "sha256:old",
+            "mutation_id": f"revision-recovery-{index}",
+            "actions": [action],
+        })]
+        for index in range(12)
+    ])
+    gateway = FakeGateway({
+        "stage_change_set": {
+            "error": "REVISION_CONFLICT",
+            "reason": "知识包内容已经变化，请重新读取计划目标后生成新的 Change Set",
+            "retryable": False,
+            "recovery": {
+                "owner": "agent",
+                "strategy": "refresh_change_set",
+                "requiredTool": "stage_change_set",
+                "maxAttempts": 2,
+            },
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        project_id = "project_revision_recovery_suspend"
+        state = runtime.store.project_state(project_id)
+        runtime.store.transition_project_state(
+            project_id,
+            expected_revision=state.revision,
+            next_state="knowledge:completed",
+            cause="test_fixture",
+            actor_run_id="",
+        )
+        started = await runtime.start_run(
+            project_id=project_id,
+            token="token_revision_recovery",
+            message="继续完成当前建模计划",
+        )
+        settled = await wait_for_status(
+            runtime, started["id"], {"suspended", "failed", "completed"}, timeout=10,
+        )
+
+        events = runtime.store.events_after(project_id, 0)
+        tool_events = [
+            event.payload for event in events
+            if event.kind == "tool" and event.payload.get("name") == "stage_change_set"
+        ]
+        assert settled["status"] == "suspended", {
+            "settled": settled,
+            "modelCalls": model.calls,
+            "toolEvents": tool_events,
+            "statuses": [event.payload for event in events if event.kind == "status"],
+        }
+        assert [
+            event["phase"] for event in tool_events if event["phase"] != "started"
+        ] == [
+            "repairing", "repairing", "waiting",
+        ]
+        assert not any(
+            event.kind == "message"
+            and any(block.get("type") == "error" for block in event.payload.get("blocks", []))
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
 async def test_ask_rejects_technical_question_while_recovery_tool_is_available() -> None:
     issue_id = "agent-issue-synthetic-binding"
     context = ToolContext(
@@ -916,6 +1057,109 @@ async def test_structured_issue_action_resumes_terminal_run_without_fake_user_me
         assert runtime.store.technical_recoveries(old.id) == {}
     finally:
         await runtime.shutdown()
+
+
+async def test_structured_issue_can_keep_progress_and_end_suspended_run(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_keep_recovery_progress",
+            project_id="project_keep_recovery_progress",
+            session_id="keep-recovery-session",
+            status="queued",
+            prompt="历史建模",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        issue_id = "agent-recovery-keep-progress"
+        runtime.store.save_technical_recovery(run.id, issue_id, {
+            "issueId": issue_id,
+            "requiredTool": "stage_change_set",
+            "strategy": "refresh_change_set",
+            "actionId": "retry_from_latest",
+            "recoveryActions": [
+                {"id": "retry_from_latest"},
+                {"id": "keep_current_progress"},
+            ],
+            "attempt": 2,
+            "maxAttempts": 2,
+            "exhausted": True,
+        })
+
+        kept = await runtime.resume_issue(
+            project_id=run.project_id,
+            token="token_keep_progress",
+            issue_id=issue_id,
+            action_id="keep_current_progress",
+        )
+
+        assert kept["mode"] == "kept"
+        assert kept["run"]["status"] == "cancelled"
+        assert kept["resolvedIssueIds"] == [issue_id]
+        assert runtime.store.technical_recoveries(run.id) == {}
+        events = runtime.store.events_after(run.project_id, 0)
+        assert any(
+            event.kind == "tool"
+            and event.payload.get("resolvedIssueIds") == [issue_id]
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_validation_issue_resume_preserves_report_locator_and_has_fallback(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    captured: list[dict] = []
+
+    async def continue_stub(run, token, prompt, **kwargs):
+        captured.append({
+            "run": run,
+            "token": token,
+            "prompt": prompt,
+            "requiredTools": kwargs.get("required_tools"),
+        })
+        return run.public()
+
+    runtime._continue = continue_stub  # type: ignore[method-assign]
+    fixtures = [
+        ("report-backed", "report-validation-resume", {"get_validation_summary"}),
+        ("inline-findings", "", {"validate_change_set"}),
+    ]
+    for suffix, report_id, expected_tools in fixtures:
+        run = runtime.store.create_run(RunRecord(
+            id=f"run_validation_resume_{suffix}",
+            project_id=f"project_validation_resume_{suffix}",
+            session_id=f"validation-resume-{suffix}",
+            status="queued",
+            prompt="历史建模",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        issue_id = f"validation-issue-{suffix}"
+        runtime.store.save_validation_repair_state(run.id, {
+            "openIssueIds": [issue_id],
+            "lastReport": {
+                "issueId": issue_id,
+                "validationReportId": report_id,
+                "findingFingerprint": f"sha256:{suffix}",
+            },
+        })
+
+        resumed = await runtime.resume_issue(
+            project_id=run.project_id,
+            token=f"token-{suffix}",
+            issue_id=issue_id,
+            action_id="review_validation_findings",
+        )
+
+        assert resumed["mode"] == "checkpoint_resume"
+        assert captured[-1]["requiredTools"] == expected_tools
+        if report_id:
+            assert report_id in captured[-1]["prompt"]
+        else:
+            assert "重新执行一次完整 Change Set 校验" in captured[-1]["prompt"]
+        assert runtime.store.validation_repair_state(run.id).get("openIssueIds") == []
 
 
 async def test_tool_context_applies_repair_policy_from_package_contract() -> None:

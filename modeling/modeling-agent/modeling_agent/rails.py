@@ -450,6 +450,19 @@ class InterjectionSafetyRail(AgentRail):
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         name = _tool_name(ctx)
+        if self._context.recovery_waiting:
+            result = {
+                "error": "RECOVERY_AWAITING_USER",
+                "instruction": "停止继续执行，等待用户选择后续处理。",
+                "suppressTrace": True,
+            }
+            _skip_tool(ctx, result)
+            ctx.request_force_finish({
+                "result_type": "answer",
+                "output": "",
+                "recovery_wait": True,
+            })
+            return
         if not self._context.interjection_reply_required or name not in self.MUTATING_TOOLS:
             return
         result = _validation_report(
@@ -1263,7 +1276,12 @@ class ActivityRail(AgentRail):
         if result.get("suppressTrace") is True:
             return
         display = result.get("display") if isinstance(result.get("display"), dict) else {}
-        summary = str(display.get("text") or result.get("reason") or "处理完成")
+        summary = str(
+            result.get("customerSummary")
+            or display.get("text")
+            or result.get("reason")
+            or "处理完成"
+        )
         trace_phase = str(result.get("tracePhase") or "")
         if trace_phase:
             phase = trace_phase
@@ -1286,6 +1304,7 @@ class ActivityRail(AgentRail):
             "findingCount": int(result.get("findingCount") or 0),
             "issueId": str(result.get("issueId") or ""),
             "issueStatus": str(result.get("issueStatus") or ""),
+            "problemVisibility": str(result.get("problemVisibility") or ""),
             "resolvedIssueIds": [
                 str(item) for item in result.get("resolvedIssueIds") or [] if str(item).strip()
             ],
@@ -1293,6 +1312,11 @@ class ActivityRail(AgentRail):
         recovery_action = result.get("recoveryAction")
         if isinstance(recovery_action, Mapping):
             payload["recoveryAction"] = dict(recovery_action)
+        recovery_actions = result.get("recoveryActions")
+        if isinstance(recovery_actions, list):
+            payload["recoveryActions"] = [
+                dict(item) for item in recovery_actions if isinstance(item, Mapping)
+            ]
         trace_group_id = tool_trace_group_id(name, _call_args(ctx))
         if trace_group_id:
             payload["traceGroupId"] = trace_group_id
@@ -1314,12 +1338,18 @@ class ActivityRail(AgentRail):
             "text": summary,
             "detail": (
                 "正在核对失败原因和可恢复的下一步"
-                if phase in {"failed", "blocked", "rejected", "repairing"}
+                if phase in {"failed", "blocked", "rejected", "repairing", "waiting"}
                 else "当前操作已经结束，正在规划下一项可执行工作"
             ),
             "phase": "planning",
             "counters": {},
         })
+        if result.get("problemVisibility") == "recovery":
+            ctx.request_force_finish({
+                "result_type": "answer",
+                "output": "",
+                "recovery_wait": True,
+            })
 
 
 def _messages_size(messages: list[Any]) -> int:
