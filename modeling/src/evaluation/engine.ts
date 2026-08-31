@@ -23,6 +23,10 @@ import { validateSpecIntegrity } from '../workflow/spec-validation.js';
 import { EvaluationAuthenticationError, EvaluationAuthSession } from './auth-session.js';
 import type { Testcase } from '../workflow/m3-repo.js';
 import { currentLlmUser, runWithLlmUser } from '../llm/user-context.js';
+import {
+  deliverAgentProjectEvents,
+  enqueueEvaluationTerminalProjectEvent,
+} from '../agent/project-event-outbox.js';
 
 // 评测引擎（M3 核心）：评测工作空间 → 导入包 → 复用本体级数据源 →
 // 逐用例 runs/sync（串行 + 退避）→ Judge → 落轮次结果。
@@ -259,10 +263,27 @@ export function startEvaluation(
       repo.roundLog(round.id, `轮次失败：${e instanceof Error ? e.message : e}`);
       repo.finishRound(round.id, 'failed');
     })
-    .finally(() => {
+    .finally(async () => {
       if (activeEvaluations.get(projectId)?.roundId === round.id) activeEvaluations.delete(projectId);
       activeProjects.delete(projectId);
       activeWorkspaces.delete(workspaceId);
+      const terminal = repo.getRound(round.id);
+      if (!terminal || terminal.status === 'running') return;
+      enqueueEvaluationTerminalProjectEvent(projectId, {
+        eventId: `evaluation:${terminal.id}:terminal`,
+        roundId: terminal.id,
+        status: terminal.status,
+        done: terminal.progressDone,
+        total: terminal.progressTotal,
+        passed: terminal.passCount,
+        finishedAt: terminal.finishedAt ?? new Date().toISOString(),
+      });
+      try {
+        const token = opts.authSession ? await opts.authSession.getAccessToken() : opts.token;
+        await deliverAgentProjectEvents(projectId, `Bearer ${token}`);
+      } catch {
+        // outbox 保留未投递事件，下一次项目请求会继续投递。
+      }
     });
   activeEvaluations.set(projectId, { roundId: round.id, controller, completion });
   void completion;

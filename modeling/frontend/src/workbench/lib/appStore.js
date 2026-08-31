@@ -536,14 +536,14 @@ export const actions = {
       }));
     }
     if (eventType === 'interaction') {
-      if (event.status === 'answered') {
+      if (event.status !== 'pending') {
         store.set((state) => ({
-          interaction: null,
+          interaction: state.interaction?.id === event.id ? null : state.interaction,
           messages: state.messages.map((message) => message.id === `interaction-${event.id}`
             ? {
               ...message,
               blocks: message.blocks.map((block) => block.interaction
-                ? { ...block, interaction: { ...block.interaction, status: 'answered', answer: event.answer } }
+                ? { ...block, interaction: { ...block.interaction, status: event.status, answer: event.answer } }
                 : block),
             }
             : message),
@@ -555,8 +555,10 @@ export const actions = {
           payload: event.payload || {},
           status: event.status || 'pending',
         };
+        const authoritativeInteractionId = String(store.get().interaction?.id || '');
+        const restoreAsPending = !replaying || authoritativeInteractionId === interaction.id;
         store.set((state) => ({
-          interaction,
+          ...(restoreAsPending ? { interaction } : {}),
           reviewedChangeGroups: state.interaction?.id === interaction.id
             ? state.reviewedChangeGroups
             : [],
@@ -571,7 +573,8 @@ export const actions = {
           createdAt: event.createdAt,
           blocks: [{ type: interaction.kind === 'confirmation'
             ? 'confirm'
-            : interaction.kind === 'release_confirmation' ? 'release' : 'ask', interaction }],
+            : interaction.kind === 'release_confirmation' ? 'release' : 'ask',
+          interaction: restoreAsPending ? interaction : { ...interaction, status: 'superseded' } }],
         });
       }
     }

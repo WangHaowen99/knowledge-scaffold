@@ -2574,6 +2574,44 @@ test('Agent 停止运行时取消评测工具可幂等执行', async (t) => {
   assert.equal(cancelled.json().idempotent, true);
 });
 
+test('Agent 项目状态读取最近评测终态且重复停止指定终态轮次不产生副作用', async (t) => {
+  const project = createProject({ owner: 'alice', name: '评测终态快照' });
+  const app = appFor(t);
+  const m3 = await import('../src/workflow/m3-repo.js');
+  const previous = m3.createRound(project.id, '1.0.0-rc.1', 4);
+  m3.roundProgress(previous.id, 2, 1);
+  m3.finishRound(previous.id, 'failed');
+  const latest = m3.createRound(project.id, '1.0.0-rc.2', 6);
+  m3.roundProgress(latest.id, 6, 5);
+  m3.finishRound(latest.id, 'done');
+
+  const status = await tool(app, project.id, 'evaluation_status', {}, `run-${project.id}`);
+  assert.equal(status.statusCode, 200, status.body);
+  assert.deepEqual(status.json(), {
+    available: true,
+    roundId: latest.id,
+    status: 'done',
+    terminal: true,
+    done: 6,
+    total: 6,
+    passed: 5,
+    createdAt: latest.createdAt,
+    finishedAt: m3.getRound(latest.id)?.finishedAt,
+    scope: { kind: 'current' },
+    display: { text: '最近一轮评测已经结束' },
+  });
+
+  const repeated = await tool(app, project.id, 'cancel_evaluation', {
+    round_id: previous.id,
+  }, `run-${project.id}`);
+  assert.equal(repeated.statusCode, 200, repeated.body);
+  assert.equal(repeated.json().cancelled, false);
+  assert.equal(repeated.json().idempotent, true);
+  assert.equal(repeated.json().roundId, previous.id);
+  assert.equal(repeated.json().status, 'failed');
+  assert.equal(m3.getRound(latest.id)?.status, 'done');
+});
+
 test('评测启动服从确定性门禁，评测库拒绝写 SQL', async (t) => {
   const project = createProject({ owner: 'alice', name: '评测工具门禁' });
   const app = appFor(t);

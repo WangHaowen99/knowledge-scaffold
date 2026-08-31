@@ -12,10 +12,10 @@ export function Block({ block }) {
     case 'text':      return <div className="wb-text"><MarkdownContent>{userFacingText(block.text)}</MarkdownContent></div>;
     case 'reasoning': return <ReasoningBlock block={block} />;
     case 'plan':      return <PlanBlock b={block} />;
-    case 'ask':       return block.interaction?.status === 'answered' ? <AnsweredInteraction interaction={block.interaction} /> : <AskBlock b={block} />;
+    case 'ask':       return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : <AskBlock b={block} />;
     case 'material':  return <MaterialRequest />;
-    case 'confirm':   return block.interaction?.status === 'answered' ? <AnsweredInteraction interaction={block.interaction} /> : block.interaction ? <LiveConfirm interaction={block.interaction} /> : <ConfirmBlock />;
-    case 'release':   return block.interaction?.status === 'answered' ? <AnsweredInteraction interaction={block.interaction} /> : <LiveRelease interaction={block.interaction} />;
+    case 'confirm':   return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : block.interaction ? <LiveConfirm interaction={block.interaction} /> : <ConfirmBlock />;
+    case 'release':   return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : <LiveRelease interaction={block.interaction} />;
     case 'policy':    return <PolicyBlock />;
     case 'preview':   return <PreviewBlock b={block} />;
     case 'error':     return <ErrorBlock block={block} />;
@@ -74,7 +74,8 @@ function ReasoningBlock({ block }) {
 }
 
 function AnsweredInteraction({ interaction }) {
-  return <div className="card"><div className="card-h">已处理</div><div className="card-b t-sm muted"><MarkdownContent>{userFacingText(interaction.payload?.question || '这项确认已经提交')}</MarkdownContent></div></div>;
+  const cancelled = ['cancelled', 'superseded'].includes(interaction?.status);
+  return <div className="card"><div className="card-h">{cancelled ? '已关闭' : '已处理'}</div><div className="card-b t-sm muted"><MarkdownContent>{userFacingText(interaction.payload?.question || (cancelled ? '这项决定已随运行结束关闭' : '这项确认已经提交'))}</MarkdownContent></div></div>;
 }
 
 /* ---------- 计划：渲染 .modeling/plan.md，因此天然有版本和回退 ---------- */

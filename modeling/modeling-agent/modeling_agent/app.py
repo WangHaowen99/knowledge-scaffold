@@ -77,6 +77,16 @@ class PackageImportEventBody(BaseModel):
     fileCount: int = Field(ge=1, le=100_000)
 
 
+class EvaluationTerminalEventBody(BaseModel):
+    eventId: str = Field(min_length=1, max_length=500)
+    roundId: str = Field(min_length=1, max_length=200)
+    status: str = Field(pattern="^(done|failed|cancelled)$")
+    done: int = Field(ge=0)
+    total: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    finishedAt: str = Field(min_length=1, max_length=100)
+
+
 class ProjectTransferBody(BaseModel):
     payload: dict[str, Any]
 
@@ -172,6 +182,15 @@ def create_app(service: AgentService) -> Starlette:
         )
         return JSONResponse(result, status_code=202)
 
+    async def evaluation_event(request: Request) -> JSONResponse:
+        body = _validate(EvaluationTerminalEventBody, await _body(request))
+        result = await service.handle_evaluation_event(
+            project_id=request.path_params["project_id"],
+            token=_require_token(request),
+            event=body.model_dump(),
+        )
+        return JSONResponse(result, status_code=202)
+
     async def export_project(request: Request) -> JSONResponse:
         _require_internal_access(request, service.settings.service_token)
         return JSONResponse(service.export_project_transfer(request.path_params["project_id"]))
@@ -231,6 +250,7 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/internal/projects/{project_id}/studio-events", studio_event, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/fusion-events", fusion_event, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/package-import-events", package_import_event, methods=["POST"]),
+        Route("/v1/internal/projects/{project_id}/evaluation-events", evaluation_event, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/transfer", export_project, methods=["GET"]),
         Route("/v1/internal/projects/{project_id}/transfer", import_project, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/transfer", delete_project, methods=["DELETE"]),

@@ -26,9 +26,9 @@ const selReplayUntilSeq = (s) => s.replayUntilSeq;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
     const interaction = s.messages[index]?.blocks?.find((block) => block.interaction)?.interaction;
-    if (interaction && interaction.status !== 'answered') return interaction.id || s.messages[index].id;
+    if (interaction?.status === 'pending') return interaction.id || s.messages[index].id;
   }
-  return s.interaction?.status !== 'answered' ? s.interaction?.id || '' : '';
+  return s.interaction?.status === 'pending' ? s.interaction?.id || '' : '';
 };
 const useTailLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 

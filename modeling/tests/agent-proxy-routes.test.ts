@@ -296,14 +296,54 @@ test('刷新 Agent 状态会先投递导入基线事件且只投递一次', asyn
   assert.equal(outbox.pendingAgentProjectEvents(project.id).length, 0);
 });
 
-test('旧 Core outbox 迁移后保留资料事件并接受 Studio、融合与导入事件', () => {
+test('刷新 Agent 状态会补发最近评测终态到专用入口且只投递一次', async (t) => {
+  const project = createProject({ owner: 'alice', name: '评测终态恢复', runtime: 'agent' });
+  const m3 = await import('../src/workflow/m3-repo.js');
+  const round = m3.createRound(project.id, '1.0.0-rc.1', 3);
+  m3.roundProgress(round.id, 2, 1);
+  m3.finishRound(round.id, 'failed');
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).includes('/evaluation-events')) {
+      return new Response(JSON.stringify({ accepted: true, reconciled: true }), {
+        status: 202, headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ state: { phase: 'evaluation' }, lastSeq: 15 }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  });
+  const app = appFor(t);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/projects/${project.id}/agent/state`,
+      headers: { authorization: 'Bearer refresh-token' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+  }
+
+  const eventCalls = calls.filter((call) => call.url.includes('/evaluation-events'));
+  assert.equal(eventCalls.length, 1);
+  const payload = JSON.parse(String(eventCalls[0].init?.body));
+  assert.equal(payload.roundId, round.id);
+  assert.equal(payload.status, 'failed');
+  assert.equal(payload.done, 2);
+  assert.equal(payload.total, 3);
+  assert.equal(payload.passed, 1);
+  assert.equal(outbox.pendingAgentProjectEvents(project.id).length, 0);
+});
+
+test('旧 Core outbox 迁移后保留资料事件并接受 Studio、融合、导入与评测终态事件', () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`CREATE TABLE projects(id TEXT PRIMARY KEY);
     INSERT INTO projects(id) VALUES ('project-migration');
     CREATE TABLE agent_project_event_outbox (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      event_type TEXT NOT NULL CHECK (event_type IN ('material_parse')),
+      event_type TEXT NOT NULL CHECK (event_type IN ('material_parse', 'studio_review', 'fusion_review', 'package_import')),
       payload_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       delivered_at TEXT
@@ -319,6 +359,15 @@ test('旧 Core outbox 迁移后保留资料事件并接受 Studio、融合与导
     'studio-review:project-migration:review-1',
     'project-migration',
     'studio_review',
+    '{}',
+    '2026-08-23',
+  );
+  db.prepare(`INSERT INTO agent_project_event_outbox (
+    id, project_id, event_type, payload_json, created_at, delivered_at
+  ) VALUES (?,?,?,?,?,NULL)`).run(
+    'evaluation:round-migration:terminal',
+    'project-migration',
+    'evaluation_terminal',
     '{}',
     '2026-08-23',
   );
@@ -343,7 +392,7 @@ test('旧 Core outbox 迁移后保留资料事件并接受 Studio、融合与导
   const rows = db.prepare(`SELECT event_type FROM agent_project_event_outbox ORDER BY id`)
     .all() as Array<{ event_type: string }>;
   assert.deepEqual(rows.map((row) => row.event_type).sort(), [
-    'fusion_review', 'material_parse', 'package_import', 'studio_review',
+    'evaluation_terminal', 'fusion_review', 'material_parse', 'package_import', 'studio_review',
   ]);
   db.close();
 });
