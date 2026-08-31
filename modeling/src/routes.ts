@@ -34,6 +34,7 @@ import {
   updateDocumentDirectives,
 } from './documents/repo.js';
 import { buildDocumentExport } from './documents/export.js';
+import { MaterialPurposeReviewStore } from './documents/material-purpose-review.js';
 import { buildTermTableTemplate } from './documents/term-template.js';
 import {
   analyzeMaterialImpact,
@@ -134,6 +135,7 @@ import {
   type GraphImportExecutionDependencies,
 } from './graph-import/service.js';
 import { GraphIsolationDataExistsError } from './graph-import/neo4j-writer.js';
+import { GraphImportInputError } from './graph-import/errors.js';
 import {
   applyOptimizations,
   normalizeOptimizationSuggestionTargets,
@@ -422,6 +424,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   ));
   const aiConstruction = new AiConstructionTaskGraph();
   const aiConstructionOrchestrator = new AiConstructionOrchestrator();
+  const materialPurposeReviews = new MaterialPurposeReviewStore();
   const documentParseQueues = new Map<string, Promise<void>>();
   let documentParseTail = Promise.resolve();
   const enqueueDocumentParse = (projectId: string, task: () => Promise<void>) => {
@@ -475,6 +478,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       tables: parsed.tables,
     });
     if (completed.document.lifecycleStatus !== 'active') return;
+    const purposeReview = materialPurposeReviews.ensure(completed.document);
     const currentPackage = await packageArtifacts.current(pending.projectId);
     const impactAnalysis = analyzeMaterialImpact(completed.change, currentPackage?.spec);
     storeMaterialImpact(getDb(), pending.projectId, completed.change, impactAnalysis);
@@ -493,6 +497,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         ...(completed.document.parseError ? { parseError: completed.document.parseError } : {}),
         changeKind: completed.change.kind,
         semanticChanged: impactAnalysis.semanticChanged,
+        ...(purposeReview ? {
+          purposeReviewRequired: purposeReview.status === 'pending',
+          sheetCount: completed.document.tables?.length ?? 0,
+        } : {}),
       });
       void deliverAgentProjectEvents(pending.projectId, authorization).catch((error) => {
         app.log.warn({ err: error, projectId: pending.projectId }, '资料解析事件等待下次重试投递');
@@ -994,17 +1002,97 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         if (purpose === 'term' && !['excel', 'csv'].includes(document.kind)) {
           return reply.code(400).send({ error: '只有 Excel 或 CSV 表格可以指定为术语表' });
         }
+        if (purpose === 'schema' && !(document.tables ?? []).length) {
+          return reply.code(400).send({ error: '只有包含可识别数据表的资料可以指定为数据 Schema' });
+        }
         if (purpose === 'term') validateProjectTermTables(project.id, document.tables ?? []);
         const expectedDirectiveRevision = Number((req.body as any)?.expectedDirectiveRevision);
         if (!Number.isSafeInteger(expectedDirectiveRevision) || expectedDirectiveRevision < 0) {
           return reply.code(400).send({ error: '缺少有效的资料设置版本，请刷新后重试' });
         }
-        return { document: updateDocumentDirectives(document.id, {
+        const updated = updateDocumentDirectives(document.id, {
           purpose, readingMode, expectedDirectiveRevision,
-        }) };
+        });
+        const purposeChanged = Object.hasOwn((req.body ?? {}) as object, 'purpose');
+        const purposeReview = purposeChanged && updated.parseStatus === 'parsed'
+          ? materialPurposeReviews.suggest(updated, { purpose, sheets: [], suggestedBy: 'user' })
+          : materialPurposeReviews.get(updated.id);
+        return { document: updated, purposeReview };
       } catch (error) {
         const message = error instanceof Error ? error.message : '资料设置保存失败';
         return reply.code(message.includes('其他位置更新') ? 409 : 400).send({ error: message });
+      }
+    });
+
+    r.put('/api/projects/:id/documents/:docId/purpose-review', async (req, reply) => {
+      const project = getProject((req.params as any).id);
+      if (!project || project.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      const document = getDocument((req.params as any).docId);
+      if (!document || document.projectId !== project.id || document.lifecycleStatus !== 'active') {
+        return reply.code(404).send({ error: '资料不存在' });
+      }
+      try {
+        const purpose = parseMaterialPurpose((req.body as any)?.purpose);
+        if (!purpose || purpose === 'auto') {
+          return reply.code(400).send({ error: '请确认明确的资料用途' });
+        }
+        const expectedDirectiveRevision = Number((req.body as any)?.expectedDirectiveRevision);
+        const result = materialPurposeReviews.confirm(document, {
+          purpose,
+          sheets: Array.isArray((req.body as any)?.sheetDecisions)
+            ? (req.body as any).sheetDecisions
+            : [],
+          confirmedBy: req.user!.username,
+          expectedDirectiveRevision,
+        });
+        return {
+          document: result.document,
+          purposeReview: result.review,
+          purposeReviewProgress: materialPurposeReviews.progress(project.id),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '资料用途确认失败';
+        return reply.code(message.includes('其他位置更新') ? 409 : 400).send({ error: message });
+      }
+    });
+
+    r.put('/api/projects/:id/documents/purpose-reviews', async (req, reply) => {
+      const project = getProject((req.params as any).id);
+      if (!project || project.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      const values = (req.body as any)?.documents;
+      if (!Array.isArray(values) || !values.length) {
+        return reply.code(400).send({ error: '没有可确认的资料用途' });
+      }
+      const inputs: Array<{
+        document: NonNullable<ReturnType<typeof getDocument>>;
+        confirmedBy: string;
+        expectedDirectiveRevision: number;
+      }> = [];
+      for (const value of values) {
+        const documentId = String(value?.documentId ?? '').trim();
+        const document = getDocument(documentId);
+        if (!document || document.projectId !== project.id || document.lifecycleStatus !== 'active') {
+          return reply.code(404).send({ error: '资料不存在' });
+        }
+        inputs.push({
+          document,
+          confirmedBy: req.user!.username,
+          expectedDirectiveRevision: Number(value?.expectedDirectiveRevision),
+        });
+      }
+      try {
+        materialPurposeReviews.confirmSuggestedBatch(inputs);
+        return {
+          documents: inputs.map((item) => ({
+            document: getDocument(item.document.id)!,
+            purposeReview: materialPurposeReviews.get(item.document.id)!,
+          })),
+          purposeReviewProgress: materialPurposeReviews.progress(project.id),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '资料用途批量确认失败';
+        return reply.code(message.includes('刷新') || message.includes('其他位置更新') ? 409 : 400)
+          .send({ error: message });
       }
     });
 
@@ -2193,6 +2281,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           });
           return reply.code(201).send({ upload });
         } catch (error) {
+          if (error instanceof GraphImportInputError) {
+            return reply.code(400).send({
+              code: error.code,
+              error: error.message,
+              details: error.details,
+            });
+          }
           return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
         }
       });
@@ -2220,6 +2315,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             error: error.message,
             uploadRevision: error.uploadRevision,
             currentRevision: error.currentRevision,
+          });
+        }
+        if (error instanceof GraphImportInputError) {
+          return reply.code(400).send({
+            code: error.code,
+            error: error.message,
+            details: error.details,
           });
         }
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
@@ -2265,6 +2367,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
               error: error.message,
               uploadRevision: error.uploadRevision,
               currentRevision: error.currentRevision,
+            });
+          }
+          if (error instanceof GraphImportInputError) {
+            return reply.code(400).send({
+              code: error.code,
+              error: error.message,
+              details: error.details,
             });
           }
           return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });

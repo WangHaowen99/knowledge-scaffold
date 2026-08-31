@@ -21,6 +21,7 @@ class StartRunBody(BaseModel):
 
 class SteerBody(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
+    purposeReviewCompleted: bool = False
 
 
 class AnswerBody(BaseModel):
@@ -34,7 +35,7 @@ class MaterialEventBody(BaseModel):
     sourceKey: str = Field(min_length=1, max_length=300)
     filename: str = Field(min_length=1, max_length=500)
     revisionNo: int = Field(ge=1)
-    purpose: str = Field(pattern="^(auto|goal|schema|evidence)$")
+    purpose: str = Field(pattern="^(auto|goal|schema|term|evidence)$")
     readingMode: str = Field(pattern="^(on_demand|full)$")
     autoContinue: bool = True
     uploadBatchId: str = Field(default="", max_length=200)
@@ -42,6 +43,8 @@ class MaterialEventBody(BaseModel):
     parseError: str = Field(default="", max_length=4_000)
     changeKind: str = Field(default="", max_length=50)
     semanticChanged: bool | None = None
+    purposeReviewRequired: bool = False
+    sheetCount: int = Field(default=0, ge=0, le=10_000)
 
 
 class StudioReviewEventBody(BaseModel):
@@ -99,6 +102,7 @@ def create_app(service: AgentService) -> Starlette:
             project_id=request.path_params["project_id"],
             token=_require_token(request),
             text=body.message,
+            purpose_review_completed=body.purposeReviewCompleted,
         )
         return JSONResponse(result, status_code=202)
 

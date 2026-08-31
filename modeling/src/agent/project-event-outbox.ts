@@ -17,6 +17,8 @@ export interface MaterialParseProjectEvent {
   parseError?: string;
   changeKind?: 'added' | 'replaced' | 'deleted' | 'format_only';
   semanticChanged?: boolean;
+  purposeReviewRequired?: boolean;
+  sheetCount?: number;
 }
 
 export interface StudioReviewProjectEvent {
@@ -148,13 +150,15 @@ export function materialParseDeliveryContext(
 function reconcileMaterialParseTerminalEvents(projectId: string): void {
   const rows = getDb().prepare(`SELECT documents.id, documents.source_key, documents.filename,
       documents.revision_no, documents.purpose, documents.reading_mode,
-      documents.parse_status, documents.parse_error,
-      impacts.change_kind, impacts.semantic_changed, started.payload_json AS started_payload_json
+      documents.parse_status, documents.parse_error, documents.tables_json,
+      impacts.change_kind, impacts.semantic_changed, started.payload_json AS started_payload_json,
+      reviews.status AS purpose_review_status
     FROM documents
     JOIN agent_project_event_outbox started
       ON started.project_id = documents.project_id
       AND started.id = 'material:' || documents.id || ':parsing'
     LEFT JOIN material_revision_impacts impacts ON impacts.current_document_id = documents.id
+    LEFT JOIN material_purpose_reviews reviews ON reviews.document_id = documents.id
     WHERE documents.project_id = ? AND documents.parse_status IN ('parsed', 'failed')
       AND NOT EXISTS (
         SELECT 1 FROM agent_project_event_outbox terminal
@@ -192,6 +196,17 @@ function reconcileMaterialParseTerminalEvents(projectId: string): void {
       ...(row.parse_error ? { parseError: String(row.parse_error) } : {}),
       ...(row.change_kind ? { changeKind: row.change_kind } : {}),
       ...(row.semantic_changed != null ? { semanticChanged: Boolean(row.semantic_changed) } : {}),
+      ...(row.purpose_review_status ? {
+        purposeReviewRequired: row.purpose_review_status === 'pending',
+        sheetCount: (() => {
+          try {
+            const tables = JSON.parse(String(row.tables_json || '[]'));
+            return Array.isArray(tables) ? tables.length : 0;
+          } catch {
+            return 0;
+          }
+        })(),
+      } : {}),
     });
   }
 }

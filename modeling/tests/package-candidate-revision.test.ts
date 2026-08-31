@@ -128,6 +128,96 @@ test('预览不会推进当前修订，接受依赖组时自动补齐并生成�
   assert.equal((await store.history(projectId))[0].packageVersion, '1.0.0-rc.5');
 });
 
+test('接受结构化规格及后续文件候选时保留对象数据源绑定', async (t) => {
+  const { projectId, store, generated } = await fixture(t);
+  const structuredSpec: PackageSpec = {
+    ...spec(),
+    objects: [{
+      key: 'Application',
+      title: '申请单',
+      description: '业务申请单',
+      fields: [{
+        key: 'id',
+        cnName: '申请编号',
+        type: 'string',
+        required: true,
+        sourceColumn: 'application_id',
+      }],
+      sourceRefs: [{
+        kind: 'table',
+        documentId: 'synthetic-document',
+        table: 'applications',
+        columns: ['application_id'],
+      }],
+      primaryKey: ['id'],
+    }, {
+      key: 'Supplement',
+      title: '补充说明',
+      description: '仅存在于结构化候选中的合成说明对象',
+      fields: [{ key: 'note', cnName: '说明', type: 'string', required: false }],
+    }],
+  };
+  const candidate = await store.createCandidateRevision(projectId, {
+    expectedRevision: generated.revision.oid,
+    groups: [{
+      id: 'bind-application-source',
+      summary: '绑定合成申请数据源',
+      changes: [{
+        kind: 'write',
+        path: 'model/package-spec.json',
+        content: `${JSON.stringify(structuredSpec, null, 2)}\n`,
+      }],
+    }],
+    action: action('candidate_created', '创建合成数据源绑定候选'),
+  });
+
+  await store.acceptCandidateRevision(projectId, {
+    candidateId: candidate.id,
+    action: action('candidate_accepted', '接受合成数据源绑定候选'),
+  });
+
+  const current = await store.current(projectId);
+  const application = current?.spec.objects.find((item) => item.key === 'Application');
+  assert.deepEqual(application?.sourceRefs, structuredSpec.objects[0].sourceRefs);
+  assert.deepEqual(application?.primaryKey, ['id']);
+  assert.equal(application?.fields[0].sourceColumn, 'application_id');
+  const mappings = JSON.parse((await store.readFile(
+    projectId,
+    'package/mappings/object-data-mappings.json',
+  )).content);
+  assert.deepEqual(Object.keys(mappings.objects), ['Application']);
+  assert.equal(mappings.objects.Application.resource, 'Application');
+
+  const operation = (await store.readFile(projectId, 'package/operations/Approve.md')).content;
+  const fileCandidate = await store.createCandidateRevision(projectId, {
+    expectedRevision: current!.revision.oid,
+    groups: [{
+      id: 'clarify-approval',
+      summary: '补充审批说明',
+      changes: [{
+        kind: 'write',
+        path: 'package/operations/Approve.md',
+        content: `${operation}\n补充候选说明。\n`,
+      }],
+    }],
+    action: action('candidate_created', '创建审批说明候选'),
+  });
+  await store.acceptCandidateRevision(projectId, {
+    candidateId: fileCandidate.id,
+    action: action('candidate_accepted', '接受审批说明候选'),
+  });
+
+  const afterFileCandidate = await store.current(projectId);
+  const preserved = afterFileCandidate?.spec.objects.find((item) => item.key === 'Application');
+  assert.deepEqual(preserved?.sourceRefs, structuredSpec.objects[0].sourceRefs);
+  assert.deepEqual(preserved?.primaryKey, ['id']);
+  assert.equal(preserved?.fields[0].sourceColumn, 'application_id');
+  assert.deepEqual(
+    afterFileCandidate?.spec.objects.find((item) => item.key === 'Supplement'),
+    structuredSpec.objects[1],
+  );
+});
+
 test('校验错误、退回和拒绝都不会改变当前知识包修订', async (t) => {
   const { projectId, store, generated } = await fixture(t);
   const index = (await store.readFile(projectId, 'package/index.md')).content;
