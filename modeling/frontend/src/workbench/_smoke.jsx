@@ -7,7 +7,7 @@ import LeftPane from './left/LeftPane.jsx';
 import { initialUploadOptions } from './pages/CreatePage.jsx';
 import { documentParagraphs, evidenceHighlight, evidenceLocationOffset } from './center/DocView.jsx';
 import EvidenceLinks from './center/EvidenceLinks.jsx';
-import { DiagnosisProgress, EvaluationSetupPanel, evaluationScopeLabel, RunsPanel } from './center/EvaluationView.jsx';
+import { DiagnosisProgress, EvaluationSetupPanel, evaluationScopeLabel, OptimizationProgress, RunsPanel } from './center/EvaluationView.jsx';
 import {
   defaultExpandedEvaluationIds,
   EvaluationResultsList,
@@ -343,6 +343,20 @@ try {
   }
   console.log('✓ 失败诊断长任务显示进度反馈');
 } catch (e) { console.log('✗ 失败诊断进度反馈:', e.message); bad++; }
+
+try {
+  const proposal = renderToString(<OptimizationProgress operation="propose" task={{
+    operation: 'propose', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  const apply = renderToString(<OptimizationProgress operation="apply" task={{
+    operation: 'apply', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  if (!proposal.includes('正在生成优化建议') || !proposal.includes('已运行')
+    || !apply.includes('正在生成知识包候选') || !apply.includes('确定性校验')) {
+    throw new Error('优化长任务没有显示可恢复的进度反馈');
+  }
+  console.log('✓ 优化长任务显示进度反馈');
+} catch (e) { console.log('✗ 优化任务进度反馈:', e.message); bad++; }
 
 try {
   const sourceScope = { kind: 'fusion_source', sourceId: 'internal-source-a', sourceName: '线路治理方案' };

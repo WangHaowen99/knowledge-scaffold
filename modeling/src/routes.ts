@@ -137,6 +137,7 @@ import { GraphIsolationDataExistsError } from './graph-import/neo4j-writer.js';
 import {
   applyOptimizations,
   normalizeOptimizationSuggestionTargets,
+  optimizationSuggestionDedupeKey,
   OptimizationExpertReviewRequiredError,
   proposeOptimizations,
   validateOptimizationSuggestions,
@@ -2746,9 +2747,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           );
           const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
             .filter((item) => item.status !== 'rejected')
-            .map((item) => `${(item.diagnosisIds ?? []).slice().sort().join(',')}|${item.kind}|${item.target ?? ''}|${item.relatedQuestion ?? item.title}`));
+            .map(optimizationSuggestionDedupeKey));
           const fresh = raw.filter((item) => {
-            const key = `${(item.diagnosisIds ?? []).slice().sort().join(',')}|${item.kind}|${item.target ?? ''}|${item.relatedQuestion ?? item.title}`;
+            const key = optimizationSuggestionDedupeKey(item);
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
@@ -2758,7 +2759,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           );
           return { suggestions };
         } catch (error) {
-          return reply.code(500).send({ error: `优化建议生成失败：${error instanceof Error ? error.message : error}` });
+          const code = (error as any)?.code;
+          return reply.code(code === 'MODEL_REQUEST_TIMEOUT' ? 504 : 500).send({
+            ...(code ? { code } : {}),
+            error: `优化建议生成失败：${error instanceof Error ? error.message : error}`,
+          });
         }
       }, 'propose');
     });
@@ -2959,7 +2964,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
             return reply.code(409).send({ code: error.code, error: error.message });
           }
-          return reply.code(500).send({ error: `优化候选生成失败：${error instanceof Error ? error.message : error}` });
+          const code = (error as any)?.code;
+          return reply.code(code === 'MODEL_REQUEST_TIMEOUT' ? 504 : 500).send({
+            ...(code ? { code } : {}),
+            error: `优化候选生成失败：${error instanceof Error ? error.message : error}`,
+          });
         }
       }, 'apply');
     });

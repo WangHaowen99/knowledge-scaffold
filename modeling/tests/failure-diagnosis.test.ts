@@ -12,6 +12,11 @@ import {
 import {
   decideScriptOptimization,
   normalizeOptimizationSuggestionTargets,
+  OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS,
+  OPTIMIZATION_APPLY_TIMEOUT_MS,
+  optimizationSuggestionDedupeKey,
+  OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS,
+  OPTIMIZATION_PROPOSAL_TIMEOUT_MS,
   proposeOptimizations,
   validateOptimizationSuggestions,
 } from '../src/evaluation/optimizer.js';
@@ -35,6 +40,26 @@ function result(id: string, question: string, groundTruth: string): EvalResult {
     createdAt: '2026-07-16T00:00:00.000Z',
   };
 }
+
+test('优化任务限制模型输出和单次等待时间', () => {
+  assert.equal(OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS, 12_000);
+  assert.equal(OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS, 32_000);
+  assert.equal(OPTIMIZATION_PROPOSAL_TIMEOUT_MS, 180_000);
+  assert.equal(OPTIMIZATION_APPLY_TIMEOUT_MS, 300_000);
+});
+
+test('同一根因和目标的优化建议不因标题改写而重复', () => {
+  const base = {
+    title: '修复统一计算入口', detail: '使用确定性脚本。', kind: 'modify_script', target: 'calculate_result',
+    diagnosisIds: ['dg-b', 'dg-a'], evidence: [], generalizationPlan: '', validationPlan: '',
+  };
+  assert.equal(optimizationSuggestionDedupeKey(base), optimizationSuggestionDedupeKey({
+    ...base, title: '调整计算脚本的权威执行路径', diagnosisIds: ['dg-a', 'dg-b'],
+  }));
+  assert.notEqual(optimizationSuggestionDedupeKey(base), optimizationSuggestionDedupeKey({
+    ...base, target: 'validate_result',
+  }));
+});
 
 const scriptedSpec = () => ({
   id: 'scripted-demo', name: 'scripted-demo', description: 'demo', version: '1.0.0', language: 'zh-CN',

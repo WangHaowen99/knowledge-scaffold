@@ -94,6 +94,9 @@ export const addManualEvaluationSuggestion = (id, input) => api(
   `${P(id)}/optimize/suggestions/manual`,
   { method: 'POST', body: JSON.stringify(input) },
 );
+export const rejectEvaluationSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/reject`, {
+  method: 'POST', body: JSON.stringify({ suggestionIds }),
+});
 export const applyEvaluationSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/apply`, {
   method: 'POST', body: JSON.stringify({ suggestionIds }),
 });

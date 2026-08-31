@@ -10,7 +10,7 @@ import {
   cancelEvaluationRun,
   confirmEvaluationDiagnoses, deleteEvaluationTestcase, diagnoseEvaluation, getEvaluationDataSource,
   getEvaluationOptimizationStatus, getEvaluationRound, listEvaluationDiagnoses, listEvaluationRounds, listEvaluationSuggestions,
-  listEvaluationTestcases, proposeEvaluationOptimizations, saveEvaluationDataSource,
+  listEvaluationTestcases, proposeEvaluationOptimizations, rejectEvaluationSuggestions, saveEvaluationDataSource,
   reviewEvaluationOptimization, startEvaluation, updateEvaluationSuggestion, updateEvaluationTestcase,
 } from '../lib/api.js';
 
@@ -146,7 +146,7 @@ export default function EvaluationView() {
       {followupTab && terminalRound && currentFollowup.loading && <div className="empty"><LoaderCircle className="wb-spin" size={18} /> 正在读取评测后续信息</div>}
       {followupTab && terminalRound && currentFollowup.error && <div className="wb-eval-alert stale">{currentFollowup.error}</div>}
       {tab === 'diagnose' && terminalRound && !currentFollowup.loading && !currentFollowup.error && <DiagnosisPanel projectId={projectId} round={round} diagnoses={currentFollowup.diagnoses} runningTask={currentFollowup.runningOperation === 'diagnose' ? currentFollowup.runningTask : null} onTaskStarted={(task) => setFollowup((old) => ({ ...old, runningOperation: 'diagnose', runningTask: task }))} onTaskSettled={() => setFollowupRefresh((value) => value + 1)} onChanged={(diagnoses) => setFollowup((old) => ({ ...old, roundId: round.round.id, diagnoses }))} onGoRuns={() => setTab('runs')} onAdvance={() => setTab('optimize')} />}
-      {tab === 'optimize' && terminalRound && !currentFollowup.loading && !currentFollowup.error && <OptimizationPanel projectId={projectId} round={round} diagnoses={currentFollowup.diagnoses} suggestions={currentFollowup.suggestions} onChanged={(suggestions) => setFollowup((old) => ({ ...old, roundId: round.round.id, suggestions }))} onGoDiagnose={() => setTab('diagnose')} />}
+      {tab === 'optimize' && terminalRound && !currentFollowup.loading && !currentFollowup.error && <OptimizationPanel projectId={projectId} round={round} diagnoses={currentFollowup.diagnoses} suggestions={currentFollowup.suggestions} runningOperation={['propose', 'apply'].includes(currentFollowup.runningOperation) ? currentFollowup.runningOperation : ''} runningTask={['propose', 'apply'].includes(currentFollowup.runningOperation) ? currentFollowup.runningTask : null} onTaskStarted={(operation, task) => setFollowup((old) => ({ ...old, runningOperation: operation, runningTask: task }))} onTaskSettled={() => setFollowupRefresh((value) => value + 1)} onChanged={(suggestions) => setFollowup((old) => ({ ...old, roundId: round.round.id, suggestions }))} onGoDiagnose={() => setTab('diagnose')} />}
     </>}
   </div>;
 }
@@ -239,40 +239,68 @@ function DiagnosisPanel({ projectId, round, diagnoses, runningTask, onTaskStarte
   </section>;
 }
 
-function OptimizationPanel({ projectId, round, diagnoses, suggestions, onChanged, onGoDiagnose }) {
-  const [selected, setSelected] = useState(new Set()); const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [manual, setManual] = useState(false); const [reviewTask, setReviewTask] = useState(null); const [reviewNote, setReviewNote] = useState('');
+function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOperation, runningTask, onTaskStarted, onTaskSettled, onChanged, onGoDiagnose }) {
+  const [selected, setSelected] = useState(new Set()); const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [manual, setManual] = useState(false); const [reviewTask, setReviewTask] = useState(null); const [reviewNote, setReviewNote] = useState(''); const [localTask, setLocalTask] = useState(null);
+  const knownPendingRef = useRef(new Set()); const selectionScopeRef = useRef('');
   const eligible = diagnoses.filter((item) => item.resolutionStatus === 'confirmed' && item.packageOptimizable && !item.blocking); const pending = suggestions.filter((item) => item.status === 'pending');
-  useEffect(() => { setSelected(new Set(pending.map((item) => item.id))); }, [suggestions]);
+  const pendingIds = new Set(pending.map((item) => item.id)); const selectedPending = new Set([...selected].filter((id) => pendingIds.has(id)));
+  useEffect(() => { setReviewTask(null); setReviewNote(''); setError(''); setNotice(''); }, [projectId, round?.round?.id]);
+  useEffect(() => {
+    const scope = `${projectId}:${round?.round?.id || ''}`;
+    const pendingIds = suggestions.filter((item) => item.status === 'pending').map((item) => item.id);
+    setSelected((previous) => {
+      if (selectionScopeRef.current !== scope) {
+        selectionScopeRef.current = scope;
+        knownPendingRef.current = new Set(pendingIds);
+        return new Set(pendingIds);
+      }
+      const reconciled = reconcileOptimizationSelection(previous, knownPendingRef.current, pendingIds);
+      knownPendingRef.current = reconciled.known;
+      return reconciled.selected;
+    });
+  }, [projectId, round?.round?.id, suggestions]);
   useEffect(() => { getEvaluationOptimizationStatus(projectId).then((data) => {
+    const taskSuggestionIds = data.task?.node?.output?.suggestionIds || [];
+    const suggestionIds = new Set(suggestions.map((item) => item.id));
+    const relevant = taskSuggestionIds.some((id) => suggestionIds.has(id));
+    if (!relevant) return;
     if (data.task?.node?.status === 'waiting_user' && data.task.node.output?.phase === 'expert_review') setReviewTask(data.task);
-  }).catch(() => {}); }, [projectId]);
+    else if (data.task?.node?.status === 'failed') setError(data.task.node.reason || data.task.node.output?.error || '优化候选生成失败');
+    else if (data.task?.node?.status === 'done' && data.task.node.output?.candidateId) { setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); void actions.refreshSnapshot(); }
+  }).catch((cause) => setError(cause.message || '优化任务状态读取失败')); }, [projectId, runningOperation, suggestions]);
   const reload = async () => { const data = await listEvaluationSuggestions(projectId, round.round.id); onChanged(data.suggestions || []); };
-  const propose = async () => { setBusy('propose'); setError(''); try { const data = await proposeEvaluationOptimizations(projectId, round.round.id); onChanged(data.suggestions || []); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
+  const beginTask = (operation) => { const task = { operation, startedAt: new Date().toISOString() }; setLocalTask(task); onTaskStarted?.(operation, task); return task; };
+  const settleTask = () => { setLocalTask(null); onTaskSettled?.(); };
+  const propose = async () => { setBusy('propose'); setError(''); beginTask('propose'); try { const data = await proposeEvaluationOptimizations(projectId, round.round.id); onChanged(mergeOptimizationSuggestions(suggestions, data.suggestions || [])); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
   const applyIds = async (ids) => { const data = await applyEvaluationSuggestions(projectId, ids); if (data.status === 'waiting_expert') { const status = await getEvaluationOptimizationStatus(projectId); setReviewTask(status.task); setNotice('Agent 修改未通过确定性校验，请补充约束后让 Agent 重试。'); } else { setReviewTask(null); setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); await actions.refreshSnapshot(); } await reload(); };
-  const apply = async () => { setBusy('apply'); setError(''); setNotice(''); try { await applyIds([...selected]); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
-  const review = async (action) => { if (!reviewTask?.node?.id) return; setBusy('review'); setError(''); try { const decision = await reviewEvaluationOptimization(projectId, reviewTask.node.id, action, reviewNote); setReviewNote(''); if (action === 'retry') await applyIds(decision.suggestionIds); else { setReviewTask(null); setNotice('已跳过本次未通过校验的建议，正式知识包未发生变化。'); await reload(); } } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
+  const apply = async () => { setBusy('apply'); setError(''); setNotice(''); beginTask('apply'); try { await applyIds([...selectedPending]); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
+  const review = async (action) => { if (!reviewTask?.node?.id) return; setBusy('review'); setError(''); let retrying = false; try { const decision = await reviewEvaluationOptimization(projectId, reviewTask.node.id, action, reviewNote); setReviewNote(''); if (action === 'retry') { retrying = true; beginTask('apply'); await applyIds(decision.suggestionIds); } else { setReviewTask(null); setNotice('已跳过本次未通过校验的建议，正式知识包未发生变化。'); await reload(); } } catch (cause) { setError(cause.message); } finally { setBusy(''); if (retrying) settleTask(); } };
+  const reject = async (item) => { if (!window.confirm(`确认忽略“${item.title}”吗？该建议不会进入知识包候选。`)) return; setBusy('reject'); setError(''); try { await rejectEvaluationSuggestions(projectId, [item.id]); setSelected((old) => { const next = new Set(old); next.delete(item.id); return next; }); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
+  const activeOperation = runningOperation || localTask?.operation || '';
+  const operationTask = runningTask || localTask;
   if (!round) return <div className="wb-eval-empty">请先完成失败诊断</div>;
-  return <section className="wb-eval-section wide"><StageHeader icon={Sparkles} title="知识包优化建议" detail="Agent 只依据已确认根因生成建议；专家可选择、编辑或手工补充，再交给 Agent 修改知识包候选。" action={<button className="btn btn-p" disabled={Boolean(busy) || !eligible.length} onClick={() => void propose()}>{busy === 'propose' ? <LoaderCircle className="wb-spin" size={14} /> : <Sparkles size={14} />}{pending.length ? '补充生成建议' : '生成建议'}</button>} />
+  return <section className="wb-eval-section wide"><StageHeader icon={Sparkles} title="知识包优化建议" detail="Agent 只依据已确认根因生成建议；专家可选择、编辑或手工补充，再交给 Agent 修改知识包候选。" action={<button className="btn btn-p" disabled={Boolean(busy) || Boolean(activeOperation) || !eligible.length} onClick={() => void propose()}>{activeOperation === 'propose' ? <LoaderCircle className="wb-spin" size={14} /> : <Sparkles size={14} />}{pending.length ? '补充生成建议' : '生成建议'}</button>} />
+    {activeOperation && operationTask && <OptimizationProgress operation={activeOperation} task={operationTask} />}
     {!eligible.length && <div className="wb-eval-alert wait">还没有已确认的知识包根因。<button className="btn btn-sm" onClick={onGoDiagnose}>返回失败诊断</button></div>}{error && <div className="wb-eval-alert stale">{error}</div>}{notice && <div className="wb-eval-alert ok"><Check size={15} />{notice}</div>}
     {reviewTask?.node?.status === 'waiting_user' && <div className="wb-opt-review"><b>确定性校验未通过</b><ul>{(reviewTask.node.output?.validationErrors || []).map((item, index) => <li key={index}>{item}</li>)}</ul><textarea className="input" rows="2" value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="补充修正约束，Agent 会带着校验错误和专家反馈重新修改" /><div><button className="btn btn-sm" disabled={Boolean(busy)} onClick={() => void review('skip')}>跳过本次建议</button><button className="btn btn-p btn-sm" disabled={Boolean(busy)} onClick={() => void review('retry')}><RefreshCw size={14} /> 带反馈重试</button></div></div>}
-    <div className="wb-suggestion-bar"><div><b>待处理建议</b><span>{pending.length} 条，已选择 {selected.size} 条</span></div><button className="btn btn-sm" disabled={!eligible.length} onClick={() => setManual(true)}><Plus size={14} /> 手工建议</button></div>
-    {pending.map((item) => <SuggestionEditor key={item.id} item={item} checked={selected.has(item.id)} busy={Boolean(busy)} diagnoses={eligible} onToggle={() => setSelected((old) => toggleSet(old, item.id))} onSave={async (input) => { setBusy('save'); try { await updateEvaluationSuggestion(projectId, item.id, input); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } }} />)}
+    <div className="wb-suggestion-bar"><div><b>待处理建议</b><span>{pending.length} 条，已选择 {selectedPending.size} 条</span></div><button className="btn btn-sm" disabled={!eligible.length} onClick={() => setManual(true)}><Plus size={14} /> 手工建议</button></div>
+    {pending.map((item) => <SuggestionEditor key={item.id} item={item} checked={selected.has(item.id)} busy={Boolean(busy) || Boolean(activeOperation)} diagnoses={eligible} onToggle={() => setSelected((old) => toggleSet(old, item.id))} onReject={() => void reject(item)} onSave={async (input) => { setBusy('save'); try { await updateEvaluationSuggestion(projectId, item.id, input); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } }} />)}
     {!pending.length && <div className="wb-eval-empty">确认根因后，让 Agent 生成修改建议，或由专家手工补充</div>}
     {manual && <SuggestionForm title="新增专家建议" diagnoses={eligible} onCancel={() => setManual(false)} onSave={async (input) => { setBusy('manual'); try { await addManualEvaluationSuggestion(projectId, { ...input, roundId: round.round.id }); await reload(); setManual(false); } catch (cause) { setError(cause.message); } finally { setBusy(''); } }} />}
-    {pending.length > 0 && <div className="wb-eval-actions sticky"><span>Agent 将按选中建议生成可审核候选</span><button className="btn btn-p" disabled={!selected.size || Boolean(busy)} onClick={() => void apply()}>{busy === 'apply' ? <LoaderCircle className="wb-spin" size={14} /> : <Bot size={14} />} 生成知识包候选（{selected.size}）</button></div>}
+    {pending.length > 0 && <div className="wb-eval-actions sticky"><span>Agent 将按选中建议生成可审核候选</span><button className="btn btn-p" disabled={!selectedPending.size || Boolean(busy) || Boolean(activeOperation)} onClick={() => void apply()}>{activeOperation === 'apply' ? <LoaderCircle className="wb-spin" size={14} /> : <Bot size={14} />} 生成知识包候选（{selectedPending.size}）</button></div>}
   </section>;
 }
 
-function SuggestionEditor({ item, checked, busy, diagnoses, onToggle, onSave }) {
+function SuggestionEditor({ item, checked, busy, diagnoses, onToggle, onReject, onSave }) {
   const [editing, setEditing] = useState(false);
-  return <article className={`wb-suggestion ${checked ? 'selected' : ''}`}><label className="wb-suggestion-check"><input type="checkbox" checked={checked} onChange={onToggle} /><span /></label><div className="wb-suggestion-body"><div className="wb-suggestion-title"><b>{item.title}</b><span className="pill">{KINDS.find(([key]) => key === item.kind)?.[1] || item.kind}</span><button className="wb-icon-btn" disabled={busy} title="编辑建议" onClick={() => setEditing(!editing)}><Pencil size={14} /></button></div><p>{item.detail}</p>{item.target && <small>目标：{item.target}</small>}{editing && <SuggestionForm initial={item} diagnoses={diagnoses} onCancel={() => setEditing(false)} onSave={(input) => { onSave(input); setEditing(false); }} />}</div></article>;
+  return <article className={`wb-suggestion ${checked ? 'selected' : ''}`}><label className="wb-suggestion-check"><input type="checkbox" disabled={busy} checked={checked} onChange={onToggle} /><span /></label><div className="wb-suggestion-body"><div className="wb-suggestion-title"><b>{item.title}</b><span className="pill">{KINDS.find(([key]) => key === item.kind)?.[1] || item.kind}</span><button className="wb-icon-btn" disabled={busy} title="编辑建议" aria-label="编辑建议" onClick={() => setEditing(!editing)}><Pencil size={14} /></button><button className="wb-icon-btn danger" disabled={busy} title="忽略建议" aria-label="忽略建议" onClick={onReject}><Trash2 size={14} /></button></div><p>{item.detail}</p>{item.target && <small>目标：{item.target}</small>}{editing && <SuggestionForm initial={item} diagnoses={diagnoses} onCancel={() => setEditing(false)} onSave={(input) => { onSave(input); setEditing(false); }} />}</div></article>;
 }
 function SuggestionForm({ title, initial = {}, diagnoses, onCancel, onSave }) {
   const [value, setValue] = useState({ title: initial.title || '', detail: initial.detail || '', kind: initial.kind || 'modify_rule', target: initial.target || '', relatedQuestion: initial.relatedQuestion || '', evidence: initial.evidence || [], generalizationPlan: initial.generalizationPlan || '', validationPlan: initial.validationPlan || '', diagnosisIds: initial.diagnosisIds?.length ? initial.diagnosisIds : diagnoses.map((item) => item.id) });
   const change = (key, next) => setValue((old) => ({ ...old, [key]: next }));
   return <div className="wb-suggestion-form">{title && <b>{title}</b>}<div className="wb-eval-field-grid"><label><span>建议标题</span><input className="input" value={value.title} onChange={(e) => change('title', e.target.value)} /></label><label><span>修改类型</span><select className="input" value={value.kind} onChange={(e) => change('kind', e.target.value)}>{KINDS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label></div><label><span>修改要求</span><textarea className="input" rows="3" value={value.detail} onChange={(e) => change('detail', e.target.value)} /></label><label><span>目标文件或资源 <small>可留空，由 Agent 定位</small></span><input className="input" value={value.target} onChange={(e) => change('target', e.target.value)} /></label><div className="wb-eval-field-grid"><label><span>泛化要求</span><textarea className="input" rows="2" value={value.generalizationPlan} onChange={(e) => change('generalizationPlan', e.target.value)} /></label><label><span>验证计划</span><textarea className="input" rows="2" value={value.validationPlan} onChange={(e) => change('validationPlan', e.target.value)} /></label></div><fieldset><legend>关联失败根因</legend>{diagnoses.map((item) => <label key={item.id}><input type="checkbox" checked={value.diagnosisIds.includes(item.id)} onChange={() => change('diagnosisIds', value.diagnosisIds.includes(item.id) ? value.diagnosisIds.filter((id) => id !== item.id) : [...value.diagnosisIds, item.id])} /> {item.title}</label>)}</fieldset><div className="wb-suggestion-form-actions"><button className="btn btn-sm" onClick={onCancel}>取消</button><button className="btn btn-p btn-sm" disabled={!value.title.trim() || !value.detail.trim() || !value.diagnosisIds.length} onClick={() => onSave(value)}><Save size={14} /> 保存建议</button></div></div>;
 }
-export function DiagnosisProgress({ task }) {
+function TimedOperationProgress({ task, title, detail }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -283,8 +311,12 @@ export function DiagnosisProgress({ task }) {
   const elapsed = elapsedSeconds < 60
     ? `${elapsedSeconds} 秒`
     : `${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒`;
-  return <div className="wb-eval-operation" role="status" aria-live="polite"><LoaderCircle className="wb-spin" size={18} /><div><b>正在分析失败原因</b><span>正在读取失败结果、执行轨迹和独立证据 · 已运行 {elapsed}，完成后自动显示结果</span></div></div>;
+  return <div className="wb-eval-operation" role="status" aria-live="polite"><LoaderCircle className="wb-spin" size={18} /><div><b>{title}</b><span>{detail} · 已运行 {elapsed}，完成后自动显示结果</span></div></div>;
 }
+export function DiagnosisProgress({ task }) { return <TimedOperationProgress task={task} title="正在分析失败原因" detail="正在读取失败结果、执行轨迹和独立证据" />; }
+export function OptimizationProgress({ operation, task }) { const copy = operation === 'apply' ? ['正在生成知识包候选', '正在落实所选建议并执行确定性校验'] : ['正在生成优化建议', '正在依据已确认根因生成并校验结构化建议']; return <TimedOperationProgress task={task} title={copy[0]} detail={copy[1]} />; }
+export function mergeOptimizationSuggestions(current, incoming) { const merged = new Map((current || []).map((item) => [item.id, item])); for (const item of incoming || []) merged.set(item.id, item); return [...merged.values()]; }
+export function reconcileOptimizationSelection(previous, known, pendingIds) { return { selected: new Set(pendingIds.filter((id) => previous.has(id) || !known.has(id))), known: new Set(pendingIds) }; }
 function StageHeader({ icon: Icon, title, detail, action }) { return <div className="wb-stage-head"><div className="wb-eval-icon"><Icon size={17} /></div><div><h3>{title}</h3><p>{detail}</p></div><span className="spacer" />{action}</div>; }
 function toggleSet(old, id) { const next = new Set(old); next.has(id) ? next.delete(id) : next.add(id); return next; }
 function formatTime(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '未知时间' : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }
