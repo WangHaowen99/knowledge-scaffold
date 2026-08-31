@@ -143,6 +143,7 @@ class ToolContext:
     tool_receipt_lookup: ToolReceiptLookup | None = None
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    evaluation_cancel_authorized: bool = False
     confirmation_required: bool = False
     interjection_reply_required: bool = False
     release_declined: bool = False
@@ -1661,6 +1662,13 @@ CORE_TOOL_SPECS = (
         {"round_id": STRING},
         display="正在读取评测结果",
     ),
+    ToolSpec(
+        "cancel_evaluation",
+        "仅在用户明确要求停止当前或指定评测轮次时使用。重复停止已结束轮次会返回同一终态，不会影响后来启动的轮次。",
+        {"round_id": STRING},
+        parallel_safe=False,
+        display="正在停止评测",
+    ),
     ToolSpec("query_eval_db", "只读查询评测数据源。", {"sql": STRING}, ("sql",), display="正在查询评测数据"),
 )
 
@@ -1719,6 +1727,14 @@ class CoreTool(Tool):
         if self.context.cancel_event is not None and self.context.cancel_event.is_set():
             raise asyncio.CancelledError
         arguments = input_dict(inputs)
+        if self.spec.name == "cancel_evaluation" and not self.context.evaluation_cancel_authorized:
+            return json.dumps({
+                "error": "EVALUATION_CANCEL_NOT_REQUESTED",
+                "reason": "用户没有明确要求停止评测",
+                "retryable": False,
+                "instruction": "不要停止评测；如需说明能力，只回答当前能力和状态。",
+                "display": {"text": "未停止评测：当前没有明确的停止请求"},
+            }, ensure_ascii=False)
         arguments = _bounded_source_arguments(self.spec.name, arguments)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         activity_id = f"{self.spec.name}:{started_after}"
@@ -2222,7 +2238,7 @@ FUSION_PHASE_TOOLS = frozenset({
     "compile_package_fusion_plan", "analyze_package_merge", "read_package_source_file",
     "stage_package_merge",
 })
-EVALUATION_PHASE_TOOLS = frozenset({"run_evaluation", "get_evaluation_results", "query_eval_db"})
+EVALUATION_PHASE_TOOLS = frozenset({"run_evaluation", "get_evaluation_results", "cancel_evaluation", "query_eval_db"})
 SCRIPT_PHASE_TOOLS = frozenset({
     "define_script_contract", "get_script_contract", "stage_script_source", "run_script_test",
 })

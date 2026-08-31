@@ -935,6 +935,46 @@ try {
   console.log('✓ 确认等待态清理活动提示');
 } catch (e) { console.log('✗ 确认等待态清理活动提示:', e.message); bad++; }
 
+store.set({
+  messages: [], interaction: null, reviewedChangeGroups: [],
+  lastSeq: 0, replayUntilSeq: 2,
+});
+actions.handleEvent({
+  eventType: 'interaction', seq: 1,
+  id: 'cancelled-run-decision', kind: 'business_decision', status: 'pending',
+  payload: { question: '是否继续历史方案？' },
+});
+try {
+  const replayed = store.get().messages[0]?.blocks?.[0]?.interaction;
+  if (store.get().interaction || replayed?.status !== 'superseded') {
+    throw new Error('历史回放恢复了已失效运行的旧决定卡');
+  }
+  const html = renderToString(<App />);
+  if (!html.includes('已关闭') || html.includes('确认提交')) {
+    throw new Error('失效决定卡仍显示为可操作状态');
+  }
+  console.log('✓ 历史回放不恢复已取消运行的旧决定卡');
+} catch (e) { console.log('✗ 历史失效决定卡:', e.message); bad++; }
+
+store.set({ messages: [], interaction: null, lastSeq: 0, replayUntilSeq: 0 });
+actions.handleEvent({
+  eventType: 'interaction', seq: 1,
+  id: 'live-cancel-decision', kind: 'business_decision', status: 'pending',
+  payload: { question: '是否继续当前方案？' },
+});
+actions.handleEvent({
+  eventType: 'interaction', seq: 2,
+  id: 'live-cancel-decision', kind: 'business_decision', status: 'cancelled',
+  answer: { action: 'run_cancelled' },
+});
+try {
+  const closed = store.get().messages[0]?.blocks?.[0]?.interaction;
+  if (store.get().interaction || closed?.status !== 'cancelled') {
+    throw new Error('取消运行后待处理决定卡没有同步关闭');
+  }
+  console.log('✓ 取消运行同步关闭待处理决定卡');
+} catch (e) { console.log('✗ 取消运行关闭决定卡:', e.message); bad++; }
+
 try {
   const html = renderToString(<Block block={{
     type: 'release',

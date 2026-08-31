@@ -121,6 +121,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "transition_project_state",
     "run_script_test",
     "run_evaluation",
+    "cancel_evaluation",
 })
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
@@ -625,6 +626,75 @@ class AgentService:
             "initialized": True,
             "preserved": False,
             "state": state.public(),
+        }
+
+    async def handle_evaluation_event(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        _require_project_and_token(project_id, token)
+        event_id = str(event.get("eventId") or "").strip()
+        round_id = str(event.get("roundId") or "").strip()
+        status = str(event.get("status") or "").strip()
+        if not event_id or not round_id or status not in {"done", "failed", "cancelled"}:
+            raise AgentRuntimeError("INVALID_EVALUATION_EVENT", "评测终态事件不完整", status=400)
+
+        inserted = self.store.record_external_event(event_id, project_id, "evaluation_terminal", event)
+        for live in self._live.values():
+            if live.project_id == project_id:
+                live.stable_read_cache.clear()
+        if not self.store.external_event_pending(event_id, project_id):
+            return {"accepted": True, "duplicate": True, "reconciled": False}
+
+        summary = _evaluation_terminal_summary(event)
+        active = self.store.active_run(project_id)
+        run_id = active.id if active else self.store.project_state(project_id).run_id
+        self.events.publish_external_once(event_id, project_id, run_id, "message", {
+            "role": "system",
+            "externalEventId": event_id,
+            "blocks": [{"type": "text", "text": summary}],
+        })
+
+        current = self.store.project_state(project_id)
+        phase, _separator, _execution = current.state.partition(":")
+        reconciled = False
+        if phase == "evaluation":
+            updated = self.store.transition_project_state(
+                project_id,
+                expected_revision=current.revision,
+                next_state=current.state,
+                cause="evaluation_terminal",
+                actor_run_id=run_id,
+                summary=summary,
+                open_questions=[
+                    item for item in current.open_questions
+                    if not _claims_active_evaluation(item)
+                ],
+                metadata={
+                    "eventId": event_id,
+                    "roundId": round_id,
+                    "status": status,
+                    "done": max(0, int(event.get("done") or 0)),
+                    "total": max(0, int(event.get("total") or 0)),
+                    "passed": max(0, int(event.get("passed") or 0)),
+                    "finishedAt": str(event.get("finishedAt") or ""),
+                },
+            )
+            public = updated.public()
+            public["phaseLabel"] = PHASE_LABELS.get(phase, phase)
+            self.events.publish(project_id, run_id, "state", public)
+            reconciled = True
+
+        self.store.mark_external_event_continued(event_id, project_id)
+        return {
+            "accepted": True,
+            "duplicate": not inserted,
+            "reconciled": reconciled,
+            "status": status,
+            "roundId": round_id,
         }
 
     async def handle_studio_review_event(
@@ -1307,6 +1377,31 @@ class AgentService:
             raise AgentRuntimeError("STATE_SUMMARY_REQUIRED", "更新状态时必须提供精简摘要", status=400)
         questions = _string_list(arguments.get("open_questions"), 30)
         evidence = _string_list(arguments.get("evidence"), 50)
+        evaluation = await self._evaluation_status_for_agent(live)
+        claims_running = (
+            _claims_active_evaluation(summary)
+            or any(_claims_active_evaluation(item) for item in questions)
+        )
+        if claims_running and evaluation.get("available") is not True:
+            raise AgentRuntimeError(
+                "STATE_EVALUATION_STATUS_UNAVAILABLE",
+                "尚未取得权威评测状态，不能把评测记录为仍在运行",
+                status=409,
+                details={
+                    "evaluation": evaluation,
+                    "next": ["重新调用 get_project_state，取得可用的 evaluation 快照后再更新"],
+                },
+            )
+        if evaluation.get("terminal") is True and claims_running:
+            raise AgentRuntimeError(
+                "STATE_EVALUATION_STATUS_CONFLICT",
+                "最近一轮评测已经结束，不能把它记录为仍在运行",
+                status=409,
+                details={
+                    "evaluation": evaluation,
+                    "next": ["以 get_project_state 返回的 evaluation 终态更新摘要和开放问题"],
+                },
+            )
 
         if name == "update_project_context":
             updated = self.store.transition_project_state(
@@ -1463,6 +1558,14 @@ class AgentService:
     async def _state_for_agent(self, live: LiveRun) -> dict[str, Any]:
         state = self.store.project_state(live.project_id)
         public = state.public()
+        evaluation = await self._evaluation_status_for_agent(live)
+        if evaluation.get("terminal") is True:
+            if _claims_active_evaluation(str(public.get("summary") or "")):
+                public["summary"] = _evaluation_terminal_summary(evaluation)
+            public["openQuestions"] = [
+                item for item in public.get("openQuestions") or []
+                if not _claims_active_evaluation(str(item))
+            ]
         phase = str(public["phase"])
         transitions: list[dict[str, Any]] = []
         for target in PHASE_EDGES.get(phase, ()):
@@ -1494,8 +1597,54 @@ class AgentService:
         public["phaseLabel"] = PHASE_LABELS.get(phase, phase)
         return {
             **public,
+            "evaluation": evaluation,
             "allowedTransitions": transitions,
             "display": {"text": f"当前阶段：{public['phaseLabel']}"},
+        }
+
+    async def _evaluation_status_for_agent(self, live: LiveRun) -> dict[str, Any]:
+        try:
+            result = await self._gateway.call(
+                project_id=live.project_id,
+                run_id=live.run_id,
+                token=live.token,
+                tool="evaluation_status",
+                arguments={},
+            )
+        except Exception as error:  # noqa: BLE001 - project state remains readable during Core outage
+            return {
+                "available": False,
+                "status": "unavailable",
+                "terminal": False,
+                "reason": f"暂时无法读取评测状态：{type(error).__name__}",
+            }
+        if result.get("error") == "EVALUATION_NOT_STARTED":
+            return {"available": False, "status": "not_started", "terminal": False}
+        if result.get("error"):
+            return {
+                "available": False,
+                "status": "unavailable",
+                "terminal": False,
+                "reason": str(result.get("reason") or "暂时无法读取评测状态"),
+            }
+        status = str(result.get("status") or "unknown")
+        if status not in {"running", "done", "failed", "cancelled"}:
+            return {
+                "available": False,
+                "status": "unavailable",
+                "terminal": False,
+                "reason": "Core 没有返回可识别的评测状态",
+            }
+        return {
+            "available": True,
+            "roundId": str(result.get("roundId") or ""),
+            "status": status,
+            "terminal": status in {"done", "failed", "cancelled"},
+            "done": max(0, int(result.get("done") or 0)),
+            "total": max(0, int(result.get("total") or 0)),
+            "passed": max(0, int(result.get("passed") or 0)),
+            "createdAt": result.get("createdAt"),
+            "finishedAt": result.get("finishedAt"),
         }
 
     async def cancel(self, *, project_id: str) -> dict[str, Any]:
@@ -1505,7 +1654,9 @@ class AgentService:
         live = self._live.get(run.id)
         if live:
             live.cancel_event.set()
-        self.store.update_run(run.id, status=RUN_STOPPING, error="")
+        _stopping, closed_interactions = self.store.begin_run_cancellation(run.id)
+        for interaction in closed_interactions:
+            self.events.publish(project_id, run.id, "interaction", interaction.public())
         self.events.publish(project_id, run.id, "status", {
             "status": RUN_STOPPING,
             "text": "正在停止并核对已经发出的修改",
@@ -1769,6 +1920,7 @@ class AgentService:
                         live.run_id, call_id, name, arguments, result,
                     ),
                     stable_read_cache=live.stable_read_cache,
+                    evaluation_cancel_authorized="cancel_evaluation" in live.required_tools,
                     confirmation_required=live.confirmation_required,
                     release_declined=live.release_declined,
                     validation_repair=live.validation_repair,
@@ -2760,6 +2912,16 @@ _EVALUATION_RESULT_INTENT = re.compile(
     r"(?:评测|测试).{0,16}(?:失败|结果|错误).{0,16}(?:归因|分析|查看|读取|诊断|排查)",
 )
 
+_EVALUATION_CANCEL_INTENT = re.compile(
+    r"(?:停止|取消|终止|中止|停掉).{0,12}(?:正式)?(?:评测|测评|测试)|"
+    r"(?:正式)?(?:评测|测评|测试).{0,12}(?:停止|取消|终止|中止|停掉)",
+)
+
+_EVALUATION_CAPABILITY_QUESTION = re.compile(
+    r"(?:能力|能否|是否|有没有|可不可以|可以吗|怎么|如何).{0,20}(?:评测|测评|测试)|"
+    r"(?:评测|测评|测试).{0,20}(?:能力|能否|是否|有没有|可不可以|可以吗|怎么|如何)",
+)
+
 _FULL_READ_INTENT = re.compile(
     r"全文.{0,6}(?:精读|阅读|通读)|(?:精读|通读).{0,12}(?:文档|文件|资料|材料)",
 )
@@ -2802,7 +2964,13 @@ def _autonomous_work_requested(text: str) -> bool:
 def _required_tools_for_user_intent(text: str) -> set[str]:
     value = str(text or "")
     required: set[str] = set()
-    if _EVALUATION_EXECUTION_INTENT.search(value):
+    cancel_requested = bool(
+        _EVALUATION_CANCEL_INTENT.search(value)
+        and not _EVALUATION_CAPABILITY_QUESTION.search(value)
+    )
+    if cancel_requested:
+        required.add("cancel_evaluation")
+    elif _EVALUATION_EXECUTION_INTENT.search(value):
         required.add("run_evaluation")
     if _EVALUATION_RESULT_INTENT.search(value):
         required.add("get_evaluation_results")
@@ -2813,3 +2981,28 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
     return required
+
+
+def _claims_active_evaluation(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    patterns = (
+        r"(?:评测|测评|测试).{0,12}(?:仍|还|正在|当前|目前).{0,8}(?:运行|执行|处理中)",
+        r"(?:评测|测评|测试).{0,12}(?:尚未|还未|没有)(?:结束|完成)",
+        r"等待.{0,12}(?:评测|测评|测试|本轮).{0,12}(?:结束|完成)",
+        r"(?:评测|测评|测试).{0,8}(?:异步|后台)(?:运行|执行)中",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _evaluation_terminal_summary(evaluation: dict[str, Any]) -> str:
+    status = str(evaluation.get("status") or "failed")
+    done = max(0, int(evaluation.get("done") or 0))
+    total = max(0, int(evaluation.get("total") or 0))
+    passed = max(0, int(evaluation.get("passed") or 0))
+    if status == "done":
+        return f"最近一轮正式评测已完成：已执行 {done}/{total} 条，通过 {passed} 条。"
+    if status == "cancelled":
+        return f"最近一轮正式评测已停止：已执行 {done}/{total} 条，通过 {passed} 条。"
+    return f"最近一轮正式评测已结束，运行失败：已执行 {done}/{total} 条，通过 {passed} 条。"

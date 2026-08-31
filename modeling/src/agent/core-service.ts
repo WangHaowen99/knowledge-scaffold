@@ -546,7 +546,8 @@ export class AgentCoreService {
     if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
-    if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id);
+    if (tool === 'evaluation_status') return this.evaluationStatus(context.project.id);
+    if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id, args);
     switch (tool) {
       case 'create_change_plan': return this.createChangePlan(context, args);
       case 'get_change_plan': return this.getChangePlan(context, args);
@@ -5608,31 +5609,72 @@ export class AgentCoreService {
   }
 
   private evaluationStatus(projectId: string) {
-    const ready = this.db.prepare(`SELECT status, progress_total, pass_count, id FROM eval_rounds
-      WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`).get(projectId) as any;
+    const ready = this.db.prepare(`SELECT id, status, progress_done, progress_total, pass_count,
+        created_at, finished_at FROM eval_rounds
+      WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId) as any;
     if (!ready) return this.unavailable(
       'EVALUATION_NOT_STARTED',
       '尚未创建可运行的评测轮次，未伪造评测结果',
       ['先在评测中心配置数据源和用例，再调用 run_evaluation'],
     );
-    return { roundId: ready.id, status: ready.status, total: ready.progress_total, passed: ready.pass_count,
+    const status = String(ready.status);
+    const terminal = ['done', 'failed', 'cancelled'].includes(status);
+    return { available: true, roundId: ready.id, status, terminal,
+      done: Number(ready.progress_done || 0), total: Number(ready.progress_total || 0),
+      passed: Number(ready.pass_count || 0), createdAt: ready.created_at,
+      finishedAt: ready.finished_at || null,
       scope: getRound(String(ready.id))?.scope ?? { kind: 'current' },
-      display: { text: ready.status === 'running' ? '评测正在后台运行' : '已读取最近一轮真实评测结果' } };
+      display: { text: status === 'running' ? '评测正在后台运行' : '最近一轮评测已经结束' } };
   }
 
-  private async cancelEvaluation(projectId: string) {
+  private async cancelEvaluation(projectId: string, args: Record<string, unknown> = {}) {
+    const requestedRoundId = typeof args.round_id === 'string' ? args.round_id.trim() : '';
+    const latest = this.evaluationStatus(projectId);
+    if (requestedRoundId) {
+      const requested = this.db.prepare(`SELECT id, status, progress_done, progress_total, pass_count,
+          created_at, finished_at FROM eval_rounds WHERE project_id = ? AND id = ?`)
+        .get(projectId, requestedRoundId) as any;
+      if (!requested) {
+        throw new AgentCoreError(
+          'EVALUATION_NOT_FOUND',
+          '指定评测轮次不存在',
+          ['重新读取项目状态后，使用其中最近一轮评测编号'],
+          404,
+        );
+      }
+      if (requested.status !== 'running') {
+        return {
+          cancelled: false,
+          idempotent: true,
+          roundId: requested.id,
+          status: requested.status,
+          terminal: true,
+          done: Number(requested.progress_done || 0),
+          total: Number(requested.progress_total || 0),
+          passed: Number(requested.pass_count || 0),
+          finishedAt: requested.finished_at || null,
+          display: { text: '指定评测已经结束，无需重复停止' },
+        };
+      }
+    }
     if (!isEvaluationActive(projectId)) {
       return {
         cancelled: false,
         idempotent: true,
+        ...(!('error' in latest) ? latest : {}),
         display: { text: '当前没有运行中的评测' },
       };
     }
-    const round = await cancelEvaluation(projectId);
+    const round = await cancelEvaluation(projectId, requestedRoundId || undefined);
     return {
       cancelled: true,
       roundId: round.id,
       status: round.status,
+      terminal: round.status !== 'running',
+      done: round.progressDone,
+      total: round.progressTotal,
+      passed: round.passCount,
+      finishedAt: round.finishedAt ?? null,
       display: { text: '当前评测已停止' },
     };
   }

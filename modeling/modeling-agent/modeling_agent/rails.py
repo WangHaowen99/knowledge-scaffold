@@ -45,7 +45,7 @@ _CONFIRMATION_CARD_CLAIMS = (
 
 MERMAID_SOURCE_VALIDATOR_VERSION = "mermaid-source-v1"
 _STABLE_READ_TOOLS = frozenset({"get_evaluation_results"})
-_STABLE_READ_INVALIDATORS = frozenset({"run_evaluation"})
+_STABLE_READ_INVALIDATORS = frozenset({"run_evaluation", "cancel_evaluation"})
 _CONTEXT_DEPENDENT_RECEIPT_TOOLS = frozenset({"run_script_test"})
 
 
@@ -441,7 +441,7 @@ class InterjectionSafetyRail(AgentRail):
         "define_script_contract", "stage_script_source",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
         "update_project_context", "transition_project_state",
-        "run_script_test", "run_evaluation",
+        "run_script_test", "run_evaluation", "cancel_evaluation",
         "ask", "request_confirmation", "request_release",
     })
 

@@ -47,15 +47,26 @@ export interface PackageImportedProjectEvent {
   fileCount: number;
 }
 
+export interface EvaluationTerminalProjectEvent {
+  eventId: string;
+  roundId: string;
+  status: 'done' | 'failed' | 'cancelled';
+  done: number;
+  total: number;
+  passed: number;
+  finishedAt: string;
+}
+
 export type AgentProjectEvent = MaterialParseProjectEvent
   | StudioReviewProjectEvent
   | FusionReviewProjectEvent
-  | PackageImportedProjectEvent;
+  | PackageImportedProjectEvent
+  | EvaluationTerminalProjectEvent;
 
 interface OutboxRow {
   id: string;
   project_id: string;
-  event_type: 'material_parse' | 'studio_review' | 'fusion_review' | 'package_import';
+  event_type: 'material_parse' | 'studio_review' | 'fusion_review' | 'package_import' | 'evaluation_terminal';
   payload_json: string;
 }
 
@@ -91,10 +102,18 @@ export function enqueuePackageImportedProjectEvent(
   enqueueAgentProjectEvent(db, projectId, 'package_import', event);
 }
 
+export function enqueueEvaluationTerminalProjectEvent(
+  projectId: string,
+  event: EvaluationTerminalProjectEvent,
+  db: DatabaseSync = getDb(),
+): void {
+  enqueueAgentProjectEvent(db, projectId, 'evaluation_terminal', event);
+}
+
 function enqueueAgentProjectEvent(
   db: DatabaseSync,
   projectId: string,
-  eventType: 'material_parse' | 'studio_review' | 'fusion_review' | 'package_import',
+  eventType: 'material_parse' | 'studio_review' | 'fusion_review' | 'package_import' | 'evaluation_terminal',
   event: AgentProjectEvent,
 ): void {
   db.prepare(`INSERT INTO agent_project_event_outbox (
@@ -196,16 +215,43 @@ function reconcileMaterialParseTerminalEvents(projectId: string): void {
   }
 }
 
+export function reconcileEvaluationTerminalEvents(projectId: string): void {
+  const rows = getDb().prepare(`SELECT id, status, progress_done, progress_total, pass_count,
+      created_at, finished_at
+    FROM eval_rounds
+    WHERE project_id = ? AND status IN ('done', 'failed', 'cancelled')
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_project_event_outbox terminal
+        WHERE terminal.id = 'evaluation:' || eval_rounds.id || ':terminal'
+      )
+    ORDER BY created_at DESC, rowid DESC LIMIT 1`).all(projectId) as any[];
+  for (const row of rows) {
+    const roundId = String(row.id);
+    enqueueEvaluationTerminalProjectEvent(projectId, {
+      eventId: `evaluation:${roundId}:terminal`,
+      roundId,
+      status: row.status,
+      done: Number(row.progress_done || 0),
+      total: Number(row.progress_total || 0),
+      passed: Number(row.pass_count || 0),
+      finishedAt: String(row.finished_at || row.created_at),
+    });
+  }
+}
+
 export async function deliverAgentProjectEvents(
   projectId: string,
   authorization: string,
 ): Promise<{ delivered: number; pending: number }> {
   reconcileMaterialParseTerminalEvents(projectId);
+  reconcileEvaluationTerminalEvents(projectId);
   const events = pendingAgentProjectEvents(projectId);
   if (!authorization || !events.length) return { delivered: 0, pending: events.length };
   let delivered = 0;
   for (const event of events) {
-    const endpoint = 'baselineRevision' in event
+    const endpoint = 'roundId' in event
+      ? 'evaluation-events'
+      : 'baselineRevision' in event
       ? 'package-import-events'
       : 'planId' in event
       ? 'fusion-events'
@@ -218,6 +264,7 @@ export async function deliverAgentProjectEvents(
           method: 'POST',
           headers: { authorization, 'content-type': 'application/json' },
           body: JSON.stringify(event),
+          signal: AbortSignal.timeout(5_000),
         },
       );
     } catch {

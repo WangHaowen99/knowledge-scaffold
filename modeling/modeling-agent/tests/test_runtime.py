@@ -21,7 +21,7 @@ from modeling_agent.rails import (
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import RUN_RUNNING, RunRecord
-from modeling_agent.service import LiveRun
+from modeling_agent.service import LiveRun, _required_tools_for_user_intent
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -63,7 +63,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert "run_evaluation" not in knowledge
     assert "create_package_fusion_plan" not in knowledge
     assert "patch_rule" not in validation
-    assert {"run_script_test", "run_evaluation", "get_evaluation_results"} <= validation
+    assert {"run_script_test", "run_evaluation", "get_evaluation_results", "cancel_evaluation"} <= validation
     assert {
         "stage_change_set", "sync_schema_objects", "patch_object_source_binding",
         "analyze_material_impact", "compile_package_fusion_plan",
@@ -120,6 +120,38 @@ async def test_phase_transition_forces_model_boundary_before_using_stale_tools()
     await rail.after_tool_call(failed)  # type: ignore[arg-type]
     assert failed.finish is None
     assert context.phase == "knowledge"
+
+
+async def test_evaluation_cancel_requires_explicit_user_intent() -> None:
+    assert "cancel_evaluation" in _required_tools_for_user_intent("请立即停止当前评测")
+    assert "run_evaluation" not in _required_tools_for_user_intent("请立即停止当前评测")
+    assert "cancel_evaluation" not in _required_tools_for_user_intent("现在是否具备停止评测的能力？")
+
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "cancel_evaluation")
+    blocked_gateway = FakeGateway({"cancel_evaluation": {"cancelled": True}})
+    blocked = json.loads(await CoreTool(spec, ToolContext(
+        project_id="project_cancel_guard",
+        run_id="run_cancel_guard",
+        token="token_1",
+        gateway=blocked_gateway,
+        emit=lambda _kind, _payload: None,
+    )).invoke({"round_id": "round_demo"}))
+    assert blocked["error"] == "EVALUATION_CANCEL_NOT_REQUESTED"
+    assert blocked_gateway.calls == []
+
+    allowed_gateway = FakeGateway({"cancel_evaluation": {
+        "cancelled": True, "roundId": "round_demo", "status": "failed",
+    }})
+    allowed = json.loads(await CoreTool(spec, ToolContext(
+        project_id="project_cancel_guard",
+        run_id="run_cancel_guard",
+        token="token_1",
+        gateway=allowed_gateway,
+        emit=lambda _kind, _payload: None,
+        evaluation_cancel_authorized=True,
+    )).invoke({"round_id": "round_demo"}))
+    assert allowed["cancelled"] is True
+    assert [call["tool"] for call in allowed_gateway.calls] == ["cancel_evaluation"]
 
 
 async def test_model_uses_stream_specific_timeouts(settings) -> None:
@@ -304,9 +336,19 @@ async def test_change_set_tools_explain_one_task_per_resource_contract() -> None
     assert "每项任务只能对应一个具体目标资源" in create_plan.description
     assert "一个且仅一个目标资源" in create_plan.properties["tasks"]["items"]["properties"]["target_key"]["description"]
     assert "每个 action 只对应一个计划任务和一个目标资源" in stage_change_set.description
-    action_properties = stage_change_set.properties["actions"]["items"]["properties"]
-    assert "单一资源目标完全对应" in action_properties["task_id"]["description"]
-    assert "多个最小字段修改" in action_properties["arguments"]["description"]
+    assert stage_change_set.properties["actions"]["maxItems"] == 4
+    variants = stage_change_set.properties["actions"]["items"]["oneOf"]
+    by_tool = {variant["properties"]["tool"]["enum"][0]: variant for variant in variants}
+    assert set(by_tool) == {
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+    }
+    object_fields = by_tool["create_object"]["properties"]["arguments"]["properties"]["fields"]
+    assert "cn_name" in object_fields["items"]["properties"]
+    assert "name" not in object_fields["items"]["properties"]
+    patch_actions = by_tool["patch_object"]["properties"]["arguments"]["properties"]["actions"]
+    assert "update_field" in patch_actions["items"]["properties"]["op"]["enum"]
+    assert "changes" in patch_actions["items"]["properties"]
 
 
 async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() -> None:
@@ -2229,6 +2271,44 @@ async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(sett
         await runtime.shutdown()
 
 
+async def test_cancel_run_publishes_pending_interaction_closure(settings) -> None:
+    model = ScriptedModel([[ToolTurn("ask", {
+        "question": "是否继续当前方案？",
+        "kind": "business_decision",
+        "options": [
+            {"label": "继续", "description": "继续当前方案", "value": "continue"},
+            {"label": "停止", "description": "停止当前方案", "value": "stop"},
+        ],
+    })]])
+    runtime = service(settings, model, FakeGateway())
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_cancel_interaction",
+            token="token_1",
+            message="请确认是否继续",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting"
+        interaction = runtime.store.pending_interaction("project_cancel_interaction")
+        assert interaction is not None
+
+        cancelled = await runtime.cancel(project_id="project_cancel_interaction")
+
+        assert cancelled["status"] == "cancelled"
+        assert runtime.store.get_interaction(interaction.id).status == "cancelled"
+        assert runtime.store.pending_interaction("project_cancel_interaction") is None
+        closure_events = [
+            event for event in runtime.store.events_after("project_cancel_interaction", 0)
+            if event.kind == "interaction"
+            and event.payload.get("id") == interaction.id
+            and event.payload.get("status") == "cancelled"
+        ]
+        assert len(closure_events) == 1
+    finally:
+        await runtime.shutdown()
+
+
 async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("run_evaluation", {})], []],
@@ -2290,6 +2370,118 @@ async def test_agent_reads_and_transitions_single_project_state(settings) -> Non
         assert state.open_questions == ["目标范围待确认"]
         assert any(call["tool"] == "gate_status" for call in gateway.calls)
     finally:
+        await runtime.shutdown()
+
+
+async def test_project_state_uses_authoritative_terminal_evaluation_and_rejects_stale_summary(settings) -> None:
+    gateway = FakeGateway({"evaluation_status": {
+        "available": True,
+        "roundId": "round_terminal",
+        "status": "failed",
+        "terminal": True,
+        "done": 2,
+        "total": 5,
+        "passed": 1,
+        "finishedAt": "2026-08-31T08:00:00.000Z",
+    }})
+    runtime = service(settings, ScriptedModel([[]]), gateway)
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_terminal_state")
+        runtime.store.transition_project_state(
+            "project_terminal_state",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测仍在异步运行中，等待本轮结束。",
+            open_questions=["等待评测完成"],
+        )
+        run = RunRecord(
+            id="run_terminal_state",
+            project_id="project_terminal_state",
+            session_id="session_terminal_state",
+            status="queued",
+            prompt="读取状态",
+            token_fingerprint="fingerprint",
+        )
+        runtime.store.create_run(run)
+        runtime.store.update_run(run.id, status=RUN_RUNNING)
+        live = LiveRun(run_id=run.id, project_id=run.project_id, token="token_1")
+
+        state = await runtime._state_for_agent(live)
+        assert state["evaluation"]["status"] == "failed"
+        assert state["evaluation"]["terminal"] is True
+        assert "运行中" not in state["summary"]
+        assert state["openQuestions"] == []
+
+        current = runtime.store.project_state(run.project_id)
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime._state_action(live, "update_project_context", {
+                "expected_revision": current.revision,
+                "summary": "评测仍在后台运行中。",
+                "open_questions": ["等待本轮评测结束"],
+                "evidence": [],
+            })
+        assert raised.value.code == "STATE_EVALUATION_STATUS_CONFLICT"
+        assert raised.value.details["evaluation"]["status"] == "failed"
+        assert runtime.store.project_state(run.project_id).summary == "评测仍在异步运行中，等待本轮结束。"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_cache(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_event")
+        runtime.store.transition_project_state(
+            "project_evaluation_event",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成", "保留另一个业务问题"],
+        )
+        live = LiveRun(
+            run_id="run_evaluation_event",
+            project_id="project_evaluation_event",
+            token="token_1",
+            stable_read_cache={"get_evaluation_results:latest": {"round": {"status": "running"}}},
+        )
+        runtime._live[live.run_id] = live
+        event = {
+            "eventId": "evaluation:round_event:terminal",
+            "roundId": "round_event",
+            "status": "done",
+            "done": 4,
+            "total": 4,
+            "passed": 3,
+            "finishedAt": "2026-08-31T09:00:00.000Z",
+        }
+
+        first = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_event", token="token_1", event=event,
+        )
+        second = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_event", token="token_1", event=event,
+        )
+
+        assert first["reconciled"] is True
+        assert second == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        state = runtime.store.project_state("project_evaluation_event")
+        assert "已完成" in state.summary
+        assert "运行中" not in state.summary
+        assert state.open_questions == ["保留另一个业务问题"]
+        assert live.stable_read_cache == {}
+        messages = [
+            item for item in runtime.store.events_after("project_evaluation_event", 0)
+            if item.kind == "message" and item.payload.get("externalEventId") == event["eventId"]
+        ]
+        assert len(messages) == 1
+    finally:
+        runtime._live.pop("run_evaluation_event", None)
         await runtime.shutdown()
 
 

@@ -243,7 +243,7 @@ CREATE INDEX IF NOT EXISTS idx_material_revision_impacts_project
 CREATE TABLE IF NOT EXISTS agent_project_event_outbox (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  event_type    TEXT NOT NULL CHECK (event_type IN ('material_parse', 'studio_review', 'fusion_review', 'package_import')),
+  event_type    TEXT NOT NULL CHECK (event_type IN ('material_parse', 'studio_review', 'fusion_review', 'package_import', 'evaluation_terminal')),
   payload_json  TEXT NOT NULL,
   created_at    TEXT NOT NULL,
   delivered_at TEXT

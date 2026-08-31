@@ -16,6 +16,8 @@ from .schemas import (
     RUN_RUNNING,
     RUN_STOPPING,
     RUN_SUSPENDED,
+    RUN_WAITING,
+    TERMINAL_RUN_STATUSES,
     RunRecord,
     RuntimeEvent,
 )
@@ -218,6 +220,36 @@ class RuntimeStore:
             self._db.execute(
                 "ALTER TABLE agent_runs ADD COLUMN tool_profile TEXT NOT NULL DEFAULT 'legacy-v1'"
             )
+        timestamp = now_iso()
+        terminal = tuple(sorted(TERMINAL_RUN_STATUSES))
+        placeholders = ",".join("?" for _ in terminal)
+        self._db.execute(
+            f"""UPDATE agent_interactions
+            SET status = 'cancelled',
+                answer_json = ?,
+                answered_at = ?
+            WHERE status = 'pending' AND run_id IN (
+              SELECT id FROM agent_runs WHERE status IN ({placeholders})
+            )""",
+            (
+                _json({"action": "run_closed", "reason": "所属运行已经结束"}),
+                timestamp,
+                *terminal,
+            ),
+        )
+        self._db.execute(
+            f"UPDATE agent_runs SET interaction_id = '' WHERE status IN ({placeholders})",
+            terminal,
+        )
+        self._db.execute(
+            """UPDATE project_agent_state SET interaction_id = ''
+            WHERE interaction_id <> '' AND NOT EXISTS (
+              SELECT 1 FROM agent_interactions interaction
+              JOIN agent_runs run ON run.id = interaction.run_id
+              WHERE interaction.id = project_agent_state.interaction_id
+                AND interaction.status = 'pending' AND run.status = 'waiting'
+            )""",
+        )
         self._db.commit()
 
     def close(self) -> None:
@@ -284,11 +316,16 @@ class RuntimeStore:
         execution = str(latest["status"]) if latest else "idle"
         if execution not in _EXECUTIONS:
             execution = "idle"
-        pending = self._db.execute(
-            """SELECT id FROM agent_interactions
-            WHERE project_id = ? AND status = 'pending' ORDER BY created_at LIMIT 1""",
-            (project_id,),
-        ).fetchone()
+        pending = None
+        if latest is not None and execution == RUN_WAITING:
+            pending = self._db.execute(
+                """SELECT interaction.id FROM agent_interactions interaction
+                JOIN agent_runs run ON run.id = interaction.run_id
+                WHERE interaction.project_id = ? AND interaction.run_id = ?
+                  AND interaction.status = 'pending' AND run.status = 'waiting'
+                ORDER BY interaction.created_at LIMIT 1""",
+                (project_id, str(latest["id"])),
+            ).fetchone()
         timestamp = now_iso()
         state = ProjectAgentState(
             project_id=project_id,
@@ -475,6 +512,59 @@ class RuntimeStore:
                     error=str(changes["error"]) if "error" in changes else None,
                 )
         return self.require_run(run_id)
+
+    def begin_run_cancellation(
+        self,
+        run_id: str,
+        *,
+        reason: str = "用户已停止运行",
+    ) -> tuple[RunRecord, list[InteractionRecord]]:
+        timestamp = now_iso()
+        with self._lock, self._db:
+            run = self.require_run(run_id)
+            rows = self._db.execute(
+                "SELECT * FROM agent_interactions WHERE run_id = ? AND status = 'pending'",
+                (run_id,),
+            ).fetchall()
+            answer = _json({"action": "run_cancelled", "reason": reason})
+            self._db.execute(
+                """UPDATE agent_interactions
+                SET status = 'cancelled', answer_json = ?, answered_at = ?
+                WHERE run_id = ? AND status = 'pending'""",
+                (answer, timestamp, run_id),
+            )
+            self._db.execute(
+                """UPDATE agent_runs SET status = ?, interaction_id = '', error = '', updated_at = ?
+                WHERE id = ?""",
+                (RUN_STOPPING, timestamp, run_id),
+            )
+            state = self._ensure_project_state_locked(run.project_id)
+            if state.run_id == run_id:
+                phase, _separator, _execution = state.state.partition(":")
+                self._transition_project_state_locked(
+                    state,
+                    next_state=f"{phase}:{RUN_STOPPING}",
+                    cause="run_stopping",
+                    actor_run_id=run_id,
+                    interaction_id="",
+                    error="",
+                )
+            closed = [
+                InteractionRecord(
+                    id=str(row["id"]),
+                    project_id=str(row["project_id"]),
+                    run_id=str(row["run_id"]),
+                    tool_call_id=str(row["tool_call_id"]),
+                    kind=str(row["kind"]),
+                    payload=_object(row["payload_json"]),
+                    status="cancelled",
+                    answer={"action": "run_cancelled", "reason": reason},
+                    created_at=str(row["created_at"]),
+                    answered_at=timestamp,
+                )
+                for row in rows
+            ]
+        return self.require_run(run_id), closed
 
     def retry_entry(self, run_id: str, operation_id: str) -> dict[str, Any] | None:
         with self._lock:

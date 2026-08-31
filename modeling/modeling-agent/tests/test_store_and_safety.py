@@ -325,6 +325,63 @@ def test_pending_interaction_is_reflected_only_by_project_state(tmp_path: Path) 
         store.close()
 
 
+def test_begin_run_cancellation_atomically_closes_pending_interaction(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        store.create_run(run("run_cancel_pending"))
+        store.update_run("run_cancel_pending", status=RUN_RUNNING)
+        interaction = InteractionRecord(
+            id="interaction_cancel_pending",
+            project_id="project_demo",
+            run_id="run_cancel_pending",
+            tool_call_id="call_cancel_pending",
+            kind="business_decision",
+            payload={"question": "是否继续当前方案？"},
+        )
+        store.create_interaction(interaction)
+
+        stopping, closed = store.begin_run_cancellation("run_cancel_pending")
+
+        assert stopping.status == "stopping"
+        assert stopping.interaction_id == ""
+        assert [item.id for item in closed] == [interaction.id]
+        assert closed[0].status == "cancelled"
+        assert store.get_interaction(interaction.id).status == "cancelled"
+        assert store.pending_interaction("project_demo") is None
+        state = store.project_state("project_demo")
+        assert state.state == "intake:stopping"
+        assert state.interaction_id == ""
+    finally:
+        store.close()
+
+
+def test_store_startup_closes_legacy_pending_interaction_from_terminal_run(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_legacy_terminal"))
+    store.update_run("run_legacy_terminal", status=RUN_RUNNING)
+    interaction = InteractionRecord(
+        id="interaction_legacy_terminal",
+        project_id="project_demo",
+        run_id="run_legacy_terminal",
+        tool_call_id="call_legacy_terminal",
+        kind="business_decision",
+        payload={"question": "历史问题"},
+    )
+    store.create_interaction(interaction)
+    store.update_run("run_legacy_terminal", status="cancelled")
+    store.close()
+
+    reopened = RuntimeStore(path)
+    try:
+        assert reopened.get_interaction(interaction.id).status == "cancelled"
+        assert reopened.require_run("run_legacy_terminal").interaction_id == ""
+        assert reopened.project_state("project_demo").interaction_id == ""
+        assert reopened.pending_interaction("project_demo") is None
+    finally:
+        reopened.close()
+
+
 def test_latest_activity_can_be_restored_for_running_agent(settings) -> None:
     runtime = service(settings, ScriptedModel([[]]))
     try:
