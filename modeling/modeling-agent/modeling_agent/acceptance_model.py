@@ -408,6 +408,8 @@ def _change_set_arguments(
     for task in plan.get("tasks", []):
         if not isinstance(task, Mapping):
             continue
+        if task.get("status") not in {None, "", "pending"}:
+            continue
         kind = str(task.get("resource_kind") or "")
         target = str(task.get("target_key") or "")
         if kind not in RESOURCE_KEYS:
@@ -419,6 +421,8 @@ def _change_set_arguments(
             "actions": _patch_actions(kind, prompt, _resource(calls, f"{kind}:{target}")),
         }
         actions.append({"task_id": task.get("id", ""), "tool": tool, "arguments": arguments})
+        if len(actions) >= 4:
+            break
     prior = len([call for call in calls if call.name == "stage_change_set"])
     return {
         "plan_id": plan.get("id", ""),

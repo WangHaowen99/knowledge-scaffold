@@ -793,26 +793,100 @@ CHANGE_PLAN_TASK = {
     ],
     "additionalProperties": False,
 }
-CHANGE_SET_ACTION = {
-    "type": "object",
-    "properties": {
-        "task_id": {
-            "type": "string", "minLength": 1,
-            "description": "Core 返回的任务 ID；必须与本动作 tool 和 arguments 中的单一资源目标完全对应。",
-        },
-        "tool": {"type": "string", "enum": [
-            "create_object", "create_rule", "create_operation", "create_metric",
-            "patch_object", "patch_rule", "patch_operation", "patch_metric",
-        ]},
-        # Core 根据 tool 再次执行对应领域参数和范围校验。
-        "arguments": {
-            "type": "object", "additionalProperties": True,
-            "description": "一个资源的一次领域动作参数；patch 的 actions 可同时包含该资源所需的多个最小字段修改。",
-        },
-    },
-    "required": ["task_id", "tool", "arguments"],
-    "additionalProperties": False,
+CHANGE_SET_TASK_ID = {
+    "type": "string", "minLength": 1,
+    "description": "Core 返回的任务 ID；必须与本动作 tool 和 arguments 中的单一资源目标完全对应。",
 }
+
+
+def change_set_arguments(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object", "properties": properties, "required": required,
+        "additionalProperties": False,
+    }
+
+
+def change_set_action_variant(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "task_id": CHANGE_SET_TASK_ID,
+            "tool": {"type": "string", "enum": [tool]},
+            "arguments": arguments,
+        },
+        "required": ["task_id", "tool", "arguments"],
+        "additionalProperties": False,
+    }
+
+
+CHANGE_SET_CREATE_OBJECT_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING,
+    "aliases": {"type": "array", "items": STRING}, "query_boundary": STRING,
+    "fields": {"type": "array", "minItems": 1, "items": DOMAIN_FIELD},
+    "relations": {"type": "array", "items": DOMAIN_RELATION},
+}, ["key", "title", "description", "fields"])
+CHANGE_SET_CREATE_RULE_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING, "content": STRING,
+    "conditions": {"type": "array", "items": {
+        "type": "object", "properties": {"condition": STRING, "conclusion": STRING},
+        "required": ["condition", "conclusion"], "additionalProperties": False,
+    }},
+    "exceptions": {"type": "array", "items": STRING},
+    "targets": {"type": "array", "items": RESOURCE_ID},
+    "evidence": {"type": "array", "minItems": 1, "items": STRING},
+}, ["key", "title", "content", "evidence"])
+CHANGE_SET_CREATE_OPERATION_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING,
+    "inputs": {"type": "array", "items": {
+        "type": "object", "properties": {
+            "param": STRING, "cn_name": STRING, "type": STRING,
+            "required": {"type": "boolean"}, "note": STRING,
+        }, "required": ["param", "type", "required"], "additionalProperties": False,
+    }},
+    "outputs": {"type": "array", "items": {
+        "type": "object", "properties": {
+            "field": STRING, "cn_name": STRING, "type": STRING, "note": STRING,
+        }, "required": ["field", "type"], "additionalProperties": False,
+    }},
+    "flow": {"type": "array", "minItems": 1, "items": STRING},
+    "notes": {"type": "array", "items": STRING},
+    "references": {"type": "array", "items": RESOURCE_ID},
+    "evidence": {"type": "array", "minItems": 1, "items": STRING},
+}, ["key", "title", "description", "flow", "evidence"])
+CHANGE_SET_CREATE_METRIC_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING, "unit": STRING, "grain": STRING,
+    "caliber": STRING, "boundaries": {"type": "array", "minItems": 1, "items": STRING},
+    "null_policy": {"type": "array", "items": {
+        "type": "object", "properties": {"field": STRING, "handling": STRING},
+        "required": ["field", "handling"], "additionalProperties": False,
+    }},
+    "dimensions": {"type": "array", "items": {
+        "type": "object", "properties": {"key": STRING, "note": STRING},
+        "required": ["key", "note"], "additionalProperties": False,
+    }},
+    "object_references": {"type": "array", "items": RESOURCE_ID},
+    "evidence": {"type": "array", "minItems": 1, "items": STRING},
+}, ["key", "title", "caliber", "boundaries", "evidence"])
+
+
+def change_set_patch_arguments(operations: list[str]) -> dict[str, Any]:
+    return change_set_arguments({
+        "resource_id": RESOURCE_ID,
+        "expected_resource_hash": RESOURCE_HASH,
+        "actions": domain_action_schema(operations),
+    }, ["resource_id", "expected_resource_hash", "actions"])
+
+
+CHANGE_SET_ACTION = {"oneOf": [
+    change_set_action_variant("create_object", CHANGE_SET_CREATE_OBJECT_ARGUMENTS),
+    change_set_action_variant("create_rule", CHANGE_SET_CREATE_RULE_ARGUMENTS),
+    change_set_action_variant("create_operation", CHANGE_SET_CREATE_OPERATION_ARGUMENTS),
+    change_set_action_variant("create_metric", CHANGE_SET_CREATE_METRIC_ARGUMENTS),
+    change_set_action_variant("patch_object", change_set_patch_arguments(OBJECT_PATCH_ACTIONS)),
+    change_set_action_variant("patch_rule", change_set_patch_arguments(RULE_PATCH_ACTIONS)),
+    change_set_action_variant("patch_operation", change_set_patch_arguments(OPERATION_PATCH_ACTIONS)),
+    change_set_action_variant("patch_metric", change_set_patch_arguments(METRIC_PATCH_ACTIONS)),
+]}
 
 
 CORE_TOOL_SPECS = (
@@ -902,12 +976,12 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "stage_change_set",
-        "把依赖闭合的一批计划任务作为原子 Change Set 提交。每个 action 只对应一个计划任务和一个目标资源；同一资源需要补多个字段时应放进该 patch 的 actions，一次完成。只能使用白名单领域动作；整批成功或整批不生效。",
+        "把依赖闭合的 1 到 4 个计划任务作为一个小型原子 Change Set 提交。每个 action 只对应一个计划任务和一个目标资源；同一资源需要补多个字段时应放进该 patch 的 actions，一次完成。大计划必须分批读取最新计划和资源快照后继续，最后再整体验证。只能使用白名单领域动作；每批成功或整批不生效。",
         {
             "plan_id": STRING,
             "expected_revision": WORKING_REVISION,
             "mutation_id": MUTATION_ID,
-            "actions": {"type": "array", "minItems": 1, "maxItems": 100, "items": CHANGE_SET_ACTION},
+            "actions": {"type": "array", "minItems": 1, "maxItems": 4, "items": CHANGE_SET_ACTION},
         },
         ("plan_id", "expected_revision", "mutation_id", "actions"),
         False,
