@@ -177,6 +177,7 @@ export class StudioWriteService {
       username,
       parseCreatePlan(rawBody),
       requestHash('create', rawBody),
+      { allowObjectFieldWrite: true },
     ));
   }
 
@@ -323,17 +324,22 @@ export class StudioWriteService {
       const spec = parseWorkingSpec(context.files);
       assertDeleteElementsExist(spec, elementIds);
       const references = incomingReferences(spec, new Set(elementIds));
+      const textReferences = incomingTextReferences(spec, new Set(elementIds));
       return {
         workingRevision: context.workingRevision,
         elementIds,
         references,
-        affectedElementIds: [...new Set(references.map((item) => item.sourceId))],
-        previewToken: deletePreviewToken(project.id, context.workingRevision, elementIds, references),
+        textReferences,
+        affectedElementIds: [...new Set([...references, ...textReferences].map((item) => item.sourceId))],
+        previewToken: deletePreviewToken(project.id, context.workingRevision, elementIds, references, textReferences),
         cleanupRequired: references.length > 0,
+        blocked: textReferences.length > 0,
         display: {
-          text: references.length
-            ? `将删除 ${elementIds.length} 个条目，并清理 ${references.length} 处关系引用`
-            : `将删除 ${elementIds.length} 个条目，没有其他条目引用它们`,
+          text: textReferences.length
+            ? `暂不能删除：仍有 ${textReferences.length} 处正文显式引用需要先修改`
+            : references.length
+              ? `将删除 ${elementIds.length} 个条目，并清理 ${references.length} 处关系引用`
+              : `将删除 ${elementIds.length} 个条目，没有其他条目引用它们`,
         },
       };
     });
@@ -556,8 +562,8 @@ export class StudioWriteService {
           : {}),
         display: {
           text: publicStagedPaths.length
-            ? `已形成${noun}的待确认修改，确认后才会保存为新版本${historicalProblemNote}`
-            : `已撤销对应的待确认修改，当前版本尚未改变${historicalProblemNote}`,
+            ? `已保存${noun}工作草稿，确定性检查通过后才会保存为新版本${historicalProblemNote}`
+            : `已撤销对应的工作草稿，当前版本尚未改变${historicalProblemNote}`,
         },
         warnings: mutation.warnings,
         historicalProblemCount: mutation.historicalProblemCount,
@@ -636,13 +642,19 @@ export interface StudioDeleteReference {
   targetId: string;
 }
 
+export interface StudioDeleteTextReference extends StudioDeleteReference {
+  excerpt: string;
+}
+
 export interface StudioDeletePreview {
   workingRevision: string;
   elementIds: string[];
   references: StudioDeleteReference[];
+  textReferences: StudioDeleteTextReference[];
   affectedElementIds: string[];
   previewToken: string;
   cleanupRequired: boolean;
+  blocked: boolean;
   display: { text: string };
 }
 
@@ -841,7 +853,14 @@ function applyMutation(
   if (plan.deletes.length) {
     assertDeleteElementsExist(spec, plan.deletes);
     const references = incomingReferences(spec, new Set(plan.deletes));
-    const expectedToken = deletePreviewToken(projectId, plan.envelope.expectedRevision, plan.deletes, references);
+    const textReferences = incomingTextReferences(spec, new Set(plan.deletes));
+    const expectedToken = deletePreviewToken(
+      projectId,
+      plan.envelope.expectedRevision,
+      plan.deletes,
+      references,
+      textReferences,
+    );
     if (plan.deletePreviewToken !== expectedToken) {
       throw new StudioWriteError(
         'DELETE_PREVIEW_STALE',
@@ -851,6 +870,14 @@ function applyMutation(
     }
     if (references.length && !plan.cleanupReferences) {
       throw fieldError({ cleanupReferences: '这些条目仍被引用，请确认同时清理关系' });
+    }
+    if (textReferences.length) {
+      throw new StudioWriteError(
+        'DELETE_TEXT_REFERENCE_BLOCKED',
+        '仍有正文显式引用，必须先修改引用内容再删除',
+        409,
+        { textReferences },
+      );
     }
     const beforeReader = new StudioReadService({
       workingRevision: plan.envelope.expectedRevision,
@@ -1214,7 +1241,13 @@ function minimalSpec(
   const title = typeof values.title === 'string' && values.title ? values.title : key;
   let item: SpecObject | SpecOperation | SpecRule | SpecMetric;
   if (kind === 'object') {
-    item = { key, title, description: title, fields: [] };
+    item = {
+      key,
+      title,
+      description: title,
+      fields: [{ key: 'id', cnName: '标识', type: 'string', required: true, note: 'Studio 新建对象的默认主键字段。' }],
+      primaryKey: ['id'],
+    };
   } else if (kind === 'operation') {
     item = {
       key,
@@ -1222,7 +1255,7 @@ function minimalSpec(
       description: title,
       inputs: [],
       outputs: [],
-      flow: ['待补充流程步骤'],
+      flow: [`完成${title}`],
       relatedObjects: [],
     };
   } else if (kind === 'rule') {
@@ -1300,6 +1333,14 @@ function validateRelations(
     const base = 'normalizedValues' in action
       ? fieldPath(action.path, 'values.relations')
       : fieldPath(action.path, 'changes.relations');
+    const sourceId = 'normalizedValues' in action
+      ? elementId(action.kind, action.key)
+      : action.elementId;
+    relations.forEach((relation, index) => {
+      if (elementId(relation.targetKind, relation.targetKey) === sourceId) {
+        errors[`${base}[${index}].targetId`] = '不能把知识条目关联到自身';
+      }
+    });
     pending.push({ path: base, relations });
   }
   applyValidationIssues(errors, validateOntologyRelationTargets(spec, pending));
@@ -1392,6 +1433,73 @@ function incomingReferences(spec: PackageSpec, deleted: Set<string>): StudioDele
   ));
 }
 
+function incomingTextReferences(spec: PackageSpec, deleted: Set<string>): StudioDeleteTextReference[] {
+  const targets = [...deleted];
+  const references: StudioDeleteTextReference[] = [];
+  const sources: Array<{ kind: StudioKind; item: Record<string, unknown> }> = [
+    ...spec.objects.map((item) => ({ kind: 'object' as const, item: item as unknown as Record<string, unknown> })),
+    ...spec.operations.map((item) => ({ kind: 'operation' as const, item: item as unknown as Record<string, unknown> })),
+    ...(spec.rules ?? []).map((item) => ({ kind: 'rule' as const, item: item as unknown as Record<string, unknown> })),
+    ...(spec.metrics ?? []).map((item) => ({ kind: 'metric' as const, item: item as unknown as Record<string, unknown> })),
+  ];
+  const visit = (sourceKind: StudioKind, source: Record<string, unknown>, value: unknown, path: string) => {
+    if (typeof value === 'string') {
+      for (const targetId of targets) {
+        if (!containsExplicitReference(value, targetId)) continue;
+        references.push({
+          sourceId: elementId(sourceKind, String(source.key ?? '')),
+          sourceTitle: String(source.title ?? source.key ?? ''),
+          field: path,
+          targetId,
+          excerpt: value.length > 160 ? `${value.slice(0, 157)}...` : value,
+        });
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(sourceKind, source, item, `${path}[${index}]`));
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, item] of Object.entries(value)) {
+      if (['key', 'title'].includes(key)) continue;
+      visit(sourceKind, source, item, path ? `${path}.${key}` : key);
+    }
+  };
+  for (const { kind, item } of sources) {
+    if (deleted.has(elementId(kind, String(item.key ?? '')))) continue;
+    visit(kind, item, item, '');
+  }
+  for (const script of spec.scripts ?? []) {
+    const targetId = elementId('operation', script.boundOperation);
+    if (!deleted.has(targetId)) continue;
+    references.push({
+      sourceId: `script:${script.key}`,
+      sourceTitle: script.title || script.key,
+      field: 'boundOperation',
+      targetId,
+      excerpt: `脚本绑定操作 operation:${script.boundOperation}`,
+    });
+  }
+  return [...new Map(references.map((item) => [
+    `${item.sourceId}\0${item.field}\0${item.targetId}`,
+    item,
+  ])).values()].sort((left, right) => (
+    `${left.sourceId}\0${left.field}\0${left.targetId}`
+      .localeCompare(`${right.sourceId}\0${right.field}\0${right.targetId}`)
+  ));
+}
+
+function containsExplicitReference(text: string, targetId: string): boolean {
+  let offset = text.indexOf(targetId);
+  while (offset >= 0) {
+    const next = text[offset + targetId.length] ?? '';
+    if (!next || !/[\p{L}\p{N}_-]/u.test(next)) return true;
+    offset = text.indexOf(targetId, offset + targetId.length);
+  }
+  return false;
+}
+
 function removeIncomingReferences(spec: PackageSpec, deleted: Set<string>): void {
   const kept = (kind: StudioKind, values: string[] | undefined): string[] => (
     (values ?? []).filter((key) => !deleted.has(elementId(kind, key)))
@@ -1418,12 +1526,14 @@ function deletePreviewToken(
   workingRevision: string,
   elementIds: string[],
   references: StudioDeleteReference[],
+  textReferences: StudioDeleteTextReference[],
 ): string {
   return `delete_${createHash('sha256').update(stableJson({
     projectId,
     workingRevision,
     elementIds: [...elementIds].sort(),
     references,
+    textReferences,
   })).digest('hex')}`;
 }
 
