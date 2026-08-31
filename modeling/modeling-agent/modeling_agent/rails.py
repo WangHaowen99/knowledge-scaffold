@@ -528,6 +528,33 @@ class ToolBoundaryRail(AgentRail):
         self._context.tool_receipt_save(_tool_name(ctx), call_id, _call_args(ctx), result)
 
 
+class PhaseTransitionRail(AgentRail):
+    """End the current model operation so the next one rebuilds phase-scoped tools."""
+
+    priority = 102
+
+    def __init__(self, context: ToolContext) -> None:
+        self._context = context
+
+    async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
+        if _tool_name(ctx) != "transition_project_state":
+            return
+        result = _result_dict(getattr(ctx.inputs, "tool_result", None))
+        next_phase = str(result.get("phase") or "").strip()
+        if result.get("error") or not next_phase or next_phase == self._context.phase:
+            return
+        previous_phase = self._context.phase
+        self._context.phase = next_phase
+        ctx.request_force_finish({
+            "result_type": "answer",
+            "output": "",
+            "phase_refresh": {
+                "from": previous_phase,
+                "to": next_phase,
+            },
+        })
+
+
 def _stable_read_cache_key(name: str, arguments: dict[str, Any]) -> str:
     if name not in _STABLE_READ_TOOLS:
         return ""

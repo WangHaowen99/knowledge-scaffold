@@ -20,6 +20,7 @@ from .rails import (
     ConfirmationRail,
     DecisionCardSafetyRail,
     InterjectionSafetyRail,
+    PhaseTransitionRail,
     ReleaseConfirmationRail,
     ToolBoundaryRail,
     WriteSafetyRail,
@@ -141,6 +142,7 @@ def build_agent(
     rails = [
         InterjectionSafetyRail(context),
         ToolBoundaryRail(context),
+        PhaseTransitionRail(context),
         WriteSafetyRail(context),
         DecisionCardSafetyRail(context),
         AskRail(context),

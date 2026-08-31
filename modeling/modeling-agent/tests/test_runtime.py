@@ -13,6 +13,7 @@ from modeling_agent.agent import _system_prompt, build_model, context_engine_con
 from modeling_agent.rails import (
     AskRail,
     ConfirmationRail,
+    PhaseTransitionRail,
     ReleaseConfirmationRail,
     claims_confirmation_card,
     requests_user_input,
@@ -81,6 +82,44 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
         )
     }
     assert {"run_evaluation", "compile_package_fusion_plan"} <= intake_recovery
+
+
+async def test_phase_transition_forces_model_boundary_before_using_stale_tools() -> None:
+    context = ToolContext(
+        project_id="project_phase_refresh",
+        run_id="run_phase_refresh",
+        token="token",
+        gateway=FakeGateway({}),
+        emit=lambda *_args: None,
+        phase="process",
+    )
+    rail = PhaseTransitionRail(context)
+
+    class Callback:
+        def __init__(self, result: dict) -> None:
+            self.inputs = SimpleNamespace(
+                tool_name="transition_project_state",
+                tool_result=json.dumps(result),
+            )
+            self.finish = None
+
+        def request_force_finish(self, result: dict) -> None:
+            self.finish = result
+
+    callback = Callback({"phase": "knowledge", "revision": 6})
+    await rail.after_tool_call(callback)  # type: ignore[arg-type]
+
+    assert context.phase == "knowledge"
+    assert callback.finish == {
+        "result_type": "answer",
+        "output": "",
+        "phase_refresh": {"from": "process", "to": "knowledge"},
+    }
+
+    failed = Callback({"error": "STATE_GATE_BLOCKED", "phase": "validation"})
+    await rail.after_tool_call(failed)  # type: ignore[arg-type]
+    assert failed.finish is None
+    assert context.phase == "knowledge"
 
 
 async def test_model_uses_stream_specific_timeouts(settings) -> None:
