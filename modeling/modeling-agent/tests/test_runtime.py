@@ -63,7 +63,11 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert "run_evaluation" not in knowledge
     assert "create_package_fusion_plan" not in knowledge
     assert "patch_rule" not in validation
-    assert {"run_script_test", "run_evaluation", "get_evaluation_results", "cancel_evaluation"} <= validation
+    assert {
+        "analyze_deterministic_capabilities", "confirm_deterministic_scope",
+        "run_script_test", "run_evaluation", "get_evaluation_results", "cancel_evaluation",
+    } <= validation
+    assert not {"analyze_deterministic_capabilities", "confirm_deterministic_scope"} & knowledge
     assert {
         "stage_change_set", "sync_schema_objects", "patch_object_source_binding",
         "analyze_material_impact", "compile_package_fusion_plan",
@@ -572,6 +576,9 @@ async def test_package_contract_is_injected_into_initial_agent_context() -> None
     assert "生成、修正和确认候选都必须以这份" in prompt
     assert "diagrams/*.mmd 时只提交裸 Mermaid 源码" in prompt
     assert "绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏" in prompt
+    assert "必须先调用 analyze_deterministic_capabilities" in prompt
+    assert "只有收到专家答案后才能调用 confirm_deterministic_scope" in prompt
+    assert "deterministic_confirmed 未通过时不得转换到评测阶段" in prompt
 
 
 async def test_candidate_validation_repair_aggregates_parallel_files_as_one_round() -> None:

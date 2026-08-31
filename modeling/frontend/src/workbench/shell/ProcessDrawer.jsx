@@ -221,6 +221,7 @@ export function humanizeTraceSummary(summary, toolName = '') {
     goal_confirmed: '建模目标确认',
     process_confirmed: '业务流程确认',
     knowledge_confirmed: '知识内容确认',
+    deterministic_confirmed: '确定性计算范围确认',
     modeling_complete: '建模完成',
   };
   for (const [internal, label] of Object.entries(gates)) text = text.replaceAll(internal, label);

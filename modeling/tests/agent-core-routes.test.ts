@@ -2486,6 +2486,204 @@ test('脚本沙箱测试要求明确输入输出契约', async (t) => {
   assert.match(blocked.json().reason, /expected/u);
 });
 
+test('确定性计算候选必须经人工确认且知识变化后旧决定自动失效', async (t) => {
+  const project = createProject({
+    owner: 'alice', name: '确定性脚本范围门禁', kind: 'package', runtime: 'agent',
+  });
+  const artifacts = getPackageArtifactStore();
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: 'deterministic-scope-package',
+    name: '确定性脚本范围门禁',
+    description: '验证确定性分析、人工范围决定和知识变更失效。',
+  });
+  const seeded = await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: {
+      ...structuredClone(initial.spec),
+      operations: [{
+        key: 'calculate_device_load',
+        title: '计算装置负荷率',
+        description: '按加工量和运行天数精确计算装置负荷率。',
+        inputs: [
+          { param: 'amount', type: 'number', required: true },
+          { param: 'days', type: 'number', required: true },
+        ],
+        outputs: [{ field: 'load_rate', type: 'number' }],
+        flow: ['汇总加工量', '换算日均负荷', '计算负荷率'],
+        relatedObjects: [],
+      }],
+    },
+    coverage: initial.coverage,
+    note: '建立确定性计算测试基线',
+    action: {
+      cause: 'test.deterministic_scope_seeded',
+      summary: '建立确定性计算测试基线',
+      actorKind: 'system',
+      actorName: 'test',
+    },
+  });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+
+  const analysis = await tool(app, project.id, 'analyze_deterministic_capabilities', {}, runId);
+  assert.equal(analysis.statusCode, 200, analysis.body);
+  assert.equal(analysis.json().status, 'decision_required');
+  assert.equal(analysis.json().candidates.length, 1);
+  assert.equal(analysis.json().candidates[0].operation_key, 'calculate_device_load');
+  assert.equal(analysis.json().candidates[0].already_covered, false);
+
+  const blocked = await tool(app, project.id, 'gate_status', {
+    gate: 'deterministic_confirmed',
+  }, runId);
+  assert.equal(blocked.statusCode, 200, blocked.body);
+  assert.equal(blocked.json().pass, false);
+  assert.match(blocked.json().blockers[0], /确认当前确定性计算候选/u);
+
+  const stale = await tool(app, project.id, 'confirm_deterministic_scope', {
+    expected_scope_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    selected_operation_keys: [],
+    reason: '专家明确决定本轮不生成脚本',
+  }, runId);
+  assert.equal(stale.statusCode, 409, stale.body);
+  assert.equal(stale.json().code, 'DETERMINISTIC_SCOPE_CHANGED');
+
+  const skipped = await tool(app, project.id, 'confirm_deterministic_scope', {
+    expected_scope_hash: analysis.json().scope_hash,
+    selected_operation_keys: [],
+    reason: '专家明确决定本轮不生成脚本',
+  }, runId);
+  assert.equal(skipped.statusCode, 200, skipped.body);
+  assert.equal(skipped.json().status, 'ready');
+  const skippedGate = await tool(app, project.id, 'gate_status', {
+    gate: 'deterministic_confirmed',
+  }, runId);
+  assert.equal(skippedGate.json().pass, true);
+  assert.match(skippedGate.json().warnings[0], /明确跳过 1 个/u);
+
+  const changed = await artifacts.savePackageVersion(project.id, {
+    expectedRevision: seeded.revision.oid,
+    spec: {
+      ...structuredClone(seeded.spec),
+      operations: seeded.spec.operations.map((operation) => ({
+        ...operation,
+        description: `${operation.description} 缺少运行天数时必须明确失败。`,
+      })),
+    },
+    coverage: seeded.coverage,
+    note: '调整确定性计算边界',
+    action: {
+      cause: 'test.deterministic_scope_changed',
+      summary: '调整确定性计算边界',
+      actorKind: 'user',
+      actorName: 'alice',
+    },
+  });
+  assert.notEqual(changed.revision.oid, seeded.revision.oid);
+  const nextRunId = runId;
+  const refreshed = await tool(app, project.id, 'analyze_deterministic_capabilities', {}, nextRunId);
+  assert.equal(refreshed.statusCode, 200, refreshed.body);
+  assert.equal(refreshed.json().status, 'decision_required');
+  assert.notEqual(refreshed.json().scope_hash, analysis.json().scope_hash);
+
+  const operations = await tool(app, project.id, 'list_domain_resources', {
+    kind: 'operation',
+  }, nextRunId);
+  assert.equal(operations.statusCode, 200, operations.body);
+  const operation = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'operation:calculate_device_load',
+    working_revision: operations.json().working_revision,
+  }, nextRunId);
+  assert.equal(operation.statusCode, 200, operation.body);
+  const contractArgs = {
+    expected_revision: operation.json().working_revision,
+    mutation_id: 'define-device-load-contract',
+    reason: '保存专家确认的输入输出和测试边界',
+    script_key: 'calculate_device_load',
+    title: '装置负荷率计算脚本',
+    description: '根据加工量与运行天数返回确定性负荷率。',
+    operation_id: 'operation:calculate_device_load',
+    expected_operation_hash: operation.json().resource.operation_contract_hash,
+    entrypoint: 'calculate_device_load.py',
+    timeout_seconds: 30,
+    parameters: [
+      { name: 'amount', flag: '--amount', type: 'number', required: true },
+      { name: 'days', flag: '--days', type: 'number', required: true },
+    ],
+    outputs: [{ key: 'load_rate', type: 'number' }],
+    boundaries: ['运行天数必须大于零', '缺少必填输入时明确失败'],
+    evidence: ['user-decision:deterministic-contract'],
+  };
+  const contractBeforeScope = await tool(
+    app, project.id, 'define_script_contract', contractArgs, nextRunId,
+  );
+  assert.equal(contractBeforeScope.statusCode, 409, contractBeforeScope.body);
+  assert.equal(contractBeforeScope.json().code, 'SCRIPT_SCOPE_NOT_CONFIRMED');
+
+  const selected = await tool(app, project.id, 'confirm_deterministic_scope', {
+    expected_scope_hash: refreshed.json().scope_hash,
+    selected_operation_keys: ['calculate_device_load'],
+    reason: '专家确认该负荷率必须由确定性脚本计算',
+  }, nextRunId);
+  assert.equal(selected.statusCode, 200, selected.body);
+  assert.equal(selected.json().status, 'implementation_required');
+  assert.deepEqual(selected.json().missing_script_bindings, ['calculate_device_load']);
+  assert.deepEqual(selected.json().missing_script_tests, []);
+
+  const defined = await tool(app, project.id, 'define_script_contract', contractArgs, nextRunId);
+  assert.equal(defined.statusCode, 200, defined.body);
+  const stillBlocked = await tool(app, project.id, 'gate_status', {
+    gate: 'ready_for_eval',
+  }, nextRunId);
+  assert.equal(stillBlocked.json().pass, false);
+  assert.ok(stillBlocked.json().blockers.some((item: string) => /完成已确认业务操作/u.test(item)));
+
+  const sourceCode = `import argparse
+import json
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--amount", required=True, type=float)
+    parser.add_argument("--days", required=True, type=float)
+    args = parser.parse_args()
+    if args.days <= 0:
+        raise ValueError("days must be greater than zero")
+    print(json.dumps({"load_rate": args.amount / args.days}, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
+`;
+  const staged = await tool(app, project.id, 'stage_script_source', {
+    script_key: 'calculate_device_load',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'stage-device-load-script',
+    reason: '按专家确认的契约实现装置负荷率计算',
+    source_code: sourceCode,
+  }, nextRunId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  const beforeTest = await tool(app, project.id, 'gate_status', {
+    gate: 'deterministic_confirmed',
+  }, nextRunId);
+  assert.equal(beforeTest.json().pass, false);
+  assert.ok(beforeTest.json().blockers.some((item: string) => /隔离测试/u.test(item)));
+
+  await usePassingScriptSandbox(t);
+  const tested = await tool(app, project.id, 'run_script_test', {
+    script: 'scripts/calculate_device_load.py',
+    cases: [
+      { input: { amount: 80, days: 2 }, expected: { load_rate: 40 } },
+      { input: { amount: 0, days: 1 }, expected: { load_rate: 0 } },
+      { input: { amount: 80, days: 0 }, expected: { error: 'days must be greater than zero' } },
+    ],
+  }, nextRunId);
+  assert.equal(tested.statusCode, 200, tested.body);
+  assert.equal(tested.json().failed, 0);
+  const deterministicReady = await tool(app, project.id, 'gate_status', {
+    gate: 'deterministic_confirmed',
+  }, nextRunId);
+  assert.equal(deterministicReady.json().pass, true, deterministicReady.body);
+});
+
 test('脚本候选的预检和最终确认都只接受当前源码的沙箱通过回执', async (t) => {
   const project = createProject({ owner: 'alice', name: '脚本回执门禁' });
   const app = appFor(t);

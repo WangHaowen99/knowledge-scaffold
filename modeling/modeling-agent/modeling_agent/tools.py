@@ -1426,6 +1426,27 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("grep_package", "跨知识包文件检索文本。", {"pattern": STRING}, ("pattern",), display="正在检索知识包"),
     ToolSpec("gate_status", "读取门禁的确定性结果；Agent 不能自行宣布门禁通过。", {"gate": STRING}, ("gate",), display="正在检查门禁"),
+    ToolSpec(
+        "analyze_deterministic_capabilities",
+        "由核心代码分析已确认知识中的计算、聚合、排序和精确转换，返回脚本候选及建议契约；本工具只分析，不生成脚本。",
+        {},
+        (),
+        display="正在分析确定性计算范围",
+    ),
+    ToolSpec(
+        "confirm_deterministic_scope",
+        "保存专家对当前确定性计算范围的明确决定。selected_operation_keys 为空表示专家明确决定本轮不生成脚本；不得在没有专家确认卡答案时调用。",
+        {
+            "expected_scope_hash": RESOURCE_HASH,
+            "selected_operation_keys": {
+                "type": "array", "items": STRING, "maxItems": 100, "uniqueItems": True,
+            },
+            "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+        },
+        ("expected_scope_hash", "selected_operation_keys", "reason"),
+        False,
+        "正在保存脚本范围决定",
+    ),
     ToolSpec("who_references", "返回直接引用目标的一跳条目；是否继续传播由你判断。", {"target": STRING}, ("target",), display="正在核对引用关系"),
     ToolSpec(
         "analyze_material_impact",
@@ -2436,6 +2457,7 @@ FUSION_PHASE_TOOLS = frozenset({
 })
 EVALUATION_PHASE_TOOLS = frozenset({"run_evaluation", "get_evaluation_results", "cancel_evaluation", "query_eval_db"})
 SCRIPT_PHASE_TOOLS = frozenset({
+    "analyze_deterministic_capabilities", "confirm_deterministic_scope",
     "define_script_contract", "get_script_contract", "stage_script_source", "run_script_test",
 })
 LEGACY_TOOL_ALIASES = frozenset({

@@ -438,6 +438,7 @@ class InterjectionSafetyRail(AgentRail):
         "patch_object", "patch_rule", "patch_operation", "patch_metric",
         "sync_schema_objects", "patch_object_source_binding",
         "delete_domain_resource",
+        "confirm_deterministic_scope",
         "define_script_contract", "stage_script_source",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
         "update_project_context", "transition_project_state",

@@ -85,6 +85,7 @@ import {
 } from '../workflow/package-version-lifecycle.js';
 import { ensureFullDocumentSummaries } from '../workflow/material-analysis-map-reduce.js';
 import { buildTaskLlm } from '../llm/provider.js';
+import { identifyScriptCandidates } from '../ai-construction/deterministic-capability.js';
 import {
   getRound,
   latestEffectiveEvaluation,
@@ -170,6 +171,7 @@ const GATE_LABELS: Record<string, string> = {
   goal_confirmed: '建模目标确认',
   process_confirmed: '业务流程确认',
   knowledge_confirmed: '知识内容确认',
+  deterministic_confirmed: '确定性计算范围确认',
   modeling_complete: '建模完成',
   ready_for_eval: '评测准备',
   evaluation_passed: '正式评测',
@@ -211,6 +213,33 @@ interface ChangeGroupInput {
   title: string;
   impact?: string[];
   warning?: string;
+}
+
+interface DeterministicCapabilityCandidateView {
+  operation_key: string;
+  title: string;
+  confidence: 'medium' | 'high';
+  reason: string;
+  suggested_contract?: string;
+  composes_operation_keys: string[];
+  already_covered: boolean;
+  bound_script_key: string | null;
+}
+
+interface DeterministicCapabilityView {
+  scope_hash: string;
+  status: 'not_required' | 'covered' | 'decision_required' | 'implementation_required' | 'ready';
+  candidates: DeterministicCapabilityCandidateView[];
+  selected_operation_keys: string[];
+  skipped_operation_keys: string[];
+  missing_script_bindings: string[];
+  missing_script_tests: string[];
+  decision: null | {
+    reason: string;
+    decided_by: string;
+    decided_at: string;
+  };
+  display: { text: string };
 }
 
 interface DomainFailureReceiptContext {
@@ -607,6 +636,8 @@ export class AgentCoreService {
       case 'stage_change_set': return this.stageChangeSet(context, args);
       case 'validate_change_set': return this.validateChangeSet(workspace, context, args);
       case 'discard_change_set': return this.discardChangeSet(workspace, context, args);
+      case 'analyze_deterministic_capabilities': return this.analyzeDeterministicCapabilities(workspace);
+      case 'confirm_deterministic_scope': return this.confirmDeterministicScope(workspace, context, args);
       case 'define_script_contract': return this.defineScriptContract(context, args);
       case 'stage_script_source': return this.runPlannedDirectTask(
         context,
@@ -1889,6 +1920,197 @@ export class AgentCoreService {
     );
   }
 
+  private deterministicCapabilityState(
+    projectId: string,
+    spec: PackageSpec,
+  ): DeterministicCapabilityView {
+    const scopeHash = hashStructuredValue('deterministic-capability-scope-v1', {
+      objects: spec.objects ?? [],
+      operations: (spec.operations ?? []).map((operation) => {
+        const value = structuredClone(operation);
+        delete value.script;
+        return value;
+      }),
+      rules: spec.rules ?? [],
+      metrics: spec.metrics ?? [],
+      dataSourceType: spec.dataSourceType ?? null,
+    });
+    const operationsForAnalysis = (spec.operations ?? []).map((operation) => {
+      const value = structuredClone(operation);
+      delete value.script;
+      return value;
+    });
+    const scripts = new Map((spec.scripts ?? []).map((script) => [script.key, script]));
+    const operationByKey = new Map((spec.operations ?? []).map((operation) => [operation.key, operation]));
+    const candidates: DeterministicCapabilityCandidateView[] = identifyScriptCandidates(
+      operationsForAnalysis,
+      spec.metrics ?? [],
+    ).map((candidate) => {
+      const operation = operationByKey.get(candidate.operationKey);
+      const scriptKey = operation?.script?.key ?? '';
+      const script = scriptKey ? scripts.get(scriptKey) : undefined;
+      const covered = Boolean(script && script.boundOperation === candidate.operationKey);
+      return {
+        operation_key: candidate.operationKey,
+        title: candidate.title,
+        confidence: candidate.confidence,
+        reason: candidate.reason,
+        ...(candidate.suggestedContract ? { suggested_contract: candidate.suggestedContract } : {}),
+        composes_operation_keys: candidate.invokesOperationKeys ?? [],
+        already_covered: covered,
+        bound_script_key: covered ? scriptKey : null,
+      };
+    });
+    const uncovered = candidates.filter((candidate) => !candidate.already_covered);
+    const row = this.db.prepare(`SELECT scope_hash, selected_operation_keys_json, reason, decided_by, decided_at
+      FROM agent_deterministic_scope_decisions WHERE project_id = ?`).get(projectId) as
+      | {
+        scope_hash: string;
+        selected_operation_keys_json: string;
+        reason: string;
+        decided_by: string;
+        decided_at: string;
+      }
+      | undefined;
+    const currentDecision = row?.scope_hash === scopeHash ? row : undefined;
+    const staleDecision = Boolean(row && row.scope_hash !== scopeHash);
+    const allowed = new Set(candidates.map((candidate) => candidate.operation_key));
+    const selected = currentDecision
+      ? parseArray(currentDecision.selected_operation_keys_json).filter((key) => allowed.has(key))
+      : [];
+    const selectedSet = new Set(selected);
+    const missingBindings = selected.filter((key) => (
+      !candidates.find((candidate) => candidate.operation_key === key)?.already_covered
+    ));
+    const missingTests = currentDecision ? selected.filter((key) => {
+      const operation = operationByKey.get(key);
+      const scriptKey = operation?.script?.key ?? '';
+      const script = scriptKey ? scripts.get(scriptKey) : undefined;
+      if (!script || script.boundOperation !== key) return false;
+      return !this.db.prepare(`SELECT 1 FROM agent_script_test_receipts
+        WHERE project_id = ? AND script_path = ? AND source_hash = ? AND created_at >= ? LIMIT 1`)
+        .get(
+          projectId,
+          `scripts/${script.entrypoint}`,
+          scriptSourceHash(script.sourceCode),
+          currentDecision.decided_at,
+        );
+    }) : [];
+    const skipped = currentDecision
+      ? uncovered.map((candidate) => candidate.operation_key).filter((key) => !selectedSet.has(key))
+      : [];
+    let status: DeterministicCapabilityView['status'];
+    let displayText: string;
+    if (!candidates.length) {
+      status = 'not_required';
+      displayText = '未发现需要确定性脚本的业务操作';
+    } else if (!uncovered.length && !row) {
+      status = 'covered';
+      displayText = `已存在 ${candidates.length} 个有效脚本绑定`;
+    } else if (!currentDecision || staleDecision) {
+      status = 'decision_required';
+      displayText = staleDecision
+        ? '业务知识已经变化，等待专家重新确认确定性脚本范围'
+        : `发现 ${uncovered.length} 个可能需要确定性计算的业务操作，等待专家确认范围`;
+    } else if (missingBindings.length || missingTests.length) {
+      status = 'implementation_required';
+      displayText = `已确认 ${selected.length} 个确定性脚本，仍需完成 ${missingBindings.length} 个绑定和 ${missingTests.length} 个沙箱验证`;
+    } else {
+      status = 'ready';
+      displayText = selected.length
+        ? `确定性脚本范围已确认，${selected.length} 个脚本均已完成绑定`
+        : '专家已确认本轮不生成确定性脚本';
+    }
+    return {
+      scope_hash: scopeHash,
+      status,
+      candidates,
+      selected_operation_keys: selected,
+      skipped_operation_keys: skipped,
+      missing_script_bindings: missingBindings,
+      missing_script_tests: missingTests,
+      decision: currentDecision ? {
+        reason: currentDecision.reason,
+        decided_by: currentDecision.decided_by,
+        decided_at: currentDecision.decided_at,
+      } : null,
+      display: { text: displayText },
+    };
+  }
+
+  private async analyzeDeterministicCapabilities(
+    workspace: WorkspaceRow,
+  ): Promise<DeterministicCapabilityView> {
+    const { spec } = await this.overlay(workspace);
+    return this.deterministicCapabilityState(
+      workspace.project_id,
+      spec,
+    );
+  }
+
+  private async confirmDeterministicScope(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ): Promise<DeterministicCapabilityView> {
+    const expectedScopeHash = text(args.expected_scope_hash, 'expected_scope_hash');
+    const current = await this.analyzeDeterministicCapabilities(workspace);
+    if (expectedScopeHash !== current.scope_hash) {
+      throw new AgentCoreError(
+        'DETERMINISTIC_SCOPE_CHANGED',
+        '业务知识已经变化，不能沿用刚才的脚本范围决定',
+        ['重新分析当前确定性计算候选，并请专家按最新范围确认'],
+        409,
+        {
+          expected_scope_hash: expectedScopeHash,
+          actual_scope_hash: current.scope_hash,
+          candidates: current.candidates,
+          retryable: false,
+        },
+      );
+    }
+    if (!Array.isArray(args.selected_operation_keys)) {
+      throw new AgentCoreError(
+        'INVALID_INPUT',
+        'selected_operation_keys 必须是数组；空数组表示明确不生成脚本',
+        [],
+        400,
+      );
+    }
+    const selected = [...new Set(args.selected_operation_keys.map((item) => String(item).trim())
+      .filter(Boolean))];
+    const allowed = new Set(current.candidates.map((candidate) => candidate.operation_key));
+    const unknown = selected.filter((key) => !allowed.has(key));
+    if (unknown.length) {
+      throw new AgentCoreError(
+        'INVALID_INPUT',
+        `所选业务操作不属于当前确定性计算候选：${unknown.join('、')}`,
+        ['使用最新分析结果中的候选范围重新确认'],
+        400,
+      );
+    }
+    const reason = text(args.reason, 'reason');
+    this.db.prepare(`INSERT INTO agent_deterministic_scope_decisions (
+      project_id, scope_hash, candidates_json, selected_operation_keys_json,
+      reason, decided_by, decided_at
+    ) VALUES (?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+      scope_hash = excluded.scope_hash,
+      candidates_json = excluded.candidates_json,
+      selected_operation_keys_json = excluded.selected_operation_keys_json,
+      reason = excluded.reason,
+      decided_by = excluded.decided_by,
+      decided_at = excluded.decided_at`).run(
+      workspace.project_id,
+      current.scope_hash,
+      JSON.stringify(current.candidates),
+      JSON.stringify(selected),
+      reason,
+      context.username,
+      nowIso(),
+    );
+    return this.analyzeDeterministicCapabilities(workspace);
+  }
+
   private async defineScriptContract(context: AgentToolContext, args: Record<string, unknown>) {
     const tool = 'define_script_contract';
     const mutationId = text(args.mutation_id, 'mutation_id');
@@ -1901,6 +2123,30 @@ export class AgentCoreService {
     studio.assertRevision(expectedRevision);
     const operationId = operationResourceIdArg(args.operation_id);
     const operation = studio.detail(operationId).element;
+    const deterministic = this.deterministicCapabilityState(
+      context.project.id,
+      parseWorkingPackageSpec(workingPackage.files),
+    );
+    const deterministicCandidate = deterministic.candidates.find(
+      (candidate) => candidate.operation_key === operation.key,
+    );
+    if (deterministicCandidate
+      && (deterministic.status === 'decision_required'
+        || (!deterministicCandidate.already_covered
+          && !deterministic.selected_operation_keys.includes(operation.key)))) {
+      throw new AgentCoreError(
+        'SCRIPT_SCOPE_NOT_CONFIRMED',
+        '这个确定性计算操作尚未被专家纳入脚本生成范围',
+        ['先分析确定性计算候选并通过人工确认卡确定脚本范围'],
+        409,
+        {
+          operation_key: operation.key,
+          scope_hash: deterministic.scope_hash,
+          deterministic_status: deterministic.status,
+          retryable: false,
+        },
+      );
+    }
     const expectedOperationHash = text(args.expected_operation_hash, 'expected_operation_hash');
     const actualOperationHash = scriptOperationContractHash(operation);
     if (expectedOperationHash !== actualOperationHash) {
@@ -5485,7 +5731,7 @@ export class AgentCoreService {
     const parsed = documents.filter((item) => item.parseStatus === 'parsed').length;
     const failed = documents.filter((item) => item.parseStatus === 'failed');
     const confirmedPaths = this.confirmedPaths(workspace.project_id);
-    const { files } = await this.overlay(workspace);
+    const { files, spec: workingSpec } = await this.overlay(workspace);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
     const pendingPaths = new Set(this.changes(workspace).map((change) => change.path));
     const diagramPaths = Object.keys(files).filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd'));
@@ -5511,6 +5757,10 @@ export class AgentCoreService {
     )).length;
     const pendingCandidates = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM artifact_candidate_revisions
       WHERE project_id = ? AND status = 'pending'`).get(workspace.project_id) as any)?.count ?? 0);
+    const deterministic = this.deterministicCapabilityState(
+      workspace.project_id,
+      workingSpec,
+    );
     const manualCases = listTestcases(workspace.project_id).filter((item) => item.source === 'manual');
     const { latestRound: latestEval, results: latestResults } = latestEffectiveEvaluation(
       workspace.project_id,
@@ -5566,6 +5816,20 @@ export class AgentCoreService {
           ...(pendingCandidates ? [`还有 ${pendingCandidates} 个确认请求待处理`] : []),
         ],
       },
+      deterministic_confirmed: {
+        pass: !['decision_required', 'implementation_required'].includes(deterministic.status),
+        blockers: deterministic.status === 'decision_required'
+          ? ['确认当前确定性计算候选是否生成或继续使用脚本']
+          : [
+            ...deterministic.missing_script_bindings
+              .map((key) => `完成已确认业务操作“${key}”的脚本契约、实现和绑定`),
+            ...deterministic.missing_script_tests
+              .map((key) => `让业务操作“${key}”的当前脚本通过已确认契约的隔离测试`),
+          ],
+        warnings: deterministic.skipped_operation_keys.length
+          ? [`专家已明确跳过 ${deterministic.skipped_operation_keys.length} 个确定性计算候选`]
+          : [],
+      },
       evaluation_passed: {
         pass: evaluationMatchesCurrentFacts,
         blockers: evaluationMatchesCurrentFacts ? [] : [
@@ -5573,7 +5837,14 @@ export class AgentCoreService {
         ],
       },
     };
-    const modelingReady = combine(gates, ['materials_ready', 'goal_confirmed', 'process_confirmed', 'knowledge_confirmed', 'modeling_complete']);
+    const modelingReady = combine(gates, [
+      'materials_ready',
+      'goal_confirmed',
+      'process_confirmed',
+      'knowledge_confirmed',
+      'modeling_complete',
+      'deterministic_confirmed',
+    ]);
     const dataSource = getProjectDataSource(workspace.project_id);
     const runningImport = getRunningEvaluationDatabaseImportRun(workspace.project_id);
     const readyForEval = {

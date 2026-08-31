@@ -612,6 +612,18 @@ CREATE TABLE IF NOT EXISTS agent_script_test_receipts (
   PRIMARY KEY (project_id, run_id, script_path, source_hash)
 );
 
+-- 确定性计算范围必须由专家显式确认。scope_hash 绑定不含脚本实现的业务知识，
+-- 业务操作、规则、指标或对象发生变化后，旧决定自动失效并重新进入人工确认。
+CREATE TABLE IF NOT EXISTS agent_deterministic_scope_decisions (
+  project_id                  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  scope_hash                  TEXT NOT NULL,
+  candidates_json             TEXT NOT NULL,
+  selected_operation_keys_json TEXT NOT NULL,
+  reason                      TEXT NOT NULL,
+  decided_by                  TEXT NOT NULL,
+  decided_at                  TEXT NOT NULL
+);
+
 -- Studio 写接口的幂等回执。这里只保存一次 HTTP 写操作的输入摘要和响应，
 -- 不表达项目阶段或当前业务状态；项目业务状态仍以 project_agent_state 为唯一来源。
 CREATE TABLE IF NOT EXISTS studio_mutation_receipts (

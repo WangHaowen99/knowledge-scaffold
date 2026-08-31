@@ -111,6 +111,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "sync_schema_objects",
     "patch_object_source_binding",
     "delete_domain_resource",
+    "confirm_deterministic_scope",
     "define_script_contract",
     "stage_script_source",
     "discard_rejected_candidate_changes",
