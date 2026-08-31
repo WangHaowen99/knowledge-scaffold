@@ -396,7 +396,9 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
       ? ([...pending.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
         .find((input) => visible(input) && !input.disabled)
         ?? [...pending.querySelectorAll<HTMLButtonElement>('button.wb-opt')]
-          .find((button) => visible(button) && !button.disabled && !button.hasAttribute('aria-expanded')))
+          .find((button) => visible(button) && !button.disabled && !button.hasAttribute('aria-expanded'))
+        ?? [...pending.querySelectorAll<HTMLButtonElement>('button.wb-review-group')]
+          .find((button) => visible(button) && !button.disabled && button.textContent?.trim() !== '已查看'))
       : undefined;
     const warningSection = [...document.querySelectorAll<HTMLElement>('.pcheck-warning-acceptance')]
       .find(visible);
@@ -422,6 +424,8 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
       .some(visible);
     const hasActiveOperation = [...document.querySelectorAll<HTMLElement>('.wb-act-stop')]
       .some(visible);
+    const phaseLabel = [...document.querySelectorAll<HTMLElement>('.wb-phase-pill')]
+      .filter(visible).at(-1)?.textContent?.trim() ?? '';
     return {
       pendingInteraction: pending ? {
         type: pending.dataset.interactionType
@@ -431,7 +435,9 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
       pendingPlanApproval,
       warningAcceptance: warningSection ? { canSubmit: Boolean(warningSubmit && !warningSubmit.disabled) } : null,
       nextActionIds,
-      completed: bodyText.includes('AI 辅助构建已完成') && !nextActionIds.includes('confirm_construction'),
+      completed: (bodyText.includes('AI 辅助构建已完成')
+        || ['确定性验证', '评测优化', '发布交付'].includes(phaseLabel))
+        && !nextActionIds.includes('confirm_construction'),
       processing: hasSpinner || hasActiveOperation || (hasRunningTask && !pending),
     };
   }, GUIDED_PENDING_INTERACTION_SELECTOR);
