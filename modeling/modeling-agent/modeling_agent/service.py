@@ -1885,6 +1885,12 @@ class AgentService:
         return self._run_public(updated, self.store.project_state(run.project_id))
 
     async def _claim_workspace(self, *, project_id: str, run_id: str, token: str) -> dict[str, Any]:
+        current_credential = getattr(self._gateway, "run_credential", None)
+        restore_credential = getattr(self._gateway, "restore_run_credential", None)
+        if callable(current_credential) and callable(restore_credential) and not current_credential(run_id):
+            persisted = self.store.require_run(run_id).run_credential
+            if persisted:
+                restore_credential(run_id, persisted)
         claimed = await self._gateway.call(
             project_id=project_id,
             run_id=run_id,

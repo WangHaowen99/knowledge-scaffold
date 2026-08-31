@@ -581,6 +581,43 @@ async def test_package_contract_is_injected_into_initial_agent_context() -> None
     assert "deterministic_confirmed 未通过时不得转换到评测阶段" in prompt
 
 
+async def test_waiting_run_restores_persisted_credential_before_claiming_workspace(settings) -> None:
+    class RestartedGateway(FakeGateway):
+        async def call(self, **kwargs):  # type: ignore[override]
+            if (
+                kwargs["tool"] == "claim_candidate_workspace"
+                and not kwargs["token"]
+                and not self.run_credential(kwargs["run_id"])
+            ):
+                return {"error": "AUTH_REQUIRED", "reason": "运行凭据没有恢复"}
+            return await super().call(**kwargs)
+
+    gateway = RestartedGateway()
+    runtime = service(settings, ScriptedModel([], final="已完成。"), gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_waiting_credential_restore",
+            token="initial_token",
+            message="开始建模",
+        )
+        await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        persisted = runtime.store.require_run(started["id"]).run_credential
+        assert persisted
+
+        gateway.credentials.clear()
+        claimed = await runtime._claim_workspace(  # noqa: SLF001
+            project_id="project_waiting_credential_restore",
+            run_id=started["id"],
+            token="",
+        )
+
+        assert claimed["packageContract"]["validatorVersion"]
+        assert gateway.run_credential(started["id"]) == persisted
+    finally:
+        await runtime.shutdown()
+
+
 async def test_candidate_validation_repair_aggregates_parallel_files_as_one_round() -> None:
     state = CandidateValidationRepairState()
     state.begin_round("model-1")
