@@ -297,6 +297,18 @@ async def test_full_document_read_declares_long_running_timeout() -> None:
     assert AbilityManager._resolve_call_timeout(tool.card) == 1830.0
 
 
+async def test_change_set_tools_explain_one_task_per_resource_contract() -> None:
+    create_plan = next(item for item in CORE_TOOL_SPECS if item.name == "create_change_plan")
+    stage_change_set = next(item for item in CORE_TOOL_SPECS if item.name == "stage_change_set")
+
+    assert "每项任务只能对应一个具体目标资源" in create_plan.description
+    assert "一个且仅一个目标资源" in create_plan.properties["tasks"]["items"]["properties"]["target_key"]["description"]
+    assert "每个 action 只对应一个计划任务和一个目标资源" in stage_change_set.description
+    action_properties = stage_change_set.properties["actions"]["items"]["properties"]
+    assert "单一资源目标完全对应" in action_properties["task_id"]["description"]
+    assert "多个最小字段修改" in action_properties["arguments"]["description"]
+
+
 async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() -> None:
     first = tool_trace_group_id("read_document", {"filename": "a.docx", "offset": 0, "limit": 20_000})
     second = tool_trace_group_id("read_document", {"filename": "a.docx", "offset": 20_000, "limit": 20_000})

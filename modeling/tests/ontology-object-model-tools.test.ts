@@ -1145,6 +1145,39 @@ test('Change Set 最后一项失败时整批不落候选，计划外动作和漏
   assert.equal(incomplete.json().incomplete_tasks.length, 2);
 });
 
+test('Change Set 可按唯一同类目标纠正模型选错的任务 ID', async (t) => {
+  const project = createProject({ owner: 'alice', name: '受控任务目标纠正', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-change-set-task-alignment-${project.id}`;
+  const objects = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  const revision = objects.json().working_revision as string;
+  const order = objects.json().items.find((item: any) => item.key === 'order');
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '分别补充客户和订单对象说明', mode: 'expert_edit', expected_revision: revision,
+    tasks: [
+      { client_key: 'customer', title: '补充客户说明', resource_kind: 'object', target_key: 'customer', allowed_tools: ['patch_object'], acceptance: '客户说明完整' },
+      { client_key: 'order', title: '补充订单说明', resource_kind: 'object', target_key: 'order', allowed_tools: ['patch_object'], acceptance: '订单说明完整' },
+    ],
+  }, runId);
+  const plan = planResponse.json().plan;
+
+  const staged = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id, expected_revision: revision, mutation_id: 'change-set-align-same-kind-task',
+    actions: [{
+      task_id: plan.tasks[0].id,
+      tool: 'patch_object',
+      arguments: {
+        resource_id: 'object:order', expected_resource_hash: order.resource_hash,
+        actions: [{ op: 'set_description', value: '订单说明由唯一目标任务纠正后更新。' }],
+      },
+    }],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  const currentPlan = await tool(app, project.id, 'get_change_plan', { plan_id: plan.id }, runId);
+  assert.deepEqual(currentPlan.json().plan.tasks.map((item: any) => item.status), ['pending', 'staged']);
+});
+
 test('正常生成计划必须经页面账号批准后才能形成 Change Set', async (t) => {
   const project = createProject({ owner: 'alice', name: '生成计划批准门禁', runtime: 'agent' });
   const app = appFor(t);

@@ -478,9 +478,10 @@ export class ChangeControlStore {
     }
     const tasks = this.taskRows(plan.id);
     const taskById = new Map(tasks.map((task) => [task.id, task]));
-    const included = new Set(input.actions.map((action) => action.taskId));
-    if (included.size !== input.actions.length) throw invalid('actions.task_id', '同一批不能重复执行同一计划任务');
-    for (const action of input.actions) {
+    const actions = input.actions.map((action) => alignSameKindActionTask(tasks, taskById, action));
+    const included = new Set(actions.map((action) => action.taskId));
+    if (included.size !== actions.length) throw invalid('actions.task_id', '同一批不能重复执行同一计划任务');
+    for (const action of actions) {
       const task = taskById.get(action.taskId);
       if (!task) throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', '修改动作不属于当前计划', 409, { task_id: action.taskId });
       if (task.status !== 'pending') {
@@ -514,10 +515,10 @@ export class ChangeControlStore {
       status, actions_json, created_at, updated_at
     ) VALUES (?,?,?,?,?,?,?,'staging',?,?,?)`).run(
       changeSetId, input.projectId, input.runId, plan.id, input.mutationId,
-      input.requestHash, input.expectedRevision, JSON.stringify(input.actions), timestamp, timestamp,
+      input.requestHash, input.expectedRevision, JSON.stringify(actions), timestamp, timestamp,
     );
     this.event(input.projectId, input.runId, plan.id, changeSetId, 'change_set.started', '正在原子应用计划任务', {
-      actionCount: input.actions.length,
+      actionCount: actions.length,
     });
     return { changeSetId };
   }
@@ -778,14 +779,37 @@ function assertActionTarget(task: TaskRow, action: ChangeSetActionInput) {
       task_id: task.id, expected_kind: task.resource_kind, actual_kind: expectedKind,
     });
   }
-  const target = action.tool.startsWith('create_')
-    ? String(action.arguments.key ?? '')
-    : String(action.arguments.resource_id ?? '').split(':').slice(1).join(':');
+  const target = actionTarget(action);
   if (target !== task.target_key) {
     throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', `动作目标与计划不一致：${task.title}`, 409, {
       task_id: task.id, expected_target: task.target_key, actual_target: target,
     });
   }
+}
+
+function actionTarget(action: ChangeSetActionInput): string {
+  return action.tool.startsWith('create_')
+    ? String(action.arguments.key ?? '')
+    : String(action.arguments.resource_id ?? '').split(':').slice(1).join(':');
+}
+
+function alignSameKindActionTask(
+  tasks: TaskRow[],
+  taskById: Map<string, TaskRow>,
+  action: ChangeSetActionInput,
+): ChangeSetActionInput {
+  const selected = taskById.get(action.taskId);
+  const actualKind = action.tool.split('_').at(-1);
+  const actualTarget = actionTarget(action);
+  if (!selected || selected.resource_kind !== actualKind || selected.target_key === actualTarget) return action;
+  const matches = tasks.filter((task) => (
+    task.status === 'pending'
+    && task.resource_kind === actualKind
+    && task.target_key === actualTarget
+    && parseStringArray(task.allowed_tools_json).includes(action.tool)
+  ));
+  if (matches.length !== 1) return action;
+  return { ...action, taskId: matches[0].id };
 }
 
 function changeSetPublic(row: ChangeSetRow) {

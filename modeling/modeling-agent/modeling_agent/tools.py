@@ -771,7 +771,10 @@ CHANGE_PLAN_TASK = {
             "type": "string",
             "enum": ["object", "rule", "operation", "metric", "script", "binding", "other"],
         },
-        "target_key": {"type": "string", "minLength": 1, "maxLength": 160},
+        "target_key": {
+            "type": "string", "minLength": 1, "maxLength": 160,
+            "description": "一个且仅一个目标资源的稳定 key；不能填写目录、类别、通配符或多个资源的概括。",
+        },
         "allowed_tools": {
             "type": "array", "minItems": 1, "maxItems": 20,
             "items": {"type": "string", "enum": [
@@ -792,13 +795,19 @@ CHANGE_PLAN_TASK = {
 CHANGE_SET_ACTION = {
     "type": "object",
     "properties": {
-        "task_id": {"type": "string", "minLength": 1},
+        "task_id": {
+            "type": "string", "minLength": 1,
+            "description": "Core 返回的任务 ID；必须与本动作 tool 和 arguments 中的单一资源目标完全对应。",
+        },
         "tool": {"type": "string", "enum": [
             "create_object", "create_rule", "create_operation", "create_metric",
             "patch_object", "patch_rule", "patch_operation", "patch_metric",
         ]},
         # Core 根据 tool 再次执行对应领域参数和范围校验。
-        "arguments": {"type": "object", "additionalProperties": True},
+        "arguments": {
+            "type": "object", "additionalProperties": True,
+            "description": "一个资源的一次领域动作参数；patch 的 actions 可同时包含该资源所需的多个最小字段修改。",
+        },
     },
     "required": ["task_id", "tool", "arguments"],
     "additionalProperties": False,
@@ -856,7 +865,7 @@ CORE_TOOL_SPECS = (
     ToolSpec("read_file", "读取知识包文件。", {"path": PATH}, ("path",), display="正在读取知识文件"),
     ToolSpec(
         "create_change_plan",
-        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
+        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
         {
             "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
             "mode": {"type": "string", "enum": ["expert_edit", "generation"]},
@@ -892,7 +901,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "stage_change_set",
-        "把依赖闭合的一批计划任务作为原子 Change Set 提交。只能使用白名单领域动作；整批成功或整批不生效。",
+        "把依赖闭合的一批计划任务作为原子 Change Set 提交。每个 action 只对应一个计划任务和一个目标资源；同一资源需要补多个字段时应放进该 patch 的 actions，一次完成。只能使用白名单领域动作；整批成功或整批不生效。",
         {
             "plan_id": STRING,
             "expected_revision": WORKING_REVISION,
