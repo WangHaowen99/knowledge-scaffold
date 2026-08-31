@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, Check, ChevronRight, Database, Download, FileJson, LoaderCircle, Pencil, Plus, RefreshCw, Save, Search, Send, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import DataSourcePanel from '../../DataSourcePanel.jsx';
+import { EvaluationResultsList } from '../../EvaluationResultCard.jsx';
 import { parseTestcaseImport, testcaseImportTemplateJson } from '../../testcase-import.js';
 import { actions, store } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
@@ -18,7 +19,6 @@ const TABS = [
   ['diagnose', '失败诊断'], ['optimize', '优化建议'],
 ];
 const STATUS = { running: ['运行中', 'wait'], done: ['已完成', 'ok'], failed: ['运行失败', 'stale'] };
-const VERDICT = { pass: ['通过', 'ok'], partial: ['部分通过', 'wait'], fail: ['未通过', 'stale'], error: ['运行错误', 'stale'] };
 const KINDS = [
   ['modify_rule', '修改业务规则'], ['add_rule', '新增业务规则'], ['modify_operation', '修改操作'],
   ['add_operation', '新增操作'], ['modify_object', '修改对象'], ['add_object', '新增对象'],
@@ -172,10 +172,10 @@ export function RunsPanel({ projectId, rounds, current, onOpen, onChanged }) {
   return <section className="wb-eval-runs"><div className="wb-eval-round-list">{rounds.map((item) => { const [label, tone] = STATUS[item.status] || [item.status, 'plain']; return <button key={item.id} className={current?.round?.id === item.id ? 'on' : ''} onClick={() => onOpen(item.id)}><span><b>{formatTime(item.createdAt)}</b><small>{evaluationScopeLabel(item.scope)} · v{item.packageVersion}</small></span><span className={`pill pill-${tone}`}>{label}</span></button>; })}</div>{current && <RoundDetail projectId={projectId} value={current} onChanged={onChanged} />}</section>;
 }
 function RoundDetail({ projectId, value, onChanged }) {
-  const { round, results = [] } = value; const failed = results.filter((item) => item.verdict !== 'pass'); const [statusLabel, statusTone] = STATUS[round.status] || [round.status, 'plain']; const progress = round.progressTotal ? Math.round(round.progressDone / round.progressTotal * 100) : 0;
+  const { round, results = [], traces = {} } = value; const failed = results.filter((item) => item.verdict !== 'pass'); const [statusLabel, statusTone] = STATUS[round.status] || [round.status, 'plain']; const progress = round.progressTotal ? Math.round(round.progressDone / round.progressTotal * 100) : 0;
   const [stopping, setStopping] = useState(false);
   const stop = async () => { setStopping(true); try { await cancelEvaluationRun(projectId, round.id); onChanged?.(); } finally { setStopping(false); } };
-  return <div className="wb-eval-round-detail"><div className="wb-eval-round-summary"><div><b>{statusLabel}</b><span>{evaluationScopeLabel(round.scope)} · 通过 {round.passCount}/{round.progressTotal || results.length}</span></div>{round.status === 'running' && <button type="button" className="btn btn-danger btn-sm" disabled={stopping} onClick={() => void stop()}><X size={14} />{stopping ? '停止中…' : '停止评测'}</button>}<span className={`pill pill-${statusTone}`}>{round.status === 'running' ? `${progress}%` : statusLabel}</span></div>{round.status === 'running' && <div className="wb-eval-progress"><span style={{ width: `${progress}%` }} /></div>}{failed.length > 0 && ['done', 'failed'].includes(round.status) && <div className="wb-eval-next"><Search size={18} /><div><b>{failed.length} 条用例未通过</b><span>失败回答和判定理由已在下方结果中列出。</span></div></div>}{round.status === 'failed' && <div className="wb-eval-alert stale"><b>本轮评测没有完成</b><span>{evaluationFailureSummary(round, results)}</span></div>}{results.map((result, index) => { const [label, tone] = VERDICT[result.verdict] || ['待判定', 'plain']; return <article className="wb-eval-result" key={result.id}><div><b>{index + 1}. {result.question}</b><span className={`pill pill-${tone}`}>{label}</span></div>{result.finalAnswer && <p><strong>回答</strong>{result.finalAnswer}</p>}{result.reason && <p><strong>判定</strong>{result.reason}</p>}</article>; })}</div>;
+  return <div className="wb-eval-round-detail"><div className="wb-eval-round-summary"><div><b>{statusLabel}</b><span>{evaluationScopeLabel(round.scope)} · 通过 {round.passCount}/{round.progressTotal || results.length}</span></div>{round.status === 'running' && <button type="button" className="btn btn-danger btn-sm" disabled={stopping} onClick={() => void stop()}><X size={14} />{stopping ? '停止中…' : '停止评测'}</button>}<span className={`pill pill-${statusTone}`}>{round.status === 'running' ? `${progress}%` : statusLabel}</span></div>{round.status === 'running' && <div className="wb-eval-progress"><span style={{ width: `${progress}%` }} /></div>}{failed.length > 0 && ['done', 'failed'].includes(round.status) && <div className="wb-eval-next"><Search size={18} /><div><b>{failed.length} 条用例未通过</b><span>失败回答和判定理由已在下方结果中列出。</span></div></div>}{round.status === 'failed' && <div className="wb-eval-alert stale"><b>本轮评测没有完成</b><span>{evaluationFailureSummary(round, results)}</span></div>}<div className="mwr wb-eval-results-shell"><EvaluationResultsList key={round.id} results={results} traces={traces} showTrace={Object.keys(traces).length > 0} /></div></div>;
 }
 
 export function evaluationFailureSummary(round, results = []) {

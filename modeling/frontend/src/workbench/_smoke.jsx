@@ -8,6 +8,11 @@ import { initialUploadOptions } from './pages/CreatePage.jsx';
 import { documentParagraphs, evidenceHighlight, evidenceLocationOffset } from './center/DocView.jsx';
 import EvidenceLinks from './center/EvidenceLinks.jsx';
 import { EvaluationSetupPanel, evaluationScopeLabel, RunsPanel } from './center/EvaluationView.jsx';
+import {
+  defaultExpandedEvaluationIds,
+  EvaluationResultsList,
+  toggleEvaluationResultExpansion,
+} from '../EvaluationResultCard.jsx';
 import FileView from './center/FileView.jsx';
 import DiffView from './center/DiffView.jsx';
 import { fitMermaidZoom } from './center/FlowView.jsx';
@@ -344,6 +349,28 @@ try {
   }
   console.log('✓ 来源回归轮次显示业务归属');
 } catch (e) { console.log('✗ 来源回归归属:', e.message); bad++; }
+
+try {
+  const results = [{
+    id: 'result-pass', verdict: 'pass', question: '已通过的问题',
+    finalAnswer: '这条默认不展开。', reason: '符合要求。',
+  }, {
+    id: 'result-fail', verdict: 'fail', question: '需要检查的问题',
+    groundTruth: '应包含汇总表。', reason: '> 判定依据\n\n缺少关键字段。',
+    finalAnswer: '## 整体结论\n\n| 装置 | 负荷 |\n| --- | ---: |\n| 装置 A | 82% |',
+  }];
+  const defaults = defaultExpandedEvaluationIds(results);
+  const toggled = toggleEvaluationResultExpansion(defaults, 'result-fail');
+  const html = renderToString(<EvaluationResultsList results={results} showTrace={false} />);
+  if (!defaults.has('result-fail') || defaults.has('result-pass') || toggled.has('result-fail')
+    || !html.includes('展开全部') || !html.includes('收起全部')
+    || !html.includes('aria-expanded="true"') || !html.includes('aria-expanded="false"')
+    || !html.includes('<h2>整体结论</h2>') || !html.includes('<table>')
+    || html.includes('这条默认不展开。') || html.includes('人工改判')) {
+    throw new Error('评测回答没有按 Markdown 渲染，或展开控制与默认状态不正确');
+  }
+  console.log('✓ 评测回答 Markdown 与批量展开控制');
+} catch (e) { console.log('✗ 评测回答展示:', e.message); bad++; }
 
 try {
   if (fitMermaidZoom(8_000, 1_040) !== 0.25

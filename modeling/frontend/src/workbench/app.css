@@ -727,11 +727,10 @@
 .wb-eval-round-summary > div > span { margin-top: 2px; color: var(--c-muted); font-size: var(--t-sm); }
 .wb-eval-progress { height: 5px; overflow: hidden; border-radius: var(--r-full); background: var(--c-surface-3); margin-bottom: var(--s-5); }
 .wb-eval-progress span { display: block; height: 100%; background: var(--c-accent); transition: width 240ms linear; }
-.wb-eval-result { padding: var(--s-4) 0; border-top: 1px solid var(--c-line-soft); }
-.wb-eval-result > div { display: flex; align-items: flex-start; gap: var(--s-4); }
-.wb-eval-result > div > b { min-width: 0; flex: 1; font-size: var(--t-md); }
-.wb-eval-result p { margin: var(--s-3) 0 0; color: var(--c-ink-2); font-size: var(--t-sm); white-space: pre-wrap; }
-.wb-eval-result p strong { display: block; margin-bottom: 2px; color: var(--c-muted); font-size: var(--t-xs); }
+.wb-eval-results-shell { margin-top: var(--s-5); }
+.wb-eval-results-shell .ev-results { margin-top: 0; }
+.wb-eval-results-shell .ev-answer-grid { grid-template-columns: minmax(0, 1fr); }
+.wb-eval-results-shell .ev-answer-panel { border-radius: var(--r-md); }
 .wb-eval-log { margin: var(--s-4) 0 0; padding: var(--s-4); overflow: auto; border-radius: var(--r-md); background: var(--c-surface-3); color: var(--c-stale); white-space: pre-wrap; }
 .wb-stage-head { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-6); }
 .wb-stage-head h3 { margin: 0; font-size: var(--t-xl); }
