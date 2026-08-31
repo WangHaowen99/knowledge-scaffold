@@ -337,8 +337,9 @@ async function targetElement(page: Page, step: JourneyStep, options: { visible?:
 async function visibleEnabledButton(
   root: Page | ElementHandle<Element>,
   pattern: RegExp,
+  selector = 'button',
 ): Promise<ElementHandle<HTMLButtonElement> | null> {
-  const buttons = await root.$$('button');
+  const buttons = await root.$$(selector);
   for (const button of buttons) {
     const state = await button.evaluate((node) => ({
       disabled: node.disabled,
@@ -379,7 +380,7 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
       .filter(visible)
       .at(-1);
     const submit = pending
-      ? [...pending.querySelectorAll<HTMLButtonElement>('button')]
+      ? [...pending.querySelectorAll<HTMLButtonElement>('button:not(.wb-opt)')]
         .find((button) => visible(button) && !button.disabled && /提交答案|确认修改|确认|通过|采用建议|接受(?:已选|已查看)/.test(button.textContent ?? ''))
       : undefined;
     const selectableChoice = pending
@@ -518,7 +519,7 @@ async function answerGuidedInteraction(page: Page) {
       for (const input of inputs) await input.dispose();
     } else {
       const options = await section.$$('button.wb-opt') as ElementHandle<HTMLButtonElement>[];
-      let hasSelected = false;
+      let hasSelectedWithoutText = false;
       let firstEligible: ElementHandle<HTMLButtonElement> | undefined;
       for (const option of options) {
         const state = await option.evaluate((node) => ({
@@ -526,10 +527,10 @@ async function answerGuidedInteraction(page: Page) {
           selected: node.getAttribute('aria-pressed') === 'true',
           requiresText: node.hasAttribute('aria-expanded'),
         }));
-        if (state.selected) hasSelected = true;
+        if (state.selected && !state.requiresText) hasSelectedWithoutText = true;
         if (!firstEligible && !state.disabled && !state.requiresText) firstEligible = option;
       }
-      if (!hasSelected && firstEligible) {
+      if (!hasSelectedWithoutText && firstEligible) {
         await firstEligible.click();
         changed = true;
       }
@@ -551,7 +552,11 @@ async function answerGuidedInteraction(page: Page) {
   }
   if (changed) await new Promise((resolve) => setTimeout(resolve, 100));
 
-  const submit = await visibleEnabledButton(section, /提交答案|确认修改|确认|通过|采用建议|接受(?:已选|已查看)/);
+  const submit = await visibleEnabledButton(
+    section,
+    /提交答案|确认修改|确认|通过|采用建议|接受(?:已选|已查看)/,
+    'button:not(.wb-opt)',
+  );
   if (!submit) {
     await section.dispose();
     return changed;
