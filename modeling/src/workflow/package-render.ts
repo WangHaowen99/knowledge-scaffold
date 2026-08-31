@@ -14,7 +14,13 @@ import {
   mappingPrimaryNames,
 } from './mapping-contract.js';
 import { validateGeneratedScriptSafety } from './script-safety.js';
-import { sourceLabelsFor, tableSourceFor } from './source-references.js';
+import {
+  sourceLabelsFor,
+  tableFieldBindingsFor,
+  tableSourceFor,
+  tableSourceRoleFor,
+  tableSourcesFor,
+} from './source-references.js';
 import { packageMappingResource } from './package-data-source.js';
 import { canonicalizePackageSpec } from './package-spec.js';
 import {
@@ -93,6 +99,15 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
     resource: packageMappingResource(spec, o),
     primary_key: mappingPrimaryNames(o),
     fields,
+    sources: tableSourcesFor(o).map((source) => ({
+      role: tableSourceRoleFor(o, source),
+      resource: source.table,
+      ...(source.documentId ? { document_id: source.documentId } : {}),
+      fields: Object.fromEntries(tableFieldBindingsFor(o, source).map((binding) => [
+        binding.fieldKey,
+        { source_column: binding.sourceColumn },
+      ])),
+    })),
     // policy（规范 §18 4.6）。规范未给默认值，取保守默认：只读、上限 1000 行；
     // require_user_filter 规范类型为字符串数组，「无必须过滤条件」用空数组表达。
     policy: { read_only: true, max_rows: 1000, require_user_filter: [] as string[] },
@@ -184,7 +199,10 @@ function objectsIndex(objects: SpecObject[]): string {
     '# 对象目录', '',
     '| object key | 标题 | 说明 | 来源Sheet |', '| --- | --- | --- | --- |',
     ...objects.map((o) => {
-      const source = tableSourceFor(o)?.table ?? (sourceLabelsFor(o).join('；') || '—');
+      const tableSources = tableSourcesFor(o);
+      const source = tableSources.length
+        ? tableSources.map((item) => item.table).join('、')
+        : sourceLabelsFor(o).join('；') || '—';
       return `| ${cell(o.key)} | ${cell(o.title)} | ${cell(o.description)} | ${cell(source)} |`;
     }), '',
   ].join('\n');

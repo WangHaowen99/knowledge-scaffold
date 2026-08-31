@@ -224,6 +224,29 @@ CREATE INDEX IF NOT EXISTS idx_documents_source_history
 CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_active_source
   ON documents(project_id, source_key) WHERE lifecycle_status = 'active';
 
+-- 资料用途建议与用户确认分离；表格额外保存逐 Sheet 处置。审查绑定不可变资料修订。
+CREATE TABLE IF NOT EXISTS material_purpose_reviews (
+  document_id             TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+  project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  content_hash            TEXT NOT NULL,
+  status                  TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending', 'confirmed')),
+  suggested_purpose       TEXT NOT NULL
+                          CHECK (suggested_purpose IN ('auto', 'goal', 'schema', 'evidence', 'term')),
+  sheet_suggestions_json  TEXT NOT NULL DEFAULT '[]',
+  suggested_by            TEXT NOT NULL DEFAULT 'system'
+                          CHECK (suggested_by IN ('system', 'agent', 'user')),
+  confirmed_purpose       TEXT
+                          CHECK (confirmed_purpose IS NULL OR confirmed_purpose IN ('goal', 'schema', 'evidence', 'term')),
+  sheet_decisions_json    TEXT NOT NULL DEFAULT '[]',
+  confirmed_by            TEXT,
+  created_at              TEXT NOT NULL,
+  updated_at              TEXT NOT NULL,
+  confirmed_at            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_material_purpose_reviews_project
+  ON material_purpose_reviews(project_id, status, updated_at);
+
 CREATE TABLE IF NOT EXISTS material_revision_impacts (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

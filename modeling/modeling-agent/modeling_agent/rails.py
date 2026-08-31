@@ -232,6 +232,7 @@ class WriteSafetyRail(AgentRail):
         "validate_change_set", "discard_change_set",
         "write_file", "delete_file", "import_zip", "stage_package_merge",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
+        "bind_object_sources",
         "compile_package_fusion_plan", "discard_rejected_candidate_changes",
         "create_object", "create_rule", "create_operation", "create_metric",
         "patch_object", "patch_rule", "patch_operation", "patch_metric",
@@ -406,6 +407,11 @@ def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> st
         return "来源知识包只能在知识建模阶段生成融合候选" if phase != "knowledge" else ""
     if tool == "import_zip":
         return ""
+    if tool in {
+        "upsert_object", "upsert_rule", "upsert_operation",
+        "bind_object_source", "bind_object_sources",
+    }:
+        return "" if phase in {"knowledge", "increment"} else f"{tool} 只能在知识建模阶段执行"
     path = str(arguments.get("path") or "").strip()
     if not path or (path.startswith(".modeling/") and path != ".modeling/goal.md"):
         return ""
@@ -433,6 +439,7 @@ class InterjectionSafetyRail(AgentRail):
         "validate_change_set", "discard_change_set",
         "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_work_notes", "update_plan",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
+        "bind_object_sources",
         "discard_rejected_candidate_changes",
         "create_object", "create_rule", "create_operation", "create_metric",
         "patch_object", "patch_rule", "patch_operation", "patch_metric",
@@ -497,6 +504,16 @@ class ToolBoundaryRail(AgentRail):
         if ctx.extra.get("_skip_tool"):
             return
         name = _tool_name(ctx)
+        if self._context.allowed_tools is not None and name not in self._context.allowed_tools:
+            _skip_tool(ctx, {
+                "error": "MATERIAL_PURPOSE_CONFIRMATION_REQUIRED",
+                "reason": "当前仅处理资料用途预判，用户确认前不能执行后续分析或建模",
+                "retryable": False,
+                "next": ["完成全部资料的明确用途建议后结束本轮并等待用户确认"],
+                "display": {"text": "等待用户确认资料用途"},
+                "suppressTrace": True,
+            })
+            return
         arguments = _call_args(ctx)
         call_id = _tool_call_id(ctx)
         if (
@@ -762,6 +779,23 @@ def _is_business_ambiguity(question: str, evidence: list[Any]) -> bool:
     return has_subject and has_ambiguity and any(str(item).strip() for item in evidence)
 
 
+_KNOWLEDGE_CANDIDATE_PATH = re.compile(
+    r"^(?:objects|operations|rules|metrics|mappings)/",
+)
+
+
+def _confirmation_requires_schema_mapping(groups: list[Any]) -> bool:
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        impact = group.get("impact")
+        for raw_path in impact if isinstance(impact, list) else []:
+            path = str(raw_path or "").removeprefix("package/")
+            if _KNOWLEDGE_CANDIDATE_PATH.match(path):
+                return True
+    return False
+
+
 class ConfirmationRail(BaseInterruptRail):
     priority = 90
 
@@ -860,6 +894,67 @@ class ConfirmationRail(BaseInterruptRail):
                     repair_scope="interaction",
                 )
                 return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
+            if _confirmation_requires_schema_mapping(groups):
+                mapping_plan = await self._context.gateway.call(
+                    project_id=self._context.project_id,
+                    run_id=self._context.run_id,
+                    token=self._context.token,
+                    tool="get_schema_mapping_plan",
+                    arguments={},
+                )
+                if mapping_plan.get("error"):
+                    mapping_plan = _ensure_validation_report(
+                        mapping_plan,
+                        validator_version="schema-mapping-plan-v1",
+                        rule_id="schema.mapping_plan.read_failed",
+                        path="mappings/object-data-mappings.json",
+                        suggestion="重新读取数据 Schema 映射台账后再提交知识候选",
+                        retryable=True,
+                        repair_scope="mapping-plan",
+                    )
+                    return self.reject(tool_result=json.dumps(mapping_plan, ensure_ascii=False))
+                if mapping_plan.get("complete") is not True:
+                    raw_problems = mapping_plan.get("problems")
+                    findings = [
+                        _finding(
+                            str(problem.get("code") or "schema.mapping.incomplete"),
+                            "mappings/object-data-mappings.json",
+                            str(problem.get("message") or "实体 Sheet 尚未完成对象来源绑定"),
+                            "根据已确认的 Sheet 处置创建或重绑对象；存在主键或跨表语义歧义时再向用户提问",
+                            actual={
+                                "documentId": problem.get("documentId"),
+                                "sheet": problem.get("sheet"),
+                            },
+                        )
+                        for problem in raw_problems if isinstance(problem, Mapping)
+                    ] if isinstance(raw_problems, list) else []
+                    if not findings:
+                        findings = [_finding(
+                            "schema.mapping.incomplete",
+                            "mappings/object-data-mappings.json",
+                            "数据 Schema 映射台账尚未完成",
+                            "先完成实体 Sheet 的对象来源绑定，再提交知识候选",
+                        )]
+                    unresolved = int(
+                        mapping_plan.get("unresolvedObjectSheetCount")
+                        or len(findings)
+                    )
+                    result = _validation_report(
+                        "SCHEMA_SHEET_MAPPING_INCOMPLETE",
+                        "schema-mapping-plan-v1",
+                        findings,
+                        instruction=(
+                            "继续完成 mappingPlan 中全部实体 Sheet 的对象来源绑定；"
+                            "可确定的内容直接使用对象领域工具补齐，只有主键、主表或跨 Sheet 归属确实有歧义时才调用 ask。"
+                            "台账 complete=true 前不要再次发起知识候选确认。"
+                        ),
+                        display=f"正在补齐 {unresolved} 张实体数据表的对象映射",
+                        retryable=True,
+                        next_steps=["完成对象来源绑定后重新核对映射台账"],
+                        repair_scope="mapping-plan",
+                    )
+                    result["mappingPlan"] = mapping_plan
+                    return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
             normalized_arguments = {**arguments, "change_groups": groups}
             preflight = await self._context.gateway.call(
                 project_id=self._context.project_id,

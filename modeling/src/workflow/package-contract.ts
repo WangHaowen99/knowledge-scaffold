@@ -104,6 +104,12 @@ export function packageGenerationContract() {
           '术语表不得单独生成 object、operation、rule 或 metric',
           '每个术语表 sheet 按第 1 列 value、第 2 列 semantic、第 3 列以后 alias 解释',
         ],
+        multiSourceObjectRules: [
+          '仅 Neo4j 图导入支持跨 Sheet 对象',
+          '每个跨 Sheet 对象必须有且只有一张 primary 主表，其余来源为一对一 extension',
+          '每张来源表必须绑定全部对象主键；非主键字段只能由一张来源表提供',
+          '一对多明细和多对多中间表必须拆分为对象或关系，不得作为 extension',
+        ],
       },
       scripts: {
         uniqueEntrypoints: true,

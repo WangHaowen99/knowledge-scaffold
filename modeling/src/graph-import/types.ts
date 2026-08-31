@@ -3,12 +3,20 @@ export interface GraphImportPropertyMapping {
   sourceColumn: string;
 }
 
+export interface GraphImportObjectSourceSchema {
+  sheet: string;
+  role: 'primary' | 'extension';
+  propertyMappings: GraphImportPropertyMapping[];
+}
+
 export interface GraphImportObjectSchema {
   key: string;
   title: string;
   label: string;
   defaultSheet: string;
   propertyMappings: GraphImportPropertyMapping[];
+  primaryKey?: string[];
+  sources?: GraphImportObjectSourceSchema[];
 }
 
 export interface GraphImportRelationSchema {
@@ -31,6 +39,7 @@ export interface GraphImportValueBindingSchema {
 
 export interface GraphImportPackageSchema {
   packageVersion: string;
+  packageObjectCount?: number;
   objects: GraphImportObjectSchema[];
   valueBindings: GraphImportValueBindingSchema[];
   relations: GraphImportRelationSchema[];
@@ -97,6 +106,15 @@ export interface GraphImportRelationPlan {
   pairs: GraphImportRelationshipPair[];
 }
 
+export interface GraphImportObjectDiagnostic {
+  objectKey: string;
+  sheet: string;
+  code: 'GRAPH_IMPORT_EMPTY_SHEET'
+    | 'GRAPH_IMPORT_NO_MAPPED_COLUMNS'
+    | 'GRAPH_IMPORT_NO_IMPORTABLE_ROWS';
+  message: string;
+}
+
 export interface GraphImportValidation {
   nodeCount: number;
   relationshipCount: number;
@@ -105,4 +123,5 @@ export interface GraphImportValidation {
   warnings: string[];
   entities: GraphImportEntityPlan[];
   relations: GraphImportRelationPlan[];
+  objectDiagnostics?: GraphImportObjectDiagnostic[];
 }

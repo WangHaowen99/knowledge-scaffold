@@ -21,7 +21,7 @@ from modeling_agent.rails import (
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import RUN_RUNNING, RunRecord
-from modeling_agent.service import LiveRun, _required_tools_for_user_intent
+from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -379,6 +379,49 @@ async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() ->
     specific_results = tool_trace_group_id("get_evaluation_results", {"round_id": "round-2"})
     assert latest_results.startswith("snapshot:get_evaluation_results:")
     assert latest_results != specific_results
+
+
+async def test_query_eval_db_description_is_mysql_mirror_diagnostic() -> None:
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "query_eval_db")
+
+    assert "MySQL 评测库镜像" in spec.description
+    assert "项目数据源配置" in spec.description
+    assert "Neo4j" in spec.description
+    assert "NL2SQL 服务内部管理" in spec.description
+    assert "query_eval_db 只用于诊断" in _system_prompt()
+    assert "get_project_state 返回的 dataSource 摘要" in _system_prompt()
+
+
+async def test_project_state_includes_core_data_source_summary(settings) -> None:
+    gateway = FakeGateway({
+        "project_data_source_status": {
+            "configured": True,
+            "mode": "connection",
+            "provider": "neo4j",
+            "workspaceLinked": True,
+            "ontologyLinked": True,
+            "neo4j": {
+                "workspaceIsolationConfigured": True,
+                "ontologyIsolationConfigured": True,
+                "graphDatabaseConfigured": True,
+            },
+        },
+        "gate_status": {"pass": True, "blockers": []},
+    })
+    runtime = service(settings, ScriptedModel([]), gateway)
+    await runtime.startup()
+    try:
+        state = await runtime._state_for_agent(LiveRun(  # noqa: SLF001
+            run_id="run_data_source_state",
+            project_id="project_data_source_state",
+            token="token_1",
+        ))
+
+        assert state["dataSource"]["provider"] == "neo4j"
+        assert state["dataSource"]["neo4j"]["workspaceIsolationConfigured"] is True
+        assert gateway.calls[0]["tool"] == "project_data_source_status"
+    finally:
+        await runtime.shutdown()
 
 
 async def test_repeated_completed_evaluation_read_calls_core_once_and_emits_one_trace(settings) -> None:
@@ -1654,6 +1697,239 @@ async def test_material_batch_waits_for_all_terminal_events_and_continues_once(s
             ("project_material_batch",),
         ).fetchone()["n"]
         assert run_count == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_material_purpose_review_stops_before_impact_or_full_read(settings) -> None:
+    model = ScriptedModel([
+        [
+            ToolTurn("set_material_directive", {
+                "filename": "业务说明.docx",
+                "purpose": "evidence",
+                "reading_mode": "on_demand",
+            }),
+            ToolTurn("set_material_directive", {
+                "filename": "对象数据.xlsx",
+                "purpose": "schema",
+                "reading_mode": "full",
+                "sheet_purposes": [{
+                    "sheet": "客户",
+                    "semantic_role": "schema",
+                    "import_disposition": "object",
+                }],
+            }),
+        ],
+        [
+            ToolTurn("analyze_material_impact", {"source": "source-doc"}),
+            ToolTurn("read_documents_fully", {"filenames": ["对象数据.xlsx"]}),
+        ],
+        [],
+    ])
+    gateway = FakeGateway({
+        "set_material_directive": {
+            "ok": True,
+            "requiresUserConfirmation": True,
+            "display": {"text": "资料用途建议等待用户确认"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        common = {
+            "uploadBatchId": "batch-purpose-review",
+            "uploadBatchSize": 2,
+            "purpose": "auto",
+            "readingMode": "on_demand",
+            "autoContinue": True,
+            "revisionNo": 1,
+            "purposeReviewRequired": True,
+            "semanticChanged": True,
+        }
+        first = await runtime.handle_material_event(
+            project_id="project_purpose_review",
+            token="token_1",
+            event={
+                **common,
+                "eventId": "material:doc-purpose:terminal",
+                "status": "parsed",
+                "documentId": "doc-purpose",
+                "sourceKey": "source-doc",
+                "filename": "业务说明.docx",
+            },
+        )
+        assert first["waitingFor"] == 1
+        second = await runtime.handle_material_event(
+            project_id="project_purpose_review",
+            token="token_2",
+            event={
+                **common,
+                "eventId": "material:sheet-purpose:terminal",
+                "status": "parsed",
+                "documentId": "sheet-purpose",
+                "sourceKey": "source-sheet",
+                "filename": "对象数据.xlsx",
+                "readingMode": "full",
+                "sheetCount": 1,
+            },
+        )
+        active = runtime.store.active_run("project_purpose_review")
+        assert active is not None
+        completed = await wait_for_status(runtime, active.id, {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        assert second["continued"] is True
+        calls = [call["tool"] for call in gateway.calls]
+        assert calls.count("set_material_directive") == 2
+        assert "analyze_material_impact" not in calls
+        assert "read_documents_fully" not in calls
+        status_texts = [
+            str(event.payload.get("text") or "")
+            for event in runtime.store.events_after("project_purpose_review", 0)
+            if event.kind == "status"
+        ]
+        assert "助手正在执行下一步" not in status_texts
+    finally:
+        await runtime.shutdown()
+
+
+async def test_completed_purpose_review_is_deferred_until_restricted_run_finishes(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_deferred_purpose_review",
+            project_id="project_deferred_purpose_review",
+            session_id="session_deferred_purpose_review",
+            status=RUN_RUNNING,
+            prompt="预判资料用途",
+            token_fingerprint="fingerprint",
+        ))
+        live = LiveRun(
+            run_id=run.id,
+            project_id=run.project_id,
+            token="token_1",
+            required_tools={"set_material_directive"},
+            required_material_directives={"对象数据.xlsx"},
+            observed_tools={"set_material_directive"},
+            observed_material_directives={"对象数据.xlsx"},
+            allowed_tools=PURPOSE_REVIEW_ALLOWED_TOOLS,
+        )
+        runtime._live[run.id] = live  # noqa: SLF001 - active purpose-review boundary
+
+        result = await runtime.steer(
+            project_id=run.project_id,
+            token="token_2",
+            text="全部资料用途已经确认，请继续全文精读并建模。",
+            purpose_review_completed=True,
+        )
+
+        assert result["mode"] == "after_purpose_review"
+        assert live.deferred_purpose_continuation is not None
+        assert live.steering.empty()
+        assert "read_documents_fully" not in live.required_tools
+        runtime._live.pop(run.id, None)  # noqa: SLF001 - avoid synthetic live run during shutdown
+    finally:
+        await runtime.shutdown()
+
+
+async def test_material_purpose_review_suggestion_does_not_change_project_phase(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    initial = runtime.store.project_state("project_pending_purpose_phase")
+    released = runtime.store.transition_project_state(
+        "project_pending_purpose_phase",
+        expected_revision=initial.revision,
+        next_state="release:idle",
+        cause="test_released_baseline",
+    )
+    live = LiveRun(
+        run_id="run_pending_purpose_phase",
+        project_id="project_pending_purpose_phase",
+        token="token_1",
+    )
+
+    await runtime._after_core_tool(  # noqa: SLF001 - pending-review state invariant
+        live,
+        "set_material_directive",
+        {"filename": "对象数据.xlsx", "purpose": "schema"},
+        {
+            "document": {"filename": "对象数据.xlsx", "purpose": "schema"},
+            "requiresUserConfirmation": True,
+        },
+    )
+
+    current = runtime.store.project_state("project_pending_purpose_phase")
+    assert current.state == released.state
+    assert current.revision == released.revision
+    assert live.observed_material_directives == {"对象数据.xlsx"}
+    await runtime.shutdown()
+
+
+async def test_material_purpose_review_requires_a_directive_for_every_document(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("set_material_directive", {
+            "filename": "业务说明.docx",
+            "purpose": "evidence",
+            "reading_mode": "on_demand",
+        })],
+        [],
+        [],
+    ])
+    gateway = FakeGateway({
+        "set_material_directive": {
+            "ok": True,
+            "requiresUserConfirmation": True,
+            "display": {"text": "资料用途建议等待用户确认"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        common = {
+            "uploadBatchId": "batch-incomplete-purpose-review",
+            "uploadBatchSize": 2,
+            "purpose": "auto",
+            "readingMode": "on_demand",
+            "autoContinue": True,
+            "revisionNo": 1,
+            "purposeReviewRequired": True,
+            "semanticChanged": True,
+        }
+        await runtime.handle_material_event(
+            project_id="project_incomplete_purpose_review",
+            token="token_1",
+            event={
+                **common,
+                "eventId": "material:doc-incomplete-purpose:terminal",
+                "status": "parsed",
+                "documentId": "doc-incomplete-purpose",
+                "sourceKey": "source-doc",
+                "filename": "业务说明.docx",
+            },
+        )
+        await runtime.handle_material_event(
+            project_id="project_incomplete_purpose_review",
+            token="token_2",
+            event={
+                **common,
+                "eventId": "material:sheet-incomplete-purpose:terminal",
+                "status": "parsed",
+                "documentId": "sheet-incomplete-purpose",
+                "sourceKey": "source-sheet",
+                "filename": "对象数据.xlsx",
+                "sheetCount": 1,
+            },
+        )
+        active = runtime.store.active_run("project_incomplete_purpose_review")
+        assert active is not None
+        completed = await wait_for_status(runtime, active.id, {"completed", "failed"})
+
+        assert completed["status"] == "failed"
+        directives = [
+            call["arguments"]["filename"] for call in gateway.calls
+            if call["tool"] == "set_material_directive"
+        ]
+        assert directives == ["业务说明.docx"]
     finally:
         await runtime.shutdown()
 
@@ -3202,7 +3478,7 @@ async def test_full_read_intent_requires_directive_and_verified_full_read_tools(
         [
             [],
             [ToolTurn("set_material_directive", {
-                "filename": "工艺规程.docx", "reading_mode": "full",
+                "filename": "工艺规程.docx", "purpose": "evidence", "reading_mode": "full",
             })],
             [ToolTurn("read_documents_fully", {"filenames": ["工艺规程.docx"]})],
             [],
@@ -3290,7 +3566,7 @@ async def test_failed_full_read_tool_does_not_satisfy_completion_proof(settings)
     model = ScriptedModel(
         [
             [ToolTurn("set_material_directive", {
-                "filename": "工艺规程.docx", "reading_mode": "full",
+                "filename": "工艺规程.docx", "purpose": "evidence", "reading_mode": "full",
             })],
             [ToolTurn("read_documents_fully", {"filenames": ["工艺规程.docx"]})],
             [],
@@ -3404,6 +3680,151 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
     assert json.loads(settled.tool_result)["accepted"] is True
     assert context.validation_repair.candidate_revision == ""
     assert context.validation_repair.attempts == 0
+
+
+async def test_process_confirmation_does_not_require_schema_mapping_plan() -> None:
+    group = {
+        "id": "process",
+        "tier": "caliber",
+        "title": "确认合成业务流程",
+        "impact": ["diagrams/synthetic-flow.mmd"],
+    }
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {"change_groups": [group]},
+        "request_confirmation_preflight": {
+            "candidate_revision": "candidate-process",
+            "validation_receipt": {
+                "candidateHash": "sha256:process",
+                "validatorVersion": "package-contract-v2",
+            },
+            "auto_approved": False,
+            "change_groups": [group],
+        },
+        "get_schema_mapping_plan": {
+            "complete": False,
+            "unresolvedObjectSheetCount": 3,
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    decision = await ConfirmationRail(context).resolve_interrupt(  # type: ignore[arg-type]
+        None,
+        type("Call", (), {"arguments": '{"summary":"确认合成业务流程"}'})(),
+        None,
+    )
+
+    assert decision.request.metadata["candidateRevision"] == "candidate-process"
+    assert [call["tool"] for call in gateway.calls] == [
+        "prepare_confirmation_groups",
+        "request_confirmation_preflight",
+    ]
+
+
+async def test_knowledge_confirmation_routes_incomplete_schema_mapping_back_to_agent() -> None:
+    group = {
+        "id": "objects",
+        "tier": "structural",
+        "title": "确认合成对象",
+        "impact": ["objects/synthetic-record.md"],
+    }
+    problem = {
+        "code": "SCHEMA_SHEET_OBJECT_MAPPING_MISSING",
+        "documentId": "document_synthetic",
+        "sheet": "synthetic_records",
+        "message": "实体 Sheet 尚未完成对象来源绑定",
+    }
+    mapping_plan = {
+        "complete": False,
+        "objectSheetCount": 1,
+        "mappedObjectSheetCount": 0,
+        "unresolvedObjectSheetCount": 1,
+        "sheets": [{
+            "documentId": "document_synthetic",
+            "sheet": "synthetic_records",
+            "importDisposition": "object",
+            "mappedObjects": [],
+            "mappingStatus": "unmapped",
+        }],
+        "problems": [problem],
+    }
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {"change_groups": [group]},
+        "get_schema_mapping_plan": mapping_plan,
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    decision = await ConfirmationRail(context).resolve_interrupt(  # type: ignore[arg-type]
+        None,
+        type("Call", (), {"arguments": '{"summary":"确认合成对象"}'})(),
+        None,
+    )
+
+    delivered = json.loads(decision.tool_result)
+    assert delivered["error"] == "SCHEMA_SHEET_MAPPING_INCOMPLETE"
+    assert delivered["retryable"] is True
+    assert delivered["repairScope"] == "mapping-plan"
+    assert delivered["display"]["text"] == "正在补齐 1 张实体数据表的对象映射"
+    assert delivered["mappingPlan"] == mapping_plan
+    assert delivered["findings"][0]["actual"]["sheet"] == "synthetic_records"
+    assert [call["tool"] for call in gateway.calls] == [
+        "prepare_confirmation_groups",
+        "get_schema_mapping_plan",
+    ]
+
+
+async def test_knowledge_confirmation_continues_after_schema_mapping_is_complete() -> None:
+    group = {
+        "id": "objects",
+        "tier": "structural",
+        "title": "确认合成对象",
+        "impact": ["objects/synthetic-record.md"],
+    }
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {"change_groups": [group]},
+        "get_schema_mapping_plan": {
+            "complete": True,
+            "unresolvedObjectSheetCount": 0,
+            "problems": [],
+        },
+        "request_confirmation_preflight": {
+            "candidate_revision": "candidate-knowledge",
+            "validation_receipt": {
+                "candidateHash": "sha256:knowledge",
+                "validatorVersion": "package-contract-v2",
+            },
+            "auto_approved": False,
+            "change_groups": [group],
+        },
+    })
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    decision = await ConfirmationRail(context).resolve_interrupt(  # type: ignore[arg-type]
+        None,
+        type("Call", (), {"arguments": '{"summary":"确认合成对象"}'})(),
+        None,
+    )
+
+    assert decision.request.metadata["candidateRevision"] == "candidate-knowledge"
+    assert [call["tool"] for call in gateway.calls] == [
+        "prepare_confirmation_groups",
+        "get_schema_mapping_plan",
+        "request_confirmation_preflight",
+    ]
 
 
 async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_result() -> None:

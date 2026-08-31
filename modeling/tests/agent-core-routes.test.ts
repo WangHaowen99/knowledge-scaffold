@@ -17,7 +17,8 @@ const [
   { createProject, getProject },
   { getPackageArtifactStore },
   { getDb },
-  { insertDocumentRevision },
+  { getDocument, insertDocumentRevision },
+  { MaterialPurposeReviewStore },
   { requireAuth },
   { storePackageMergeSource },
   { renderPackage },
@@ -29,6 +30,7 @@ const [
   import('../src/artifacts/runtime.js'),
   import('../src/db/index.js'),
   import('../src/documents/repo.js'),
+  import('../src/documents/material-purpose-review.js'),
   import('../src/auth/middleware.js'),
   import('../src/agent/package-merge.js'),
   import('../src/workflow/package-render.js'),
@@ -1113,6 +1115,12 @@ test('无 Schema 时领域工具编译操作和规则，但拒绝对象物理绑
     }],
   }).document;
   const app = appFor(t);
+  const selectedSource = await app.inject({
+    method: 'PUT',
+    url: `/api/projects/${project.id}/agent/package-data-source`,
+    payload: { dataSourceType: 'nl2sql' },
+  });
+  assert.equal(selectedSource.statusCode, 200, selectedSource.body);
   const runId = `run-${project.id}`;
   const operationGroup = { id: 'domain-operation', tier: 'structural', title: '库存查询操作' };
   const ruleGroup = { id: 'domain-rule', tier: 'caliber', title: '库存可用规则' };
@@ -1268,6 +1276,12 @@ test('无 Schema 时 upsert_object 不能通过 source 参数生成物理绑定'
     }],
   }).document;
   const app = appFor(t);
+  const selectedSource = await app.inject({
+    method: 'PUT',
+    url: `/api/projects/${project.id}/agent/package-data-source`,
+    payload: { dataSourceType: 'nl2sql' },
+  });
+  assert.equal(selectedSource.statusCode, 200, selectedSource.body);
   const runId = `run-${project.id}`;
   await confirmGoal(app, project.id, runId);
   await confirmProcess(app, project.id, runId);
@@ -1983,10 +1997,17 @@ test('Agent 保存数据 Schema 用途时返回真实 Sheet 与字段事实', as
 
   const response = await tool(app, project.id, 'set_material_directive', {
     filename: inserted.filename, purpose: 'schema', reading_mode: 'on_demand',
+    sheet_purposes: [{
+      sheet: '设备', semantic_role: 'schema', import_disposition: 'object',
+      reason: '每行对应一个合成设备对象',
+    }],
   }, `run-${project.id}`);
 
   assert.equal(response.statusCode, 200, response.body);
   assert.equal(response.json().document.purpose, 'schema');
+  assert.equal(response.json().purposeReview.status, 'pending');
+  assert.equal(response.json().purposeReview.suggestedBy, 'agent');
+  assert.equal(response.json().requiresUserConfirmation, true);
   assert.equal(response.json().schema[0].table, '设备');
   assert.equal(response.json().schema[0].fields[0].name, '设备编码');
   assert.equal(response.json().schema[0].fields[0].primaryKeyCandidate, true);
@@ -1996,6 +2017,355 @@ test('Agent 保存数据 Schema 用途时返回真实 Sheet 与字段事实', as
     documentId: inserted.id, filename: inserted.filename, sheet: '设备',
   });
   assert.deepEqual(response.json().objects[0].attributes.map((field: any) => field.name), ['设备编码', '备注']);
+});
+
+test('Agent 为普通文档预判用途后等待用户确认', async (t) => {
+  const project = createProject({ owner: 'alice', name: '普通资料用途契约' });
+  const app = appFor(t);
+  const inserted = insertDocumentRevision({
+    projectId: project.id,
+    filename: '业务目标.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '# 目标\n\n建立设备检修知识包。',
+  }).document;
+
+  const response = await tool(app, project.id, 'set_material_directive', {
+    filename: inserted.filename,
+    purpose: 'goal',
+    reading_mode: 'on_demand',
+  }, `run-${project.id}`);
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().document.purpose, 'goal');
+  assert.equal(response.json().purposeReview.status, 'pending');
+  assert.equal(response.json().purposeReview.suggestedBy, 'agent');
+  assert.equal(response.json().requiresUserConfirmation, true);
+  assert.deepEqual(response.json().purposeReview.sheetSuggestions, []);
+
+  const ambiguous = await tool(app, project.id, 'set_material_directive', {
+    filename: inserted.filename,
+    purpose: 'auto',
+    reading_mode: 'on_demand',
+  }, `run-${project.id}`);
+  assert.equal(ambiguous.statusCode, 400, ambiguous.body);
+  assert.equal(ambiguous.json().code, 'MATERIAL_PURPOSE_REQUIRED');
+  assert.equal(getDocument(inserted.id)?.purpose, 'goal');
+
+  const invalid = await tool(app, project.id, 'set_material_directive', {
+    filename: inserted.filename,
+    purpose: 'schema',
+    reading_mode: 'on_demand',
+  }, `run-${project.id}`);
+  assert.equal(invalid.statusCode, 400, invalid.body);
+  assert.match(invalid.json().reason, /可识别数据表/);
+  assert.equal(getDocument(inserted.id)?.purpose, 'goal');
+});
+
+test('实体 Sheet 尚未映射时允许确认目标、流程和非知识资源候选', async (t) => {
+  const project = createProject({ owner: 'alice', name: '流程与映射门禁顺序', runtime: 'agent' });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: 'process-before-mapping-package',
+    name: '流程与映射门禁顺序',
+    description: '验证对象映射不会阻断流程确认。',
+  });
+  const material = insertDocumentRevision({
+    projectId: project.id,
+    filename: 'synthetic-entities.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'entities',
+      rowCount: 1,
+      fields: [{ name: 'entity_id', inferredType: 'string', sampleValues: ['E-1'], distinctRatio: 1 }],
+      rows: [['E-1']],
+    }],
+  }).document;
+  const reviews = new MaterialPurposeReviewStore(getDb());
+  reviews.ensure(material);
+  const suggestion = reviews.suggest(material, {
+    purpose: 'schema',
+    sheets: [{ sheet: 'entities', semanticRole: 'schema', importDisposition: 'object' }],
+    suggestedBy: 'agent',
+  });
+  reviews.confirm(material, {
+    purpose: 'schema',
+    sheets: suggestion.sheetSuggestions,
+    confirmedBy: 'alice',
+    expectedDirectiveRevision: 0,
+  });
+
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+
+  const plan = await tool(app, project.id, 'get_schema_mapping_plan', {}, runId);
+  assert.equal(plan.statusCode, 200, plan.body);
+  assert.equal(plan.json().complete, false);
+  assert.equal(plan.json().objectSheetCount, 1);
+  assert.equal(plan.json().mappedObjectSheetCount, 0);
+  assert.equal(plan.json().unresolvedObjectSheetCount, 1);
+  assert.equal(plan.json().sheets[0].mappingStatus, 'unmapped');
+  assert.equal(plan.json().problems[0].code, 'SCHEMA_SHEET_OBJECT_MAPPING_MISSING');
+
+  const current = await getPackageArtifactStore().readPackageFiles(project.id);
+  const manifestGroup = { id: 'manifest-metadata', tier: 'index', title: '同步知识包说明' };
+  const manifest = await tool(app, project.id, 'write_file', {
+    path: 'manifest.yaml',
+    content: current.files['manifest.yaml'].replace(
+      /^description:.*$/mu,
+      'description: 合成项目的知识包说明',
+    ),
+    change_group: manifestGroup.id,
+    evidence: [],
+  }, runId);
+  assert.equal(manifest.statusCode, 200, manifest.body);
+  const manifestPreflight = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: manifestGroup.title,
+    change_groups: [manifestGroup],
+  }, runId);
+  assert.equal(manifestPreflight.statusCode, 200, manifestPreflight.body);
+});
+
+test('没有实体 Sheet 时数据映射台账视为完整', async (t) => {
+  const project = createProject({ owner: 'alice', name: '无实体表映射台账', runtime: 'agent' });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: 'no-object-sheet-package',
+    name: '无实体表映射台账',
+    description: '验证没有实体表时无需补齐对象来源映射。',
+  });
+
+  const app = appFor(t);
+  const plan = await tool(app, project.id, 'get_schema_mapping_plan', {}, `run-${project.id}`);
+  assert.equal(plan.statusCode, 200, plan.body);
+  assert.equal(plan.json().complete, true);
+  assert.equal(plan.json().sheetCount, 0);
+  assert.equal(plan.json().objectSheetCount, 0);
+  assert.equal(plan.json().unresolvedObjectSheetCount, 0);
+});
+
+test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候选', async (t) => {
+  const project = createProject({ owner: 'alice', name: '逐表用途候选门禁', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  await artifacts.initializeDraftPackage(project.id, {
+    id: 'sheet-purpose-gate-package',
+    name: '逐表用途候选门禁',
+    description: '验证合成工作簿的用途确认和对象来源绑定。',
+  });
+  const material = insertDocumentRevision({
+    projectId: project.id,
+    filename: 'synthetic-records.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'records',
+      rowCount: 1,
+      fields: [
+        { name: 'record_id', inferredType: 'string', sampleValues: ['R-1'], distinctRatio: 1 },
+        { name: 'record_name', inferredType: 'string', sampleValues: ['合成记录'], distinctRatio: 1 },
+      ],
+      rows: [['R-1', '合成记录']],
+    }, {
+      name: 'notes',
+      rowCount: 1,
+      fields: [{ name: 'note', inferredType: 'string', sampleValues: ['合成说明'], distinctRatio: 1 }],
+      rows: [['合成说明']],
+    }],
+  }).document;
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+
+  const group = { id: 'record-object', tier: 'structural', title: '合成记录对象' };
+  const unbound = await tool(app, project.id, 'upsert_object', {
+    key: 'record',
+    title: '合成记录',
+    description: '用于验证逐表确认门禁。',
+    fields: [
+      { key: 'id', cn_name: '记录编号', type: 'string', required: true },
+      { key: 'name', cn_name: '记录名称', type: 'string', required: true },
+    ],
+    relations: [],
+    evidence: [`material:${material.id}`],
+    change_group: group.id,
+  }, runId);
+  assert.equal(unbound.statusCode, 200, unbound.body);
+
+  const reviews = new MaterialPurposeReviewStore(getDb());
+  reviews.ensure(material);
+  const pending = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(pending.statusCode, 409, pending.body);
+  assert.equal(pending.json().code, 'MATERIAL_PURPOSE_REVIEW_REQUIRED');
+
+  const suggestion = reviews.suggest(material, {
+    purpose: 'schema',
+    sheets: [
+      { sheet: 'records', semanticRole: 'schema', importDisposition: 'object' },
+      { sheet: 'notes', semanticRole: 'evidence', importDisposition: 'reference' },
+    ],
+    suggestedBy: 'agent',
+  });
+  reviews.confirm(material, {
+    purpose: 'schema',
+    sheets: suggestion.sheetSuggestions,
+    confirmedBy: 'alice',
+    expectedDirectiveRevision: 0,
+  });
+  const missingMapping = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(missingMapping.statusCode, 409, missingMapping.body);
+  assert.equal(missingMapping.json().code, 'SCHEMA_SHEET_MAPPING_INCOMPLETE');
+  assert.equal(
+    missingMapping.json().reason,
+    '数据 Schema 与对象映射不一致：还有 1 张 Sheet 的结构化对象来源尚未闭环',
+  );
+  assert.equal(missingMapping.json().problems[0].sheet, 'records');
+  assert.equal(missingMapping.json().retryable, false);
+  assert.equal(missingMapping.json().findingCount, 1);
+  const incompletePlan = await tool(app, project.id, 'get_schema_mapping_plan', {}, runId);
+  assert.equal(incompletePlan.statusCode, 200, incompletePlan.body);
+  assert.equal(incompletePlan.json().complete, false);
+  assert.deepEqual(incompletePlan.json().sheets[0].mappedObjects, []);
+
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '按已确认的逐 Sheet 用途同步物理对象',
+    mode: 'generation',
+    expected_revision: listed.json().working_revision,
+    tasks: [{
+      client_key: 'records-object',
+      title: '同步记录对象',
+      resource_kind: 'object',
+      target_key: 'records',
+      allowed_tools: ['create_object'],
+      acceptance: '完整同步 records Sheet 的字段与来源映射',
+    }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  assert.deepEqual(plan.tasks[0].allowed_tools, ['sync_schema_objects']);
+  const approved = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
+    payload: { approved: true },
+  });
+  assert.equal(approved.statusCode, 200, approved.body);
+  const synced = await tool(app, project.id, 'sync_schema_objects', {
+    plan_task_id: plan.tasks[0].id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'sheet-purpose-schema-sync',
+    reason: '按用户确认的实体 Sheet 确定性同步',
+  }, runId);
+  assert.equal(synced.statusCode, 200, synced.body);
+  assert.equal(synced.json().object_count, 1);
+  const completePlan = await tool(app, project.id, 'get_schema_mapping_plan', {}, runId);
+  assert.equal(completePlan.statusCode, 200, completePlan.body);
+  assert.equal(completePlan.json().complete, true);
+  assert.deepEqual(completePlan.json().sheets[0].mappedObjects, ['records']);
+  const ready = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: '按已确认用途同步 records 对象',
+    change_groups: [{ id: 'schema_objects', tier: 'structural', title: 'Schema 对象同步' }],
+  }, runId);
+  assert.equal(ready.statusCode, 200, ready.body);
+});
+
+test('对象领域工具原子生成跨 Sheet 主表与扩展表映射', async (t) => {
+  const project = createProject({ owner: 'alice', name: '跨表对象合成验证', runtime: 'agent' });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: 'multi-source-object-package',
+    name: '跨表对象合成验证',
+    description: '验证主表和一对一扩展表的结构化绑定。',
+  });
+  const material = insertDocumentRevision({
+    projectId: project.id,
+    filename: 'synthetic-entity.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'EntityBase', rowCount: 1,
+      fields: [
+        { name: 'base_id', inferredType: 'string', sampleValues: ['E-1'], distinctRatio: 1 },
+        { name: 'base_name', inferredType: 'string', sampleValues: ['合成实体'], distinctRatio: 1 },
+      ],
+      rows: [['E-1', '合成实体']],
+    }, {
+      name: 'EntityExtension', rowCount: 1,
+      fields: [
+        { name: 'extension_id', inferredType: 'string', sampleValues: ['E-1'], distinctRatio: 1 },
+        { name: 'detail_text', inferredType: 'string', sampleValues: ['合成说明'], distinctRatio: 1 },
+      ],
+      rows: [['E-1', '合成说明']],
+    }],
+  }).document;
+  const app = appFor(t);
+  const selectedSource = await app.inject({
+    method: 'PUT',
+    url: `/api/projects/${project.id}/agent/package-data-source`,
+    payload: { dataSourceType: 'neo4j' },
+  });
+  assert.equal(selectedSource.statusCode, 200, selectedSource.body);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+  const sourcePlan = {
+    primary_key: ['entity_id'],
+    sources: [{
+      document_id: material.id,
+      table: 'EntityBase',
+      role: 'primary',
+      field_bindings: [
+        { field_key: 'entity_id', source_column: 'base_id' },
+        { field_key: 'name', source_column: 'base_name' },
+      ],
+    }, {
+      document_id: material.id,
+      table: 'EntityExtension',
+      role: 'extension',
+      field_bindings: [
+        { field_key: 'entity_id', source_column: 'extension_id' },
+        { field_key: 'detail', source_column: 'detail_text' },
+      ],
+    }],
+  };
+  const created = await tool(app, project.id, 'upsert_object', {
+    key: 'synthetic_entity',
+    title: '合成实体',
+    description: '由主表和扩展表共同描述的合成实体。',
+    fields: [
+      { key: 'entity_id', cn_name: '实体编号', type: 'string', required: true },
+      { key: 'name', cn_name: '实体名称', type: 'string', required: true },
+      { key: 'detail', cn_name: '补充说明', type: 'string', required: false },
+    ],
+    relations: [],
+    source_plan: sourcePlan,
+    evidence: [`material:${material.id}`],
+    change_group: 'multi-source-object',
+  }, runId);
+  assert.equal(created.statusCode, 200, created.body);
+
+  const rebound = await tool(app, project.id, 'bind_object_sources', {
+    key: 'synthetic_entity',
+    primary_key: sourcePlan.primary_key,
+    sources: sourcePlan.sources,
+    evidence: [`material:${material.id}`],
+    change_group: 'multi-source-object',
+  }, runId);
+  assert.equal(rebound.statusCode, 200, rebound.body);
+  assert.equal(rebound.json().sources.length, 2);
+  const mappingFile = await tool(app, project.id, 'read_file', {
+    path: 'mappings/object-data-mappings.json',
+  }, runId);
+  assert.equal(mappingFile.statusCode, 200, mappingFile.body);
+  const mapping = JSON.parse(mappingFile.json().content).objects.synthetic_entity;
+  assert.deepEqual(mapping.sources.map((source: any) => source.role), ['primary', 'extension']);
+  assert.equal(mapping.sources[1].fields.detail.source_column, 'detail_text');
 });
 
 test('同名 Sheet 必须用资料 ID 稳定寻址', async (t) => {
@@ -2918,6 +3288,55 @@ test('评测启动服从确定性门禁，评测库拒绝写 SQL', async (t) => 
   }, runId);
   assert.equal(writeQuery.statusCode, 400, writeQuery.body);
   assert.equal(writeQuery.json().code, 'READ_ONLY_SQL_REQUIRED');
+
+  const unavailableQuery = await tool(app, project.id, 'query_eval_db', {
+    sql: 'SELECT 1',
+  }, runId);
+  assert.equal(unavailableQuery.statusCode, 409, unavailableQuery.body);
+  assert.equal(unavailableQuery.json().code, 'EVAL_DB_TOOL_UNAVAILABLE');
+  assert.doesNotMatch(unavailableQuery.body, /EVAL_DB_URL/);
+  assert.match(unavailableQuery.json().reason, /直连评测库的诊断能力/);
+});
+
+test('Agent 内部数据源状态只返回脱敏摘要', async (t) => {
+  const project = createProject({ owner: 'alice', name: '数据源摘要' });
+  const app = appFor(t);
+  const { saveProjectDataSource } = await import('../src/evaluation/data-source-repo.js');
+  saveProjectDataSource({
+    projectId: project.id,
+    mode: 'connection',
+    provider: 'neo4j',
+    workspaceId: 'workspace_demo',
+    ontologyId: 'ontology_demo',
+    config: {
+      uri: 'bolt://graph.example.com:7687',
+      username: 'graph_user',
+      password: '<redacted>',
+      database: 'neo4j',
+      workspace_property: 'workspace_id',
+      workspace_value: 'workspace_demo',
+      ontology_property: 'ontology_id',
+      ontology_value: 'ontology_demo',
+    },
+  });
+
+  const response = await tool(app, project.id, 'project_data_source_status');
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json(), {
+    configured: true,
+    mode: 'connection',
+    provider: 'neo4j',
+    workspaceLinked: true,
+    ontologyLinked: true,
+    neo4j: {
+      workspaceIsolationConfigured: true,
+      ontologyIsolationConfigured: true,
+      graphDatabaseConfigured: true,
+    },
+    display: { text: '已配置 Neo4j 评测数据源' },
+  });
+  assert.doesNotMatch(response.body, /bolt:\/\/|graph_user|<redacted>|workspace_id|ontology_id/);
 });
 
 test('可选评测库未配置时只记录活动，不要求用户处理', async (t) => {

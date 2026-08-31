@@ -194,8 +194,8 @@ test('多表对象不能把不同物理表的字段并集伪装成可直接绑�
   assert.deepEqual(tableSourcesFor(multiTable).map((source) => source.table), ['CUSTOMERS', 'PRODUCTS']);
   const problems = findObjectDataMappingProblems(spec([multiTable]), [table(), productTable]);
   assert.equal(problems.length, 1);
-  assert.match(problems[0].message, /当前数据绑定一次只能执行一张物理表/);
-  assert.match(problems[0].message, /汇总对象.*不声明表格 sourceRefs/);
+  assert.match(problems[0].message, /当前数据源类型不支持跨 Sheet 对象/);
+  assert.match(problems[0].message, /拆分为逐来源对象.*Neo4j 图导入/);
 });
 
 test('文档来源会显示第一个有名称的中文章节', () => {
