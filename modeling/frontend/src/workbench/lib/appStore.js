@@ -431,20 +431,22 @@ export const actions = {
           || event.phase === 'waiting'
           || event.repairStopped
           || recoveryActions.length > 0;
-        actions.appendMessage({
-          id: issueId
-            ? `tool-issue-${event.runId || 'run'}-${issueId}`
-            : `tool-alert-${event.runId || 'run'}-${event.toolCallId || event.name || seq}`,
-          role: 'assistant',
-          createdAt,
-          blocks: [{
-            type: recoveryProblem ? 'recovery' : 'error',
-            issueId,
-            status: event.issueStatus || event.phase,
-            text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
-            actions: recoveryActions,
-          }],
-        });
+        if (recoveryProblem) {
+          actions.appendMessage({
+            id: issueId
+              ? `tool-issue-${event.runId || 'run'}-${issueId}`
+              : `tool-recovery-${event.runId || 'run'}-${event.toolCallId || event.name || seq}`,
+            role: 'assistant',
+            createdAt,
+            blocks: [{
+              type: 'recovery',
+              issueId,
+              status: event.issueStatus || event.phase,
+              text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
+              actions: recoveryActions,
+            }],
+          });
+        }
       }
     }
     if (eventType === 'message') {

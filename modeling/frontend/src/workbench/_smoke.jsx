@@ -26,7 +26,11 @@ import {
   SCENES,
   studioFocusFromLocation,
 } from './lib/appStore.js';
-import { humanizeTraceSummary, newestTraceFirst, restoredVersionMessage } from './shell/ProcessDrawer.jsx';
+import ProcessDrawer, {
+  humanizeTraceSummary,
+  newestTraceFirst,
+  restoredVersionMessage,
+} from './shell/ProcessDrawer.jsx';
 import { userFacingText } from './lib/userFacingText.js';
 import {
   evidenceLabel,
@@ -1372,6 +1376,33 @@ try {
   }
   console.log('✓ 可选工具不可用只保留活动轨迹');
 } catch (e) { console.log('✗ 可选工具不可用展示:', e.message); bad++; }
+
+const traceOnlyProblem = {
+  eventType: 'tool', seq: 1, runId: 'run-trace-only-problem', toolCallId: 'call-plan-validation',
+  name: 'run_script_test', phase: 'failed', code: 'SCRIPT_CONTRACT_NOT_FOUND',
+  issueId: 'issue-plan-validation', issueStatus: 'awaiting_user',
+  summary: '脚本契约不存在：plan_validation', createdAt: '2026-01-01T00:00:00Z',
+};
+try {
+  for (const replayUntilSeq of [0, 1]) {
+    store.set({
+      demo: false, messages: [], trace: [], lastSeq: 0, replayUntilSeq,
+      activity: null, run: null,
+    });
+    actions.handleEvent(traceOnlyProblem);
+    const trace = store.get().trace.find((item) => item.toolCallId === 'call-plan-validation');
+    if (store.get().messages.length !== 0
+      || trace?.phase !== 'failed'
+      || !trace.summary.includes('脚本契约不存在')) {
+      throw new Error('普通工具失败仍进入聊天记录，或没有保留在过程记录');
+    }
+  }
+  const processHtml = renderToString(<ProcessDrawer onClose={() => {}} />);
+  if (!processHtml.includes('脚本契约不存在') || processHtml.includes('当前问题需要处理')) {
+    throw new Error('过程抽屉没有展示工具失败，或仍渲染聊天红卡文案');
+  }
+  console.log('✓ 工具失败只出现在过程记录');
+} catch (e) { console.log('✗ 工具失败展示位置:', e.message); bad++; }
 
 store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
 actions.handleEvent({
