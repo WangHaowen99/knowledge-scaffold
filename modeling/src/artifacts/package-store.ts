@@ -9,6 +9,7 @@ import { renderPackage } from '../workflow/package-render.js';
 import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { validateGeneratedScriptSafety } from '../workflow/script-safety.js';
+import { sourceLabelsFor } from '../workflow/source-references.js';
 import {
   ArtifactRepositoryError,
   type ArtifactChange,
@@ -1112,7 +1113,13 @@ export class PackageArtifactStore {
       const contentChanges = selectedCandidateChanges(candidate.groups, selection.selectedGroupIds);
       const candidateTarget = applyCandidateChanges(current, contentChanges);
       const candidateView = this.viewFromSnapshot(candidateTarget);
-      const candidateSpec = parseRenderedPackageFiles(packageTextFiles(candidateTarget.files));
+      const renderedCandidateSpec = parseRenderedPackageFiles(packageTextFiles(candidateTarget.files));
+      const structuredSpecChanged = contentChanges.some((change) => (
+        change.kind === 'write' && change.path === SPEC_PATH
+      ));
+      const candidateSpec = structuredSpecChanged
+        ? candidateView.spec
+        : preserveUnrenderedPackageMetadata(renderedCandidateSpec, candidateView.spec, contentChanges);
       validateChangedCandidateScripts(currentView.spec, candidateSpec, candidateTarget, contentChanges);
       const allowedVersions = [currentView.spec.version, packageVersion];
       if (!allowedVersions.includes(candidateSpec.version) || !allowedVersions.includes(candidateView.spec.version)) {
@@ -1842,6 +1849,80 @@ function packageTextFiles(files: readonly ArtifactFile[]): Record<string, string
     if (content !== null) result[file.path.slice(PACKAGE_PREFIX.length)] = content;
   }
   return result;
+}
+
+function preserveUnrenderedPackageMetadata(
+  parsed: PackageSpec,
+  structured: PackageSpec,
+  changes: readonly ArtifactChange[],
+): PackageSpec {
+  const structuredObjects = new Map(structured.objects.map((object) => [object.key, object]));
+  const structuredOperations = new Map(structured.operations.map((operation) => [operation.key, operation]));
+  const structuredScripts = new Map((structured.scripts ?? []).map((script) => [script.key, script]));
+  const changedPaths = new Set(changes.map((change) => change.path));
+  const objectIndexChanged = changedPaths.has(`${PACKAGE_PREFIX}objects/index.md`);
+  const objectMappingsChanged = changedPaths.has(`${PACKAGE_PREFIX}mappings/object-data-mappings.json`);
+  const sourceArtifactsChangedFor = (key: string) => objectIndexChanged
+    || objectMappingsChanged
+    || changedPaths.has(`${PACKAGE_PREFIX}objects/${key}.md`);
+  const parsedObjectKeys = new Set(parsed.objects.map((object) => object.key));
+  const objects = parsed.objects.map((object) => {
+    const previous = structuredObjects.get(object.key);
+    if (!previous) return object;
+    const sourcesUnchanged = JSON.stringify(sourceLabelsFor(object))
+      === JSON.stringify(sourceLabelsFor(previous));
+    if (!sourceArtifactsChangedFor(object.key)) return previous;
+    return {
+      ...object,
+      ...(previous.candidateId ? { candidateId: previous.candidateId } : {}),
+      ...(sourcesUnchanged ? {
+        sourceRefs: previous.sourceRefs,
+        sourceTable: previous.sourceTable,
+        primaryKey: previous.primaryKey,
+      } : {}),
+      fields: object.fields.map((field) => {
+        const previousField = previous.fields.find((item) => item.key === field.key);
+        return sourcesUnchanged && previousField?.sourceColumn
+          ? { ...field, sourceColumn: previousField.sourceColumn }
+          : field;
+      }),
+    };
+  });
+  for (const previous of structured.objects) {
+    if (!parsedObjectKeys.has(previous.key) && !sourceArtifactsChangedFor(previous.key)) {
+      objects.push(previous);
+    }
+  }
+  return {
+    ...parsed,
+    ...(structured.dataSourceType ? { dataSourceType: structured.dataSourceType } : {}),
+    ...(structured.candidateDispositions ? { candidateDispositions: structured.candidateDispositions } : {}),
+    objects,
+    operations: parsed.operations.map((operation) => {
+      const previous = structuredOperations.get(operation.key);
+      return previous?.competencyQuestionId
+        && previous.competencyQuestion === operation.competencyQuestion
+        ? { ...operation, competencyQuestionId: previous.competencyQuestionId }
+        : operation;
+    }),
+    ...(parsed.scripts ? {
+      scripts: parsed.scripts.map((script) => {
+        const previous = structuredScripts.get(script.key);
+        if (!previous) return script;
+        return {
+          ...script,
+          parameters: script.parameters.map((parameter) => {
+            const previousParameter = previous.parameters.find((item) => (
+              item.name === parameter.name && item.flag === parameter.flag
+            ));
+            return previousParameter?.multiple
+              ? { ...parameter, multiple: true }
+              : parameter;
+          }),
+        };
+      }),
+    } : {}),
+  };
 }
 
 function diffCandidateSnapshots(base: ArtifactSnapshot, target: ArtifactSnapshot): ArtifactFileDiff[] {

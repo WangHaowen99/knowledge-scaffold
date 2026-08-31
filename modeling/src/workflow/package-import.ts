@@ -273,6 +273,32 @@ function optionalString(value: unknown): string | undefined {
   return text || undefined;
 }
 
+function mappingTableSources(mapping: any): SourceRef[] {
+  if (!Array.isArray(mapping?.sources)) return [];
+  return mapping.sources.flatMap((raw: any) => {
+    const table = optionalString(raw?.resource);
+    const role = optionalString(raw?.role);
+    if (!table || !['primary', 'extension'].includes(role ?? '')) return [];
+    const rawFields = raw?.fields && typeof raw.fields === 'object' && !Array.isArray(raw.fields)
+      ? raw.fields
+      : {};
+    const fieldBindings = Object.entries<any>(rawFields).flatMap(([fieldKey, value]) => {
+      const sourceColumn = optionalString(value?.source_column);
+      return fieldKey && sourceColumn ? [{ fieldKey, sourceColumn }] : [];
+    });
+    return [{
+      kind: 'table' as const,
+      table,
+      role: role as 'primary' | 'extension',
+      ...(optionalString(raw?.document_id) ? { documentId: optionalString(raw.document_id) } : {}),
+      ...(fieldBindings.length ? {
+        columns: fieldBindings.map((item) => item.sourceColumn),
+        fieldBindings,
+      } : {}),
+    }];
+  });
+}
+
 function parseObject(
   path: string,
   markdown: string,
@@ -282,16 +308,30 @@ function parseObject(
   const { data, body } = frontmatter(markdown, path);
   const key = String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? '').trim();
   const objectMapping = mapping?.objects?.[key];
+  const mappedTableSources = mappingTableSources(objectMapping);
+  const primarySource = mappedTableSources.find((source) => (
+    source.kind === 'table' && source.role === 'primary'
+  ));
+  const primaryColumns = new Map(primarySource?.kind === 'table'
+    ? (primarySource.fieldBindings ?? []).map((item) => [item.fieldKey, item.sourceColumn])
+    : []);
   const fields: SpecField[] = tableRows(section(body, '字段')).map((row) => ({
     key: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || undefined,
     required: required(row[3] ?? ''), note: row[4] || undefined, alias: normalizeFieldAlias(row[5]),
+    ...(primaryColumns.get(row[0] ?? '') ? { sourceColumn: primaryColumns.get(row[0] ?? '') } : {}),
     valueBindingRef: optionalString(objectMapping?.fields?.[row[0] ?? '']?.value_binding_ref),
   })).filter((field) => field.key && field.key !== '—');
   const relations = tableRows(section(body, '关系')).map((row) => ({
     relation: row[0] ?? '', target: row[1] ?? '', note: row[2] || undefined,
     ...(row[3] ? { evidence: row[3].split('；').map((item) => item.trim()).filter(Boolean) } : {}),
   })).filter((item) => item.relation && item.target);
-  const sourceRefs = strings(data.sources).map(parseSource).filter((item): item is SourceRef => Boolean(item));
+  const declaredSourceRefs = strings(data.sources).map(parseSource).filter((item): item is SourceRef => Boolean(item));
+  const sourceRefs = mappedTableSources.length
+    ? [
+      ...declaredSourceRefs.filter((item) => item.kind !== 'table'),
+      ...mappedTableSources,
+    ]
+    : declaredSourceRefs;
   const indexedSourceSheet = objectIndex.get(key)?.sourceSheet;
   const fallbackSourceRefs = sourceRefs.length || !indexedSourceSheet || indexedSourceSheet === '—'
     ? []

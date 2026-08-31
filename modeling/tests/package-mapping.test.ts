@@ -158,7 +158,7 @@ test('package mapping format：纯渲染产物符合语义 mapping 契约', () =
 test('package mapping contract：mapping 是允许空 objects 的必选文件', () => {
   const contract = packageGenerationContract();
 
-  assert.equal(contract.validatorVersion, 'package-contract-v5');
+  assert.equal(contract.validatorVersion, 'package-contract-v6');
   assert.ok(contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
   assert.equal(contract.packageFormat.mappings.required, true);
   assert.equal(contract.packageFormat.mappings.allowEmptyObjects, true);
@@ -204,6 +204,33 @@ test('package mapping format：对象索引必须保留来源 Sheet 列和值', 
   assert.ok(runFormatChecks(spec, missingValue).some((finding) => /DataObject.*缺少 来源Sheet/.test(finding.message)));
 });
 
+test('package mapping format：对象来源在规格、详情、目录和运行时 mapping 之间必须一致', () => {
+  const spec = packageSpec();
+  const wrongIndex = renderPackage(spec);
+  wrongIndex['objects/index.md'] = wrongIndex['objects/index.md'].replace('| DataSheet |', '| OtherSheet |');
+  assert.ok(runFormatChecks(spec, wrongIndex).some((finding) => (
+    finding.category === '对象来源不一致' && /DataObject.*DataSheet.*OtherSheet/.test(finding.message)
+  )));
+
+  const textOnlySpec = packageSpec();
+  delete textOnlySpec.objects[0].sourceTable;
+  const textOnlyFiles = renderPackage(textOnlySpec);
+  textOnlyFiles['objects/DataObject.md'] = textOnlyFiles['objects/DataObject.md'].replace(
+    '\n---\n# 业务定义',
+    '\nsources:\n  - "表格：DataSheet"\n---\n# 业务定义',
+  );
+  textOnlyFiles['objects/index.md'] = textOnlyFiles['objects/index.md'].replace(
+    '| DataObject | 数据实体 | 由 Excel 数据表支持的实体 | — |',
+    '| DataObject | 数据实体 | 由 Excel 数据表支持的实体 | DataSheet |',
+  );
+  const findings = runFormatChecks(textOnlySpec, textOnlyFiles);
+  assert.ok(findings.some((finding) => (
+    finding.category === '对象来源不一致'
+    && finding.target === 'objects/DataObject.md'
+    && /未声明结构化表格来源/.test(finding.message)
+  )));
+});
+
 test('package mapping：已声明的数据映射必须匹配真实 Sheet、字段和主键', () => {
   const valid = packageSpec();
   assert.deepEqual(findObjectDataMappingProblems(valid, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])]), []);
@@ -241,14 +268,14 @@ test('package mapping：已声明的数据映射必须匹配真实 Sheet、字�
   );
 });
 
-test('package mapping：多来源汇总对象不能伪装成可直接绑定的单个物理对象', () => {
+test('package mapping：未声明来源角色和逐表字段的多来源对象继续阻断', () => {
   const spec = packageSpec();
   spec.objects[0] = {
     ...spec.objects[0],
     sourceTable: undefined,
     sourceRefs: [
-      { kind: 'table', table: 'TenderEvents' },
-      { kind: 'table', table: 'ParkEvents' },
+      { kind: 'table', table: 'EntityBase' },
+      { kind: 'table', table: 'EntityExtension' },
     ],
     primaryKey: ['event_uid'],
     fields: [
@@ -258,15 +285,61 @@ test('package mapping：多来源汇总对象不能伪装成可直接绑定的�
   };
 
   const problems = findObjectDataMappingProblems(spec, [
-    dataTable('TenderEvents', ['event_id', 'company_name']),
-    dataTable('ParkEvents', ['event_id', 'company_name']),
+    dataTable('EntityBase', ['event_id', 'company_name']),
+    dataTable('EntityExtension', ['event_id', 'company_name']),
     dataTable('DataSheet', ['ID', 'NAME', 'CODE']),
   ]).filter((problem) => problem.objectKey === 'DataObject');
 
   assert.equal(problems.length, 1);
   assert.match(problems[0].message, /同时绑定了 2 张来源表/);
-  assert.match(problems[0].message, /当前数据绑定一次只能执行一张物理表/);
-  assert.match(problems[0].message, /逐来源明细对象/);
+  assert.match(problems[0].message, /当前数据源类型不支持跨 Sheet 对象/);
+});
+
+test('package mapping：Neo4j 对象保存主表和一对一扩展表的完整运行时映射', () => {
+  const spec = packageSpec();
+  spec.dataSourceType = 'neo4j';
+  spec.objects[0] = {
+    ...spec.objects[0],
+    sourceTable: undefined,
+    sourceRefs: [
+      {
+        kind: 'table', table: 'EntityBase', role: 'primary',
+        fieldBindings: [
+          { fieldKey: 'entity_id', sourceColumn: 'base_id' },
+          { fieldKey: 'entity_name', sourceColumn: 'base_name' },
+        ],
+      },
+      {
+        kind: 'table', table: 'EntityExtension', role: 'extension',
+        fieldBindings: [
+          { fieldKey: 'entity_id', sourceColumn: 'extension_id' },
+          { fieldKey: 'detail', sourceColumn: 'detail_text' },
+        ],
+      },
+    ],
+    primaryKey: ['entity_id'],
+    fields: [
+      { key: 'entity_id', cnName: '实体标识', sourceColumn: 'base_id', type: 'string', required: true },
+      { key: 'entity_name', cnName: '实体名称', sourceColumn: 'base_name', type: 'string' },
+      { key: 'detail', cnName: '补充说明', sourceColumn: 'detail_text', type: 'string' },
+    ],
+  };
+  const tables = [
+    dataTable('EntityBase', ['base_id', 'base_name']),
+    dataTable('EntityExtension', ['extension_id', 'detail_text']),
+    dataTable('DataSheet', ['ID', 'NAME', 'CODE']),
+  ];
+
+  assert.deepEqual(findObjectDataMappingProblems(spec, tables), []);
+  const files = renderPackage(spec);
+  const mapping = JSON.parse(files['mappings/object-data-mappings.json']).objects.DataObject;
+  assert.deepEqual(mapping.sources.map((source: any) => [source.role, source.resource]), [
+    ['primary', 'EntityBase'],
+    ['extension', 'EntityExtension'],
+  ]);
+  assert.equal(mapping.sources[1].fields.detail.source_column, 'detail_text');
+  assert.match(files['objects/index.md'], /EntityBase、EntityExtension/u);
+  assert.deepEqual(runFormatChecks(spec, files), []);
 });
 
 test('package mapping：无物理表映射的派生业务对象可汇总逐来源明细对象', () => {
@@ -739,7 +812,7 @@ test('semantic binding：批量确认后写入 value_bindings 和字段引用', 
     dataTable('机场中文代号', ['ARP_CD', '机场名'], [
       { ARP_CD: 'CAN', 机场名: '广州白云国际机场' },
       { ARP_CD: 'CGO', 机场名: '郑州新郑国际机场' },
-    ]),
+    ], 'term'),
   ];
   const suggestion = suggestSemanticBindings(spec, tables)[0];
   const bindingApplied = applySemanticBindingSelection(spec, tables, {

@@ -2,17 +2,24 @@ import { assertGraphIdentifier } from '../evaluation/data-source.js';
 import type { PackageSpec } from '../types.js';
 import { mappingFieldName, mappingObjectName } from '../workflow/mapping-contract.js';
 import {
+  tableFieldBindingsFor,
+  tableSourceRoleFor,
+  tableSourcesFor,
+} from '../workflow/source-references.js';
+import {
   markdownTableCells,
   parseObjectIndex,
   type ObjectIndexEntry,
 } from '../workflow/object-index.js';
 import type {
   GraphImportObjectSchema,
+  GraphImportObjectSourceSchema,
   GraphImportPackageSchema,
   GraphImportRelationSchema,
   GraphImportValueBindingSchema,
 } from './types.js';
 import { assertGraphLabel } from './graph-label.js';
+import { GraphImportNoObjectMappingError } from './errors.js';
 
 type PackageFiles = Record<string, string>;
 
@@ -79,12 +86,72 @@ function objectSchema(
         throw new Error(`对象 ${object.key} 的 mapping 包含对象规格未声明的字段 key ${fieldName}`);
       }
     }
+    const rawSources = Array.isArray(mapping.sources) ? mapping.sources : [];
+    const sources: GraphImportObjectSourceSchema[] = rawSources.map((raw: unknown, sourceIndex: number) => {
+      const source = asRecord(raw, `对象 ${object.key} 的 sources[${sourceIndex}]`);
+      const sheet = String(source.resource ?? '').trim();
+      const role = String(source.role ?? '').trim();
+      if (!sheet) throw new Error(`对象 ${object.key} 的 sources[${sourceIndex}] 缺少 resource`);
+      if (!['primary', 'extension'].includes(role)) {
+        throw new Error(`对象 ${object.key} 的 sources[${sourceIndex}] role 必须是 primary 或 extension`);
+      }
+      const sourceFields = asRecord(source.fields || {}, `对象 ${object.key} 的 sources[${sourceIndex}].fields`);
+      const sourceMappings = Object.entries<any>(sourceFields).map(([fieldKey, value]) => {
+        if (!expectedFieldNames.has(fieldKey)) {
+          throw new Error(`对象 ${object.key} 的 sources[${sourceIndex}] 包含未知字段 ${fieldKey}`);
+        }
+        const sourceColumn = String(value?.source_column ?? '').trim();
+        if (!sourceColumn) {
+          throw new Error(`对象 ${object.key} 的 sources[${sourceIndex}] 字段 ${fieldKey} 缺少 source_column`);
+        }
+        assertGraphIdentifier(fieldKey, `对象 ${object.key} 的 Property`);
+        return { property: fieldKey, sourceColumn };
+      });
+      return {
+        sheet,
+        role: role as GraphImportObjectSourceSchema['role'],
+        propertyMappings: sourceMappings,
+      };
+    });
+    if (sources.length && sources.filter((source) => source.role === 'primary').length !== 1) {
+      throw new Error(`对象 ${object.key} 的 sources 必须且只能包含一张 primary 主表`);
+    }
+    if (sources.length) {
+      const expectedSources = tableSourcesFor(object);
+      if (sources.length !== expectedSources.length) {
+        throw new Error(`对象 ${object.key} 的 mapping sources 与对象规格来源数量不一致`);
+      }
+      for (const [sourceIndex, source] of sources.entries()) {
+        const expected = expectedSources[sourceIndex];
+        if (source.sheet !== expected.table || source.role !== tableSourceRoleFor(object, expected)) {
+          throw new Error(`对象 ${object.key} 的 sources[${sourceIndex}] 与对象规格来源不一致`);
+        }
+        const expectedBindings = tableFieldBindingsFor(object, expected);
+        if (JSON.stringify(source.propertyMappings) !== JSON.stringify(expectedBindings.map((binding) => ({
+          property: binding.fieldKey,
+          sourceColumn: binding.sourceColumn,
+        })))) {
+          throw new Error(`对象 ${object.key} 的 sources[${sourceIndex}] 字段映射与对象规格不一致`);
+        }
+      }
+    }
+    const primaryKey = Array.isArray(mapping.primary_key)
+      ? mapping.primary_key.map((item: unknown) => String(item ?? '').trim()).filter(Boolean)
+      : [];
+    const primarySource = sources.find((source) => source.role === 'primary');
+    const mergedPropertyMappings = sources.length
+      ? sources.flatMap((source) => source.propertyMappings).filter((item, index, all) => (
+        all.findIndex((candidate) => candidate.property === item.property) === index
+      ))
+      : propertyMappings;
     return {
       key: object.key,
       title: object.title,
       label: indexEntry.key,
-      defaultSheet: indexEntry.sourceSheet,
-      propertyMappings,
+      defaultSheet: primarySource?.sheet ?? indexEntry.sourceSheet,
+      propertyMappings: mergedPropertyMappings,
+      ...(primaryKey.length ? { primaryKey } : {}),
+      ...(sources.length ? { sources } : {}),
     };
   });
 }
@@ -153,9 +220,16 @@ export function extractGraphImportSchema(spec: PackageSpec, files: PackageFiles)
   try { parsed = JSON.parse(rawMappings); } catch { throw new Error('object-data-mappings.json 不是合法 JSON'); }
   const mappings = asRecord(parsed.objects, 'object-data-mappings.json objects');
   const objects = objectSchema(spec, mappings, parseObjectIndex(rawObjectIndex));
+  if (!objects.length) {
+    throw new GraphImportNoObjectMappingError(spec.objects.map((object) => ({
+      key: object.key,
+      title: object.title,
+    })));
+  }
   const mappedObjectKeys = new Set(objects.map((object) => object.key));
   return {
     packageVersion: spec.version,
+    packageObjectCount: spec.objects.length,
     objects,
     valueBindings: valueBindings(parsed),
     relations: relations(spec, files).filter((relation) => (

@@ -93,6 +93,7 @@ export function objectImportIssue(preview, objectOrKey) {
   if (!object) return '知识包中不存在该实体';
   const sheet = sheetByName(preview, object.defaultSheet);
   if (!sheet) return `固定 Sheet「${object.defaultSheet}」不存在于 Excel`;
+  if (sheet.rowCount === 0) return `固定 Sheet「${object.defaultSheet}」没有数据行`;
   if (!(object.propertyMappings || []).some((mapping) => sheet.columns.includes(mapping.sourceColumn))) {
     return `固定 Sheet「${object.defaultSheet}」不包含该实体任何映射字段`;
   }

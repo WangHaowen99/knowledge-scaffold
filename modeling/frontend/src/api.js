@@ -124,6 +124,14 @@ export const updateDocumentDirectives = (id, docId, directives) => api(
   `/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}/directives`,
   { method: 'PATCH', body: JSON.stringify(directives) },
 );
+export const confirmDocumentPurposeReview = (id, docId, input) => api(
+  `/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}/purpose-review`,
+  { method: 'PUT', body: JSON.stringify(input) },
+);
+export const confirmDocumentPurposeReviews = (id, documents) => api(
+  `/api/projects/${encodeURIComponent(id)}/documents/purpose-reviews`,
+  { method: 'PUT', body: JSON.stringify({ documents }) },
+);
 export const deleteDocument = (id, docId) => api(`/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' });
 export const downloadDocument = async (id, docId) => requireOkResponse(await authFetch(
   `/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}/download`,

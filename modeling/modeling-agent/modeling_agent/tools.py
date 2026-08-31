@@ -34,6 +34,7 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "upsert_rule",
     "upsert_operation",
     "bind_object_source",
+    "bind_object_sources",
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
@@ -45,6 +46,7 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "upsert_rule",
     "upsert_operation",
     "bind_object_source",
+    "bind_object_sources",
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
@@ -101,6 +103,7 @@ class ToolContext:
     tool_receipt_lookup: ToolReceiptLookup | None = None
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    allowed_tools: frozenset[str] | None = None
     confirmation_required: bool = False
     interjection_reply_required: bool = False
     release_declined: bool = False
@@ -459,6 +462,12 @@ CHANGE_GROUP = {
 CORE_TOOL_SPECS = (
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
+        "get_schema_mapping_plan",
+        "读取全部已确认 Sheet 与当前对象结构化来源的完整对照台账，返回逐 Sheet 映射状态和未闭环计数。业务流程确认并进入 knowledge 阶段后先调用，补齐来源后再次核对；只有 complete=true 才能发起知识候选确认。",
+        {},
+        display="正在核对数据 Schema 映射计划",
+    ),
+    ToolSpec(
         "read_document",
         "按需分页读取资料正文。局部核对先检索再读取命中范围；需要全文覆盖时必须改用 read_documents_fully，禁止串行翻页替代。",
         {"filename": STRING, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 20000}},
@@ -467,13 +476,24 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "set_material_directive",
-        "按用户自然语言或上传卡设置资料的主要用途与阅读方式；用户未指定时不得替用户强行分类。",
+        "提交资料用途预判。每份已解析资料都要提交；表格资料必须逐 Sheet 给出建议。核心会要求用户确认后才允许知识候选生效；用户未指定时不得把建议伪装成用户决定。",
         {
             "filename": STRING,
-            "purpose": {"type": "string", "enum": ["auto", "goal", "schema", "evidence"]},
+            "purpose": {"type": "string", "enum": ["goal", "schema", "term", "evidence"]},
             "reading_mode": {"type": "string", "enum": ["on_demand", "full"]},
+            "sheet_purposes": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "sheet": STRING,
+                    "semantic_role": {"type": "string", "enum": ["schema", "evidence", "ignore"]},
+                    "import_disposition": {"type": "string", "enum": ["object", "relationship", "derived", "reference", "ignore"]},
+                    "reason": STRING,
+                },
+                "required": ["sheet", "semantic_role", "import_disposition"],
+                "additionalProperties": False,
+            }},
         },
-        ("filename",),
+        ("filename", "purpose"),
         False,
         "正在保存资料设置",
     ),
@@ -520,7 +540,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "upsert_object",
-        "创建或完整替换一个业务对象，并可在同一次调用中绑定真实数据表。核心确定性生成对象详情、对象索引、数据映射和内部语义规格；不要再手写这些文件。",
+        "创建或完整替换一个业务对象，并可在同一次调用中绑定真实数据表。更新已绑定对象时，省略 source 只会在字段集合不变时保留原绑定；字段变化必须完整重绑，remove_source=true 才会显式解绑。核心确定性生成对象详情、对象索引、数据映射和内部语义规格；不要再手写这些文件。",
         {
             "key": STRING, "title": STRING, "description": STRING,
             "aliases": {"type": "array", "items": STRING},
@@ -547,6 +567,26 @@ CORE_TOOL_SPECS = (
                 "primary_key": {"type": "array", "minItems": 1, "items": STRING},
             }, "required": ["document_id", "table", "field_bindings", "primary_key"],
                "additionalProperties": False},
+            "source_plan": {"type": "object", "properties": {
+                "primary_key": {"type": "array", "minItems": 1, "items": STRING},
+                "sources": {"type": "array", "minItems": 2, "items": {
+                    "type": "object",
+                    "properties": {
+                        "document_id": STRING,
+                        "table": STRING,
+                        "role": {"type": "string", "enum": ["primary", "extension"]},
+                        "field_bindings": {"type": "array", "minItems": 1, "items": {
+                            "type": "object",
+                            "properties": {"field_key": STRING, "source_column": STRING},
+                            "required": ["field_key", "source_column"],
+                            "additionalProperties": False,
+                        }},
+                    },
+                    "required": ["document_id", "table", "role", "field_bindings"],
+                    "additionalProperties": False,
+                }},
+            }, "required": ["primary_key", "sources"], "additionalProperties": False},
+            "remove_source": {"type": "boolean"},
             "evidence": {"type": "array", "minItems": 1, "items": STRING},
             "change_group": CHANGE_GROUP,
         },
@@ -653,6 +693,35 @@ CORE_TOOL_SPECS = (
         ("key", "document_id", "table", "field_bindings", "primary_key", "evidence", "change_group"),
         False,
         "正在编译对象数据绑定",
+    ),
+    ToolSpec(
+        "bind_object_sources",
+        "用完整计划重绑一个现有跨 Sheet 对象。必须有且只有一张 primary 主表，其余为一对一 extension；每张表都绑定全部对象主键，非主键字段只能由一张表提供。",
+        {
+            "key": STRING,
+            "primary_key": {"type": "array", "minItems": 1, "items": STRING},
+            "sources": {"type": "array", "minItems": 2, "items": {
+                "type": "object",
+                "properties": {
+                    "document_id": STRING,
+                    "table": STRING,
+                    "role": {"type": "string", "enum": ["primary", "extension"]},
+                    "field_bindings": {"type": "array", "minItems": 1, "items": {
+                        "type": "object",
+                        "properties": {"field_key": STRING, "source_column": STRING},
+                        "required": ["field_key", "source_column"],
+                        "additionalProperties": False,
+                    }},
+                },
+                "required": ["document_id", "table", "role", "field_bindings"],
+                "additionalProperties": False,
+            }},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+            "change_group": CHANGE_GROUP,
+        },
+        ("key", "primary_key", "sources", "evidence", "change_group"),
+        False,
+        "正在编译跨 Sheet 对象数据绑定",
     ),
     ToolSpec(
         "get_validation_summary",
