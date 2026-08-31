@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { store, actions, materialPurposeLabel } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import { docSample, materials } from '../lib/mock/fixtures.js';
@@ -12,6 +12,42 @@ const selDemo = (s) => s.demo;
 const selMaterials = (s) => s.materials;
 const selMaterialContents = (s) => s.materialContents;
 const selMaterialReferrers = (s) => s.materialReferrers;
+
+const SHEET_DISPOSITIONS = [
+  { value: 'object', label: '实体数据', semanticRole: 'schema' },
+  { value: 'relationship', label: '关系数据', semanticRole: 'schema' },
+  { value: 'derived', label: '派生汇总', semanticRole: 'schema' },
+  { value: 'reference', label: '业务依据', semanticRole: 'evidence' },
+  { value: 'ignore', label: '忽略', semanticRole: 'ignore' },
+];
+
+function decisionForSheet(sheet, disposition = 'reference', reason = '') {
+  const option = SHEET_DISPOSITIONS.find((item) => item.value === disposition)
+    || SHEET_DISPOSITIONS[3];
+  return {
+    sheet,
+    semanticRole: option.semanticRole,
+    importDisposition: option.value,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function purposeReviewForm(material) {
+  const review = material.purposeReview;
+  const source = review?.status === 'confirmed' ? review.sheetDecisions : review?.sheetSuggestions;
+  const bySheet = new Map((source || []).map((item) => [item.sheet, item]));
+  return {
+    purpose: review?.confirmedPurpose || review?.suggestedPurpose || material.purpose || 'evidence',
+    decisions: Object.fromEntries(material.tables.map((table) => {
+      const decision = bySheet.get(table.name);
+      return [table.name, decisionForSheet(
+        table.name,
+        decision?.importDisposition || (material.purpose === 'schema' ? 'object' : 'reference'),
+        decision?.reason,
+      )];
+    })),
+  };
+}
 
 /* 双向反查是资料界面的全部理由。
    草图里反查面板占右栏，但右栏在正式版恒为对话流（「只有一条流」），
@@ -190,11 +226,11 @@ function RealDocument({ material, referrers, location }) {
       </div>
       <div className="card-b" style={{ borderTop: '1px solid var(--c-line-soft)' }}>
         <div className="wb-doc-directives">
-          <label><span>用途</span><select className="input" value={material.purpose || 'auto'} aria-label={`${material.filename}的资料用途`}
+          {!material.purposeReview && <label><span>用途</span><select className="input" value={material.purpose || 'auto'} aria-label={`${material.filename}的资料用途`}
             onChange={(event) => void actions.setMaterialDirectives(material.id, { purpose: event.target.value })}>
             {['auto', 'goal', 'schema', 'term', 'evidence'].map((value) => <option key={value} value={value}
               disabled={['schema', 'term'].includes(value) && !['excel', 'csv'].includes(material.kind)}>{materialPurposeLabel(value)}</option>)}
-          </select></label>
+          </select></label>}
           {material.purpose === 'term' && <button className="btn btn-sm" type="button" onClick={() => void downloadTemplate()}>
             <Icon name="download" size={12} />下载模板
           </button>}
@@ -202,6 +238,7 @@ function RealDocument({ material, referrers, location }) {
             onChange={(event) => void actions.setMaterialDirectives(material.id, { readingMode: event.target.checked ? 'full' : 'on_demand' })} />
             <span>全文精读</span></label>
         </div>
+        {material.purposeReview && <MaterialPurposeReviewPanel material={material} />}
         <div className="btn-row">
           <button className="btn btn-sm" onClick={() => void download()}><Icon name="download" size={12} />下载原文件</button>
           <button className="btn btn-sm" onClick={() => revisionInput.current?.click()}><Icon name="upload" size={12} />上传新版本</button>
@@ -216,6 +253,97 @@ function RealDocument({ material, referrers, location }) {
       </div>
     </aside>
     </div>
+  );
+}
+
+function MaterialPurposeReviewPanel({ material }) {
+  const projectMaterials = useStore(store, selMaterials);
+  const review = material.purposeReview;
+  const initial = purposeReviewForm(material);
+  const [purpose, setPurpose] = useState(initial.purpose === 'auto' ? 'evidence' : initial.purpose);
+  const [decisions, setDecisions] = useState(initial.decisions);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const next = purposeReviewForm(material);
+    setPurpose(next.purpose === 'auto' ? 'evidence' : next.purpose);
+    setDecisions(next.decisions);
+    setError('');
+  }, [material.id, review.updatedAt]);
+
+  const ordered = material.tables.map((table) => decisions[table.name]).filter(Boolean);
+  const hasSchemaSheet = ordered.some((item) => item.semanticRole === 'schema');
+  const validationError = ordered.length !== material.tables.length
+    ? '仍有 Sheet 未分类'
+    : hasSchemaSheet && purpose !== 'schema'
+      ? '包含实体、关系或汇总 Sheet 时，文件用途必须是数据 Schema'
+      : purpose === 'schema' && !hasSchemaSheet
+        ? '数据 Schema 至少需要一个实体、关系或汇总 Sheet'
+        : '';
+  const analysisPending = review.status !== 'confirmed' && review.suggestedBy !== 'agent';
+  const reviewable = projectMaterials.filter((item) => item.purposeReview);
+  const confirmedCount = reviewable.filter((item) => item.purposeReview.status === 'confirmed').length;
+  const tabular = ['excel', 'csv'].includes(material.kind) && material.tables.length > 0;
+
+  const changeDisposition = (sheet, disposition) => {
+    setDecisions((current) => ({
+      ...current,
+      [sheet]: decisionForSheet(sheet, disposition),
+    }));
+    if (['object', 'relationship', 'derived'].includes(disposition)) setPurpose('schema');
+    setError('');
+  };
+  const confirm = async () => {
+    if (validationError || analysisPending) return;
+    setSaving(true);
+    setError('');
+    const result = await actions.confirmMaterialPurposeReview(material.id, purpose, ordered);
+    if (!result) setError(store.get().error || '资料用途确认失败');
+    setSaving(false);
+  };
+
+  return (
+    <section className="wb-purpose-review" aria-label="资料用途确认">
+      <div className="wb-purpose-review-head">
+        <b>{tabular ? '文件及 Sheet 用途' : '资料用途确认'}</b>
+        {reviewable.length > 1 && <span className="muted">{confirmedCount}/{reviewable.length}</span>}
+        <span className={`pill ${review.status === 'confirmed' ? 'ok' : 'wait'}`}>
+          {analysisPending ? '助手轻量分析中' : review.status === 'confirmed' ? '已确认' : '待确认'}
+        </span>
+      </div>
+      <label className="wb-purpose-file">
+        <span>文件用途</span>
+        <select className="input" value={purpose} disabled={analysisPending}
+          onChange={(event) => { setPurpose(event.target.value); setError(''); }}>
+          {['goal', 'schema', 'term', 'evidence'].map((value) => (
+            <option key={value} value={value}
+              disabled={['schema', 'term'].includes(value) && !tabular}>{materialPurposeLabel(value)}</option>
+          ))}
+        </select>
+      </label>
+      <div className="wb-purpose-sheets">
+        {material.tables.map((table) => (
+          <label key={table.name} className="wb-purpose-sheet">
+            <span title={table.name}>{table.name}</span>
+            <select className="input" value={decisions[table.name]?.importDisposition || 'reference'}
+              aria-label={`${table.name}的用途`}
+              disabled={analysisPending}
+              onChange={(event) => changeDisposition(table.name, event.target.value)}>
+              {SHEET_DISPOSITIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            {decisions[table.name]?.reason && <small>{decisions[table.name].reason}</small>}
+          </label>
+        ))}
+      </div>
+      {(error || validationError) && <div className="wb-purpose-error" role="alert">{error || validationError}</div>}
+      <button className="btn btn-p btn-sm" type="button" disabled={saving || analysisPending || Boolean(validationError)}
+        onClick={() => void confirm()}>
+        {saving ? '确认中…' : review.status === 'confirmed' ? '更新确认' : tabular ? '确认文件及全部 Sheet' : '确认资料用途'}
+      </button>
+    </section>
   );
 }
 

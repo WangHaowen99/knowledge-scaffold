@@ -1,5 +1,10 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
-import { store, actions } from '../lib/appStore.js';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  store,
+  actions,
+  materialPurposeLabel,
+  pendingMaterialPurposeReviews,
+} from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import { Block } from './blocks/Blocks.jsx';
 import { CONVERSATIONS } from '../lib/mock/conversations.js';
@@ -23,6 +28,7 @@ const selRevision = (s) => s.revision;
 const selPackageVersion = (s) => s.packageVersion;
 const selStatusText = (s) => s.statusText;
 const selReplayUntilSeq = (s) => s.replayUntilSeq;
+const selMaterials = (s) => s.materials;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
     const interaction = s.messages[index]?.blocks?.find((block) => block.interaction)?.interaction;
@@ -48,6 +54,7 @@ export default function RightPane() {
   const packageVersion = useStore(store, selPackageVersion);
   const statusText = useStore(store, selStatusText);
   const replayUntilSeq = useStore(store, selReplayUntilSeq);
+  const materials = useStore(store, selMaterials);
   const interactionId = useStore(store, selPendingInteractionMessageId);
   const scroller = useRef(null);
   const stream = useRef(null);
@@ -69,6 +76,9 @@ export default function RightPane() {
   const activityTail = activity
     ? `${activity.id || activity.text}:${activity.detail || ''}:${activity.progress?.current || 0}`
     : '';
+  const purposeReviewTail = materials.map((material) => (
+    `${material.id}:${material.purposeReview?.status || ''}:${material.purposeReview?.suggestedBy || ''}`
+  )).join('|');
   const interactionInStream = Boolean(interaction && messages.some((message) => (
     message.blocks?.some((block) => block.interaction?.id === interaction.id)
   )));
@@ -119,7 +129,7 @@ export default function RightPane() {
       return;
     }
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
-  }, [user.length, scene, streamTail, activityTail, interactionId, projectId, replayingHistory]);
+  }, [user.length, scene, streamTail, activityTail, purposeReviewTail, interactionId, projectId, replayingHistory]);
 
   useTailLayoutEffect(() => {
     const element = scroller.current;
@@ -178,7 +188,10 @@ export default function RightPane() {
           {base.map((m) => <Message key={m.id} m={m} />)}
           {user.map((m) => <Message key={m.id} m={m} />)}
           {!demo && restoredInteractionMessage && <Message m={restoredInteractionMessage} />}
-          {!demo && !base.length && !restoredInteractionMessage && <div className="empty">{loading ? '正在加载项目…' : '助手接手后，进度、问题和变更都会出现在这里'}</div>}
+          {!demo && <MaterialPurposeBatchCard materials={materials} />}
+          {!demo && !base.length && !restoredInteractionMessage
+            && pendingMaterialPurposeReviews(materials).length === 0
+            && <div className="empty">{loading ? '正在加载项目…' : '助手接手后，进度、问题和变更都会出现在这里'}</div>}
           {error && (
             <div className="card card-stale" role="alert">
               <div className="card-h">
@@ -207,6 +220,67 @@ export default function RightPane() {
 
       <Composer />
     </>
+  );
+}
+
+export function MaterialPurposeBatchCard({ materials }) {
+  const [saving, setSaving] = useState(false);
+  const pending = pendingMaterialPurposeReviews(materials);
+  if (!pending.length) return null;
+  const ready = pending.every((material) => material.purposeReview?.suggestedBy === 'agent');
+  const first = pending.find((material) => material.purposeReview?.suggestedBy === 'agent') || pending[0];
+  const confirmAll = async () => {
+    if (!ready || saving) return;
+    setSaving(true);
+    try {
+      await actions.confirmAllMaterialPurposeReviews();
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="wb-msg" aria-label="资料用途批量确认">
+      <div className="wb-who"><b>助手</b></div>
+      <div className="wb-msg-assistant-body">
+        <div className="card card-wait wb-purpose-batch">
+          <div className="card-h">确认资料用途<span className="spacer" />{pending.length} 份</div>
+          <div className="card-b">
+            <div className="wb-purpose-batch-intro">
+              {ready ? '已完成本批资料的用途预判，请确认是否采用。' : '正在分析本批资料用途，完成后可一键确认。'}
+            </div>
+            <ul className="wb-purpose-batch-files">
+              {pending.map((material) => {
+                const review = material.purposeReview || {};
+                const analyzed = review.suggestedBy === 'agent';
+                const sheetSuggestions = review.sheetSuggestions || [];
+                const objectSheetCount = sheetSuggestions.filter((item) => (
+                  item.importDisposition === 'object'
+                )).length;
+                return <li key={material.id}>
+                  <span title={material.filename || material.name}>{material.filename || material.name}</span>
+                  <div className="wb-purpose-batch-result">
+                    <b className={analyzed ? '' : 'pending'}>
+                      {analyzed ? materialPurposeLabel(review.suggestedPurpose) : '分析中'}
+                    </b>
+                    {analyzed && sheetSuggestions.length > 0 && <small>{objectSheetCount} 个实体 Sheet</small>}
+                  </div>
+                </li>;
+              })}
+            </ul>
+            <div className="btn-row">
+              <button className="btn btn-p" type="button" disabled={!ready || saving}
+                aria-busy={saving} onClick={() => void confirmAll()}>
+                {saving ? '确认中…' : '一键确认全部'}
+              </button>
+              <button className="btn" type="button" disabled={saving}
+                onClick={() => actions.selectMaterial(first.id)}>
+                逐个调整
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

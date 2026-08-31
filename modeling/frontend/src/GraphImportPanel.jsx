@@ -25,7 +25,9 @@ import {
   updateRelationMapping,
 } from './graph-import-form.js';
 
-const statusLabel = { running: '执行中', done: '成功', failed: '失败', cancelled: '已取消' };
+const statusLabel = {
+  running: '执行中', done: '成功', empty: '未导入', failed: '失败', cancelled: '已取消',
+};
 
 function initialRelationDraft(preview) {
   const objects = (preview?.schema?.objects || []).filter((object) => !objectImportIssue(preview, object));
@@ -132,7 +134,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
     setActiveRunId('');
     setPassword('');
     setReplacementRequest(null);
-    if (activeRun.status === 'done') {
+    if (activeRun.status === 'done' && activeRun.nodeCount > 0) {
       setPreview(null);
       setMappings([]);
       setValidation(null);
@@ -140,6 +142,11 @@ export default function GraphImportPanel({ projectId, dataSource }) {
       setKnownRelationId('');
       setError('');
       setMessage(`后台导入成功：${activeRun.nodeCount} 个实例 / ${activeRun.relationshipCount} 条关系`);
+      return;
+    }
+    if (activeRun.status === 'done') {
+      setError('后台任务未写入任何实例，不能视为导入成功');
+      setMessage('临时 Excel 可能已被旧版本清理，请重新检查对象数据映射');
       return;
     }
     if (activeRun.status === 'cancelled') {
@@ -395,6 +402,8 @@ export default function GraphImportPanel({ projectId, dataSource }) {
   const config = dataSource?.config || {};
   const isolationReady = config.workspace_property && config.workspace_value
     && config.ontology_property && config.ontology_value;
+  const mappedObjectCount = preview?.schema?.objects?.length ?? 0;
+  const hasExecutablePlan = (validation?.counts?.nodeCount ?? 0) > 0;
 
   return (
     <section className="gi-panel">
@@ -430,8 +439,17 @@ export default function GraphImportPanel({ projectId, dataSource }) {
           <div className="gi-filebar">
             <div><b>{preview.filename}</b><span>{formatBytes(preview.sizeBytes)}</span></div>
             <div>{preview.sheets.map((sheet) => `${sheet.name}（${sheet.rowCount} 行）`).join(' · ')}</div>
+            <div>
+              知识包对象 {preview.schema.packageObjectCount ?? preview.schema.objects.length} 项
+              {' · '}已映射对象 {preview.schema.objects.length} 项
+              {' · '}Excel Sheet {preview.sheets.length} 项
+            </div>
             <button className="tc-del" disabled={controlsDisabled} onClick={cancel}>取消导入</button>
           </div>
+
+          {!mappedObjectCount && (
+            <div className="lerr">知识包未生成对象到数据表的运行时映射，不能执行图数据导入。</div>
+          )}
 
           {!preview.schema.relations.length && (
             <div className="gi-message">当前知识包未预定义关系，可在此直接新增导入关系。</div>
@@ -489,7 +507,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
           ))}
 
           <div className="gi-actions">
-            <button className="btn" disabled={controlsDisabled} onClick={validate}>
+            <button className="btn" disabled={controlsDisabled || !mappedObjectCount} onClick={validate}>
               {busy === 'validate' ? '校验中…' : '校验映射与数据'}
             </button>
             {validation && (
@@ -503,6 +521,11 @@ export default function GraphImportPanel({ projectId, dataSource }) {
             {validation?.warnings?.length > 0 && (
               <div className="gi-warnings">{validation.warnings.join('；')}</div>
             )}
+            {validation?.objectDiagnostics?.length > 0 && (
+              <div className="gi-warnings">
+                {validation.objectDiagnostics.map((diagnostic) => diagnostic.message).join('；')}
+              </div>
+            )}
           </div>
 
           {validation && (
@@ -512,7 +535,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
                 <input ref={passwordInputRef} type="password" value={password} disabled={controlsDisabled} autoComplete="new-password"
                   onChange={(event) => setPassword(event.target.value)} placeholder="每次执行均需重新输入" />
               </div>
-              <button className="btn btn-p" disabled={controlsDisabled || !password || !isolationReady} onClick={execute}>
+              <button className="btn btn-p" disabled={controlsDisabled || !password || !isolationReady || !hasExecutablePlan} onClick={execute}>
                 {busy === 'execute' ? '正在写入…' : '写入实例与关系'}
               </button>
             </div>
@@ -667,7 +690,9 @@ function ImportHistory({ imports }) {
       <div className="gi-history-title">最近导入</div>
       {imports.slice(0, 5).map((item) => (
         <div className="gi-history-row" key={item.id}>
-          <span className={`tag gi-${item.status}`}>{statusLabel[item.status] || item.status}</span>
+          <span className={`tag gi-${item.status === 'done' && item.nodeCount === 0 ? 'empty' : item.status}`}>
+            {statusLabel[item.status === 'done' && item.nodeCount === 0 ? 'empty' : item.status] || item.status}
+          </span>
           <b>{item.filename}</b>
           <span>{item.nodeCount} 个实例 / {item.relationshipCount} 条关系</span>
           <time>{formatTime(item.finishedAt || item.createdAt)}</time>

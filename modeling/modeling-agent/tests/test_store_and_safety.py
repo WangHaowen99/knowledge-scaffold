@@ -1048,6 +1048,10 @@ async def test_mermaid_raw_source_passes_write_rail() -> None:
         ("stage_package_merge", "", "knowledge", True),
         ("compile_package_fusion_plan", "", "intake", True),
         ("compile_package_fusion_plan", "", "knowledge", True),
+        ("upsert_object", "", "process", False),
+        ("upsert_object", "", "knowledge", True),
+        ("bind_object_sources", "", "increment", True),
+        ("bind_object_source", "", "validation", False),
     ],
 )
 def test_candidate_paths_are_limited_to_their_business_phase(
