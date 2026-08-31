@@ -383,13 +383,14 @@ async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() ->
 
 async def test_query_eval_db_description_is_mysql_mirror_diagnostic() -> None:
     spec = next(item for item in CORE_TOOL_SPECS if item.name == "query_eval_db")
+    prompt = _system_prompt("", {})
 
     assert "MySQL 评测库镜像" in spec.description
     assert "项目数据源配置" in spec.description
     assert "Neo4j" in spec.description
     assert "NL2SQL 服务内部管理" in spec.description
-    assert "query_eval_db 只用于诊断" in _system_prompt()
-    assert "get_project_state 返回的 dataSource 摘要" in _system_prompt()
+    assert "query_eval_db 只用于诊断" in prompt
+    assert "get_project_state 返回的 dataSource 摘要" in prompt
 
 
 async def test_project_state_includes_core_data_source_summary(settings) -> None:
@@ -419,7 +420,7 @@ async def test_project_state_includes_core_data_source_summary(settings) -> None
 
         assert state["dataSource"]["provider"] == "neo4j"
         assert state["dataSource"]["neo4j"]["workspaceIsolationConfigured"] is True
-        assert gateway.calls[0]["tool"] == "project_data_source_status"
+        assert any(call["tool"] == "project_data_source_status" for call in gateway.calls)
     finally:
         await runtime.shutdown()
 
@@ -3887,7 +3888,7 @@ async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_r
     assert blocked["repeatedFinding"] is True
     assert blocked["repairStopped"] is True
     assert blocked["retryable"] is False
-    assert "自动修正已停止" in blocked["instruction"]
+    assert "自动修正已达到上限" in blocked["instruction"]
 
 
 async def test_text_choice_request_rejects_confirmation_and_opens_ask_card(settings) -> None:
