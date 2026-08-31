@@ -28,6 +28,11 @@ from .schemas import (
 )
 from .settings import Settings
 from .store import RuntimeStore, token_fingerprint
+from .project_transfer import (
+    delete_project_transfer,
+    export_project_transfer,
+    import_project_transfer,
+)
 from .tools import CandidateValidationRepairState, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 from .workflows import (
@@ -389,6 +394,15 @@ class AgentService:
             "focus": restored_focus if isinstance(restored_focus, dict) else None,
             "lastSeq": self.store.latest_event_seq(project_id),
         }
+
+    def export_project_transfer(self, project_id: str) -> dict[str, Any]:
+        return export_project_transfer(self.store, self.settings.checkpoint_db, project_id)
+
+    def import_project_transfer(self, project_id: str, payload: dict[str, Any]) -> dict[str, str]:
+        return import_project_transfer(self.store, self.settings.checkpoint_db, project_id, payload)
+
+    def delete_project_transfer(self, project_id: str) -> None:
+        delete_project_transfer(self.store, self.settings.checkpoint_db, project_id)
 
     async def start_run(
         self,

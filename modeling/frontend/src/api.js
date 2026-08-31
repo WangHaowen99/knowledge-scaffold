@@ -115,6 +115,21 @@ export const createProject = (input) => api('/api/projects', { method: 'POST', b
 export const deleteProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`, {
   method: 'DELETE', body: JSON.stringify({ confirmed: true }),
 });
+export const startProjectTransferExport = (id) => api(
+  `/api/projects/${encodeURIComponent(id)}/transfer-exports`,
+  { method: 'POST', body: '{}' },
+);
+export const startProjectTransferImport = (file) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api('/api/project-transfers/imports', { method: 'POST', body: form });
+};
+export const getProjectTransferJob = (jobId) => api(
+  `/api/project-transfers/jobs/${encodeURIComponent(jobId)}`,
+);
+export const downloadProjectTransfer = async (jobId) => requireOkResponse(await authFetch(
+  `/api/project-transfers/jobs/${encodeURIComponent(jobId)}/download`,
+));
 export const importPackageWorkspace = (file) => {
   const form = new FormData();
   form.append('file', file);

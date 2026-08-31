@@ -216,6 +216,7 @@ import { validateTermTables } from './workflow/term-table.js';
 import { getProjectPackageDataSourceSelection } from './workflow/package-data-source-selection.js';
 import { registerAcceptanceRoutes } from './acceptance/routes.js';
 import { takeAcceptanceFault } from './acceptance/faults.js';
+import { registerProjectTransferRoutes } from './projects/project-transfer-routes.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
   `semantic_binding_ignored:${projectId}:${revision}`;
@@ -600,6 +601,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     registerAgentLlmConfigRoutes(r);
     registerProjectMcpManagementRoutes(r);
     registerAcceptanceRoutes(r);
+    registerProjectTransferRoutes(r);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
 
