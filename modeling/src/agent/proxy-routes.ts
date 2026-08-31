@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { config } from '../config.js';
+import { MaterialPurposeReviewStore } from '../documents/material-purpose-review.js';
 import { canReadProject, canWriteProject } from '../projects/repo.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 import { takeAcceptanceFault } from '../acceptance/faults.js';
@@ -34,6 +35,18 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
     const acceptanceFailure = takeAcceptanceMessageFailure(request, reply, id);
     if (acceptanceFailure) return acceptanceFailure;
+    if ((request.body as any)?.purposeReviewCompleted === true) {
+      const progress = new MaterialPurposeReviewStore().progress(id);
+      if (!progress.allConfirmed) {
+        return reply.code(409).send({
+          code: 'MATERIAL_PURPOSE_REVIEW_REQUIRED',
+          error: progress.totalCount
+            ? `仍有 ${progress.pendingCount} 份资料用途尚未确认`
+            : '当前没有已完成用途确认的资料批次',
+          purposeReviewProgress: progress,
+        });
+      }
+    }
     return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/steer`, 'POST', id);
   });
 

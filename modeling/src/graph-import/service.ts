@@ -31,6 +31,10 @@ import type {
 } from './types.js';
 import { normalizeGraphImportMapping, validateGraphImportMapping } from './validator.js';
 import { inferGraphImportColumns } from './value-inference.js';
+import {
+  assertGraphImportPlanNotEmpty,
+  assertGraphImportWriteResult,
+} from './errors.js';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_ROWS_PER_SHEET = 50_000;
@@ -262,16 +266,24 @@ export async function validateGraphImportUpload(input: {
   owner: string;
   uploadId: string;
   mapping: GraphImportMapping;
-}): Promise<{ packageVersion: string; packageRevisionOid: string; counts: GraphImportCounts; warnings: string[] }> {
+}): Promise<{
+  packageVersion: string;
+  packageRevisionOid: string;
+  counts: GraphImportCounts;
+  warnings: string[];
+  objectDiagnostics: NonNullable<GraphImportValidation['objectDiagnostics']>;
+}> {
   const packageContext = await loadPackage(input.projectId);
   const { upload, tables } = parseUpload(input);
   assertUploadRevision(upload.packageRevisionOid, packageContext);
   const plan = validateGraphImportMapping(packageContext.schema, tables, input.mapping);
+  assertGraphImportPlanNotEmpty(plan);
   return {
     packageVersion: packageContext.version,
     packageRevisionOid: packageContext.revisionOid,
     counts: counts(plan),
     warnings: plan.warnings,
+    objectDiagnostics: plan.objectDiagnostics ?? [],
   };
 }
 
@@ -293,6 +305,7 @@ async function runGraphImportTask(input: {
   const { request, run, plan, connection, writer, signal } = input;
   try {
     if (signal.aborted) throw signal.reason;
+    assertGraphImportPlanNotEmpty(plan);
     const packageContext = await loadPackage(request.projectId);
     assertUploadRevision(run.packageRevisionOid, packageContext);
     if (signal.aborted) throw signal.reason;
@@ -301,6 +314,7 @@ async function runGraphImportTask(input: {
       userName: request.owner,
       signal,
     });
+    assertGraphImportWriteResult(plan, result);
     if (signal.aborted) throw signal.reason;
     finishGraphImportRun(run.id, {
       status: 'done',
@@ -364,6 +378,7 @@ export async function executeGraphImport(input: {
   assertUploadRevision(upload.packageRevisionOid, packageContext);
   const mapping = normalizeGraphImportMapping(input.mapping);
   const plan = validateGraphImportMapping(packageContext.schema, tables, mapping);
+  assertGraphImportPlanNotEmpty(plan);
   const inspectIsolation = dependencies.inspectIsolation ?? inspectGraphIsolation;
   if (input.replaceExisting !== true) {
     let existing: GraphIsolationCounts;

@@ -260,6 +260,11 @@ export const specObjectSchema = (candidateIds: string[] = []) => Type.Object({
       documentId: Type.Optional(Type.String()),
       table: Type.String({ description: '数据字典中的真实 Sheet 名' }),
       columns: Type.Optional(Type.Array(Type.String())),
+      role: Type.Optional(Type.Union([Type.Literal('primary'), Type.Literal('extension')])),
+      fieldBindings: Type.Optional(Type.Array(Type.Object({
+        fieldKey: KeyString(),
+        sourceColumn: Type.String(),
+      }))),
     }),
     Type.Object({
       kind: Type.Literal('document'),

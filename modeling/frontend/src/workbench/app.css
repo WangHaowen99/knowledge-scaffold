@@ -335,6 +335,37 @@
 .wb-doc-directives { display: grid; gap: var(--s-2); margin-bottom: var(--s-4); }
 .wb-doc-directives > label:first-child { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); color: var(--c-muted); font-size: var(--t-xs); }
 .wb-doc-directives select { width: 142px; min-height: 30px; padding: 3px 24px 3px 7px; font-size: var(--t-xs); }
+.wb-purpose-review { display: grid; gap: var(--s-3); margin-bottom: var(--s-4); padding-block: var(--s-3); border-block: 1px solid var(--c-line-soft); }
+.wb-purpose-review-head, .wb-purpose-file, .wb-purpose-sheet { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+.wb-purpose-review-head b { font-size: var(--t-sm); }
+.wb-purpose-review-head .pill { padding: 2px 6px; font-size: var(--t-xs); }
+.wb-purpose-review-head .pill.ok { background: var(--c-ok-bg); color: var(--c-ok); }
+.wb-purpose-review-head .pill.wait { background: var(--c-wait-bg); color: var(--c-wait); }
+.wb-purpose-file > span, .wb-purpose-sheet > span { min-width: 0; overflow: hidden; color: var(--c-muted); font-size: var(--t-xs); text-overflow: ellipsis; white-space: nowrap; }
+.wb-purpose-file select, .wb-purpose-sheet select { width: 132px; min-width: 112px; min-height: 30px; font-size: var(--t-xs); }
+.wb-purpose-sheets { display: grid; gap: var(--s-2); }
+.wb-purpose-sheet { display: grid; grid-template-columns: minmax(0, 1fr) 132px; }
+.wb-purpose-sheet small { grid-column: 1 / -1; color: var(--c-faint); font-size: var(--t-xs); overflow-wrap: anywhere; }
+.wb-purpose-error { padding: var(--s-2); border-left: 2px solid var(--c-stale); background: var(--c-stale-bg); color: var(--c-stale); font-size: var(--t-xs); overflow-wrap: anywhere; }
+.wb-purpose-review > .btn { width: 100%; }
+.wb-purpose-batch-intro { margin-bottom: var(--s-3); color: var(--c-muted); font-size: var(--t-sm); line-height: 1.5; }
+.wb-purpose-batch-files { display: grid; gap: 0; margin: 0 0 var(--s-4); padding: 0; list-style: none; }
+.wb-purpose-batch-files li {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-3);
+  min-height: 34px; padding: var(--s-2) 0; border-top: 1px solid var(--c-line-soft);
+}
+.wb-purpose-batch-files li:last-child { border-bottom: 1px solid var(--c-line-soft); }
+.wb-purpose-batch-files span { min-width: 0; overflow: hidden; color: var(--c-ink-2); text-overflow: ellipsis; white-space: nowrap; }
+.wb-purpose-batch-result { display: grid; justify-items: end; gap: 2px; }
+.wb-purpose-batch-result small { color: var(--c-faint); font-size: var(--t-xs); white-space: nowrap; }
+.wb-purpose-batch-files b {
+  max-width: 124px; padding: 2px 6px; overflow: hidden; border-radius: var(--r-sm);
+  background: var(--c-ok-bg); color: var(--c-ok); font-size: var(--t-xs); font-weight: 600;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.wb-purpose-batch-files b.pending { background: var(--c-wait-bg); color: var(--c-wait); }
+.wb-purpose-batch .btn-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.wb-purpose-batch .btn { min-width: 0; }
 .wb-create-file { padding: var(--s-2) 0; border-bottom: 1px solid var(--c-line-soft); }
 .wb-create-file .wb-material-directives { padding-left: 19px; }
 
@@ -811,6 +842,8 @@
   .wb-doc { padding: var(--s-4); font-size: var(--t-md); }
   .wb-doc-layout { grid-template-columns: 1fr; }
   .wb-doc-refs { position: static; }
+  .wb-purpose-sheet { grid-template-columns: minmax(0, 1fr) minmax(112px, 42%); }
+  .wb-purpose-sheet select { width: 100%; }
   .wb-eval-runs { grid-template-columns: 1fr; }
   .wb-eval-field-grid { grid-template-columns: 1fr; }
   .wb-eval-round-list { border-right: 0; border-bottom: 1px solid var(--c-line); padding: 0 0 var(--s-3); }

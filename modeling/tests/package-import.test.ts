@@ -105,7 +105,16 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   })), [{
     key: 'Customer',
     title: '客户',
-    sourceRefs: [{ kind: 'table', table: 'customer_table' }],
+    sourceRefs: [{
+      kind: 'table',
+      table: 'customer_table',
+      role: 'primary',
+      columns: ['customer_id', 'name'],
+      fieldBindings: [
+        { fieldKey: 'customer_id', sourceColumn: 'customer_id' },
+        { fieldKey: 'name', sourceColumn: 'name' },
+      ],
+    }],
     primaryKey: ['customer_id'],
     fields: [['customer_id', '客户编号', 'string', true], ['name', '客户名称', 'string', false]],
   }]);

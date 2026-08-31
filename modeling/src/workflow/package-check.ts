@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { parse as parseYaml } from 'yaml';
 
 import { getDb, nowIso } from '../db/index.js';
 import { findObjectDataMappingProblems } from './data-mapping.js';
@@ -25,7 +26,13 @@ import {
 } from './package-contract.js';
 import { packageMappingResource } from './package-data-source.js';
 import { validateMermaidSource } from './mermaid-source-contract.js';
-import { sourceRefsFor, tableSourceFor, tableSourcesFor } from './source-references.js';
+import {
+  sourceRefsFor,
+  tableFieldBindingsFor,
+  tableSourceFor,
+  tableSourceRoleFor,
+  tableSourcesFor,
+} from './source-references.js';
 import { duplicateScriptEntrypoints, normalizeCompetencyQuestion, questionsMatch } from './spec-validation.js';
 import type { PackageFiles } from './package-render.js';
 import { validateGeneratedScriptSafety } from './script-safety.js';
@@ -235,11 +242,6 @@ export function runRuleChecks(
         `对象「${o.title || o.key}」没有绑定 Sheet 或文档，可能是外部输入或专家定义对象`,
         `请专家确认对象 ${o.key} 是否为运行时输入；如需查数，再补充来源表或文档`);
     }
-    if (tableSourcesFor(o).length > 1) {
-      add('警告', '多表映射待确认', o.key,
-        `对象「${o.title || o.key}」同时引用 ${tableSourcesFor(o).map((source) => source.table).join('、')}，字段按来源表并集校验`,
-        `请专家确认对象 ${o.key} 是否应拆分，或在数据源绑定阶段核对多表关联关系`);
-    }
     if (!o.fields?.length) add('错误', '对象不完整', o.key, `对象「${o.title || o.key}」没有任何字段`, `为对象 ${o.key} 补充字段清单`);
     if ((o.description ?? '').trim().length < 10) add('提示', '描述过简', o.key, `对象「${o.title || o.key}」描述过短，可能造成消费歧义`, `为对象 ${o.key} 补充业务描述（用途、口径、边界）`);
     for (const pk of o.primaryKey ?? []) {
@@ -324,6 +326,30 @@ function parseFrontmatter(md: string): Record<string, string> | null {
     out[m[1]] = v;
   }
   return out;
+}
+
+function parseStructuredFrontmatter(md: string): Record<string, unknown> | null {
+  if (!md.startsWith('---\n')) return null;
+  const end = md.indexOf('\n---', 4);
+  if (end < 0) return null;
+  try {
+    const parsed = parseYaml(md.slice(4, end));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 // 提取 markdown 索引表格的第一列（跳过表头与分隔行、以及「—」占位）
@@ -482,9 +508,11 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   }
 
   const objectIndex = files['objects/index.md'];
+  let objectIndexEntries: Map<string, { key: string; sourceSheet: string }> | undefined;
   if (objectIndex?.trim()) {
     try {
       const entries = parseObjectIndex(objectIndex);
+      objectIndexEntries = entries;
       for (const object of spec.objects ?? []) {
         if (!entries.has(object.key)) {
           add('错误', '对象索引非法', 'objects/index.md', `objects/index.md 缺少对象 ${object.key} 及其来源 Sheet`);
@@ -508,9 +536,59 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
         const specObjects = new Map((spec.objects ?? []).map((object) => [mappingObjectName(object), object]));
         for (const object of spec.objects ?? []) {
           const objectKey = mappingObjectName(object);
+          const tableSources = tableSourcesFor(object);
           const tableSource = tableSourceFor(object);
+          const objectPath = `objects/${object.key}.md`;
+          const detail = parseStructuredFrontmatter(files[objectPath] ?? '');
+          const detailSources = stringValues(detail?.sources);
+          const detailMapping = recordValue(detail?.mapping);
+          const indexSource = objectIndexEntries?.get(object.key)?.sourceSheet;
+          const mappingExists = Object.hasOwn(j.objects, objectKey);
+          const runtimeMapping = recordValue(j.objects[objectKey]);
           if (tableSource && !Object.hasOwn(j.objects, objectKey)) {
             add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 声明了来源表「${tableSource.table}」，但最终 mapping 中缺少 object key ${objectKey}`);
+          }
+          if (tableSource) {
+            const expectedIndexSource = tableSources.map((source) => source.table).join('、');
+            if (indexSource && indexSource !== expectedIndexSource) {
+              add('错误', '对象来源不一致', 'objects/index.md', `对象 ${object.key} 的来源 Sheet 应为「${expectedIndexSource}」（当前：「${indexSource}」）`);
+            }
+            const missingDetailSources = tableSources.filter((source) => (
+              !detailSources.includes(`表格：${source.table}`)
+            ));
+            if (missingDetailSources.length) {
+              add('错误', '对象来源不一致', objectPath, `对象 ${object.key} 声明了来源表「${missingDetailSources.map((source) => source.table).join('、')}」，但详情 sources 未包含对应表格来源`);
+            }
+            if (!runtimeMapping
+              || detailMapping?.provider_alias !== runtimeMapping.provider_alias
+              || detailMapping?.resource !== runtimeMapping.resource) {
+              add('错误', '对象来源不一致', objectPath, `对象 ${object.key} 的详情 mapping 与结构化数据映射不一致`);
+            }
+            const expectedRuntimeSources = tableSources.map((source) => ({
+              role: tableSourceRoleFor(object, source),
+              resource: source.table,
+              ...(source.documentId ? { document_id: source.documentId } : {}),
+              fields: Object.fromEntries(tableFieldBindingsFor(object, source).map((binding) => [
+                binding.fieldKey,
+                { source_column: binding.sourceColumn },
+              ])),
+            }));
+            if (runtimeMapping
+              && (runtimeMapping.sources !== undefined || tableSources.length > 1)
+              && JSON.stringify(runtimeMapping.sources) !== JSON.stringify(expectedRuntimeSources)) {
+              add('错误', '对象来源不一致', 'mappings/object-data-mappings.json', `对象 ${object.key} 的逐来源 Sheet、角色或字段映射与对象规格不一致`);
+            }
+          } else {
+            const detailTableSources = detailSources.filter((source) => source.startsWith('表格：'));
+            const indexClaimsTable = Boolean(indexSource && indexSource !== '—' && !indexSource.startsWith('文档：'));
+            if (detailTableSources.length || detailMapping || mappingExists || indexClaimsTable) {
+              add(
+                '错误',
+                '对象来源不一致',
+                objectPath,
+                `对象 ${object.key} 未声明结构化表格来源，但对象详情、对象目录或运行时 mapping 声明了可实例化来源`,
+              );
+            }
           }
         }
         for (const [objectKey, v] of Object.entries<any>(j.objects)) {

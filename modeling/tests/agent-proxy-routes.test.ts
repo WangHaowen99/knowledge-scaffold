@@ -11,11 +11,20 @@ import Fastify from 'fastify';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-agent-proxy-'));
 
-const [{ registerAgentProxyRoutes }, { createProject }, outbox, { ensureAgentProjectEventKinds }] = await Promise.all([
+const [
+  { registerAgentProxyRoutes },
+  { createProject },
+  outbox,
+  { ensureAgentProjectEventKinds },
+  { DocumentRevisionRepo },
+  { MaterialPurposeReviewStore },
+] = await Promise.all([
   import('../src/agent/proxy-routes.js'),
   import('../src/projects/repo.js'),
   import('../src/agent/project-event-outbox.js'),
   import('../src/db/index.js'),
+  import('../src/documents/repo.js'),
+  import('../src/documents/material-purpose-review.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -98,6 +107,75 @@ test('问题恢复动作按项目和问题身份结构化转发', async (t) => {
   });
   assert.equal(denied.statusCode, 404);
   assert.equal(calls.length, 1);
+});
+
+test('只有后端确认全部资料用途后才允许续跑正常建模轮次', async (t) => {
+  const project = createProject({ owner: 'alice', name: '用途确认边界' });
+  const documents = new DocumentRevisionRepo();
+  const reviews = new MaterialPurposeReviewStore();
+  const firstDocument = documents.insert({
+    projectId: project.id,
+    filename: '业务说明一.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '# 业务说明一',
+  }).document;
+  const secondDocument = documents.insert({
+    projectId: project.id,
+    filename: '业务说明二.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '# 业务说明二',
+  }).document;
+  reviews.ensure(firstDocument);
+  reviews.ensure(secondDocument);
+  const firstSuggestion = reviews.suggest(firstDocument, {
+    purpose: 'evidence',
+    sheets: [],
+    suggestedBy: 'agent',
+  });
+  const secondSuggestion = reviews.suggest(secondDocument, {
+    purpose: 'evidence',
+    sheets: [],
+    suggestedBy: 'agent',
+  });
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify({ mode: 'new_run', run: { id: 'run-purpose' } }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const app = appFor(t);
+  const request = {
+    method: 'POST' as const,
+    url: `/api/projects/${project.id}/agent/steer`,
+    payload: { message: '全部用途已确认，请继续建模', purposeReviewCompleted: true },
+  };
+
+  reviews.confirm(firstDocument, {
+    purpose: 'evidence',
+    sheets: firstSuggestion.sheetSuggestions,
+    confirmedBy: 'alice',
+    expectedDirectiveRevision: firstDocument.directiveRevision ?? 0,
+  });
+  const blocked = await app.inject(request);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().purposeReviewProgress.pendingCount, 1);
+  assert.equal(calls.length, 0);
+
+  reviews.confirm(secondDocument, {
+    purpose: 'evidence',
+    sheets: secondSuggestion.sheetSuggestions,
+    confirmedBy: 'alice',
+    expectedDirectiveRevision: secondDocument.directiveRevision ?? 0,
+  });
+  const continued = await app.inject(request);
+
+  assert.equal(continued.statusCode, 202, continued.body);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), request.payload);
 });
 
 test('交互回答始终带项目作用域转发', async (t) => {
