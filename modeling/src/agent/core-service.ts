@@ -8081,6 +8081,8 @@ function workingContentRevision(baseRevision: string, files: Record<string, stri
   return `sha256:${hash.digest('hex')}`;
 }
 
-function scriptSourceHash(source: string | Uint8Array): string {
-  return `sha256:${createHash('sha256').update('agent-script-test-v1\0').update(source).digest('hex')}`;
+export function scriptSourceHash(source: string | Uint8Array): string {
+  const text = typeof source === 'string' ? source : Buffer.from(source).toString('utf8');
+  const canonical = `${text.replace(/\r\n?/gu, '\n').replace(/\n+$/u, '')}\n`;
+  return `sha256:${createHash('sha256').update('agent-script-test-v1\0').update(canonical).digest('hex')}`;
 }
