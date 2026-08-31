@@ -762,20 +762,35 @@ class AskRail(BaseInterruptRail):
 
 def _claims_missing_capability(text: str) -> bool:
     normalized = re.sub(r"\s+", "", str(text or "")).lower()
-    return any(phrase in normalized for phrase in (
+    phrases = (
         "环境无法", "当前环境不能", "平台无法", "无法补写", "人工补写",
         "等待管理员", "管理员处理", "系统不支持", "没有权限修改",
-    ))
+    )
+    for phrase in phrases:
+        if phrase in normalized:
+            return True
+    return False
 
 
 def _is_business_ambiguity(question: str, evidence: list[Any]) -> bool:
     normalized = re.sub(r"\s+", "", str(question or ""))
-    has_subject = any(word in normalized for word in (
+    subject_words = (
         "字段", "主键", "口径", "业务含义", "对应关系", "范围", "优先级",
-    ))
-    has_ambiguity = any(word in normalized for word in (
+    )
+    has_subject = False
+    for word in subject_words:
+        if word in normalized:
+            has_subject = True
+            break
+
+    ambiguity_words = (
         "歧义", "无法确定", "多个", "二选一", "请选择", "哪一个", "哪种",
-    ))
+    )
+    has_ambiguity = False
+    for word in ambiguity_words:
+        if word in normalized:
+            has_ambiguity = True
+            break
     return has_subject and has_ambiguity and any(str(item).strip() for item in evidence)
 
 
@@ -1435,11 +1450,17 @@ class ActivityRail(AgentRail):
                 and isinstance(plan, Mapping):
             self._emit("change_plan", {"plan": dict(plan)})
         if name in {"stage_change_set", "get_change_set_receipt", "discard_change_set"}:
-            change_set = result.get("change_set") if isinstance(result.get("change_set"), Mapping) else {
-                key: result.get(key) for key in (
-                    "change_set_id", "plan_id", "mutation_id", "status", "working_revision"
-                ) if result.get(key) is not None
-            }
+            raw_change_set = result.get("change_set")
+            if isinstance(raw_change_set, Mapping):
+                change_set = raw_change_set
+            else:
+                change_set = {}
+                for key in (
+                    "change_set_id", "plan_id", "mutation_id", "status", "working_revision",
+                ):
+                    value = result.get(key)
+                    if value is not None:
+                        change_set[key] = value
             if change_set:
                 self._emit("change_set", {"changeSet": dict(change_set)})
         self._emit("progress", {

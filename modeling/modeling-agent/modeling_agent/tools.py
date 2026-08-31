@@ -2568,27 +2568,36 @@ def core_tool_specs_for_phase(
     """
     legacy_profile = tool_profile == "legacy-v1"
     if not phase:
-        return tuple(
-            spec for spec in CORE_TOOL_SPECS
-            if legacy_profile or spec.name not in LEGACY_TOOL_ALIASES
-        )
+        selected_specs: list[ToolSpec] = []
+        for spec in CORE_TOOL_SPECS:
+            if legacy_profile or spec.name not in LEGACY_TOOL_ALIASES:
+                selected_specs.append(spec)
+        return tuple(selected_specs)
     allowed_domain = phase in {"knowledge", "increment"}
     allowed_fusion = phase == "increment"
     allowed_evaluation = phase in {"validation", "evaluation", "release"}
-    return tuple(
-        spec for spec in CORE_TOOL_SPECS
-        if (legacy_profile or spec.name not in LEGACY_TOOL_ALIASES)
-        and (spec.name in required_tools
-        or ((spec.name not in DOMAIN_PHASE_TOOLS or allowed_domain)
-        and (spec.name not in FUSION_PHASE_TOOLS or allowed_fusion)
-        and (spec.name not in EVALUATION_PHASE_TOOLS or allowed_evaluation)
-        and (spec.name not in SCRIPT_PHASE_TOOLS or phase in {"validation", "increment"})))
-        and not (
+    selected_specs = []
+    for spec in CORE_TOOL_SPECS:
+        if not legacy_profile and spec.name in LEGACY_TOOL_ALIASES:
+            continue
+        required_for_recovery = spec.name in required_tools
+        allowed_for_phase = (
+            (spec.name not in DOMAIN_PHASE_TOOLS or allowed_domain)
+            and (spec.name not in FUSION_PHASE_TOOLS or allowed_fusion)
+            and (spec.name not in EVALUATION_PHASE_TOOLS or allowed_evaluation)
+            and (spec.name not in SCRIPT_PHASE_TOOLS or phase in {"validation", "increment"})
+        )
+        if not required_for_recovery and not allowed_for_phase:
+            continue
+        direct_change_forbidden = (
             not legacy_profile
             and phase in {"knowledge", "increment"}
             and spec.name in CHANGE_SET_DIRECT_ACTION_TOOLS | {"write_file", "delete_file"}
         )
-    )
+        if direct_change_forbidden:
+            continue
+        selected_specs.append(spec)
+    return tuple(selected_specs)
 
 
 def build_core_tools(context: ToolContext, names: set[str]) -> list[Tool]:
