@@ -521,6 +521,8 @@ class ToolBoundaryRail(AgentRail):
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
+        if not result:
+            return
         if not ctx.extra.get("_tool_receipt_replayed") and not ctx.extra.get("_stable_read_replayed"):
             _remember_stable_read(
                 self._context.stable_read_cache,
@@ -1096,6 +1098,15 @@ class ReleaseConfirmationRail(BaseInterruptRail):
                 },
             ))
         answer = user_input if isinstance(user_input, Mapping) else {"approved": False, "feedback": str(user_input)}
+        if answer.get("action") == "settled_release":
+            settled = answer.get("result")
+            result = dict(settled) if isinstance(settled, Mapping) else {
+                "error": "RELEASE_RESULT_MISSING",
+                "reason": "正式发布结果没有恢复",
+                "instruction": "保持当前版本不变，重新发起发布确认。",
+                "display": {"text": "正式发布结果需要重新确认"},
+            }
+            return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
         if answer.get("action") == "interject":
             self._context.interjection_reply_required = True
             return self.reject(tool_result=json.dumps({
@@ -1274,6 +1285,8 @@ class ActivityRail(AgentRail):
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         name = _tool_name(ctx)
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
+        if not result:
+            return
         if result.get("suppressTrace") is True:
             return
         display = result.get("display") if isinstance(result.get("display"), dict) else {}

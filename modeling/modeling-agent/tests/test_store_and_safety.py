@@ -295,6 +295,32 @@ async def test_script_test_never_replays_receipt_across_candidate_source_changes
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_tool_boundary_does_not_save_empty_interrupted_result() -> None:
+    saved: list[tuple[str, str, dict, dict]] = []
+    context = ToolContext(
+        project_id="project_release",
+        run_id="run_release",
+        token="",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        tool_receipt_save=lambda name, call_id, arguments, result: saved.append(
+            (name, call_id, arguments, result)
+        ),
+    )
+    rail = ToolBoundaryRail(context)
+    interrupted = _tool_call_context(
+        "request_release",
+        {"summary": "确认正式发布"},
+        "call_release_1",
+        {},
+    )
+
+    await rail.after_tool_call(interrupted)  # type: ignore[arg-type]
+
+    assert saved == []
+
+
 def test_pending_interaction_is_reflected_only_by_project_state(tmp_path: Path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     try:

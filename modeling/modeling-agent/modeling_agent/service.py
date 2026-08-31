@@ -1035,11 +1035,18 @@ class AgentService:
             interaction.kind == "confirmation"
             and answer.get("action") != "interject"
         )
+        direct_release = (
+            interaction.kind == "release_confirmation"
+            and answer.get("action") != "interject"
+            and answer.get("approved") is True
+            and answer.get("coverage_confirmed") is True
+        )
         restored_confirmation = (
             direct_confirmation
             and interaction.tool_call_id.startswith(INTERJECTION_CONTINUATION_PREFIX)
         )
         confirmation_result: dict[str, Any] | None = None
+        release_result: dict[str, Any] | None = None
         if direct_confirmation:
             approved = answer.get("approved") is True
             validation_receipt = interaction.payload.get("validationReceipt")
@@ -1111,6 +1118,43 @@ class AgentService:
                     status=409,
                     details={"next": confirmation_result.get("next") or []},
                 )
+        if direct_release:
+            release_result = await self._gateway.call(
+                project_id=project_id,
+                run_id=interaction.run_id,
+                token=token,
+                tool="request_release",
+                arguments={
+                    "summary": str(
+                        interaction.payload.get("summary")
+                        or interaction.payload.get("question")
+                        or "确认正式发布"
+                    ),
+                    "version": str(
+                        answer.get("version")
+                        or interaction.payload.get("version")
+                        or ""
+                    ),
+                    "review": dict(answer),
+                },
+            )
+            if release_result.get("error"):
+                reason = str(release_result.get("reason") or "正式发布没有成功完成")
+                error_code = str(release_result.get("error") or "RELEASE_FAILED")
+                failed_interaction = self.store.set_interaction_submission_error(interaction.id, reason)
+                if failed_interaction is not None:
+                    self.events.publish(
+                        interaction.project_id,
+                        interaction.run_id,
+                        "interaction",
+                        failed_interaction.public(),
+                    )
+                raise AgentRuntimeError(
+                    error_code,
+                    reason,
+                    status=409,
+                    details={"next": release_result.get("next") or []},
+                )
         self.store.answer_interaction(interaction_id, answer)
         run = self.store.require_run(interaction.run_id)
         self.events.publish(run.project_id, run.id, "interaction", {"id": interaction.id, "status": "answered", "answer": answer})
@@ -1144,6 +1188,24 @@ class AgentService:
                 {interaction.tool_call_id: {
                     "action": "settled_confirmation",
                     "result": confirmation_result or {},
+                    "continuation": prompt,
+                }},
+                required_tools=required_tools,
+                autonomous_seed=True,
+            )
+        if direct_release and release_result is not None:
+            version = str(release_result.get("version") or answer.get("version") or "")
+            prompt = (
+                f"用户已确认真实用例覆盖，服务端已完成稳定版本 {version} 的正式发布。\n"
+                f"发布结果：{json.dumps(release_result, ensure_ascii=False)}\n"
+                "只依据该发布结果说明已完成的版本和交付状态；不要再次发起发布确认。"
+            )
+            return await self._resume(
+                run,
+                token,
+                {interaction.tool_call_id: {
+                    "action": "settled_release",
+                    "result": release_result,
                     "continuation": prompt,
                 }},
                 required_tools=required_tools,

@@ -3788,6 +3788,147 @@ async def test_release_confirmation_uses_core_preflight_and_focuses_evaluation()
     assert decision.request.metadata["testcaseCount"] == 5
 
 
+async def test_release_confirmation_executes_core_release_once_after_approval(settings) -> None:
+    model = ScriptedModel(
+        [
+            [ToolTurn("request_release", {"summary": "确认 19 条真实用例并发布"})],
+            [],
+        ],
+        final="1.0.0 已正式发布。",
+    )
+    gateway = FakeGateway({
+        "release_preflight": {
+            "ready": True,
+            "version": "1.0.0",
+            "testcase_count": 19,
+            "questions": ["月度排产安全校验"],
+        },
+        "request_release": {
+            "released": True,
+            "version": "1.0.0",
+            "revision": "stable-revision",
+            "display": {"text": "1.0.0 已正式发布"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_release",
+            token="token_1",
+            message="发布 1.0.0",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_release")
+        assert interaction is not None and interaction.kind == "release_confirmation"
+        assert runtime.store.tool_receipt(
+            started["id"],
+            interaction.tool_call_id,
+            "request_release",
+            {"summary": "确认 19 条真实用例并发布"},
+        ) is None
+        assert not any(
+            event.kind == "tool"
+            and event.payload.get("name") == "request_release"
+            and event.payload.get("phase") == "completed"
+            for event in runtime.store.events_after("project_release", 0)
+        )
+
+        await runtime.answer_interaction(
+            project_id="project_release",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "approved": True,
+                "coverage_confirmed": True,
+                "version": "1.0.0",
+            },
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        assert runtime.store.pending_interaction("project_release") is None
+        release_calls = [call for call in gateway.calls if call["tool"] == "request_release"]
+        assert len(release_calls) == 1
+        assert release_calls[0]["arguments"]["version"] == "1.0.0"
+        assert release_calls[0]["arguments"]["review"]["coverage_confirmed"] is True
+        receipt = runtime.store.tool_receipt(
+            started["id"],
+            interaction.tool_call_id,
+            "request_release",
+            {"summary": "确认 19 条真实用例并发布"},
+        )
+        assert receipt is not None and receipt["released"] is True
+        completed_release_events = [
+            event
+            for event in runtime.store.events_after("project_release", 0)
+            if event.kind == "tool"
+            and event.payload.get("name") == "request_release"
+            and event.payload.get("phase") == "completed"
+        ]
+        assert len(completed_release_events) == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_release_failure_keeps_confirmation_pending(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("request_release", {"summary": "确认 19 条真实用例并发布"})],
+    ])
+    gateway = FakeGateway({
+        "release_preflight": {
+            "ready": True,
+            "version": "1.0.0",
+            "testcase_count": 19,
+        },
+        "request_release": {
+            "error": "RELEASE_WRITE_FAILED",
+            "reason": "稳定版本写入失败",
+            "next": ["保持候选版本并重试"],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_release_failure",
+            token="token_1",
+            message="发布 1.0.0",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_release_failure")
+        assert interaction is not None
+
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime.answer_interaction(
+                project_id="project_release_failure",
+                interaction_id=interaction.id,
+                token="token_2",
+                answer={
+                    "approved": True,
+                    "coverage_confirmed": True,
+                    "version": "1.0.0",
+                },
+            )
+
+        assert raised.value.code == "RELEASE_WRITE_FAILED"
+        assert runtime.store.require_run(started["id"]).status == "waiting"
+        pending = runtime.store.pending_interaction("project_release_failure")
+        assert pending is not None and pending.id == interaction.id
+        assert pending.payload["lastSubmissionError"] == "稳定版本写入失败"
+        assert [call["tool"] for call in gateway.calls].count("request_release") == 1
+        assert runtime.store.tool_receipt(
+            started["id"],
+            interaction.tool_call_id,
+            "request_release",
+            {"summary": "确认 19 条真实用例并发布"},
+        ) is None
+    finally:
+        await runtime.shutdown()
+
+
 async def test_declined_release_cannot_reopen_confirmation_in_same_run() -> None:
     gateway = FakeGateway({
         "release_preflight": {
