@@ -219,15 +219,48 @@ export function studioGraphEdgeStyle(edge, nodesById = new Map()) {
 const sessions = new Map();
 
 export function readStudioSession(projectId) {
-  if (!sessions.has(projectId)) sessions.set(projectId, createStudioSession());
+  if (!sessions.has(projectId)) {
+    sessions.set(projectId, {
+      ...createStudioSession(),
+      entryDrafts: readPersistedStudioDrafts(projectId),
+    });
+  }
   return sessions.get(projectId);
 }
 
 export function writeStudioSession(projectId, session) {
   sessions.set(projectId, session);
+  persistStudioDrafts(projectId, session?.entryDrafts);
   return session;
 }
 
 export function resetStudioSession(projectId) {
   sessions.delete(projectId);
+  if (typeof globalThis.sessionStorage !== 'undefined') {
+    globalThis.sessionStorage.removeItem(studioDraftStorageKey(projectId));
+  }
+}
+
+function readPersistedStudioDrafts(projectId) {
+  if (typeof globalThis.sessionStorage === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(globalThis.sessionStorage.getItem(studioDraftStorageKey(projectId)) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistStudioDrafts(projectId, drafts) {
+  if (typeof globalThis.sessionStorage === 'undefined') return;
+  const key = studioDraftStorageKey(projectId);
+  if (!drafts || !Object.keys(drafts).length) {
+    globalThis.sessionStorage.removeItem(key);
+    return;
+  }
+  globalThis.sessionStorage.setItem(key, JSON.stringify(drafts));
+}
+
+function studioDraftStorageKey(projectId) {
+  return `modeling:studio-entry-drafts:${String(projectId || '')}`;
 }

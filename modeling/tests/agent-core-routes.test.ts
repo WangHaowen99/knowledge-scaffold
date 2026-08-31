@@ -726,6 +726,7 @@ test('候选工作区显式接续、分组层级和退回状态都由 core 确�
   }, nextRunId);
   assert.equal(preflight.statusCode, 200, preflight.body);
   const candidateId = preflight.json().candidate_revision;
+  const confirmedBeforeRejection = await getPackageArtifactStore().current(project.id);
 
   const rejected = await tool(app, project.id, 'request_confirmation_rejected', {
     review: { approved: false, feedback: '补充例外条件' },
@@ -733,6 +734,13 @@ test('候选工作区显式接续、分组层级和退回状态都由 core 确�
   assert.equal(rejected.statusCode, 200, rejected.body);
   assert.equal(rejected.json().candidateRevision, candidateId);
   assert.equal((await getPackageArtifactStore().getCandidateRevision(project.id, candidateId)).status, 'rejected');
+  assert.equal(
+    (await getPackageArtifactStore().current(project.id))?.revision.oid,
+    confirmedBeforeRejection?.revision.oid,
+  );
+  const returnedDraft = await tool(app, project.id, 'read_file', { path: '.modeling/goal.md' }, nextRunId);
+  assert.equal(returnedDraft.statusCode, 200, returnedDraft.body);
+  assert.match(returnedDraft.json().content, /安全库存判断目标/u);
 
   const adjusted = await tool(app, project.id, 'write_file', {
     path: '.modeling/goal.md',

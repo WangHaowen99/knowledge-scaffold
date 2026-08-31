@@ -69,7 +69,7 @@ import { renderDiagramFiles } from '../flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from '../flowchart/file-path.js';
 import { importMermaidFlowchart, MermaidImportError } from '../flowchart/mermaid-import.js';
 import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js';
-import { canReadProject, getProject } from '../projects/repo.js';
+import { canReadProject, canWriteProject, getProject } from '../projects/repo.js';
 import { listNodes } from '../workflow/engine.js';
 import { findKnowledgeEvidenceProblems } from '../workflow/knowledge-evidence.js';
 import * as m3repo from '../workflow/m3-repo.js';
@@ -749,19 +749,21 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   };
 
   app.get('/api/projects/:id/session', async (req, reply) => {
-    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    const project = readableProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     return readProjectSession(project, { advance: false });
   });
 
   app.post('/api/projects/:id/session/advance', async (req, reply) => {
-    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    const project = readableProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
-    return readProjectSession(project, { advance: true });
+    return readProjectSession(project, {
+      advance: canWriteProject(project.id, req.user!.username),
+    });
   });
 
   app.get('/api/projects/:id/ai-construction/messages', async (req, reply) => {
-    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    const project = readableProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     const query = (req.query ?? {}) as { beforeSeq?: string; limit?: string };
     const beforeSeq = query.beforeSeq === undefined ? undefined : Number(query.beforeSeq);
@@ -774,7 +776,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   });
 
   app.get('/api/projects/:id/ai-construction', async (req, reply) => {
-    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    const project = readableProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     return { aiConstruction: graph.snapshot(project.id) };
   });
