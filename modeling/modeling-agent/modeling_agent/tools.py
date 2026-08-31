@@ -1033,7 +1033,13 @@ CORE_TOOL_SPECS = (
         {"round_id": STRING},
         display="正在读取评测结果",
     ),
-    ToolSpec("query_eval_db", "只读查询评测数据源。", {"sql": STRING}, ("sql",), display="正在查询评测数据"),
+    ToolSpec(
+        "query_eval_db",
+        "仅用于诊断 modeling 服务端可直连的 MySQL 评测库镜像，要求服务端已配置评测库直连地址；参数必须是一条只读 SQL。不要用它查询项目数据源配置，也不要用它访问 Neo4j 或仅由 NL2SQL 服务内部管理的数据连接。",
+        {"sql": STRING},
+        ("sql",),
+        display="正在查询评测库镜像",
+    ),
 )
 
 PROJECT_STATE_TOOL_SPECS = (

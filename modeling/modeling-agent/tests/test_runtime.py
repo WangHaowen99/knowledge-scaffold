@@ -67,6 +67,49 @@ async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() ->
     assert latest_results != specific_results
 
 
+async def test_query_eval_db_description_is_mysql_mirror_diagnostic() -> None:
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "query_eval_db")
+
+    assert "MySQL 评测库镜像" in spec.description
+    assert "项目数据源配置" in spec.description
+    assert "Neo4j" in spec.description
+    assert "NL2SQL 服务内部管理" in spec.description
+    assert "query_eval_db 只用于诊断" in _system_prompt()
+    assert "get_project_state 返回的 dataSource 摘要" in _system_prompt()
+
+
+async def test_project_state_includes_core_data_source_summary(settings) -> None:
+    gateway = FakeGateway({
+        "project_data_source_status": {
+            "configured": True,
+            "mode": "connection",
+            "provider": "neo4j",
+            "workspaceLinked": True,
+            "ontologyLinked": True,
+            "neo4j": {
+                "workspaceIsolationConfigured": True,
+                "ontologyIsolationConfigured": True,
+                "graphDatabaseConfigured": True,
+            },
+        },
+        "gate_status": {"pass": True, "blockers": []},
+    })
+    runtime = service(settings, ScriptedModel([]), gateway)
+    await runtime.startup()
+    try:
+        state = await runtime._state_for_agent(LiveRun(  # noqa: SLF001
+            run_id="run_data_source_state",
+            project_id="project_data_source_state",
+            token="token_1",
+        ))
+
+        assert state["dataSource"]["provider"] == "neo4j"
+        assert state["dataSource"]["neo4j"]["workspaceIsolationConfigured"] is True
+        assert gateway.calls[0]["tool"] == "project_data_source_status"
+    finally:
+        await runtime.shutdown()
+
+
 async def test_repeated_completed_evaluation_read_calls_core_once_and_emits_one_trace(settings) -> None:
     model = ScriptedModel(
         [
