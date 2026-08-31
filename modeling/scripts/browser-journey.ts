@@ -74,6 +74,15 @@ export function isGuidedInteractionResponse(url: string, method: string) {
   }
 }
 
+export function isGuidedPlanResponse(url: string, method: string) {
+  if (method.toUpperCase() !== 'POST') return false;
+  try {
+    return /\/api\/projects\/[^/]+\/agent\/change-plans\/[^/]+\/respond$/.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function shouldRecoverGuidedRepairConflict(status: number, code?: string) {
   return status === 409 && (code === 'REVISION_CONFLICT' || code === 'busy');
 }
@@ -590,10 +599,41 @@ async function answerGuidedInteraction(page: Page) {
 }
 
 async function approveVisiblePlan(page: Page) {
-  const button = await visibleEnabledButton(page, /^批准并开始$/);
+  const buttons = await page.$$('button') as ElementHandle<HTMLButtonElement>[];
+  let button: ElementHandle<HTMLButtonElement> | undefined;
+  for (let index = buttons.length - 1; index >= 0; index -= 1) {
+    const candidate = buttons[index]!;
+    const state = await candidate.evaluate((node) => ({
+      disabled: node.disabled,
+      text: (node.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    }));
+    const box = await candidate.boundingBox();
+    if (!state.disabled && box && box.width > 0 && box.height > 0 && state.text === '批准并开始') {
+      button = candidate;
+      break;
+    }
+  }
+  for (const candidate of buttons) if (candidate !== button) await candidate.dispose();
   if (!button) return false;
+  const requestPromise = page.waitForRequest((request) => (
+    isGuidedPlanResponse(request.url(), request.method())
+  ), { timeout: 3_000 });
+  const responsePromise = page.waitForResponse((response) => (
+    isGuidedPlanResponse(response.url(), response.request().method())
+  ), { timeout: 15 * 60_000 });
   await button.click();
   await button.dispose();
+  try {
+    await requestPromise;
+  } catch {
+    void responsePromise.catch(() => undefined);
+    throw new Error('批准按钮没有发起计划响应请求，请检查最新计划卡状态');
+  }
+  const response = await responsePromise;
+  if (!response.ok()) {
+    const payload = await response.json().catch(() => ({})) as { error?: string; code?: string };
+    throw new Error(payload.error || payload.code || `批准建模计划失败（${response.status()}）`);
+  }
   return true;
 }
 

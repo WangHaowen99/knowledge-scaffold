@@ -9,6 +9,7 @@ import {
   guidedConstructionIsProcessing,
   GUIDED_PENDING_INTERACTION_SELECTOR,
   isGuidedInteractionResponse,
+  isGuidedPlanResponse,
   shouldRecoverGuidedRepairConflict,
   nextGuidedIdleIterations,
   matchesJourneyControlText,
@@ -42,6 +43,21 @@ test('提交结构化待办时只等待当前交互的响应请求', () => {
   ), true);
   assert.equal(isGuidedInteractionResponse(
     'http://example.test/api/projects/p1/session',
+    'POST',
+  ), false);
+});
+
+test('批准建模计划只等待当前计划卡的响应请求', () => {
+  assert.equal(isGuidedPlanResponse(
+    'http://example.test/api/projects/p1/agent/change-plans/plan-1/respond',
+    'POST',
+  ), true);
+  assert.equal(isGuidedPlanResponse(
+    'http://example.test/api/projects/p1/agent/change-plans/plan-1/respond',
+    'GET',
+  ), false);
+  assert.equal(isGuidedPlanResponse(
+    'http://example.test/api/projects/p1/agent/interactions/i1/answer',
     'POST',
   ), false);
 });
