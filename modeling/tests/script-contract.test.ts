@@ -94,6 +94,48 @@ def main(payload):
 `)), /argparse|CLI/);
 });
 
+test('boolean action must match the contract and argparse declaration', () => {
+  const source = (argument: string) => `
+import argparse
+import json
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    ${argument}
+    args = parser.parse_args()
+    print(json.dumps({"result": {"enabled": args.enabled, "input": args.input_json}}))
+
+if __name__ == "__main__":
+    main()
+`;
+  const withBoolean = (parameter: SpecScript['parameters'][number], sourceCode: string): SpecScript => ({
+    ...script(sourceCode),
+    parameters: [script(sourceCode).parameters[0], parameter],
+  });
+  const storeTrue = {
+    name: 'enabled', flag: '--enabled', type: 'boolean', required: false,
+    defaultValue: false, action: 'store_true' as const,
+  };
+
+  assert.doesNotThrow(() => validateGeneratedScriptSafety(withBoolean(
+    storeTrue,
+    source('parser.add_argument("--enabled", action="store_true")'),
+  )));
+  assert.throws(() => validateGeneratedScriptSafety(withBoolean(
+    { ...storeTrue, action: undefined },
+    source('parser.add_argument("--enabled", action="store_true")'),
+  )), /普通 boolean 契约.*store_true/u);
+  assert.throws(() => validateGeneratedScriptSafety(withBoolean(
+    storeTrue,
+    source('parser.add_argument("--enabled", type=str)'),
+  )), /源码 action.*store_true.*不一致/u);
+  assert.throws(() => validateGeneratedScriptSafety(withBoolean(
+    { ...storeTrue, defaultValue: true },
+    source('parser.add_argument("--enabled", action="store_true")'),
+  )), /默认值.*store_true.*不一致/u);
+});
+
 test('generated scripts reject invalid Python syntax before creating a candidate revision', () => {
   assert.throws(() => validateGeneratedScriptSafety(script(`
 import argparse

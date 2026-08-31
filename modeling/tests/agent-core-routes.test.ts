@@ -63,6 +63,7 @@ function tool(app: ReturnType<typeof Fastify>, projectId: string, name: string,
 async function usePassingScriptSandbox(t: test.TestContext) {
   const socketPath = join(mkdtempSync(join(tmpdir(), 'modeling-agent-gate-sandbox-')), 'jiuwenbox.sock');
   const previousSocketPath = config.jiuwenboxSocketPath;
+  const executedCases: Array<Array<{ argv: string[]; expected: unknown }>> = [];
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
@@ -71,6 +72,7 @@ async function usePassingScriptSandbox(t: test.TestContext) {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         const encodedCases = body.command.at(-1);
         const cases = JSON.parse(Buffer.from(encodedCases, 'base64').toString('utf8'));
+        executedCases.push(cases);
         const results = cases.map((item: Record<string, unknown>, index: number) => ({
           index, passed: true, actual: item.expected, expected: item.expected,
         }));
@@ -97,6 +99,7 @@ async function usePassingScriptSandbox(t: test.TestContext) {
     config.jiuwenboxSocketPath = previousSocketPath;
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
+  return executedCases;
 }
 
 function confirmationReceipt(preflight: { json(): any }) {
@@ -2608,6 +2611,10 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
     parameters: [
       { name: 'amount', flag: '--amount', type: 'number', required: true },
       { name: 'days', flag: '--days', type: 'number', required: true },
+      {
+        name: 'strict', flag: '--strict', type: 'boolean', required: false,
+        action: 'store_true',
+      },
     ],
     outputs: [{ key: 'load_rate', type: 'number' }],
     boundaries: ['运行天数必须大于零', '缺少必填输入时明确失败'],
@@ -2644,6 +2651,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--amount", required=True, type=float)
     parser.add_argument("--days", required=True, type=float)
+    parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
     if args.days <= 0:
         raise ValueError("days must be greater than zero")
@@ -2667,17 +2675,22 @@ if __name__ == "__main__":
   assert.equal(beforeTest.json().pass, false);
   assert.ok(beforeTest.json().blockers.some((item: string) => /隔离测试/u.test(item)));
 
-  await usePassingScriptSandbox(t);
+  const executedCases = await usePassingScriptSandbox(t);
   const tested = await tool(app, project.id, 'run_script_test', {
     script: 'scripts/calculate_device_load.py',
     cases: [
-      { input: { amount: 80, days: 2 }, expected: { load_rate: 40 } },
-      { input: { amount: 0, days: 1 }, expected: { load_rate: 0 } },
-      { input: { amount: 80, days: 0 }, expected: { error: 'days must be greater than zero' } },
+      { input: { amount: 80, days: 2, strict: true }, expected: { load_rate: 40 } },
+      { input: { amount: 0, days: 1, strict: false }, expected: { load_rate: 0 } },
+      { input: { amount: 80, days: 0, strict: false }, expected: { error: 'days must be greater than zero' } },
     ],
   }, nextRunId);
   assert.equal(tested.statusCode, 200, tested.body);
   assert.equal(tested.json().failed, 0);
+  assert.deepEqual(executedCases[0].map((item) => item.argv), [
+    ['--amount', '80.0', '--days', '2.0', '--strict'],
+    ['--amount', '0.0', '--days', '1.0'],
+    ['--amount', '80.0', '--days', '0.0'],
+  ]);
   const deterministicReady = await tool(app, project.id, 'gate_status', {
     gate: 'deterministic_confirmed',
   }, nextRunId);
@@ -2691,7 +2704,6 @@ test('脚本候选的预检和最终确认都只接受当前源码的沙箱通�
   await confirmGoal(app, project.id, runId);
   await confirmProcess(app, project.id, runId);
   await confirmKnowledge(app, project.id, runId);
-  const group = { id: 'script-current-source', tier: 'script', title: '当前脚本实现' };
   const source = (expression: string) => `import argparse
 import json
 
@@ -2702,27 +2714,93 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--value", required=True, type=int)
     args = parser.parse_args()
-    print(json.dumps(run(args.value)))
+    print(json.dumps({"value": run(args.value)}))
 
 if __name__ == "__main__":
     main()
 `;
-  const writeScript = (source: string) => tool(app, project.id, 'write_file', {
-    path: 'scripts/stock.py',
-    content: source,
-    change_group: group.id,
-    evidence: ['user-decision:script-current-source'],
+  const artifacts = getPackageArtifactStore();
+  const current = await artifacts.current(project.id);
+  assert.ok(current);
+  const seeded = await artifacts.savePackageVersion(project.id, {
+    expectedRevision: current.revision.oid,
+    spec: {
+      ...structuredClone(current.spec),
+      operations: [...current.spec.operations, {
+        key: 'calculate_stock', title: '计算库存', description: '按输入值计算库存。',
+        inputs: [{ param: 'value', type: 'number', required: true }],
+        outputs: [{ field: 'value', type: 'number' }],
+        flow: ['读取输入', '计算库存'], relatedObjects: [],
+        script: { key: 'stock', required: true },
+      }],
+      scripts: [{
+        key: 'stock', title: '库存计算脚本', description: '执行确定性库存计算。',
+        boundOperation: 'calculate_stock', runtime: 'python', entrypoint: 'stock.py', timeoutSeconds: 30,
+        parameters: [{ name: 'value', flag: '--value', type: 'integer', required: true }],
+        outputs: [{ key: 'value', type: 'number' }],
+        boundaries: ['只处理显式输入'], evidence: ['user-decision:script-current-source'],
+        sourceCode: source('value'),
+      }],
+    },
+    coverage: current.coverage,
+    note: '建立已发布脚本基线',
+    action: {
+      cause: 'test.script_baseline_seeded', summary: '建立已发布脚本基线',
+      actorKind: 'system', actorName: 'test',
+    },
+  });
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  assert.equal(claimed.json().supersededChanges, 0);
+
+  const operation = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'operation:calculate_stock',
   }, runId);
-  const preflight = () => tool(app, project.id, 'request_confirmation_preflight', {
-    summary: group.title,
-    change_groups: [group],
+  assert.equal(operation.statusCode, 200, operation.body);
+  const defined = await tool(app, project.id, 'define_script_contract', {
+    expected_revision: operation.json().working_revision,
+    mutation_id: 'define-stock-contract-v2',
+    reason: '定义已发布库存脚本的当前执行契约',
+    script_key: 'stock', title: '库存计算脚本', description: '执行确定性库存计算。',
+    operation_id: 'operation:calculate_stock',
+    expected_operation_hash: operation.json().resource.operation_contract_hash,
+    entrypoint: 'stock.py', timeout_seconds: 30,
+    parameters: [{ name: 'value', flag: '--value', type: 'integer', required: true }],
+    outputs: [{ key: 'value', type: 'number' }],
+    boundaries: ['只处理显式输入'], evidence: ['user-decision:script-current-source'],
   }, runId);
+  assert.equal(defined.statusCode, 200, defined.body);
+  let workingRevision = defined.json().working_revision as string;
+  let mutation = 0;
+  const writeScript = async (sourceCode: string) => {
+    mutation += 1;
+    const staged = await tool(app, project.id, 'stage_script_source', {
+      script_key: 'stock', expected_revision: workingRevision,
+      expected_contract_hash: defined.json().contract_hash,
+      mutation_id: `stage-stock-source-${mutation}`,
+      reason: '更新当前库存脚本源码', source_code: sourceCode,
+    }, runId);
+    if (staged.statusCode === 200) workingRevision = staged.json().working_revision;
+    return staged;
+  };
+  let currentGroups: any[] = [];
+  const preflight = async () => {
+    const prepared = await tool(app, project.id, 'prepare_confirmation_groups', {}, runId);
+    assert.equal(prepared.statusCode, 200, prepared.body);
+    currentGroups = prepared.json().change_groups;
+    assert.equal(currentGroups.length, 1);
+    assert.deepEqual(currentGroups[0].impact, ['scripts/stock.py']);
+    return tool(app, project.id, 'request_confirmation_preflight', {
+      summary: '确认当前脚本实现', change_groups: currentGroups,
+    }, runId);
+  };
   const runTest = () => tool(app, project.id, 'run_script_test', {
     script: 'scripts/stock.py',
-    cases: [{ input: { value: 2 }, expected: 4 }],
+    cases: [{ input: { value: 2 }, expected: { value: 4 } }],
   }, runId);
 
   assert.equal((await writeScript(source('value * 2'))).statusCode, 200);
+  assert.notEqual(workingRevision, seeded.revision.oid);
   const neverTested = await preflight();
   assert.equal(neverTested.statusCode, 409, neverTested.body);
   assert.equal(neverTested.json().code, 'SCRIPT_TEST_REQUIRED');
@@ -2743,20 +2821,26 @@ if __name__ == "__main__":
   getDb().prepare('DELETE FROM agent_script_test_receipts WHERE project_id = ? AND run_id = ?')
     .run(project.id, runId);
   const blockedConfirmation = await tool(app, project.id, 'request_confirmation', {
-    summary: group.title,
-    change_groups: [group],
+    summary: '确认当前脚本实现',
+    change_groups: currentGroups,
     ...confirmationReceipt(ready),
-    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
+    review: {
+      approved: true, review_mode: 'full',
+      selected_groups: currentGroups.map((group: any) => group.id),
+    },
   }, runId);
   assert.equal(blockedConfirmation.statusCode, 409, blockedConfirmation.body);
   assert.equal(blockedConfirmation.json().code, 'SCRIPT_TEST_REQUIRED');
 
   assert.equal((await runTest()).statusCode, 200);
   const confirmed = await tool(app, project.id, 'request_confirmation', {
-    summary: group.title,
-    change_groups: [group],
+    summary: '确认当前脚本实现',
+    change_groups: currentGroups,
     ...confirmationReceipt(ready),
-    review: { approved: true, review_mode: 'full', selected_groups: [group.id] },
+    review: {
+      approved: true, review_mode: 'full',
+      selected_groups: currentGroups.map((group: any) => group.id),
+    },
   }, runId);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
 });

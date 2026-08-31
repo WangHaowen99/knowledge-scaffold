@@ -583,6 +583,9 @@ test('脚本工具先固化契约，再原子生成源码、说明、索引和�
     parameters: [{
       name: 'input_json', flag: '--input-json', type: 'string', required: true,
       description: 'Synthetic JSON input',
+    }, {
+      name: 'verbose', flag: '--verbose', type: 'boolean', required: false,
+      action: 'store_true', description: 'Enable verbose output',
     }],
     outputs: [{ key: 'result', type: 'object', description: 'Structured synthetic result' }],
     boundaries: ['只处理显式传入的合成 JSON，不访问网络或本地文件'],
@@ -590,6 +593,8 @@ test('脚本工具先固化契约，再原子生成源码、说明、索引和�
   });
   assert.equal(defined.statusCode, 200, defined.body);
   assert.equal(defined.json().candidate, false);
+  assert.equal(defined.json().contract.parameters[1].action, 'store_true');
+  assert.equal(defined.json().contract.parameters[1].default_value, false);
 
   const directSourceWrite = await tool(app, project.id, 'write_file', {
     path: 'scripts/render_synthetic_summary.py',
@@ -606,7 +611,7 @@ test('脚本工具先固化契约，再原子生成源码、说明、索引和�
     expected_contract_hash: defined.json().contract_hash,
     mutation_id: 'synthetic-stage-placeholder-v1',
     reason: 'The placeholder must be rejected',
-    source_code: `import argparse\nimport json\n\nparser = argparse.ArgumentParser()\nparser.add_argument("--input-json", required=True)\nparser.parse_args()\nprint(json.dumps({"result": "hello world"}))\n`,
+    source_code: `import argparse\nimport json\n\nparser = argparse.ArgumentParser()\nparser.add_argument("--input-json", required=True)\nparser.add_argument("--verbose", action="store_true")\nparser.parse_args()\nprint(json.dumps({"result": "hello world"}))\n`,
   });
   assert.equal(placeholderSource.statusCode, 400, placeholderSource.body);
   assert.equal(placeholderSource.json().code, 'INVALID_DOMAIN_PAYLOAD');
@@ -618,6 +623,7 @@ import json
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-json", required=True)
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     payload = json.loads(args.input_json)
     result = {"received_keys": sorted(payload.keys())}

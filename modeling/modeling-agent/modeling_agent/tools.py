@@ -1714,6 +1714,7 @@ CORE_TOOL_SPECS = (
                         {"type": "string"}, {"type": "number"}, {"type": "boolean"},
                     ]},
                     "description": STRING, "multiple": {"type": "boolean"},
+                    "action": {"type": "string", "enum": ["store_true", "store_false"]},
                 }, "required": ["name", "flag", "type", "required"], "additionalProperties": False,
             }},
             "outputs": {"type": "array", "minItems": 1, "maxItems": 100, "items": {
@@ -1756,8 +1757,17 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "run_script_test",
-        "在 JiuwenBox 中运行脚本契约测试。",
-        {"script": STRING, "cases": {"type": "array", "items": {"type": "object"}}},
+        "按知识包 Markdown 中的脚本契约拼装 CLI 参数，再在 JiuwenBox 中从脚本入口启动子进程。"
+        "每个用例只能提供业务 input 和完整 expected；不接受 function 或 argv，不能直调 Python 内部函数。",
+        {"script": STRING, "cases": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "input": {"type": "object", "additionalProperties": True},
+                "expected": {},
+            },
+            "required": ["input", "expected"],
+            "additionalProperties": False,
+        }}},
         ("script", "cases"),
         False,
         "正在沙箱中测试脚本",

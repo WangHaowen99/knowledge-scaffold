@@ -359,6 +359,7 @@ export const specScriptSchema = () => Type.Object({
     name: Type.String(), flag: Type.String(), type: Type.String(), required: Type.Boolean(),
     defaultValue: Type.Optional(Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
     description: Type.Optional(Type.String()), multiple: Type.Optional(Type.Boolean()),
+    action: Type.Optional(Type.Union([Type.Literal('store_true'), Type.Literal('store_false')])),
   })),
   outputs: Type.Array(Type.Object({
     key: Type.String(), type: Type.String(), description: Type.Optional(Type.String()),

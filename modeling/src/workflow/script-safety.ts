@@ -124,6 +124,45 @@ export function validateGeneratedScriptExecutionContract(script: SpecScript): vo
     if (!source.includes(flag)) {
       throw new Error(`脚本执行契约检查失败（${script.key}）：源码未声明参数 ${flag}`);
     }
+    const parameterType = String(parameter.type || 'string').trim().toLowerCase();
+    const booleanParameter = parameterType === 'bool' || parameterType === 'boolean';
+    const action = String(parameter.action || '').trim().toLowerCase();
+    if (action && !booleanParameter) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 的 action 只适用于 boolean 参数`);
+    }
+    if (action && parameter.required) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 使用 ${action} 时不能设为必填`);
+    }
+    if (action && parameter.multiple) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 使用 ${action} 时不能设为多值`);
+    }
+    const actionDefault = action === 'store_true' ? false : action === 'store_false' ? true : undefined;
+    if (actionDefault !== undefined
+      && parameter.defaultValue !== undefined
+      && parameter.defaultValue !== actionDefault) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：${flag} 的默认值与 ${action} 不一致`,
+      );
+    }
+    const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const declaration = source.match(new RegExp(
+      `\\.add_argument\\s*\\(\\s*["']${escapedFlag}["'][\\s\\S]*?\\)`,
+      'u',
+    ))?.[0] ?? '';
+    if (!declaration) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 未通过 argparse 声明`);
+    }
+    const sourceAction = declaration.match(/\baction\s*=\s*["'](store_true|store_false)["']/u)?.[1] ?? '';
+    if (action && sourceAction !== action) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：${flag} 的源码 action 与契约 ${action} 不一致`,
+      );
+    }
+    if (!action && booleanParameter && sourceAction) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：${flag} 是普通 boolean 契约，源码不能使用 ${sourceAction}`,
+      );
+    }
   }
   for (const output of script.outputs) {
     if (!source.includes(`"${output.key}"`) && !source.includes(`'${output.key}'`)) {

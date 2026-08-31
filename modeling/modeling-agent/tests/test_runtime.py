@@ -88,6 +88,18 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert {"run_evaluation", "compile_package_fusion_plan"} <= intake_recovery
 
 
+async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypasses() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    parameter_schema = specs["define_script_contract"].properties["parameters"]["items"]
+    assert parameter_schema["properties"]["action"]["enum"] == ["store_true", "store_false"]
+
+    case_schema = specs["run_script_test"].properties["cases"]["items"]
+    assert case_schema["required"] == ["input", "expected"]
+    assert case_schema["additionalProperties"] is False
+    assert "argv" not in case_schema["properties"]
+    assert "function" not in case_schema["properties"]
+
+
 async def test_phase_transition_forces_model_boundary_before_using_stale_tools() -> None:
     context = ToolContext(
         project_id="project_phase_refresh",

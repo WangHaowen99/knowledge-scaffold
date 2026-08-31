@@ -77,7 +77,11 @@ import {
   validateMermaidSource,
 } from '../workflow/mermaid-source-contract.js';
 import { previewOntologyObjectMutation } from '../workflow/ontology-object-model-mutation.js';
-import { parseRenderedPackageFiles } from '../workflow/package-import.js';
+import {
+  parseRenderedPackageFiles,
+  parseRenderedScriptFile,
+} from '../workflow/package-import.js';
+import { buildScriptCliArguments } from '../workflow/script-cli.js';
 import {
   isReleaseCandidateVersion,
   nextValidationCandidateVersion,
@@ -3986,9 +3990,8 @@ export class AgentCoreService {
     reason: string,
   ) {
     assertMaterialEvidenceReferences(workspace.project_id, evidence);
-    const detailPath = renderedPaths.find((path) => !path.endsWith('/index.md')
+    const declaredDetailPath = renderedPaths.find((path) => !path.endsWith('/index.md')
       && path !== 'mappings/object-data-mappings.json');
-    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
     let compiledSpec: PackageSpec;
     let rendered: Record<string, string>;
     try {
@@ -4003,6 +4006,12 @@ export class AgentCoreService {
       );
     }
     const current = await this.overlay(workspace);
+    const detailPath = renderedPaths.find((path) => (
+      !path.endsWith('/index.md')
+      && path !== 'mappings/object-data-mappings.json'
+      && rendered[path] !== current.files[path]
+    )) ?? declaredDetailPath;
+    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
     await this.discardFrozenCandidate(workspace, context, '领域结构继续修改，旧确认请求已失效');
     this.db.exec('SAVEPOINT agent_domain_compile');
     try {
@@ -6289,13 +6298,43 @@ export class AgentCoreService {
           409,
         );
       }
-      return item as Record<string, unknown>;
+      if (Object.hasOwn(item, 'argv') || Object.hasOwn(item, 'function')) {
+        throw new AgentCoreError(
+          'CONTRACT_REQUIRED',
+          `第 ${index + 1} 个脚本用例不能提供 argv 或 function`,
+          ['只提供业务 input 和完整 expected；平台会按 Markdown 契约拼装 CLI'],
+          409,
+        );
+      }
+      const caseInput = (item as Record<string, unknown>).input;
+      if (!caseInput || typeof caseInput !== 'object' || Array.isArray(caseInput)) {
+        throw new AgentCoreError(
+          'CONTRACT_REQUIRED',
+          `第 ${index + 1} 个脚本用例的 input 必须是业务参数对象`,
+          ['按脚本 Markdown 契约中的参数 key 提供输入'],
+          409,
+        );
+      }
+      return item as { input: Record<string, unknown>; expected: unknown };
     });
-    const source = await this.scriptSourceForTest(workspace, script);
+    const artifact = await this.scriptArtifactForTest(workspace, script);
+    const cliCases = cases.map((item, index) => {
+      const built = buildScriptCliArguments(artifact.contract.parameters, item.input);
+      if (built.missing.length || built.invalid.length) {
+        throw new AgentCoreError(
+          'CONTRACT_REQUIRED',
+          `第 ${index + 1} 个脚本用例无法按 Markdown 契约拼装 CLI`,
+          ['补齐必填参数并移除未知或类型不正确的输入'],
+          409,
+          { missing: built.missing, invalid: built.invalid },
+        );
+      }
+      return { argv: built.args, expected: item.expected };
+    });
     const result = await runScriptCasesInJiuwenbox({
         runId: workspace.run_id,
-        source,
-        cases,
+        source: artifact.source,
+        cases: cliCases,
       }).catch((error: unknown) => {
       throw new AgentCoreError(
         'SANDBOX_UNAVAILABLE',
@@ -6305,7 +6344,7 @@ export class AgentCoreService {
         { technical: error instanceof Error ? error.message : String(error) },
       );
     });
-    const sourceHash = scriptSourceHash(source);
+    const sourceHash = scriptSourceHash(artifact.source);
     if (result.failed === 0) {
       this.db.prepare(`INSERT INTO agent_script_test_receipts (
         project_id, run_id, script_path, source_hash, total, passed, failed, sandbox, created_at
@@ -6336,7 +6375,11 @@ export class AgentCoreService {
     };
   }
 
-  private async scriptSourceForTest(workspace: WorkspaceRow, script: string): Promise<string> {
+  private async scriptArtifactForTest(
+    workspace: WorkspaceRow,
+    script: string,
+  ): Promise<{ source: string; contract: SpecScript }> {
+    let files: Record<string, string>;
     if (workspace.candidate_id) {
       const candidate = await this.artifacts.getCandidateRevision(
         workspace.project_id,
@@ -6347,10 +6390,41 @@ export class AgentCoreService {
           workspace.project_id,
           candidate.id,
         );
-        if (script in preview.files) return preview.files[script];
+        files = preview.files;
+      } else {
+        files = (await this.overlay(workspace)).files;
       }
+    } else {
+      files = (await this.overlay(workspace)).files;
     }
-    return (await this.readFile(workspace, { path: script })).content;
+    const source = files[script];
+    if (source === undefined) {
+      throw new AgentCoreError('FILE_NOT_FOUND', `脚本文件不存在：${script}`, ['调用 list_dir 核对脚本路径'], 404);
+    }
+    const parseErrors: string[] = [];
+    const contracts = Object.keys(files)
+      .filter((path) => /^scripts\/[^/]+\.md$/u.test(path) && path !== 'scripts/index.md')
+      .flatMap((path) => {
+        try {
+          return [parseRenderedScriptFile(path, files[path], files)];
+        } catch (error) {
+          parseErrors.push(error instanceof Error ? error.message : `脚本契约无法解析：${path}`);
+          return [];
+        }
+      })
+      .filter((contract) => `scripts/${contract.entrypoint}` === script);
+    if (contracts.length !== 1) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        contracts.length
+          ? `脚本文件绑定了多个 Markdown 契约：${script}`
+          : `没有找到脚本文件对应的 Markdown 契约：${script}`,
+        ['确认 scripts/*.md 的 entrypoint 与待测脚本一致'],
+        409,
+        parseErrors.length ? { parseErrors } : undefined,
+      );
+    }
+    return { source, contract: contracts[0] };
   }
 
   private assertScriptCandidatesTested(
@@ -6781,6 +6855,52 @@ function scriptContractFromArgs(
         400,
       );
     }
+    const parameterType = text(parameter.type, `parameters[${index}].type`);
+    const rawAction = optionalInputText(parameter.action)?.toLowerCase();
+    if (rawAction && rawAction !== 'store_true' && rawAction !== 'store_false') {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].action 只能是 store_true 或 store_false`,
+        [],
+        400,
+      );
+    }
+    const action: SpecScript['parameters'][number]['action'] =
+      rawAction === 'store_true' || rawAction === 'store_false' ? rawAction : undefined;
+    if (action && !['bool', 'boolean'].includes(parameterType.toLowerCase())) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].action 只适用于 boolean 参数`,
+        [],
+        400,
+      );
+    }
+    if (action && parameter.required) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}] 使用 ${action} 时不能设为必填`,
+        [],
+        400,
+      );
+    }
+    if (action && parameter.multiple === true) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}] 使用 ${action} 时不能同时设为多值`,
+        [],
+        400,
+      );
+    }
+    const actionDefault = action === 'store_true' ? false : action === 'store_false' ? true : undefined;
+    if (actionDefault !== undefined && defaultValue !== undefined && defaultValue !== actionDefault) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}] 的默认值与 ${action} 语义不一致`,
+        [`${action} 的默认值必须为 ${String(actionDefault)}`],
+        400,
+      );
+    }
+    const normalizedDefaultValue = defaultValue ?? actionDefault;
     if (parameter.multiple !== undefined && typeof parameter.multiple !== 'boolean') {
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
@@ -6792,13 +6912,14 @@ function scriptContractFromArgs(
     return {
       name: domainKey(parameter.name, `脚本参数 parameters[${index}]`),
       flag,
-      type: text(parameter.type, `parameters[${index}].type`),
+      type: parameterType,
       required: parameter.required,
-      ...(defaultValue !== undefined ? { defaultValue } : {}),
+      ...(normalizedDefaultValue !== undefined ? { defaultValue: normalizedDefaultValue } : {}),
       ...(optionalInputText(parameter.description)
         ? { description: optionalInputText(parameter.description) }
         : {}),
       ...(parameter.multiple === true ? { multiple: true } : {}),
+      ...(action ? { action } : {}),
     };
   });
   assertUniqueDomainKeys(parameters.map((parameter) => parameter.name), '脚本参数 key');
@@ -6846,6 +6967,7 @@ function scriptContractView(contract: Omit<SpecScript, 'sourceCode'>) {
       ...(parameter.defaultValue !== undefined ? { default_value: parameter.defaultValue } : {}),
       ...(parameter.description ? { description: parameter.description } : {}),
       ...(parameter.multiple ? { multiple: true } : {}),
+      ...(parameter.action ? { action: parameter.action } : {}),
     })),
     outputs: contract.outputs,
     boundaries: contract.boundaries,
