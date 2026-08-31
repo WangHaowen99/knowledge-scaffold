@@ -13,7 +13,10 @@ import {
   reviewEvaluationOptimization, startEvaluation, updateEvaluationSuggestion, updateEvaluationTestcase,
 } from '../lib/api.js';
 
-const TABS = [['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果']];
+const TABS = [
+  ['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果'],
+  ['diagnose', '失败诊断'], ['optimize', '优化建议'],
+];
 const STATUS = { running: ['运行中', 'wait'], done: ['已完成', 'ok'], failed: ['运行失败', 'stale'] };
 const VERDICT = { pass: ['通过', 'ok'], partial: ['部分通过', 'wait'], fail: ['未通过', 'stale'], error: ['运行错误', 'stale'] };
 const KINDS = [
@@ -28,6 +31,8 @@ export default function EvaluationView() {
   const [tab, setTab] = useState('setup');
   const [facts, setFacts] = useState({ source: undefined, cases: undefined, rounds: undefined });
   const [round, setRound] = useState(null);
+  const [followup, setFollowup] = useState({ roundId: '', diagnoses: [], suggestions: [], loading: false, error: '' });
+  const [followupRefresh, setFollowupRefresh] = useState(0);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const loadFacts = useCallback(async () => {
@@ -49,13 +54,63 @@ export default function EvaluationView() {
     const timer = window.setInterval(() => { void loadFacts(); if (round?.round?.status === 'running') void openRound(round.round.id); }, 3000);
     return () => window.clearInterval(timer);
   }, [loadFacts, openRound, round?.round?.id, round?.round?.status]);
+  useEffect(() => {
+    if (!['diagnose', 'optimize'].includes(tab)) return undefined;
+    const roundId = round?.round?.id;
+    const terminal = ['done', 'failed'].includes(round?.round?.status);
+    if (!projectId || !roundId || !terminal) {
+      setFollowup({ roundId: roundId || '', diagnoses: [], suggestions: [], loading: false, error: '' });
+      return undefined;
+    }
+    let active = true;
+    setFollowup((old) => ({
+      roundId,
+      diagnoses: old.roundId === roundId ? old.diagnoses : [],
+      suggestions: old.roundId === roundId ? old.suggestions : [],
+      loading: true,
+      error: '',
+    }));
+    void (async () => {
+      try {
+        const [diagnosisData, suggestionData] = await Promise.all([
+          listEvaluationDiagnoses(projectId, roundId),
+          tab === 'optimize' ? listEvaluationSuggestions(projectId, roundId) : Promise.resolve(null),
+        ]);
+        if (!active) return;
+        setFollowup((old) => ({
+          roundId,
+          diagnoses: diagnosisData.diagnoses || [],
+          suggestions: suggestionData ? (suggestionData.suggestions || []) : (old.roundId === roundId ? old.suggestions : []),
+          loading: false,
+          error: '',
+        }));
+      } catch (cause) {
+        if (!active) return;
+        setFollowup((old) => ({ ...old, roundId, loading: false, error: cause.message || '评测后续信息读取失败' }));
+      }
+    })();
+    return () => { active = false; };
+  }, [followupRefresh, projectId, round?.round?.id, round?.round?.status, tab]);
   const official = useMemo(() => (facts.cases || []).filter((item) => item.source === 'manual'), [facts.cases]);
-  const counts = { cases: official.length, runs: facts.rounds?.length || 0 };
+  const currentFollowup = followup.roundId === round?.round?.id ? followup : { diagnoses: [], suggestions: [], loading: false, error: '' };
+  const counts = {
+    cases: official.length,
+    runs: facts.rounds?.length || 0,
+    diagnose: currentFollowup.diagnoses.length,
+    optimize: currentFollowup.suggestions.filter((item) => item.status === 'pending').length,
+  };
   const loading = facts.source === undefined || facts.cases === undefined || facts.rounds === undefined;
+  const followupTab = ['diagnose', 'optimize'].includes(tab);
+  const terminalRound = ['done', 'failed'].includes(round?.round?.status);
+  const refresh = () => {
+    void loadFacts();
+    if (round?.round?.id) void openRound(round.round.id);
+    if (followupTab) setFollowupRefresh((value) => value + 1);
+  };
   return <div className="wb-eval">
     <div className="tabs wb-eval-tabs" role="tablist" aria-label="评测与优化工作区">
       {TABS.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{label}{counts[id] > 0 && <span className="wb-eval-count">{counts[id]}</span>}</button>)}
-      <span className="spacer" /><button type="button" className="wb-eval-refresh" title="刷新" aria-label="刷新" onClick={() => { void loadFacts(); if (round?.round?.id) void openRound(round.round.id); }}><RefreshCw size={15} /></button>
+      <span className="spacer" /><button type="button" className="wb-eval-refresh" title="刷新" aria-label="刷新" onClick={refresh}><RefreshCw size={15} /></button>
     </div>
     {error && <div className="wb-eval-alert stale">{error}</div>}
     {notice && <div className="wb-eval-alert ok"><Check size={15} />{notice}</div>}
@@ -63,6 +118,11 @@ export default function EvaluationView() {
       {tab === 'setup' && <EvaluationSetupPanel projectId={projectId} onSaved={(source) => { setFacts((old) => ({ ...old, source })); setTab('cases'); }} />}
       {tab === 'cases' && <CasesPanel projectId={projectId} cases={official} suggestedCount={facts.cases.length - official.length} sourceReady={Boolean(facts.source)} onChanged={(cases) => setFacts((old) => ({ ...old, cases }))} onOpenSetup={() => setTab('setup')} onStarted={(roundId) => { setNotice('正式评测已创建，只会运行这一轮；进度和停止入口已显示。'); setTab('runs'); void loadFacts(); void openRound(roundId); }} />}
       {tab === 'runs' && <RunsPanel projectId={projectId} rounds={facts.rounds} current={round} onOpen={(id) => void openRound(id)} onChanged={() => { void loadFacts(); if (round?.round?.id) void openRound(round.round.id); }} />}
+      {followupTab && !terminalRound && <div className="wb-eval-empty">请先选择一个已结束的评测轮次 <button className="btn btn-sm" onClick={() => setTab('runs')}>查看结果</button></div>}
+      {followupTab && terminalRound && currentFollowup.loading && <div className="empty"><LoaderCircle className="wb-spin" size={18} /> 正在读取评测后续信息</div>}
+      {followupTab && terminalRound && currentFollowup.error && <div className="wb-eval-alert stale">{currentFollowup.error}</div>}
+      {tab === 'diagnose' && terminalRound && !currentFollowup.loading && !currentFollowup.error && <DiagnosisPanel projectId={projectId} round={round} diagnoses={currentFollowup.diagnoses} onChanged={(diagnoses) => setFollowup((old) => ({ ...old, roundId: round.round.id, diagnoses }))} onGoRuns={() => setTab('runs')} onAdvance={() => setTab('optimize')} />}
+      {tab === 'optimize' && terminalRound && !currentFollowup.loading && !currentFollowup.error && <OptimizationPanel projectId={projectId} round={round} diagnoses={currentFollowup.diagnoses} suggestions={currentFollowup.suggestions} onChanged={(suggestions) => setFollowup((old) => ({ ...old, roundId: round.round.id, suggestions }))} onGoDiagnose={() => setTab('diagnose')} />}
     </>}
   </div>;
 }

@@ -39,10 +39,14 @@ test('新工作台评测准备页复用完整数据源组件并保持 Agent 状�
   assert.match(workbenchEntry, /import ['"]\.\.\/styles\.css['"]/);
 });
 
-test('新工作台评测区只保留准备、真实用例和运行结果', () => {
-  assert.match(evaluationView, /const TABS = \[\['setup', '准备'\], \['cases', '真实用例'\], \['runs', '运行结果'\]\]/);
-  assert.doesNotMatch(evaluationView, /\['diagnose', '失败诊断'\]|\['optimize', '优化建议'\]/);
-  assert.doesNotMatch(evaluationView, /tab === 'diagnose'|tab === 'optimize'/);
+test('新工作台评测区接入失败诊断和优化建议', () => {
+  assert.match(evaluationView, /\['setup', '准备'\], \['cases', '真实用例'\], \['runs', '运行结果'\]/);
+  assert.match(evaluationView, /\['diagnose', '失败诊断'\], \['optimize', '优化建议'\]/);
+  assert.match(evaluationView, /listEvaluationDiagnoses\(projectId, roundId\)/);
+  assert.match(evaluationView, /listEvaluationSuggestions\(projectId, roundId\)/);
+  assert.match(evaluationView, /tab === 'diagnose'[\s\S]*<DiagnosisPanel/);
+  assert.match(evaluationView, /tab === 'optimize'[\s\S]*<OptimizationPanel/);
+  assert.match(evaluationView, /请先选择一个已结束的评测轮次/);
 });
 
 test('新工作台保存数据源只更新 Agent 评测事实', async () => {
