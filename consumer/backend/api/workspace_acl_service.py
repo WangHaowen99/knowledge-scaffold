@@ -7,7 +7,9 @@ layer and serializes validated references with the existing deletion flow.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import secrets
 from typing import Any, Callable, Iterable
 
 from api.auth.user_deletion import identity_reference_guard
@@ -15,12 +17,104 @@ from workspace.workspaces import (
     _normalize_workspace_members as normalize_workspace_members,
     _normalize_workspace_owner as normalize_workspace_owner,
     create_workspace,
+    get_workspace,
+    list_workspaces,
     update_workspace,
     update_workspace_authorized,
 )
 
 
 logger = logging.getLogger(__name__)
+
+_PERSONAL_WORKSPACE_ID_PREFIX = "home-"
+
+
+def _personal_workspace_id(username: str) -> str:
+    digest = hashlib.sha256(username.encode("utf-8")).hexdigest()[:20]
+    return "{}{}".format(_PERSONAL_WORKSPACE_ID_PREFIX, digest)
+
+
+def ensure_user_personal_workspace(
+    auth_backend: Any,
+    user: Any,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    if getattr(user, "role", None) == "admin":
+        return None, list_workspaces()
+
+    username = normalize_workspace_owner(getattr(user, "username", None))
+    if username is None:
+        raise ValueError("Authenticated user has no username")
+
+    with identity_reference_guard((username,)):
+        available_workspaces = list_workspaces()
+        base_workspace_id = _personal_workspace_id(username)
+        owned = [
+            workspace
+            for workspace in available_workspaces
+            if workspace.get("owner") == username
+        ]
+        if owned:
+            personal_workspace = min(
+                owned,
+                key=lambda workspace: (
+                    str(workspace.get("created_at") or ""),
+                    workspace["id"],
+                ),
+            )
+            workspace_id = personal_workspace["id"]
+            suffix = workspace_id[len(base_workspace_id) + 1 :]
+            is_managed_personal_id = workspace_id == base_workspace_id or (
+                workspace_id.startswith(base_workspace_id + "-")
+                and len(suffix) == 8
+                and all(character in "0123456789abcdef" for character in suffix)
+            )
+            if (
+                is_managed_personal_id
+                and personal_workspace.get("name") == "{} 的工作空间".format(username)
+                and personal_workspace.get("description") == "用户个人默认工作空间"
+            ):
+                personal_workspace = update_workspace(
+                    workspace_id,
+                    name="默认工作空间",
+                )
+                available_workspaces = [
+                    personal_workspace if workspace["id"] == workspace_id else workspace
+                    for workspace in available_workspaces
+                ]
+            return personal_workspace, available_workspaces
+
+        existing_usernames = _load_auth_usernames(auth_backend)
+        if username not in existing_usernames:
+            raise WorkspaceIdentityNotFoundError("owner", (username,))
+
+        workspace_id = base_workspace_id
+        for attempt in range(9):
+            try:
+                personal_workspace = create_workspace(
+                    name="默认工作空间",
+                    description="用户个人默认工作空间",
+                    workspace_id=workspace_id,
+                    set_as_default=False,
+                    auto_set_default=False,
+                    owner=username,
+                    allow_reserved_id=True,
+                )
+                break
+            except ValueError as exc:
+                try:
+                    personal_workspace = get_workspace(workspace_id)
+                except KeyError:
+                    raise exc
+                if personal_workspace.get("owner") == username:
+                    break
+                if attempt == 8:
+                    raise ValueError("无法分配个人工作空间 ID") from exc
+                workspace_id = "{}-{}".format(
+                    base_workspace_id,
+                    secrets.token_hex(4),
+                )
+        available_workspaces.append(personal_workspace)
+        return personal_workspace, available_workspaces
 
 
 class WorkspaceIdentityDirectoryUnavailableError(RuntimeError):
