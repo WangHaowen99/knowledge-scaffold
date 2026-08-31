@@ -3844,7 +3844,7 @@ async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_r
     assert blocked["repeatedFinding"] is True
     assert blocked["repairStopped"] is True
     assert blocked["retryable"] is False
-    assert "自动修正已停止" in blocked["instruction"]
+    assert "自动修正已达到上限" in blocked["instruction"]
 
 
 async def test_text_choice_request_rejects_confirmation_and_opens_ask_card(settings) -> None:
