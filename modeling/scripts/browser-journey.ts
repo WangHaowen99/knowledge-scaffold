@@ -32,6 +32,7 @@ export const GUIDED_PENDING_INTERACTION_SELECTOR = [
 
 export interface GuidedConstructionSnapshot {
   pendingInteraction: null | { type?: string; canSubmit: boolean };
+  pendingPlanApproval?: boolean;
   warningAcceptance?: null | { canSubmit: boolean };
   nextActionIds: string[];
   completed?: boolean;
@@ -40,6 +41,7 @@ export interface GuidedConstructionSnapshot {
 
 export type GuidedConstructionAction =
   | { kind: 'answer_interaction' }
+  | { kind: 'approve_plan' }
   | { kind: 'accept_warnings' }
   | { kind: 'click_action'; actionId: string }
   | { kind: 'complete' }
@@ -78,6 +80,7 @@ export function shouldRecoverGuidedRepairConflict(status: number, code?: string)
 export function chooseGuidedConstructionAction(
   snapshot: GuidedConstructionSnapshot,
 ): GuidedConstructionAction {
+  if (snapshot.pendingPlanApproval) return { kind: 'approve_plan' };
   if (snapshot.processing) return { kind: 'wait' };
   if (snapshot.pendingInteraction) {
     if (snapshot.pendingInteraction.canSubmit) return { kind: 'answer_interaction' };
@@ -399,6 +402,8 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
       .map((button) => button.dataset.action ?? '')
       .filter(Boolean);
     const bodyText = document.body.innerText;
+    const pendingPlanApproval = [...document.querySelectorAll<HTMLButtonElement>('button')]
+      .some((button) => visible(button) && !button.disabled && button.textContent?.trim() === '批准并开始');
     const hasSpinner = [...document.querySelectorAll<HTMLElement>('.pchat .spinner')].some(visible);
     const hasRunningTask = [...document.querySelectorAll<HTMLElement>('.ac-message-task-list article.running')]
       .some(visible);
@@ -410,6 +415,7 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
           ?? pending.closest<HTMLElement>('[data-interaction-id]')?.dataset.interactionType,
         canSubmit: Boolean(submit || selectableChoice),
       } : null,
+      pendingPlanApproval,
       warningAcceptance: warningSection ? { canSubmit: Boolean(warningSubmit && !warningSubmit.disabled) } : null,
       nextActionIds,
       completed: bodyText.includes('AI 辅助构建已完成') && !nextActionIds.includes('confirm_construction'),
@@ -555,6 +561,14 @@ async function answerGuidedInteraction(page: Page) {
   return true;
 }
 
+async function approveVisiblePlan(page: Page) {
+  const button = await visibleEnabledButton(page, /^批准并开始$/);
+  if (!button) return false;
+  await button.click();
+  await button.dispose();
+  return true;
+}
+
 async function runGuidedConstruction(page: Page, timeoutMs: number) {
   const startedAt = Date.now();
   let idleIterations = 0;
@@ -568,7 +582,10 @@ async function runGuidedConstruction(page: Page, timeoutMs: number) {
       lastStateSignature = stateSignature;
     }
     if (action.kind === 'complete') return;
-    if (action.kind === 'answer_interaction') {
+    if (action.kind === 'approve_plan') {
+      const progressed = await approveVisiblePlan(page);
+      idleIterations = nextGuidedIdleIterations(idleIterations, { progressed, processing: Boolean(snapshot.processing) });
+    } else if (action.kind === 'answer_interaction') {
       const progressed = await answerGuidedInteraction(page);
       idleIterations = nextGuidedIdleIterations(idleIterations, { progressed, processing: Boolean(snapshot.processing) });
     } else if (action.kind === 'accept_warnings') {

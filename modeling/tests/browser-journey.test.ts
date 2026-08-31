@@ -117,6 +117,13 @@ test('精确文字操作会忽略按钮中的装饰图标', () => {
 
 test('受控建模驾驶员优先处理结构化待办，其次推进阶段动作', () => {
   assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    pendingPlanApproval: true,
+    nextActionIds: [],
+    processing: true,
+  }), { kind: 'approve_plan' });
+
+  assert.deepEqual(chooseGuidedConstructionAction({
     pendingInteraction: { type: 'question', canSubmit: true },
     nextActionIds: ['confirm_materials'],
   }), { kind: 'answer_interaction' });
