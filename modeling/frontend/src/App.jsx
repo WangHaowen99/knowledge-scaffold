@@ -123,7 +123,7 @@ export default function App() {
     const kind = typeof project === 'string' ? 'modeling' : (project.kind || 'modeling');
     const runtime = typeof project === 'string' ? 'agent' : (project.runtime || 'legacy');
     if (kind === 'modeling' || runtime === 'agent') {
-      window.location.assign(`/workbench.html?project=${encodeURIComponent(id)}`);
+      window.location.assign(importedPackageStudioUrl(id));
       return;
     }
     setProjectAccessNotice('');
