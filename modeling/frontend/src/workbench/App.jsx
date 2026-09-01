@@ -4,6 +4,7 @@ import { store, actions } from './lib/appStore.js';
 import { useStore } from './lib/store.js';
 import { startMockActivity } from './lib/mock/stream.js';
 import { subscribeAgent } from './lib/api.js';
+import { prefetchStudioBootstrap } from './studio/studio-api.js';
 import { me } from '../api.js';
 import SettingsModal from '../SettingsModal.jsx';
 import TopBar from './shell/TopBar.jsx';
@@ -99,7 +100,8 @@ function Workbench() {
     if (!projectId) return undefined;
     let stopped = false;
     let unsubscribe = () => {};
-    void actions.bootstrap(projectId).then(({ agent, snapshot, agentAvailable }) => {
+    let bootstrapTimer = 0;
+    const bootstrapWorkbench = () => actions.bootstrap(projectId).then(({ agent, snapshot, agentAvailable }) => {
       const shouldStart = new URLSearchParams(window.location.search).get('start') === '1';
       if (!stopped && agentAvailable && shouldStart && !store.get().autoStartSent && !agent.run) {
         store.set({ autoStartSent: true });
@@ -115,7 +117,17 @@ function Workbench() {
         });
       }
     }).catch(() => undefined);
-    return () => { stopped = true; unsubscribe(); };
+    if (store.get().focus.kind === 'studio') {
+      void prefetchStudioBootstrap(projectId, { limit: 200 }).catch(() => undefined);
+      bootstrapTimer = window.setTimeout(() => { void bootstrapWorkbench(); }, 75);
+    } else {
+      void bootstrapWorkbench();
+    }
+    return () => {
+      stopped = true;
+      window.clearTimeout(bootstrapTimer);
+      unsubscribe();
+    };
   }, [demo]);
 
   return (

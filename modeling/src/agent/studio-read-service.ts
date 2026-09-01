@@ -6,12 +6,13 @@ import type {
   SpecObject,
   SpecOperation,
   SpecRule,
+  SpecScript,
 } from '../types.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
 
-export const STUDIO_SCHEMA_VERSION = 'studio-v3';
+export const STUDIO_SCHEMA_VERSION = 'studio-v5';
 
-export type StudioKind = 'object' | 'operation' | 'rule' | 'metric' | 'concept';
+export type StudioKind = 'object' | 'operation' | 'rule' | 'metric' | 'script';
 
 export interface StudioWorkingPackage {
   workingRevision: string;
@@ -48,30 +49,14 @@ export interface StudioElement extends StudioElementSummary {
   relations: StudioRelation[];
 }
 
-type StudioSpec = SpecObject | SpecOperation | SpecRule | SpecMetric;
+type StudioSpec = SpecObject | SpecOperation | SpecRule | SpecMetric | SpecScript;
 
 interface SpecElementSeed {
-  kind: Exclude<StudioKind, 'concept'>;
+  kind: StudioKind;
   spec: StudioSpec;
 }
 
-interface ConceptElementSeed {
-  kind: 'concept';
-  spec: {
-    key: string;
-    title: string;
-    description: string;
-    layer: 'common' | 'parameterized';
-    decision: 'preserve_views';
-    members: Array<{
-      relation: 'equivalent' | 'broader' | 'narrower' | 'overlap';
-      targetKind: Exclude<StudioKind, 'concept'>;
-      targetKey: string;
-    }>;
-  };
-}
-
-type ElementSeed = SpecElementSeed | ConceptElementSeed;
+type ElementSeed = SpecElementSeed;
 
 interface ListOptions {
   kind?: unknown;
@@ -87,21 +72,21 @@ interface GraphOptions {
   query?: unknown;
 }
 
-const KIND_ORDER: StudioKind[] = ['object', 'operation', 'rule', 'metric', 'concept'];
+const KIND_ORDER: StudioKind[] = ['object', 'operation', 'rule', 'metric', 'script'];
 const KIND_SET = new Set<string>(KIND_ORDER);
 const KIND_DIRECTORY: Record<StudioKind, string> = {
   object: 'objects',
   operation: 'operations',
   rule: 'rules',
   metric: 'metrics',
-  concept: 'mappings',
+  script: 'scripts',
 };
 const KIND_LABEL: Record<StudioKind, string> = {
   object: '对象',
   operation: '操作',
   rule: '规则',
   metric: '指标',
-  concept: '融合概念',
+  script: '脚本',
 };
 const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
 
@@ -121,6 +106,7 @@ export const STUDIO_SCHEMA = {
     update: true,
     delete: true,
     batch: true,
+    operationFlow: true,
   },
   kinds: [
     {
@@ -196,20 +182,26 @@ export const STUDIO_SCHEMA = {
       bulkEditableFields: ['description'],
     },
     {
-      kind: 'concept', label: KIND_LABEL.concept, directory: KIND_DIRECTORY.concept,
+      kind: 'script', label: KIND_LABEL.script, directory: KIND_DIRECTORY.script,
       capabilities: { create: false, update: false, delete: false, batch: false },
       fields: [
         { key: 'title', label: '名称', type: 'text', required: true, readOnly: true },
-        { key: 'description', label: '裁决说明', type: 'long_text', required: true, readOnly: true },
-        { key: 'layer', label: '语义层', type: 'text', required: true, readOnly: true },
-        { key: 'decision', label: '融合策略', type: 'text', required: true, readOnly: true },
-        { key: 'members', label: '来源成员', type: 'key_value_table', required: true, readOnly: true },
+        { key: 'description', label: '脚本用途', type: 'long_text', required: true, readOnly: true },
+        { key: 'boundOperation', label: '绑定操作', type: 'text', required: true, readOnly: true },
+        { key: 'runtime', label: '运行时', type: 'text', required: true, readOnly: true },
+        { key: 'entrypoint', label: '入口文件', type: 'text', required: true, readOnly: true },
+        { key: 'timeoutSeconds', label: '超时秒数', type: 'number', required: true, readOnly: true },
+        { key: 'parameters', label: '输入参数', type: 'key_value_table', required: false, readOnly: true },
+        { key: 'outputs', label: '输出', type: 'key_value_table', required: false, readOnly: true },
+        { key: 'boundaries', label: '执行边界', type: 'text_list', required: true, readOnly: true },
+        { key: 'evidence', label: '知识证据', type: 'evidence_list', required: false, readOnly: true },
+        { key: 'sourceCode', label: '脚本源码', type: 'long_text', required: true, readOnly: true },
       ],
       tableColumns: COMMON_COLUMNS,
-      legalRelations: [{
-        kind: 'concept_member',
-        targetKinds: ['object', 'operation', 'rule', 'metric'],
-      }],
+      legalRelations: [
+        { kind: 'script_bound_operation', targetKinds: ['operation'] },
+        { kind: 'script_uses_object', targetKinds: ['object'] },
+      ],
       bulkEditableFields: [],
     },
   ],
@@ -246,9 +238,9 @@ export class StudioReadService {
         { workingRevision: workingPackage.workingRevision },
       );
     }
-    const seeds = elementSeeds(spec, workingPackage.files);
+    const seeds = elementSeeds(spec);
     const ids = new Set(seeds.map((seed) => elementId(seed.kind, seed.spec.key)));
-    this.elements = seeds.map((seed) => projectElement(seed, ids));
+    this.elements = seeds.map((seed) => projectElement(seed, ids, spec));
     this.byId = new Map(this.elements.map((element) => [element.id, element]));
   }
 
@@ -283,6 +275,7 @@ export class StudioReadService {
       hasStagedChanges: this.workingPackage.workingRevision !== this.workingPackage.baseRevision,
       items,
       total: filtered.length,
+      kindTotals: this.kindTotals(),
       nextCursor: nextOffset < filtered.length
         ? encodeCursor(nextOffset, this.workingPackage.workingRevision)
         : null,
@@ -327,8 +320,14 @@ export class StudioReadService {
       edges,
       aggregates: [],
       nextCursor: null,
-      totals: { elements: elements.length, relations: edges.length },
+      totals: { elements: elements.length, relations: edges.length, byKind: this.kindTotals() },
     };
+  }
+
+  kindTotals(): Record<StudioKind, number> {
+    const totals = Object.fromEntries(KIND_ORDER.map((kind) => [kind, 0])) as Record<StudioKind, number>;
+    this.elements.forEach((element) => { totals[element.kind] += 1; });
+    return totals;
   }
 
   private filter(options: GraphOptions): StudioElement[] {
@@ -341,78 +340,42 @@ export class StudioReadService {
   }
 }
 
-function elementSeeds(spec: PackageSpec, files: Record<string, string>): ElementSeed[] {
+export function resolveStudioWorkingSpec(
+  baseSpec: PackageSpec,
+  files: Record<string, string>,
+): PackageSpec {
+  try {
+    const renderedSpec = parseRenderedPackageFiles(files);
+    const renderedCount = studioSpecElementCount(renderedSpec);
+    return renderedCount > 0 || studioSpecElementCount(baseSpec) === 0 ? renderedSpec : baseSpec;
+  } catch {
+    return baseSpec;
+  }
+}
+
+function studioSpecElementCount(spec: PackageSpec): number {
+  return spec.objects.length
+    + spec.operations.length
+    + (spec.rules?.length || 0)
+    + (spec.metrics?.length || 0)
+    + (spec.scripts?.length || 0);
+}
+
+function elementSeeds(spec: PackageSpec): ElementSeed[] {
   return [
     ...spec.objects.map((item) => ({ kind: 'object' as const, spec: item })),
     ...spec.operations.map((item) => ({ kind: 'operation' as const, spec: item })),
     ...(spec.rules ?? []).map((item) => ({ kind: 'rule' as const, spec: item })),
     ...(spec.metrics ?? []).map((item) => ({ kind: 'metric' as const, spec: item })),
-    ...fusionConceptSeeds(files),
+    ...(spec.scripts ?? []).map((item) => ({ kind: 'script' as const, spec: item })),
   ];
 }
 
-function fusionConceptSeeds(files: Record<string, string>): ConceptElementSeed[] {
-  const raw = files['mappings/package-fusion.json'];
-  if (!raw) return [];
-  let ledger: any;
-  try {
-    ledger = JSON.parse(raw);
-  } catch {
-    throw new StudioReadError(
-      'INVALID_WORKING_PACKAGE',
-      '融合来源映射无法解析',
-      409,
-      { sourcePath: 'mappings/package-fusion.json' },
-    );
-  }
-  const resources = Array.isArray(ledger?.resources) ? ledger.resources : [];
-  const fusedKeyByMember = new Map(resources.map((entry: any) => [
-    `${String(entry?.sourceId ?? '')}\0${String(entry?.kind ?? '')}\0${String(entry?.sourceKey ?? '')}`,
-    String(entry?.fusedKey ?? ''),
-  ]));
-  const studioKinds = new Set(['object', 'operation', 'rule', 'metric']);
-  const concepts = Array.isArray(ledger?.concepts) ? ledger.concepts : [];
-  return concepts.flatMap((concept: any): ConceptElementSeed[] => {
-    const key = String(concept?.id ?? '').trim();
-    const layer = String(concept?.layer ?? '');
-    if (!key || !['common', 'parameterized'].includes(layer)) return [];
-    const members = (Array.isArray(concept?.members) ? concept.members : []).flatMap((member: any) => {
-      const targetKind = String(member?.kind ?? '');
-      if (!studioKinds.has(targetKind)) return [];
-      const fusedKey = String(member?.fusedKey ?? '').trim() || fusedKeyByMember.get(
-        `${String(member?.sourceId ?? '')}\0${targetKind}\0${String(member?.key ?? '')}`,
-      ) || '';
-      if (!fusedKey) return [];
-      const relation = String(member?.relation ?? 'overlap');
-      return [{
-        relation: ['equivalent', 'broader', 'narrower', 'overlap'].includes(relation)
-          ? relation as 'equivalent' | 'broader' | 'narrower' | 'overlap'
-          : 'overlap' as const,
-        targetKind: targetKind as Exclude<StudioKind, 'concept'>,
-        targetKey: fusedKey,
-      }];
-    });
-    return [{
-      kind: 'concept',
-      spec: {
-        key,
-        title: String(concept?.title ?? '').trim() || key,
-        description: String(concept?.rationale ?? '').trim(),
-        layer: layer as 'common' | 'parameterized',
-        decision: 'preserve_views',
-        members,
-      },
-    }];
-  });
-}
-
-function projectElement(seed: ElementSeed, knownIds: Set<string>): StudioElement {
+function projectElement(seed: ElementSeed, knownIds: Set<string>, spec: PackageSpec): StudioElement {
   const id = elementId(seed.kind, seed.spec.key);
-  const sourcePath = seed.kind === 'concept'
-    ? 'mappings/package-fusion.json'
-    : `${KIND_DIRECTORY[seed.kind]}/${seed.spec.key}.md`;
+  const sourcePath = `${KIND_DIRECTORY[seed.kind]}/${seed.spec.key}.md`;
   const values = valuesOf(seed);
-  const relations = relationsOf(seed, id, knownIds);
+  const relations = relationsOf(seed, id, knownIds, spec);
   return {
     id,
     kind: seed.kind,
@@ -427,18 +390,6 @@ function projectElement(seed: ElementSeed, knownIds: Set<string>): StudioElement
 }
 
 function valuesOf(seed: ElementSeed): Record<string, unknown> {
-  if (seed.kind === 'concept') {
-    return {
-      title: seed.spec.title,
-      description: seed.spec.description,
-      layer: seed.spec.layer,
-      decision: seed.spec.decision,
-      members: seed.spec.members.map((member) => ({
-        relation: member.relation,
-        target: elementId(member.targetKind, member.targetKey),
-      })),
-    };
-  }
   if (seed.kind === 'object') {
     const item = seed.spec as SpecObject;
     return {
@@ -475,6 +426,22 @@ function valuesOf(seed: ElementSeed): Record<string, unknown> {
       evidence: item.evidence ?? [],
     };
   }
+  if (seed.kind === 'script') {
+    const item = seed.spec as SpecScript;
+    return {
+      title: item.title,
+      description: item.description,
+      boundOperation: item.boundOperation,
+      runtime: item.runtime,
+      entrypoint: item.entrypoint,
+      timeoutSeconds: item.timeoutSeconds,
+      parameters: item.parameters,
+      outputs: item.outputs,
+      boundaries: item.boundaries,
+      evidence: item.evidence ?? [],
+      sourceCode: item.sourceCode,
+    };
+  }
   const item = seed.spec as SpecMetric;
   return {
     title: item.title,
@@ -490,8 +457,9 @@ function valuesOf(seed: ElementSeed): Record<string, unknown> {
 }
 
 function descriptionOf(seed: ElementSeed): string {
-  if (seed.kind === 'concept') return seed.spec.description;
-  if (seed.kind === 'object' || seed.kind === 'operation') return seed.spec.description ?? '';
+  if (seed.kind === 'object' || seed.kind === 'operation' || seed.kind === 'script') {
+    return seed.spec.description ?? '';
+  }
   if (seed.kind === 'rule') {
     const rule = seed.spec as SpecRule;
     return rule.description || rule.content || '';
@@ -500,7 +468,12 @@ function descriptionOf(seed: ElementSeed): string {
   return metric.description || metric.caliber || '';
 }
 
-function relationsOf(seed: ElementSeed, sourceId: string, knownIds: Set<string>): StudioRelation[] {
+function relationsOf(
+  seed: ElementSeed,
+  sourceId: string,
+  knownIds: Set<string>,
+  spec: PackageSpec,
+): StudioRelation[] {
   const inputs: Array<{
     kind: string;
     label: string;
@@ -509,14 +482,7 @@ function relationsOf(seed: ElementSeed, sourceId: string, knownIds: Set<string>)
     description?: string;
     evidence?: string[];
   }> = [];
-  if (seed.kind === 'concept') {
-    inputs.push(...seed.spec.members.map((member) => ({
-      kind: 'concept_member',
-      label: conceptRelationLabel(member.relation),
-      targetKind: member.targetKind,
-      targetKey: member.targetKey,
-    })));
-  } else if (seed.kind === 'object') {
+  if (seed.kind === 'object') {
     for (const relation of (seed.spec as SpecObject).relations ?? []) {
       const target = parseTarget(relation.target, 'object');
       inputs.push({
@@ -539,6 +505,11 @@ function relationsOf(seed: ElementSeed, sourceId: string, knownIds: Set<string>)
     inputs.push(...(operation.usesMetrics ?? []).map((key) => ({
       kind: 'uses_metric', label: '使用指标', targetKind: 'metric' as const, targetKey: key,
     })));
+    if (operation.script?.key) {
+      inputs.push({
+        kind: 'uses_script', label: '使用脚本', targetKind: 'script', targetKey: operation.script.key,
+      });
+    }
   } else if (seed.kind === 'rule') {
     inputs.push(...((seed.spec as SpecRule).appliesToObjects ?? []).map((key) => ({
       kind: 'applies_to_object', label: '适用于对象', targetKind: 'object' as const, targetKey: key,
@@ -546,9 +517,21 @@ function relationsOf(seed: ElementSeed, sourceId: string, knownIds: Set<string>)
     inputs.push(...((seed.spec as SpecRule).appliesToOperations ?? []).map((key) => ({
       kind: 'applies_to_operation', label: '适用于操作', targetKind: 'operation' as const, targetKey: key,
     })));
-  } else {
+  } else if (seed.kind === 'metric') {
     inputs.push(...((seed.spec as SpecMetric).usesObjects ?? []).map((key) => ({
       kind: 'uses_object', label: '使用对象', targetKind: 'object' as const, targetKey: key,
+    })));
+  } else {
+    const script = seed.spec as SpecScript;
+    inputs.push({
+      kind: 'script_bound_operation',
+      label: '绑定操作',
+      targetKind: 'operation',
+      targetKey: script.boundOperation,
+    });
+    const operation = spec.operations.find((item) => item.key === script.boundOperation);
+    inputs.push(...(operation?.relatedObjects ?? []).map((key) => ({
+      kind: 'script_uses_object', label: '使用对象', targetKind: 'object' as const, targetKey: key,
     })));
   }
   const relations = inputs.map((input) => {
@@ -563,13 +546,6 @@ function relationsOf(seed: ElementSeed, sourceId: string, knownIds: Set<string>)
     };
   });
   return [...new Map(relations.map((relation) => [relation.id, relation])).values()];
-}
-
-function conceptRelationLabel(relation: ConceptElementSeed['spec']['members'][number]['relation']): string {
-  if (relation === 'equivalent') return '同一概念视图';
-  if (relation === 'broader') return '上位概念';
-  if (relation === 'narrower') return '下位概念';
-  return '部分重叠';
 }
 
 function parseTarget(raw: string, fallbackKind: StudioKind): { kind: StudioKind; key: string } {
