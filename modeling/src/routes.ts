@@ -232,6 +232,17 @@ function ignoreSemanticBinding(projectId: string, revision: string): void {
   setSetting(semanticBindingIgnoreKey(projectId, revision), new Date().toISOString());
 }
 
+function normalizedPackageName(value: unknown): string {
+  return String(value ?? '').trim().normalize('NFKC').toLowerCase();
+}
+
+function hasVisiblePackageNameConflict(username: string, packageName: string): boolean {
+  const normalizedName = normalizedPackageName(packageName);
+  return Boolean(normalizedName && listProjects(username).some((project) => (
+    project.kind === 'package' && normalizedPackageName(project.name) === normalizedName
+  )));
+}
+
 function semanticBindingPreview(projectId: string, revision: string, spec: any, tables: any[]) {
   const preview = previewSemanticBindingCandidates(spec, tables);
   if (!isSemanticBindingIgnored(projectId, revision)) return preview;
@@ -828,6 +839,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         imported = parsePackageArchive(new Uint8Array(await file.toBuffer()));
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+
+      if (hasVisiblePackageNameConflict(req.user!.username, imported.spec.name)) {
+        return reply.code(409).send({
+          error: (
+            `知识包名称「${imported.spec.name}」已存在，不可重复导入。`
+            + '请修改 manifest.yaml 中的 name 字段后重新导入。'
+          ),
+          code: 'PACKAGE_NAME_CONFLICT',
+        });
       }
 
       const project = createProject({
