@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as accessState from './accessState.js';
 import {
   canLoadProtectedData,
   canLoadWorkspaceData,
@@ -33,4 +34,54 @@ test('workspace-scoped surfaces stay blocked while global surfaces remain availa
   assert.equal(requiresWorkspaceData('observability', 'session'), true);
   assert.equal(requiresWorkspaceData('observability', 'global'), false);
   assert.equal(requiresWorkspaceData('config'), false);
+});
+
+test('a valid current-account stored selection wins over the preferred workspace', () => {
+  assert.equal(typeof accessState.resolveWorkspaceSelection, 'function');
+  assert.equal(accessState.resolveWorkspaceSelection({
+    workspaces: [{ id: 'preferred' }, { id: 'remembered' }],
+    storedWorkspaceId: 'remembered',
+    preferredWorkspaceId: 'preferred',
+    defaultWorkspaceId: 'preferred',
+  }), 'remembered');
+});
+
+test('an unavailable stored selection falls back to the preferred workspace', () => {
+  assert.equal(typeof accessState.resolveWorkspaceSelection, 'function');
+  assert.equal(accessState.resolveWorkspaceSelection({
+    workspaces: [{ id: 'global-default' }, { id: 'personal-preferred' }],
+    storedWorkspaceId: 'removed',
+    preferredWorkspaceId: 'personal-preferred',
+    defaultWorkspaceId: 'global-default',
+  }), 'personal-preferred');
+});
+
+test('unavailable stored and preferred selections fall back to a visible default', () => {
+  assert.equal(typeof accessState.resolveWorkspaceSelection, 'function');
+  assert.equal(accessState.resolveWorkspaceSelection({
+    workspaces: [{ id: 'first-visible' }, { id: 'global-default' }],
+    storedWorkspaceId: 'removed',
+    preferredWorkspaceId: 'hidden',
+    defaultWorkspaceId: 'global-default',
+  }), 'global-default');
+});
+
+test('an unavailable default falls back to the first visible workspace', () => {
+  assert.equal(typeof accessState.resolveWorkspaceSelection, 'function');
+  assert.equal(accessState.resolveWorkspaceSelection({
+    workspaces: [{ id: 'first-visible' }, { id: 'second-visible' }],
+    storedWorkspaceId: 'removed',
+    preferredWorkspaceId: 'hidden',
+    defaultWorkspaceId: 'unavailable-default',
+  }), 'first-visible');
+});
+
+test('an empty visible workspace list resolves to no selection', () => {
+  assert.equal(typeof accessState.resolveWorkspaceSelection, 'function');
+  assert.equal(accessState.resolveWorkspaceSelection({
+    workspaces: [],
+    storedWorkspaceId: 'remembered',
+    preferredWorkspaceId: 'preferred',
+    defaultWorkspaceId: 'global-default',
+  }), '');
 });
