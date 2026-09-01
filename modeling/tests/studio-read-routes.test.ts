@@ -216,6 +216,7 @@ test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图�
   });
   assert.equal(schema.statusCode, 200, schema.body);
   assert.equal(schema.json().schemaVersion, 'studio-v3');
+  assert.equal(schema.headers['cache-control'], 'private, no-cache');
   const cachedSchema = await app.inject({
     method: 'GET',
     url: `/api/projects/${project.id}/studio/schema`,

@@ -313,6 +313,7 @@ export class AgentCoreService {
       });
     }
     const readableWorkspace = this.readableWorkspace(project.id, username, current.revision.oid);
+    const studioChanges = readableWorkspace ? this.changes(readableWorkspace) : [];
     const packageFiles = readableWorkspace
       ? await this.overlay(readableWorkspace)
       : await this.artifacts.readPackageFiles(project.id, current.revision.oid);
@@ -327,6 +328,7 @@ export class AgentCoreService {
       packageVersion: packageFiles.spec.version,
       packageStatus: packageFiles.spec.status,
       candidateRevision: readableWorkspace?.candidate_id ?? null,
+      studioPendingCount: studioChanges.length ? 1 : 0,
       files: Object.keys(packageFiles.files).sort(),
       binaryFiles: packageFiles.binaryFiles,
       materials,

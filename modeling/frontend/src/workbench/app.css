@@ -18,6 +18,11 @@
 }
 .wb-top .goal { font-weight: 600; max-width: 300px; }
 .wb-top .sep { color: var(--c-line); user-select: none; }
+.wb-pending-pill { cursor: pointer; font-family: inherit; line-height: inherit; }
+.wb-pending-pill:hover:not(:disabled), .wb-pending-pill:focus-visible {
+  border-color: var(--c-wait); box-shadow: 0 0 0 2px var(--c-wait-bg);
+}
+.wb-pending-pill:disabled { cursor: default; opacity: .72; }
 .wb-counts-pill { cursor: default; }
 .wb-counts-pill b { font-weight: 600; color: var(--c-ink-2); }
 .wb-mobile-tabs { display: none; }
@@ -393,6 +398,10 @@
 }
 .wb-confirm-submit-error span { color: var(--c-stale); overflow-wrap: anywhere; }
 .wb-confirm-submit-error small { color: var(--c-muted); }
+.wb-confirm-semantics {
+  margin-bottom: var(--s-3); padding: var(--s-3) var(--s-4); border-left: 3px solid var(--c-accent);
+  background: var(--c-accent-bg); color: var(--c-muted); font-size: var(--t-sm); line-height: 1.55;
+}
 .wb-error-recovery { display: block; margin-top: var(--s-2); color: var(--c-muted); }
 .wb-flow-source {
   margin: 0; padding: var(--s-5); min-height: 240px; overflow: auto; white-space: pre-wrap;

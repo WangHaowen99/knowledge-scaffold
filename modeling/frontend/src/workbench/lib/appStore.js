@@ -1,6 +1,7 @@
 /* 工作台共享状态。字段刻意保持扁平，方便 useStore 用稳定引用做选择器订阅。 */
 import { createStore } from './store.js';
 import * as F from './mock/fixtures.js';
+import { refreshWorkbenchAfterConfirmation } from '../interaction-settlement.js';
 import {
   answerAgent,
   cancelAgent,
@@ -62,6 +63,7 @@ const initial = {
   messages: [],
   interaction: null,
   reviewedChangeGroups: [],
+  studioPendingCount: 0,
   run: null,
   statusText: '',
   loading: Boolean(initialProjectId),
@@ -248,6 +250,7 @@ export const actions = {
         files: snapshot.files,
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
         candidateDiff: candidate.files || [],
+        studioPendingCount: Number(snapshot.studioPendingCount) || 0,
         confirmPolicy: snapshot.confirmPolicy || [],
         packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
         selectedMaterial: snapshot.materials[0]?.id || '',
@@ -296,6 +299,7 @@ export const actions = {
       materials: snapshot.materials,
       materialContents,
       candidateDiff: candidate.files || [],
+      studioPendingCount: Number(snapshot.studioPendingCount) || 0,
       confirmPolicy: snapshot.confirmPolicy || [],
       packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
     });
@@ -779,6 +783,16 @@ export const actions = {
     try {
       const result = await answerAgent(projectId, interactionId, submittedAnswer);
       store.set({ run: result.run, error: '' });
+      if (interaction?.kind === 'confirmation') {
+        const { refreshError } = await refreshWorkbenchAfterConfirmation({
+          refreshSnapshot: () => actions.refreshSnapshot(),
+        });
+        if (refreshError) {
+          store.set({
+            error: '确认决定已处理，但页面状态刷新失败；请使用顶部待确认入口重新载入',
+          });
+        }
+      }
       return result;
     } catch (error) {
       const failure = error instanceof Error ? error.message : '提交失败，请重试';
@@ -1173,12 +1187,13 @@ export const actions = {
   agentFocus(focus) {
     const current = store.get();
     if (!availableFocusTarget(focus, current)) return;
+    const agentTarget = { ...focus, source: 'agent' };
     const material = focus?.kind === 'doc'
       ? current.materials.find((item) => item.id === focus.target || item.filename === focus.target)
       : null;
     store.set((s) => (s.follow
-      ? { focus, pendingFocus: null, ...(material ? { selectedMaterial: material.id } : {}) }
-      : { pendingFocus: focus }));
+      ? { focus: agentTarget, pendingFocus: null, ...(material ? { selectedMaterial: material.id } : {}) }
+      : { pendingFocus: agentTarget }));
     if (focus?.target && ['flow', 'file'].includes(focus.kind)) void actions.loadFile(focus.target);
     if (material) void actions.loadMaterial(material.id);
   },
@@ -1186,7 +1201,7 @@ export const actions = {
   /** 用户点消息上的定位入口：跳过去并重新开始跟随。 */
   focusFrom(focus) {
     if (!availableFocusTarget(focus, store.get())) return;
-    store.set({ focus, follow: true, pendingFocus: null });
+    store.set({ focus: { ...focus, source: 'agent' }, follow: true, pendingFocus: null });
     if (focus?.target && ['flow', 'file'].includes(focus.kind)) void actions.loadFile(focus.target);
   },
   selectPath(path) {
