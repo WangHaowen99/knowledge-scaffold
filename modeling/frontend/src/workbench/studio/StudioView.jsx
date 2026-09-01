@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Boxes,
   Check,
+  FileCode2,
   Gauge,
   Network,
   Plus,
@@ -26,10 +27,11 @@ import {
   batchStudioElements,
   applyStudioDeletions,
   createStudioElement,
+  getStudioBootstrap,
   getStudioElement,
   getStudioElements,
   getStudioGraph,
-  getStudioSchema,
+  invalidateStudioBootstrap,
   previewStudioDeletions,
   requestStudioReview,
   studioError,
@@ -40,10 +42,17 @@ import {
   KIND_META,
   readStudioSession,
   restoreStudioHistory,
+  clearStudioSearch,
+  shouldSubmitStudioSearch,
+  stageStudioSearch,
   STUDIO_TARGET,
+  studioSearchDraft,
+  studioTextMatchesQuery,
+  submitStudioSearch,
   studioHistoryFromLocation,
   studioHistorySnapshot,
   studioHistoryUrl,
+  studioKindCounts,
   studioVisibleElementId,
   writeStudioSession,
 } from './studio-model.js';
@@ -74,7 +83,7 @@ import './studio.css';
 
 const selProjectId = (state) => state.projectId;
 const selMaterials = (state) => state.materials;
-const KIND_ICON = { object: Boxes, operation: Workflow, rule: Scale, metric: Gauge, concept: Network };
+const KIND_ICON = { object: Boxes, operation: Workflow, rule: Scale, metric: Gauge, script: FileCode2 };
 const STUDIO_REFRESH_DEBOUNCE_MS = 200;
 
 export default function StudioView({ focus }) {
@@ -88,6 +97,7 @@ export default function StudioView({ focus }) {
   const [projectEventBaseline, setProjectEventBaseline] = useState({ projectId: '', cursor: 0, ready: false });
   const sessionRef = useRef(session);
   const requestRef = useRef(0);
+  const loadAbortRef = useRef(null);
   const refreshStateRef = useRef({ gate: null, loadTimer: null });
   const deferredRefreshRef = useRef(null);
   const localEditsRef = useRef(studioHasPendingLocalEdits(session));
@@ -137,18 +147,22 @@ export default function StudioView({ focus }) {
     }
   }, [markRequestFailure, projectId, update]);
 
-  const loadStudio = useCallback(async () => {
+  const loadStudio = useCallback(async (options = {}) => {
     if (!projectId) return;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     const requestId = requestRef.current + 1;
     requestRef.current = requestId;
     const hasContent = Boolean(sessionRef.current.schema && sessionRef.current.graph);
     update({ phase: hasContent ? 'refreshing' : 'loading', error: null });
     try {
-      const [schema, list] = await Promise.all([
-        getStudioSchema(projectId),
-        getStudioElements(projectId, { limit: 200 }),
-      ]);
-      const graph = await getStudioGraph(projectId, { workingRevision: list.workingRevision });
+      const bootstrap = await getStudioBootstrap(projectId, { limit: 200 }, {
+        signal: controller.signal,
+        cache: options.cache,
+      });
+      const { schema, graph } = bootstrap;
+      const list = bootstrap.elements;
       if (requestRef.current !== requestId) return;
       const previous = sessionRef.current;
       const selectedExists = list.items.some((item) => item.id === previous.selectedElementId)
@@ -161,6 +175,7 @@ export default function StudioView({ focus }) {
         error: null,
         schema,
         elements: list.items,
+        kindTotals: list.kindTotals || graph.totals?.byKind || studioKindCounts(list.items),
         total: list.total,
         nextCursor: list.nextCursor,
         graph,
@@ -184,16 +199,20 @@ export default function StudioView({ focus }) {
       }
       if (selectedElementId) await loadDetail(selectedElementId, list.workingRevision);
     } catch (error) {
-      if (requestRef.current === requestId) markRequestFailure(error);
+      if (!controller.signal.aborted && requestRef.current === requestId) markRequestFailure(error);
+    } finally {
+      if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
   }, [clearExternalNotice, loadDetail, markRequestFailure, projectId, setExternalNotice, update]);
+  const reloadStudio = useCallback(() => loadStudio({ cache: 'reload' }), [loadStudio]);
 
   const discardLocalDraftsAndLoadStudio = useCallback(async () => {
     localEditsRef.current = false;
     deferredRefreshRef.current = null;
+    invalidateStudioBootstrap(projectId);
     update({ entryDrafts: {}, details: {} });
     await loadStudio();
-  }, [loadStudio, update]);
+  }, [loadStudio, projectId, update]);
 
   useEffect(() => {
     const dirty = studioHasPendingLocalEdits(session);
@@ -207,9 +226,9 @@ export default function StudioView({ focus }) {
     if (state.loadTimer) return;
     state.loadTimer = setTimeout(() => {
       state.loadTimer = null;
-      void loadStudio();
+      void reloadStudio();
     }, STUDIO_REFRESH_DEBOUNCE_MS);
-  }, [loadStudio]);
+  }, [reloadStudio]);
 
   useEffect(() => {
     const cached = initialStudioSession(projectId);
@@ -277,9 +296,17 @@ export default function StudioView({ focus }) {
   }, [focus, loadDetail, update]);
 
   useEffect(() => {
+    const elementId = session.selectedElementId;
+    if (!elementId || !session.workingRevision || session.details[elementId] || session.detailLoading) return;
+    void loadDetail(elementId, session.workingRevision);
+  }, [loadDetail, session.detailLoading, session.details, session.selectedElementId, session.workingRevision]);
+
+  useEffect(() => {
     if (!projectEventBaseline.ready || projectEventBaseline.projectId !== projectId) return undefined;
     void loadStudio();
     return () => {
+      loadAbortRef.current?.abort();
+      loadAbortRef.current = null;
       requestRef.current += 1;
       if (refreshStateRef.current.loadTimer) clearTimeout(refreshStateRef.current.loadTimer);
       refreshStateRef.current.loadTimer = null;
@@ -443,6 +470,7 @@ export default function StudioView({ focus }) {
         ...latest,
         loadingMore: false,
         elements: [...new Map([...latest.elements, ...page.items].map((item) => [item.id, item])).values()],
+        kindTotals: page.kindTotals || latest.kindTotals,
         total: page.total,
         nextCursor: page.nextCursor,
       }));
@@ -476,6 +504,7 @@ export default function StudioView({ focus }) {
           : current.studioWarningCount,
         details,
         elements,
+        kindTotals: studioKindCounts(elements),
         selectedElementId: deleted.has(current.selectedElementId) ? '' : current.selectedElementId,
         selectedIds: current.selectedIds.filter((id) => !deleted.has(id)),
         total: Math.max(0, current.total - deleted.size, elements.length),
@@ -490,6 +519,7 @@ export default function StudioView({ focus }) {
       update((current) => ({
         ...current,
         elements: list.items,
+        kindTotals: list.kindTotals || graph.totals?.byKind || studioKindCounts(list.items),
         total: list.total,
         nextCursor: list.nextCursor,
         graph,
@@ -518,13 +548,13 @@ export default function StudioView({ focus }) {
   if (session.phase === 'error' && !session.schema) {
     return <>
       {projectEvents}
-      <StudioFailure failure={session.error} onRetry={loadStudio} />
+      <StudioFailure failure={session.error} onRetry={reloadStudio} />
     </>;
   }
   if (session.phase === 'conflict' && !session.schema) {
     return <>
       {projectEvents}
-      <StudioConflict failure={session.error} onReload={loadStudio} />
+      <StudioConflict failure={session.error} onReload={reloadStudio} />
     </>;
   }
 
@@ -537,7 +567,7 @@ export default function StudioView({ focus }) {
             onReload={discardLocalDraftsAndLoadStudio} />
         )}
         {(session.phase === 'conflict' || session.phase === 'error') && (
-          <StudioBanner failure={session.error} conflict={session.phase === 'conflict'} onRetry={loadStudio} />
+          <StudioBanner failure={session.error} conflict={session.phase === 'conflict'} onRetry={reloadStudio} />
         )}
         {session.studioWarnings?.length > 0 && (
           <StudioWarningBanner warnings={session.studioWarnings} count={session.studioWarningCount}
@@ -548,11 +578,11 @@ export default function StudioView({ focus }) {
           <StudioPendingReviewBanner state={reviewSubmitState} onSubmit={submitPendingReview}
             blocked={entryDraftDirty} />
         )}
-        <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={loadStudio} />
+        <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={reloadStudio} />
         {session.elements.length === 0 ? (
-          <StudioEmpty schema={session.schema} onCreate={setCreateKind} onRefresh={loadStudio} />
+          <StudioEmpty schema={session.schema} onCreate={setCreateKind} onRefresh={reloadStudio} />
         ) : session.view === 'graph' ? (
-          <StudioGraph session={session} update={update} onOpen={openDetail} focus={focus} />
+          <StudioGraph projectId={projectId} session={session} update={update} onOpen={openDetail} focus={focus} />
         ) : session.view === 'table' ? (
           <StudioTable session={session} update={update} onOpen={openDetail} onLoadMore={loadMore}
             onCreate={setCreateKind} onDelete={setDeleteIds} onMutation={applyMutation} projectId={projectId} focus={focus} />
@@ -578,8 +608,8 @@ export default function StudioView({ focus }) {
             onMutation={applyMutation}
             onCompleted={() => {
               setDeleteIds([]);
-              navigate('table', '');
-            }} />
+            navigate('table', '');
+          }} />
         )}
       </div>
     </>
@@ -615,6 +645,9 @@ function writeBrowserHistory(session, mode, projectId) {
 
 function StudioToolbar({ session, update, navigate, onRefresh }) {
   const inEntry = session.view === 'entry';
+  const searchDraft = studioSearchDraft(session);
+  const submitSearch = () => update(submitStudioSearch);
+  const clearSearch = () => update(clearStudioSearch);
   return (
     <div className="studio-toolbar">
       <div className="seg" role="tablist" aria-label="Studio 视图">
@@ -628,13 +661,21 @@ function StudioToolbar({ session, update, navigate, onRefresh }) {
           onClick={() => session.selectedElementId && navigate('entry')}><Boxes size={13} />条目</button>
       </div>
       {!inEntry && <>
-        <label className="studio-search">
-          <Search size={13} />
-          <span className="sr-only">搜索知识条目</span>
-          <input value={session.query} placeholder="搜索名称、Key 或说明"
-            onChange={(event) => update({ query: event.target.value })} />
-        </label>
-        <StudioKindTabs kinds={session.schema?.kinds} elements={session.elements} value={session.kind}
+        <div className="studio-search" role="search">
+          <input value={searchDraft} aria-label="搜索知识条目" placeholder="搜索名称、Key 或说明"
+            onChange={(event) => update((current) => stageStudioSearch(current, event.target.value), '')}
+            onKeyDown={(event) => {
+              if (!shouldSubmitStudioSearch(event)) return;
+              event.preventDefault();
+              submitSearch();
+            }} />
+          <button type="button" title="搜索" aria-label="搜索" onClick={submitSearch}><Search size={13} /></button>
+          {(searchDraft || session.query) && (
+            <button type="button" title="清除搜索" aria-label="清除搜索" onClick={clearSearch}><X size={13} /></button>
+          )}
+        </div>
+        <StudioKindTabs kinds={session.schema?.kinds} elements={session.elements} counts={session.kindTotals}
+          value={session.kind}
           onChange={(kind) => update((current) => {
             const visibleNodes = (current.graph?.nodes || []).filter((node) => !kind || node.kind === kind);
             return {
@@ -655,17 +696,16 @@ function StudioToolbar({ session, update, navigate, onRefresh }) {
   );
 }
 
-export function StudioKindTabs({ kinds = [], elements = [], value = '', onChange = () => {} }) {
-  const counts = elements.reduce((result, element) => {
-    result[element.kind] = (result[element.kind] || 0) + 1;
-    return result;
-  }, {});
+export function StudioKindTabs({ kinds = [], elements = [], counts, value = '', onChange = () => {} }) {
+  const resolvedCounts = counts || studioKindCounts(elements);
   const tabs = [{ kind: '', label: '全部' }, ...kinds];
   return (
     <div className="seg studio-kind-tabs" role="tablist" aria-label="按知识类型筛选">
       {tabs.map((kind) => {
         const KindIcon = KIND_ICON[kind.kind];
-        const count = kind.kind ? counts[kind.kind] || 0 : elements.length;
+        const count = kind.kind
+          ? resolvedCounts[kind.kind] || 0
+          : Object.values(resolvedCounts).reduce((total, item) => total + Number(item || 0), 0);
         const selected = value === kind.kind;
         return (
           <button type="button" role="tab" key={kind.kind || 'all'} className={selected ? 'on' : ''}
@@ -693,13 +733,13 @@ function StudioTable({
   const scrollRef = useRef(null);
   const [bulkDescription, setBulkDescription] = useState('');
   const [bulkState, setBulkState] = useState({ phase: 'idle', message: '' });
-  const query = session.query.trim().toLocaleLowerCase('zh-CN');
+  const query = session.query.trim();
   const groups = (session.schema?.kinds || []).map((kind) => ({
     ...kind,
     items: session.elements.filter((element) => (
       element.kind === kind.kind
       && (!session.kind || element.kind === session.kind)
-      && (!query || `${element.key} ${element.title} ${element.description}`.toLocaleLowerCase('zh-CN').includes(query))
+      && studioTextMatchesQuery(`${element.key} ${element.title} ${element.description}`, query)
     )),
   })).filter((group) => !session.kind || group.kind === session.kind);
 

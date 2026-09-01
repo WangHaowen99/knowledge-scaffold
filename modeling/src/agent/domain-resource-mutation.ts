@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { StudioElement, StudioKind, StudioRelation } from './studio-read-service.js';
 
-export type DomainKind = Exclude<StudioKind, 'concept'>;
+export type DomainKind = Exclude<StudioKind, 'script'>;
 
 export interface DomainPatchCompilation {
   changes: Record<string, unknown>;
@@ -729,8 +729,8 @@ function assertExpectedItemHash(expected: unknown, value: unknown, path: string)
 }
 
 function assertDomainKind(value: StudioKind): DomainKind {
-  if (value === 'concept') {
-    throw new DomainPatchError('DOMAIN_KIND_READ_ONLY', '融合概念是只读资源', 'resource_id');
+  if (value === 'script') {
+    throw new DomainPatchError('DOMAIN_KIND_READ_ONLY', '脚本是只读资源', 'resource_id');
   }
   return value;
 }
