@@ -149,6 +149,24 @@ export default function RightPane() {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    const focusPending = (event) => {
+      followingTail.current = true;
+      const interactionId = String(event.detail?.interactionId || '');
+      const pending = [...(stream.current?.querySelectorAll('[data-pending-interaction]') || [])]
+        .find((element) => !interactionId || element.dataset.pendingInteraction === interactionId);
+      if (pending) {
+        pending.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        pending.querySelector('button:not([disabled]), textarea:not([disabled]), input:not([disabled])')
+          ?.focus({ preventScroll: true });
+        return;
+      }
+      if (scroller.current) scroller.current.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
+    };
+    window.addEventListener('mw-pending-attention', focusPending);
+    return () => window.removeEventListener('mw-pending-attention', focusPending);
+  }, []);
+
   return (
     <>
       <div className="wb-head">

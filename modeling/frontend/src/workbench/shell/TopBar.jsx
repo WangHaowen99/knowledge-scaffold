@@ -23,6 +23,7 @@ const selFiles = (s) => s.files;
 const selInteraction = (s) => s.interaction;
 const selRun = (s) => s.run;
 const selWorkflow = (s) => s.workflow;
+const selStudioPendingCount = (s) => s.studioPendingCount;
 
 export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
   const [transferProgress, setTransferProgress] = useState(null);
@@ -42,17 +43,37 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
   const confirmationGroups = interaction?.kind === 'confirmation'
     ? (interaction.payload?.changeGroups || []).length
     : 0;
+  const studioPendingCount = useStore(store, selStudioPendingCount);
   const counts = demo ? project.counts : {
     flows: files.filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd')).length,
     objects: files.filter((path) => path.startsWith('objects/') && path.endsWith('.md') && !path.endsWith('index.md')).length,
     scripts: files.filter((path) => path.startsWith('scripts/') && path.endsWith('.py')).length,
-    pending: interaction ? 1 : 0,
+    pending: Math.max(interaction ? 1 : 0, Number(studioPendingCount) || 0),
     pendingGroups: confirmationGroups,
   };
   const incr = scene === 'increment';
   const running = !interaction && ['queued', 'running', 'stopping'].includes(run?.status);
   const structuralPolicy = confirmPolicy.find((item) => item.tier === 'structural');
   const projectName = demo ? project.name : (realProject?.name || '正在加载项目');
+  const openPending = () => {
+    if (!counts.pending) return;
+    if (demo) {
+      actions.setScene('confirm');
+      return;
+    }
+    if (interaction) {
+      window.dispatchEvent(new CustomEvent('mw-pending-attention', {
+        detail: { interactionId: interaction.id },
+      }));
+      return;
+    }
+    store.set({
+      focus: { kind: 'studio', target: '知识包 Studio', view: 'table' },
+      follow: false,
+      pendingFocus: null,
+    });
+    window.dispatchEvent(new Event('mw-package-updated'));
+  };
   const exportPackage = async () => {
     try {
       const response = await downloadPackage(store.get().projectId);
@@ -113,11 +134,17 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
           <span className="pill pill-stale">4 项需处理</span>
         </>
       ) : (
-        <span className="pill pill-wait wb-priority-status">{counts.pending
-          ? counts.pendingGroups
-            ? `${counts.pending} 个决定 · ${counts.pendingGroups} 组变更`
-            : `${counts.pending} 个决定待处理`
-          : '没有待处理决定'}</span>
+        <button type="button" className="pill pill-wait wb-pending-pill"
+          disabled={!counts.pending} onClick={openPending}
+          title={interaction ? '查看建模助手中的待确认事项' : counts.pending ? '查看 Studio 中待检查并应用的工作草稿' : '当前没有待处理内容'}>
+          {counts.pending
+            ? interaction
+              ? counts.pendingGroups
+                ? `${counts.pending} 个决定 · ${counts.pendingGroups} 组变更`
+                : `${counts.pending} 个决定待处理`
+              : `${counts.pending} 项 Studio 修改待应用`
+            : '没有待处理决定'}
+        </button>
       )}
 
       {!demo && workflow?.phaseLabel && (

@@ -130,7 +130,7 @@ export const STUDIO_SCHEMA = {
         { key: 'title', label: '名称', type: 'text', required: true },
         { key: 'description', label: '业务定义', type: 'long_text', required: true },
         { key: 'aliases', label: '别名', type: 'text_list', required: false },
-        { key: 'fields', label: '字段', type: 'field_table', required: true, readOnly: true },
+        { key: 'fields', label: '字段', type: 'field_table', required: true },
         { key: 'queryBoundary', label: '查询边界', type: 'long_text', required: false },
         { key: 'sources', label: '知识来源', type: 'source_list', required: false, readOnly: true },
       ],
@@ -278,6 +278,9 @@ export class StudioReadService {
     const nextOffset = offset + items.length;
     return {
       workingRevision: this.workingPackage.workingRevision,
+      baseRevision: this.workingPackage.baseRevision,
+      candidateRevision: this.workingPackage.candidateRevision,
+      hasStagedChanges: this.workingPackage.workingRevision !== this.workingPackage.baseRevision,
       items,
       total: filtered.length,
       nextCursor: nextOffset < filtered.length

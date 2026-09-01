@@ -123,6 +123,39 @@ test('项目成员被移除后，已有事件 SSE 连接会在权限复核时关
   assert.equal(reconnect.statusCode, 404);
 });
 
+test('项目成员可读取会话和订阅事件，非成员仍不可访问', async (t) => {
+  const project = createProject({ owner: 'alice', kind: 'package', name: '成员事件订阅' });
+  setProjectMember(project.id, 'alice', 'bob', 'viewer');
+  const state = getAuthoringState();
+  state.apply({
+    kind: 'publish_event',
+    projectId: project.id,
+    type: 'package.revision.created',
+    payload: { revisionId: 'rev-member-visible' },
+  });
+
+  const memberApp = routeApp(t, 'bob');
+  const [session, advance, messages, graph, events] = await Promise.all([
+    memberApp.inject({ method: 'GET', url: `/api/projects/${project.id}/session` }),
+    memberApp.inject({ method: 'POST', url: `/api/projects/${project.id}/session/advance` }),
+    memberApp.inject({ method: 'GET', url: `/api/projects/${project.id}/ai-construction/messages` }),
+    memberApp.inject({ method: 'GET', url: `/api/projects/${project.id}/ai-construction` }),
+    memberApp.inject({ method: 'GET', url: `/api/projects/${project.id}/events?after=0` }),
+  ]);
+  assert.equal(session.statusCode, 200, session.body);
+  assert.equal(advance.statusCode, 200, advance.body);
+  assert.equal(messages.statusCode, 200, messages.body);
+  assert.equal(graph.statusCode, 200, graph.body);
+  assert.equal(events.statusCode, 200, events.body);
+  assert.equal(events.json().events[0].payload.revisionId, 'rev-member-visible');
+
+  const outsiderApp = routeApp(t, 'mallory');
+  const outsider = await outsiderApp.inject({
+    method: 'GET', url: `/api/projects/${project.id}/events?after=0`,
+  });
+  assert.equal(outsider.statusCode, 404);
+});
+
 test('阶段回退接口先预览影响并恢复知识包后重开目标阶段', async (t) => {
   const project = createProject({ owner: 'alice', kind: 'package', name: '阶段回退接口' });
   const packages = getPackageArtifactStore();
