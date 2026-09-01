@@ -649,6 +649,15 @@ def _aggregate_validation_reports(reports: list[Mapping[str, Any]]) -> dict[str,
 
 
 STRING = {"type": "string"}
+RELATION_NAME = {
+    "type": "string",
+    "description": (
+        "由模型根据材料证据生成，不从固定枚举中选择；只填写简洁、有方向的中文谓词"
+        "（如“属于”“包含”“生成”“引用”“依赖”“适用于”），不得包含源对象或目标对象的 key、"
+        "标题、别名，也不得只填写 1:1、1:N 等关系基数。提交前将“源对象 -> 关系名称 -> 目标对象”"
+        "连读为自然、符合证据的业务陈述；有更具体证据时避免只写“关联”“对应”。基数可写入 note。"
+    ),
+}
 PATH = {"type": "string", "description": "知识包内相对路径"}
 CHANGE_GROUP = {
     "type": "string",
@@ -1281,7 +1290,7 @@ CORE_TOOL_SPECS = (
             }},
             "relations": {"type": "array", "items": {
                 "type": "object",
-                "properties": {"relation": STRING, "target": STRING, "note": STRING,
+                "properties": {"relation": RELATION_NAME, "target": STRING, "note": STRING,
                                "evidence": {"type": "array", "items": STRING}},
                 "required": ["relation", "target"], "additionalProperties": False,
             }},
