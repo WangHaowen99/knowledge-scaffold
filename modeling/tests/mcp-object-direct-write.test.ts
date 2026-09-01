@@ -68,7 +68,7 @@ async function seedProject(projectId: string) {
             { key: 'customer_id', cnName: '客户ID', type: 'string', required: true, sourceColumn: 'customer_id' },
             { key: 'customer_name', cnName: '客户名称', type: 'string', sourceColumn: 'customer_name' },
           ],
-          relations: [{ relation: '关联订单', target: 'order', note: '客户与订单关联。' }],
+          relations: [{ relation: '关联', target: 'order', note: '客户与订单关联。' }],
         },
         {
           key: 'order',
@@ -194,7 +194,7 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
       update: [{ key: 'customer_name', changes: { alias: '名称', note: '客户展示名称。' } }],
     },
     relation_ops: {
-      update: [{ relationId, changes: { label: '服务订单', description: '客户服务的订单集合。' } }],
+      update: [{ relationId, changes: { label: '拥有', description: '客户服务的订单集合。' } }],
     },
   };
 
@@ -202,7 +202,7 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
   assert.equal(validated.ok, true);
   assert.equal(validated.resource.id, 'object:customer');
   assert.equal(validated.next_object.fields.length, 3);
-  assert.equal(validated.next_object.relations[0].label, '服务订单');
+  assert.equal(validated.next_object.relations[0].label, '拥有');
 
   const beforeEventSeq = getAuthoringState().snapshot(project.id).lastEventSeq;
   const updated = await call(project, 'update_ontology_object', mutation);
@@ -210,7 +210,7 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
   assert.notEqual(updated.revision, seeded.revision.oid);
   assert.equal(updated.object.metadata.queryBoundary, '只回答客户主数据和客户等级。');
   assert.equal(updated.object.fields.length, 3);
-  assert.equal(updated.object.relations[0].label, '服务订单');
+  assert.equal(updated.object.relations[0].label, '拥有');
   assert.deepEqual(updated.affected_resources, [
     { type: 'mapping', key: 'object-data-mappings', relation: 'field_mapping' },
     { type: 'object', key: 'customer' },
@@ -234,7 +234,7 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
   });
   assert.deepEqual(after.object.metadata.aliases, ['客户主档', '客户实体']);
   assert.equal(after.object.fields[2].key, 'customer_level');
-  assert.equal(after.object.relations[0].label, '服务订单');
+  assert.equal(after.object.relations[0].label, '拥有');
 });
 
 test('Object MCP 细化返回主键删除、关系目标非法和 revision 冲突', async () => {

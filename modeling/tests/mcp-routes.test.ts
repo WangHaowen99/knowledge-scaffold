@@ -85,7 +85,7 @@ async function seedProject(projectId: string) {
             { key: 'customer_id', cnName: '客户ID', type: 'string', required: true, sourceColumn: 'customer_id' },
             { key: 'customer_name', cnName: '客户名称', type: 'string', sourceColumn: 'customer_name' },
           ],
-          relations: [{ relation: '关联订单', target: 'order', note: '客户与订单关联。' }],
+          relations: [{ relation: '关联', target: 'order', note: '客户与订单关联。' }],
         },
         {
           key: 'order',
@@ -476,7 +476,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
             add: [{ key: 'customer_level', cnName: '客户等级', type: 'string', sourceColumn: 'customer_level' }],
           },
           relation_ops: {
-            update: [{ relationId, changes: { label: '客户订单' } }],
+            update: [{ relationId, changes: { label: '拥有' } }],
           },
         },
       },
@@ -536,7 +536,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
             add: [{ key: 'customer_level', cnName: '客户等级', type: 'string', sourceColumn: 'customer_level' }],
           },
           relation_ops: {
-            update: [{ relationId, changes: { label: '客户订单' } }],
+            update: [{ relationId, changes: { label: '拥有' } }],
           },
         },
       },
@@ -577,7 +577,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.equal(after.statusCode, 200, after.body);
   assert.deepEqual(after.json().result.structuredContent.object.metadata.aliases, ['客户主档', '客户实体']);
   assert.equal(after.json().result.structuredContent.object.fields.length, 3);
-  assert.equal(after.json().result.structuredContent.object.relations[0].label, '客户订单');
+  assert.equal(after.json().result.structuredContent.object.relations[0].label, '拥有');
 
   const legacyInitialize = await app.inject({
     method: 'POST',
