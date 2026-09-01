@@ -392,7 +392,6 @@ function mergeObjectRelations(
   const issues: OntologyValidationIssue[] = [];
   if (raw === undefined) {
     return {
-      relations: currentObjectRelations(current).map(toNormalizedRelation),
       issues,
       delta: { added: 0, updated: 0, removed: 0 },
       addTargets: [],
@@ -526,9 +525,11 @@ function mergeObjectRelations(
       targetId: relation.targetId,
       label: relation.label,
       ...(relation.description !== undefined ? { description: relation.description } : {}),
+      ...(relation.evidence?.length ? { evidence: [...relation.evidence] } : {}),
     })),
     'relation_ops.final_relations',
     [{ kind: 'object_relation', targetKinds: ['object'] }],
+    { preserveEvidence: true },
   );
   issues.push(...normalized.issues);
   return {
@@ -568,16 +569,6 @@ function currentObjectRelations(object: SpecObject): RawObjectRelation[] {
 
 function projectRelations(object: SpecObject): OntologyObjectRelationView[] {
   return currentObjectRelations(object).map(({ evidence: _evidence, ...relation }) => relation);
-}
-
-function toNormalizedRelation(relation: RawObjectRelation): NormalizedOntologyRelation {
-  return {
-    kind: relation.kind,
-    targetKind: 'object',
-    targetKey: relation.targetKey,
-    ...(relation.label ? { label: relation.label } : {}),
-    ...(relation.description ? { description: relation.description } : {}),
-  };
 }
 
 function effectivePatchChanges(

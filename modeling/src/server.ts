@@ -16,6 +16,7 @@ import { recoverInterruptedAuthoringWork } from './authoring/restart-recovery.js
 import { failInterruptedEvaluationRounds } from './workflow/m3-repo.js';
 import { failInterruptedOptimizationApplyTasks } from './evaluation/optimization-apply-progress.js';
 import { archiveNonBlockingFindingInteractions } from './authoring/nonblocking-findings.js';
+import { startModelingMcpServer, type ModelingMcpServerHandle } from './mcp-server.js';
 
 async function main() {
   const db = getDb(); // 初始化 schema
@@ -32,6 +33,25 @@ async function main() {
   await registerRoutes(app);
   await registerFrontend(app);
   await app.listen({ port: config.port, host: '0.0.0.0' });
+  let mcp: ModelingMcpServerHandle;
+  try {
+    mcp = await startModelingMcpServer();
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await mcp.close(`收到 ${signal}`);
+    } finally {
+      await app.close();
+    }
+  };
+  process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.once('SIGINT', () => { void shutdown('SIGINT'); });
   app.log.info(`知识包建模工具后端已启动：http://localhost:${config.port}`);
 }
 

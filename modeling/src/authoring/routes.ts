@@ -3046,6 +3046,10 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     let closed = false;
     const flush = () => {
       if (closed) return;
+      if (!canReadProject(project.id, req.user!.username)) {
+        cleanup();
+        return;
+      }
       try {
         let page = state.replay(project.id, cursor);
         while (page.events.length) {
