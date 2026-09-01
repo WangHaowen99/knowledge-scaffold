@@ -382,6 +382,16 @@ def _normalized_ontology_name(value: object) -> str:
     return unicodedata.normalize("NFKC", str(value or "").strip()).casefold()
 
 
+def _is_ontology_name_candidate(candidate: Path, ontology_id: str) -> bool:
+    if candidate.name.startswith("."):
+        return False
+    if candidate.name == ontology_id:
+        return False
+    if candidate.is_symlink():
+        return False
+    return candidate.is_dir()
+
+
 def _find_ontology_name_conflict(
     ontologies_dir: Path,
     *,
@@ -398,12 +408,7 @@ def _find_ontology_name_conflict(
         return None
 
     for candidate in candidates:
-        if (
-            candidate.name.startswith(".")
-            or candidate.name == ontology_id
-            or candidate.is_symlink()
-            or not candidate.is_dir()
-        ):
+        if not _is_ontology_name_candidate(candidate, ontology_id):
             continue
         manifest_path = candidate / "manifest.yaml"
         if not manifest_path.is_file() or manifest_path.is_symlink():
