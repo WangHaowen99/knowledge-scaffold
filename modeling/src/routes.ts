@@ -49,7 +49,7 @@ import * as m2 from './workflow/m2.js';
 import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
-import { parsePackageArchive } from './workflow/package-import.js';
+import { parsePackageArchive, renameImportedPackageArchive } from './workflow/package-import.js';
 import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
@@ -239,11 +239,33 @@ function normalizedPackageName(value: unknown): string {
   return String(value ?? '').trim().normalize('NFKC').toLowerCase();
 }
 
-function hasVisiblePackageNameConflict(username: string, packageName: string): boolean {
-  const normalizedName = normalizedPackageName(packageName);
-  return Boolean(normalizedName && listProjects(username).some((project) => (
-    project.kind === 'package' && normalizedPackageName(project.name) === normalizedName
-  )));
+function packageNameCandidate(baseName: string, sequence: number): string {
+  const suffix = `（${sequence}）`;
+  const availableLength = Math.max(1, 200 - [...suffix].length);
+  const prefix = [...baseName].slice(0, availableLength).join('').trimEnd();
+  return `${prefix}${suffix}`;
+}
+
+function visiblePackageNameConflict(
+  username: string,
+  attemptedName: string,
+  originalName: string,
+): { originalName: string; attemptedName: string; candidates: string[] } | null {
+  const occupied = new Set(
+    listProjects(username)
+      .filter((project) => project.kind === 'package')
+      .map((project) => normalizedPackageName(project.name)),
+  );
+  if (!occupied.has(normalizedPackageName(attemptedName))) return null;
+
+  const original = String(originalName ?? '').trim();
+  const baseName = original.replace(/\s*[（(]\d+[）)]$/u, '').trim() || original;
+  const candidates: string[] = [];
+  for (let sequence = 2; sequence < 10_002 && candidates.length < 3; sequence += 1) {
+    const candidate = packageNameCandidate(baseName, sequence);
+    if (!occupied.has(normalizedPackageName(candidate))) candidates.push(candidate);
+  }
+  return { originalName: original, attemptedName, candidates };
 }
 
 function semanticBindingPreview(projectId: string, revision: string, spec: any, tables: any[]) {
@@ -843,19 +865,29 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
 
       let imported: ReturnType<typeof parsePackageArchive>;
+      let originalPackageName = '';
       try {
         imported = parsePackageArchive(new Uint8Array(await file.toBuffer()));
+        originalPackageName = imported.spec.name;
+        const requestedName = String((file.fields as any)?.package_name?.value ?? '').trim();
+        if (requestedName) imported = renameImportedPackageArchive(imported, requestedName);
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
       }
 
-      if (hasVisiblePackageNameConflict(req.user!.username, imported.spec.name)) {
+      const nameConflict = visiblePackageNameConflict(
+        req.user!.username,
+        imported.spec.name,
+        originalPackageName,
+      );
+      if (nameConflict) {
         return reply.code(409).send({
           error: (
             `知识包名称「${imported.spec.name}」已存在，不可重复导入。`
-            + '请修改 manifest.yaml 中的 name 字段后重新导入。'
+            + '请选择候选名称或输入新名称后继续导入。'
           ),
           code: 'PACKAGE_NAME_CONFLICT',
+          conflict: nameConflict,
         });
       }
 
@@ -874,7 +906,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           spec: imported.spec,
           coverage: imported.coverage,
           files: imported.rawFiles,
-          note: `导入 ${file.filename}`,
+          note: originalPackageName === imported.spec.name
+            ? `导入 ${file.filename}`
+            : `导入 ${file.filename}，名称从「${originalPackageName}」调整为「${imported.spec.name}」`,
           action: {
             cause: 'package_import',
             summary: `导入知识包 ${imported.spec.name}`,
