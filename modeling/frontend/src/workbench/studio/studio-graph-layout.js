@@ -4,19 +4,40 @@ import elkWorkerUrl from 'elkjs/lib/elk-worker.min.js?url';
 import { separateStudioReciprocalRoutes } from './studio-graph-geometry.js';
 
 const NODE_SIZES = {
-  object: { width: 194, height: 82 },
-  operation: { width: 184, height: 72 },
-  rule: { width: 174, height: 70 },
-  metric: { width: 164, height: 62 },
-  concept: { width: 170, height: 68 },
+  object: { width: 148, height: 148 },
+  operation: { width: 120, height: 72 },
+  rule: { width: 114, height: 68 },
+  metric: { width: 118, height: 62 },
+  script: { width: 106, height: 68 },
+  cluster: { width: 170, height: 170 },
 };
-const DEFAULT_NODE_SIZE = { width: 178, height: 72 };
-const elk = typeof Worker === 'function' ? new ELK({ workerUrl: elkWorkerUrl }) : null;
+const NODE_MAX_WIDTHS = {
+  object: 180,
+  operation: 180,
+  rule: 170,
+  metric: 180,
+  script: 160,
+  cluster: 240,
+};
+const DEFAULT_NODE_SIZE = { width: 106, height: 66 };
+const DEFAULT_NODE_MAX_WIDTH = 160;
+const NODE_TITLE_FONT_SIZE = 15;
+const NODE_TITLE_WIDTH_RATIO = 0.72;
+const NODE_TITLE_LINE_HEIGHT = 18;
+let elk = null;
 
-export async function layoutStudioGraph(nodes, edges) {
-  const sizedNodes = nodes.map(withNodeSize);
-  if (!elk) return { nodes: fallbackStudioLayout(sizedNodes), routes: {} };
-  const graph = await elk.layout({
+function studioElk() {
+  if (typeof Worker !== 'function') return null;
+  if (!elk) elk = new ELK({ workerUrl: elkWorkerUrl });
+  return elk;
+}
+
+export async function layoutStudioGraph(nodes, edges, sizingEdges = edges) {
+  const degreeById = studioDegreeById(nodes, sizingEdges);
+  const sizedNodes = nodes.map((node) => withNodeSize(node, degreeById.get(node.id) || 0));
+  const engine = studioElk();
+  if (!engine) return { nodes: fallbackStudioLayout(sizedNodes), routes: {} };
+  const graph = await engine.layout({
     id: 'studio-root',
     layoutOptions: studioLayoutOptions(sizedNodes.length),
     children: sizedNodes.map((node) => ({ id: node.id, width: node.width, height: node.height })),
@@ -26,9 +47,10 @@ export async function layoutStudioGraph(nodes, edges) {
   return { ...result, routes: separateStudioReciprocalRoutes(result.routes, edges) };
 }
 
-export function fallbackStudioLayout(nodes) {
-  const sizedNodes = nodes.map(withNodeSize);
-  const hasBackendPositions = sizedNodes.every((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
+export function fallbackStudioLayout(nodes, sizingEdges = []) {
+  const degreeById = studioDegreeById(nodes, sizingEdges);
+  const sizedNodes = nodes.map((node) => withNodeSize(node, degreeById.get(node.id) || 0));
+  const hasBackendPositions = studioBackendPositionsUsable(sizedNodes);
   if (hasBackendPositions) {
     return sizedNodes.map((node) => ({ ...node, position: { x: node.x, y: node.y } }));
   }
@@ -52,14 +74,52 @@ export function fallbackStudioLayout(nodes) {
   }));
 }
 
-export function studioNodeSize(node) {
+export function studioBackendPositionsUsable(nodes) {
+  if (!nodes.every((node) => Number.isFinite(node.x) && Number.isFinite(node.y))) return false;
+  if (nodes.length <= 1) return true;
+  const unique = new Set(nodes.map((node) => `${node.x}:${node.y}`));
+  if (unique.size !== nodes.length) return false;
+  if (nodes.length < 4) return true;
+  const xs = nodes.map((node) => node.x);
+  const ys = nodes.map((node) => node.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  if (width < 1 || height < 1) return false;
+  const aspect = width / height;
+  return aspect >= 0.125 && aspect <= 8;
+}
+
+export function studioNodeSize(node, degree = 0) {
   const base = NODE_SIZES[node.kind] || DEFAULT_NODE_SIZE;
-  const titleUnits = Array.from(node.label || '').length;
-  const keyUnits = Math.ceil(String(node.id || '').length * 0.45);
-  return {
-    width: base.width + Math.min(30, Math.max(0, Math.max(titleUnits, keyUnits) - 8) * 2),
-    height: base.height,
-  };
+  const maxWidth = NODE_MAX_WIDTHS[node.kind] || DEFAULT_NODE_MAX_WIDTH;
+  const degreeBoost = degree >= 5 ? 18 : degree >= 3 ? 10 : degree >= 1 ? 4 : 0;
+  const titleWidth = estimateStudioTextWidth(node.label, NODE_TITLE_FONT_SIZE);
+  const contentWidth = Math.ceil(titleWidth / NODE_TITLE_WIDTH_RATIO);
+  const width = Math.round(Math.min(maxWidth, Math.max(base.width + degreeBoost, contentWidth)));
+  let lineCount = Math.max(1, Math.ceil(titleWidth / Math.max(1, width * NODE_TITLE_WIDTH_RATIO)));
+  let height = Math.round(base.height + Math.min(degreeBoost, 10) + (lineCount - 1) * NODE_TITLE_LINE_HEIGHT);
+  if (node.kind === 'object' || node.kind === 'cluster') {
+    const memberBoost = node.kind === 'cluster'
+      ? Math.min(60, Math.round(Math.sqrt(Math.max(1, node.memberCount || 1)) * 5))
+      : 0;
+    let diameter = Math.max(width, height);
+    diameter = Math.min(maxWidth, diameter + memberBoost);
+    lineCount = Math.max(1, Math.ceil(titleWidth / Math.max(1, diameter * NODE_TITLE_WIDTH_RATIO)));
+    height = Math.round(base.height + Math.min(degreeBoost, 10) + (lineCount - 1) * NODE_TITLE_LINE_HEIGHT);
+    diameter = Math.max(diameter, width, height);
+    return { width: diameter, height: diameter };
+  }
+  return { width, height };
+}
+
+export function estimateStudioTextWidth(text, fontSize = NODE_TITLE_FONT_SIZE) {
+  return Array.from(String(text || '')).reduce((width, character) => {
+    if (/\s/u.test(character)) return width + fontSize * 0.3;
+    if (/[\u2e80-\u9fff\uf900-\ufaff]/u.test(character)) return width + fontSize;
+    if (/[A-Z]/u.test(character)) return width + fontSize * 0.66;
+    if (/[a-z0-9]/u.test(character)) return width + fontSize * 0.54;
+    return width + fontSize * 0.64;
+  }, 0);
 }
 
 export function studioLayoutOptions(nodeCount) {
@@ -98,8 +158,17 @@ export function studioLayerBound(nodeCount) {
   return Math.max(4, Math.min(8, Math.ceil(Math.sqrt(nodeCount) / 2)));
 }
 
-function withNodeSize(node) {
-  return { ...node, ...studioNodeSize(node) };
+function withNodeSize(node, degree = 0) {
+  return { ...node, ...studioNodeSize(node, degree), degree };
+}
+
+function studioDegreeById(nodes, edges) {
+  const result = new Map(nodes.map((node) => [node.id, 0]));
+  edges.forEach((edge) => {
+    if (result.has(edge.source)) result.set(edge.source, result.get(edge.source) + 1);
+    if (result.has(edge.target)) result.set(edge.target, result.get(edge.target) + 1);
+  });
+  return result;
 }
 
 function offsets(sizes, gap) {

@@ -24,6 +24,7 @@ import {
   savePackageDataSource,
   respondChangePlan as respondChangePlanRequest,
 } from './api.js';
+import { prefetchStudioBootstrap } from '../studio/studio-api.js';
 
 /** demo 场景：对应设计草图的各屏状态。接后端后由真实事件驱动，这里只是入口。 */
 export const SCENES = [
@@ -43,6 +44,10 @@ function sceneFromUrl() {
 }
 const boot = SCENES.find((s) => s.id === sceneFromUrl()) || SCENES[0];
 const initialProjectId = projectFromUrl();
+const initialStudioFocus = initialProjectId ? studioFocusFromLocation() : null;
+if (initialProjectId && initialStudioFocus) {
+  void prefetchStudioBootstrap(initialProjectId, { limit: 200 }).catch(() => undefined);
+}
 
 const initial = {
   demo: !initialProjectId,
@@ -76,7 +81,7 @@ const initial = {
   scene: boot.id,
   leftTab: boot.leftTab,                // pkg | mat
   focus: initialProjectId
-    ? { kind: 'empty', target: '' }
+    ? initialStudioFocus || { kind: 'empty', target: '' }
     : { ...boot.focus, target: focusTargetFor(boot.focus.kind), node: boot.id === 'modeling' ? 'D2' : undefined },
   follow: true,                         // 是否跟随助手的 focus
   pendingFocus: null,                   // follow=false 时助手想去的地方，攒着等用户「跟上」

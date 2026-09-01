@@ -161,13 +161,10 @@ export function studioLabelPosition(points, anchor) {
   if (!anchor || !points[anchor.segmentIndex + 1]) return longestSegmentMiddle(points);
   const start = points[anchor.segmentIndex];
   const end = points[anchor.segmentIndex + 1];
-  const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
   const point = {
     x: start.x + (end.x - start.x) * anchor.t,
     y: start.y + (end.y - start.y) * anchor.t,
   };
-  if (horizontal) point.y += anchor.normalOffset;
-  else point.x += anchor.normalOffset;
   return point;
 }
 
