@@ -6,10 +6,12 @@ const [
   { createProjectEventReplayGate },
   {
     createStudioProjectEventBaseline,
+    markStudioDraftsForRefresh,
     STUDIO_PROJECT_REFRESH_EVENT_TYPES,
     planStudioProjectEvent,
     planStudioWindowRefresh,
     studioHasPendingLocalEdits,
+    studioPendingDraftRefresh,
     studioRefreshNoticeMessage,
   },
 ] = await Promise.all([
@@ -130,12 +132,41 @@ test('Studio 的 window 刷新在本地草稿存在时也会延后', () => {
 test('Studio 外部刷新提示会携带 revision 前缀', () => {
   assert.equal(
     studioRefreshNoticeMessage('1234567890abcdef'),
-    '知识包已有新版本（1234567890ab），当前保留你的本地输入。',
+    '知识包已有新版本（1234567890ab），当前显示你的本地未保存修改。',
   );
   assert.equal(
     studioRefreshNoticeMessage(''),
-    '知识包已有新版本，当前保留你的本地输入。',
+    '知识包已有新版本，当前显示你的本地未保存修改。',
   );
+});
+
+test('Studio 待载入 revision 随本地草稿持久化并能在刷新后恢复', () => {
+  const drafts = {
+    'operation:read_record': {
+      draft: { title: '本地名称' },
+      baseRevision: 'rev-old',
+      updatedAt: 1,
+    },
+  };
+  const marked = markStudioDraftsForRefresh(drafts, 'rev-new');
+
+  assert.deepEqual(marked['operation:read_record'], {
+    ...drafts['operation:read_record'],
+    refreshPending: true,
+    newerRevision: 'rev-new',
+  });
+  assert.deepEqual(studioPendingDraftRefresh(JSON.parse(JSON.stringify(marked)), 'rev-new'), {
+    pending: true,
+    revisionId: 'rev-new',
+  });
+  assert.deepEqual(studioPendingDraftRefresh(drafts, 'rev-newer'), {
+    pending: true,
+    revisionId: 'rev-newer',
+  });
+  assert.deepEqual(studioPendingDraftRefresh(drafts, 'rev-old'), {
+    pending: false,
+    revisionId: '',
+  });
 });
 
 test('StudioView 先建立当前项目事件基线再加载，并在加载页保持订阅', () => {
@@ -158,7 +189,19 @@ test('StudioView 保留 revision 事件刷新、window 更新与脏态保护', (
 
   assert.match(source, /planStudioProjectEvent\(\{/);
   assert.match(source, /planStudioWindowRefresh\(\{\s*localEdits:\s*localEditsRef\.current\s*\}\)/);
+  assert.match(source, /entryDrafts: markStudioDraftsForRefresh\(current\.entryDrafts, plan\.revisionId\)/);
+  assert.match(source, /studioPendingDraftRefresh\(previous\.entryDrafts, list\.workingRevision\)/);
+  assert.match(source, /if \(!entryDraftDirty \|\| !externalRefreshNotice\.pending\) return;/);
   assert.match(source, /if \(!entryDraftDirty && deferredRefreshRef\.current\) \{/);
   assert.match(source, /window\.addEventListener\('mw-package-updated', refresh\)/);
-  assert.match(source, /<StudioExternalRefreshBanner message=\{externalRefreshNotice\.message\} onReload=\{loadStudio\} \/>/);
+  assert.match(source, /const discardLocalDraftsAndLoadStudio = useCallback\(async \(\) => \{/);
+  assert.match(source, /update\(\{ entryDrafts: \{\}, details: \{\} \}\);\s*await loadStudio\(\)/s);
+  assert.match(source, /onReload=\{discardLocalDraftsAndLoadStudio\}/);
+  assert.match(source, /放弃草稿并载入新版/);
+});
+
+test('Studio schema 每次刷新都重新验证动态租约', () => {
+  const source = readFileSync(new URL('../frontend/src/workbench/studio/studio-api.js', import.meta.url), 'utf8');
+
+  assert.match(source, /getStudioSchema = \(projectId\) => api\(`\$\{P\(projectId\)\}\/schema`, \{ cache: 'no-cache' \}\)/);
 });
