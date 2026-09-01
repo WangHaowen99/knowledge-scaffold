@@ -53,7 +53,7 @@ function packageSpec(): PackageSpec {
           { key: 'id', cnName: '数据ID', sourceColumn: 'ID', type: 'string', required: true },
           { key: 'name', cnName: '名称', sourceColumn: 'NAME', type: 'string' },
         ],
-        relations: [{ relation: 'references', target: 'ConceptObject' }],
+        relations: [{ relation: '引用', target: 'ConceptObject' }],
       },
       {
         key: 'ConceptObject',
@@ -129,6 +129,10 @@ test('package mapping：新生成规格允许多类来源且仍要求字段中�
   assert.ok(schema.properties.sourceTable);
   assert.ok(schema.properties.sourceRefs);
   assert.ok(fieldSchema.required.includes('cnName'));
+  const relationSchema = schema.properties.relations.items.properties.relation;
+  assert.match(relationSchema.description, /模型根据材料证据生成.*中文谓词/);
+  assert.match(relationSchema.description, /不得包含源对象或目标对象.*连读/);
+  assert.equal(relationSchema.enum, undefined);
 });
 
 test('package mapping：同一来源 Sheet 可以支持多个实体，并写入对象索引', () => {
@@ -148,6 +152,7 @@ test('package mapping：同一来源 Sheet 可以支持多个实体，并写入�
     graphSchema.objects.map((object) => [object.key, object.defaultSheet]),
     [['DataObject', 'DataSheet'], ['ConceptObject', 'DataSheet']],
   );
+  assert.equal(graphSchema.relations[0]?.relationName, '引用');
 });
 
 test('package mapping format：纯渲染产物符合语义 mapping 契约', () => {

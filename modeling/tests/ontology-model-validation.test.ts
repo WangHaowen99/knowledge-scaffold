@@ -132,7 +132,7 @@ test('关系目标校验基于最终 spec 判断缺失引用', () => {
   const issues = validateOntologyRelationTargets(spec, [{
     path: 'changes.relations',
     relations: [
-      { kind: 'object_relation', targetKind: 'object', targetKey: 'order', label: '关联订单' },
+      { kind: 'object_relation', targetKind: 'object', targetKey: 'order', label: '关联' },
       { kind: 'object_relation', targetKind: 'object', targetKey: 'missing', label: '缺失对象' },
     ],
   }]);
