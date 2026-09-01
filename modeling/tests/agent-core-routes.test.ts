@@ -3288,6 +3288,57 @@ test('评测启动服从确定性门禁，评测库拒绝写 SQL', async (t) => 
   }, runId);
   assert.equal(writeQuery.statusCode, 400, writeQuery.body);
   assert.equal(writeQuery.json().code, 'READ_ONLY_SQL_REQUIRED');
+
+  const unavailableQuery = await tool(app, project.id, 'query_eval_db', {
+    sql: 'SELECT 1',
+  }, runId);
+  assert.equal(unavailableQuery.statusCode, 409, unavailableQuery.body);
+  assert.equal(unavailableQuery.json().code, 'EVAL_DB_TOOL_UNAVAILABLE');
+  assert.doesNotMatch(unavailableQuery.body, /EVAL_DB_URL/);
+  assert.match(unavailableQuery.json().reason, /直连评测库的诊断能力/);
+});
+
+test('Agent 内部数据源状态只返回脱敏摘要', async (t) => {
+  const project = createProject({ owner: 'alice', name: '数据源摘要' });
+  const app = appFor(t);
+  const { saveProjectDataSource } = await import('../src/evaluation/data-source-repo.js');
+  saveProjectDataSource({
+    projectId: project.id,
+    mode: 'connection',
+    provider: 'neo4j',
+    workspaceId: 'workspace_demo',
+    ontologyId: 'ontology_demo',
+    config: {
+      uri: 'bolt://graph.example.com:7687',
+      username: 'graph_user',
+      password: '<redacted>',
+      database: 'neo4j',
+      workspace_property: 'workspace_id',
+      workspace_value: 'workspace_demo',
+      ontology_property: 'ontology_id',
+      ontology_value: 'ontology_demo',
+    },
+  });
+
+  const response = await tool(app, project.id, 'project_data_source_status');
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json(), {
+    configured: true,
+    mode: 'connection',
+    provider: 'neo4j',
+    providerMeaning: 'project_evaluation_data_source_type',
+    mappingAliasNote: 'mappings/object-data-mappings.json 中的 default_provider_alias/provider_alias 是知识包内部逻辑数据源别名，不是项目评测数据源 provider',
+    workspaceLinked: true,
+    ontologyLinked: true,
+    neo4j: {
+      workspaceIsolationConfigured: true,
+      ontologyIsolationConfigured: true,
+      graphDatabaseConfigured: true,
+    },
+    display: { text: '已配置 Neo4j 评测数据源' },
+  });
+  assert.doesNotMatch(response.body, /bolt:\/\/|graph_user|<redacted>|workspace_id|ontology_id/);
 });
 
 test('可选评测库未配置时只记录活动，不要求用户处理', async (t) => {
