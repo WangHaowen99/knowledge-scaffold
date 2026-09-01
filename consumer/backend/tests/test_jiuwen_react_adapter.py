@@ -5697,7 +5697,13 @@ def test_factory_passes_explicit_context_engine_config(monkeypatch):
     assert cec.kwargs["max_context_message_num"] is None
     assert cec.kwargs["default_window_round_num"] == 14
     assert cec.kwargs["enable_reload"] is False
-    assert cec.kwargs["enable_kv_cache_release"] is False
+    assert "enable_kv_cache_release" not in cec.kwargs
+    assert created["react_agent_config"]["kv_cache_affinity_config"] == {
+        "enable_kv_cache_release": False,
+        "enable_kv_cache_affinity": False,
+    }
+    assert created["react_agent_config"]["context_processors"] == []
+    assert created["react_agent_config"]["parallel_tool_calls"] is True
 
 
 @pytest.mark.parametrize("value, expected", [
