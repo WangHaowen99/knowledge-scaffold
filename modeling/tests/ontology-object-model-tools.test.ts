@@ -98,7 +98,7 @@ async function seedProject(projectId: string) {
             { key: 'customer_id', cnName: '客户ID', type: 'string', required: true, sourceColumn: 'customer_id' },
             { key: 'customer_name', cnName: '客户名称', type: 'string', sourceColumn: 'customer_name' },
           ],
-          relations: [{ relation: '关联订单', target: 'order', note: '客户与订单关联。' }],
+          relations: [{ relation: '关联', target: 'order', note: '客户与订单关联。' }],
         },
         {
           key: 'order',
@@ -190,7 +190,7 @@ test('对象模型工具支持预校验、apply、review 和确认生效', async
       update: [{ key: 'customer_name', changes: { alias: '名称', note: '客户展示名称。' } }],
     },
     relation_ops: {
-      update: [{ relationId, changes: { label: '服务订单', description: '客户服务的订单集合。' } }],
+      update: [{ relationId, changes: { label: '拥有', description: '客户服务的订单集合。' } }],
     },
   };
 
@@ -199,7 +199,7 @@ test('对象模型工具支持预校验、apply、review 和确认生效', async
   assert.equal(validated.json().ok, true);
   assert.deepEqual(validated.json().normalized_mutation.fieldOps.addKeys, ['customer_level']);
   assert.equal(validated.json().next_object.fields.length, 3);
-  assert.equal(validated.json().next_object.relations[0].label, '服务订单');
+  assert.equal(validated.json().next_object.relations[0].label, '拥有');
 
   const applied = await tool(app, project.id, 'apply_ontology_object_patch', {
     ...mutation,
@@ -258,7 +258,7 @@ test('对象模型工具支持预校验、apply、review 和确认生效', async
   assert.equal(after.json().object.metadata.queryBoundary, '只回答客户主数据和客户等级。');
   assert.equal(after.json().object.fields.length, 3);
   assert.equal(after.json().object.fields[2].key, 'customer_level');
-  assert.equal(after.json().object.relations[0].label, '服务订单');
+  assert.equal(after.json().object.relations[0].label, '拥有');
 });
 
 test('领域 Patch 只编译语义受影响路径，并保留无关候选和隐藏规格字段', async (t) => {
@@ -714,7 +714,7 @@ test('对象模型工具支持查询 review 状态与审计记录', async (t) =>
       add: [{ key: 'customer_level', cnName: '客户等级', type: 'string', sourceColumn: 'customer_level' }],
     },
     relation_ops: {
-      update: [{ relationId, changes: { label: '客户订单' } }],
+      update: [{ relationId, changes: { label: '拥有' } }],
     },
   };
 

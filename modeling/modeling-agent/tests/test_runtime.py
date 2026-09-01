@@ -165,6 +165,17 @@ async def test_evaluation_cancel_requires_explicit_user_intent() -> None:
     )).invoke({"round_id": "round_demo"}))
     assert allowed["cancelled"] is True
     assert [call["tool"] for call in allowed_gateway.calls] == ["cancel_evaluation"]
+async def test_upsert_object_relation_name_is_model_generated_chinese_text() -> None:
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "upsert_object")
+    relation = spec.input_schema["properties"]["relations"]["items"]["properties"]["relation"]
+
+    assert relation["type"] == "string"
+    assert "enum" not in relation
+    assert "模型根据材料证据生成" in relation["description"]
+    assert "中文谓词" in relation["description"]
+    assert "1:N" in relation["description"]
+    assert "不得包含源对象或目标对象" in relation["description"]
+    assert "连读" in relation["description"]
 
 
 async def test_model_uses_stream_specific_timeouts(settings) -> None:
