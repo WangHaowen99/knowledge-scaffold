@@ -230,7 +230,7 @@ test('Studio 单条创建和编辑形成工作草稿，确定性检查后直接�
   const schema = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/schema` });
   assert.equal(schema.statusCode, 200, schema.body);
   assert.deepEqual(schema.json().capabilities, {
-    read: true, create: true, update: true, delete: true, batch: true,
+    read: true, create: true, update: true, delete: true, batch: true, operationFlow: true,
   });
 
   const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });

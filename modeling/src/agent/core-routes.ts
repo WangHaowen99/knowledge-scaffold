@@ -17,6 +17,7 @@ import {
   StudioReadError,
   StudioReadService,
 } from './studio-read-service.js';
+import { StudioOperationFlowService } from './studio-operation-flow-service.js';
 import { StudioReviewService } from './studio-review-service.js';
 import { StudioWriteError, StudioWriteService } from './studio-write-service.js';
 import {
@@ -30,6 +31,36 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
   const studioWrites = new StudioWriteService();
   const studioReviews = new StudioReviewService();
   const artifacts = getPackageArtifactStore();
+  const studioReadCache = new Map<string, StudioReadService>();
+  const studioReadInFlight = new Map<string, Promise<{
+    workingPackage: Awaited<ReturnType<AgentCoreService['workbenchStudioFiles']>>;
+    studio: StudioReadService;
+  }>>();
+  const studioRead = async (project: NonNullable<ReturnType<typeof getProject>>, username: string) => {
+    const requestKey = `${project.id}:${username}`;
+    const inFlight = studioReadInFlight.get(requestKey);
+    if (inFlight) return inFlight;
+    const promise = (async () => {
+      const workingPackage = await service.workbenchStudioFiles(project, username);
+      const cacheKey = `${project.id}:${username}:${workingPackage.workingRevision}`;
+      const cached = studioReadCache.get(cacheKey);
+      if (cached) {
+        studioReadCache.delete(cacheKey);
+        studioReadCache.set(cacheKey, cached);
+        return { workingPackage, studio: cached };
+      }
+      const studio = new StudioReadService(workingPackage);
+      studioReadCache.set(cacheKey, studio);
+      while (studioReadCache.size > 24) studioReadCache.delete(studioReadCache.keys().next().value!);
+      return { workingPackage, studio };
+    })();
+    studioReadInFlight.set(requestKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (studioReadInFlight.get(requestKey) === promise) studioReadInFlight.delete(requestKey);
+    }
+  };
 
   app.get('/api/projects/:id/agent/snapshot', async (request, reply) => {
     let project = getProject(String((request.params as any).id ?? ''));
@@ -235,6 +266,31 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     return studioSchemaForRole(role, lease);
   });
 
+  app.get('/api/projects/:id/studio/bootstrap', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const query = (request.query ?? {}) as Record<string, unknown>;
+      const { studio } = await studioRead(project, request.user!.username);
+      studio.assertRevision(query.workingRevision);
+      const elements = studio.list({ ...query, limit: query.limit ?? 200 });
+      const graph = studio.graph(query);
+      const role = projectMemberRole(project.id, request.user!.username);
+      const lease = studioWrites.leaseStatus(project.id, request.user!.username);
+      setRevisionEtag(reply, elements.workingRevision);
+      return {
+        schema: studioSchemaForRole(role, lease),
+        elements,
+        graph,
+        workingRevision: elements.workingRevision,
+      };
+    } catch (error) {
+      return sendStudioReadError(reply, error);
+    }
+  });
+
   app.get('/api/projects/:id/studio/elements', async (request, reply) => {
     const project = getProject(String((request.params as any).id ?? ''));
     if (!project || !canReadProject(project.id, request.user!.username)) {
@@ -242,11 +298,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       const query = (request.query ?? {}) as Record<string, unknown>;
-      const workingPackage = await service.workbenchStudioFiles(
-        project,
-        request.user!.username,
-      );
-      const studio = new StudioReadService(workingPackage);
+      const { workingPackage, studio } = await studioRead(project, request.user!.username);
       studio.assertRevision(query.workingRevision);
       const response = studio.list(query);
       setRevisionEtag(reply, response.workingRevision);
@@ -403,12 +455,29 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       const query = (request.query ?? {}) as Record<string, unknown>;
-      const studio = new StudioReadService(await service.workbenchStudioFiles(
-        project,
-        request.user!.username,
-      ));
+      const { studio } = await studioRead(project, request.user!.username);
       studio.assertRevision(query.workingRevision);
       const response = studio.detail((request.params as any).elementId);
+      setRevisionEtag(reply, response.workingRevision);
+      return response;
+    } catch (error) {
+      return sendStudioReadError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/studio/elements/:elementId/flow', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const query = (request.query ?? {}) as Record<string, unknown>;
+      const workingPackage = await service.workbenchStudioFiles(project, request.user!.username);
+      const studio = new StudioReadService(workingPackage);
+      studio.assertRevision(query.workingRevision);
+      const response = new StudioOperationFlowService(workingPackage).read(
+        (request.params as any).elementId,
+      );
       setRevisionEtag(reply, response.workingRevision);
       return response;
     } catch (error) {
@@ -423,10 +492,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       const query = (request.query ?? {}) as Record<string, unknown>;
-      const studio = new StudioReadService(await service.workbenchStudioFiles(
-        project,
-        request.user!.username,
-      ));
+      const { studio } = await studioRead(project, request.user!.username);
       studio.assertRevision(query.workingRevision);
       const response = studio.graph(query);
       setRevisionEtag(reply, response.workingRevision);
