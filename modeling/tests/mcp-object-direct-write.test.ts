@@ -16,6 +16,7 @@ const [
   { ObjectMcpService },
   { executeModelingMcpTool, toolNamesByToolset },
   { ModelingMcpToolError },
+  { ArtifactRepositoryError },
 ] = await Promise.all([
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
@@ -26,7 +27,25 @@ const [
   import('../src/mcp/object/service.js'),
   import('../src/mcp/toolset.js'),
   import('../src/mcp/tool-error.js'),
+  import('../src/artifacts/repository.js'),
 ]);
+
+function artifactsWithPlanningConflict(artifacts: ReturnType<typeof getPackageArtifactStore>) {
+  return new Proxy(artifacts, {
+    get(target, property) {
+      if (property === 'planPackageVersionChanges') {
+        return async () => {
+          throw new ArtifactRepositoryError('revision_conflict', 'synthetic planning conflict', {
+            expectedRevision: 'expected-revision',
+            actualRevision: 'actual-revision',
+          });
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 async function seedProject(projectId: string) {
   insertDocument({
@@ -68,7 +87,12 @@ async function seedProject(projectId: string) {
             { key: 'customer_id', cnName: '客户ID', type: 'string', required: true, sourceColumn: 'customer_id' },
             { key: 'customer_name', cnName: '客户名称', type: 'string', sourceColumn: 'customer_name' },
           ],
-          relations: [{ relation: '关联订单', target: 'order', note: '客户与订单关联。' }],
+          relations: [{
+            relation: '关联订单',
+            target: 'order',
+            note: '客户与订单关联。',
+            evidence: ['material-revision:synthetic-customer-order'],
+          }],
         },
         {
           key: 'order',
@@ -164,6 +188,30 @@ test('Object MCP 工具集已收敛为 read + validate + direct update', () => {
   assert.deepEqual(tools.change, ['validate_ontology_object_change', 'update_ontology_object']);
 });
 
+test('Object MCP 分页游标绑定 query、sort 和 order', async () => {
+  const project = createProject({ owner: 'cursor_object', name: 'Object cursor context', runtime: 'agent' });
+  await seedProject(project.id);
+  const first = await call(project, 'list_ontology_objects', { limit: 1, sort: 'key', order: 'asc' });
+  assert.ok(first.next_cursor);
+
+  for (const changedContext of [
+    { query: '客户' },
+    { sort: 'title' },
+    { order: 'desc' },
+  ]) {
+    await assert.rejects(
+      () => call(project, 'list_ontology_objects', {
+        limit: 1,
+        sort: 'key',
+        order: 'asc',
+        cursor: first.next_cursor,
+        ...changedContext,
+      }),
+      (error: unknown) => error instanceof ModelingMcpToolError && error.code === 'CURSOR_CONTEXT_MISMATCH',
+    );
+  }
+});
+
 test('Object MCP 支持正式 revision 读取、预校验和直接写入', async () => {
   const project = createProject({ owner: 'alice', name: 'Object MCP direct write', runtime: 'agent' });
   const seeded = await seedProject(project.id);
@@ -211,6 +259,10 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
   assert.equal(updated.object.metadata.queryBoundary, '只回答客户主数据和客户等级。');
   assert.equal(updated.object.fields.length, 3);
   assert.equal(updated.object.relations[0].label, '服务订单');
+  const updatedSnapshot = await getPackageArtifactStore().readPackageFiles(project.id, updated.revision);
+  assert.deepEqual(updatedSnapshot.spec.objects[0].relations?.[0].evidence, [
+    'material-revision:synthetic-customer-order',
+  ]);
   assert.deepEqual(updated.affected_resources, [
     { type: 'mapping', key: 'object-data-mappings', relation: 'field_mapping' },
     { type: 'object', key: 'customer' },
@@ -235,6 +287,32 @@ test('Object MCP 支持正式 revision 读取、预校验和直接写入', async
   assert.deepEqual(after.object.metadata.aliases, ['客户主档', '客户实体']);
   assert.equal(after.object.fields[2].key, 'customer_level');
   assert.equal(after.object.relations[0].label, '服务订单');
+});
+
+test('Object MCP 修改无关字段时保留关系 evidence 和 relationId', async () => {
+  const project = createProject({ owner: 'alice-evidence', name: 'Object MCP relation evidence', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const current = await call(project, 'get_ontology_object', {
+    object_id: 'object:customer',
+    revision: seeded.revision.oid,
+  });
+  const relationId = current.object.relations[0].id as string;
+
+  const updated = await call(project, 'update_ontology_object', {
+    object_id: 'object:customer',
+    expected_revision: seeded.revision.oid,
+    metadata: { title: '客户实体' },
+  });
+  const snapshot = await getPackageArtifactStore().readPackageFiles(project.id, updated.revision);
+  assert.deepEqual(snapshot.spec.objects[0].relations?.[0].evidence, [
+    'material-revision:synthetic-customer-order',
+  ]);
+
+  const after = await call(project, 'get_ontology_object', {
+    object_id: 'object:customer',
+    revision: updated.revision,
+  });
+  assert.equal(after.object.relations[0].id, relationId);
 });
 
 test('Object MCP 细化返回主键删除、关系目标非法和 revision 冲突', async () => {
@@ -321,6 +399,34 @@ test('Object MCP 在非 draft/review 知识包上阻止直写', async () => {
       return true;
     },
   );
+});
+
+test('Object MCP 分析期间的 revision 冲突保持 409 可重试语义', async () => {
+  const project = createProject({ owner: 'object_plan_conflict', name: 'Object MCP plan conflict', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const service = new ObjectMcpService(getDb(), artifactsWithPlanningConflict(getPackageArtifactStore()));
+  const mutation = {
+    object_id: 'object:customer',
+    expected_revision: seeded.revision.oid,
+    metadata: { aliases: ['客户主档', '并发冲突'] },
+  };
+
+  for (const toolName of ['validate_ontology_object_change', 'update_ontology_object']) {
+    await assert.rejects(
+      () => service.execute(toolName, project, project.owner, mutation),
+      (error: unknown) => {
+        assert.ok(error instanceof ModelingMcpToolError);
+        assert.equal(error.code, 'REVISION_CONFLICT');
+        assert.equal(error.statusCode, 409);
+        assert.equal(error.details.phase, 'validate');
+        assert.equal(error.details.retryable, true);
+        assert.equal(error.details.reason_code, 'REVISION_CONFLICT');
+        assert.equal(error.details.expected_revision, 'expected-revision');
+        assert.equal(error.details.actual_revision, 'actual-revision');
+        return true;
+      },
+    );
+  }
 });
 
 test('Object MCP 在人工草稿存在时阻止直写', async () => {

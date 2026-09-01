@@ -10,6 +10,7 @@ process.env.MODELING_MCP_OPERATION_RULE_ENABLED = 'true';
 const [
   { createProject },
   { getPackageArtifactStore },
+  { insertDocument },
   { getAuthoringState },
   { getDb },
   { config },
@@ -17,9 +18,11 @@ const [
   { OperationRuleMcpService },
   { executeModelingMcpTool, toolDefinitionsFor, toolNamesByToolset },
   { ModelingMcpToolError },
+  { ArtifactRepositoryError },
 ] = await Promise.all([
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
+  import('../src/documents/repo.js'),
   import('../src/authoring/state.js'),
   import('../src/db/index.js'),
   import('../src/config.js'),
@@ -27,11 +30,40 @@ const [
   import('../src/mcp/operation-rule/service.js'),
   import('../src/mcp/toolset.js'),
   import('../src/mcp/tool-error.js'),
+  import('../src/artifacts/repository.js'),
 ]);
+
+function artifactsWithPlanningConflict(artifacts: ReturnType<typeof getPackageArtifactStore>) {
+  return new Proxy(artifacts, {
+    get(target, property) {
+      if (property === 'planPackageVersionChanges') {
+        return async () => {
+          throw new ArtifactRepositoryError('revision_conflict', 'synthetic planning conflict', {
+            expectedRevision: 'expected-revision',
+            actualRevision: 'actual-revision',
+          });
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 config.mcp.operationRuleEnabled = true;
 
 async function seedProject(projectId: string) {
+  insertDocument({
+    projectId,
+    filename: 'synthetic_records.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'records',
+      rowCount: 1,
+      fields: [{ name: 'record_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1 }],
+    }],
+  });
   const artifacts = getPackageArtifactStore();
   const initial = await artifacts.initializeDraftPackage(projectId, {
     id: `synthetic-${projectId}`,
@@ -46,7 +78,8 @@ async function seedProject(projectId: string) {
         key: 'record',
         title: '记录',
         description: '用于合成测试的记录对象。',
-        fields: [{ key: 'record_id', cnName: '记录编号', type: 'string', required: true }],
+        sourceRefs: [{ kind: 'table', table: 'records' }],
+        fields: [{ key: 'record_id', cnName: '记录编号', type: 'string', required: true, sourceColumn: 'record_id' }],
         primaryKey: ['record_id'],
       }],
     },
@@ -180,6 +213,84 @@ test('Object/Operation/Rule MCP schema 与知识包 Unicode key 规则一致', (
   assert.match('operation:查询操作', new RegExp(patternFor('get_ontology_operation', 'operation_id'), 'u'));
   assert.match('rule:判断规则', new RegExp(patternFor('get_ontology_rule', 'rule_id'), 'u'));
   assert.match('新增操作', new RegExp(patternFor('create_ontology_operation', 'key', changeTools), 'u'));
+});
+
+test('Operation/Rule MCP 分页游标绑定资源类型和 query', async () => {
+  const project = createProject({ owner: 'cursor_rule', name: 'Rule cursor context', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const payload = {
+    description: '用于分页游标测试。',
+    applies_to_objects: ['record'],
+    content: '记录编号非空。',
+    conditions: [{ condition: 'record_id 非空', conclusion: '记录有效' }],
+    exceptions: [],
+  };
+  const firstRule = await call(project, 'create_ontology_rule', {
+    expected_revision: seeded.revision.oid,
+    key: 'record_valid_a',
+    title: '记录有效规则 A',
+    ...payload,
+  });
+  await call(project, 'create_ontology_rule', {
+    expected_revision: firstRule.revision,
+    key: 'record_valid_b',
+    title: '记录有效规则 B',
+    ...payload,
+  });
+  const first = await call(project, 'list_ontology_rules', { limit: 1 });
+  assert.ok(first.next_cursor);
+  await assert.rejects(
+    () => call(project, 'list_ontology_rules', { limit: 1, query: 'B', cursor: first.next_cursor }),
+    (error: unknown) => error instanceof ModelingMcpToolError && error.code === 'CURSOR_CONTEXT_MISMATCH',
+  );
+  await assert.rejects(
+    () => call(project, 'list_ontology_operations', { limit: 1, cursor: first.next_cursor }),
+    (error: unknown) => error instanceof ModelingMcpToolError && error.code === 'CURSOR_CONTEXT_MISMATCH',
+  );
+});
+
+test('Operation/Rule MCP 无关修改保留 legacy mapping 和人工 Markdown', async () => {
+  const project = createProject({ owner: 'legacy_files', name: 'MCP imported file preservation', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const artifacts = getPackageArtifactStore();
+  const archive = await artifacts.readPackageArchiveFiles(project.id, seeded.revision.oid);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const mappingPath = 'mappings/object-data-mappings.json';
+  const objectPath = 'objects/record.md';
+  const mappings = JSON.parse(decoder.decode(archive.files[mappingPath]));
+  mappings.objects.record.resource = 'legacy_records';
+  const manualMarker = '\n<!-- imported manual content -->\n';
+  archive.files[mappingPath] = encoder.encode(`${JSON.stringify(mappings, null, 2)}\n`);
+  archive.files[objectPath] = encoder.encode(`${decoder.decode(archive.files[objectPath])}${manualMarker}`);
+  const imported = await artifacts.importPackageVersion(project.id, {
+    expectedRevision: seeded.revision.oid,
+    spec: archive.spec,
+    coverage: archive.coverage,
+    files: archive.files,
+    action: {
+      cause: 'mcp_legacy_import_seed', summary: '导入 legacy 文件', actorKind: 'user', actorName: project.owner,
+    },
+  });
+
+  const result = await call(project, 'create_ontology_rule', {
+    expected_revision: imported.revision.oid,
+    key: 'record_valid',
+    title: '记录有效规则',
+    description: '判断记录是否有效。',
+    applies_to_objects: ['record'],
+    content: '记录编号非空时视为有效。',
+    conditions: [{ condition: 'record_id 非空', conclusion: '记录有效' }],
+    exceptions: [],
+  });
+  const after = await artifacts.readPackageFiles(project.id, result.revision);
+  assert.equal(JSON.parse(after.files[mappingPath]).objects.record.resource, 'legacy_records');
+  assert.match(after.files[objectPath], /imported manual content/u);
+  const actualChangedPaths = (await artifacts.diff(project.id, imported.revision.oid, result.revision))
+    .files.map((file) => file.path.replace(/^package\//u, '')).sort();
+  assert.deepEqual([...result.changed_paths].sort(), actualChangedPaths);
+  assert.equal(actualChangedPaths.includes(mappingPath), false);
+  assert.equal(actualChangedPaths.includes(objectPath), false);
 });
 
 test('Rule -> Operation CRUD、影响分析和删除保护形成同步闭环', async () => {
@@ -482,6 +593,41 @@ test('同一正式 revision 并发写最多一个成功', async () => {
   assert.equal((current.spec.rules ?? []).length, 1);
 });
 
+test('Operation/Rule 重复提交相同内容时 validate 与 apply 都返回 NO_CHANGES', async () => {
+  const project = createProject({ owner: 'operator_noop', name: 'Operation Rule no-op', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const created = await call(project, 'create_ontology_rule', {
+    expected_revision: seeded.revision.oid,
+    key: 'same_rule',
+    title: '相同规则',
+    content: '相同规则内容。',
+    applies_to_objects: ['record'],
+  });
+  const args = {
+    expected_revision: created.revision,
+    resource_type: 'rule',
+    action: 'update',
+    resource_id: 'rule:same_rule',
+    payload: { title: '相同规则', content: '相同规则内容。', applies_to_objects: ['record'] },
+  };
+  const validated = await call(project, 'validate_ontology_operation_rule_change', args);
+  assert.equal(validated.ok, false);
+  assert.deepEqual(validated.changed_paths, []);
+  assert.ok(validated.issues.some((item: any) => item.code === 'NO_CHANGES'));
+  await assert.rejects(
+    () => call(project, 'update_ontology_rule', {
+      expected_revision: created.revision,
+      rule_id: 'rule:same_rule',
+      changes: {
+        title: '相同规则',
+        content: '相同规则内容。',
+        applies_to_objects: ['record'],
+      },
+    }),
+    (error: unknown) => error instanceof ModelingMcpToolError && error.code === 'SUBMISSION_BLOCKED',
+  );
+});
+
 test('Operation/Rule MCP 写入同样受包状态与编辑忙碌态门禁约束', async () => {
   const releasedProject = createProject({ owner: 'operator_c', name: 'Operation Rule status gate', runtime: 'agent' });
   await seedProject(releasedProject.id);
@@ -567,5 +713,49 @@ test('Operation/Rule MCP revision 事件发布失败时仍返回已提交 revisi
     assert.equal(loggedErrors.length, 1);
   } finally {
     console.error = originalConsoleError;
+  }
+});
+
+test('Operation/Rule MCP 分析期间的 revision 冲突保持 409 可重试语义', async () => {
+  const project = createProject({ owner: 'rule_plan_conflict', name: 'Rule MCP plan conflict', runtime: 'agent' });
+  const seeded = await seedProject(project.id);
+  const service = new OperationRuleMcpService(getDb(), artifactsWithPlanningConflict(getPackageArtifactStore()));
+  const analysisArgs = {
+    resource_type: 'rule',
+    action: 'create',
+    expected_revision: seeded.revision.oid,
+    key: 'planning_conflict_rule',
+    payload: {
+      title: '并发冲突规则',
+      content: '用于验证 revision 冲突错误语义。',
+      applies_to_objects: ['record'],
+    },
+  };
+  const applyArgs = {
+    expected_revision: seeded.revision.oid,
+    key: 'planning_conflict_rule',
+    title: '并发冲突规则',
+    content: '用于验证 revision 冲突错误语义。',
+    applies_to_objects: ['record'],
+  };
+
+  for (const [toolName, args] of [
+    ['validate_ontology_operation_rule_change', analysisArgs],
+    ['create_ontology_rule', applyArgs],
+  ] as const) {
+    await assert.rejects(
+      () => service.execute(toolName, project, project.owner, args),
+      (error: unknown) => {
+        assert.ok(error instanceof ModelingMcpToolError);
+        assert.equal(error.code, 'REVISION_CONFLICT');
+        assert.equal(error.statusCode, 409);
+        assert.equal(error.details.phase, 'validate');
+        assert.equal(error.details.retryable, true);
+        assert.equal(error.details.reason_code, 'REVISION_CONFLICT');
+        assert.equal(error.details.expected_revision, 'expected-revision');
+        assert.equal(error.details.actual_revision, 'actual-revision');
+        return true;
+      },
+    );
   }
 });

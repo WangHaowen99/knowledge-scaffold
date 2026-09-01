@@ -25,6 +25,7 @@ import {
   type ArtifactRevisionActorKind,
   type ArtifactRevisionRecord,
 } from './revision-repo.js';
+import { runProjectWriteExclusive } from './project-write-lock.js';
 
 const SPEC_PATH = 'model/package-spec.json';
 const COVERAGE_PATH = 'model/coverage.json';
@@ -55,6 +56,13 @@ export interface SavePackageVersionInput {
   coverage: CoverageResult;
   note?: string;
   action: PackageRevisionAction;
+  preserveUnchangedManagedFiles?: boolean;
+  beforeCommit?: () => Promise<void>;
+}
+
+export interface PackageVersionChangePlan {
+  revision: string;
+  changedPaths: string[];
 }
 
 export interface InitializeDraftPackageInput {
@@ -303,8 +311,6 @@ export class PackageArtifactStore {
   private readonly db: DatabaseSync;
   private readonly repository: ArtifactRepository;
   private readonly revisions: ArtifactRevisionRepo;
-  private readonly projectQueues = new Map<string, Promise<void>>();
-
   constructor(options: PackageArtifactStoreOptions) {
     this.db = options.db ?? getDb();
     this.repository = options.repository;
@@ -405,8 +411,13 @@ export class PackageArtifactStore {
       const note = optionalText(input.note, '版本备注', 1000);
       const current = await this.repository.snapshot(projectId);
       const target = packageFiles(input.spec, input.coverage);
-      preserveImportedExtras(current.files, target);
+      if (input.preserveUnchangedManagedFiles) {
+        preserveUnchangedManagedFiles(current, target, this.viewFromSnapshot(current));
+      } else {
+        preserveImportedExtras(current.files, target);
+      }
       const changes = changesForManagedFiles(current.files, target);
+      await input.beforeCommit?.();
       const id = `pv_${randomUUID().slice(0, 12)}`;
       const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
         projectId,
@@ -436,6 +447,30 @@ export class PackageArtifactStore {
         );
       });
       return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid), packageVersion);
+    });
+  }
+
+  async planPackageVersionChanges(
+    projectId: string,
+    input: Pick<SavePackageVersionInput, 'expectedRevision' | 'spec' | 'coverage' | 'preserveUnchangedManagedFiles'>,
+  ): Promise<PackageVersionChangePlan> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      validatePackageSpec(input.spec);
+      validateCoverage(input.coverage);
+      const current = await this.repository.snapshot(projectId);
+      assertExpectedRevision(input.expectedRevision, current.revision.oid);
+      const target = packageFiles(input.spec, input.coverage);
+      if (input.preserveUnchangedManagedFiles) {
+        preserveUnchangedManagedFiles(current, target, this.viewFromSnapshot(current));
+      } else {
+        preserveImportedExtras(current.files, target);
+      }
+      const changes = changesForManagedFiles(current.files, target);
+      return {
+        revision: current.revision.oid,
+        changedPaths: changes.map((change) => displayManagedPath(change.path)).sort(compareNames),
+      };
     });
   }
 
@@ -1581,18 +1616,7 @@ export class PackageArtifactStore {
   }
 
   private async runExclusive<T>(projectId: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.projectQueues.get(projectId) ?? Promise.resolve();
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
-    const tail = previous.then(() => gate);
-    this.projectQueues.set(projectId, tail);
-    await previous;
-    try {
-      return await task();
-    } finally {
-      release();
-      if (this.projectQueues.get(projectId) === tail) this.projectQueues.delete(projectId);
-    }
+    return runProjectWriteExclusive(projectId, task);
   }
 }
 
@@ -2229,6 +2253,28 @@ function preserveImportedExtras(
       || target.has(file.path)) continue;
     target.set(file.path, new Uint8Array(file.content));
   }
+}
+
+function preserveUnchangedManagedFiles(
+  current: ArtifactSnapshot,
+  target: Map<string, Uint8Array>,
+  currentView: PackageArtifactView,
+): void {
+  const canonicalCurrent = packageFiles(currentView.spec, currentView.coverage);
+  const actual = new Map(current.files.map((file) => [file.path, file.content]));
+  const paths = new Set([...canonicalCurrent.keys(), ...target.keys()]);
+  for (const path of paths) {
+    const before = canonicalCurrent.get(path);
+    const after = target.get(path);
+    if (before === undefined || after === undefined || !bytesEqual(before, after)) continue;
+    const existing = actual.get(path);
+    if (existing) target.set(path, new Uint8Array(existing));
+  }
+  preserveImportedExtras(current.files, target);
+}
+
+function displayManagedPath(path: string): string {
+  return path.startsWith(PACKAGE_PREFIX) ? path.slice(PACKAGE_PREFIX.length) : path;
 }
 
 function metadataChanges(current: readonly ArtifactFile[], spec: PackageSpec): ArtifactChange[] {

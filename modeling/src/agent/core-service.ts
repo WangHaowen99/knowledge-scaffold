@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
+import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import {
   backgroundAuthSessions,
   type BackgroundAuthSessionRegistry,
@@ -1831,7 +1832,7 @@ export class AgentCoreService {
     this.db.exec('SAVEPOINT agent_schema_object_sync');
     try {
       for (const path of objectPaths) {
-        this.upsertChange(workspace, {
+        await this.upsertChange(workspace, {
           path,
           kind: 'write',
           content: rendered[path],
@@ -1841,7 +1842,7 @@ export class AgentCoreService {
         });
       }
       for (const path of staleObjectPaths) {
-        this.upsertChange(workspace, {
+        await this.upsertChange(workspace, {
           path,
           kind: 'delete',
           content: null,
@@ -1851,7 +1852,7 @@ export class AgentCoreService {
         });
       }
       for (const path of ['objects/index.md', OBJECT_DATA_MAPPING_PATH]) {
-        this.upsertChange(workspace, {
+        await this.upsertChange(workspace, {
           path,
           kind: 'write',
           content: rendered[path],
@@ -1860,7 +1861,7 @@ export class AgentCoreService {
           reason: 'Schema 对象确定性编译产物',
         });
       }
-      this.upsertChange(workspace, {
+      await this.upsertChange(workspace, {
         path: INTERNAL_SPEC_CHANGE_PATH,
         kind: 'write',
         content: `${JSON.stringify(nextSpec, null, 2)}\n`,
@@ -3710,7 +3711,7 @@ export class AgentCoreService {
       };
     }
     await this.discardFrozenCandidate(workspace, context, '表格资料继续同步，旧确认请求已失效');
-    this.upsertChange(workspace, {
+    await this.upsertChange(workspace, {
       path,
       kind: 'write',
       content,
@@ -4476,7 +4477,7 @@ export class AgentCoreService {
           );
         }
         if (currentFiles[path] === content) continue;
-        this.upsertChange(workspace, {
+        await this.upsertChange(workspace, {
           path,
           kind: 'write',
           content,
@@ -4487,7 +4488,7 @@ export class AgentCoreService {
       }
       if (rendered[OBJECT_DATA_MAPPING_PATH] === undefined
         && Object.hasOwn(current.files, OBJECT_DATA_MAPPING_PATH)) {
-        this.upsertChange(workspace, {
+        await this.upsertChange(workspace, {
           path: OBJECT_DATA_MAPPING_PATH,
           kind: 'delete',
           content: null,
@@ -4496,7 +4497,7 @@ export class AgentCoreService {
           reason: '虚拟对象模式不生成物理数据 mapping',
         });
       }
-      this.upsertChange(workspace, {
+      await this.upsertChange(workspace, {
         path: INTERNAL_SPEC_CHANGE_PATH,
         kind: 'write',
         content: `${JSON.stringify(compiledSpec, null, 2)}\n`,
@@ -4719,7 +4720,7 @@ export class AgentCoreService {
       ? RUNTIME_GROUP
       : changeGroupId(args.change_group, 'change_group');
     await this.discardFrozenCandidate(workspace, context, '候选内容继续修改，旧确认请求已失效');
-    this.upsertChange(workspace, {
+    await this.upsertChange(workspace, {
       path, kind: 'write', content, groupId,
       evidence, reason: null,
     });
@@ -4826,7 +4827,7 @@ export class AgentCoreService {
     }
     await this.assertCandidateStageGate(workspace, path);
     await this.discardFrozenCandidate(workspace, context, '候选内容继续修改，旧确认请求已失效');
-    this.upsertChange(workspace, {
+    await this.upsertChange(workspace, {
       path, kind: 'delete', content: null, groupId,
       evidence: [], reason: String(args.reason ?? '').trim() || null,
     });
@@ -4991,30 +4992,32 @@ export class AgentCoreService {
   ) {
     const content = text(args.markdown, 'markdown', true);
     await this.discardFrozenCandidate(workspace, context, '运行锚点已更新，旧确认请求已失效');
-    this.upsertChange(workspace, {
+    await this.upsertChange(workspace, {
       path, kind: 'write', content, groupId: RUNTIME_GROUP, evidence: [], reason: null,
     });
     return { ok: true, path, candidate: true, display: { text: path.endsWith('plan.md') ? '已更新建模计划' : '已更新项目摘要' } };
   }
 
-  private upsertChange(
+  private async upsertChange(
     workspace: WorkspaceRow,
     change: { path: string; kind: 'write' | 'delete'; content: string | null; groupId: string; evidence: string[]; reason: string | null },
-  ) {
-    this.db.prepare(`INSERT INTO agent_candidate_changes (
-      project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(project_id, run_id, path) DO UPDATE SET
-      kind = excluded.kind,
-      content = excluded.content,
-      group_id = excluded.group_id,
-      evidence_json = excluded.evidence_json,
-      reason = excluded.reason,
-      updated_at = excluded.updated_at`)
-      .run(
-        workspace.project_id, workspace.run_id, change.path, change.kind, change.content,
-        change.groupId, JSON.stringify(change.evidence), change.reason, nowIso(),
-      );
+  ): Promise<void> {
+    await runProjectWriteExclusive(workspace.project_id, async () => {
+      this.db.prepare(`INSERT INTO agent_candidate_changes (
+        project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(project_id, run_id, path) DO UPDATE SET
+        kind = excluded.kind,
+        content = excluded.content,
+        group_id = excluded.group_id,
+        evidence_json = excluded.evidence_json,
+        reason = excluded.reason,
+        updated_at = excluded.updated_at`)
+        .run(
+          workspace.project_id, workspace.run_id, change.path, change.kind, change.content,
+          change.groupId, JSON.stringify(change.evidence), change.reason, nowIso(),
+        );
+    });
   }
 
   private async effectiveChanges(workspace: WorkspaceRow): Promise<ChangeRow[]> {
@@ -5468,7 +5471,7 @@ export class AgentCoreService {
       if (current.files[targetPath] === content) continue;
       const tier = expectedTier(targetPath) ?? 'structural';
       const groupId = `merge-${tier}`;
-      this.upsertChange(workspace, {
+      await this.upsertChange(workspace, {
         path: targetPath,
         kind: 'write',
         content,
