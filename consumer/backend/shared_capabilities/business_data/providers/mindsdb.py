@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
@@ -11,20 +12,24 @@ import requests
 
 from ..connection import EffectiveConnection
 from ..contracts import ProviderCapabilities, ProviderEvent, ProviderResult
+from ..errors import ProviderProtocolError
 from ..transport.http import create_retry_session, extract_error_detail, sanitize_public_text
 from ..transport.sse import iter_sse_data
 
 _THOUGHT_MARKER = "```\nThought:"
+_STREAM_RECOVERY_RETRIES = 1
+_STREAM_RECOVERY_DELAY_SECONDS = 5
 
 
 class MindsDBProvider:
     capabilities = ProviderCapabilities(query=True, query_sql=True, native_streaming=True, probe=True)
 
-    def __init__(self, connection: EffectiveConnection, session=None):
+    def __init__(self, connection: EffectiveConnection, session=None, sleep_fn=None):
         self.connection = connection
         self._session = session or create_retry_session(int(connection.options.get("max_retries", 3)))
         self._owns_session = session is None
         self._auth_token: str = ""
+        self._sleep = sleep_fn or time.sleep
 
     def query(self, question: str) -> ProviderResult:
         final: ProviderResult | None = None
@@ -94,35 +99,107 @@ class MindsDBProvider:
         project = str(self.connection.options.get("project_name") or "mindsdb")
         agent = str(self.connection.options.get("default_agent_name") or "my_agent")
         path = "/api/projects/{}/agents/{}/completions/stream".format(project, agent)
-        response = self._post_with_auth_retry(path, {"messages": [{"question": question, "answer": ""}]}, stream=True)
-        if isinstance(response, ProviderResult):
-            yield ProviderEvent(type="start")
-            yield ProviderEvent(type="error", content=response.error, result=response)
-            yield ProviderEvent(type="done")
+        payload = {"messages": [{"question": question, "answer": ""}]}
+        start_emitted = False
+
+        for attempt_index in range(_STREAM_RECOVERY_RETRIES + 1):
+            response = self._post_with_auth_retry(path, payload, stream=True)
+            if isinstance(response, ProviderResult):
+                # Request establishment already uses the HTTP Session retry
+                # policy. Only accepted streams are eligible for this layer's
+                # single recovery attempt, so the two retry budgets do not
+                # multiply each other.
+                if not start_emitted:
+                    yield ProviderEvent(type="start")
+                yield ProviderEvent(type="error", content=response.error, result=response)
+                yield ProviderEvent(type="done")
+                return
+
+            failure_message = "MindsDB agent stream ended before a final answer"
+            failure_code = "missing_final"
+            stream_ended = False
+            try:
+                with response:
+                    for chunk in iter_sse_data(
+                        response.iter_lines(decode_unicode=True)
+                    ):
+                        for event in _chunk_events(chunk):
+                            if event.type == "start":
+                                if not start_emitted:
+                                    yield event
+                                    start_emitted = True
+                                continue
+                            if event.type == "final":
+                                if not start_emitted:
+                                    yield ProviderEvent(type="start")
+                                yield event
+                                yield ProviderEvent(
+                                    type="done",
+                                    content="查询流程结束",
+                                )
+                                return
+                            if event.type == "done":
+                                stream_ended = True
+                                break
+                            if event.type == "error":
+                                failure_message = self._sanitize_stream_detail(
+                                    event.content,
+                                    fallback="MindsDB agent query failed",
+                                )
+                                failure_code = "query_error"
+                                stream_ended = True
+                                break
+                            if not start_emitted:
+                                yield ProviderEvent(type="start")
+                                start_emitted = True
+                            yield event
+                        if stream_ended:
+                            break
+            except (
+                requests.exceptions.RequestException,
+                ProviderProtocolError,
+            ) as exc:
+                detail = self._sanitize_stream_detail(
+                    exc,
+                    fallback="stream connection interrupted",
+                )
+                failure_message = "MindsDB agent stream read failed: {}".format(
+                    detail
+                )
+                failure_code = "stream_read_error"
+
+            if not start_emitted:
+                yield ProviderEvent(type="start")
+                start_emitted = True
+            if attempt_index < _STREAM_RECOVERY_RETRIES:
+                yield ProviderEvent(
+                    type="intermediate",
+                    content=(
+                        "MindsDB 查询流未完整返回，{} 秒后重试（{}/{}）：{}"
+                    ).format(
+                        _STREAM_RECOVERY_DELAY_SECONDS,
+                        attempt_index + 1,
+                        _STREAM_RECOVERY_RETRIES,
+                        failure_message,
+                    ),
+                )
+                self._sleep(_STREAM_RECOVERY_DELAY_SECONDS)
+                continue
+
+            yield ProviderEvent(
+                type="error",
+                content=failure_message,
+                result=ProviderResult(
+                    success=False,
+                    error=failure_message,
+                    metadata={
+                        "error_code": failure_code,
+                        "stream_attempts": attempt_index + 1,
+                    },
+                ),
+            )
+            yield ProviderEvent(type="done", content="查询流程结束")
             return
-        with response:
-            for chunk in iter_sse_data(response.iter_lines(decode_unicode=True)):
-                for event in _chunk_events(chunk):
-                    if event.type != "error":
-                        yield event
-                        continue
-                    detail = sanitize_public_text(
-                        event.content,
-                        self.connection.endpoint,
-                        self.connection.auth.token,
-                        self.connection.auth.password,
-                        self._auth_token,
-                    ).strip()[:500]
-                    message = detail or "MindsDB agent query failed"
-                    yield ProviderEvent(
-                        type="error",
-                        content=message,
-                        result=ProviderResult(
-                            success=False,
-                            error=message,
-                            metadata={"error_code": "query_error"},
-                        ),
-                    )
 
     def probe(self, timeout_seconds: float | None = None) -> ProviderResult:
         endpoint = self.connection.endpoint.rstrip("/")
@@ -264,6 +341,18 @@ class MindsDBProvider:
         if detail:
             message = "{}：{}".format(message, detail[:200])
         return _probe_failure(message, "http_error")
+
+    def _sanitize_stream_detail(self, detail: object, *, fallback: str) -> str:
+        return (
+            sanitize_public_text(
+                detail,
+                self.connection.endpoint,
+                self.connection.auth.token,
+                self.connection.auth.password,
+                self._auth_token,
+            ).strip()[:500]
+            or fallback
+        )
 
     def close(self) -> None:
         if self._owns_session:
@@ -428,8 +517,29 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
         )
         return [{"type": "start", "content": content or "开始执行本体探索"}]
 
-    if chunk_type == "end":
+    if chunk_type == "data":
+        # MindsDB 2026.7 emits the final Agent answer in ``text`` while older
+        # versions used ``content``. Accept both shapes so a successful remote
+        # completion is not silently projected as an empty answer.
+        data = _extract_final_content(
+            str(chunk.get("text") or "").strip() or _collect_chunk_text(chunk)
+        )
+        if not data:
+            data = "查询成功，未匹配到数据。"
+        return [{"type": "final", "content": data}]
+
+    if "output" in chunk:
+        output = str(chunk.get("output") or "").strip() or _collect_messages_text(
+            chunk.get("messages")
+        )
+        if output:
+            return [{"type": "final", "content": _extract_final_content(output)}]
+
+    if chunk_type in {"end", "done"} or chunk.get("is_task_complete") is True:
         return [{"type": "done", "content": "查询流程结束"}]
+
+    if "output" in chunk:
+        return []
 
     if chunk_type == "sql":
         return []
@@ -439,25 +549,6 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
         if not context or _should_skip_context_chunk(context):
             return []
         return [{"type": "intermediate", "content": context}]
-
-    if chunk_type == "data":
-        # MindsDB 2026.7 emits the final Agent answer in ``text`` while older
-        # versions used ``content``. Accept both shapes so a successful remote
-        # completion is not silently projected as an empty answer.
-        data = _extract_final_content(
-            str(chunk.get("text") or "").strip() or _collect_chunk_text(chunk)
-        )
-        if not data:
-            return []
-        return [{"type": "final", "content": data}]
-
-    if "output" in chunk:
-        output = str(chunk.get("output") or "").strip() or _collect_messages_text(
-            chunk.get("messages")
-        )
-        if not output:
-            return []
-        return [{"type": "final", "content": _extract_final_content(output)}]
 
     actions = chunk.get("actions")
     if isinstance(actions, list):
