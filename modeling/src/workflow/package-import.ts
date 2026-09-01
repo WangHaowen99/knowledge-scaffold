@@ -1,5 +1,5 @@
 import { unzipSync } from 'fflate';
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, parseDocument } from 'yaml';
 
 import type {
   CoverageResult,
@@ -37,6 +37,8 @@ export interface ImportedPackageArchive {
   rawFiles: Record<string, Uint8Array>;
   warnings: string[];
 }
+
+const MAX_PACKAGE_NAME_LENGTH = 200;
 
 type Frontmatter = Record<string, any>;
 
@@ -629,6 +631,40 @@ export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
       ...(embeddedSpec ? [] : ['该知识包未携带结构化规格，已从标准目录和 Markdown 内容重建。']),
       ...(Object.keys(rawFiles).length > Object.keys(files).length
         ? ['包内二进制附件已原样保留，可随知识包导出，但不支持在线编辑。'] : []),
+    ],
+  };
+}
+
+export function renameImportedPackageArchive(
+  imported: ImportedPackageArchive,
+  value: unknown,
+): ImportedPackageArchive {
+  const name = String(value ?? '').trim();
+  if (!name) throw new Error('知识包新名称不能为空');
+  if ([...name].length > MAX_PACKAGE_NAME_LENGTH) {
+    throw new Error(`知识包新名称不能超过 ${MAX_PACKAGE_NAME_LENGTH} 个字符`);
+  }
+
+  const sourceManifest = imported.files['manifest.yaml'];
+  const document = parseDocument(sourceManifest);
+  if (document.errors.length) throw new Error('manifest.yaml 不是合法 YAML');
+  document.set('name', name);
+  const manifest = document.toString();
+  const parsedManifest = parsePackageManifest(manifest);
+  const manifestIssues = packageManifestIssues(parsedManifest);
+  if (manifestIssues.length) throw new Error(manifestIssues.map((issue) => issue.message).join('；'));
+
+  return {
+    ...imported,
+    spec: canonicalizePackageSpec({ ...imported.spec, name }),
+    files: { ...imported.files, 'manifest.yaml': manifest },
+    rawFiles: {
+      ...imported.rawFiles,
+      'manifest.yaml': new TextEncoder().encode(manifest),
+    },
+    warnings: [
+      ...imported.warnings,
+      `导入时已将知识包名称从「${imported.spec.name}」修改为「${name}」。`,
     ],
   };
 }
