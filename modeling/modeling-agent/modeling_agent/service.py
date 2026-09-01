@@ -1842,6 +1842,19 @@ class AgentService:
                 if not _claims_active_evaluation(str(item))
             ]
         phase = str(public["phase"])
+        data_source = await self._gateway.call(
+            project_id=live.project_id,
+            run_id=live.run_id,
+            token=live.token,
+            tool="project_data_source_status",
+            arguments={},
+        )
+        if data_source.get("error"):
+            data_source = {
+                "configured": False,
+                "mode": "unknown",
+                "error": str(data_source.get("reason") or "数据源配置读取失败"),
+            }
         transitions: list[dict[str, Any]] = []
         for target in PHASE_EDGES.get(phase, ()):
             gate = PHASE_GATES.get(target)
@@ -1873,6 +1886,7 @@ class AgentService:
         return {
             **public,
             "evaluation": evaluation,
+            "dataSource": data_source,
             "allowedTransitions": transitions,
             "display": {"text": f"当前阶段：{public['phaseLabel']}"},
         }

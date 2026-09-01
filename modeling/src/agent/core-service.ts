@@ -588,6 +588,7 @@ export class AgentCoreService {
     }
     if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
     if (tool === 'get_package_contract') return packageGenerationContract();
+    if (tool === 'project_data_source_status') return this.projectDataSourceStatus(context.project.id);
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
     if (tool === 'evaluation_status') return this.evaluationStatus(context.project.id);
     if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id, args);
@@ -717,6 +718,70 @@ export class AgentCoreService {
       default:
         throw new AgentCoreError('TOOL_NOT_FOUND', `未知 Agent 工具：${tool}`, [], 404);
     }
+  }
+
+  private projectDataSourceStatus(projectId: string) {
+    const dataSource = getProjectDataSource(projectId);
+    if (!dataSource) {
+      return {
+        configured: false,
+        mode: 'unset',
+        display: { text: '尚未配置评测数据源' },
+      };
+    }
+    if (dataSource.mode === 'none') {
+      return {
+        configured: true,
+        mode: 'none',
+        provider: null,
+        display: { text: '已配置为不使用外部数据源' },
+      };
+    }
+
+    const sourceConfig = dataSource.config ?? {};
+    const provider = dataSource.provider ?? null;
+    const base = {
+      configured: true,
+      mode: 'connection',
+      provider,
+      providerMeaning: 'project_evaluation_data_source_type',
+      mappingAliasNote: 'mappings/object-data-mappings.json 中的 default_provider_alias/provider_alias 是知识包内部逻辑数据源别名，不是项目评测数据源 provider',
+      workspaceLinked: Boolean(dataSource.workspaceId),
+      ontologyLinked: Boolean(dataSource.ontologyId),
+    };
+    if (provider === 'nl2sql_http' || provider === 'nl2sql_template') {
+      const scene = String(sourceConfig.scene ?? '').trim();
+      return {
+        ...base,
+        nl2sql: {
+          sceneConfigured: Boolean(scene),
+          evaluationWorkspaceConfigured: Boolean(String(sourceConfig.evaluation_workspace_id ?? '').trim()),
+          usesProjectEvaluationDatabase: scene === projectEvaluationDatabaseName(projectId),
+        },
+        display: { text: `已配置 ${provider} 评测数据源` },
+      };
+    }
+    if (provider === 'neo4j') {
+      return {
+        ...base,
+        neo4j: {
+          workspaceIsolationConfigured: Boolean(
+            String(sourceConfig.workspace_property ?? '').trim()
+            && String(sourceConfig.workspace_value ?? '').trim(),
+          ),
+          ontologyIsolationConfigured: Boolean(
+            String(sourceConfig.ontology_property ?? '').trim()
+            && String(sourceConfig.ontology_value ?? '').trim(),
+          ),
+          graphDatabaseConfigured: Boolean(String(sourceConfig.database ?? '').trim()),
+        },
+        display: { text: '已配置 Neo4j 评测数据源' },
+      };
+    }
+    return {
+      ...base,
+      display: { text: '已配置评测数据源' },
+    };
   }
 
   private validationSummary(context: AgentToolContext, args: Record<string, unknown>) {
@@ -6913,8 +6978,8 @@ export class AgentCoreService {
     if (!config.evalDbUrl) {
       throw new AgentCoreError(
         'EVAL_DB_TOOL_UNAVAILABLE',
-        '评测库尚未配置，未执行查询',
-        ['配置 EVAL_DB_URL 并导入项目评测数据后重试'],
+        '当前没有开启建模助手直连评测库的诊断能力，未执行数据库查询',
+        ['运行正式评测并读取评测结果；只有需要诊断 MySQL 评测库镜像数据时才使用本工具'],
         409,
         {
           retryable: false,
