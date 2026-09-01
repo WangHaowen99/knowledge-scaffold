@@ -244,10 +244,28 @@ function splitTableRow(line: string): string[] {
 }
 
 function tableRows(value: string): string[][] {
+  return markdownTable(value).rows;
+}
+
+function markdownTable(value: string): { headers: string[]; rows: string[][] } {
   const lines = value.split('\n').map((line) => line.trim()).filter(Boolean);
   const header = lines.findIndex((line) => line.startsWith('|'));
-  if (header < 0 || !/^\|?\s*:?-{3}/.test(lines[header + 1] ?? '')) return [];
-  return lines.slice(header + 2).filter((line) => line.startsWith('|')).map(splitTableRow);
+  if (header < 0 || !/^\|?\s*:?-{3}/.test(lines[header + 1] ?? '')) {
+    return { headers: [], rows: [] };
+  }
+  return {
+    headers: splitTableRow(lines[header]),
+    rows: lines.slice(header + 2).filter((line) => line.startsWith('|')).map(splitTableRow),
+  };
+}
+
+function tableCell(headers: string[], row: string[], ...names: string[]): string {
+  const normalized = headers.map((header) => header.replaceAll(/\s+/g, '').toLowerCase());
+  for (const name of names) {
+    const index = normalized.indexOf(name.replaceAll(/\s+/g, '').toLowerCase());
+    if (index >= 0) return row[index] ?? '';
+  }
+  return '';
 }
 
 function strings(value: unknown): string[] {
@@ -318,7 +336,11 @@ function parseObject(
   const fields: SpecField[] = tableRows(section(body, '字段')).map((row) => ({
     key: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || undefined,
     required: required(row[3] ?? ''), note: row[4] || undefined, alias: normalizeFieldAlias(row[5]),
-    ...(primaryColumns.get(row[0] ?? '') ? { sourceColumn: primaryColumns.get(row[0] ?? '') } : {}),
+    ...((optionalString(objectMapping?.fields?.[row[0] ?? '']?.source_column)
+      || primaryColumns.get(row[0] ?? ''))
+      ? { sourceColumn: optionalString(objectMapping?.fields?.[row[0] ?? '']?.source_column)
+        || primaryColumns.get(row[0] ?? '') }
+      : {}),
     valueBindingRef: optionalString(objectMapping?.fields?.[row[0] ?? '']?.value_binding_ref),
   })).filter((field) => field.key && field.key !== '—');
   const relations = tableRows(section(body, '关系')).map((row) => ({
@@ -440,15 +462,56 @@ function parseMetric(path: string, markdown: string): SpecMetric {
   };
 }
 
-function parseScript(path: string, markdown: string, files: Record<string, string>): SpecScript {
+export function parseRenderedScriptFile(
+  path: string,
+  markdown: string,
+  files: Record<string, string>,
+): SpecScript {
   const { data, body } = frontmatter(markdown, path);
   const inputSection = section(body, '输入参数');
-  const hasDefaultColumn = /\|\s*默认值\s*\|/.test(inputSection);
-  const parameters = tableRows(inputSection).map((row) => ({
-    name: row[0] ?? '', flag: row[1] ?? '', type: row[2] || 'string', required: required(row[3] ?? ''),
-    ...(hasDefaultColumn && row[4] && row[4] !== '—' ? { defaultValue: parseParameterDefault(row[4]) } : {}),
-    description: row[hasDefaultColumn ? 5 : 4] || undefined,
-  })).filter((item) => item.name && item.name !== '—');
+  const inputTable = markdownTable(inputSection);
+  const parameters = inputTable.rows.map((row, index) => {
+    const name = tableCell(inputTable.headers, row, '参数 key', '参数key', '参数名称', 'name');
+    const rawAction = tableCell(inputTable.headers, row, 'Action', 'action').trim().toLowerCase();
+    if (rawAction && rawAction !== '—' && !['store_true', 'store_false'].includes(rawAction)) {
+      throw new Error(`${path} 的第 ${index + 1} 个脚本参数 Action 不正确：${rawAction}`);
+    }
+    const action: SpecScript['parameters'][number]['action'] =
+      rawAction === 'store_true' || rawAction === 'store_false' ? rawAction : undefined;
+    const type = tableCell(inputTable.headers, row, '类型', 'type') || 'string';
+    const isRequired = required(tableCell(inputTable.headers, row, '必填', 'required'));
+    const multiple = required(tableCell(inputTable.headers, row, '是否多值', 'multiple'));
+    const defaultText = tableCell(inputTable.headers, row, '默认值', '默认', 'default');
+    const parsedDefault = defaultText && defaultText !== '—'
+      ? parseParameterDefault(defaultText)
+      : undefined;
+    if (action && !['bool', 'boolean'].includes(type.toLowerCase())) {
+      throw new Error(`${path} 的第 ${index + 1} 个脚本参数 Action 只适用于 boolean`);
+    }
+    if (action && isRequired) {
+      throw new Error(`${path} 的第 ${index + 1} 个脚本参数使用 ${action} 时不能设为必填`);
+    }
+    if (action && multiple) {
+      throw new Error(`${path} 的第 ${index + 1} 个脚本参数使用 ${action} 时不能设为多值`);
+    }
+    const actionDefault = action === 'store_true' ? false : action === 'store_false' ? true : undefined;
+    if (actionDefault !== undefined && parsedDefault !== undefined && parsedDefault !== actionDefault) {
+      throw new Error(`${path} 的第 ${index + 1} 个脚本参数默认值与 ${action} 不一致`);
+    }
+    const defaultValue = parsedDefault ?? actionDefault;
+    return {
+      name,
+      flag: tableCell(inputTable.headers, row, 'CLI 参数', 'CLI参数', 'flag'),
+      type,
+      required: isRequired,
+      ...(defaultValue !== undefined ? { defaultValue } : {}),
+      ...(tableCell(inputTable.headers, row, '说明', '描述', 'description')
+        ? { description: tableCell(inputTable.headers, row, '说明', '描述', 'description') }
+        : {}),
+      ...(multiple ? { multiple: true } : {}),
+      ...(action ? { action } : {}),
+    };
+  }).filter((item) => item.name && item.name !== '—');
   const outputs = tableRows(section(body, '输出')).map((row) => ({
     key: row[0] ?? '', type: row[1] || 'string', description: row[2] || undefined,
   })).filter((item) => item.key && item.key !== '—');
@@ -496,7 +559,7 @@ function parseRenderedSpec(
   const operations = detailPaths('operations').map((path) => parseOperation(path, files[path]));
   const rules = detailPaths('rules').map((path) => parseRule(path, files[path]));
   const metrics = detailPaths('metrics').map((path) => parseMetric(path, files[path]));
-  const scripts = detailPaths('scripts').map((path) => parseScript(path, files[path], files));
+  const scripts = detailPaths('scripts').map((path) => parseRenderedScriptFile(path, files[path], files));
   const valueBindings = parseValueBindings(mapping);
   return {
     id: String(manifest.id ?? '').trim(),

@@ -18,6 +18,11 @@ import {
 } from './studio-read-service.js';
 import { StudioReviewService } from './studio-review-service.js';
 import { StudioWriteError, StudioWriteService } from './studio-write-service.js';
+import {
+  acceptanceAgentToolAfter,
+  acceptanceAgentToolBefore,
+  takeAcceptanceFault,
+} from '../acceptance/faults.js';
 
 export function registerAgentCoreRoutes(app: FastifyInstance): void {
   const service = new AgentCoreService();
@@ -46,6 +51,25 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     try {
       const body = (request.body ?? {}) as any;
       return service.setWorkbenchConfirmPolicy(project.id, body.tier, body.mode);
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/agent/change-plans/:planId/respond', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const approved = (request.body as any)?.approved;
+      if (typeof approved !== 'boolean') return reply.code(400).send({ error: '请选择批准或拒绝计划' });
+      return service.respondChangePlan(
+        project,
+        request.user!.username,
+        String((request.params as any).planId ?? ''),
+        approved,
+      );
     } catch (error) {
       return sendAgentCoreError(reply, error);
     }
@@ -90,10 +114,21 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       return reply.code(404).send({ error: '项目不存在' });
     }
     try {
+      const path = String((request.query as any)?.path ?? '');
+      if (path === 'objects/member_profile.md' && takeAcceptanceFault(
+        request.user!.username,
+        'F18',
+        `file:${project.id}:${path}:${Date.now()}`,
+      )) {
+        return reply.code(503).send({
+          code: 'FILE_READ_TEMPORARILY_UNAVAILABLE',
+          error: '当前文件暂时读取失败，项目其他区域仍可正常使用',
+        });
+      }
       return await service.workbenchFile(
         project,
         request.user!.username,
-        String((request.query as any)?.path ?? ''),
+        path,
       );
     } catch (error) {
       return sendAgentCoreError(reply, error);
@@ -394,11 +429,16 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       ? argumentsValue as Record<string, unknown>
       : {};
     try {
-      return await service.invoke({
+      const before = acceptanceAgentToolBefore(request.user!.username, runId, String((request.params as any).tool ?? ''));
+      if (before) return reply.code(before.statusCode).send(before.payload);
+      const result = await service.invoke({
         project,
         runId,
         username: request.user!.username,
       }, String((request.params as any).tool ?? ''), args);
+      const after = acceptanceAgentToolAfter(request.user!.username, runId, String((request.params as any).tool ?? ''));
+      if (after) return reply.code(after.statusCode).send(after.payload);
+      return result;
     } catch (error) {
       return sendAgentCoreError(reply, error);
     }

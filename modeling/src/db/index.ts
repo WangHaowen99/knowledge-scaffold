@@ -290,7 +290,7 @@ export function ensureTaskKindCoverage(db: DatabaseSync): void {
 export function ensureAgentProjectEventKinds(db: DatabaseSync): void {
   const row = db.prepare(`SELECT sql FROM sqlite_master
     WHERE type = 'table' AND name = 'agent_project_event_outbox'`).get() as { sql?: string } | undefined;
-  if (!row?.sql || row.sql.includes("'package_import'")) return;
+  if (!row?.sql || row.sql.includes("'evaluation_terminal'")) return;
 
   db.exec('PRAGMA foreign_keys = OFF');
   try {
@@ -298,7 +298,7 @@ export function ensureAgentProjectEventKinds(db: DatabaseSync): void {
       CREATE TABLE agent_project_event_outbox_next (
         id            TEXT PRIMARY KEY,
         project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        event_type    TEXT NOT NULL CHECK (event_type IN ('material_parse', 'studio_review', 'fusion_review', 'package_import')),
+        event_type    TEXT NOT NULL CHECK (event_type IN ('material_parse', 'studio_review', 'fusion_review', 'package_import', 'evaluation_terminal')),
         payload_json  TEXT NOT NULL,
         created_at    TEXT NOT NULL,
         delivered_at TEXT
@@ -364,6 +364,9 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'agent_candidate_workspaces', 'credential_hash', 'TEXT');
   ensureColumn(db, 'agent_candidate_workspaces', 'credential_expires_at', 'TEXT');
   ensureColumn(db, 'agent_candidate_workspaces', 'package_data_source_type', "TEXT NOT NULL DEFAULT 'neo4j'");
+  ensureColumn(db, 'agent_change_plans', 'approval_status', "TEXT NOT NULL DEFAULT 'approved'");
+  ensureColumn(db, 'agent_change_plans', 'approved_by', 'TEXT');
+  ensureColumn(db, 'agent_change_plans', 'approved_at', 'TEXT');
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
   ensureColumn(db, 'generation_batch_checkpoints', 'dependency_hash', "TEXT NOT NULL DEFAULT ''");

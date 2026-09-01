@@ -40,8 +40,8 @@ test('脚本契约只通过 JiuwenBox 创建、执行并释放一次性沙箱', 
 
   const result = await runScriptCasesInJiuwenbox({
     runId: 'run-test',
-    source: 'def run(a, b):\n    return a + b\n',
-    cases: [{ input: { a: 1, b: 2 }, expected: 3 }],
+    source: 'import json\nprint(json.dumps(3))\n',
+    cases: [{ argv: ['--left', '1', '--right', '2'], expected: 3 }],
     socketPath,
   });
 
@@ -53,6 +53,12 @@ test('脚本契约只通过 JiuwenBox 创建、执行并释放一次性沙箱', 
   assert.equal(calls[0].body.policy.network.uplink.nat, false);
   assert.equal(calls[1].body.command[0], '/usr/bin/python3');
   assert.equal(calls[1].body.command.includes('/bin/sh'), false);
+  const runner = String(calls[1].body.command[3]);
+  assert.doesNotMatch(runner, /runpy|case\.get\("function"\)/u);
+  assert.deepEqual(
+    JSON.parse(Buffer.from(calls[1].body.command[5], 'base64').toString('utf8')),
+    [{ argv: ['--left', '1', '--right', '2'], expected: 3 }],
+  );
   assert.match(calls[2].path, /^\/api\/v1\/sandboxes\/mdl-/u);
 });
 
@@ -62,7 +68,7 @@ test('JiuwenBox 不可用时不回退到宿主机执行', async () => {
     runScriptCasesInJiuwenbox({
       runId: 'run-test',
       source: 'raise RuntimeError("host must not run this")\n',
-      cases: [{ input: {}, expected: null }],
+      cases: [{ argv: [], expected: null }],
       socketPath: missingSocket,
     }),
     /ENOENT|connect/u,

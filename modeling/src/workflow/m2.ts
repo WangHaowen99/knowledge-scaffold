@@ -60,6 +60,7 @@ import {
   buildObjectGenerationHints,
 } from './object-generation-hints.js';
 import { buildPhysicalSchemaObjects, detectSchemaManifests } from './schema-manifest.js';
+import { enforceObjectSourcePolicy, schemaObjectPolicyIssues } from './schema-object-policy.js';
 import {
   dispositionForObjectAndOperationCandidates,
   validateGeneratedKnowledgeResources,
@@ -296,8 +297,9 @@ export async function generatePackage(
     authoringRun.id,
     { phase: '知识结构生成', currentStep: '准备知识包生成', progress: 0, retryCount: 0 },
   );
-  const physicalSchemaObjects = buildPhysicalSchemaObjects(ctx.tables);
-  const schemaManifests = detectSchemaManifests(ctx.tables);
+  const schemaOnlyTables = ctx.tables.filter((table) => table.materialPurpose === 'schema');
+  const physicalSchemaObjects = buildPhysicalSchemaObjects(schemaOnlyTables);
+  const schemaManifests = detectSchemaManifests(schemaOnlyTables);
   const rawObjectHints = buildObjectGenerationHints(analysis, ctx.tables);
   const objectHints = rawObjectHints.map((candidate, index) => ({
     ...candidate,
@@ -1076,7 +1078,8 @@ export async function generatePackage(
         .map((document) => ({ id: document.id, filename: document.filename })),
       tables: ctx.tables.map((table) => ({ name: table.name, documentId: table.documentId })),
     });
-    const spec = normalizeObjectDataMappings(rawSpec, ctx.tables);
+    const governedSpec = enforceObjectSourcePolicy(rawSpec, ctx.tables);
+    const spec = normalizeObjectDataMappings(governedSpec, schemaOnlyTables);
     trace({
       projectId: project.id, nodeId: node.id, phase: 'validation', kind: 'phase_started', status: 'running',
       title: '校验知识包完整性',
@@ -1119,6 +1122,10 @@ export async function generatePackage(
       details: { coveredCount: coverage.covered.length, uncoveredCount: coverage.uncovered.length },
     });
     const files = renderPackage(spec);
+    const objectSourceIssues = schemaObjectPolicyIssues(spec, files, ctx.tables);
+    if (objectSourceIssues.length) {
+      throw new Error(`对象来源策略未通过：${objectSourceIssues.map((issue) => issue.message).join('；')}`);
+    }
     const saved = await artifactStore.savePackageVersion(project.id, {
       expectedRevision: baseRevision.oid,
       spec,

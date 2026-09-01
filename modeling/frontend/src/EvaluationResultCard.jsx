@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, ChevronsDown, ChevronsUp } from 'lucide-react';
+import MarkdownContent from './MarkdownContent.jsx';
 
 const VERDICT_META = {
   pass: { className: 'tag-ok', label: '通过' },
@@ -17,8 +19,21 @@ export function shouldExpandEvaluationResult(verdict) {
   return ['partial', 'fail', 'error'].includes(verdict);
 }
 
-function defaultExpandedIds(results) {
+export function defaultExpandedEvaluationIds(results) {
   return new Set(results.filter((item) => shouldExpandEvaluationResult(item.verdict)).map((item) => item.id));
+}
+
+export function toggleEvaluationResultExpansion(expandedIds, resultId) {
+  const next = new Set(expandedIds);
+  if (next.has(resultId)) next.delete(resultId);
+  else next.add(resultId);
+  return next;
+}
+
+function EvaluationMarkdown({ children, fallback }) {
+  const value = String(children || '').trim();
+  if (!value) return <div className="ev-answer-empty">{fallback}</div>;
+  return <div className="ev-markdown"><MarkdownContent>{value}</MarkdownContent></div>;
 }
 
 function ToolExecutionTrace({ trace }) {
@@ -47,6 +62,8 @@ export default function EvaluationResultCard({
   open,
   onToggle,
   onOverride,
+  index,
+  showTrace = true,
 }) {
   const [overrideTarget, setOverrideTarget] = useState('');
   const [overrideReason, setOverrideReason] = useState('');
@@ -65,8 +82,11 @@ export default function EvaluationResultCard({
         onClick={onToggle}
       >
         <span className={`tag ${meta.className}`}>{meta.label}{result.overridden ? '·改' : ''}</span>
+        {Number.isInteger(index) && <span className="ev-result-index">{index + 1}.</span>}
         <span className="ev-question-summary">{result.question}</span>
-        <span className="ev-result-chevron" aria-hidden="true">{open ? '⌄' : '›'}</span>
+        <span className="ev-result-chevron" aria-hidden="true">
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        </span>
       </button>
 
       {open && (
@@ -74,17 +94,23 @@ export default function EvaluationResultCard({
           <div className="ev-answer-grid">
             <section className="ev-answer-panel ev-answer-standard" aria-label="标准答案">
               <div className="ev-section-title">标准答案</div>
-              <div className="ev-answer-content">{result.groundTruth || '（未配置标准答案）'}</div>
+              <div className="ev-answer-content">
+                <EvaluationMarkdown fallback="（未配置标准答案）">{result.groundTruth}</EvaluationMarkdown>
+              </div>
             </section>
             <section className="ev-answer-panel ev-answer-evaluated" aria-label="评测回答">
               <div className="ev-section-title">评测回答</div>
-              <div className="ev-answer-content">{result.finalAnswer || '（无回答）'}</div>
+              <div className="ev-answer-content">
+                <EvaluationMarkdown fallback="（无回答）">{result.finalAnswer}</EvaluationMarkdown>
+              </div>
             </section>
           </div>
 
           <section className="ev-reason" aria-label="判分说明">
             <div className="ev-section-title">判分说明</div>
-            <div className="ev-reason-content">{result.reason || '（暂无判分说明）'}</div>
+            <div className="ev-reason-content">
+              <EvaluationMarkdown fallback="（暂无判分说明）">{result.reason}</EvaluationMarkdown>
+            </div>
           </section>
 
           {result.overridden && (
@@ -96,9 +122,9 @@ export default function EvaluationResultCard({
             </section>
           )}
 
-          <ToolExecutionTrace trace={trace} />
+          {showTrace && <ToolExecutionTrace trace={trace} />}
 
-          {result.verdict === 'error' ? (
+          {typeof onOverride === 'function' && (result.verdict === 'error' ? (
             <div className="ev-override-disabled">运行错误需要先修复环境并重试，不能人工改判。</div>
           ) : <>
             <div className="ev-override">
@@ -134,16 +160,17 @@ export default function EvaluationResultCard({
                 <button type="button" className="btn" disabled={overrideBusy}
                   onClick={() => { setOverrideTarget(''); setOverrideReason(''); setOverrideError(''); }}>取消</button></div>
             </div>}
-          </>}
+          </>)}
         </div>
       )}
     </article>
   );
 }
 
-export function EvaluationResultsList({ results, traces = {}, onOverride }) {
-  const [expandedIds, setExpandedIds] = useState(() => defaultExpandedIds(results));
+export function EvaluationResultsList({ results, traces = {}, onOverride, showTrace = true }) {
+  const [expandedIds, setExpandedIds] = useState(() => defaultExpandedEvaluationIds(results));
   const seenIdsRef = useRef(new Set(results.map((item) => item.id)));
+  const bulkModeRef = useRef('default');
 
   useEffect(() => {
     const nextIds = new Set(results.map((item) => item.id));
@@ -152,6 +179,8 @@ export function EvaluationResultsList({ results, traces = {}, onOverride }) {
       .map((item) => item.id);
     seenIdsRef.current = nextIds;
     setExpandedIds((current) => {
+      if (bulkModeRef.current === 'expanded') return nextIds;
+      if (bulkModeRef.current === 'collapsed') return new Set();
       const next = new Set([...current].filter((id) => nextIds.has(id)));
       newlyExpanded.forEach((id) => next.add(id));
       return next;
@@ -164,30 +193,34 @@ export function EvaluationResultsList({ results, traces = {}, onOverride }) {
 
   return (
     <div className="ev-results">
-      {results.length > 1 && (
-        <div className="ev-results-toolbar" aria-label="评测结果展开操作">
-          <span>{results.length} 条评测结果</span>
-          <div>
-            <button type="button" disabled={allExpanded}
-              onClick={() => setExpandedIds(new Set(results.map((item) => item.id)))}>展开全部</button>
-            <button type="button" disabled={allCollapsed}
-              onClick={() => setExpandedIds(new Set())}>收起全部</button>
-          </div>
+      <div className="ev-results-toolbar" aria-label="评测结果展开操作">
+        <span>{results.length} 条评测结果</span>
+        <div>
+          <button type="button" disabled={allExpanded} title="展开全部评测回答"
+            onClick={() => { bulkModeRef.current = 'expanded'; setExpandedIds(new Set(results.map((item) => item.id))); }}>
+            <ChevronsDown size={14} />展开全部
+          </button>
+          <button type="button" disabled={allCollapsed} title="收起全部评测回答"
+            onClick={() => { bulkModeRef.current = 'collapsed'; setExpandedIds(new Set()); }}>
+            <ChevronsUp size={14} />收起全部
+          </button>
         </div>
-      )}
-      {results.map((item) => (
+      </div>
+      {results.map((item, index) => (
         <EvaluationResultCard
           key={item.id}
           result={item}
+          index={index}
           trace={traces[item.id]}
+          showTrace={showTrace}
           open={expandedIds.has(item.id)}
           onToggle={() => setExpandedIds((current) => {
-            const next = new Set(current);
-            if (next.has(item.id)) next.delete(item.id);
-            else next.add(item.id);
-            return next;
+            bulkModeRef.current = 'custom';
+            return toggleEvaluationResultExpansion(current, item.id);
           })}
-          onOverride={(verdict, reason) => onOverride(item, verdict, reason)}
+          onOverride={typeof onOverride === 'function'
+            ? (verdict, reason) => onOverride(item, verdict, reason)
+            : undefined}
         />
       ))}
     </div>

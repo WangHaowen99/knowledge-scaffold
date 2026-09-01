@@ -7,7 +7,12 @@ import LeftPane from './left/LeftPane.jsx';
 import { initialUploadOptions } from './pages/CreatePage.jsx';
 import { documentParagraphs, evidenceHighlight, evidenceLocationOffset } from './center/DocView.jsx';
 import EvidenceLinks from './center/EvidenceLinks.jsx';
-import { EvaluationSetupPanel, evaluationScopeLabel, RunsPanel } from './center/EvaluationView.jsx';
+import { DiagnosisProgress, EvaluationSetupPanel, evaluationScopeLabel, OptimizationProgress, RunsPanel } from './center/EvaluationView.jsx';
+import {
+  defaultExpandedEvaluationIds,
+  EvaluationResultsList,
+  toggleEvaluationResultExpansion,
+} from '../EvaluationResultCard.jsx';
 import FileView from './center/FileView.jsx';
 import DiffView from './center/DiffView.jsx';
 import { fitMermaidZoom } from './center/FlowView.jsx';
@@ -28,7 +33,11 @@ import {
   SCENES,
   studioFocusFromLocation,
 } from './lib/appStore.js';
-import { humanizeTraceSummary, newestTraceFirst, restoredVersionMessage } from './shell/ProcessDrawer.jsx';
+import ProcessDrawer, {
+  humanizeTraceSummary,
+  newestTraceFirst,
+  restoredVersionMessage,
+} from './shell/ProcessDrawer.jsx';
 import { userFacingText } from './lib/userFacingText.js';
 import {
   evidenceLabel,
@@ -327,6 +336,31 @@ try {
 } catch (e) { console.log('✗ 评测数据源配置:', e.message); bad++; }
 
 try {
+  const html = renderToString(<DiagnosisProgress task={{
+    operation: 'diagnose', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  if (!html.includes('正在分析失败原因') || !html.includes('正在读取失败结果、执行轨迹和独立证据')
+    || !html.includes('已运行') || !html.includes('1 分') || !html.includes('role="status"')) {
+    throw new Error('诊断长任务没有立即显示可恢复的进度反馈');
+  }
+  console.log('✓ 失败诊断长任务显示进度反馈');
+} catch (e) { console.log('✗ 失败诊断进度反馈:', e.message); bad++; }
+
+try {
+  const proposal = renderToString(<OptimizationProgress operation="propose" task={{
+    operation: 'propose', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  const apply = renderToString(<OptimizationProgress operation="apply" task={{
+    operation: 'apply', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  if (!proposal.includes('正在生成优化建议') || !proposal.includes('已运行')
+    || !apply.includes('正在生成知识包候选') || !apply.includes('确定性校验')) {
+    throw new Error('优化长任务没有显示可恢复的进度反馈');
+  }
+  console.log('✓ 优化长任务显示进度反馈');
+} catch (e) { console.log('✗ 优化任务进度反馈:', e.message); bad++; }
+
+try {
   const sourceScope = { kind: 'fusion_source', sourceId: 'internal-source-a', sourceName: '线路治理方案' };
   const html = renderToString(<RunsPanel rounds={[{
     id: 'round-source', status: 'done', packageVersion: '0.9.0', createdAt: '2026-08-23T10:00:00Z',
@@ -342,6 +376,28 @@ try {
   }
   console.log('✓ 来源回归轮次显示业务归属');
 } catch (e) { console.log('✗ 来源回归归属:', e.message); bad++; }
+
+try {
+  const results = [{
+    id: 'result-pass', verdict: 'pass', question: '已通过的问题',
+    finalAnswer: '这条默认不展开。', reason: '符合要求。',
+  }, {
+    id: 'result-fail', verdict: 'fail', question: '需要检查的问题',
+    groundTruth: '应包含汇总表。', reason: '> 判定依据\n\n缺少关键字段。',
+    finalAnswer: '## 整体结论\n\n| 装置 | 负荷 |\n| --- | ---: |\n| 装置 A | 82% |',
+  }];
+  const defaults = defaultExpandedEvaluationIds(results);
+  const toggled = toggleEvaluationResultExpansion(defaults, 'result-fail');
+  const html = renderToString(<EvaluationResultsList results={results} showTrace={false} />);
+  if (!defaults.has('result-fail') || defaults.has('result-pass') || toggled.has('result-fail')
+    || !html.includes('展开全部') || !html.includes('收起全部')
+    || !html.includes('aria-expanded="true"') || !html.includes('aria-expanded="false"')
+    || !html.includes('<h2>整体结论</h2>') || !html.includes('<table>')
+    || html.includes('这条默认不展开。') || html.includes('人工改判')) {
+    throw new Error('评测回答没有按 Markdown 渲染，或展开控制与默认状态不正确');
+  }
+  console.log('✓ 评测回答 Markdown 与批量展开控制');
+} catch (e) { console.log('✗ 评测回答展示:', e.message); bad++; }
 
 try {
   if (fitMermaidZoom(8_000, 1_040) !== 0.25
@@ -597,14 +653,14 @@ store.set({
   run: { id: 'long-running', status: 'running' },
   interaction: null,
   messages: [],
-  activity: { text: '正在核对影响范围', progress: {}, startedAt: Date.now() - 121_000 },
+  activity: { text: '正在核对影响范围', progress: {}, startedAt: Date.now() - 1_000 },
 });
 try {
   const html = renderToString(<ActivityLine />);
   if (!html.includes('停止任务') || !html.includes('wb-act-stop')) {
-    throw new Error('超过两分钟后没有在活动行提供停止出口');
+    throw new Error('运行开始后没有立即在活动行提供停止出口');
   }
-  console.log('✓ Agent 长任务超过两分钟直接提供停止出口');
+  console.log('✓ Agent 运行开始后立即提供停止出口');
 } catch (e) { console.log('✗ Agent 长任务停止出口:', e.message); bad++; }
 
 store.set({
@@ -937,6 +993,46 @@ try {
   console.log('✓ 确认等待态清理活动提示');
 } catch (e) { console.log('✗ 确认等待态清理活动提示:', e.message); bad++; }
 
+store.set({
+  messages: [], interaction: null, reviewedChangeGroups: [],
+  lastSeq: 0, replayUntilSeq: 2,
+});
+actions.handleEvent({
+  eventType: 'interaction', seq: 1,
+  id: 'cancelled-run-decision', kind: 'business_decision', status: 'pending',
+  payload: { question: '是否继续历史方案？' },
+});
+try {
+  const replayed = store.get().messages[0]?.blocks?.[0]?.interaction;
+  if (store.get().interaction || replayed?.status !== 'superseded') {
+    throw new Error('历史回放恢复了已失效运行的旧决定卡');
+  }
+  const html = renderToString(<App />);
+  if (!html.includes('已关闭') || html.includes('确认提交')) {
+    throw new Error('失效决定卡仍显示为可操作状态');
+  }
+  console.log('✓ 历史回放不恢复已取消运行的旧决定卡');
+} catch (e) { console.log('✗ 历史失效决定卡:', e.message); bad++; }
+
+store.set({ messages: [], interaction: null, lastSeq: 0, replayUntilSeq: 0 });
+actions.handleEvent({
+  eventType: 'interaction', seq: 1,
+  id: 'live-cancel-decision', kind: 'business_decision', status: 'pending',
+  payload: { question: '是否继续当前方案？' },
+});
+actions.handleEvent({
+  eventType: 'interaction', seq: 2,
+  id: 'live-cancel-decision', kind: 'business_decision', status: 'cancelled',
+  answer: { action: 'run_cancelled' },
+});
+try {
+  const closed = store.get().messages[0]?.blocks?.[0]?.interaction;
+  if (store.get().interaction || closed?.status !== 'cancelled') {
+    throw new Error('取消运行后待处理决定卡没有同步关闭');
+  }
+  console.log('✓ 取消运行同步关闭待处理决定卡');
+} catch (e) { console.log('✗ 取消运行关闭决定卡:', e.message); bad++; }
+
 try {
   const html = renderToString(<Block block={{
     type: 'release',
@@ -1186,6 +1282,19 @@ try {
 
 store.set({
   demo: false,
+  fileContents: {},
+  fileErrors: { 'objects/member_profile.md': '当前文件暂时读取失败，项目其他区域仍可正常使用' },
+});
+try {
+  const html = renderToString(<FileView path="objects/member_profile.md" />);
+  if (!html.includes('当前文件暂时不可用') || !html.includes('重试') || !html.includes('建模助手')) {
+    throw new Error('文件读取失败没有提供就地恢复入口');
+  }
+  console.log('✓ 文件读取失败提供就地重试和助手提示');
+} catch (e) { console.log('✗ 文件读取恢复入口:', e.message); bad++; }
+
+store.set({
+  demo: false,
   fileContents: {
     'manifest.yaml': ['id: refinery', 'name: 加氢裂化知识包', 'version: 1.0.0', 'status: released', 'resources:', '  objects: 2', '  operations: 2'].join('\n'),
   },
@@ -1251,9 +1360,9 @@ try {
   if (/deadbeef|request_release|run-|cp-013|工具事件|工具边界/.test(html)) {
     throw new Error('主界面仍暴露运行时实现标识');
   }
-  if (message !== '我已从版本历史恢复到v1.0.0。请以恢复后的发布结果为准继续，无需重复评测。'
+  if (message !== '已从版本历史恢复到v1.0.0，无需重复评测。'
     || /request_|preflight|API|checkpoint|running/.test(message)) {
-    throw new Error('版本恢复没有形成自然业务消息');
+    throw new Error('版本恢复没有形成确定性业务提示');
   }
   if (humanizeTraceSummary('当前项目状态：评测 / running') !== '当前阶段：评测'
     || humanizeTraceSummary('处理完成', 'task_tool') !== '一项子任务已完成，主任务继续处理中'
@@ -1285,6 +1394,121 @@ try {
   }
   console.log('✓ 主流程不暴露运行时实现');
 } catch (e) { console.log('✗ 主流程实现隔离:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-recovery', toolCallId: 'call-change-set',
+  name: 'stage_change_set', phase: 'repairing', code: 'CHANGE_SET_RESULT_UNKNOWN',
+  summary: 'Change Set 已提交，但返回助手的响应丢失；重试前必须先查询当前回执',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-recovery', toolCallId: 'call-receipt',
+  name: 'get_change_set_receipt', phase: 'completed', summary: '已找到原写入回执',
+  createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const recovery = store.get().messages.find((message) => message.id === 'tool-alert-run-recovery-call-change-set');
+  const trace = store.get().trace.find((item) => item.toolCallId === 'call-change-set');
+  if (recovery || trace?.phase !== 'repairing' || !trace.summary.includes('响应丢失')) {
+    throw new Error('自动恢复过程没有仅保留在活动记录');
+  }
+  console.log('✓ 工具自动恢复过程不占用主对话');
+} catch (e) { console.log('✗ 工具自动恢复记录:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-optional-tool', toolCallId: 'call-eval-db',
+  name: 'query_eval_db', phase: 'rejected', code: 'EVAL_DB_TOOL_UNAVAILABLE',
+  problemVisibility: 'activity', summary: '可选评测库未配置，已跳过本次查询',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+try {
+  const trace = store.get().trace.find((item) => item.toolCallId === 'call-eval-db');
+  if (store.get().messages.length !== 0 || trace?.phase !== 'rejected') {
+    throw new Error('可选工具不可用仍生成了主对话问题卡，或没有保留活动轨迹');
+  }
+  console.log('✓ 可选工具不可用只保留活动轨迹');
+} catch (e) { console.log('✗ 可选工具不可用展示:', e.message); bad++; }
+
+const traceOnlyProblem = {
+  eventType: 'tool', seq: 1, runId: 'run-trace-only-problem', toolCallId: 'call-plan-validation',
+  name: 'run_script_test', phase: 'failed', code: 'SCRIPT_CONTRACT_NOT_FOUND',
+  issueId: 'issue-plan-validation', issueStatus: 'awaiting_user',
+  summary: '脚本契约不存在：plan_validation', createdAt: '2026-01-01T00:00:00Z',
+};
+try {
+  for (const replayUntilSeq of [0, 1]) {
+    store.set({
+      demo: false, messages: [], trace: [], lastSeq: 0, replayUntilSeq,
+      activity: null, run: null,
+    });
+    actions.handleEvent(traceOnlyProblem);
+    const trace = store.get().trace.find((item) => item.toolCallId === 'call-plan-validation');
+    if (store.get().messages.length !== 0
+      || trace?.phase !== 'failed'
+      || !trace.summary.includes('脚本契约不存在')) {
+      throw new Error('普通工具失败仍进入聊天记录，或没有保留在过程记录');
+    }
+  }
+  const processHtml = renderToString(<ProcessDrawer onClose={() => {}} />);
+  if (!processHtml.includes('脚本契约不存在') || processHtml.includes('当前问题需要处理')) {
+    throw new Error('过程抽屉没有展示工具失败，或仍渲染聊天红卡文案');
+  }
+  console.log('✓ 工具失败只出现在过程记录');
+} catch (e) { console.log('✗ 工具失败展示位置:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-issue', toolCallId: 'call-managed-write',
+  name: 'write_file', phase: 'repairing', code: 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+  issueId: 'issue-binding', issueStatus: 'repairing', summary: '对象数据映射已阻止，正在自动修正',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-issue', toolCallId: 'call-managed-write-again',
+  name: 'write_file', phase: 'repairing', code: 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+  issueId: 'issue-binding', issueStatus: 'repairing', summary: '正在读取对象和来源表',
+  createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const issues = store.get().messages.filter((message) => message.id === 'tool-issue-run-issue-issue-binding');
+  if (issues.length !== 0) {
+    throw new Error('自动修正中的技术问题仍占据主对话');
+  }
+  actions.handleEvent({
+    eventType: 'tool', seq: 3, runId: 'run-issue', toolCallId: 'call-binding',
+    name: 'patch_object_source_binding', phase: 'waiting', code: 'RECOVERY_EXHAUSTED',
+    issueId: 'issue-binding', issueStatus: 'awaiting_user', problemVisibility: 'recovery',
+    repairStopped: true, summary: '自动处理仍有未完成项，请选择如何处理当前成果。',
+    recoveryActions: [{
+      id: 'retry_from_latest', label: '基于最新内容继续', description: '只处理未完成部分。',
+    }, {
+      id: 'keep_current_progress', label: '保留当前成果，结束本轮', description: '保留已有修改。',
+    }],
+    createdAt: '2026-01-01T00:00:02Z',
+  });
+  const recoveryIssue = store.get().messages.find((message) => message.id === 'tool-issue-run-issue-issue-binding');
+  const html = renderToString(<Block block={recoveryIssue?.blocks?.[0]} />);
+  if (recoveryIssue?.blocks?.[0]?.type !== 'recovery'
+    || !html.includes('请选择后续处理')
+    || !html.includes('基于最新内容继续')
+    || !html.includes('保留当前成果，结束本轮')
+    || html.includes('card-stale')
+    || html.includes('当前问题需要处理')) {
+    throw new Error('自动恢复到达上限后没有形成客户可操作的非红色选择卡');
+  }
+  actions.handleEvent({
+    eventType: 'tool', seq: 4, runId: 'run-issue', toolCallId: 'call-binding-resolved',
+    name: 'patch_object_source_binding', phase: 'completed', issueStatus: 'resolved',
+    resolvedIssueIds: ['issue-binding'], summary: '对象与数据表绑定完成',
+    createdAt: '2026-01-01T00:00:03Z',
+  });
+  if (store.get().messages.some((message) => message.id === 'tool-issue-run-issue-issue-binding')) {
+    throw new Error('已解决问题仍占据主对话');
+  }
+  console.log('✓ 自动恢复隐藏且耗尽后提供客户处理出口');
+} catch (e) { console.log('✗ 工具问题生命周期:', e.message); bad++; }
 
 store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null, drawerOpen: true });
 actions.handleEvent({

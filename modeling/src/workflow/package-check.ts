@@ -3,6 +3,7 @@ import { parse as parseYaml } from 'yaml';
 
 import { getDb, nowIso } from '../db/index.js';
 import { findObjectDataMappingProblems } from './data-mapping.js';
+import { OBJECT_DATA_MAPPING_PATH, packageNeedsObjectDataMapping } from './schema-object-policy.js';
 import { describeFieldNameConflict, findFieldNameConflicts } from './field-alias.js';
 import { validateKey } from './keys.js';
 import {
@@ -422,6 +423,14 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
   // 1) 必选文件存在且非空（规范 §2.1）
   for (const p of PACKAGE_REQUIRED_FILES) {
     if (!(p in files) || !files[p].trim()) add('错误', '必选文件缺失', p, `必选文件 ${p} 缺失或为空，本体包不能被稳定消费`);
+  }
+  const mappingRequired = packageNeedsObjectDataMapping(spec);
+  const mappingContent = files[OBJECT_DATA_MAPPING_PATH];
+  if (mappingRequired && !mappingContent?.trim()) {
+    add('错误', '必选文件缺失', OBJECT_DATA_MAPPING_PATH, '存在物理对象绑定时必须生成 object data mapping 文件');
+  }
+  if (!mappingRequired && mappingContent !== undefined) {
+    add('错误', 'mapping 非法', OBJECT_DATA_MAPPING_PATH, '没有物理对象绑定时不得生成 object data mapping 文件');
   }
   for (const o of spec.objects ?? []) {
     if (!(`objects/${o.key}.md` in files)) add('错误', '必选文件缺失', `objects/${o.key}.md`, `对象 ${o.key} 的详情文件缺失`);

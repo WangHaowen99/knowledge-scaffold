@@ -29,6 +29,7 @@ function Workbench() {
   const widths = useStore(store, selWidths);
   const drawer = useStore(store, selDrawer);
   const demo = useStore(store, selDemo);
+  const interaction = useStore(store, (state) => state.interaction);
   const leftRef = useRef(null);
   const rightRef = useRef(null);
   const [globalDrag, setGlobalDrag] = useState(false);
@@ -37,6 +38,11 @@ function Workbench() {
   ));
   const [settingsUser, setSettingsUser] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
+  const [mobilePane, setMobilePane] = useState('assistant');
+
+  useEffect(() => {
+    if (interaction) setMobilePane('assistant');
+  }, [interaction?.id]);
 
   const openMcpSettings = async () => {
     setSettingsLoading(true);
@@ -122,7 +128,13 @@ function Workbench() {
         event.preventDefault(); setGlobalDrag(false); void actions.upload(event.dataTransfer.files);
       }}>
       <TopBar onOpenMcpSettings={() => void openMcpSettings()} settingsLoading={settingsLoading} />
-      <div className="wb-body">
+      <nav className="wb-mobile-tabs" aria-label="移动端工作区">
+        <button type="button" className={mobilePane === 'content' ? 'on' : ''}
+          onClick={() => setMobilePane('content')}>知识内容</button>
+        <button type="button" className={mobilePane === 'assistant' ? 'on' : ''}
+          onClick={() => setMobilePane('assistant')}>建模助手{interaction ? <span>1</span> : null}</button>
+      </nav>
+      <div className={`wb-body wb-mobile-${mobilePane}`}>
         <aside className="wb-pane wb-pane-l" ref={leftRef} style={{ width: widths.left }}>
           <LeftPane />
         </aside>

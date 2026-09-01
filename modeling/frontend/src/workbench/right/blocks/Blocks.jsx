@@ -11,18 +11,83 @@ export function Block({ block }) {
   switch (block.type) {
     case 'text':      return <div className="wb-text"><MarkdownContent>{userFacingText(block.text)}</MarkdownContent></div>;
     case 'reasoning': return <ReasoningBlock block={block} />;
-    case 'plan':      return <PlanBlock items={block.items} />;
-    case 'ask':       return block.interaction?.status === 'answered' ? <AnsweredInteraction interaction={block.interaction} /> : <AskBlock b={block} />;
+    case 'plan':      return <PlanBlock b={block} />;
+    case 'ask':       return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : <AskBlock b={block} />;
     case 'material':  return <MaterialRequest />;
-    case 'confirm':   return block.interaction?.status === 'answered' ? <AnsweredInteraction interaction={block.interaction} /> : block.interaction ? <LiveConfirm interaction={block.interaction} /> : <ConfirmBlock />;
-    case 'release':   return block.interaction?.status === 'answered' ? <AnsweredInteraction interaction={block.interaction} /> : <LiveRelease interaction={block.interaction} />;
+    case 'confirm':   return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : block.interaction ? <LiveConfirm interaction={block.interaction} /> : <ConfirmBlock />;
+    case 'release':   return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : <LiveRelease interaction={block.interaction} />;
     case 'policy':    return <PolicyBlock />;
     case 'preview':   return <PreviewBlock b={block} />;
-    case 'error':     return <div className="card card-stale"><div className="card-b">{userFacingText(block.text)}</div></div>;
+    case 'error':     return <ErrorBlock block={block} />;
+    case 'recovery':  return <RecoveryBlock block={block} />;
     case 'upload':    return <UploadBlock block={block} />;
     case 'uploadResult': return <UploadResult block={block} />;
     default:          return null;
   }
+}
+
+function RecoveryBlock({ block }) {
+  const [busy, setBusy] = useState('');
+  const run = async (action) => {
+    if (!action?.id || busy) return;
+    setBusy(action.id);
+    try {
+      if (block.issueId) await actions.resumeIssue(block.issueId, action.id);
+      else await actions.send(action.message || '请从已保存的当前进展继续，只处理尚未完成的部分。');
+    } finally {
+      setBusy('');
+    }
+  };
+  return (
+    <div className="card card-wait">
+      <div className="card-h">请选择后续处理</div>
+      <div className="card-b">
+        <div className="wb-text" style={{ marginBottom: 'var(--s-3)' }}>
+          <MarkdownContent>{userFacingText(block.text)}</MarkdownContent>
+        </div>
+        {(block.actions || []).map((action) => (
+          <button key={action.id || action.label} type="button" className="wb-opt"
+            disabled={Boolean(busy)} onClick={() => void run(action)}>
+            <b>{busy === action.id ? '正在处理…' : userFacingText(action.label || '继续')}</b>
+            {action.description && <span>{userFacingText(action.description)}</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorBlock({ block }) {
+  const [busy, setBusy] = useState('');
+  const run = async (action) => {
+    if (!action?.id || busy) return;
+    setBusy(action.id);
+    try {
+      if (block.issueId) await actions.resumeIssue(block.issueId, action.id);
+      else await actions.send(action.message || '请从已保存的当前进展继续，先核对计划和写入回执，不要重复已经完成的修改。');
+    } finally {
+      setBusy('');
+    }
+  };
+  const repairing = block.status === 'repairing';
+  return (
+    <div className={`card ${repairing ? 'card-wait' : 'card-stale'}`}>
+      <div className="card-h">{repairing ? '系统正在自动修正' : '当前问题需要处理'}</div>
+      <div className="card-b">
+        <div>{userFacingText(block.text)}</div>
+        {Array.isArray(block.actions) && block.actions.length > 0 && (
+          <div className="btn-row wb-error-actions">
+            {block.actions.map((action) => (
+              <button key={action.id || action.label} type="button" className="btn btn-sm"
+                disabled={Boolean(busy)} onClick={() => void run(action)}>
+                {busy === action.id ? '正在恢复…' : userFacingText(action.label || '重试')}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function ReasoningBlock({ block }) {
@@ -41,14 +106,26 @@ function ReasoningBlock({ block }) {
 }
 
 function AnsweredInteraction({ interaction }) {
-  return <div className="card"><div className="card-h">已处理</div><div className="card-b t-sm muted"><MarkdownContent>{userFacingText(interaction.payload?.question || '这项确认已经提交')}</MarkdownContent></div></div>;
+  const cancelled = ['cancelled', 'superseded'].includes(interaction?.status);
+  return <div className="card"><div className="card-h">{cancelled ? '已关闭' : '已处理'}</div><div className="card-b t-sm muted"><MarkdownContent>{userFacingText(interaction.payload?.question || (cancelled ? '这项决定已随运行结束关闭' : '这项确认已经提交'))}</MarkdownContent></div></div>;
 }
 
 /* ---------- 计划：渲染 .modeling/plan.md，因此天然有版本和回退 ---------- */
-function PlanBlock({ items }) {
+function PlanBlock({ b }) {
+  const [busy, setBusy] = useState('');
+  const plan = b.plan || {};
+  const items = b.items || [];
+  const decide = async (approved) => {
+    if (!plan.id || busy) return;
+    setBusy(approved ? 'approve' : 'reject');
+    try { await actions.respondChangePlan(plan.id, approved); } finally { setBusy(''); }
+  };
   return (
     <div className="card">
-      <div className="card-h">当前计划</div>
+      <div className="card-h">当前计划<span className="spacer" />
+        {plan.approval_status === 'pending' ? '等待批准'
+          : plan.approval_status === 'rejected' ? '已拒绝' : plan.id ? '已批准' : ''}
+      </div>
       <div className="card-b">
         <ul className="wb-plan">
           {items.map((it) => (
@@ -58,6 +135,15 @@ function PlanBlock({ items }) {
             </li>
           ))}
         </ul>
+        {plan.approval_status === 'pending' && <div className="wb-plan-approval">
+          <span>批准前不会生成对象、规则、操作、指标或脚本候选。</span>
+          <div className="btn-row">
+            <button type="button" className="btn btn-p btn-sm" disabled={Boolean(busy)}
+              onClick={() => void decide(true)}>{busy === 'approve' ? '批准中…' : '批准并开始'}</button>
+            <button type="button" className="btn btn-sm" disabled={Boolean(busy)}
+              onClick={() => void decide(false)}>{busy === 'reject' ? '拒绝中…' : '拒绝计划'}</button>
+          </div>
+        </div>}
       </div>
     </div>
   );
@@ -90,6 +176,7 @@ function AskBlock({ b }) {
 function LiveAsk({ interaction }) {
   const [manual, setManual] = useState('');
   const [followUpOption, setFollowUpOption] = useState(null);
+  const [selectedOption, setSelectedOption] = useState(null);
   const [sending, setSending] = useState(false);
   const manualInput = useRef(null);
   const payload = interaction.payload || {};
@@ -111,17 +198,19 @@ function LiveAsk({ interaction }) {
         </div>
         {options.map((option) => (
           <button key={option.value || option.label}
-            className={`wb-opt ${followUpOption === option ? 'on' : ''}`}
-            disabled={sending} aria-pressed={followUpOption === option}
+            type="button"
+            className={`wb-opt ${followUpOption === option || selectedOption === option ? 'on' : ''}`}
+            disabled={sending} aria-pressed={followUpOption === option || selectedOption === option}
             aria-expanded={option.requiresText ? followUpOption === option : undefined}
             onClick={() => {
-              const value = option.value || option.label;
               if (option.requiresText) {
                 setFollowUpOption(option);
+                setSelectedOption(null);
                 setManual('');
                 return;
               }
-              void submit({ value, selected: [value] });
+              setFollowUpOption(null);
+              setSelectedOption(option);
             }}>
             <b>{userFacingText(option.label)}</b><span>{userFacingText(option.description)}</span>
           </button>
@@ -155,13 +244,24 @@ function LiveAsk({ interaction }) {
             </div>
           </form>
         ) : (
-          <form className="wb-ask-manual" onSubmit={(event) => {
+          <form className="wb-ask-manual wb-ask-decision" onSubmit={(event) => {
             event.preventDefault();
+            if (selectedOption) {
+              const value = selectedOption.value || selectedOption.label;
+              void submit({ value, selected: [value] });
+              return;
+            }
             void submit({ value: manual.trim(), action: material ? 'oral' : 'manual' });
           }}>
             <input ref={manualInput} className="input" value={manual} onChange={(event) => setManual(event.target.value)}
-              placeholder={material ? '也可以直接口述内容…' : '或者直接说明你们的口径…'} />
-            <button type="submit" className="btn btn-p btn-sm" disabled={sending || !manual.trim()}>提交</button>
+              disabled={Boolean(selectedOption)}
+              placeholder={selectedOption
+                ? `已选择：${userFacingText(selectedOption.label)}`
+                : material ? '也可以直接口述内容…' : '或者直接说明你们的口径…'} />
+            {selectedOption && <button type="button" className="btn btn-sm" disabled={sending}
+              onClick={() => setSelectedOption(null)}>重选</button>}
+            <button type="submit" className="btn btn-p btn-sm"
+              disabled={sending || (!selectedOption && !manual.trim())}>{sending ? '提交中…' : '确认提交'}</button>
           </form>
         )}
       </div>
@@ -170,16 +270,23 @@ function LiveAsk({ interaction }) {
 }
 
 function LiveConfirm({ interaction }) {
-  const policy = useStore(store, (state) => state.confirmPolicy);
+  const reviewed = useStore(store, (state) => state.reviewedChangeGroups);
   const payload = interaction.payload || {};
   const groups = payload.changeGroups || [];
   const atomicSelection = payload.atomicSelection === true;
   const selectable = groups.filter((group) => !group.autoApproved);
-  const [selected, setSelected] = useState(() => selectable.map((group) => group.id));
+  const [selected, setSelected] = useState(() => atomicSelection ? selectable.map((group) => group.id) : []);
+  const [reviewMode, setReviewMode] = useState('full');
   const [returning, setReturning] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [sending, setSending] = useState(false);
   const feedbackInput = useRef(null);
+  const sampled = selectable.slice(0, 3).map((group) => group.id);
+  const selectedForSubmit = atomicSelection ? selectable.map((group) => group.id) : selected;
+  const reviewRequired = reviewMode === 'sampled' ? sampled : selectedForSubmit;
+  const allReviewed = reviewRequired.length > 0 && reviewRequired.every((id) => reviewed.includes(id));
+  const autoApprovedCount = groups.length - selectable.length;
+  const heldCount = selectable.length - selectedForSubmit.length;
   const respond = async (answer) => {
     if (sending) return;
     setSending(true);
@@ -187,7 +294,7 @@ function LiveConfirm({ interaction }) {
   };
   return (
     <div className="card card-accent">
-      <div className="card-h">确认待修改内容<span className="spacer" />{groups.length} 组</div>
+      <div className="card-h">确认待修改内容<span className="spacer" />已查看 {reviewed.filter((id) => groups.some((group) => group.id === id)).length}/{groups.length} · 已选 {selectedForSubmit.length}</div>
       <div className="card-b">
         {payload.lastSubmissionError && <div className="wb-confirm-submit-error" role="alert">
           <b>刚才没有接受成功</b>
@@ -196,9 +303,12 @@ function LiveConfirm({ interaction }) {
         </div>}
         {groups.map((group) => {
           const impact = (group.impact || []).filter(Boolean);
-          return <label className={`wb-grp ${group.autoApproved ? 'dim' : ''}`} key={group.id}>
+          const hasReviewed = reviewed.includes(group.id);
+          const path = impact[0] || '';
+          return <div className={`wb-grp ${group.autoApproved ? 'dim' : ''}${hasReviewed ? ' reviewed' : ''}`} key={group.id}>
             <input type="checkbox" disabled={group.autoApproved || atomicSelection || sending}
               checked={group.autoApproved || atomicSelection || selected.includes(group.id)}
+              aria-label={`选择${userFacingText(group.title)}`}
               onChange={() => setSelected((items) => items.includes(group.id)
                 ? items.filter((id) => id !== group.id) : [...items, group.id])} />
             <span><b>{userFacingText(group.title)}</b><span className="gm">{group.tier === 'caliber' ? '业务口径' : group.tier === 'structural' ? '结构变更' : group.tier === 'script' ? '脚本' : '自动同步'}{group.warning ? ` · ${userFacingText(group.warning)}` : ''}</span>
@@ -206,7 +316,11 @@ function LiveConfirm({ interaction }) {
                 涉及 {impact.slice(0, 2).join('、')}{impact.length > 2 ? ` 等 ${impact.length} 处` : ''}
               </span>}
             </span>
-          </label>;
+            <button type="button" className="btn btn-sm wb-review-group"
+              onClick={() => actions.reviewChangeGroup(group.id, path)}>
+              {hasReviewed ? '已查看' : '查看变更'}
+            </button>
+          </div>;
         })}
         {returning ? <>
           <textarea ref={feedbackInput} className="input" rows={3} aria-label="调整要求"
@@ -220,30 +334,37 @@ function LiveConfirm({ interaction }) {
             </button>
             <button className="btn" disabled={sending} onClick={() => setReturning(false)}>取消</button>
           </div>
-        </> : <div className="btn-row" style={{ marginTop: 'var(--s-4)' }}>
-          <button className="btn btn-p" disabled={sending || selected.length === 0} aria-busy={sending}
-            onClick={() => void respond({ approved: true, review_mode: 'full', selected_groups: selected, sampled_groups: [] })}>
-            {sending ? '正在接受…' : `接受已选（${selected.length}）`}
+        </> : <>
+          <div className="wb-confirm-summary" role="status">
+            将接受 {selectedForSubmit.length} 组，暂不接受 {heldCount} 组，自动同步 {autoApprovedCount} 组。
+            {!allReviewed && reviewRequired.length > 0 && <b> 请先查看所有将接受的变更。</b>}
+          </div>
+          <div className="btn-row" style={{ marginTop: 'var(--s-3)' }}>
+          <button className="btn btn-p" disabled={sending || !allReviewed} aria-busy={sending}
+            onClick={() => void respond({
+              approved: true,
+              review_mode: reviewMode,
+              selected_groups: selectedForSubmit,
+              sampled_groups: reviewMode === 'sampled' ? sampled : [],
+            })}>
+            {sending ? '正在接受…' : reviewMode === 'sampled'
+              ? `接受已查看的前 ${sampled.length} 组`
+              : `接受已选（${selectedForSubmit.length}）`}
           </button>
-          {selectable.length > 3 && <button className="btn" disabled={sending}
+          {!atomicSelection && selectable.length > 3 && <button className="btn" disabled={sending}
             onClick={() => {
-              const sampled = selected.slice(0, 3);
-              void respond({ approved: true, review_mode: 'sampled', selected_groups: selected, sampled_groups: sampled });
-            }}>抽检 3 组后接受</button>}
+              setReviewMode('sampled');
+              setSelected(sampled);
+            }}>查看前三组</button>}
+          {reviewMode === 'sampled' && <button className="btn" disabled={sending}
+            onClick={() => { setReviewMode('full'); setSelected([]); }}>改为逐组审阅</button>}
           <button className="btn btn-danger" disabled={sending}
             onClick={() => {
               setReturning(true);
               requestAnimationFrame(() => feedbackInput.current?.focus());
             }}>退回调整</button>
-        </div>}
-        {policy.find((item) => item.tier === 'structural') && (
-          <label className="wb-policy-inline">
-            <input type="checkbox"
-              checked={policy.find((item) => item.tier === 'structural')?.mode === 'auto'}
-              onChange={(event) => void actions.setConfirmPolicy('structural', event.target.checked ? 'auto' : 'ask')} />
-            <span><b>后续结构变更不用再问我</b><small>只自动处理对象、操作和指标结构；业务口径与脚本仍必须确认</small></span>
-          </label>
-        )}
+          </div>
+        </>}
       </div>
     </div>
   );

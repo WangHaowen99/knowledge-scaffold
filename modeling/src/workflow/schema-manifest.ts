@@ -141,7 +141,6 @@ export function detectSchemaManifests(tables: DataDictTable[]): SchemaManifest[]
 
 export function buildPhysicalSchemaObjects(tables: DataDictTable[]): PhysicalSchemaObject[] {
   const manifests = detectSchemaManifests(tables);
-  const manifestNames = new Set(manifests.map((manifest) => manifest.table.name));
   const entryBySheet = new Map<string, SchemaManifestEntry>();
   for (const manifest of manifests) {
     for (const entry of manifest.entries) {
@@ -152,7 +151,6 @@ export function buildPhysicalSchemaObjects(tables: DataDictTable[]): PhysicalSch
   const usedKeys = new Set<string>();
   return tables.flatMap((table, index) => {
     const manifestKey = `${table.documentId ?? '__unbound__'}:${table.name}`;
-    if (manifestNames.has(table.name) && manifests.some((item) => item.table === table)) return [];
     const entry = entryBySheet.get(manifestKey);
     const { fields, primaryKey } = toSpecFields(table);
     const title = entry?.title || table.name;
