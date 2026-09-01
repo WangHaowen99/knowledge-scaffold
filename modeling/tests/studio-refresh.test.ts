@@ -162,3 +162,12 @@ test('StudioView 保留 revision 事件刷新、window 更新与脏态保护', (
   assert.match(source, /window\.addEventListener\('mw-package-updated', refresh\)/);
   assert.match(source, /<StudioExternalRefreshBanner message=\{externalRefreshNotice\.message\} onReload=\{loadStudio\} \/>/);
 });
+
+test('StudioView 在窗口聚焦和页面重新可见时补偿核对 revision', () => {
+  const source = readFileSync(new URL('../frontend/src/workbench/studio/StudioView.jsx', import.meta.url), 'utf8');
+  assert.match(source, /window\.addEventListener\('focus', refresh\)/u);
+  assert.match(source, /document\.addEventListener\('visibilitychange', refreshOnVisible\)/u);
+  assert.match(source, /document\.visibilityState === 'visible'/u);
+  assert.match(source, /window\.removeEventListener\('focus', refresh\)/u);
+  assert.match(source, /document\.removeEventListener\('visibilitychange', refreshOnVisible\)/u);
+});
