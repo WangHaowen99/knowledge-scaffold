@@ -1674,7 +1674,8 @@ Graph provider 配置：
       "description": "通过 NL2SQL HTTP 查询服务检索本体业务数据。",
       "fields": [
         { "name": "url", "label": "服务地址", "type": "str", "required": true, "secret": false, "default": "" },
-        { "name": "token", "label": "访问 Token", "type": "str", "required": false, "secret": true, "default": "" }
+        { "name": "token", "label": "访问 Token", "type": "str", "required": true, "secret": true, "default": "" },
+        { "name": "scene", "label": "场景 Scene", "type": "str", "required": true, "secret": false, "default": "" }
       ]
     }
   ]
@@ -1741,7 +1742,7 @@ Graph provider 配置：
 
 #### `POST /agentic/ontologies/{ontology_id}/data-source/test` (`admin`)
 
-测试数据源服务可达性。请求体可传入与 PUT 相同的候选配置；请求体为空时测试已保存配置。测试不会保存候选配置。MindsDB 会请求 Project 范围内的 Agent 列表，并校验 `project_name + default_agent_name`；NL2SQL HTTP / NL2SQL Template 会请求 `/api/v1/query`，验证服务地址、网络和鉴权头。
+测试数据源服务可达性。请求体可传入与 PUT 相同的候选配置；请求体为空时测试已保存配置。测试不会保存候选配置。MindsDB 会请求 Project 范围内的 Agent 列表，并校验 `project_name + default_agent_name`；NL2SQL HTTP / NL2SQL Template 会携带 Scene 与 Bearer Token 请求 `/api/v1/sql`，执行 `SELECT 1`，并要求响应包含 `success=true`。
 
 ```json
 {
