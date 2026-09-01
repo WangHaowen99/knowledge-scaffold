@@ -1,6 +1,6 @@
 """Phase A offline regression baseline for the OpenJiuwen ContextEngine.
 
-These tests use the real ``openjiuwen==0.1.17`` ContextEngine and ReActAgent.
+These tests use the real ``openjiuwen==0.1.14`` ContextEngine and ReActAgent.
 A fake model captures the final ``invoke`` and ``stream`` message arguments.
 
 Test matrix:
@@ -37,33 +37,7 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
 
 def test_phase_a_uses_requirements_pinned_openjiuwen_version():
-    assert importlib.metadata.version("openjiuwen") == "0.1.17"
-
-
-def test_default_factory_configures_openjiuwen_0_1_17_runtime_features():
-    from types import SimpleNamespace
-
-    from agent.core.jiuwen_engine import create_default_jiuwen_agent
-
-    agent = create_default_jiuwen_agent(
-        llm_config=SimpleNamespace(
-            provider="openai_compatible",
-            api_key="synthetic-key",
-            base_url="https://llm.example.com/v1",
-            model="model-a",
-            timeout=30,
-            max_tokens=128,
-            temperature=0.2,
-        ),
-        max_iterations=1,
-        context_max_rounds=3,
-    )
-
-    config = agent.config
-    assert config.context_processors == []
-    assert config.parallel_tool_calls is True
-    assert config.kv_cache_affinity_config.enable_kv_cache_release is False
-    assert config.kv_cache_affinity_config.enable_kv_cache_affinity is False
+    assert importlib.metadata.version("openjiuwen") == "0.1.14"
 
 
 def _run(coro):
@@ -151,6 +125,7 @@ async def _capture_real_react_model_window(
                 max_context_message_num=None,
                 default_window_round_num=configured_rounds,
                 enable_reload=False,
+                enable_kv_cache_release=False,
             ),
         )
     )
