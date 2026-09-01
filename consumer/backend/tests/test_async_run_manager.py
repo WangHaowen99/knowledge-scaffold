@@ -23,6 +23,8 @@ from agent.runtime.errors import (
     RunConflictError,
     RunNotFoundError,
     SessionBusyError,
+    WorkspaceBusyError,
+    WorkspaceUnavailableError,
 )
 from agent.runtime.manager import AsyncRunManager
 from agent.runtime.manager import request_fingerprint
@@ -720,6 +722,82 @@ def test_same_session_second_run_is_rejected_without_queueing():
         assert runtime.cancelled == []
 
         await manager.cancel_run("run_admission_first", _scope(), reason="test_cleanup")
+    asyncio.run(run_test())
+
+
+def test_workspace_deletion_guard_rejects_active_run():
+    async def run_test():
+        runtime = _BlockingRuntime()
+        manager = AsyncRunManager(runtime)
+        await manager.create_run(_context("run_workspace_active"), _scope())
+        await asyncio.wait_for(runtime.started.wait(), timeout=1.0)
+
+        with pytest.raises(WorkspaceBusyError) as exc_info:
+            async with manager.workspace_deletion_guard("workspace_demo"):
+                pass
+
+        assert exc_info.value.run_id == "run_workspace_active"
+        assert exc_info.value.session_id == "session_demo"
+        assert exc_info.value.status == "running"
+
+        await manager.cancel_run(
+            "run_workspace_active",
+            _scope(),
+            reason="test_cleanup",
+        )
+        async with manager.workspace_deletion_guard("workspace_demo"):
+            pass
+
+    asyncio.run(run_test())
+
+
+def test_workspace_deletion_guard_rejects_waiting_creation_after_deletion():
+    async def run_test():
+        runtime = _SuccessRuntime()
+        available = {
+            "workspace_demo": True,
+            "workspace_other": True,
+        }
+
+        async def workspace_available(workspace_id: str) -> bool:
+            return available.get(workspace_id, False)
+
+        manager = AsyncRunManager(
+            runtime,
+            workspace_available=workspace_available,
+        )
+
+        async with manager.workspace_deletion_guard("workspace_demo"):
+            creation = asyncio.create_task(
+                manager.create_run(_context("run_after_workspace_guard"), _scope())
+            )
+            other_context = _context("run_other_workspace").model_copy(
+                update={
+                    "session_id": "session_other",
+                    "workspace_id": "workspace_other",
+                }
+            )
+            other_scope = RunScope(
+                "operator_a",
+                "workspace_other",
+                ("agent:run", "agent:read", "agent:cancel", "agent:interact"),
+            )
+            other_snapshot, other_created = await asyncio.wait_for(
+                manager.create_run(other_context, other_scope),
+                timeout=1.0,
+            )
+            await asyncio.sleep(0)
+            assert creation.done() is False
+            assert other_created is True
+            assert other_snapshot.run_id == "run_other_workspace"
+            available["workspace_demo"] = False
+
+        with pytest.raises(WorkspaceUnavailableError) as exc_info:
+            await creation
+
+        assert exc_info.value.workspace_id == "workspace_demo"
+        assert await manager.repository.get("run_after_workspace_guard") is None
+
     asyncio.run(run_test())
 
 

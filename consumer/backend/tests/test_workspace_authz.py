@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,10 +19,27 @@ from api.auth.auth import AuthUser
 from api.routes.skills import skills_router
 from api.routes.workspaces import workspaces_router
 from api.testing import TestApplication
+from agent.runtime.errors import WorkspaceBusyError
 from auth_test_backend import AuthManager
 
 
 FORBIDDEN_BODY = {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
+
+
+class _InlinePool:
+    async def run(self, function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+
+class _WorkspaceRunManager:
+    def __init__(self):
+        self.busy_error = None
+
+    @asynccontextmanager
+    async def workspace_deletion_guard(self, _workspace_id):
+        if self.busy_error is not None:
+            raise self.busy_error
+        yield
 
 
 def _build_env(tmp_path, monkeypatch):
@@ -40,6 +59,10 @@ def _build_env(tmp_path, monkeypatch):
     admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
 
     app.state.services["AUTH_MANAGER"] = auth_manager
+    app.state.runtime_container = SimpleNamespace(
+        short_io=_InlinePool(),
+        manager=_WorkspaceRunManager(),
+    )
     app.include_router(workspaces_router)
     app.include_router(skills_router)
 
@@ -782,6 +805,38 @@ def test_workspace_owner_can_delete_owned_workspace_but_member_cannot(tmp_path, 
     assert deleted.status_code == 200
     assert deleted.json() == {"success": True, "id": "alice-ws"}
     assert client.get("/agentic/workspaces/alice-ws", headers=headers["admin"]).status_code == 404
+
+
+def test_workspace_delete_rejects_active_run(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+    client.app.state.runtime_container.manager.busy_error = WorkspaceBusyError(
+        "run-active",
+        "session-active",
+        "running",
+    )
+
+    response = client.delete(
+        "/agentic/workspaces/alice-ws",
+        headers=headers["alice"],
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": "工作空间存在运行中任务，请等待完成或显式停止后再删除",
+        "error_code": "WORKSPACE_RUN_ACTIVE",
+        "workspace_id": "alice-ws",
+        "run_id": "run-active",
+        "session_id": "session-active",
+        "run_status": "running",
+    }
+    assert (
+        client.get(
+            "/agentic/workspaces/alice-ws",
+            headers=headers["alice"],
+        ).status_code
+        == 200
+    )
 
 
 def test_workspace_owner_can_delete_owned_default_without_promoting_another_workspace(

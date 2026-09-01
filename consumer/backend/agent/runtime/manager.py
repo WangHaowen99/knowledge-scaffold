@@ -9,7 +9,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from agent.runtime.contracts import (
     PublicEventDraft,
@@ -27,6 +27,8 @@ from agent.runtime.errors import (
     RunConflictError,
     RunNotFoundError,
     SessionBusyError,
+    WorkspaceBusyError,
+    WorkspaceUnavailableError,
 )
 from agent.runtime.event_bus import AsyncEventBus
 from agent.runtime.service import AsyncExecutionService, pending_interaction_from_draft
@@ -106,7 +108,7 @@ class _RunEntry:
 
 
 @dataclass
-class _SessionLockState:
+class _ScopedLockState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     leases: int = 0
 
@@ -118,6 +120,9 @@ class AsyncRunManager:
         repository: Optional[InMemoryRunRepository] = None,
         event_bus: Optional[AsyncEventBus] = None,
         supervisor: Optional[RunTaskSupervisor] = None,
+        workspace_available: Optional[
+            Callable[[str], Awaitable[bool]]
+        ] = None,
     ) -> None:
         self.execution_service = execution_service
         self.repository = repository or InMemoryRunRepository()
@@ -139,7 +144,10 @@ class AsyncRunManager:
         self._creation_lock = asyncio.Lock()
         self._active_by_session: dict[tuple[str, str, str], str] = {}
         self._session_locks_guard = asyncio.Lock()
-        self._session_locks: dict[tuple[str, str, str], _SessionLockState] = {}
+        self._session_locks: dict[tuple[str, str, str], _ScopedLockState] = {}
+        self._workspace_locks_guard = asyncio.Lock()
+        self._workspace_locks: dict[str, _ScopedLockState] = {}
+        self._workspace_available = workspace_available
 
     async def create_run(
         self,
@@ -180,49 +188,58 @@ class AsyncRunManager:
             context=context,
         )
         fingerprint = request_fingerprint(context)
-        async with self._creation_lock:
-            if idempotency_key:
-                existing = await self.repository.lookup_idempotency(
-                    scope=scope,
-                    session_id=context.session_id,
+        async with self._workspace_guard(scope.workspace_id):
+            if (
+                self._workspace_available is not None
+                and not await self._workspace_available(scope.workspace_id)
+            ):
+                raise WorkspaceUnavailableError(scope.workspace_id)
+            async with self._creation_lock:
+                if idempotency_key:
+                    existing = await self.repository.lookup_idempotency(
+                        scope=scope,
+                        session_id=context.session_id,
+                        idempotency_key=idempotency_key,
+                        request_fingerprint=fingerprint,
+                    )
+                    if existing is not None:
+                        return existing, False
+                session_key = (
+                    scope.username,
+                    scope.workspace_id,
+                    context.session_id,
+                )
+                active_run_id = self._active_by_session.get(session_key)
+                if active_run_id:
+                    active = await self.repository.get(active_run_id)
+                    if (
+                        active is not None
+                        and active.status not in TERMINAL_RUN_STATUSES
+                    ):
+                        raise SessionBusyError(active_run_id)
+                    self._active_by_session.pop(session_key, None)
+                stored, created = await self.repository.create(
+                    snapshot,
                     idempotency_key=idempotency_key,
                     request_fingerprint=fingerprint,
                 )
-                if existing is not None:
-                    return existing, False
-            session_key = (
-                scope.username,
-                scope.workspace_id,
-                context.session_id,
-            )
-            active_run_id = self._active_by_session.get(session_key)
-            if active_run_id:
-                active = await self.repository.get(active_run_id)
-                if active is not None and active.status not in TERMINAL_RUN_STATUSES:
-                    raise SessionBusyError(active_run_id)
-                self._active_by_session.pop(session_key, None)
-            stored, created = await self.repository.create(
-                snapshot,
-                idempotency_key=idempotency_key,
-                request_fingerprint=fingerprint,
-            )
-            if created:
-                self._entries[context.run_id] = _RunEntry()
-                self._active_by_session[session_key] = context.run_id
-                try:
-                    task = self.supervisor.start_run(
-                        context.run_id,
-                        self._execute(context.run_id),
+                if created:
+                    self._entries[context.run_id] = _RunEntry()
+                    self._active_by_session[session_key] = context.run_id
+                    try:
+                        task = self.supervisor.start_run(
+                            context.run_id,
+                            self._execute(context.run_id),
+                        )
+                    except BaseException:
+                        self._active_by_session.pop(session_key, None)
+                        raise
+                    task.add_done_callback(
+                        lambda completed, run_id=context.run_id: self._task_finished(
+                            run_id,
+                            completed,
+                        )
                     )
-                except BaseException:
-                    self._active_by_session.pop(session_key, None)
-                    raise
-                task.add_done_callback(
-                    lambda completed, run_id=context.run_id: self._task_finished(
-                        run_id,
-                        completed,
-                    )
-                )
         return stored, created
 
     @asynccontextmanager
@@ -235,7 +252,7 @@ class AsyncRunManager:
         async with self._session_locks_guard:
             state = self._session_locks.get(key)
             if state is None:
-                state = _SessionLockState()
+                state = _ScopedLockState()
                 self._session_locks[key] = state
             state.leases += 1
         try:
@@ -248,6 +265,29 @@ class AsyncRunManager:
                     state.leases = max(0, state.leases - 1)
                     if not state.leases and not state.lock.locked():
                         self._session_locks.pop(key, None)
+
+    @asynccontextmanager
+    async def _workspace_guard(
+        self,
+        workspace_id: str,
+    ) -> AsyncIterator[None]:
+        key = str(workspace_id or "").strip()
+        async with self._workspace_locks_guard:
+            state = self._workspace_locks.get(key)
+            if state is None:
+                state = _ScopedLockState()
+                self._workspace_locks[key] = state
+            state.leases += 1
+        try:
+            async with state.lock:
+                yield
+        finally:
+            async with self._workspace_locks_guard:
+                current = self._workspace_locks.get(key)
+                if current is state:
+                    state.leases = max(0, state.leases - 1)
+                    if not state.leases and not state.lock.locked():
+                        self._workspace_locks.pop(key, None)
 
     async def assert_session_available(
         self,
@@ -263,6 +303,34 @@ class AsyncRunManager:
             if active is not None and active.status not in TERMINAL_RUN_STATUSES:
                 raise SessionBusyError(active_run_id)
             self._active_by_session.pop(key, None)
+
+    @asynccontextmanager
+    async def workspace_deletion_guard(
+        self,
+        workspace_id: str,
+    ) -> AsyncIterator[None]:
+        """Block new Run creation while a workspace deletion is validated."""
+        normalized_workspace_id = str(workspace_id or "").strip()
+        if not normalized_workspace_id:
+            raise ValueError("workspace_id is required")
+        async with self._workspace_guard(normalized_workspace_id):
+            async with self._creation_lock:
+                snapshots = await self.repository.list_snapshots()
+                active = None
+                for snapshot in snapshots:
+                    if snapshot.scope.workspace_id != normalized_workspace_id:
+                        continue
+                    if snapshot.status in TERMINAL_RUN_STATUSES:
+                        continue
+                    active = snapshot
+                    break
+                if active is not None:
+                    raise WorkspaceBusyError(
+                        active.run_id,
+                        active.session_id,
+                        active.status.value,
+                    )
+            yield
 
     async def get_run(
         self,

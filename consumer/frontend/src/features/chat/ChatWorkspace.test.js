@@ -120,6 +120,19 @@ test('chat activity refreshes session ordering at send and terminal stream state
   assert.equal(chatSessionsSource.includes('updated_at: updatedAt'), true);
 });
 
+test('chat deletion asks the backend before clearing local stream state', () => {
+  const start = chatSessionsSource.indexOf('const deleteChat = useCallback');
+  const end = chatSessionsSource.indexOf('const loadSessions = useCallback', start);
+  const deletionSource = chatSessionsSource.slice(start, end);
+
+  assert.equal(deletionSource.includes('stopStreamForSession'), false);
+  assert.equal(
+    deletionSource.indexOf("scopedFetch(`/agentic/sessions/${id}`, { method: 'DELETE' }")
+      < deletionSource.indexOf('clearCacheForSession(id)'),
+    true,
+  );
+});
+
 test('agent stream ownership remains mounted while the chat surface changes', () => {
   assert.equal(appShellSource.includes('const agenticStream = useAgenticStream({'), true);
   assert.equal(appShellSource.includes('agenticStream={agenticStream}'), true);
