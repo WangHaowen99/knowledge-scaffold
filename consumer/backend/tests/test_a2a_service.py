@@ -12,6 +12,7 @@ from agent.runtime.contracts import (
     RunSnapshot,
     RunStatus,
     RuntimeResult,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import RunConflictError
 from api.protocols.a2a.models import A2ATaskCreateRequest, A2ATaskState
@@ -103,6 +104,10 @@ def test_create_task_keeps_external_id_out_of_canonical_identity(tmp_path):
     assert snapshot.run_id != view.id
     assert view.metadata["canonical_run_id"] == snapshot.run_id
     assert manager.contexts[0].supports_user_interaction is False
+    assert (
+        manager.contexts[0].concurrency_limit
+        == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+    )
     _, turn = service.execution_store.find_turn_by_protocol_id(
         "a2a", "external_task_demo"
     )

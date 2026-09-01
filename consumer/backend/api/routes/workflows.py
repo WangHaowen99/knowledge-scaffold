@@ -21,6 +21,7 @@ from agent.runtime.contracts import (
     RunStatus,
     RuntimeInvocationContext,
     TERMINAL_RUN_STATUSES,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import (
     EventReplayUnavailableError,
@@ -982,7 +983,7 @@ async def create_run(
                     if interaction_response is not None
                     else None
                 ),
-                concurrency_limit=100 if current_user.role == "admin" else 1,
+                concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
             )
             try:
                 snapshot, manager_created = await manager.create_run(
@@ -1193,9 +1194,7 @@ async def create_sync_run(
                     traceparent=(
                         trace_context.value if trace_context is not None else ""
                     ),
-                    concurrency_limit=(
-                        100 if current_user.role == "admin" else 1
-                    ),
+                    concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
                     admission_timeout_seconds=300.0,
                 )
                 _snapshot, manager_created = await manager.create_run(

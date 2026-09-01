@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 RuntimeTerminalStatus = Literal["awaiting_input", "completed", "failed", "cancelled"]
 LlmRequestMode = Literal["sync", "stream"]
 RuntimeHistoryRole = Literal["user", "assistant", "tool"]
+USER_WORKSPACE_RUN_CONCURRENCY_LIMIT = 100
 
 
 def _require_non_empty(value: str, info) -> str:
@@ -305,4 +306,4 @@ class PublicEventSink(Protocol):
 
 # Re-export event models for the public A/B import surface without duplicating
 # their schema definitions in this module.
-from .events import PublicEvent, PublicEventDraft  # noqa: E402
+from .events import PublicEvent, PublicEventDraft  # noqa: E402, F401

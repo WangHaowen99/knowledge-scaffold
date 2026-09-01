@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import api.routes as routes_module
 import api.routes.mcp as mcp_routes
+from agent.runtime.contracts import USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
 from api.auth.auth import AuthUser
 from api.protocols.mcp.paths import MCP_INTERNAL_CHAT_PATH
 from api.testing import TestApplication
@@ -109,6 +110,7 @@ def test_internal_chat_revalidates_scope_and_passes_runtime_store(monkeypatch):
     assert captured["execution_store"] is store
     assert captured["scope"] is scope
     assert captured["payload"]["session_id"] == "session_demo"
+    assert captured["concurrency_limit"] == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
 
 
 def test_internal_chat_rejects_workspace_scope_mismatch(monkeypatch):

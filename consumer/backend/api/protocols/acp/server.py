@@ -20,6 +20,7 @@ from agent.runtime.contracts import (
     RunStatus as CanonicalRunStatus,
     RuntimeInvocationContext,
     TERMINAL_RUN_STATUSES,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import RunNotFoundError, SessionBusyError
 from api.auth.auth import (
@@ -325,7 +326,7 @@ async def _admit_run(
             interaction_response=(
                 dict(interaction_response) if interaction_response is not None else None
             ),
-            concurrency_limit=100 if user.role == "admin" else 1,
+            concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
             timeout_seconds=float(max(1, get_config().acp.run.timeout)),
         )
         try:

@@ -12,6 +12,7 @@ from agent.runtime.contracts import (
     RunStatus,
     RuntimeInvocationContext,
     TERMINAL_RUN_STATUSES,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import RunConflictError, RunNotFoundError
 from api.protocols.a2a.models import (
@@ -108,6 +109,7 @@ class A2ATaskService:
                 include_trace=False,
                 supports_user_interaction=False,
                 traceparent=self.traceparent,
+                concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
             )
             try:
                 snapshot, manager_created = await self.manager.create_run(
