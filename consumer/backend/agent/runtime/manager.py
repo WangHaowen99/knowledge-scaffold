@@ -19,6 +19,7 @@ from agent.runtime.contracts import (
     RunStatus,
     RuntimeErrorInfo,
     RuntimeInvocationContext,
+    RuntimeRecoveryAction,
     RuntimeResult,
     TERMINAL_RUN_STATUSES,
 )
@@ -942,6 +943,8 @@ class AsyncRunManager:
         if error is not None:
             payload["error"] = error.message
             payload["error_code"] = error.error_code
+        if result.recovery is not None:
+            payload["recovery"] = result.recovery.model_dump(mode="json")
         if cancel_reason:
             payload["cancel_reason"] = cancel_reason
 
@@ -1029,6 +1032,17 @@ class AsyncRunManager:
                     retriable=False,
                     source="runtime",
                 )
+        recovery = None
+        if status == RunStatus.FAILED and isinstance(
+            draft.payload.get("recovery"),
+            dict,
+        ):
+            try:
+                recovery = RuntimeRecoveryAction.model_validate(
+                    draft.payload["recovery"]
+                )
+            except ValueError:
+                recovery = None
         return RuntimeResult(
             status=status.value,
             content=content,
@@ -1044,6 +1058,7 @@ class AsyncRunManager:
                 else None
             ),
             error=error,
+            recovery=recovery,
         )
 
 def _normalize_runtime_status(value: Any) -> RunStatus:

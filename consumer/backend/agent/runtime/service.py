@@ -24,6 +24,7 @@ from agent.runtime.contracts import (
     RuntimeEventSink,
     RuntimeHistoryMessage,
     RuntimeInvocationContext,
+    RuntimeRecoveryAction,
     RuntimeResult,
 )
 from agent.runtime.events import RuntimeEvent
@@ -656,13 +657,18 @@ def _result_from_terminal(
 ) -> RuntimeResult:
     payload = adapter.adapt_runtime_result_payload(event)
     status = event.status
+    history: list[RuntimeHistoryMessage] = []
+    for item in event.payload.get("history_messages") or []:
+        try:
+            history.append(RuntimeHistoryMessage.model_validate(item))
+        except ValueError:
+            continue
+    read_documents = (
+        dict(event.payload["read_documents"])
+        if isinstance(event.payload.get("read_documents"), Mapping)
+        else None
+    )
     if status in {"completed", "awaiting_input"}:
-        history: list[RuntimeHistoryMessage] = []
-        for item in event.payload.get("history_messages") or []:
-            try:
-                history.append(RuntimeHistoryMessage.model_validate(item))
-            except ValueError:
-                continue
         return RuntimeResult(
             status=status,
             content=payload.get("content"),
@@ -670,17 +676,19 @@ def _result_from_terminal(
             usage=payload.get("usage"),
             trace=payload.get("trace"),
             history_messages=history,
-            read_documents=(
-                dict(event.payload["read_documents"])
-                if isinstance(event.payload.get("read_documents"), Mapping)
-                else None
-            ),
+            read_documents=read_documents,
             evolution_recall_records=[
                 dict(item)
                 for item in event.payload.get("evolution_recall_records") or []
                 if isinstance(item, Mapping)
             ],
         )
+    recovery = None
+    if status == "failed" and isinstance(payload.get("recovery"), Mapping):
+        try:
+            recovery = RuntimeRecoveryAction.model_validate(payload["recovery"])
+        except ValueError:
+            recovery = None
     return RuntimeResult(
         status=status,
         content=(str(payload.get("content")) if payload.get("content") is not None else None),
@@ -694,6 +702,9 @@ def _result_from_terminal(
             if status == "failed"
             else None
         ),
+        recovery=recovery,
+        history_messages=history,
+        read_documents=read_documents,
     )
 
 
@@ -712,6 +723,8 @@ def _terminal_draft_from_result(
         payload["usage"] = result.usage
     if result.error is not None:
         payload["error"] = result.error.model_dump(mode="json")
+    if result.recovery is not None:
+        payload["recovery"] = result.recovery.model_dump(mode="json")
     return PublicEventDraft(
         run_id=context.run_id,
         session_id=context.session_id,

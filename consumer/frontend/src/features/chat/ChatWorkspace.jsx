@@ -448,6 +448,26 @@ export default function ChatWorkspace({
     }
   };
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const handleRecoveryAction = async (recoveryMessage) => {
+    const message = String(recoveryMessage || '').trim();
+    if (
+      !workspaceDataReady
+      || !currentChatId
+      || !message
+      || streamState.isLoading
+      || pendingInteraction
+    ) return false;
+
+    const refreshSessionTime = () => touchSession?.(currentChatId);
+    refreshSessionTime();
+    await sendAgentic(message, currentChatId, {
+      agentMode,
+      modelProfileId,
+      selectedOntologyId,
+      onSessionUpdated: refreshSessionTime,
+    });
+    return true;
+  };
   const runProgress = resolveRunProgressView(streamState);
   const isSubmitting = isBlankChatSubmitting(currentChatId, firstSendPending);
   const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
@@ -572,7 +592,9 @@ export default function ChatWorkspace({
         <div className="th-body" ref={bodyRef} onScroll={handleMessageScroll}>
           <ConversationView model={conversationModel} sessionId={currentChatId}
             runState={streamState} evidenceByTurnKey={evidenceByTurnKey}
-            onEvidenceSelect={openEvidence} />
+            onEvidenceSelect={openEvidence}
+            onRecoveryAction={handleRecoveryAction}
+            recoveryActionDisabled={streamState.isLoading || Boolean(pendingInteraction)} />
           {!messages.length && !streamState.isLoading && (
             <div className="chat-empty">
               <div className="chat-empty-visual" aria-hidden="true">
