@@ -1293,6 +1293,23 @@ test('无 Schema 时 upsert_object 不能通过 source 参数生成物理绑定'
   const runId = `run-${project.id}`;
   await confirmGoal(app, project.id, runId);
   await confirmProcess(app, project.id, runId);
+  const cardinalityOnly = await tool(app, project.id, 'upsert_object', {
+    key: 'relation_probe',
+    title: '合成关系对象',
+    description: '用于验证关系名称输入边界的合成对象。',
+    fields: [{ key: 'id', cn_name: '合成编号', type: 'string', required: true }],
+    relations: [{ relation: '1:N', target: 'relation_probe' }],
+    evidence: ['user-decision:synthetic-relation-check'],
+    change_group: 'relation-probe',
+  }, runId);
+  assert.equal(cardinalityOnly.statusCode, 400, cardinalityOnly.body);
+  assert.equal(cardinalityOnly.json().code, 'INVALID_DOMAIN_PAYLOAD');
+  assert.match(cardinalityOnly.body, /关系名称不能只填写关系基数/);
+  const rejectedCandidate = getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ? AND run_id = ? AND path = 'objects/relation_probe.md'`)
+    .get(project.id, runId) as { count: number };
+  assert.equal(rejectedCandidate.count, 0);
+
   const group = { id: 'lead-object', tier: 'structural', title: '营销线索对象' };
   const upserted = await tool(app, project.id, 'upsert_object', {
     key: 'marketing_lead',
