@@ -7,6 +7,7 @@ import {
   authFetch,
   clearAuthToken,
   getAuthToken,
+  getCurrentWorkspaceId,
   getRefreshToken,
   loginWithPassword,
   logoutAuthSession,
@@ -15,6 +16,15 @@ import {
   setAuthToken,
   synchronizeAuthStateFromStorage,
 } from './auth.js';
+
+const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+test.after(() => {
+  if (originalWindowDescriptor) {
+    Object.defineProperty(globalThis, 'window', originalWindowDescriptor);
+  } else {
+    delete globalThis.window;
+  }
+});
 
 // Node 24 exposes an experimental global Web Locks implementation. These
 // tests intentionally exercise the storage-restricted fallback used when the
@@ -629,6 +639,52 @@ test('another tab cannot redirect this tab request to a different workspace', as
 
   assert.equal(response.status, 200);
   assert.equal(capturedWorkspace, 'workspace-a');
+});
+
+test('workspace selections are persisted independently for each username', () => {
+  installWindow();
+
+  setCurrentWorkspaceId('account-alpha-space', 'account-alpha');
+  setCurrentWorkspaceId('account-beta-space', 'account-beta');
+
+  assert.equal(getCurrentWorkspaceId('account-alpha'), 'account-alpha-space');
+  assert.equal(getCurrentWorkspaceId('account-beta'), 'account-beta-space');
+});
+
+test('a new account never inherits the legacy global workspace selection', () => {
+  const target = installWindow();
+  target.localStorage.setItem('onto_agent_workspace_id', 'legacy-global-space');
+
+  assert.equal(getCurrentWorkspaceId('new-account'), '');
+});
+
+test('a new account never inherits the previous account workspace selection', () => {
+  installWindow();
+  setCurrentWorkspaceId('previous-account-space', 'previous-account');
+
+  assert.equal(getCurrentWorkspaceId('new-account'), '');
+});
+
+test('the same account restores its workspace selection after a simulated refresh', async () => {
+  const storage = createStorage();
+  const firstWindow = installWindow();
+  firstWindow.localStorage = storage;
+  setCurrentWorkspaceId('remembered-space', 'account-alpha');
+
+  const refreshedWindow = installWindow();
+  refreshedWindow.localStorage = storage;
+  const refreshedAuth = await import('./auth.js?workspace-refresh-test');
+
+  assert.equal(refreshedAuth.getCurrentWorkspaceId('account-alpha'), 'remembered-space');
+});
+
+test('workspace selection APIs preserve optional-username compatibility', () => {
+  const target = installWindow();
+
+  setCurrentWorkspaceId('current-tab-space');
+
+  assert.equal(getCurrentWorkspaceId(), 'current-tab-space');
+  assert.equal(target.localStorage.getItem('onto_agent_workspace_id'), 'current-tab-space');
 });
 
 test('logout during refresh cannot restore stale credentials', async () => {

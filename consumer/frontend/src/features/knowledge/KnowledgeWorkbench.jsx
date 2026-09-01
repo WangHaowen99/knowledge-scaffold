@@ -283,7 +283,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
           : '导入知识包后，可在这里统一浏览和管理内容。');
     return (
       <>
-        <div className="kbx"><EmptyState title={title} description={description}
+        <div className="kbx kb-empty-shell"><EmptyState title={title} description={description}
           action={packagesError ? <button className="btn" type="button" onClick={() => retryPackages()}>重新加载</button> : undefined} /></div>
         {importDialog}
       </>
