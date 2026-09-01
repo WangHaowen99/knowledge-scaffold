@@ -27,6 +27,7 @@ from agent.runtime.errors import (
     EventReplayUnavailableError,
     RunNotFoundError,
     SessionBusyError,
+    WorkspaceUnavailableError,
 )
 from agent.runtime.event_bus import (
     EventSubscriberLimitExceeded,
@@ -1024,6 +1025,8 @@ async def create_run(
             409,
             run_id=exc.run_id,
         )
+    except WorkspaceUnavailableError as exc:
+        return _error(exc.error_code, str(exc), 409)
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
         return _error(
             "RUNTIME_CAPACITY_EXCEEDED",
@@ -1238,6 +1241,13 @@ async def create_sync_run(
             409,
             session_id=session_id,
             run_id=exc.run_id,
+        )
+    except WorkspaceUnavailableError as exc:
+        return _sync_error(
+            str(exc),
+            409,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
         )
     except InteractionCheckpointError as exc:
         return _sync_error(

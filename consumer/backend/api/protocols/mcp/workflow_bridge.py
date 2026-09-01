@@ -360,7 +360,11 @@ async def execute_mcp_chat_workflow_async(
         raise
     except Exception as exc:
         error_code = str(getattr(exc, "error_code", ""))
-        status_code = 409 if error_code == "SESSION_BUSY" else 500
+        status_code = (
+            409
+            if error_code in {"SESSION_BUSY", "WORKSPACE_UNAVAILABLE"}
+            else 500
+        )
         return _workflow_error(
             error_code or "MCP_CHAT_WORKFLOW_FAILED",
             str(exc) or "MCP chat admission failed",
