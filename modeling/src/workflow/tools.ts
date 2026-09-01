@@ -1,6 +1,7 @@
 import { Type } from '@earendil-works/pi-ai';
 import type { DataDictTable, KnowledgeArtifactKind } from '../types.js';
 import { KEY_SCHEMA_PATTERN, KEY_SCHEMA_DESCRIPTION } from './keys.js';
+import { RELATION_NAME_GENERATION_GUIDANCE } from './relation-name.js';
 import { createSourceCatalog } from './source-catalog.js';
 import {
   readDocumentPage,
@@ -249,7 +250,7 @@ export const specObjectSchema = (candidateIds: string[] = []) => Type.Object({
   }))),
   queryBoundary: Type.Optional(Type.String({ description: '查询边界：查询该对象前的前置条件与不得推断的事项' })),
   relations: Type.Optional(Type.Array(Type.Object({
-    relation: Type.String({ description: '关系名，如 belongs_to / references' }),
+    relation: Type.String({ description: RELATION_NAME_GENERATION_GUIDANCE }),
     target: KeyString(),
     note: Type.Optional(Type.String()),
     evidence: Type.Optional(EvidenceList()),
@@ -364,6 +365,7 @@ export const specScriptSchema = () => Type.Object({
     name: Type.String(), flag: Type.String(), type: Type.String(), required: Type.Boolean(),
     defaultValue: Type.Optional(Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
     description: Type.Optional(Type.String()), multiple: Type.Optional(Type.Boolean()),
+    action: Type.Optional(Type.Union([Type.Literal('store_true'), Type.Literal('store_false')])),
   })),
   outputs: Type.Array(Type.Object({
     key: Type.String(), type: Type.String(), description: Type.Optional(Type.String()),

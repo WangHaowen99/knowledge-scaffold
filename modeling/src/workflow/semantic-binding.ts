@@ -169,6 +169,27 @@ function sourceFieldByObject(
   return { table, field: table?.fields.find((item) => item.name === sourceColumn), sourceColumn };
 }
 
+function bestBusinessFieldCoverage(
+  spec: PackageSpec,
+  tables: DataDictTable[],
+  resource: DataDictTable,
+  valueField: DataDictField,
+): number {
+  const tablesByName = new Map(tables.map((table) => [table.name, table]));
+  let best = 0;
+  for (const object of spec.objects ?? []) {
+    for (const field of object.fields ?? []) {
+      const source = sourceFieldByObject(object, tablesByName, field.key);
+      if (!source.table || !source.field || source.table.name === resource.name) continue;
+      best = Math.max(
+        best,
+        coverageStats(source.field, valueField, source.table, resource).coverage,
+      );
+    }
+  }
+  return best;
+}
+
 function uniqueKey(base: string, used: Set<string>): string {
   let key = base;
   let suffix = 2;
@@ -252,7 +273,15 @@ export function suggestSemanticBindings(
         const aliasFields = aliasFieldsFor(valueField, semanticField, semanticFields);
         const key = uniqueKey(keyFrom(table.name, valueField.name), usedKeys);
         const semanticMatched = pairScore(valueField, semanticField) >= 100;
-        const confidence = Number(Math.min(0.98, 0.7 + (semanticMatched ? 0.15 : 0) + (aliasFields.length ? 0.05 : 0)).toFixed(3));
+        const businessCoverage = bestBusinessFieldCoverage(spec, tables, table, valueField);
+        const valuesMatched = businessCoverage >= 0.5;
+        const confidence = Number(Math.min(
+          0.98,
+          0.7
+            + (semanticMatched ? 0.15 : 0)
+            + (valuesMatched ? 0.15 : 0)
+            + (aliasFields.length ? 0.05 : 0),
+        ).toFixed(3));
         if (confidence < MIN_AUTO_BINDING_CONFIDENCE) continue;
         suggestions.push({
           key,
@@ -265,6 +294,7 @@ export function suggestSemanticBindings(
           confidence,
           reasons: [
             `资源「${table.name}」包含可配对的代号字段「${valueField.name}」和名称字段「${semanticField.name}」`,
+            ...(valuesMatched ? [`该代号字段与现有业务字段的样例值覆盖率为 ${Math.round(businessCoverage * 100)}%`] : []),
             '先确认术语绑定本身；业务字段关联将在确认后单独推荐',
           ],
         });

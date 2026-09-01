@@ -12,6 +12,7 @@ import {
   describeObjectAliasConflict,
   findObjectAliasConflicts,
 } from './object-alias-validation.js';
+import { relationNameProblem } from './relation-name.js';
 
 export const normalizeCompetencyQuestion = (value: string) => value
   .normalize('NFKC')
@@ -97,9 +98,18 @@ export function validateObjectBatch(
 ): string[] {
   const issues: string[] = [];
   const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  const knownObjects = new Map([...existingObjects, ...objects]
+    .map((object) => [normalizeKey(object.key), object]));
   for (const object of objects) {
     if (object.candidateId && !candidateIds.has(object.candidateId)) {
       issues.push(`对象「${object.title || object.key}」认领了当前批次不存在的候选 ID ${object.candidateId}`);
+    }
+    for (const [index, relation] of (object.relations ?? []).entries()) {
+      const problem = relationNameProblem(relation.relation, {
+        source: object,
+        target: knownObjects.get(normalizeKey(relation.target)),
+      });
+      if (problem) issues.push(`对象 ${object.key} 的 relations[${index}].relation：${problem}`);
     }
   }
   const claimed = new Set(objects.map((object) => object.candidateId).filter(Boolean));
@@ -304,7 +314,8 @@ export function validateSpecIntegrity(
   options: { validateScriptExecutionContract?: boolean } = {},
 ): CoverageResult {
   const errors: string[] = [];
-  const objectKeys = new Set((spec.objects ?? []).map((item) => normalizeKey(item.key)));
+  const objectsByKey = new Map((spec.objects ?? []).map((item) => [normalizeKey(item.key), item]));
+  const objectKeys = new Set(objectsByKey.keys());
   const ruleKeys = new Set((spec.rules ?? []).map((item) => normalizeKey(item.key)));
   const metricKeys = new Set((spec.metrics ?? []).map((item) => normalizeKey(item.key)));
   const operationKeys = new Set((spec.operations ?? []).map((item) => normalizeKey(item.key)));
@@ -329,7 +340,12 @@ export function validateSpecIntegrity(
   }
 
   for (const object of spec.objects ?? []) {
-    for (const relation of object.relations ?? []) {
+    for (const [index, relation] of (object.relations ?? []).entries()) {
+      const problem = relationNameProblem(relation.relation, {
+        source: object,
+        target: objectsByKey.get(normalizeKey(relation.target)),
+      });
+      if (problem) errors.push(`对象 ${object.key} 的 relations[${index}].relation：${problem}`);
       if (!objectKeys.has(normalizeKey(relation.target))) errors.push(`对象 ${object.key} 引用了不存在的对象 ${relation.target}`);
     }
   }

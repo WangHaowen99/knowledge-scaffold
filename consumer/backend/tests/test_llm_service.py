@@ -2,13 +2,20 @@
 
 import json
 import logging
+import threading
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIStatusError, InternalServerError
 from pydantic import BaseModel
 
+from agent.exceptions import WorkflowCancelledError
 from config import AgentConfig, LLMConfig
 from llm import LLMService
+from llm.transport import _retry_delay_seconds
 
 
 class _FakeStreamingResponse:
@@ -41,12 +48,209 @@ class _FakeOpenAIClient:
 
     def _create_completion(self, **kwargs):
         self.calls.append(kwargs)
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if callable(response):
+            return response(**kwargs)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+def _agent_config_with_retries(max_retries):
+    return AgentConfig(
+        llm_connection_max_retries=max_retries,
+        main_agent_max_iterations=50,
+        sub_agent_max_iterations=20,
+        sub_agent_max_concurrency=6,
+        sub_agent_max_depth=10,
+        parallel_default_max_workers=10,
+        context_max_rounds=10,
+    )
+
+
+def _api_status_error(status_code, *, retry_after=None):
+    request = httpx.Request(
+        "POST",
+        "https://llm.example.com/v1/chat/completions",
+    )
+    headers = {"Retry-After": str(retry_after)} if retry_after is not None else {}
+    response = httpx.Response(
+        status_code,
+        json={"error": {"message": "synthetic upstream failure"}},
+        headers=headers,
+        request=request,
+    )
+    error_type = InternalServerError if status_code >= 500 else APIStatusError
+    return error_type(
+        "synthetic upstream failure",
+        response=response,
+        body=response.json(),
+    )
+
+
+def _llm_with_responses(responses, *, max_retries):
+    fake_client = _FakeOpenAIClient(responses)
+    llm = LLMService(
+        LLMConfig(
+            base_url="https://llm.example.com/v1",
+            model="unit-model",
+            api_key=None,
+            timeout=30,
+            max_tokens=256,
+            temperature=0.0,
+        ),
+        agent_config=_agent_config_with_retries(max_retries),
+        openai_client=fake_client,
+    )
+    return llm, fake_client
 
 
 class _StructuredOutput(BaseModel):
     answer: str
     score: float
+
+
+def test_llm_retries_transient_status_and_uses_retry_after(monkeypatch):
+    completion = _FakeOpenAINonStreamCompletion(
+        {
+            "model": "unit-model",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "recovered"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+    llm, fake_client = _llm_with_responses(
+        [_api_status_error(503, retry_after=2), completion],
+        max_retries=3,
+    )
+    waits = []
+    monkeypatch.setattr(
+        llm.transport,
+        "_wait_before_retry",
+        lambda delay_seconds, cancel_event: waits.append(
+            (delay_seconds, cancel_event)
+        ),
+    )
+
+    response = llm.call(
+        messages=[{"role": "user", "content": "continue"}],
+        stream=False,
+        enable_reasoning=False,
+    )
+
+    assert response.content == "recovered"
+    assert len(fake_client.calls) == 2
+    assert waits == [(2.0, None)]
+
+
+def test_llm_transient_status_stops_at_configured_retry_limit(monkeypatch):
+    llm, fake_client = _llm_with_responses(
+        [_api_status_error(503) for _ in range(3)],
+        max_retries=2,
+    )
+    waits = []
+    monkeypatch.setattr(
+        llm.transport,
+        "_wait_before_retry",
+        lambda delay_seconds, cancel_event: waits.append(delay_seconds),
+    )
+
+    with pytest.raises(APIStatusError):
+        llm.call(
+            messages=[{"role": "user", "content": "retry"}],
+            stream=False,
+            enable_reasoning=False,
+        )
+
+    assert len(fake_client.calls) == 3
+    assert waits == [1.0, 2.0]
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+def test_llm_does_not_retry_non_retryable_status(status_code, monkeypatch):
+    llm, fake_client = _llm_with_responses(
+        [_api_status_error(status_code)],
+        max_retries=3,
+    )
+    waits = []
+    monkeypatch.setattr(
+        llm.transport,
+        "_wait_before_retry",
+        lambda delay_seconds, cancel_event: waits.append(delay_seconds),
+    )
+
+    with pytest.raises(APIStatusError):
+        llm.call(
+            messages=[{"role": "user", "content": "invalid"}],
+            stream=False,
+            enable_reasoning=False,
+        )
+
+    assert len(fake_client.calls) == 1
+    assert waits == []
+
+
+def test_llm_zero_retry_configuration_still_sends_first_request():
+    error = _api_status_error(503)
+    llm, fake_client = _llm_with_responses([error], max_retries=0)
+
+    with pytest.raises(APIStatusError) as raised:
+        llm.call(
+            messages=[{"role": "user", "content": "single attempt"}],
+            stream=False,
+            enable_reasoning=False,
+        )
+
+    assert raised.value is error
+    assert len(fake_client.calls) == 1
+
+
+def test_llm_retry_wait_honors_cancellation():
+    cancel_event = threading.Event()
+
+    def cancel_then_fail(**_kwargs):
+        cancel_event.set()
+        raise _api_status_error(503)
+
+    llm, fake_client = _llm_with_responses(
+        [cancel_then_fail, _FakeOpenAINonStreamCompletion({})],
+        max_retries=3,
+    )
+    llm._cancel_events["run-cancel"] = cancel_event
+
+    with pytest.raises(WorkflowCancelledError):
+        llm.call(
+            messages=[{"role": "user", "content": "cancel"}],
+            stream=False,
+            enable_reasoning=False,
+            run_id="run-cancel",
+        )
+
+    assert len(fake_client.calls) == 1
+
+
+def test_retry_after_http_date_and_invalid_values_use_bounded_delays():
+    now = datetime(2026, 8, 27, 0, 0, tzinfo=timezone.utc)
+    valid_http_date = format_datetime(now + timedelta(seconds=5), usegmt=True)
+
+    assert _retry_delay_seconds(
+        0,
+        SimpleNamespace(headers={"Retry-After": valid_http_date}),
+        now_utc=now,
+    ) == 5.0
+    assert _retry_delay_seconds(
+        2,
+        SimpleNamespace(headers={"Retry-After": "invalid"}),
+        now_utc=now,
+    ) == 4.0
+    assert _retry_delay_seconds(
+        2,
+        SimpleNamespace(headers={"Retry-After": "600"}),
+        now_utc=now,
+    ) == 4.0
 
 
 def test_llm_call_clamps_output_tokens_to_ops_limit(tmp_path, monkeypatch):

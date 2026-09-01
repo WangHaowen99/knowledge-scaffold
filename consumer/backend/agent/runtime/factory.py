@@ -11,6 +11,7 @@ from agent.runtime.manager import AsyncRunManager
 from agent.runtime.runtime import RuntimeComponents, RuntimeContainer
 from agent.runtime.service import AsyncExecutionService, OrchestratorSessionAdapter
 from agent.runtime.store import InMemoryRunRepository
+from workspace.workspaces import workspace_exists
 
 
 def components_factory(
@@ -53,11 +54,21 @@ def components_factory(
             max_subscribers_total=container.config.max_subscribers_total,
             event_persistor=service.persist_public_event,
         )
+
+        async def workspace_available(workspace_id: str) -> bool:
+            return bool(
+                await container.short_io.run(
+                    workspace_exists,
+                    workspace_id,
+                )
+            )
+
         manager = AsyncRunManager(
             service,
             repository=repository,
             event_bus=event_hub,
             supervisor=container.supervisor,
+            workspace_available=workspace_available,
         )
         return RuntimeComponents(
             runtime=runtime,

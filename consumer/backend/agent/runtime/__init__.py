@@ -17,6 +17,7 @@ from .contracts import (
     RuntimeEventSink,
     RuntimeHistoryMessage,
     RuntimeInvocationContext,
+    RuntimeRecoveryAction,
     RuntimeResult,
 )
 from .events import PublicEvent, PublicEventDraft, RuntimeEvent
@@ -71,6 +72,7 @@ __all__ = [
     "RuntimeEventSink",
     "RuntimeHistoryMessage",
     "RuntimeInvocationContext",
+    "RuntimeRecoveryAction",
     "RuntimeResult",
     "RunTaskSupervisor",
     "NativeAsyncRuntimeConfig",

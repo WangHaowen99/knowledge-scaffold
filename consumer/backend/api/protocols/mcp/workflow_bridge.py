@@ -412,7 +412,11 @@ async def execute_mcp_chat_workflow_async(
         raise
     except Exception as exc:
         error_code = str(getattr(exc, "error_code", ""))
-        status_code = 409 if error_code == "SESSION_BUSY" else 500
+        status_code = (
+            409
+            if error_code in {"SESSION_BUSY", "WORKSPACE_UNAVAILABLE"}
+            else 500
+        )
         await _emit_mcp_terminal_progress(
             progress_sink,
             progress_projector,

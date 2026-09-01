@@ -3,7 +3,7 @@ import useAuth from './useAuth';
 import { authFetch, getCurrentWorkspaceId, setCurrentWorkspaceId } from '../../shared/api/auth';
 import { friendlyRequestError } from '../../shared/api/errors';
 import { can as canCheck } from './permissions';
-import { canLoadProtectedData, canLoadWorkspaceData } from './accessState';
+import { canLoadProtectedData, canLoadWorkspaceData, resolveWorkspaceSelection } from './accessState';
 import { AuthCtx } from './useAuthContext';
 
 // 统一的认证 + 工作空间上下文：替代 props 层层下传。
@@ -39,6 +39,7 @@ export default function AuthProvider({ children }) {
     setWorkspacesError('');
     setWorkspacesLoaded(false);
     setWorkspacesLoading(false);
+    setWorkspaceIdState(currentUsername ? getCurrentWorkspaceId(currentUsername) : '');
   }
 
   const loadWorkspaces = useCallback(async () => {
@@ -56,11 +57,13 @@ export default function AuthProvider({ children }) {
       setWorkspaces(list);
       setWsRoles(Object.fromEntries(list.filter((w) => w.role).map((w) => [w.id, w.role])));
       setDefaultWorkspaceId(data.default_workspace_id || null);
-      const stored = getCurrentWorkspaceId();
-      const nextWorkspaceId = stored && list.some((w) => w.id === stored)
-        ? stored
-        : data.default_workspace_id || list[0]?.id || '';
-      setCurrentWorkspaceId(nextWorkspaceId);
+      const nextWorkspaceId = resolveWorkspaceSelection({
+        workspaces: list,
+        storedWorkspaceId: getCurrentWorkspaceId(currentUsername),
+        preferredWorkspaceId: data.preferred_workspace_id,
+        defaultWorkspaceId: data.default_workspace_id,
+      });
+      setCurrentWorkspaceId(nextWorkspaceId, currentUsername);
       setWorkspaceIdState(nextWorkspaceId);
     } catch (error) {
       if (workspaceLoadEpochRef.current !== loadEpoch) return;
@@ -71,7 +74,7 @@ export default function AuthProvider({ children }) {
         setWorkspacesLoading(false);
       }
     }
-  }, [protectedDataReady]);
+  }, [protectedDataReady, currentUsername]);
 
   useEffect(() => {
     if (!protectedDataReady) return undefined;
@@ -80,9 +83,9 @@ export default function AuthProvider({ children }) {
   }, [protectedDataReady, loadWorkspaces]);
 
   const switchWorkspace = useCallback((id) => {
-    setCurrentWorkspaceId(id);
+    setCurrentWorkspaceId(id, currentUsername);
     setWorkspaceIdState(id);
-  }, []);
+  }, [currentUsername]);
 
   const value = useMemo(() => ({
     ...auth,

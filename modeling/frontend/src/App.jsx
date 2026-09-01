@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getToken, getRefreshToken, clearSession, me, importPackageWorkspace } from './api.js';
+import { Archive } from 'lucide-react';
+import {
+  clearSession,
+  getAcceptanceEnvironment,
+  getRefreshToken,
+  getToken,
+  getProjectTransferJob,
+  importPackageWorkspace,
+  me,
+  startProjectTransferImport,
+} from './api.js';
 import LoginPage from './LoginPage.jsx';
+import AcceptancePage from './AcceptancePage.jsx';
 import ProjectList from './ProjectList.jsx';
 import ProjectWorkbenchRouter from './ProjectWorkbenchRouter.jsx';
 import SettingsModal from './SettingsModal.jsx';
@@ -9,13 +20,14 @@ import {
   confirmUnsavedNavigation,
   protectUnsavedBeforeUnload,
 } from './flowchartNavigationGuard.js';
+import { waitForProjectTransferJob } from './projectTransfer.js';
 
 function initialWorkspaceRoute() {
-  if (typeof window === 'undefined') return { projectId: null, projectKind: 'modeling' };
+  if (typeof window === 'undefined') return { projectId: null, projectKind: 'modeling', acceptance: false };
   const params = new URLSearchParams(window.location.search);
   const projectId = params.get('project');
   const projectKind = params.get('kind') === 'package' ? 'package' : 'modeling';
-  return { projectId, projectKind };
+  return { projectId, projectKind, acceptance: window.location.pathname === '/acceptance' };
 }
 
 function replaceWorkspaceRoute(projectId, projectKind) {
@@ -29,8 +41,8 @@ function replaceWorkspaceRoute(projectId, projectKind) {
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
-export function importedPackageStudioUrl(projectId) {
-  return `/workbench.html?project=${encodeURIComponent(projectId)}&studioView=graph`;
+export function projectWorkbenchUrl(projectId) {
+  return `/workbench.html?project=${encodeURIComponent(projectId)}`;
 }
 
 export default function App() {
@@ -39,7 +51,11 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [projectId, setProjectId] = useState(initialRoute.projectId);
   const [projectKind, setProjectKind] = useState(initialRoute.projectKind);
+  const [acceptanceOpen, setAcceptanceOpen] = useState(initialRoute.acceptance);
+  const [acceptanceAvailable, setAcceptanceAvailable] = useState(false);
   const [importingPackage, setImportingPackage] = useState(false);
+  const [importingProject, setImportingProject] = useState(false);
+  const [projectImportProgress, setProjectImportProgress] = useState(0);
   const [importError, setImportError] = useState('');
   const [importNotice, setImportNotice] = useState('');
   const [projectAccessNotice, setProjectAccessNotice] = useState('');
@@ -49,6 +65,7 @@ export default function App() {
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const userRef = useRef(null);
   const packageInputRef = useRef(null);
+  const projectTransferInputRef = useRef(null);
 
   useEffect(() => {
     if (!getToken()) { setStatus('out'); return; }
@@ -60,6 +77,13 @@ export default function App() {
         setStatus('out');
       });
   }, []);
+
+  useEffect(() => {
+    if (status !== 'in') return;
+    void getAcceptanceEnvironment()
+      .then(() => setAcceptanceAvailable(true))
+      .catch(() => setAcceptanceAvailable(false));
+  }, [status]);
 
   // 点击菜单外任意处 / 按 Esc 关闭用户菜单。
   // 用捕获阶段 + contains 判断：页面里有组件对 click 调 stopPropagation（如优化建议卡的勾选），冒泡监听会被吞
@@ -99,13 +123,23 @@ export default function App() {
     const kind = typeof project === 'string' ? 'modeling' : (project.kind || 'modeling');
     const runtime = typeof project === 'string' ? 'agent' : (project.runtime || 'legacy');
     if (kind === 'modeling' || runtime === 'agent') {
-      window.location.assign(`/workbench.html?project=${encodeURIComponent(id)}`);
+      window.location.assign(projectWorkbenchUrl(id));
       return;
     }
     setProjectAccessNotice('');
     setProjectId(id);
     setProjectKind(kind);
     replaceWorkspaceRoute(id, kind);
+  };
+
+  const openAcceptance = () => {
+    setAcceptanceOpen(true);
+    window.history.pushState(null, '', '/acceptance');
+  };
+
+  const closeAcceptance = () => {
+    setAcceptanceOpen(false);
+    window.history.pushState(null, '', '/');
   };
 
   const handleProjectUnavailable = useCallback(() => {
@@ -134,11 +168,26 @@ export default function App() {
     try {
       const result = await importPackageWorkspace(file);
       setImportNotice((result.warnings ?? []).join('；'));
-      window.location.assign(importedPackageStudioUrl(result.project.id));
+      window.location.assign(projectWorkbenchUrl(result.project.id));
     } catch (error) {
       setImportError(error instanceof Error ? error.message : '知识包导入失败');
     } finally {
       setImportingPackage(false);
+    }
+  };
+
+  const importTransferredProject = async (file) => {
+    if (!file || importingProject) return;
+    setImportingProject(true); setProjectImportProgress(0); setImportError(''); setImportNotice('');
+    try {
+      const started = await startProjectTransferImport(file);
+      const job = await waitForProjectTransferJob(getProjectTransferJob, started.job.id, {
+        onProgress: (progress) => setProjectImportProgress(Number(progress?.percent) || 0),
+      });
+      window.location.assign(`/workbench.html?project=${encodeURIComponent(job.project.projectId)}`);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '项目导入失败');
+      setImportingProject(false);
     }
   };
 
@@ -163,13 +212,30 @@ export default function App() {
       <div className="topbar">
         <div className="logo"><span className="mk">知</span>知识包建模工具</div>
         <span className="crumb">
-          {projectId
+          {acceptanceOpen
+            ? '项目 / 浏览器验收场景'
+            : projectId
             ? <><button type="button" className="crumb-link" onClick={closeProject}>项目</button> / 统一建模工作台</>
             : '项目'}
         </span>
         <div className="right">
-          {!projectId && (
+          {!projectId && !acceptanceOpen && (
             <>
+              {acceptanceAvailable && <button type="button" className="tb-btn" onClick={openAcceptance}>
+                验收场景
+              </button>}
+              <button className="tb-btn" disabled={importingProject}
+                title="从其他环境导入完整项目迁移包"
+                onClick={() => projectTransferInputRef.current?.click()}>
+                <Archive />
+                {importingProject ? `导入项目 ${projectImportProgress}%` : '导入项目'}
+              </button>
+              <input ref={projectTransferInputRef} type="file" accept=".zip" hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  void importTransferredProject(file);
+                }} />
               <button className="tb-btn" disabled={importingPackage} onClick={() => packageInputRef.current?.click()}>
                 {importingPackage ? '导入中…' : '导入已有知识包'}
               </button>
@@ -216,13 +282,15 @@ export default function App() {
       {importNotice && <div className="app-global-notice">{importNotice}<button onClick={() => setImportNotice('')}>✕</button></div>}
       {projectAccessNotice && <div className="app-global-notice">{projectAccessNotice}<button onClick={() => setProjectAccessNotice('')}>✕</button></div>}
       <div className="main">
-        {projectId
+        {acceptanceOpen
+          ? <AcceptancePage onOpenProject={openProject} onBack={closeAcceptance} />
+          : projectId
           ? <ProjectWorkbenchRouter projectId={projectId} onUnsavedChange={setWorkspaceDirty}
               onProjectUnavailable={handleProjectUnavailable}
               onAuthenticationRequired={handleAuthenticationRequired} />
           : <ProjectList onOpen={openProject} />}
       </div>
-      {!projectId && <Tour scene="projects" steps={PROJECT_STEPS} />}
+      {!projectId && !acceptanceOpen && <Tour scene="projects" steps={PROJECT_STEPS} />}
       {settingsOpen && <SettingsModal user={user} projectId={projectId} tab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>
   );

@@ -66,9 +66,9 @@ export default function CenterPane() {
     file: '渲染 / 源码',
     studio: '图 / 表 / 条目',
   }[focus.kind];
-  const focusReference = focus.kind === 'studio'
-    ? focus.elementId
-    : focus.node;
+  const focusReference = focus.source === 'agent'
+    ? focus.kind === 'studio' ? focus.elementId : focus.node
+    : null;
   const pendingMaterial = pending?.kind === 'doc'
     ? materials.find((item) => item.id === pending.target || item.filename === pending.target)
     : null;
@@ -118,7 +118,8 @@ export default function CenterPane() {
                 </>}
               </span>
               <span className="spacer" />
-              <button className="btn btn-sm" onClick={() => actions.setFollow(false)}>取消跟随</button>
+              <button className="btn btn-sm" title="停止由建模助手自动切换中栏位置；不会停止助手任务"
+                onClick={() => actions.setFollow(false)}>停止自动定位</button>
             </div>
           )}
           {!follow && pending && (

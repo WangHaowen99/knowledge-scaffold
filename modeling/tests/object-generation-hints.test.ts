@@ -21,7 +21,9 @@ test('存在 Excel Sheet 时对象只采用确定性物理对象，不再追加�
       kind: 'object', name: '段落中偶然出现的侧线别名', rationale: '分段线索', sources: ['manual.md'], readiness: 'needs_clarification',
     }],
   };
-  const hints = buildObjectGenerationHints(analysis, [{ name: 'unit', documentId: 'doc-excel', rowCount: 0, fields: [] }]);
+  const hints = buildObjectGenerationHints(analysis, [{
+    name: 'unit', documentId: 'doc-excel', materialPurpose: 'schema', rowCount: 0, fields: [],
+  }]);
   assert.deepEqual(hints, []);
 });
 
@@ -42,7 +44,9 @@ test('绑定表格的材料对象候选不会与确定性物理对象重复生�
       kind: 'object', name: '装置', rationale: '表格对象', sources: ['unit'], readiness: 'extractable',
     }],
   };
-  assert.deepEqual(buildObjectGenerationHints(analysis, [{ name: 'unit', documentId: 'doc-excel', rowCount: 1, fields: [] }]), []);
+  assert.deepEqual(buildObjectGenerationHints(analysis, [{
+    name: 'unit', documentId: 'doc-excel', materialPurpose: 'schema', rowCount: 1, fields: [],
+  }]), []);
 });
 
 test('Excel 只约束对象范围，首版规则指标仍保留全文候选供流程相关性处置', () => {

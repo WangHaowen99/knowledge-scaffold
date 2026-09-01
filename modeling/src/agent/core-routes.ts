@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { PackageArtifactStoreError } from '../artifacts/package-store.js';
+import { getAuthoringState } from '../authoring/state.js';
 import { canReadProject, canWriteProject, claimAgentRuntime, getProject, projectMemberRole } from '../projects/repo.js';
 import { parsePackageArchive } from '../workflow/package-import.js';
 import {
@@ -16,14 +17,50 @@ import {
   StudioReadError,
   StudioReadService,
 } from './studio-read-service.js';
+import { StudioOperationFlowService } from './studio-operation-flow-service.js';
 import { StudioReviewService } from './studio-review-service.js';
 import { StudioWriteError, StudioWriteService } from './studio-write-service.js';
+import {
+  acceptanceAgentToolAfter,
+  acceptanceAgentToolBefore,
+  takeAcceptanceFault,
+} from '../acceptance/faults.js';
 
 export function registerAgentCoreRoutes(app: FastifyInstance): void {
   const service = new AgentCoreService();
   const studioWrites = new StudioWriteService();
   const studioReviews = new StudioReviewService();
   const artifacts = getPackageArtifactStore();
+  const studioReadCache = new Map<string, StudioReadService>();
+  const studioReadInFlight = new Map<string, Promise<{
+    workingPackage: Awaited<ReturnType<AgentCoreService['workbenchStudioFiles']>>;
+    studio: StudioReadService;
+  }>>();
+  const studioRead = async (project: NonNullable<ReturnType<typeof getProject>>, username: string) => {
+    const requestKey = `${project.id}:${username}`;
+    const inFlight = studioReadInFlight.get(requestKey);
+    if (inFlight) return inFlight;
+    const promise = (async () => {
+      const workingPackage = await service.workbenchStudioFiles(project, username);
+      const cacheKey = `${project.id}:${username}:${workingPackage.workingRevision}`;
+      const cached = studioReadCache.get(cacheKey);
+      if (cached) {
+        studioReadCache.delete(cacheKey);
+        studioReadCache.set(cacheKey, cached);
+        return { workingPackage, studio: cached };
+      }
+      const studio = new StudioReadService(workingPackage);
+      studioReadCache.set(cacheKey, studio);
+      while (studioReadCache.size > 24) studioReadCache.delete(studioReadCache.keys().next().value!);
+      return { workingPackage, studio };
+    })();
+    studioReadInFlight.set(requestKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (studioReadInFlight.get(requestKey) === promise) studioReadInFlight.delete(requestKey);
+    }
+  };
 
   app.get('/api/projects/:id/agent/snapshot', async (request, reply) => {
     let project = getProject(String((request.params as any).id ?? ''));
@@ -46,6 +83,25 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     try {
       const body = (request.body ?? {}) as any;
       return service.setWorkbenchConfirmPolicy(project.id, body.tier, body.mode);
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/agent/change-plans/:planId/respond', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const approved = (request.body as any)?.approved;
+      if (typeof approved !== 'boolean') return reply.code(400).send({ error: '请选择批准或拒绝计划' });
+      return service.respondChangePlan(
+        project,
+        request.user!.username,
+        String((request.params as any).planId ?? ''),
+        approved,
+      );
     } catch (error) {
       return sendAgentCoreError(reply, error);
     }
@@ -90,10 +146,21 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       return reply.code(404).send({ error: '项目不存在' });
     }
     try {
+      const path = String((request.query as any)?.path ?? '');
+      if (path === 'objects/member_profile.md' && takeAcceptanceFault(
+        request.user!.username,
+        'F18',
+        `file:${project.id}:${path}:${Date.now()}`,
+      )) {
+        return reply.code(503).send({
+          code: 'FILE_READ_TEMPORARILY_UNAVAILABLE',
+          error: '当前文件暂时读取失败，项目其他区域仍可正常使用',
+        });
+      }
       return await service.workbenchFile(
         project,
         request.user!.username,
-        String((request.query as any)?.path ?? ''),
+        path,
       );
     } catch (error) {
       return sendAgentCoreError(reply, error);
@@ -190,12 +257,38 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     if (!project || !canReadProject(project.id, request.user!.username)) {
       return reply.code(404).send({ error: '项目不存在' });
     }
-    reply.header('Cache-Control', 'private, max-age=3600, must-revalidate');
+    // Studio 权限包含候选和租约状态，确认结算后必须立即重新验证。
+    reply.header('Cache-Control', 'private, no-cache');
     const role = projectMemberRole(project.id, request.user!.username);
     const lease = studioWrites.leaseStatus(project.id, request.user!.username);
     const schemaEtag = `${STUDIO_SCHEMA_VERSION}-${role}-${lease.mode}-${lease.owner ?? ''}-${lease.expiresAt ?? ''}`;
     if (sendNotModified(request.headers['if-none-match'], reply, schemaEtag)) return reply;
     return studioSchemaForRole(role, lease);
+  });
+
+  app.get('/api/projects/:id/studio/bootstrap', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const query = (request.query ?? {}) as Record<string, unknown>;
+      const { studio } = await studioRead(project, request.user!.username);
+      studio.assertRevision(query.workingRevision);
+      const elements = studio.list({ ...query, limit: query.limit ?? 200 });
+      const graph = studio.graph(query);
+      const role = projectMemberRole(project.id, request.user!.username);
+      const lease = studioWrites.leaseStatus(project.id, request.user!.username);
+      setRevisionEtag(reply, elements.workingRevision);
+      return {
+        schema: studioSchemaForRole(role, lease),
+        elements,
+        graph,
+        workingRevision: elements.workingRevision,
+      };
+    } catch (error) {
+      return sendStudioReadError(reply, error);
+    }
   });
 
   app.get('/api/projects/:id/studio/elements', async (request, reply) => {
@@ -205,14 +298,15 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       const query = (request.query ?? {}) as Record<string, unknown>;
-      const studio = new StudioReadService(await service.workbenchStudioFiles(
-        project,
-        request.user!.username,
-      ));
+      const { workingPackage, studio } = await studioRead(project, request.user!.username);
       studio.assertRevision(query.workingRevision);
       const response = studio.list(query);
       setRevisionEtag(reply, response.workingRevision);
-      return response;
+      return {
+        ...response,
+        reviewRequested: workingPackage.candidateRevision !== null
+          || studioReviews.reviewRequested(project.id, response.workingRevision),
+      };
     } catch (error) {
       return sendStudioReadError(reply, error);
     }
@@ -238,12 +332,18 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       return reply.code(404).send({ error: '项目不存在' });
     }
     try {
-      const response = await studioWrites.patch(
+      const elementId = String((request.params as any).elementId ?? '');
+      const response = await (elementId.startsWith('object:') ? studioWrites.patchObjectModel(
         project,
         request.user!.username,
-        String((request.params as any).elementId ?? ''),
+        elementId,
         request.body,
-      );
+      ) : studioWrites.patch(
+        project,
+        request.user!.username,
+        elementId,
+        request.body,
+      ));
       setRevisionEtag(reply, response.workingRevision);
       return response;
     } catch (error) {
@@ -324,8 +424,25 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
         request.body,
       );
       setRevisionEtag(reply, response.workingRevision);
-      triggerAgentProjectEventDelivery(request, project.id);
-      return reply.code(202).send(response);
+      if (response.mode === 'agent') {
+        triggerAgentProjectEventDelivery(request, project.id);
+      } else if (response.currentRevision) {
+        try {
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: project.id,
+            type: 'package.revision.created',
+            payload: {
+              revisionId: response.currentRevision,
+              cause: 'studio_deterministic_commit',
+              ...(response.packageVersion ? { packageVersion: response.packageVersion } : {}),
+            },
+          });
+        } catch (error) {
+          request.log.warn({ err: error, projectId: project.id }, 'Studio revision 刷新事件发送失败');
+        }
+      }
+      return reply.code(response.applied ? 200 : 202).send(response);
     } catch (error) {
       return sendStudioError(reply, error);
     }
@@ -338,12 +455,29 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       const query = (request.query ?? {}) as Record<string, unknown>;
-      const studio = new StudioReadService(await service.workbenchStudioFiles(
-        project,
-        request.user!.username,
-      ));
+      const { studio } = await studioRead(project, request.user!.username);
       studio.assertRevision(query.workingRevision);
       const response = studio.detail((request.params as any).elementId);
+      setRevisionEtag(reply, response.workingRevision);
+      return response;
+    } catch (error) {
+      return sendStudioReadError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/studio/elements/:elementId/flow', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const query = (request.query ?? {}) as Record<string, unknown>;
+      const workingPackage = await service.workbenchStudioFiles(project, request.user!.username);
+      const studio = new StudioReadService(workingPackage);
+      studio.assertRevision(query.workingRevision);
+      const response = new StudioOperationFlowService(workingPackage).read(
+        (request.params as any).elementId,
+      );
       setRevisionEtag(reply, response.workingRevision);
       return response;
     } catch (error) {
@@ -358,10 +492,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       const query = (request.query ?? {}) as Record<string, unknown>;
-      const studio = new StudioReadService(await service.workbenchStudioFiles(
-        project,
-        request.user!.username,
-      ));
+      const { studio } = await studioRead(project, request.user!.username);
       studio.assertRevision(query.workingRevision);
       const response = studio.graph(query);
       setRevisionEtag(reply, response.workingRevision);
@@ -394,11 +525,16 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       ? argumentsValue as Record<string, unknown>
       : {};
     try {
-      return await service.invoke({
+      const before = acceptanceAgentToolBefore(request.user!.username, runId, String((request.params as any).tool ?? ''));
+      if (before) return reply.code(before.statusCode).send(before.payload);
+      const result = await service.invoke({
         project,
         runId,
         username: request.user!.username,
       }, String((request.params as any).tool ?? ''), args);
+      const after = acceptanceAgentToolAfter(request.user!.username, runId, String((request.params as any).tool ?? ''));
+      if (after) return reply.code(after.statusCode).send(after.payload);
+      return result;
     } catch (error) {
       return sendAgentCoreError(reply, error);
     }

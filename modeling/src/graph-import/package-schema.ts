@@ -215,7 +215,12 @@ export function extractGraphImportSchema(spec: PackageSpec, files: PackageFiles)
   const rawObjectIndex = files['objects/index.md'];
   if (!rawObjectIndex) throw new Error('最终知识包缺少 objects/index.md');
   const rawMappings = files['mappings/object-data-mappings.json'];
-  if (!rawMappings) throw new Error('最终知识包缺少 mappings/object-data-mappings.json');
+  if (!rawMappings) {
+    throw new GraphImportNoObjectMappingError(spec.objects.map((object) => ({
+      key: object.key,
+      title: object.title,
+    })));
+  }
   let parsed: any;
   try { parsed = JSON.parse(rawMappings); } catch { throw new Error('object-data-mappings.json 不是合法 JSON'); }
   const mappings = asRecord(parsed.objects, 'object-data-mappings.json objects');

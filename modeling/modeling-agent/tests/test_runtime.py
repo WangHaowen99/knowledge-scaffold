@@ -8,10 +8,12 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
-from modeling_agent.agent import _system_prompt, build_model
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from modeling_agent.agent import _system_prompt, build_model, context_engine_config
 from modeling_agent.rails import (
     AskRail,
     ConfirmationRail,
+    PhaseTransitionRail,
     ReleaseConfirmationRail,
     claims_confirmation_card,
     requests_user_input,
@@ -19,7 +21,7 @@ from modeling_agent.rails import (
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import RUN_RUNNING, RunRecord
-from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS
+from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -28,6 +30,7 @@ from modeling_agent.tools import (
     RequestConfirmationTool,
     CandidateValidationRepairState,
     ToolContext,
+    core_tool_specs_for_phase,
 )
 
 from conftest import FakeGateway, ScriptedModel, ToolTurn, service
@@ -46,11 +49,328 @@ async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: flo
     raise AssertionError(f"run {run_id} did not reach {statuses}")
 
 
+async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
+    knowledge = {spec.name for spec in core_tool_specs_for_phase("knowledge")}
+    validation = {spec.name for spec in core_tool_specs_for_phase("validation")}
+    increment = {spec.name for spec in core_tool_specs_for_phase("increment")}
+
+    assert {
+        "list_domain_resources", "stage_change_set", "sync_schema_objects",
+        "patch_object_source_binding",
+    } <= knowledge
+    assert not {"write_file", "delete_file", "patch_object", "create_metric", "upsert_object"} & knowledge
+    assert "update_work_notes" in knowledge and "update_plan" not in knowledge
+    assert "run_evaluation" not in knowledge
+    assert "create_package_fusion_plan" not in knowledge
+    assert "patch_rule" not in validation
+    assert {
+        "analyze_deterministic_capabilities", "confirm_deterministic_scope",
+        "run_script_test", "run_evaluation", "get_evaluation_results", "cancel_evaluation",
+    } <= validation
+    assert not {"analyze_deterministic_capabilities", "confirm_deterministic_scope"} & knowledge
+    assert {
+        "stage_change_set", "sync_schema_objects", "patch_object_source_binding",
+        "analyze_material_impact", "compile_package_fusion_plan",
+    } <= increment
+    assert not {"patch_operation", "upsert_operation", "bind_object_source"} & increment
+    legacy: set[str] = set()
+    for spec in core_tool_specs_for_phase("knowledge", tool_profile="legacy-v1"):
+        legacy.add(spec.name)
+    assert {"write_file", "patch_object", "create_metric", "upsert_object", "bind_object_source"} <= legacy
+    assert "update_plan" in legacy
+    intake_recovery: set[str] = set()
+    required_tools = frozenset({"run_evaluation", "compile_package_fusion_plan"})
+    for spec in core_tool_specs_for_phase("intake", required_tools):
+        intake_recovery.add(spec.name)
+    assert {"run_evaluation", "compile_package_fusion_plan"} <= intake_recovery
+
+
+async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypasses() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    parameter_schema = specs["define_script_contract"].properties["parameters"]["items"]
+    assert parameter_schema["properties"]["action"]["enum"] == ["store_true", "store_false"]
+
+    case_schema = specs["run_script_test"].properties["cases"]["items"]
+    assert case_schema["required"] == ["input", "expected"]
+    assert case_schema["additionalProperties"] is False
+    assert "argv" not in case_schema["properties"]
+    assert "function" not in case_schema["properties"]
+
+
+async def test_phase_transition_forces_model_boundary_before_using_stale_tools() -> None:
+    context = ToolContext(
+        project_id="project_phase_refresh",
+        run_id="run_phase_refresh",
+        token="token",
+        gateway=FakeGateway({}),
+        emit=lambda *_args: None,
+        phase="process",
+    )
+    rail = PhaseTransitionRail(context)
+
+    class Callback:
+        def __init__(self, result: dict) -> None:
+            self.inputs = SimpleNamespace(
+                tool_name="transition_project_state",
+                tool_result=json.dumps(result),
+            )
+            self.finish = None
+
+        def request_force_finish(self, result: dict) -> None:
+            self.finish = result
+
+    callback = Callback({"phase": "knowledge", "revision": 6})
+    await rail.after_tool_call(callback)  # type: ignore[arg-type]
+
+    assert context.phase == "knowledge"
+    assert callback.finish == {
+        "result_type": "answer",
+        "output": "",
+        "phase_refresh": {"from": "process", "to": "knowledge"},
+    }
+
+    failed = Callback({"error": "STATE_GATE_BLOCKED", "phase": "validation"})
+    await rail.after_tool_call(failed)  # type: ignore[arg-type]
+    assert failed.finish is None
+    assert context.phase == "knowledge"
+
+
+async def test_evaluation_cancel_requires_explicit_user_intent() -> None:
+    assert "cancel_evaluation" in _required_tools_for_user_intent("请立即停止当前评测")
+    assert "run_evaluation" not in _required_tools_for_user_intent("请立即停止当前评测")
+    assert "cancel_evaluation" not in _required_tools_for_user_intent("现在是否具备停止评测的能力？")
+
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "cancel_evaluation")
+    blocked_gateway = FakeGateway({"cancel_evaluation": {"cancelled": True}})
+    blocked = json.loads(await CoreTool(spec, ToolContext(
+        project_id="project_cancel_guard",
+        run_id="run_cancel_guard",
+        token="token_1",
+        gateway=blocked_gateway,
+        emit=lambda _kind, _payload: None,
+    )).invoke({"round_id": "round_demo"}))
+    assert blocked["error"] == "EVALUATION_CANCEL_NOT_REQUESTED"
+    assert blocked_gateway.calls == []
+
+    allowed_gateway = FakeGateway({"cancel_evaluation": {
+        "cancelled": True, "roundId": "round_demo", "status": "failed",
+    }})
+    allowed = json.loads(await CoreTool(spec, ToolContext(
+        project_id="project_cancel_guard",
+        run_id="run_cancel_guard",
+        token="token_1",
+        gateway=allowed_gateway,
+        emit=lambda _kind, _payload: None,
+        evaluation_cancel_authorized=True,
+    )).invoke({"round_id": "round_demo"}))
+    assert allowed["cancelled"] is True
+    assert [call["tool"] for call in allowed_gateway.calls] == ["cancel_evaluation"]
+async def test_upsert_object_relation_name_is_model_generated_chinese_text() -> None:
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "upsert_object")
+    relation = spec.input_schema["properties"]["relations"]["items"]["properties"]["relation"]
+
+    assert relation["type"] == "string"
+    assert "enum" not in relation
+    assert "模型根据材料证据生成" in relation["description"]
+    assert "中文谓词" in relation["description"]
+    assert "1:N" in relation["description"]
+    assert "不得包含源对象或目标对象" in relation["description"]
+    assert "连读" in relation["description"]
+
+
 async def test_model_uses_stream_specific_timeouts(settings) -> None:
     model = build_model(settings)
 
     assert model.model_client_config.stream_first_chunk_timeout == 120.0
     assert model.model_client_config.stream_idle_timeout == 60.0
+
+    context = context_engine_config(settings)
+    assert context.max_context_message_num == 64
+    assert context.default_window_message_num == 48
+    assert context.default_window_round_num == 10
+    assert context.enable_reload is False
+
+
+async def test_model_timeout_uses_one_persisted_recovery_and_new_execution_brief(settings) -> None:
+    class TimeoutThenSuccessModel(ScriptedModel):
+        def __init__(self) -> None:
+            super().__init__([[], []], final="已从保存的计划继续完成。")
+            self.failures = 1
+
+        async def stream(self, *args, **kwargs):  # type: ignore[override]
+            if self.failures:
+                self.failures -= 1
+                self.calls += 1
+                raise TimeoutError("stream first chunk timeout")
+            async for chunk in super().stream(*args, **kwargs):
+                yield chunk
+
+    model = TimeoutThenSuccessModel()
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_model_timeout_recovery",
+            token="token_1",
+            message="继续核对当前建模计划",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        ledger = runtime.store.retry_ledger(started["id"])
+        assert len(ledger) == 1
+        assert ledger[0]["category"] == "model_timeout"
+        assert ledger[0]["attempt"] == 1
+        assert ledger[0]["status"] == "succeeded"
+        assert completed["sessionId"] != started["sessionId"]
+        recovery = []
+        for event in runtime.store.events_after("project_model_timeout_recovery", 0):
+            if event.kind == "recovery":
+                recovery.append(event.payload)
+        assert [event["status"] for event in recovery] == ["retrying", "succeeded"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_second_model_timeout_exhausts_application_recovery(settings) -> None:
+    class AlwaysTimeoutModel(ScriptedModel):
+        async def stream(self, *_args, **_kwargs):  # type: ignore[override]
+            self.calls += 1
+            if False:
+                yield None
+            raise TimeoutError("stream idle timeout")
+
+    model = AlwaysTimeoutModel([[]])
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_model_timeout_exhausted",
+            token="token_1",
+            message="继续完成当前工作",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "failed"
+        ledger = runtime.store.retry_ledger(started["id"])
+        assert len(ledger) == 1
+        assert ledger[0]["attempt"] == 1
+        assert ledger[0]["status"] == "exhausted"
+        assert model.calls == 2
+        recovery = []
+        for event in runtime.store.events_after("project_model_timeout_exhausted", 0):
+            if event.kind == "recovery" and event.payload.get("status") == "retrying":
+                recovery.append(event)
+        assert len(recovery) == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_context_limit_is_recovered_in_a_fresh_bounded_session(settings) -> None:
+    class ContextLimitThenSuccessModel(ScriptedModel):
+        def __init__(self) -> None:
+            super().__init__([[], []], final="已根据有界摘要继续。")
+            self.failures = 1
+
+        async def stream(self, *args, **kwargs):  # type: ignore[override]
+            if self.failures:
+                self.failures -= 1
+                self.calls += 1
+                raise ValueError("maximum context length exceeded")
+            async for chunk in super().stream(*args, **kwargs):
+                yield chunk
+
+    runtime = service(settings, ContextLimitThenSuccessModel())
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_context_limit_recovery",
+            token="token_1",
+            message="继续处理长资料中的剩余任务",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        ledger = runtime.store.retry_ledger(started["id"])
+        assert len(ledger) == 1
+        assert ledger[0]["category"] == "context_limit"
+        assert ledger[0]["status"] == "succeeded"
+        transitions = runtime.store._db.execute(  # noqa: SLF001 - checkpoint audit invariant
+            """SELECT cause FROM project_agent_state_transitions
+            WHERE project_id = ? ORDER BY id""",
+            ("project_context_limit_recovery",),
+        ).fetchall()
+        assert any(row["cause"] == "execution_session_rotated" for row in transitions)
+        assert runtime.store.project_state(
+            "project_context_limit_recovery",
+        ).checkpoint_id == completed["sessionId"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_interrupted_stream_marks_partial_message_incomplete(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    run = runtime.store.create_run(RunRecord(
+        id="run_partial_timeout",
+        project_id="project_partial_timeout",
+        session_id="session_partial_timeout",
+        status=RUN_RUNNING,
+        prompt="核对当前计划",
+        token_fingerprint="fingerprint",
+    ))
+    live = LiveRun(run_id=run.id, project_id=run.project_id, token="token_1")
+    live.bundle = SimpleNamespace(agent=object())
+
+    class PartialTimeoutRunner:
+        @staticmethod
+        async def run_agent_streaming(*_args, **_kwargs):
+            yield SimpleNamespace(type="llm_output", payload="这是尚未完成的半段回复")
+            raise TimeoutError("stream idle timeout")
+
+    with pytest.raises(TimeoutError):
+        await runtime._run_streaming(  # noqa: SLF001
+            live, run, PartialTimeoutRunner, "核对当前计划",
+        )
+    events = runtime.store.events_after(run.project_id, 0)
+    done = [event for event in events if event.kind == "message_done"]
+    assert len(done) == 1
+    assert done[0].payload["incomplete"] is True
+
+
+async def test_full_document_read_declares_long_running_timeout() -> None:
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "read_documents_fully")
+    tool = CoreTool(spec, ToolContext(
+        project_id="project_timeout",
+        run_id="run_timeout",
+        token="token",
+        gateway=FakeGateway({}),
+        emit=lambda *_args: None,
+    ))
+
+    assert tool.card.properties["resilience"]["timeout_s"] == 1830.0
+    assert AbilityManager._resolve_call_timeout(tool.card) == 1830.0
+
+
+async def test_change_set_tools_explain_one_task_per_resource_contract() -> None:
+    create_plan = next(item for item in CORE_TOOL_SPECS if item.name == "create_change_plan")
+    stage_change_set = next(item for item in CORE_TOOL_SPECS if item.name == "stage_change_set")
+
+    assert "每项任务只能对应一个具体目标资源" in create_plan.description
+    assert "一个且仅一个目标资源" in create_plan.properties["tasks"]["items"]["properties"]["target_key"]["description"]
+    assert "每个 action 只对应一个计划任务和一个目标资源" in stage_change_set.description
+    assert stage_change_set.properties["actions"]["maxItems"] == 4
+    variants = stage_change_set.properties["actions"]["items"]["oneOf"]
+    by_tool = {variant["properties"]["tool"]["enum"][0]: variant for variant in variants}
+    assert set(by_tool) == {
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+    }
+    object_fields = by_tool["create_object"]["properties"]["arguments"]["properties"]["fields"]
+    assert "cn_name" in object_fields["items"]["properties"]
+    assert "name" not in object_fields["items"]["properties"]
+    patch_actions = by_tool["patch_object"]["properties"]["arguments"]["properties"]["actions"]
+    assert "update_field" in patch_actions["items"]["properties"]["op"]["enum"]
+    assert "changes" in patch_actions["items"]["properties"]
 
 
 async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() -> None:
@@ -65,6 +385,50 @@ async def test_paged_trace_groups_ignore_offsets_but_keep_resource_identity() ->
     specific_results = tool_trace_group_id("get_evaluation_results", {"round_id": "round-2"})
     assert latest_results.startswith("snapshot:get_evaluation_results:")
     assert latest_results != specific_results
+
+
+async def test_query_eval_db_description_is_mysql_mirror_diagnostic() -> None:
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "query_eval_db")
+    prompt = _system_prompt("", {})
+
+    assert "MySQL 评测库镜像" in spec.description
+    assert "项目数据源配置" in spec.description
+    assert "Neo4j" in spec.description
+    assert "NL2SQL 服务内部管理" in spec.description
+    assert "query_eval_db 只用于诊断" in prompt
+    assert "get_project_state 返回的 dataSource 摘要" in prompt
+
+
+async def test_project_state_includes_core_data_source_summary(settings) -> None:
+    gateway = FakeGateway({
+        "project_data_source_status": {
+            "configured": True,
+            "mode": "connection",
+            "provider": "neo4j",
+            "workspaceLinked": True,
+            "ontologyLinked": True,
+            "neo4j": {
+                "workspaceIsolationConfigured": True,
+                "ontologyIsolationConfigured": True,
+                "graphDatabaseConfigured": True,
+            },
+        },
+        "gate_status": {"pass": True, "blockers": []},
+    })
+    runtime = service(settings, ScriptedModel([]), gateway)
+    await runtime.startup()
+    try:
+        state = await runtime._state_for_agent(LiveRun(  # noqa: SLF001
+            run_id="run_data_source_state",
+            project_id="project_data_source_state",
+            token="token_1",
+        ))
+
+        assert state["dataSource"]["provider"] == "neo4j"
+        assert state["dataSource"]["neo4j"]["workspaceIsolationConfigured"] is True
+        assert any(call["tool"] == "project_data_source_status" for call in gateway.calls)
+    finally:
+        await runtime.shutdown()
 
 
 async def test_repeated_completed_evaluation_read_calls_core_once_and_emits_one_trace(settings) -> None:
@@ -274,6 +638,46 @@ async def test_package_contract_is_injected_into_initial_agent_context() -> None
     assert "生成、修正和确认候选都必须以这份" in prompt
     assert "diagrams/*.mmd 时只提交裸 Mermaid 源码" in prompt
     assert "绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏" in prompt
+    assert "必须先调用 analyze_deterministic_capabilities" in prompt
+    assert "只有收到专家答案后才能调用 confirm_deterministic_scope" in prompt
+    assert "deterministic_confirmed 未通过时不得转换到评测阶段" in prompt
+
+
+async def test_waiting_run_restores_persisted_credential_before_claiming_workspace(settings) -> None:
+    class RestartedGateway(FakeGateway):
+        async def call(self, **kwargs):  # type: ignore[override]
+            if (
+                kwargs["tool"] == "claim_candidate_workspace"
+                and not kwargs["token"]
+                and not self.run_credential(kwargs["run_id"])
+            ):
+                return {"error": "AUTH_REQUIRED", "reason": "运行凭据没有恢复"}
+            return await super().call(**kwargs)
+
+    gateway = RestartedGateway()
+    runtime = service(settings, ScriptedModel([], final="已完成。"), gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_waiting_credential_restore",
+            token="initial_token",
+            message="开始建模",
+        )
+        await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        persisted = runtime.store.require_run(started["id"]).run_credential
+        assert persisted
+
+        gateway.credentials.clear()
+        claimed = await runtime._claim_workspace(  # noqa: SLF001
+            project_id="project_waiting_credential_restore",
+            run_id=started["id"],
+            token="",
+        )
+
+        assert claimed["packageContract"]["validatorVersion"]
+        assert gateway.run_credential(started["id"]) == persisted
+    finally:
+        await runtime.shutdown()
 
 
 async def test_candidate_validation_repair_aggregates_parallel_files_as_one_round() -> None:
@@ -299,24 +703,72 @@ async def test_candidate_validation_repair_aggregates_parallel_files_as_one_roun
     ]
 
 
-async def test_candidate_validation_repair_stops_after_three_distinct_model_rounds() -> None:
+async def test_candidate_validation_repair_gives_distinct_findings_separate_budgets() -> None:
     state = CandidateValidationRepairState()
 
-    for attempt in range(1, 4):
-        state.begin_round(f"model-{attempt}")
+    issue_ids = set()
+    for round_number in range(1, 4):
+        state.begin_round(f"model-{round_number}")
         result = state.record({
             "error": "CANDIDATE_FORMAT_INVALID",
             "validatorVersion": "package-v1",
-            "findings": [{"ruleId": f"rule-{attempt}", "path": f"file-{attempt}.md"}],
+            "findings": [{"ruleId": f"rule-{round_number}", "path": f"file-{round_number}.md"}],
         })
-        assert result["repairAttempt"] == attempt
+        assert result["repairAttempt"] == 1
         assert result["repairStopped"] is False
+        issue_ids.add(result["issueId"])
 
     state.begin_round("model-4")
-    assert state.attempts == 3
+    assert state.attempts == 1
     assert state.repeated_findings is False
+    assert state.stopped is False
+    assert len(issue_ids) == 3
+
+
+async def test_candidate_validation_repair_remembers_issue_across_alternating_findings() -> None:
+    state = CandidateValidationRepairState()
+    report_a = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:alternating-a",
+    }
+    report_b = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:alternating-b",
+    }
+
+    state.begin_round("model-1")
+    state.record(report_a)
+    state.begin_round("model-2")
+    state.record(report_b)
+    state.begin_round("model-3")
+    repeated_a = state.record(report_a)
+
+    assert repeated_a["repairAttempt"] == 2
+    assert repeated_a["repairStopped"] is False
+
+    state.begin_round("model-4")
+    assert state.issue_attempts == {
+        "sha256:alternating-a": 2,
+        "sha256:alternating-b": 1,
+    }
     assert state.stopped is True
-    assert state.blocked_result()["repairStopped"] is True
+    blocked = state.blocked_result("sha256:alternating-a")
+    assert blocked["repairStopped"] is True
+    assert blocked["tracePhase"] == "waiting"
+    assert blocked["problemVisibility"] == "recovery"
+    assert [action["id"] for action in blocked["recoveryActions"]] == [
+        "review_validation_findings", "keep_current_progress",
+    ]
+
+    unrelated = state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findingFingerprint": "sha256:alternating-c",
+    })
+    assert unrelated["repairAttempt"] == 1
+    assert unrelated["repairStopped"] is False
 
 
 async def test_candidate_validation_repair_stops_on_repeated_round_and_recovery_resets() -> None:
@@ -367,6 +819,27 @@ async def test_successful_candidate_write_does_not_reset_validation_episode() ->
     assert state.stopped is False
 
 
+async def test_successful_full_validation_resolves_all_open_issue_ids() -> None:
+    state = CandidateValidationRepairState()
+    state.begin_round("model-1")
+    first = state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "rule-a", "path": "objects/a.md"}],
+    })
+    second = state.record({
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "rule-b", "path": "rules/b.md"}],
+    })
+
+    assert state.record_success("write_file") == []
+    assert state.record_success("validate_change_set") == [
+        first["issueId"], second["issueId"],
+    ]
+    assert state.open_issue_ids == []
+
+
 async def test_compact_validation_report_without_inline_findings_enters_repair_state() -> None:
     gateway = FakeGateway({
         "write_file": {
@@ -405,6 +878,394 @@ async def test_compact_validation_report_without_inline_findings_enters_repair_s
     assert "findings" not in result
     assert result["repairAttempt"] == 1
     assert "get_validation_findings" in result["instruction"]
+
+
+async def test_managed_file_failure_requires_domain_tool_and_resolves_same_issue() -> None:
+    issue_id = "agent-issue-synthetic-binding"
+    gateway = FakeGateway({
+        "write_file": {
+            "error": "MANAGED_FILE_REQUIRES_DOMAIN_TOOL",
+            "reason": "对象数据映射是受管文件，不能直接写入",
+            "requiredAction": "redirect_tool",
+            "requiredTool": "patch_object_source_binding",
+            "targetKind": "object_binding",
+            "issueId": issue_id,
+            "retryable": False,
+        },
+        "patch_object_source_binding": {
+            "ok": True,
+            "display": {"text": "对象与数据表绑定完成"},
+        },
+    })
+    required: list[tuple[str, dict]] = []
+    recoveries: dict[str, dict] = {}
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+        require_tool=lambda name, recovery: required.append((name, recovery)),
+        technical_recoveries=recoveries,
+    )
+    write_spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+    rejected = json.loads(await CoreTool(write_spec, context).invoke({
+        "path": "mappings/object-data-mappings.json",
+        "content": "{}",
+        "change_group": "synthetic_binding",
+        "evidence": [],
+    }))
+
+    assert rejected["issueId"] == issue_id
+    assert rejected["issueStatus"] == "repairing"
+    assert rejected["tracePhase"] == "repairing"
+    assert required[0][0] == "patch_object_source_binding"
+    assert recoveries[issue_id]["targetKind"] == "object_binding"
+
+    binding_spec = next(
+        item for item in CORE_TOOL_SPECS if item.name == "patch_object_source_binding"
+    )
+    repaired = json.loads(await CoreTool(binding_spec, context).invoke({}))
+    assert repaired["issueStatus"] == "resolved"
+    assert repaired["resolvedIssueIds"] == [issue_id]
+    assert recoveries == {}
+
+
+async def test_revision_conflict_auto_recovers_then_offers_customer_actions() -> None:
+    gateway = FakeGateway({
+        "stage_change_set": {
+            "error": "REVISION_CONFLICT",
+            "reason": "知识包内容已经变化，请重新读取计划目标后生成新的 Change Set",
+            "retryable": False,
+            "recovery": {
+                "owner": "agent",
+                "strategy": "refresh_change_set",
+                "requiredTool": "stage_change_set",
+                "maxAttempts": 2,
+            },
+        },
+    })
+    required: list[str] = []
+    released: list[str] = []
+    context = ToolContext(
+        project_id="project_revision_recovery",
+        run_id="run_revision_recovery",
+        token="token_demo",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+        require_tool=lambda name, _recovery: required.append(name),
+        release_required_tool=lambda name: released.append(name),
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "stage_change_set")
+    arguments = {
+        "plan_id": "plan_revision_recovery",
+        "expected_revision": "sha256:old",
+        "mutation_id": "revision-recovery-fixture",
+        "actions": [],
+    }
+
+    first = json.loads(await CoreTool(spec, context).invoke(arguments))
+    second = json.loads(await CoreTool(spec, context).invoke(arguments))
+    exhausted = json.loads(await CoreTool(spec, context).invoke(arguments))
+
+    assert first["tracePhase"] == "repairing"
+    assert first["problemVisibility"] == "activity"
+    assert first["repairAttempt"] == 1
+    assert second["tracePhase"] == "repairing"
+    assert second["repairAttempt"] == 2
+    assert exhausted["tracePhase"] == "waiting"
+    assert exhausted["issueStatus"] == "awaiting_user"
+    assert exhausted["problemVisibility"] == "recovery"
+    assert exhausted["repairStopped"] is True
+    assert [action["id"] for action in exhausted["recoveryActions"]] == [
+        "retry_from_latest", "keep_current_progress",
+    ]
+    assert required == ["stage_change_set"] * 3
+    assert released == ["stage_change_set"]
+    recovery = context.technical_recoveries[exhausted["issueId"]]
+    assert recovery["attempt"] == 2
+    assert recovery["exhausted"] is True
+
+
+async def test_revision_recovery_exhaustion_suspends_run_without_error_message(settings) -> None:
+    action = {
+        "task_id": "task_revision_recovery",
+        "tool": "create_object",
+        "arguments": {
+            "key": "revision_recovery_object",
+            "title": "版本恢复对象",
+            "description": "用于验证版本冲突恢复",
+            "fields": [{"key": "id", "type": "string", "required": True}],
+        },
+    }
+    model = ScriptedModel([
+        [ToolTurn("stage_change_set", {
+            "plan_id": "plan_revision_recovery",
+            "expected_revision": "sha256:old",
+            "mutation_id": f"revision-recovery-{index}",
+            "actions": [action],
+        })]
+        for index in range(12)
+    ])
+    gateway = FakeGateway({
+        "stage_change_set": {
+            "error": "REVISION_CONFLICT",
+            "reason": "知识包内容已经变化，请重新读取计划目标后生成新的 Change Set",
+            "retryable": False,
+            "recovery": {
+                "owner": "agent",
+                "strategy": "refresh_change_set",
+                "requiredTool": "stage_change_set",
+                "maxAttempts": 2,
+            },
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        project_id = "project_revision_recovery_suspend"
+        state = runtime.store.project_state(project_id)
+        runtime.store.transition_project_state(
+            project_id,
+            expected_revision=state.revision,
+            next_state="knowledge:completed",
+            cause="test_fixture",
+            actor_run_id="",
+        )
+        started = await runtime.start_run(
+            project_id=project_id,
+            token="token_revision_recovery",
+            message="继续完成当前建模计划",
+        )
+        settled = await wait_for_status(
+            runtime, started["id"], {"suspended", "failed", "completed"}, timeout=10,
+        )
+
+        events = runtime.store.events_after(project_id, 0)
+        tool_events = [
+            event.payload for event in events
+            if event.kind == "tool" and event.payload.get("name") == "stage_change_set"
+        ]
+        assert settled["status"] == "suspended", {
+            "settled": settled,
+            "modelCalls": model.calls,
+            "toolEvents": tool_events,
+            "statuses": [event.payload for event in events if event.kind == "status"],
+        }
+        assert [
+            event["phase"] for event in tool_events if event["phase"] != "started"
+        ] == [
+            "repairing", "repairing", "waiting",
+        ]
+        assert not any(
+            event.kind == "message"
+            and any(block.get("type") == "error" for block in event.payload.get("blocks", []))
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_ask_rejects_technical_question_while_recovery_tool_is_available() -> None:
+    issue_id = "agent-issue-synthetic-binding"
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        technical_recoveries={
+            issue_id: {
+                "issueId": issue_id,
+                "requiredTool": "patch_object_source_binding",
+                "targetKind": "object_binding",
+            },
+        },
+    )
+    tool_call = type("Call", (), {
+        "arguments": json.dumps({
+            "question": "当前环境无法补写，请让管理员处理吗？",
+            "kind": "clarification",
+            "evidence": [],
+        }, ensure_ascii=False),
+    })()
+
+    decision = await AskRail(context).resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    result = json.loads(decision.tool_result)
+    assert result["error"] == "TECHNICAL_RECOVERY_REQUIRED"
+    assert result["issueId"] == issue_id
+    assert result["issueStatus"] == "repairing"
+    assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+
+
+async def test_structured_issue_action_resumes_terminal_run_without_fake_user_message(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("patch_object_source_binding", {})],
+        [],
+    ], final="对象与来源表已经重新绑定。")
+    runtime = service(settings, model, FakeGateway({
+        "patch_object_source_binding": {
+            "ok": True,
+            "display": {"text": "对象与来源表绑定完成"},
+        },
+    }))
+    await runtime.startup()
+    try:
+        old = runtime.store.create_run(RunRecord(
+            id="run_old_issue",
+            project_id="project_issue_resume",
+            session_id="old-session",
+            status="queued",
+            prompt="历史建模",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(old.id, status="completed")
+        state = runtime.store.project_state(old.project_id)
+        runtime.store.transition_project_state(
+            old.project_id,
+            expected_revision=state.revision,
+            next_state="knowledge:completed",
+            cause="test_fixture",
+            actor_run_id=old.id,
+        )
+        issue_id = "agent-issue-synthetic-resume"
+        runtime.store.save_technical_recovery(old.id, issue_id, {
+            "issueId": issue_id,
+            "requiredTool": "patch_object_source_binding",
+            "targetKind": "object_binding",
+            "actionId": "resume_object_binding",
+        })
+
+        resumed = await runtime.resume_issue(
+            project_id=old.project_id,
+            token="token_resume",
+            issue_id=issue_id,
+            action_id="resume_object_binding",
+        )
+        new_run_id = resumed["run"]["id"]
+        settled = await wait_for_status(
+            runtime, new_run_id, {"completed", "suspended", "failed"}, timeout=10,
+        )
+
+        assert resumed["mode"] == "new_run"
+        assert settled["status"] == "completed"
+        events = runtime.store.events_after(old.project_id, 0)
+        assert not any(
+            event.run_id == new_run_id and event.kind == "message"
+            and event.payload.get("role") == "user"
+            for event in events
+        )
+        assert any(
+            event.run_id == new_run_id and event.kind == "tool"
+            and issue_id in event.payload.get("resolvedIssueIds", [])
+            for event in events
+        )
+        assert runtime.store.technical_recoveries(old.id) == {}
+    finally:
+        await runtime.shutdown()
+
+
+async def test_structured_issue_can_keep_progress_and_end_suspended_run(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_keep_recovery_progress",
+            project_id="project_keep_recovery_progress",
+            session_id="keep-recovery-session",
+            status="queued",
+            prompt="历史建模",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        issue_id = "agent-recovery-keep-progress"
+        runtime.store.save_technical_recovery(run.id, issue_id, {
+            "issueId": issue_id,
+            "requiredTool": "stage_change_set",
+            "strategy": "refresh_change_set",
+            "actionId": "retry_from_latest",
+            "recoveryActions": [
+                {"id": "retry_from_latest"},
+                {"id": "keep_current_progress"},
+            ],
+            "attempt": 2,
+            "maxAttempts": 2,
+            "exhausted": True,
+        })
+
+        kept = await runtime.resume_issue(
+            project_id=run.project_id,
+            token="token_keep_progress",
+            issue_id=issue_id,
+            action_id="keep_current_progress",
+        )
+
+        assert kept["mode"] == "kept"
+        assert kept["run"]["status"] == "cancelled"
+        assert kept["resolvedIssueIds"] == [issue_id]
+        assert runtime.store.technical_recoveries(run.id) == {}
+        events = runtime.store.events_after(run.project_id, 0)
+        assert any(
+            event.kind == "tool"
+            and event.payload.get("resolvedIssueIds") == [issue_id]
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_validation_issue_resume_preserves_report_locator_and_has_fallback(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    captured: list[dict] = []
+
+    async def continue_stub(run, token, prompt, **kwargs):
+        captured.append({
+            "run": run,
+            "token": token,
+            "prompt": prompt,
+            "requiredTools": kwargs.get("required_tools"),
+        })
+        return run.public()
+
+    runtime._continue = continue_stub  # type: ignore[method-assign]
+    fixtures = [
+        ("report-backed", "report-validation-resume", {"get_validation_summary"}),
+        ("inline-findings", "", {"validate_change_set"}),
+    ]
+    for suffix, report_id, expected_tools in fixtures:
+        run = runtime.store.create_run(RunRecord(
+            id=f"run_validation_resume_{suffix}",
+            project_id=f"project_validation_resume_{suffix}",
+            session_id=f"validation-resume-{suffix}",
+            status="queued",
+            prompt="历史建模",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        issue_id = f"validation-issue-{suffix}"
+        runtime.store.save_validation_repair_state(run.id, {
+            "openIssueIds": [issue_id],
+            "lastReport": {
+                "issueId": issue_id,
+                "validationReportId": report_id,
+                "findingFingerprint": f"sha256:{suffix}",
+            },
+        })
+
+        resumed = await runtime.resume_issue(
+            project_id=run.project_id,
+            token=f"token-{suffix}",
+            issue_id=issue_id,
+            action_id="review_validation_findings",
+        )
+
+        assert resumed["mode"] == "checkpoint_resume"
+        assert captured[-1]["requiredTools"] == expected_tools
+        if report_id:
+            assert report_id in captured[-1]["prompt"]
+        else:
+            assert "重新执行一次完整 Change Set 校验" in captured[-1]["prompt"]
+        assert runtime.store.validation_repair_state(run.id).get("openIssueIds") == []
 
 
 async def test_tool_context_applies_repair_policy_from_package_contract() -> None:
@@ -1993,6 +2854,46 @@ async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(sett
         await runtime.shutdown()
 
 
+async def test_cancel_run_publishes_pending_interaction_closure(settings) -> None:
+    model = ScriptedModel([[ToolTurn("ask", {
+        "question": "是否继续当前方案？",
+        "kind": "business_decision",
+        "options": [
+            {"label": "继续", "description": "继续当前方案", "value": "continue"},
+            {"label": "停止", "description": "停止当前方案", "value": "stop"},
+        ],
+    })]])
+    runtime = service(settings, model, FakeGateway())
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_cancel_interaction",
+            token="token_1",
+            message="请确认是否继续",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting"
+        interaction = runtime.store.pending_interaction("project_cancel_interaction")
+        assert interaction is not None
+
+        cancelled = await runtime.cancel(project_id="project_cancel_interaction")
+
+        assert cancelled["status"] == "cancelled"
+        assert runtime.store.get_interaction(interaction.id).status == "cancelled"
+        assert runtime.store.pending_interaction("project_cancel_interaction") is None
+        closure_events = []
+        for event in runtime.store.events_after("project_cancel_interaction", 0):
+            if event.kind != "interaction":
+                continue
+            if event.payload.get("id") != interaction.id:
+                continue
+            if event.payload.get("status") == "cancelled":
+                closure_events.append(event)
+        assert len(closure_events) == 1
+    finally:
+        await runtime.shutdown()
+
+
 async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("run_evaluation", {})], []],
@@ -2053,6 +2954,190 @@ async def test_agent_reads_and_transitions_single_project_state(settings) -> Non
         assert state.summary == "已取得一份可读资料，正在形成目标候选。"
         assert state.open_questions == ["目标范围待确认"]
         assert any(call["tool"] == "gate_status" for call in gateway.calls)
+    finally:
+        await runtime.shutdown()
+
+
+async def test_project_state_uses_authoritative_terminal_evaluation_and_rejects_stale_summary(settings) -> None:
+    gateway = FakeGateway({"evaluation_status": {
+        "available": True,
+        "roundId": "round_terminal",
+        "status": "failed",
+        "terminal": True,
+        "done": 2,
+        "total": 5,
+        "passed": 1,
+        "finishedAt": "2026-08-31T08:00:00.000Z",
+    }})
+    runtime = service(settings, ScriptedModel([[]]), gateway)
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_terminal_state")
+        runtime.store.transition_project_state(
+            "project_terminal_state",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测仍在异步运行中，等待本轮结束。",
+            open_questions=["等待评测完成"],
+        )
+        run = RunRecord(
+            id="run_terminal_state",
+            project_id="project_terminal_state",
+            session_id="session_terminal_state",
+            status="queued",
+            prompt="读取状态",
+            token_fingerprint="fingerprint",
+        )
+        runtime.store.create_run(run)
+        runtime.store.update_run(run.id, status=RUN_RUNNING)
+        live = LiveRun(run_id=run.id, project_id=run.project_id, token="token_1")
+
+        state = await runtime._state_for_agent(live)
+        assert state["evaluation"]["status"] == "failed"
+        assert state["evaluation"]["terminal"] is True
+        assert "运行中" not in state["summary"]
+        assert state["openQuestions"] == []
+
+        current = runtime.store.project_state(run.project_id)
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime._state_action(live, "update_project_context", {
+                "expected_revision": current.revision,
+                "summary": "评测仍在后台运行中。",
+                "open_questions": ["等待本轮评测结束"],
+                "evidence": [],
+            })
+        assert raised.value.code == "STATE_EVALUATION_STATUS_CONFLICT"
+        assert raised.value.details["evaluation"]["status"] == "failed"
+        assert runtime.store.project_state(run.project_id).summary == "评测仍在异步运行中，等待本轮结束。"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_cache(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_event")
+        runtime.store.transition_project_state(
+            "project_evaluation_event",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成", "保留另一个业务问题"],
+        )
+        live = LiveRun(
+            run_id="run_evaluation_event",
+            project_id="project_evaluation_event",
+            token="token_1",
+            stable_read_cache={"get_evaluation_results:latest": {"round": {"status": "running"}}},
+        )
+        runtime._live[live.run_id] = live
+        event = {
+            "eventId": "evaluation:round_event:terminal",
+            "roundId": "round_event",
+            "status": "done",
+            "done": 4,
+            "total": 4,
+            "passed": 3,
+            "finishedAt": "2026-08-31T09:00:00.000Z",
+        }
+
+        first = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_event", token="token_1", event=event,
+        )
+        second = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_event", token="token_1", event=event,
+        )
+
+        assert first["reconciled"] is True
+        assert second == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        state = runtime.store.project_state("project_evaluation_event")
+        assert "已完成" in state.summary
+        assert "运行中" not in state.summary
+        assert state.open_questions == ["保留另一个业务问题"]
+        assert live.stable_read_cache == {}
+        messages = [
+            item for item in runtime.store.events_after("project_evaluation_event", 0)
+            if item.kind == "message" and item.payload.get("externalEventId") == event["eventId"]
+        ]
+        assert len(messages) == 1
+    finally:
+        runtime._live.pop("run_evaluation_event", None)
+        await runtime.shutdown()
+
+
+async def test_evaluation_terminal_event_does_not_present_or_apply_older_round(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_order")
+        runtime.store.transition_project_state(
+            "project_evaluation_order",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        latest = {
+            "eventId": "evaluation:round_latest:terminal",
+            "roundId": "round_latest",
+            "status": "done",
+            "done": 5,
+            "total": 5,
+            "passed": 5,
+            "finishedAt": "2026-08-31T10:00:00.000Z",
+        }
+        older = {
+            "eventId": "evaluation:round_older:terminal",
+            "roundId": "round_older",
+            "status": "done",
+            "done": 4,
+            "total": 4,
+            "passed": 3,
+            "finishedAt": "2026-08-31T09:00:00.000Z",
+        }
+
+        applied = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_order", token="token_1", event=latest,
+        )
+        state_after_latest = runtime.store.project_state("project_evaluation_order")
+        ignored = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_order", token="token_1", event=older,
+        )
+
+        assert applied["reconciled"] is True
+        assert ignored["stale"] is True
+        state_after_older = runtime.store.project_state("project_evaluation_order")
+        assert state_after_older.revision == state_after_latest.revision
+        assert state_after_older.summary == state_after_latest.summary
+        assert "5/5" in state_after_older.summary
+        messages = [
+            item.payload for item in runtime.store.events_after("project_evaluation_order", 0)
+            if item.kind == "message" and item.payload.get("externalEventId")
+        ]
+        assert [item["externalEventId"] for item in messages] == [latest["eventId"]]
+        stale_receipt = runtime.store._db.execute(  # noqa: SLF001 - persistence invariant test
+            "SELECT continuation_status, presented_at FROM external_project_events WHERE id = ?",
+            (older["eventId"],),
+        ).fetchone()
+        assert stale_receipt["continuation_status"] == "continued"
+        assert stale_receipt["presented_at"] == ""
+
+        current = runtime.store.project_state("project_evaluation_order")
+        runtime.store.transition_project_state(
+            "project_evaluation_order",
+            expected_revision=current.revision,
+            next_state=current.state,
+            cause="test_stale_projection",
+            summary="最近一轮正式评测已完成：已执行 4/4 条，通过 3 条。",
+        )
+        assert "4/4" in runtime.store.project_state("project_evaluation_order").summary
+        assert "5/5" in runtime.project_state("project_evaluation_order")["state"]["summary"]
     finally:
         await runtime.shutdown()
 
@@ -2591,7 +3676,7 @@ async def test_confirmation_preflight_focuses_frozen_business_diff() -> None:
         "validatorVersion": "package-contract-v2",
     }
     assert context.validation_repair.candidate_revision == "candidate_goal"
-    assert context.validation_repair.attempts == 2
+    assert context.validation_repair.attempts == 0
     assert events == [
         ("focus", {"target": {"kind": "diff", "target": ".modeling/goal.md"}}),
     ]
@@ -2811,7 +3896,7 @@ async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_r
     assert blocked["repeatedFinding"] is True
     assert blocked["repairStopped"] is True
     assert blocked["retryable"] is False
-    assert "自动修正已停止" in blocked["instruction"]
+    assert "自动修正已达到上限" in blocked["instruction"]
 
 
 async def test_text_choice_request_rejects_confirmation_and_opens_ask_card(settings) -> None:
@@ -3215,6 +4300,151 @@ async def test_release_confirmation_uses_core_preflight_and_focuses_evaluation()
     assert decision.request.metadata["kind"] == "release_confirmation"
     assert decision.request.metadata["version"] == "1.0.0"
     assert decision.request.metadata["testcaseCount"] == 5
+
+
+async def test_release_confirmation_executes_core_release_once_after_approval(settings) -> None:
+    model = ScriptedModel(
+        [
+            [ToolTurn("request_release", {"summary": "确认 19 条真实用例并发布"})],
+            [],
+        ],
+        final="1.0.0 已正式发布。",
+    )
+    gateway = FakeGateway({
+        "release_preflight": {
+            "ready": True,
+            "version": "1.0.0",
+            "testcase_count": 19,
+            "questions": ["月度排产安全校验"],
+        },
+        "request_release": {
+            "released": True,
+            "version": "1.0.0",
+            "revision": "stable-revision",
+            "display": {"text": "1.0.0 已正式发布"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_release",
+            token="token_1",
+            message="发布 1.0.0",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_release")
+        assert interaction is not None and interaction.kind == "release_confirmation"
+        assert runtime.store.tool_receipt(
+            started["id"],
+            interaction.tool_call_id,
+            "request_release",
+            {"summary": "确认 19 条真实用例并发布"},
+        ) is None
+        completed_release_events = []
+        for event in runtime.store.events_after("project_release", 0):
+            if event.kind != "tool":
+                continue
+            if event.payload.get("name") != "request_release":
+                continue
+            if event.payload.get("phase") == "completed":
+                completed_release_events.append(event)
+        assert not completed_release_events
+
+        await runtime.answer_interaction(
+            project_id="project_release",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "approved": True,
+                "coverage_confirmed": True,
+                "version": "1.0.0",
+            },
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        assert runtime.store.pending_interaction("project_release") is None
+        release_calls = [call for call in gateway.calls if call["tool"] == "request_release"]
+        assert len(release_calls) == 1
+        assert release_calls[0]["arguments"]["version"] == "1.0.0"
+        assert release_calls[0]["arguments"]["review"]["coverage_confirmed"] is True
+        receipt = runtime.store.tool_receipt(
+            started["id"],
+            interaction.tool_call_id,
+            "request_release",
+            {"summary": "确认 19 条真实用例并发布"},
+        )
+        assert receipt is not None and receipt["released"] is True
+        completed_release_events = []
+        for event in runtime.store.events_after("project_release", 0):
+            if event.kind != "tool":
+                continue
+            if event.payload.get("name") != "request_release":
+                continue
+            if event.payload.get("phase") == "completed":
+                completed_release_events.append(event)
+        assert len(completed_release_events) == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_release_failure_keeps_confirmation_pending(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("request_release", {"summary": "确认 19 条真实用例并发布"})],
+    ])
+    gateway = FakeGateway({
+        "release_preflight": {
+            "ready": True,
+            "version": "1.0.0",
+            "testcase_count": 19,
+        },
+        "request_release": {
+            "error": "RELEASE_WRITE_FAILED",
+            "reason": "稳定版本写入失败",
+            "next": ["保持候选版本并重试"],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_release_failure",
+            token="token_1",
+            message="发布 1.0.0",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_release_failure")
+        assert interaction is not None
+
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime.answer_interaction(
+                project_id="project_release_failure",
+                interaction_id=interaction.id,
+                token="token_2",
+                answer={
+                    "approved": True,
+                    "coverage_confirmed": True,
+                    "version": "1.0.0",
+                },
+            )
+
+        assert raised.value.code == "RELEASE_WRITE_FAILED"
+        assert runtime.store.require_run(started["id"]).status == "waiting"
+        pending = runtime.store.pending_interaction("project_release_failure")
+        assert pending is not None and pending.id == interaction.id
+        assert pending.payload["lastSubmissionError"] == "稳定版本写入失败"
+        assert [call["tool"] for call in gateway.calls].count("request_release") == 1
+        assert runtime.store.tool_receipt(
+            started["id"],
+            interaction.tool_call_id,
+            "request_release",
+            {"summary": "确认 19 条真实用例并发布"},
+        ) is None
+    finally:
+        await runtime.shutdown()
 
 
 async def test_declined_release_cannot_reopen_confirmation_in_same_run() -> None:

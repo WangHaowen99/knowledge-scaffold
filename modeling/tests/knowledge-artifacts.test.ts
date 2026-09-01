@@ -10,6 +10,7 @@ import {
 import { listNodes, runAnalyze, upsertNode } from '../src/workflow/engine.js';
 import { generatePackage } from '../src/workflow/m2.js';
 import { renderPackage } from '../src/workflow/package-render.js';
+import { relationNameProblem } from '../src/workflow/relation-name.js';
 import { applyOptimizations, OptimizationExpertReviewRequiredError } from '../src/evaluation/optimizer.js';
 import { createProject } from '../src/projects/repo.js';
 import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
@@ -285,6 +286,54 @@ test('逻辑对象候选不得静默遗漏', () => {
   ]);
 });
 
+test('对象关系名称拒绝纯基数和重复端点名称并保留模型生成的中英文谓词', () => {
+  for (const cardinality of [
+    '1:1', '1:N', 'N:M', 'Ｘ：Ｘ', '1..*', '一对多', 'one-to-many',
+  ]) {
+    assert.match(relationNameProblem(cardinality) ?? '', /关系名称不能只填写关系基数/);
+  }
+  for (const relation of [
+    '属于', '包含', '生成', '引用', '依赖', '适用于', '对应', 'belongs_to',
+  ]) {
+    assert.equal(relationNameProblem(relation), undefined);
+  }
+
+  const context = {
+    source: { key: 'application_item', title: '申请项' },
+    target: { key: 'application', title: '申请', aliases: ['业务申请'] },
+  };
+  for (const redundant of [
+    '属于申请', '对应业务申请', '申请项属于', 'belongs_to_application',
+  ]) {
+    assert.match(relationNameProblem(redundant, context) ?? '', /不应包含(?:源|目标)对象名称/);
+  }
+  for (const relation of ['属于', '对应', '隶属于', 'belongs_to']) {
+    assert.equal(relationNameProblem(relation, context), undefined);
+  }
+
+  const invalid = baseSpec();
+  invalid.objects[0].relations = [{ relation: '1:N', target: 'customer' }];
+  assert.ok(validateObjectBatch([], invalid.objects).some((issue) => (
+    issue.includes('relations[0].relation') && issue.includes('关系基数')
+  )));
+  assert.throws(() => validateSpecIntegrity(invalid), /relations\[0\]\.relation.*关系基数/);
+
+  const redundant = baseSpec();
+  redundant.objects[0].title = '申请项';
+  redundant.objects.push({
+    key: 'application', title: '申请', description: '用于关系连读校验的合成申请对象',
+    aliases: ['业务申请'], fields: [{ key: 'id', cnName: '申请编号' }],
+  });
+  redundant.objects[0].relations = [{ relation: '属于申请', target: 'application' }];
+  assert.ok(validateObjectBatch([], redundant.objects).some((issue) => issue.includes('目标对象名称')));
+  assert.throws(() => validateSpecIntegrity(redundant), /目标对象名称.*申请/);
+
+  const valid = structuredClone(redundant);
+  valid.objects[0].relations = [{ relation: '属于', target: 'application' }];
+  assert.deepEqual(validateObjectBatch([], valid.objects), []);
+  assert.doesNotThrow(() => validateSpecIntegrity(valid));
+});
+
 test('规则指标候选可以逐项生成或延期，但不得静默遗漏', async () => {
   const project = createProject({ owner: 'tester', name: '指标补全回归', domain: '金融', background: '' });
   await initializeGenerationDraft(project);
@@ -350,7 +399,7 @@ test('规则指标候选可以逐项生成或延期，但不得静默遗漏', as
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer_table', rowCount: 1,
+      name: 'customer_table', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'customer_id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }],
     documents: [{ id: 'product-manual', filename: '产品手册.docx', textContent: '资产规模与产品覆盖率计算口径。' }],
@@ -395,7 +444,7 @@ test('operation 用来源表名引用对象时转换为对象 key', async () => 
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer_table', rowCount: 1,
+      name: 'customer_table', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'customer_id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }],
     documents: [],

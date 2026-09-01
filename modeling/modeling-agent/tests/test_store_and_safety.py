@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,7 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     try:
         store.create_run(run("run_1"))
+        assert store.require_run("run_1").tool_profile == "domain-v2"
         queued = store.project_state("project_demo")
         assert queued.state == "intake:queued"
         assert queued.run_id == "run_1"
@@ -55,6 +57,34 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
             ("intake:queued", "intake:running"),
             ("intake:running", "intake:suspended"),
         ]
+    finally:
+        store.close()
+
+
+def test_store_migrates_existing_checkpoints_to_legacy_tool_profile(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-runtime.sqlite"
+    db = sqlite3.connect(path)
+    db.execute("""CREATE TABLE agent_runs (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL,
+      status TEXT NOT NULL, prompt TEXT NOT NULL, token_fingerprint TEXT NOT NULL,
+      baseline_revision TEXT NOT NULL DEFAULT '', candidate_revision TEXT NOT NULL DEFAULT '',
+      interaction_id TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '',
+      error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )""")
+    db.execute(
+        "INSERT INTO agent_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "run_legacy", "project_legacy", "legacy-session", "suspended", "继续建模",
+            "000000000000", "", "", "", "", "", "2026-08-30T00:00:00Z",
+            "2026-08-30T00:00:00Z",
+        ),
+    )
+    db.commit()
+    db.close()
+
+    store = RuntimeStore(path)
+    try:
+        assert store.require_run("run_legacy").tool_profile == "legacy-v1"
     finally:
         store.close()
 
@@ -121,6 +151,77 @@ def test_validation_repair_state_survives_runtime_store_restart(tmp_path: Path) 
         reopened.close()
 
 
+def test_technical_tool_redirect_survives_restart_until_resolved(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_redirect"))
+    recovery = {
+        "issueId": "agent-issue-synthetic",
+        "requiredTool": "patch_object_source_binding",
+        "targetKind": "object_binding",
+    }
+    store.save_technical_recovery(
+        "run_redirect", "agent-issue-synthetic", recovery,
+    )
+    store.close()
+
+    reopened = RuntimeStore(path)
+    try:
+        assert reopened.technical_recoveries("run_redirect") == {
+            "agent-issue-synthetic": recovery,
+        }
+        reopened.resolve_technical_recoveries(
+            "run_redirect", ["agent-issue-synthetic"],
+        )
+        assert reopened.technical_recoveries("run_redirect") == {}
+    finally:
+        reopened.close()
+
+
+def test_retry_ledger_survives_restart_and_enforces_attempt_limit(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_retry"))
+    first = store.record_retry(
+        "run_retry",
+        "model-stream-0001",
+        category="model_timeout",
+        max_attempts=1,
+        error_fingerprint="sha256:first",
+        last_error="TimeoutError: first chunk timeout",
+        delay_seconds=0.5,
+    )
+    assert first["attempt"] == 1
+    assert first["status"] == "retrying"
+    assert first["nextAllowedAt"]
+    store.close()
+
+    reopened = RuntimeStore(path)
+    try:
+        restored = reopened.retry_entry("run_retry", "model-stream-0001")
+        assert restored is not None
+        assert restored["attempt"] == 1
+        assert restored["errorFingerprint"] == "sha256:first"
+        with pytest.raises(AgentRuntimeError) as caught:
+            reopened.record_retry(
+                "run_retry",
+                "model-stream-0001",
+                category="model_timeout",
+                max_attempts=1,
+                error_fingerprint="sha256:second",
+                last_error="TimeoutError: idle timeout",
+            )
+        assert caught.value.code == "RETRY_EXHAUSTED"
+        settled = reopened.settle_retry(
+            "run_retry", "model-stream-0001", "exhausted", last_error="still timed out",
+        )
+        assert settled is not None
+        assert settled["status"] == "exhausted"
+        assert settled["nextAllowedAt"] == ""
+    finally:
+        reopened.close()
+
+
 def test_validation_repair_state_is_scoped_to_candidate_revision() -> None:
     state = CandidateValidationRepairState()
     state.scope_candidate_revision("candidate-a")
@@ -165,6 +266,61 @@ async def test_tool_boundary_rail_returns_receipt_instead_of_calling_tool_again(
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_script_test_never_replays_receipt_across_candidate_source_changes(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.create_run(run("run_script"))
+    arguments = {"script": "scripts/current.py", "cases": [{"input": {}, "expected": {"ok": True}}]}
+    store.save_tool_receipt(
+        "run_script", "call_script_test", "run_script_test", arguments,
+        {"passed": 1, "failed": 0},
+    )
+    context = ToolContext(
+        project_id="project_script",
+        run_id="run_script",
+        token="",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        tool_receipt_lookup=lambda name, call_id, args: store.tool_receipt(
+            "run_script", call_id, name, args,
+        ),
+    )
+    rail = ToolBoundaryRail(context)
+    call = _tool_call_context("run_script_test", arguments, "call_script_test")
+    try:
+        await rail.before_tool_call(call)  # type: ignore[arg-type]
+        assert call.inputs.tool_result is None
+        assert "_tool_receipt_replayed" not in call.extra
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_boundary_does_not_save_empty_interrupted_result() -> None:
+    saved: list[tuple[str, str, dict, dict]] = []
+    context = ToolContext(
+        project_id="project_release",
+        run_id="run_release",
+        token="",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        tool_receipt_save=lambda name, call_id, arguments, result: saved.append(
+            (name, call_id, arguments, result)
+        ),
+    )
+    rail = ToolBoundaryRail(context)
+    interrupted = _tool_call_context(
+        "request_release",
+        {"summary": "确认正式发布"},
+        "call_release_1",
+        {},
+    )
+
+    await rail.after_tool_call(interrupted)  # type: ignore[arg-type]
+
+    assert saved == []
+
+
 def test_pending_interaction_is_reflected_only_by_project_state(tmp_path: Path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     try:
@@ -193,6 +349,63 @@ def test_pending_interaction_is_reflected_only_by_project_state(tmp_path: Path) 
         assert store.pending_interaction("project_demo") is None
     finally:
         store.close()
+
+
+def test_begin_run_cancellation_atomically_closes_pending_interaction(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        store.create_run(run("run_cancel_pending"))
+        store.update_run("run_cancel_pending", status=RUN_RUNNING)
+        interaction = InteractionRecord(
+            id="interaction_cancel_pending",
+            project_id="project_demo",
+            run_id="run_cancel_pending",
+            tool_call_id="call_cancel_pending",
+            kind="business_decision",
+            payload={"question": "是否继续当前方案？"},
+        )
+        store.create_interaction(interaction)
+
+        stopping, closed = store.begin_run_cancellation("run_cancel_pending")
+
+        assert stopping.status == "stopping"
+        assert stopping.interaction_id == ""
+        assert [item.id for item in closed] == [interaction.id]
+        assert closed[0].status == "cancelled"
+        assert store.get_interaction(interaction.id).status == "cancelled"
+        assert store.pending_interaction("project_demo") is None
+        state = store.project_state("project_demo")
+        assert state.state == "intake:stopping"
+        assert state.interaction_id == ""
+    finally:
+        store.close()
+
+
+def test_store_startup_closes_legacy_pending_interaction_from_terminal_run(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_legacy_terminal"))
+    store.update_run("run_legacy_terminal", status=RUN_RUNNING)
+    interaction = InteractionRecord(
+        id="interaction_legacy_terminal",
+        project_id="project_demo",
+        run_id="run_legacy_terminal",
+        tool_call_id="call_legacy_terminal",
+        kind="business_decision",
+        payload={"question": "历史问题"},
+    )
+    store.create_interaction(interaction)
+    store.update_run("run_legacy_terminal", status="cancelled")
+    store.close()
+
+    reopened = RuntimeStore(path)
+    try:
+        assert reopened.get_interaction(interaction.id).status == "cancelled"
+        assert reopened.require_run("run_legacy_terminal").interaction_id == ""
+        assert reopened.project_state("project_demo").interaction_id == ""
+        assert reopened.pending_interaction("project_demo") is None
+    finally:
+        reopened.close()
 
 
 def test_latest_activity_can_be_restored_for_running_agent(settings) -> None:
@@ -330,6 +543,27 @@ async def test_tool_boundary_reuses_completed_evaluation_read_until_new_round() 
 
 
 @pytest.mark.asyncio
+async def test_optional_evaluation_database_unavailable_stays_in_activity_trace() -> None:
+    events: list[tuple[str, dict]] = []
+    call = _tool_call_context("query_eval_db", {"sql": "SELECT 1"}, "call_eval_db", {
+        "error": "EVAL_DB_TOOL_UNAVAILABLE",
+        "reason": "评测库尚未配置，未执行查询",
+        "retryable": False,
+        "tracePhase": "rejected",
+        "problemVisibility": "activity",
+        "customerSummary": "可选评测库未配置，已跳过本次查询",
+    })
+
+    await ActivityRail(lambda kind, payload: events.append((kind, payload))).after_tool_call(call)  # type: ignore[arg-type]
+
+    tool_event = next(payload for kind, payload in events if kind == "tool")
+    assert tool_event["phase"] == "rejected"
+    assert tool_event["code"] == "EVAL_DB_TOOL_UNAVAILABLE"
+    assert tool_event["problemVisibility"] == "activity"
+    assert tool_event["summary"] == "可选评测库未配置，已跳过本次查询"
+
+
+@pytest.mark.asyncio
 async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
     events: list[tuple[str, dict]] = []
     context = ToolContext(
@@ -372,10 +606,14 @@ async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
         "repairAttempt": 1,
         "repairRoundId": "unscoped",
         "findingCount": 1,
+        "issueId": result["issueId"],
+        "issueStatus": "repairing",
+        "problemVisibility": "",
+        "resolvedIssueIds": [],
     }), ("progress", {
         "activityId": "after-tool:call_goal_evidence",
         "text": "建模目标中的资料依据还不能打开原文",
-        "detail": "当前操作已经结束，正在规划下一项可执行工作",
+        "detail": "正在核对失败原因和可恢复的下一步",
         "phase": "planning",
         "counters": {},
     })]
@@ -414,7 +652,7 @@ async def test_goal_write_reports_body_material_token_missing_from_evidence() ->
 
 
 @pytest.mark.asyncio
-async def test_repair_stop_emits_one_blocker_and_keeps_recovery_tools_available() -> None:
+async def test_repair_stop_does_not_freeze_unrelated_dependency_failures() -> None:
     events: list[tuple[str, dict]] = []
 
     async def state_action(_name: str, _arguments: dict) -> dict:
@@ -457,12 +695,12 @@ async def test_repair_stop_emits_one_blocker_and_keeps_recovery_tools_available(
     await rail.before_tool_call(second)  # type: ignore[arg-type]
     await activity.after_tool_call(second)  # type: ignore[arg-type]
 
-    assert json.loads(first.inputs.tool_result)["error"] == "CANDIDATE_REPAIR_STOPPED"
-    assert json.loads(second.inputs.tool_result)["suppressTrace"] is True
-    assert len(events) == 2
-    assert events[0][1]["phase"] == "blocked"
-    assert events[1][0] == "progress"
-    assert events[1][1]["detail"] == "正在核对失败原因和可恢复的下一步"
+    assert json.loads(first.inputs.tool_result)["error"] == "WRITE_PHASE_MISMATCH"
+    assert json.loads(second.inputs.tool_result)["error"] == "WRITE_PHASE_MISMATCH"
+    assert context.validation_repair.stopped is True
+    assert context.validation_repair.attempts == 2
+    assert len(events) == 4
+    assert [event[1]["phase"] for event in events if event[0] == "tool"] == ["waiting", "waiting"]
 
     for tool_name in ("delete_file", "discard_rejected_candidate_changes"):
         recovery = SimpleNamespace(

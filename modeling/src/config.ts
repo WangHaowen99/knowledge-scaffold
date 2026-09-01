@@ -37,6 +37,7 @@ const evaluationLlmModel = env('MODELING_EVALUATION_LLM_MODEL');
 export const config = {
   port: Number(env('PORT', '5100')),
   dataDir: resolve(env('DATA_DIR', './data')),
+  acceptanceMode: booleanEnv('MODELING_ACCEPTANCE_MODE', false),
 
   llm: {
     baseUrl: env('MODELING_LLM_BASE_URL'),
@@ -100,6 +101,13 @@ export const config = {
     tokenAudience: env('MODELING_MCP_TOKEN_AUDIENCE', 'knowledge-scaffold-modeling-mcp'),
     defaultTokenTtlSeconds: positiveIntegerEnv('MODELING_MCP_TOKEN_TTL_SECONDS', 86_400),
     maxTokenTtlSeconds: positiveIntegerEnv('MODELING_MCP_TOKEN_MAX_TTL_SECONDS', 2_592_000),
+    maxSseSessions: positiveIntegerEnv('MODELING_MCP_MAX_SSE_SESSIONS', 10_000),
+    maxSseSessionsPerToken: positiveIntegerEnv('MODELING_MCP_MAX_SSE_SESSIONS_PER_TOKEN', 20),
+    maxSseSessionsPerProject: positiveIntegerEnv('MODELING_MCP_MAX_SSE_SESSIONS_PER_PROJECT', 200),
+    maxSseSessionsPerUser: positiveIntegerEnv('MODELING_MCP_MAX_SSE_SESSIONS_PER_USER', 100),
+    maxSseSessionsPerIp: positiveIntegerEnv('MODELING_MCP_MAX_SSE_SESSIONS_PER_IP', 100),
+    sseMaxLifetimeSeconds: positiveIntegerEnv('MODELING_MCP_SSE_MAX_LIFETIME_SECONDS', 28_800),
+    sseIdleTimeoutSeconds: positiveIntegerEnv('MODELING_MCP_SSE_IDLE_TIMEOUT_SECONDS', 1_800),
     protocolVersion: env('MODELING_MCP_PROTOCOL_VERSION', '2026-07-28'),
     legacyProtocolVersion: env('MODELING_MCP_LEGACY_PROTOCOL_VERSION', '2025-11-25'),
   },

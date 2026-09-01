@@ -392,25 +392,45 @@ export const logoutAuthSession = async () => {
 
 let workspaceSnapshotOwner = null;
 let workspaceSnapshot = DEFAULT_WORKSPACE_ID;
+let workspaceSnapshotUsername = null;
 
-const ensureWorkspaceSnapshot = () => {
-  if (workspaceSnapshotOwner !== window) {
+const normalizeWorkspaceUsername = (username) => (
+  typeof username === 'string' && username.trim() ? username.trim() : null
+);
+
+const workspaceStorageKey = (username) => (
+  username ? `${WORKSPACE_KEY}:${encodeURIComponent(username)}` : WORKSPACE_KEY
+);
+
+const ensureWorkspaceSnapshot = (username) => {
+  const normalizedUsername = normalizeWorkspaceUsername(username);
+  if (workspaceSnapshotOwner !== window || workspaceSnapshotUsername !== normalizedUsername) {
     workspaceSnapshotOwner = window;
-    workspaceSnapshot = readStorage(WORKSPACE_KEY) || DEFAULT_WORKSPACE_ID;
+    workspaceSnapshotUsername = normalizedUsername;
+    workspaceSnapshot = readStorage(workspaceStorageKey(normalizedUsername)) || DEFAULT_WORKSPACE_ID;
   }
   return workspaceSnapshot;
 };
 
-export const getCurrentWorkspaceId = () => ensureWorkspaceSnapshot();
+export const getCurrentWorkspaceId = (username) => {
+  if (username !== undefined) return ensureWorkspaceSnapshot(username);
+  if (workspaceSnapshotOwner !== window) return ensureWorkspaceSnapshot(null);
+  return workspaceSnapshot;
+};
 
-export const setCurrentWorkspaceId = (workspaceId) => {
+export const setCurrentWorkspaceId = (workspaceId, username) => {
+  const normalizedUsername = username === undefined && workspaceSnapshotOwner === window
+    ? workspaceSnapshotUsername
+    : normalizeWorkspaceUsername(username);
   workspaceSnapshotOwner = window;
+  workspaceSnapshotUsername = normalizedUsername;
   workspaceSnapshot = workspaceId || DEFAULT_WORKSPACE_ID;
   try {
+    const storageKey = workspaceStorageKey(normalizedUsername);
     if (workspaceSnapshot) {
-      window.localStorage.setItem(WORKSPACE_KEY, workspaceSnapshot);
+      window.localStorage.setItem(storageKey, workspaceSnapshot);
     } else {
-      window.localStorage.removeItem(WORKSPACE_KEY);
+      window.localStorage.removeItem(storageKey);
     }
   } catch {
     // ignore storage errors

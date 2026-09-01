@@ -59,6 +59,7 @@ export default function CreatePage() {
         project: result.project,
         revision: null,
         workflow: null,
+        changePlan: null,
         files: [],
         materials: [],
         messages: [],
@@ -126,7 +127,12 @@ export default function CreatePage() {
             onDragOver={(e) => { e.preventDefault(); setOver(true); }}
             onDragLeave={() => setOver(false)}
             onDrop={(e) => { e.preventDefault(); setOver(false); addFiles(e.dataTransfer.files); }}
-            onClick={() => input.current?.click()} role="button" tabIndex={0}>
+            onClick={() => input.current?.click()}
+            onKeyDown={(event) => {
+              if (!['Enter', ' '].includes(event.key)) return;
+              event.preventDefault(); input.current?.click();
+            }}
+            role="button" tabIndex={0} aria-label="选择要上传的建模资料">
             <Icon name="upload" size={26} style={{ color: 'var(--c-faint)' }} />
             <div className="t1">把资料拖到这里</div>
             <div className="t2">md / txt / pdf / word / excel · 也可以点击选择 · 现在没有也可以直接开始</div>
@@ -170,6 +176,7 @@ export default function CreatePage() {
             <button className="btn btn-p" style={{ padding: '9px 22px' }} disabled={!name.trim() || creating}
               onClick={() => void start()}>{creating ? '正在创建…' : '开始建模'}</button>
           </div>
+          {!name.trim() && <div className="wb-disabled-reason" role="status">填写项目名称后即可开始建模。</div>}
           <div className="t-sm muted" style={{ marginTop: 'var(--s-3)' }}>
             助手会按资料设置取证、和你确认建模目标，然后才动知识包正文。
           </div>
@@ -200,6 +207,7 @@ function DataSourceSelector({ value, disabled, onChange }) {
           </span>
         </span>
       </legend>
+      <p className="wb-data-source-warning">这项选择会决定后续的数据查询方式。项目建立后切换类型需要重新生成知识包，请按实际使用的数据源选择。</p>
       <div className="wb-data-source-options">
         {options.map((option) => (
           <label key={option.value} className={`wb-radio-card ${value === option.value ? 'on' : ''}`}>

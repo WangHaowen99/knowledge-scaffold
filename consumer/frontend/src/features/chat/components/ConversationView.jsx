@@ -1,13 +1,14 @@
 import { Fragment, useEffect, useState } from 'react';
 import {
   AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, FileText, GitBranch,
-  Globe2, Loader2, Search, ShieldCheck, ShieldX, Workflow, Wrench,
+  Globe2, Loader2, Play, Search, ShieldCheck, ShieldX, Workflow, Wrench,
 } from 'lucide-react';
 
 import Markdown from '../../../shared/ui/Markdown';
 import { CandidateResultsPanel } from '../../solver/index.js';
 import { formatDurationMs, formatTime } from '../lib/chatPresentation';
 import { resolveRunProgressView } from '../lib/streamLifecycle';
+import { findVisibleWorkflowRecoveryIndex } from '../lib/workflowErrorPresentation';
 import { TurnEvidencePanel } from './EvidencePanel';
 import { CopyButton, RunFeedback } from './RunActions';
 import ToolOutput from './ToolOutput';
@@ -43,10 +44,14 @@ export default function ConversationView({
   runState = null,
   evidenceByTurnKey = {},
   onEvidenceSelect,
+  onRecoveryAction = null,
+  recoveryActionDisabled = false,
 }) {
+  const messages = model?.messages || [];
+  const visibleRecoveryIndex = findVisibleWorkflowRecoveryIndex(messages);
   return (
     <div className="conversation-view" role="log" aria-live="off" aria-relevant="additions">
-      {(model?.messages || []).map((message) => (
+      {messages.map((message, index) => (
         message.role === 'user'
           ? <UserMessage key={message.key} message={message} />
           : message.role === 'system'
@@ -55,7 +60,10 @@ export default function ConversationView({
               <AssistantTurn key={message.key} turn={message} sessionId={sessionId}
                 runState={message.isLoading ? runState : null}
                 evidence={evidenceByTurnKey[message.key] || null}
-                onEvidenceSelect={(hit) => onEvidenceSelect?.(hit, message.key)} />
+                onEvidenceSelect={(hit) => onEvidenceSelect?.(hit, message.key)}
+                onRecoveryAction={onRecoveryAction}
+                recoveryActionDisabled={recoveryActionDisabled}
+                showRecoveryAction={index === visibleRecoveryIndex} />
             )
       ))}
     </div>
@@ -87,6 +95,9 @@ export function AssistantTurn({
   runState = null,
   evidence = null,
   onEvidenceSelect,
+  onRecoveryAction = null,
+  recoveryActionDisabled = false,
+  showRecoveryAction = false,
 }) {
   const answerText = (turn.blocks || [])
     .filter((block) => block.kind === 'content')
@@ -112,7 +123,10 @@ const hasSolverResult = (turn.blocks || []).some(
                 <TurnEvidencePanel evidence={evidence} onSelect={onEvidenceSelect} />
               )}
               <ConversationBlock block={block} turn={turn} answerText={answerText}
-                sessionId={sessionId} runState={runState} />
+                sessionId={sessionId} runState={runState}
+                onRecoveryAction={onRecoveryAction}
+                recoveryActionDisabled={recoveryActionDisabled}
+                showRecoveryAction={showRecoveryAction} />
             </Fragment>
           ))}
           {evidence && firstContentIndex === -1 && (
@@ -128,7 +142,16 @@ const hasSolverResult = (turn.blocks || []).some(
   );
 }
 
-function ConversationBlock({ block, turn, answerText, sessionId, runState }) {
+function ConversationBlock({
+  block,
+  turn,
+  answerText,
+  sessionId,
+  runState,
+  onRecoveryAction,
+  recoveryActionDisabled,
+  showRecoveryAction,
+}) {
   if (block.kind === 'content') return <AgentContent block={block} />;
   if (block.kind === 'reasoning') return <ReasoningBlock block={block} />;
   if (block.kind === 'business_data') return <BusinessDataResult block={block} sessionId={sessionId} runId={turn.runId} />;
@@ -138,7 +161,9 @@ function ConversationBlock({ block, turn, answerText, sessionId, runState }) {
   if (block.kind === 'artifacts') return <ArtifactBlock block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'subagent') return <SubagentGroup block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'status' || block.kind === 'awaiting') {
-    return <RunStatusBlock block={block} turn={turn} answerText={answerText} runState={runState} />;
+    return <RunStatusBlock block={block} turn={turn} answerText={answerText} runState={runState}
+      onRecoveryAction={onRecoveryAction} recoveryActionDisabled={recoveryActionDisabled}
+      showRecoveryAction={showRecoveryAction} />;
   }
   return block.text ? <div className="conversation-state-block"><Circle size={11} />{block.text}</div> : null;
 }
@@ -423,8 +448,17 @@ function SubagentTask({ task, sessionId, runId }) {
   );
 }
 
-export function RunStatusBlock({ block, turn, answerText, runState = null }) {
+export function RunStatusBlock({
+  block,
+  turn,
+  answerText,
+  runState = null,
+  onRecoveryAction = null,
+  recoveryActionDisabled = false,
+  showRecoveryAction = false,
+}) {
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [recoveryRequested, setRecoveryRequested] = useState(false);
   const tracksActiveRun = Boolean(
     (turn.status === 'running' || turn.status === 'queued') && runState?.isLoading,
   );
@@ -440,6 +474,22 @@ export function RunStatusBlock({ block, turn, answerText, runState = null }) {
   const isAwaiting = turn.status === 'awaiting';
   const isIncomplete = turn.errorCode === 'MODEL_OUTPUT_TRUNCATED';
   const activeProgress = tracksActiveRun ? resolveRunProgressView(runState, nowMs) : null;
+  const shouldShowRecoveryAction = Boolean(
+    showRecoveryAction
+    && isFailure
+    && turn.recovery
+    && typeof onRecoveryAction === 'function',
+  );
+  const requestRecovery = async () => {
+    if (!shouldShowRecoveryAction || recoveryActionDisabled || recoveryRequested) return;
+    setRecoveryRequested(true);
+    try {
+      const accepted = await onRecoveryAction(turn.recovery.message, turn.recovery);
+      if (accepted === false) setRecoveryRequested(false);
+    } catch {
+      setRecoveryRequested(false);
+    }
+  };
   return (
     <div className={`statusline run-status status-${turn.status}`} data-block-key={block.key}>
       <span className="run-status-summary">
@@ -448,8 +498,21 @@ export function RunStatusBlock({ block, turn, answerText, runState = null }) {
           : turn.status === 'running' ? <Loader2 className="spin" size={12} /> : isFailure ? <AlertCircle size={12} /> : isCancelled ? <Circle size={12} /> : isAwaiting ? <Clock3 size={12} /> : <Check size={12} />}
         {activeProgress?.summary || `${isIncomplete ? '回答未完成' : statusLabel(turn.status)}${duration ? ` · 总耗时 ${duration}` : ''}`}
       </span>
-      {(block.text || turn.error) && (isFailure || isCancelled || isAwaiting) && (
-        <span className="run-status-detail">{block.text || turn.error}</span>
+      {(turn.errorPresentation?.message || block.text || turn.error)
+        && (isFailure || isCancelled || isAwaiting) && (
+        <span className="run-status-detail">
+          {turn.errorPresentation?.message || block.text || turn.error}
+        </span>
+      )}
+      {shouldShowRecoveryAction && (
+        <span className="run-status-recovery">
+          <span>已保留可恢复的任务上下文，可从中断处继续。</span>
+          <button type="button" onClick={requestRecovery}
+            disabled={recoveryActionDisabled || recoveryRequested}>
+            {recoveryRequested ? <Loader2 className="spin" size={13} /> : <Play size={13} />}
+            {recoveryRequested ? '正在继续…' : turn.recovery.label}
+          </button>
+        </span>
       )}
       {turn.terminal && (
         <span className="run-status-actions">

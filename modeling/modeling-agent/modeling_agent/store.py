@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,10 @@ from .schemas import (
     InteractionRecord,
     ProjectAgentState,
     RUN_RUNNING,
+    RUN_STOPPING,
     RUN_SUSPENDED,
+    RUN_WAITING,
+    TERMINAL_RUN_STATUSES,
     RunRecord,
     RuntimeEvent,
 )
@@ -39,6 +42,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   status TEXT NOT NULL,
   prompt TEXT NOT NULL,
   token_fingerprint TEXT NOT NULL,
+  tool_profile TEXT NOT NULL DEFAULT 'domain-v2',
   run_credential TEXT NOT NULL DEFAULT '',
   baseline_revision TEXT NOT NULL DEFAULT '',
   candidate_revision TEXT NOT NULL DEFAULT '',
@@ -158,6 +162,37 @@ CREATE TABLE IF NOT EXISTS agent_validation_repair_state (
   state_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- 受管文件被拒绝后的确定性工具转向也必须跨服务重启保留。
+CREATE TABLE IF NOT EXISTS agent_technical_recoveries (
+  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  issue_id TEXT NOT NULL,
+  state_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, issue_id)
+);
+
+-- SDK 内部重试对业务层不可见。这里记录应用层恢复是否已经使用、何时允许再次执行，
+-- 防止服务重启或模型上下文切换后把同一个失败操作无限重放。
+CREATE TABLE IF NOT EXISTS agent_retry_ledger (
+  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  operation_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL,
+  error_fingerprint TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'retrying',
+  next_allowed_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, operation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_retry_ledger_run
+  ON agent_retry_ledger(run_id, updated_at DESC);
 """
 
 
@@ -180,6 +215,41 @@ class RuntimeStore:
             self._db.execute(
                 "ALTER TABLE agent_runs ADD COLUMN run_credential TEXT NOT NULL DEFAULT ''"
             )
+        if "tool_profile" not in columns:
+            # 数据库中已有的运行可能仍持有旧工具调用 checkpoint，不能强制切换 schema。
+            self._db.execute(
+                "ALTER TABLE agent_runs ADD COLUMN tool_profile TEXT NOT NULL DEFAULT 'legacy-v1'"
+            )
+        timestamp = now_iso()
+        terminal = tuple(sorted(TERMINAL_RUN_STATUSES))
+        placeholders = ",".join("?" for _ in terminal)
+        self._db.execute(
+            f"""UPDATE agent_interactions
+            SET status = 'cancelled',
+                answer_json = ?,
+                answered_at = ?
+            WHERE status = 'pending' AND run_id IN (
+              SELECT id FROM agent_runs WHERE status IN ({placeholders})
+            )""",
+            (
+                _json({"action": "run_closed", "reason": "所属运行已经结束"}),
+                timestamp,
+                *terminal,
+            ),
+        )
+        self._db.execute(
+            f"UPDATE agent_runs SET interaction_id = '' WHERE status IN ({placeholders})",
+            terminal,
+        )
+        self._db.execute(
+            """UPDATE project_agent_state SET interaction_id = ''
+            WHERE interaction_id <> '' AND NOT EXISTS (
+              SELECT 1 FROM agent_interactions interaction
+              JOIN agent_runs run ON run.id = interaction.run_id
+              WHERE interaction.id = project_agent_state.interaction_id
+                AND interaction.status = 'pending' AND run.status = 'waiting'
+            )""",
+        )
         self._db.commit()
 
     def close(self) -> None:
@@ -246,11 +316,16 @@ class RuntimeStore:
         execution = str(latest["status"]) if latest else "idle"
         if execution not in _EXECUTIONS:
             execution = "idle"
-        pending = self._db.execute(
-            """SELECT id FROM agent_interactions
-            WHERE project_id = ? AND status = 'pending' ORDER BY created_at LIMIT 1""",
-            (project_id,),
-        ).fetchone()
+        pending = None
+        if latest is not None and execution == RUN_WAITING:
+            pending = self._db.execute(
+                """SELECT interaction.id FROM agent_interactions interaction
+                JOIN agent_runs run ON run.id = interaction.run_id
+                WHERE interaction.project_id = ? AND interaction.run_id = ?
+                  AND interaction.status = 'pending' AND run.status = 'waiting'
+                ORDER BY interaction.created_at LIMIT 1""",
+                (project_id, str(latest["id"])),
+            ).fetchone()
         timestamp = now_iso()
         state = ProjectAgentState(
             project_id=project_id,
@@ -357,9 +432,9 @@ class RuntimeStore:
             self._db.execute(
                 """INSERT INTO agent_runs
                 (id, project_id, session_id, status, prompt, token_fingerprint,
-                 run_credential, baseline_revision, candidate_revision, interaction_id,
+                 tool_profile, run_credential, baseline_revision, candidate_revision, interaction_id,
                  result, error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _run_values(run),
             )
             self._transition_project_state_locked(
@@ -392,8 +467,10 @@ class RuntimeStore:
 
     def update_run(self, run_id: str, **changes: Any) -> RunRecord:
         allowed = {
+            "session_id",
             "status",
             "token_fingerprint",
+            "tool_profile",
             "run_credential",
             "baseline_revision",
             "candidate_revision",
@@ -414,7 +491,9 @@ class RuntimeStore:
             if cursor.rowcount != 1:
                 raise AgentRuntimeError("RUN_NOT_FOUND", "找不到这次 Agent 运行", status=404)
             state = self._ensure_project_state_locked(self.require_run(run_id).project_id)
-            if state.run_id == run_id and any(key in changes for key in ("status", "interaction_id", "error")):
+            if state.run_id == run_id and any(
+                key in changes for key in ("session_id", "status", "interaction_id", "error")
+            ):
                 phase, _separator, execution = state.state.partition(":")
                 next_execution = str(changes.get("status", execution))
                 if next_execution not in _EXECUTIONS:
@@ -422,12 +501,213 @@ class RuntimeStore:
                 self._transition_project_state_locked(
                     state,
                     next_state=f"{phase}:{next_execution}",
-                    cause=f"run_{next_execution}",
+                    cause=(
+                        "execution_session_rotated"
+                        if "session_id" in changes and "status" not in changes
+                        else f"run_{next_execution}"
+                    ),
                     actor_run_id=run_id,
                     interaction_id=str(changes["interaction_id"]) if "interaction_id" in changes else None,
+                    checkpoint_id=str(changes["session_id"]) if "session_id" in changes else None,
                     error=str(changes["error"]) if "error" in changes else None,
                 )
         return self.require_run(run_id)
+
+    def begin_run_cancellation(
+        self,
+        run_id: str,
+        *,
+        reason: str = "用户已停止运行",
+    ) -> tuple[RunRecord, list[InteractionRecord]]:
+        timestamp = now_iso()
+        with self._lock, self._db:
+            run = self.require_run(run_id)
+            rows = self._db.execute(
+                "SELECT * FROM agent_interactions WHERE run_id = ? AND status = 'pending'",
+                (run_id,),
+            ).fetchall()
+            answer = _json({"action": "run_cancelled", "reason": reason})
+            self._db.execute(
+                """UPDATE agent_interactions
+                SET status = 'cancelled', answer_json = ?, answered_at = ?
+                WHERE run_id = ? AND status = 'pending'""",
+                (answer, timestamp, run_id),
+            )
+            self._db.execute(
+                """UPDATE agent_runs SET status = ?, interaction_id = '', error = '', updated_at = ?
+                WHERE id = ?""",
+                (RUN_STOPPING, timestamp, run_id),
+            )
+            state = self._ensure_project_state_locked(run.project_id)
+            if state.run_id == run_id:
+                phase, _separator, _execution = state.state.partition(":")
+                self._transition_project_state_locked(
+                    state,
+                    next_state=f"{phase}:{RUN_STOPPING}",
+                    cause="run_stopping",
+                    actor_run_id=run_id,
+                    interaction_id="",
+                    error="",
+                )
+            closed = [
+                InteractionRecord(
+                    id=str(row["id"]),
+                    project_id=str(row["project_id"]),
+                    run_id=str(row["run_id"]),
+                    tool_call_id=str(row["tool_call_id"]),
+                    kind=str(row["kind"]),
+                    payload=_object(row["payload_json"]),
+                    status="cancelled",
+                    answer={"action": "run_cancelled", "reason": reason},
+                    created_at=str(row["created_at"]),
+                    answered_at=timestamp,
+                )
+                for row in rows
+            ]
+        return self.require_run(run_id), closed
+
+    def retry_entry(self, run_id: str, operation_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                """SELECT * FROM agent_retry_ledger
+                WHERE run_id = ? AND operation_id = ?""",
+                (run_id, operation_id),
+            ).fetchone()
+        return _retry_entry_from_row(row) if row else None
+
+    def save_technical_recovery(
+        self,
+        run_id: str,
+        issue_id: str,
+        recovery: dict[str, Any],
+    ) -> None:
+        timestamp = now_iso()
+        with self._lock, self._db:
+            self.require_run(run_id)
+            self._db.execute(
+                """INSERT INTO agent_technical_recoveries (
+                run_id, issue_id, state_json, status, created_at, updated_at
+                ) VALUES (?, ?, ?, 'active', ?, ?)
+                ON CONFLICT(run_id, issue_id) DO UPDATE SET
+                  state_json = excluded.state_json,
+                  status = 'active',
+                  updated_at = excluded.updated_at""",
+                (run_id, issue_id, _json(recovery), timestamp, timestamp),
+            )
+
+    def technical_recoveries(self, run_id: str) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT issue_id, state_json FROM agent_technical_recoveries
+                WHERE run_id = ? AND status = 'active' ORDER BY created_at, issue_id""",
+                (run_id,),
+            ).fetchall()
+        return {str(row["issue_id"]): _object(row["state_json"]) for row in rows}
+
+    def resolve_technical_recoveries(self, run_id: str, issue_ids: list[str]) -> None:
+        normalized = [str(item).strip() for item in issue_ids if str(item).strip()]
+        if not normalized:
+            return
+        placeholders = ",".join("?" for _item in normalized)
+        with self._lock, self._db:
+            self._db.execute(
+                f"""UPDATE agent_technical_recoveries
+                SET status = 'resolved', updated_at = ?
+                WHERE run_id = ? AND issue_id IN ({placeholders})""",
+                (now_iso(), run_id, *normalized),
+            )
+
+    def record_retry(
+        self,
+        run_id: str,
+        operation_id: str,
+        *,
+        category: str,
+        max_attempts: int,
+        error_fingerprint: str,
+        last_error: str,
+        delay_seconds: float = 0,
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        next_allowed_at = (
+            datetime.now(UTC) + timedelta(seconds=max(0.0, delay_seconds))
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        with self._lock, self._db:
+            self.require_run(run_id)
+            row = self._db.execute(
+                """SELECT attempt FROM agent_retry_ledger
+                WHERE run_id = ? AND operation_id = ?""",
+                (run_id, operation_id),
+            ).fetchone()
+            attempt = int(row["attempt"] or 0) + 1 if row else 1
+            if attempt > max_attempts:
+                raise AgentRuntimeError(
+                    "RETRY_EXHAUSTED",
+                    "该操作已经达到自动恢复上限",
+                    status=409,
+                    details={"operationId": operation_id, "attempt": attempt - 1},
+                )
+            self._db.execute(
+                """INSERT INTO agent_retry_ledger (
+                run_id, operation_id, category, attempt, max_attempts,
+                error_fingerprint, last_error, status, next_allowed_at,
+                created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'retrying', ?, ?, ?)
+                ON CONFLICT(run_id, operation_id) DO UPDATE SET
+                  category = excluded.category,
+                  attempt = excluded.attempt,
+                  max_attempts = excluded.max_attempts,
+                  error_fingerprint = excluded.error_fingerprint,
+                  last_error = excluded.last_error,
+                  status = 'retrying',
+                  next_allowed_at = excluded.next_allowed_at,
+                  updated_at = excluded.updated_at""",
+                (
+                    run_id,
+                    operation_id,
+                    category,
+                    attempt,
+                    max_attempts,
+                    error_fingerprint,
+                    str(last_error)[:8_000],
+                    next_allowed_at,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        return self.retry_entry(run_id, operation_id) or {}
+
+    def settle_retry(
+        self,
+        run_id: str,
+        operation_id: str,
+        status: str,
+        *,
+        last_error: str | None = None,
+    ) -> dict[str, Any] | None:
+        if status not in {"succeeded", "exhausted", "cancelled"}:
+            raise AgentRuntimeError("RETRY_STATUS_INVALID", "无效的重试结论", status=400)
+        updates = ["status = ?", "next_allowed_at = ''", "updated_at = ?"]
+        values: list[Any] = [status, now_iso()]
+        if last_error is not None:
+            updates.append("last_error = ?")
+            values.append(str(last_error)[:8_000])
+        with self._lock, self._db:
+            self._db.execute(
+                f"""UPDATE agent_retry_ledger SET {', '.join(updates)}
+                WHERE run_id = ? AND operation_id = ?""",
+                (*values, run_id, operation_id),
+            )
+        return self.retry_entry(run_id, operation_id)
+
+    def retry_ledger(self, run_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM agent_retry_ledger
+                WHERE run_id = ? ORDER BY created_at, operation_id""",
+                (run_id,),
+            ).fetchall()
+        return [_retry_entry_from_row(row) for row in rows]
 
     def recover_interrupted(self) -> list[RunRecord]:
         timestamp = now_iso()
@@ -440,8 +720,8 @@ class RuntimeStore:
                 self._ensure_project_state_locked(str(project["project_id"]))
             state_rows = self._db.execute(
                 """SELECT * FROM project_agent_state
-                WHERE state LIKE ? OR state LIKE ?""",
-                (f"%:{RUN_RUNNING}", f"%:{RUN_SUSPENDED}"),
+                WHERE state LIKE ? OR state LIKE ? OR state LIKE ?""",
+                (f"%:{RUN_RUNNING}", f"%:{RUN_STOPPING}", f"%:{RUN_SUSPENDED}"),
             ).fetchall()
             recovered: list[RunRecord] = []
             for state_row in state_rows:
@@ -464,7 +744,7 @@ class RuntimeStore:
                         "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                     ).fetchone()))
                 phase, _separator, execution = state.state.partition(":")
-                if execution == RUN_RUNNING:
+                if execution in {RUN_RUNNING, RUN_STOPPING}:
                     self._transition_project_state_locked(
                         state,
                         next_state=f"{phase}:{RUN_SUSPENDED}",
@@ -708,6 +988,29 @@ class RuntimeStore:
             ).fetchone()
         return bool(row and row["continuation_status"] == "pending")
 
+    def latest_presented_evaluation(
+        self,
+        project_id: str,
+        *,
+        exclude_event_id: str = "",
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT payload_json FROM external_project_events
+                WHERE project_id = ? AND kind = 'evaluation_terminal'
+                  AND presented_at <> '' AND id <> ?""",
+                (project_id, exclude_event_id),
+            ).fetchall()
+        evaluations = [_object(row["payload_json"]) for row in rows]
+        return max(
+            evaluations,
+            key=lambda item: (
+                str(item.get("finishedAt") or ""),
+                str(item.get("roundId") or ""),
+            ),
+            default=None,
+        )
+
     def mark_external_event_continued(self, event_id: str, project_id: str) -> None:
         with self._lock, self._db:
             self._db.execute(
@@ -837,6 +1140,7 @@ def _run_values(run: RunRecord) -> tuple[Any, ...]:
         run.status,
         run.prompt,
         run.token_fingerprint,
+        run.tool_profile,
         run.run_credential,
         run.baseline_revision,
         run.candidate_revision,
@@ -856,6 +1160,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         status=row["status"],
         prompt=row["prompt"],
         token_fingerprint=row["token_fingerprint"],
+        tool_profile=row["tool_profile"],
         run_credential=row["run_credential"],
         baseline_revision=row["baseline_revision"],
         candidate_revision=row["candidate_revision"],
@@ -878,6 +1183,22 @@ def _arguments_hash(arguments: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _retry_entry_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "runId": str(row["run_id"]),
+        "operationId": str(row["operation_id"]),
+        "category": str(row["category"]),
+        "attempt": int(row["attempt"]),
+        "maxAttempts": int(row["max_attempts"]),
+        "errorFingerprint": str(row["error_fingerprint"]),
+        "lastError": str(row["last_error"]),
+        "status": str(row["status"]),
+        "nextAllowedAt": str(row["next_allowed_at"]),
+        "createdAt": str(row["created_at"]),
+        "updatedAt": str(row["updated_at"]),
+    }
+
+
 def _interaction_from_row(row: sqlite3.Row) -> InteractionRecord:
     return InteractionRecord(
         id=row["id"],
@@ -896,7 +1217,7 @@ def _interaction_from_row(row: sqlite3.Row) -> InteractionRecord:
 _PHASES = frozenset({
     "intake", "goal", "process", "knowledge", "increment", "validation", "evaluation", "release",
 })
-_EXECUTIONS = frozenset({"idle", "queued", "running", "waiting", "suspended", "completed", "failed", "cancelled"})
+_EXECUTIONS = frozenset({"idle", "queued", "running", "stopping", "waiting", "suspended", "completed", "failed", "cancelled"})
 
 
 def _validate_state(value: str) -> None:

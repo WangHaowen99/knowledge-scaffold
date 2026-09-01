@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from agent.runtime.contracts import USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
 from api.auth.auth import (
     AuthUser,
     get_auth_manager,
@@ -283,7 +284,7 @@ async def execute_internal_mcp_chat(
     """Enter the canonical Jiuwen workflow after native header authentication."""
     if isinstance(authorization, JSONResponse):
         return authorization
-    scope, user = authorization
+    scope, _user = authorization
 
     cfg = await _short_io(request, load_mcp_runtime_config)
     try:
@@ -306,7 +307,7 @@ async def execute_internal_mcp_chat(
         execution_store=execution_store,
         scope=scope,
         payload=payload,
-        concurrency_limit=100 if str(user.role or "") == "admin" else 1,
+        concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
         queue_wait_seconds=min(30, max(1, int(cfg.http_timeout_seconds))),
         execution_timeout_seconds=max(1, int(cfg.http_timeout_seconds)),
         trace_config=cfg,

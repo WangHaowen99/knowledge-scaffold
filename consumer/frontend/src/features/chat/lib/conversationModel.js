@@ -1,4 +1,8 @@
 import { publicErrorMessage } from './streamHelpers.js';
+import {
+  getWorkflowErrorPresentation,
+  normalizeWorkflowRecovery,
+} from './workflowErrorPresentation.js';
 
 const TERMINAL_STATUSES = new Set(['finished', 'error', 'cancelled', 'awaiting']);
 const BUSINESS_DATA_TOOLS = new Set(['business_data_search']);
@@ -481,6 +485,21 @@ const normalizeMessage = (message, index, occurrences) => {
   const key = uniqueKey(`message:${messageIdentity(message, index)}`, occurrences);
   const role = stringValue(message?.role).trim() || 'assistant';
   const status = normalizeConversationStatus(message?.status, message?.isLoading);
+  const rawError = publicErrorMessage(message?.meta?.error);
+  const errorCode = stringValue(message?.meta?.error_code).trim();
+  const errorRetriable = message?.meta?.error_retriable === true;
+  const cancelReason = stringValue(message?.meta?.cancel_reason);
+  const errorPresentation = (
+    rawError || status === 'error' || status === 'cancelled'
+      ? getWorkflowErrorPresentation(rawError, {
+        status,
+        errorCode,
+        retriable: errorRetriable,
+        cancelReason,
+      })
+      : null
+  );
+  const recovery = normalizeWorkflowRecovery(message?.meta?.recovery);
   const blockOccurrences = new Map();
   const segments = Array.isArray(message?.streamSegments) ? message.streamSegments : [];
   const blocks = segments.map((segment, segmentIndex) => (
@@ -531,9 +550,11 @@ const normalizeMessage = (message, index, occurrences) => {
     content: stringValue(message?.content),
     interaction: message?.interaction || null,
     options: Array.isArray(message?.options) ? message.options : [],
-    error: publicErrorMessage(message?.meta?.error),
-    errorCode: stringValue(message?.meta?.error_code),
-    cancelReason: stringValue(message?.meta?.cancel_reason),
+    error: rawError,
+    errorCode,
+    errorPresentation,
+    recovery,
+    cancelReason,
     startedAt,
     endedAt,
     durationMs: elapsedValue(startedAt, endedAt),

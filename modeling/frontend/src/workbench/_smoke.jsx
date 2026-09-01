@@ -1,13 +1,19 @@
 /* 冒烟：把每个场景 SSR 渲染一遍，抓组件未定义 / 渲染期异常。不参与生产构建。 */
 globalThis.window = globalThis.window || { location: { hash: '' }, addEventListener() {}, removeEventListener() {} };
 
+import { readFileSync } from 'node:fs';
 import { renderToString } from 'react-dom/server';
 import App from './App.jsx';
 import LeftPane from './left/LeftPane.jsx';
 import { initialUploadOptions } from './pages/CreatePage.jsx';
 import { documentParagraphs, evidenceHighlight, evidenceLocationOffset } from './center/DocView.jsx';
 import EvidenceLinks from './center/EvidenceLinks.jsx';
-import { EvaluationSetupPanel, evaluationScopeLabel, RunsPanel } from './center/EvaluationView.jsx';
+import { DiagnosisProgress, EvaluationSetupPanel, evaluationScopeLabel, OptimizationProgress, RunsPanel } from './center/EvaluationView.jsx';
+import {
+  defaultExpandedEvaluationIds,
+  EvaluationResultsList,
+  toggleEvaluationResultExpansion,
+} from '../EvaluationResultCard.jsx';
 import FileView from './center/FileView.jsx';
 import DiffView from './center/DiffView.jsx';
 import { fitMermaidZoom } from './center/FlowView.jsx';
@@ -28,7 +34,11 @@ import {
   SCENES,
   studioFocusFromLocation,
 } from './lib/appStore.js';
-import { humanizeTraceSummary, newestTraceFirst, restoredVersionMessage } from './shell/ProcessDrawer.jsx';
+import ProcessDrawer, {
+  humanizeTraceSummary,
+  newestTraceFirst,
+  restoredVersionMessage,
+} from './shell/ProcessDrawer.jsx';
 import { userFacingText } from './lib/userFacingText.js';
 import {
   evidenceLabel,
@@ -38,17 +48,26 @@ import {
 } from './lib/evidence.js';
 import {
   applyStudioFocus,
+  clearStudioSearch,
   createStudioSession,
   filterStudioGraph,
+  projectStudioLargeGraph,
   restoreStudioHistory,
+  shouldSubmitStudioSearch,
+  stageStudioSearch,
   studioGraphChain,
   studioGraphEdgeStyle,
   studioGraphNeighborhood,
+  studioGraphScrollSurface,
   studioHistoryFromLocation,
   studioHistorySnapshot,
   studioHistoryUrl,
+  studioKindCounts,
+  studioSearchDraft,
+  studioTextMatchesQuery,
   studioSummaryVisible,
   studioVisibleElementId,
+  submitStudioSearch,
 } from './studio/studio-model.js';
 import {
   buildStudioRoutePresentation,
@@ -59,8 +78,17 @@ import {
   studioRouteForNodePositions,
   studioRoutePoints,
 } from './studio/studio-graph-geometry.js';
-import { studioLayerBound, studioLayoutOptions } from './studio/studio-graph-layout.js';
 import {
+  estimateStudioTextWidth,
+  fallbackStudioLayout,
+  studioBackendPositionsUsable,
+  studioLayerBound,
+  studioLayoutOptions,
+  studioNodeSize,
+} from './studio/studio-graph-layout.js';
+import { applyHorizontalPacking } from './studio/webgl/studio-force-layout.worker.js';
+import {
+  studioGraphNodeAttributes,
   STUDIO_NODE_CLICK_DISTANCE,
   STUDIO_NODE_DRAG_THRESHOLD,
 } from './studio/StudioGraph.jsx';
@@ -84,8 +112,157 @@ import {
   packageFilesFromSelection,
 } from './fusion/FusionView.jsx';
 import { StudioAccessBanner, StudioKindTabs, studioFieldEditable } from './studio/StudioView.jsx';
+import {
+  ambientNodeOffset,
+  smoothGraphPosition,
+  WebGLGraphRuntime,
+} from './studio/webgl/StudioWebGLRuntime.js';
+import {
+  operationFlowMode,
+  operationFlowScrollCanvas,
+  operationStepsDiagram,
+  projectOperationFlowDiagram,
+} from './studio/operation-flow/operationFlowModel.js';
 
 let bad = 0;
+try {
+  const storeSource = readFileSync('src/workbench/lib/appStore.js', 'utf8');
+  const appSource = readFileSync('src/workbench/App.jsx', 'utf8');
+  const apiSource = readFileSync('src/workbench/studio/studio-api.js', 'utf8');
+  const studioSource = readFileSync('src/workbench/studio/StudioView.jsx', 'utf8');
+  if (!storeSource.includes('const initialStudioFocus = initialProjectId ? studioFocusFromLocation() : null')
+    || !storeSource.includes('prefetchStudioBootstrap(initialProjectId, { limit: 200 })')
+    || !appSource.includes("store.get().focus.kind === 'studio'")
+    || !appSource.includes('prefetchStudioBootstrap(projectId, { limit: 200 })')
+    || !readFileSync('src/App.jsx', 'utf8').includes('window.location.assign(projectWorkbenchUrl(id))')
+    || !apiSource.includes('const bootstrapRequests = new Map()')
+    || !apiSource.includes("if (cache === 'reload') invalidateStudioBootstrap(projectId)")
+    || !studioSource.includes("loadStudio({ cache: 'reload' })")) {
+    throw new Error('直接进入 Studio 时没有优先加载或复用 bootstrap');
+  }
+  console.log('✓ Studio 快速入口优先预取并复用 bootstrap');
+} catch (e) { console.log('✗ Studio 快速入口:', e.message); bad++; }
+
+try {
+  const smoothed = smoothGraphPosition({ x: 0, y: 0 }, { x: 100, y: 50 }, 150);
+  const offsets = Array.from({ length: 120 }, (_, index) => (
+    ambientNodeOffset('synthetic:node', 'synthetic:component', index / 10, 0.5)
+  ));
+  const maximumScreenX = Math.max(...offsets.map((offset) => Math.abs(offset.x * 0.5)));
+  const maximumScreenY = Math.max(...offsets.map((offset) => Math.abs(offset.y * 0.5)));
+  if (smoothed.x <= 55 || smoothed.x >= 70
+    || smoothed.y <= 27 || smoothed.y >= 35
+    || maximumScreenX > 3.2
+    || maximumScreenY > 4.0) {
+    throw new Error('节点展示插值或稳定后漂移超出安静动态范围');
+  }
+  console.log('✓ Studio 节点移动使用平滑插值与低幅慢速漂移');
+} catch (e) { console.log('✗ Studio 节点移动参数:', e.message); bad++; }
+
+try {
+  const initial = { ...createStudioSession(), query: '旧查询', queryDraft: '  新查询  ', selectedElementId: 'rule:a' };
+  const staged = stageStudioSearch(initial, '继续输入');
+  const submitted = submitStudioSearch(initial);
+  const cleared = clearStudioSearch(submitted);
+  if (staged.query !== '旧查询'
+    || studioSearchDraft(staged) !== '继续输入'
+    || submitted.query !== '新查询'
+    || submitted.queryDraft !== '新查询'
+    || cleared.query !== ''
+    || cleared.queryDraft !== ''
+    || cleared.selectedElementId !== ''
+    || !shouldSubmitStudioSearch({ key: 'Enter' })
+    || shouldSubmitStudioSearch({ key: 'Enter', nativeEvent: { isComposing: true } })
+    || shouldSubmitStudioSearch({ key: 'a' })
+    || !studioTextMatchesQuery('合成库存盘点规则', '库房盘点')
+    || !studioTextMatchesQuery('合成库存盘点规则', '库存盘点')
+    || studioTextMatchesQuery('合成库存盘点规则', '库房')
+    || studioTextMatchesQuery('合成库存盘点规则', '客户识别')) {
+    throw new Error('搜索草稿在提交前影响了正式查询，或 Enter 组合输入判断错误');
+  }
+  console.log('✓ Studio 搜索仅在 Enter 或按钮提交后生效');
+} catch (e) { console.log('✗ Studio 搜索提交:', e.message); bad++; }
+
+try {
+  const source = readFileSync('src/workbench/studio/StudioGraph.jsx', 'utf8');
+  if (/if \(!filtered\.nodes\.length\)\s*\{\s*return/s.test(source)
+    || !source.includes('studio-graph-empty-overlay')
+    || !source.includes('graphFullscreen && (')) {
+    throw new Error('空搜索结果会卸载全屏图谱画布');
+  }
+  console.log('✓ Studio 全屏空搜索保留图谱画布');
+} catch (e) { console.log('✗ Studio 全屏空搜索:', e.message); bad++; }
+
+try {
+  let contextLostCount = 0;
+  let preventedCount = 0;
+  const runtime = new WebGLGraphRuntime({ onContextLost: () => { contextLostCount += 1; } });
+  const event = { preventDefault: () => { preventedCount += 1; } };
+  runtime.handleContextLost(event);
+  runtime.scene = {
+    nodes: [{ id: 'cluster:synthetic', kind: 'cluster' }],
+    edges: Array.from({ length: 80 }, (_, index) => ({ id: `edge:${index}` })),
+  };
+  runtime.forceStatus = 'settled';
+  if (runtime.edgeLabelBudget(0.8) !== 10 || runtime.edgeLabelBudget(1) !== 16) {
+    throw new Error('聚合图谱没有使用收敛后的边标签预算');
+  }
+  runtime.destroyed = true;
+  runtime.handleContextLost(event);
+  if (contextLostCount !== 1 || preventedCount !== 2) {
+    throw new Error('主动销毁 WebGL 时仍被误判为渲染器不可用');
+  }
+  console.log('✓ Studio WebGL 主动销毁不触发不可用回退');
+} catch (e) { console.log('✗ Studio WebGL 生命周期:', e.message); bad++; }
+
+try {
+  const graphSource = readFileSync('src/workbench/studio/webgl/StudioWebGLGraph.jsx', 'utf8');
+  const runtimeSource = readFileSync('src/workbench/studio/webgl/StudioWebGLRuntime.js', 'utf8');
+  if (!graphSource.includes('onScenePresented')
+    || !graphSource.includes('!presented &&')
+    || !runtimeSource.includes('notifyScenePresented()')
+    || (runtimeSource.match(/window\.requestAnimationFrame/g) || []).length < 2) {
+    throw new Error('WebGL 初始化遮罩在场景首帧呈现前被移除');
+  }
+  console.log('✓ Studio WebGL 场景首帧后移除初始化遮罩');
+} catch (e) { console.log('✗ Studio WebGL 首帧遮罩:', e.message); bad++; }
+
+try {
+  const steps = operationStepsDiagram('operation:a', '操作 A', ['步骤一', '步骤二']);
+  const projected = projectOperationFlowDiagram({
+    id: 'process-a',
+    title: '流程 A',
+    nodes: [
+      { id: 'start', label: '开始', kind: 'start' },
+      { id: 'action', label: '执行', kind: 'action' },
+      { id: 'long-action', label: '读取当前业务上下文并根据已经确认的规则计算适用范围，完成结果校验后继续执行后续步骤', kind: 'action' },
+    ],
+    edges: [
+      { id: 'edge-a', from: 'start', to: 'action', kind: 'sequence' },
+      { id: 'edge-b', from: 'action', to: 'long-action', kind: 'sequence' },
+    ],
+    layout: { direction: 'LR', positions: {} },
+  }, ['action']);
+  const scrollCanvas = operationFlowScrollCanvas({
+    ...projected,
+    nodes: projected.nodes.map((node, index) => ({ ...node, position: { x: -20, y: index * 680 - 40 } })),
+  }, 56, { width: 1600, height: 900 });
+  if (operationFlowMode({ defaultView: 'business-flow', diagrams: [{}], steps: ['步骤一'] }) !== 'business-flow'
+    || operationFlowMode({ diagrams: [], steps: ['步骤一'] }) !== 'operation-steps'
+    || steps.nodes.length !== 4
+    || projected.nodes.find((node) => node.id === 'action')?.data.focused !== true
+    || projected.nodes.find((node) => node.id === 'long-action')?.data.estimatedHeight <= 56
+    || projected.nodes.find((node) => node.id === 'long-action')?.style.height !== undefined
+    || scrollCanvas.height < 1400
+    || scrollCanvas.width !== 1600
+    || Math.min(...scrollCanvas.nodes.map((node) => node.position.x)) < 600
+    || scrollCanvas.nodes.some((node) => node.position.x < 0 || node.position.y < 0)
+    || projected.edges[0]?.source !== 'start') {
+    throw new Error('操作步骤、默认视图或业务流程高亮投影不一致');
+  }
+  console.log('✓ Studio 操作步骤与所在业务流程投影');
+} catch (e) { console.log('✗ Studio 操作流程投影:', e.message); bad++; }
+
 try {
   const graph = {
     nodes: [
@@ -108,16 +285,116 @@ try {
   const unknownStyle = studioGraphEdgeStyle({ kind: 'unknown_relation' }, byId);
   const objectNodes = filterStudioGraph(graph, 'object', '').nodes;
   const searched = filterStudioGraph(graph, '', '操作 A');
+  const attributes = studioGraphNodeAttributes({ id: 'object:a', kind: 'object' }, {
+    'object:a': { values: { fields: [{ key: 'field_a', cnName: '字段 A', type: 'string' }] } },
+  });
+  const scriptAttributes = studioGraphNodeAttributes({ id: 'script:a', kind: 'script' }, {
+    'script:a': { values: { fields: [{ key: 'invalid' }] } },
+  });
+  const scrollSurface = studioGraphScrollSurface([
+    { position: { x: -120, y: -60 }, width: 160, height: 72 },
+    { position: { x: 1180, y: 940 }, width: 180, height: 80 },
+  ], 1.5, { width: 1200, height: 800 });
+  const decoratedSurface = studioGraphScrollSurface([
+    { position: { x: 0, y: 0 }, width: 160, height: 72 },
+  ], 2, { width: 800, height: 600 }, 80, [
+    { x: 30, y: 1800, width: 120, height: 28 },
+  ]);
+  const largeSource = {
+    nodes: Array.from({ length: 12 }, (_, index) => ({
+      id: `object:synthetic_${index}`, kind: 'object', label: `合成对象 ${index}`, x: index * 40, y: index % 3 * 50,
+    })),
+    edges: Array.from({ length: 11 }, (_, index) => ({
+      id: `edge:synthetic_${index}`, source: `object:synthetic_${index}`, target: `object:synthetic_${index + 1}`,
+      kind: 'object_relation', label: '合成关系',
+    })),
+  };
+  const clustered = projectStudioLargeGraph(largeSource, { threshold: 8, maxClusterSize: 4 });
+  const firstClusterId = Object.keys(clustered.clusters)[0];
+  const expanded = projectStudioLargeGraph(largeSource, {
+    threshold: 8, maxClusterSize: 4, expandedClusterIds: [firstClusterId],
+  });
+  const searchedLarge = projectStudioLargeGraph(largeSource, { threshold: 8, maxClusterSize: 4, query: '合成' });
+  const thresholdSource = {
+    nodes: Array.from({ length: 500 }, (_, index) => ({
+      id: `rule:threshold_${index}`,
+      kind: 'rule',
+      label: `合成阈值规则 ${index + 1}`,
+    })),
+    edges: Array.from({ length: 600 }, (_, index) => ({
+      id: `edge:threshold_${index}`,
+      source: `rule:threshold_${index % 500}`,
+      target: `rule:threshold_${(index + 1) % 500}`,
+      kind: 'uses_rule',
+      label: '合成关系',
+    })),
+  };
+  const thresholdClustered = projectStudioLargeGraph(thresholdSource);
+  const unlinkedBelowThreshold = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 499), edges: [],
+  });
+  const mediumSparse = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 250),
+    edges: Array.from({ length: 300 }, (_, index) => ({
+      id: `edge:medium-sparse_${index}`,
+      source: `rule:threshold_${index % 250}`,
+      target: `rule:threshold_${(index + 1) % 250}`,
+    })),
+  });
+  const lowDensity = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 200),
+    edges: Array.from({ length: 180 }, (_, index) => ({
+      id: `edge:low-density_${index}`,
+      source: `rule:threshold_${index % 200}`,
+      target: `rule:threshold_${(index + 1) % 200}`,
+    })),
+  });
+  const mediumDense = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 200),
+    edges: Array.from({ length: 400 }, (_, index) => ({
+      id: `edge:medium-dense_${index}`,
+      source: `rule:threshold_${index % 200}`,
+      target: `rule:threshold_${(index + 1) % 200}`,
+    })),
+  });
+  const largerSparse = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 300),
+    edges: Array.from({ length: 360 }, (_, index) => ({
+      id: `edge:larger-sparse_${index}`,
+      source: `rule:threshold_${index % 300}`,
+      target: `rule:threshold_${(index + 1) % 300}`,
+    })),
+  });
   if (filtered.nodes.some((node) => node.kind === 'rule') || filtered.edges.some((edge) => edge.id === 'e1')
     || neighborhood.edges.size !== 2 || metricChain.edges.size !== 2
-    || metricStyle.color !== '#8879bd' || metricStyle.dash
+    || metricStyle.color !== '#5935a4' || metricStyle.dash
     || unknownStyle.color !== '#98a2b1'
     || searched.nodes.length !== 3 || searched.edges.length !== 2
     || searched.nodes.some((node) => node.id === 'object:a')
     || searched.edges.some((edge) => edge.id === 'e3')
+    || attributes.length !== 1 || attributes[0].key !== 'field_a' || scriptAttributes.length !== 0
     || !studioSummaryVisible('object:a', '')
     || studioSummaryVisible('object:a', 'object:a')
     || !studioSummaryVisible('object:b', 'object:a')
+    || studioSummaryVisible('operation:a', '', { activeKind: 'operation', selectedKind: 'operation' })
+    || !studioSummaryVisible('operation:a', '', { activeKind: '', selectedKind: 'operation' })
+    || scrollSurface.width <= 2000
+    || scrollSurface.height <= 1500
+    || scrollSurface.viewport.zoom !== 1.5
+    || scrollSurface.viewport.x <= 0
+    || decoratedSurface.height < 3800
+    || !clustered.clustered || clustered.nodes.length >= largeSource.nodes.length
+    || !clustered.nodes.every((node) => node.kind === 'cluster')
+    || !clustered.edges.some((edge) => edge.source.startsWith('cluster:') && edge.target.startsWith('cluster:'))
+    || !expanded.clusters[firstClusterId]?.expanded
+    || expanded.nodes.filter((node) => node.kind !== 'cluster').length !== 4
+    || searchedLarge.clustered || searchedLarge.nodes.length !== largeSource.nodes.length
+    || !thresholdClustered.clustered || thresholdClustered.nodes.length > 30
+    || unlinkedBelowThreshold.clustered
+    || !mediumSparse.clustered
+    || lowDensity.clustered
+    || !mediumDense.clustered
+    || !largerSparse.clustered
     || studioVisibleElementId('operation:a', objectNodes) !== ''
     || studioVisibleElementId('object:a', objectNodes) !== 'object:a'
     || STUDIO_NODE_CLICK_DISTANCE < 4
@@ -130,6 +407,28 @@ try {
 try {
   const compactOptions = studioLayoutOptions(8);
   const largeOptions = studioLayoutOptions(49);
+  const objectSize = studioNodeSize({ kind: 'object', id: 'object:a', label: '对象 A' }, 1);
+  const operationSize = studioNodeSize({ kind: 'operation', id: 'operation:a', label: '操作 A' }, 1);
+  const ruleSize = studioNodeSize({ kind: 'rule', id: 'rule:a', label: '规则 A' }, 1);
+  const metricSize = studioNodeSize({ kind: 'metric', id: 'metric:a', label: '指标 A' }, 1);
+  const scriptSize = studioNodeSize({ kind: 'script', id: 'script:a', label: '脚本 A' }, 1);
+  const longObjectSize = studioNodeSize({ kind: 'object', id: 'object:long', label: '需要完整说明的超长合成业务对象名称' }, 0);
+  const longOperationSize = studioNodeSize({ kind: 'operation', id: 'operation:long', label: '需要完整说明的超长合成业务操作名称' }, 0);
+  const longScriptSize = studioNodeSize({ kind: 'script', id: 'script:long', label: '需要完整说明的超长合成处理脚本名称' }, 0);
+  const unlinkedRules = Array.from({ length: 33 }, (_, index) => ({
+    id: `rule:synthetic_${index}`,
+    kind: 'rule',
+    label: `合成规则 ${index + 1}`,
+    width: 114,
+    height: 68,
+    x: index * 180,
+    y: 0,
+    degree: 0,
+  }));
+  const seededRules = fallbackStudioLayout(unlinkedRules);
+  applyHorizontalPacking(unlinkedRules, [], 1.8);
+  const packedRows = new Set(unlinkedRules.map((node) => Math.round(node.y)));
+  const seededRows = new Set(seededRules.map((node) => Math.round(node.position.y)));
   if (compactOptions['elk.layered.layering.coffmanGraham.layerBound'] !== undefined
     || compactOptions['elk.aspectRatio'] !== '1.8'
     || compactOptions['elk.spacing.componentComponent'] !== '80'
@@ -137,7 +436,25 @@ try {
     || studioLayerBound(11) !== 4
     || studioLayerBound(49) !== 4
     || largeOptions['elk.layered.layering.strategy'] !== 'COFFMAN_GRAHAM'
-    || largeOptions['elk.layered.layering.coffmanGraham.layerBound'] !== '4') {
+    || largeOptions['elk.layered.layering.coffmanGraham.layerBound'] !== '4'
+    || objectSize.width <= Math.max(operationSize.width, ruleSize.width, metricSize.width, scriptSize.width)
+    || objectSize.width !== objectSize.height
+    || objectSize.height >= 168
+    || operationSize.width <= operationSize.height
+    || operationSize.height >= 92
+    || ruleSize.width <= ruleSize.height
+    || ruleSize.height >= 88
+    || metricSize.width <= metricSize.height
+    || metricSize.height >= 82
+    || scriptSize.width <= scriptSize.height
+    || scriptSize.height >= 88
+    || longObjectSize.width < 180 || longObjectSize.width !== longObjectSize.height
+    || longOperationSize.width !== 180 || longOperationSize.height <= 72 || longOperationSize.height > 126
+    || longScriptSize.width !== 160 || longScriptSize.height <= 68 || longScriptSize.height > 122
+    || studioBackendPositionsUsable(unlinkedRules.map((node, index) => ({ ...node, x: index * 180, y: 0 })))
+    || seededRows.size < 4
+    || packedRows.size < 4
+    || estimateStudioTextWidth('合成对象') <= estimateStudioTextWidth('abcd')) {
     throw new Error('横向分量装箱或大图动态分栏参数不一致');
   }
   console.log('✓ Studio 分量横向装箱与大图动态分栏');
@@ -173,12 +490,12 @@ try {
   }, {
     position: { x: -60, y: 0 }, width: 160,
   });
-  if (Math.abs(firstLabel.y - secondLabel.y) < 25
+  if (firstLabel.y !== 40 || secondLabel.y !== 41
     || reverseHandles.sourceHandle !== 'source-left'
     || reverseHandles.targetHandle !== 'target-right') {
-    throw new Error('相邻标签未分轨，或反向关系未使用左侧 source / 右侧 target');
+    throw new Error('关系标签没有保持在所属线条，或反向关系端点错误');
   }
-  console.log('✓ Studio 相邻标签避让与反向关系端点');
+  console.log('✓ Studio 在线标签与反向关系端点');
 } catch (e) { console.log('✗ Studio 标签与端点几何:', e.message); bad++; }
 
 try {
@@ -267,16 +584,22 @@ try {
 } catch (e) { console.log('✗ Studio 标签距离约束:', e.message); bad++; }
 
 try {
+  const counts = studioKindCounts([
+    { kind: 'object' }, { kind: 'object' }, { kind: 'operation' }, { kind: 'rule' }, { kind: 'metric' },
+  ]);
   const html = renderToString(<StudioKindTabs value="operation" kinds={[
     { kind: 'object', label: '对象' },
     { kind: 'operation', label: '操作' },
     { kind: 'rule', label: '规则' },
-  ]} elements={[
-    { kind: 'object' }, { kind: 'object' }, { kind: 'operation' }, { kind: 'rule' },
-  ]} />);
+    { kind: 'metric', label: '指标' },
+    { kind: 'script', label: '脚本' },
+  ]} elements={[]} counts={counts} />);
   if (!html.includes('按知识类型筛选') || !html.includes('<span>全部</span>')
     || !html.includes('<span>对象</span>') || !html.includes('<span>操作</span>')
-    || !html.includes('<span>规则</span>') || (html.match(/role="tab"/g) || []).length !== 4
+    || !html.includes('<span>规则</span>') || !html.includes('<span>指标</span>')
+    || !html.includes('<span>脚本</span>') || (html.match(/role="tab"/g) || []).length !== 6
+    || !html.includes('<span>对象</span><small>2</small>')
+    || !html.includes('<span>全部</span><small>5</small>')
     || !html.includes('aria-selected="true"')) {
     throw new Error('Studio 类型没有以并列切换项完整展示');
   }
@@ -327,6 +650,31 @@ try {
 } catch (e) { console.log('✗ 评测数据源配置:', e.message); bad++; }
 
 try {
+  const html = renderToString(<DiagnosisProgress task={{
+    operation: 'diagnose', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  if (!html.includes('正在分析失败原因') || !html.includes('正在读取失败结果、执行轨迹和独立证据')
+    || !html.includes('已运行') || !html.includes('1 分') || !html.includes('role="status"')) {
+    throw new Error('诊断长任务没有立即显示可恢复的进度反馈');
+  }
+  console.log('✓ 失败诊断长任务显示进度反馈');
+} catch (e) { console.log('✗ 失败诊断进度反馈:', e.message); bad++; }
+
+try {
+  const proposal = renderToString(<OptimizationProgress operation="propose" task={{
+    operation: 'propose', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  const apply = renderToString(<OptimizationProgress operation="apply" task={{
+    operation: 'apply', startedAt: new Date(Date.now() - 65_000).toISOString(),
+  }} />);
+  if (!proposal.includes('正在生成优化建议') || !proposal.includes('已运行')
+    || !apply.includes('正在生成知识包候选') || !apply.includes('确定性校验')) {
+    throw new Error('优化长任务没有显示可恢复的进度反馈');
+  }
+  console.log('✓ 优化长任务显示进度反馈');
+} catch (e) { console.log('✗ 优化任务进度反馈:', e.message); bad++; }
+
+try {
   const sourceScope = { kind: 'fusion_source', sourceId: 'internal-source-a', sourceName: '线路治理方案' };
   const html = renderToString(<RunsPanel rounds={[{
     id: 'round-source', status: 'done', packageVersion: '0.9.0', createdAt: '2026-08-23T10:00:00Z',
@@ -342,6 +690,28 @@ try {
   }
   console.log('✓ 来源回归轮次显示业务归属');
 } catch (e) { console.log('✗ 来源回归归属:', e.message); bad++; }
+
+try {
+  const results = [{
+    id: 'result-pass', verdict: 'pass', question: '已通过的问题',
+    finalAnswer: '这条默认不展开。', reason: '符合要求。',
+  }, {
+    id: 'result-fail', verdict: 'fail', question: '需要检查的问题',
+    groundTruth: '应包含汇总表。', reason: '> 判定依据\n\n缺少关键字段。',
+    finalAnswer: '## 整体结论\n\n| 装置 | 负荷 |\n| --- | ---: |\n| 装置 A | 82% |',
+  }];
+  const defaults = defaultExpandedEvaluationIds(results);
+  const toggled = toggleEvaluationResultExpansion(defaults, 'result-fail');
+  const html = renderToString(<EvaluationResultsList results={results} showTrace={false} />);
+  if (!defaults.has('result-fail') || defaults.has('result-pass') || toggled.has('result-fail')
+    || !html.includes('展开全部') || !html.includes('收起全部')
+    || !html.includes('aria-expanded="true"') || !html.includes('aria-expanded="false"')
+    || !html.includes('<h2>整体结论</h2>') || !html.includes('<table>')
+    || html.includes('这条默认不展开。') || html.includes('人工改判')) {
+    throw new Error('评测回答没有按 Markdown 渲染，或展开控制与默认状态不正确');
+  }
+  console.log('✓ 评测回答 Markdown 与批量展开控制');
+} catch (e) { console.log('✗ 评测回答展示:', e.message); bad++; }
 
 try {
   if (fitMermaidZoom(8_000, 1_040) !== 0.25
@@ -423,12 +793,14 @@ try {
   const fromUrl = studioHistoryFromLocation({ href: `http://localhost${url}` });
   const routeFocus = studioFocusFromLocation({ href: `http://localhost${url}` });
   const restored = restoreStudioHistory(createStudioSession(), snapshot);
+  const legacyKind = restoreStudioHistory(createStudioSession(), { kind: 'concept' });
   if (restored.view !== 'entry' || restored.returnView !== 'table'
     || restored.graphViewport.zoom !== 1.2 || restored.tableScrollTop !== 420
     || restored.expandedClusterIds[0] !== 'cluster:rule:1'
     || fromUrl.selectedElementId !== 'rule:safety-stock' || fromUrl.query !== '库存'
     || routeFocus.view !== 'entry' || routeFocus.elementId !== 'rule:safety-stock'
-    || !url.includes('studioView=entry') || !url.includes('studioKind=rule')) {
+    || !url.includes('studioView=entry') || !url.includes('studioKind=rule')
+    || legacyKind.kind !== '') {
     throw new Error('Studio 浏览器历史没有完整保存导航现场');
   }
   console.log('✓ Studio 浏览器历史恢复视图、筛选与相机现场');
@@ -597,14 +969,14 @@ store.set({
   run: { id: 'long-running', status: 'running' },
   interaction: null,
   messages: [],
-  activity: { text: '正在核对影响范围', progress: {}, startedAt: Date.now() - 121_000 },
+  activity: { text: '正在核对影响范围', progress: {}, startedAt: Date.now() - 1_000 },
 });
 try {
   const html = renderToString(<ActivityLine />);
   if (!html.includes('停止任务') || !html.includes('wb-act-stop')) {
-    throw new Error('超过两分钟后没有在活动行提供停止出口');
+    throw new Error('运行开始后没有立即在活动行提供停止出口');
   }
-  console.log('✓ Agent 长任务超过两分钟直接提供停止出口');
+  console.log('✓ Agent 运行开始后立即提供停止出口');
 } catch (e) { console.log('✗ Agent 长任务停止出口:', e.message); bad++; }
 
 store.set({
@@ -937,6 +1309,46 @@ try {
   console.log('✓ 确认等待态清理活动提示');
 } catch (e) { console.log('✗ 确认等待态清理活动提示:', e.message); bad++; }
 
+store.set({
+  messages: [], interaction: null, reviewedChangeGroups: [],
+  lastSeq: 0, replayUntilSeq: 2,
+});
+actions.handleEvent({
+  eventType: 'interaction', seq: 1,
+  id: 'cancelled-run-decision', kind: 'business_decision', status: 'pending',
+  payload: { question: '是否继续历史方案？' },
+});
+try {
+  const replayed = store.get().messages[0]?.blocks?.[0]?.interaction;
+  if (store.get().interaction || replayed?.status !== 'superseded') {
+    throw new Error('历史回放恢复了已失效运行的旧决定卡');
+  }
+  const html = renderToString(<App />);
+  if (!html.includes('已关闭') || html.includes('确认提交')) {
+    throw new Error('失效决定卡仍显示为可操作状态');
+  }
+  console.log('✓ 历史回放不恢复已取消运行的旧决定卡');
+} catch (e) { console.log('✗ 历史失效决定卡:', e.message); bad++; }
+
+store.set({ messages: [], interaction: null, lastSeq: 0, replayUntilSeq: 0 });
+actions.handleEvent({
+  eventType: 'interaction', seq: 1,
+  id: 'live-cancel-decision', kind: 'business_decision', status: 'pending',
+  payload: { question: '是否继续当前方案？' },
+});
+actions.handleEvent({
+  eventType: 'interaction', seq: 2,
+  id: 'live-cancel-decision', kind: 'business_decision', status: 'cancelled',
+  answer: { action: 'run_cancelled' },
+});
+try {
+  const closed = store.get().messages[0]?.blocks?.[0]?.interaction;
+  if (store.get().interaction || closed?.status !== 'cancelled') {
+    throw new Error('取消运行后待处理决定卡没有同步关闭');
+  }
+  console.log('✓ 取消运行同步关闭待处理决定卡');
+} catch (e) { console.log('✗ 取消运行关闭决定卡:', e.message); bad++; }
+
 try {
   const html = renderToString(<Block block={{
     type: 'release',
@@ -1186,6 +1598,19 @@ try {
 
 store.set({
   demo: false,
+  fileContents: {},
+  fileErrors: { 'objects/member_profile.md': '当前文件暂时读取失败，项目其他区域仍可正常使用' },
+});
+try {
+  const html = renderToString(<FileView path="objects/member_profile.md" />);
+  if (!html.includes('当前文件暂时不可用') || !html.includes('重试') || !html.includes('建模助手')) {
+    throw new Error('文件读取失败没有提供就地恢复入口');
+  }
+  console.log('✓ 文件读取失败提供就地重试和助手提示');
+} catch (e) { console.log('✗ 文件读取恢复入口:', e.message); bad++; }
+
+store.set({
+  demo: false,
   fileContents: {
     'manifest.yaml': ['id: refinery', 'name: 加氢裂化知识包', 'version: 1.0.0', 'status: released', 'resources:', '  objects: 2', '  operations: 2'].join('\n'),
   },
@@ -1251,9 +1676,9 @@ try {
   if (/deadbeef|request_release|run-|cp-013|工具事件|工具边界/.test(html)) {
     throw new Error('主界面仍暴露运行时实现标识');
   }
-  if (message !== '我已从版本历史恢复到v1.0.0。请以恢复后的发布结果为准继续，无需重复评测。'
+  if (message !== '已从版本历史恢复到v1.0.0，无需重复评测。'
     || /request_|preflight|API|checkpoint|running/.test(message)) {
-    throw new Error('版本恢复没有形成自然业务消息');
+    throw new Error('版本恢复没有形成确定性业务提示');
   }
   if (humanizeTraceSummary('当前项目状态：评测 / running') !== '当前阶段：评测'
     || humanizeTraceSummary('处理完成', 'task_tool') !== '一项子任务已完成，主任务继续处理中'
@@ -1285,6 +1710,121 @@ try {
   }
   console.log('✓ 主流程不暴露运行时实现');
 } catch (e) { console.log('✗ 主流程实现隔离:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-recovery', toolCallId: 'call-change-set',
+  name: 'stage_change_set', phase: 'repairing', code: 'CHANGE_SET_RESULT_UNKNOWN',
+  summary: 'Change Set 已提交，但返回助手的响应丢失；重试前必须先查询当前回执',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-recovery', toolCallId: 'call-receipt',
+  name: 'get_change_set_receipt', phase: 'completed', summary: '已找到原写入回执',
+  createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const recovery = store.get().messages.find((message) => message.id === 'tool-alert-run-recovery-call-change-set');
+  const trace = store.get().trace.find((item) => item.toolCallId === 'call-change-set');
+  if (recovery || trace?.phase !== 'repairing' || !trace.summary.includes('响应丢失')) {
+    throw new Error('自动恢复过程没有仅保留在活动记录');
+  }
+  console.log('✓ 工具自动恢复过程不占用主对话');
+} catch (e) { console.log('✗ 工具自动恢复记录:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-optional-tool', toolCallId: 'call-eval-db',
+  name: 'query_eval_db', phase: 'rejected', code: 'EVAL_DB_TOOL_UNAVAILABLE',
+  problemVisibility: 'activity', summary: '可选评测库未配置，已跳过本次查询',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+try {
+  const trace = store.get().trace.find((item) => item.toolCallId === 'call-eval-db');
+  if (store.get().messages.length !== 0 || trace?.phase !== 'rejected') {
+    throw new Error('可选工具不可用仍生成了主对话问题卡，或没有保留活动轨迹');
+  }
+  console.log('✓ 可选工具不可用只保留活动轨迹');
+} catch (e) { console.log('✗ 可选工具不可用展示:', e.message); bad++; }
+
+const traceOnlyProblem = {
+  eventType: 'tool', seq: 1, runId: 'run-trace-only-problem', toolCallId: 'call-plan-validation',
+  name: 'run_script_test', phase: 'failed', code: 'SCRIPT_CONTRACT_NOT_FOUND',
+  issueId: 'issue-plan-validation', issueStatus: 'awaiting_user',
+  summary: '脚本契约不存在：plan_validation', createdAt: '2026-01-01T00:00:00Z',
+};
+try {
+  for (const replayUntilSeq of [0, 1]) {
+    store.set({
+      demo: false, messages: [], trace: [], lastSeq: 0, replayUntilSeq,
+      activity: null, run: null,
+    });
+    actions.handleEvent(traceOnlyProblem);
+    const trace = store.get().trace.find((item) => item.toolCallId === 'call-plan-validation');
+    if (store.get().messages.length !== 0
+      || trace?.phase !== 'failed'
+      || !trace.summary.includes('脚本契约不存在')) {
+      throw new Error('普通工具失败仍进入聊天记录，或没有保留在过程记录');
+    }
+  }
+  const processHtml = renderToString(<ProcessDrawer onClose={() => {}} />);
+  if (!processHtml.includes('脚本契约不存在') || processHtml.includes('当前问题需要处理')) {
+    throw new Error('过程抽屉没有展示工具失败，或仍渲染聊天红卡文案');
+  }
+  console.log('✓ 工具失败只出现在过程记录');
+} catch (e) { console.log('✗ 工具失败展示位置:', e.message); bad++; }
+
+store.set({ messages: [], trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-issue', toolCallId: 'call-managed-write',
+  name: 'write_file', phase: 'repairing', code: 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+  issueId: 'issue-binding', issueStatus: 'repairing', summary: '对象数据映射已阻止，正在自动修正',
+  createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-issue', toolCallId: 'call-managed-write-again',
+  name: 'write_file', phase: 'repairing', code: 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+  issueId: 'issue-binding', issueStatus: 'repairing', summary: '正在读取对象和来源表',
+  createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const issues = store.get().messages.filter((message) => message.id === 'tool-issue-run-issue-issue-binding');
+  if (issues.length !== 0) {
+    throw new Error('自动修正中的技术问题仍占据主对话');
+  }
+  actions.handleEvent({
+    eventType: 'tool', seq: 3, runId: 'run-issue', toolCallId: 'call-binding',
+    name: 'patch_object_source_binding', phase: 'waiting', code: 'RECOVERY_EXHAUSTED',
+    issueId: 'issue-binding', issueStatus: 'awaiting_user', problemVisibility: 'recovery',
+    repairStopped: true, summary: '自动处理仍有未完成项，请选择如何处理当前成果。',
+    recoveryActions: [{
+      id: 'retry_from_latest', label: '基于最新内容继续', description: '只处理未完成部分。',
+    }, {
+      id: 'keep_current_progress', label: '保留当前成果，结束本轮', description: '保留已有修改。',
+    }],
+    createdAt: '2026-01-01T00:00:02Z',
+  });
+  const recoveryIssue = store.get().messages.find((message) => message.id === 'tool-issue-run-issue-issue-binding');
+  const html = renderToString(<Block block={recoveryIssue?.blocks?.[0]} />);
+  if (recoveryIssue?.blocks?.[0]?.type !== 'recovery'
+    || !html.includes('请选择后续处理')
+    || !html.includes('基于最新内容继续')
+    || !html.includes('保留当前成果，结束本轮')
+    || html.includes('card-stale')
+    || html.includes('当前问题需要处理')) {
+    throw new Error('自动恢复到达上限后没有形成客户可操作的非红色选择卡');
+  }
+  actions.handleEvent({
+    eventType: 'tool', seq: 4, runId: 'run-issue', toolCallId: 'call-binding-resolved',
+    name: 'patch_object_source_binding', phase: 'completed', issueStatus: 'resolved',
+    resolvedIssueIds: ['issue-binding'], summary: '对象与数据表绑定完成',
+    createdAt: '2026-01-01T00:00:03Z',
+  });
+  if (store.get().messages.some((message) => message.id === 'tool-issue-run-issue-issue-binding')) {
+    throw new Error('已解决问题仍占据主对话');
+  }
+  console.log('✓ 自动恢复隐藏且耗尽后提供客户处理出口');
+} catch (e) { console.log('✗ 工具问题生命周期:', e.message); bad++; }
 
 store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null, drawerOpen: true });
 actions.handleEvent({

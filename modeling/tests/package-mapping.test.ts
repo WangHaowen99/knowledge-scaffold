@@ -53,7 +53,7 @@ function packageSpec(): PackageSpec {
           { key: 'id', cnName: '数据ID', sourceColumn: 'ID', type: 'string', required: true },
           { key: 'name', cnName: '名称', sourceColumn: 'NAME', type: 'string' },
         ],
-        relations: [{ relation: 'references', target: 'ConceptObject' }],
+        relations: [{ relation: '引用', target: 'ConceptObject' }],
       },
       {
         key: 'ConceptObject',
@@ -129,6 +129,10 @@ test('package mapping：新生成规格允许多类来源且仍要求字段中�
   assert.ok(schema.properties.sourceTable);
   assert.ok(schema.properties.sourceRefs);
   assert.ok(fieldSchema.required.includes('cnName'));
+  const relationSchema = schema.properties.relations.items.properties.relation;
+  assert.match(relationSchema.description, /模型根据材料证据生成.*中文谓词/);
+  assert.match(relationSchema.description, /不得包含源对象或目标对象.*连读/);
+  assert.equal(relationSchema.enum, undefined);
 });
 
 test('package mapping：同一来源 Sheet 可以支持多个实体，并写入对象索引', () => {
@@ -148,6 +152,7 @@ test('package mapping：同一来源 Sheet 可以支持多个实体，并写入�
     graphSchema.objects.map((object) => [object.key, object.defaultSheet]),
     [['DataObject', 'DataSheet'], ['ConceptObject', 'DataSheet']],
   );
+  assert.equal(graphSchema.relations[0]?.relationName, '引用');
 });
 
 test('package mapping format：纯渲染产物符合语义 mapping 契约', () => {
@@ -155,13 +160,14 @@ test('package mapping format：纯渲染产物符合语义 mapping 契约', () =
   assert.deepEqual(runFormatChecks(spec, renderPackage(spec)), []);
 });
 
-test('package mapping contract：mapping 是允许空 objects 的必选文件', () => {
+test('package mapping contract：mapping 只在物理 Schema 模式下生成', () => {
   const contract = packageGenerationContract();
 
   assert.equal(contract.validatorVersion, 'package-contract-v6');
-  assert.ok(contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
-  assert.equal(contract.packageFormat.mappings.required, true);
-  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, true);
+  assert.ok(!contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
+  assert.equal(contract.packageFormat.mappings.required, 'when_physical_schema_exists');
+  assert.equal(contract.packageFormat.mappings.forbidden, 'when_physical_schema_absent');
+  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, false);
 });
 
 test('package mapping format：mapping 缺失或为空时阻断知识包', () => {
@@ -183,13 +189,11 @@ test('package mapping format：mapping 缺失或为空时阻断知识包', () =>
   )));
 });
 
-test('package mapping format：无物理对象时允许空 objects 映射', () => {
+test('package mapping format：无物理对象时不生成 mapping', () => {
   const spec = packageSpec();
   spec.objects = [];
   const files = renderPackage(spec);
-  const mappings = JSON.parse(files['mappings/object-data-mappings.json']);
-
-  assert.deepEqual(mappings.objects, {});
+  assert.equal(files['mappings/object-data-mappings.json'], undefined);
   assert.deepEqual(runFormatChecks(spec, files), []);
 });
 

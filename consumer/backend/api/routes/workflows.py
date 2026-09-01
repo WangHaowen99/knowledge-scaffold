@@ -21,11 +21,13 @@ from agent.runtime.contracts import (
     RunStatus,
     RuntimeInvocationContext,
     TERMINAL_RUN_STATUSES,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import (
     EventReplayUnavailableError,
     RunNotFoundError,
     SessionBusyError,
+    WorkspaceUnavailableError,
 )
 from agent.runtime.event_bus import (
     EventSubscriberLimitExceeded,
@@ -982,7 +984,7 @@ async def create_run(
                     if interaction_response is not None
                     else None
                 ),
-                concurrency_limit=100 if current_user.role == "admin" else 1,
+                concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
             )
             try:
                 snapshot, manager_created = await manager.create_run(
@@ -1023,6 +1025,8 @@ async def create_run(
             409,
             run_id=exc.run_id,
         )
+    except WorkspaceUnavailableError as exc:
+        return _error(exc.error_code, str(exc), 409)
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
         return _error(
             "RUNTIME_CAPACITY_EXCEEDED",
@@ -1193,9 +1197,7 @@ async def create_sync_run(
                     traceparent=(
                         trace_context.value if trace_context is not None else ""
                     ),
-                    concurrency_limit=(
-                        100 if current_user.role == "admin" else 1
-                    ),
+                    concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
                     admission_timeout_seconds=300.0,
                 )
                 _snapshot, manager_created = await manager.create_run(
@@ -1239,6 +1241,13 @@ async def create_sync_run(
             409,
             session_id=session_id,
             run_id=exc.run_id,
+        )
+    except WorkspaceUnavailableError as exc:
+        return _sync_error(
+            str(exc),
+            409,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
         )
     except InteractionCheckpointError as exc:
         return _sync_error(

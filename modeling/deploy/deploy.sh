@@ -95,7 +95,8 @@ load_modeling_env() {
                    MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
                    MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS \
                    MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
-                   MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN; do
+                   MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN \
+                   MODELING_ACCEPTANCE_MODE; do
             load_env_if_unset "${file}" "${key}"
         done
     done
@@ -264,7 +265,7 @@ deploy_release() {
         -p mw-modeling \
         -f "${compose_file}" \
         --project-directory "${bundle_root}" \
-        up -d
+        up -d --remove-orphans
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
@@ -297,7 +298,7 @@ deploy_source() {
         -p mw-modeling \
         -f "${compose_file}" \
         --project-directory "${repo_root}/deploy" \
-        up -d --build
+        up -d --build --remove-orphans
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
