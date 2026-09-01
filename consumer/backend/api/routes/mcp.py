@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import socket
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from api.auth.auth import (
     AuthUser,
@@ -15,7 +17,11 @@ from api.auth.auth import (
     require_authenticated_user,
 )
 from api.request_parsing import read_json_object
-from api.protocols.mcp.paths import MCP_API_PREFIX, MCP_INTERNAL_CHAT_ROUTE
+from api.protocols.mcp.paths import (
+    MCP_API_PREFIX,
+    MCP_INTERNAL_CHAT_ROUTE,
+    MCP_INTERNAL_CHAT_STREAM_ROUTE,
+)
 from api.protocols.mcp.workflow_bridge import execute_mcp_chat_workflow_async
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
 from integration.mcp.scope import (
@@ -306,6 +312,176 @@ async def execute_internal_mcp_chat(
         trace_config=cfg,
     )
     return JSONResponse(content=body, status_code=status_code)
+
+
+@mcp_router.post(MCP_INTERNAL_CHAT_STREAM_ROUTE)
+async def stream_internal_mcp_chat(
+    request: Request,
+    authorization: _MCPChatAuthorization = Depends(_authorize_internal_mcp_chat),
+):
+    """Stream coarse public progress and one terminal result to the MCP server."""
+
+    if isinstance(authorization, JSONResponse):
+        return authorization
+    scope, user = authorization
+    cfg = await _short_io(request, load_mcp_runtime_config)
+    try:
+        payload = await read_json_object(request)
+    except HTTPException as exc:
+        return JSONResponse(
+            content={"detail": exc.detail},
+            status_code=exc.status_code,
+        )
+
+    from api.routes import get_user_stores
+
+    _chat_store, execution_store = await _short_io(
+        request,
+        get_user_stores,
+        scope.username,
+        scope.workspace_id,
+    )
+    queue_size = int(getattr(cfg, "chat_progress_queue_size", 128))
+    heartbeat_seconds = int(
+        getattr(cfg, "chat_progress_heartbeat_seconds", 15)
+    )
+    max_message_bytes = int(
+        getattr(cfg, "chat_progress_max_message_bytes", 4096)
+    )
+    event_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(
+        maxsize=max(16, queue_size)
+    )
+    progress_was_dropped = False
+
+    async def publish_progress(event: dict[str, Any]) -> None:
+        nonlocal progress_was_dropped
+        safe_event = _bounded_internal_progress_event(
+            event,
+            max_bytes=max_message_bytes,
+        )
+        if safe_event is None:
+            progress_was_dropped = True
+            return
+        item = ("progress", safe_event)
+        if str(safe_event.get("event") or "") in {
+            "tool.completed",
+            "run.completed",
+            "run.failed",
+        }:
+            await event_queue.put(item)
+            return
+        try:
+            event_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            progress_was_dropped = True
+
+    async def execute_workflow() -> None:
+        try:
+            body, status_code = await execute_mcp_chat_workflow_async(
+                runtime=_runtime(request),
+                execution_store=execution_store,
+                scope=scope,
+                payload=payload,
+                concurrency_limit=100 if str(user.role or "") == "admin" else 1,
+                queue_wait_seconds=min(
+                    30,
+                    max(1, int(cfg.http_timeout_seconds)),
+                ),
+                execution_timeout_seconds=max(
+                    1,
+                    int(cfg.http_timeout_seconds),
+                ),
+                trace_config=cfg,
+                progress_sink=publish_progress,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            body = {
+                "ok": False,
+                "error": {
+                    "type": "backend_error",
+                    "error_code": "MCP_CHAT_BRIDGE_ERROR",
+                    "detail": "Backend workflow bridge failed",
+                    "retriable": True,
+                },
+            }
+            status_code = 500
+        if progress_was_dropped:
+            body = dict(body)
+            body["progress_truncated"] = True
+        await event_queue.put(
+            (
+                "result",
+                {"status_code": status_code, "body": body},
+            )
+        )
+
+    workflow_task = asyncio.create_task(execute_workflow())
+
+    async def generate():
+        try:
+            while True:
+                try:
+                    event_name, event_data = await asyncio.wait_for(
+                        event_queue.get(),
+                        timeout=max(5, heartbeat_seconds),
+                    )
+                except TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                yield _encode_internal_sse(event_name, event_data)
+                if event_name == "result":
+                    return
+        finally:
+            if not workflow_task.done():
+                workflow_task.cancel()
+            await asyncio.gather(workflow_task, return_exceptions=True)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _encode_internal_sse(event_name: str, payload: dict[str, Any]) -> str:
+    return "event: {}\ndata: {}\n\n".format(
+        str(event_name or "message"),
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def _bounded_internal_progress_event(
+    event: dict[str, Any],
+    *,
+    max_bytes: int,
+) -> dict[str, Any] | None:
+    payload = dict(event or {})
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(serialized) <= max(1024, int(max_bytes)):
+        return payload
+    payload["summary"] = "运行轨迹内容已裁剪"
+    payload["warning_code"] = "PROGRESS_TRUNCATED"
+    payload["truncated"] = True
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return payload if len(serialized) <= max(1024, int(max_bytes)) else None
 
 
 def _probe_mcp_runtime_status(cfg: MCPRuntimeConfig) -> dict[str, object]:

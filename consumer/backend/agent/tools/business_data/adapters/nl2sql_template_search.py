@@ -246,7 +246,12 @@ class NL2SQLTemplateSearchAdapter:
         sql, metadata = self._matcher(query)
 
         if sql:
-            yield {"type": "intermediate", "content": "模板命中，执行 SQL: {}".format(sql)}
+            yield {
+                "type": "intermediate",
+                "content": "模板命中，执行 SQL: {}".format(sql),
+                "public_summary": "模板命中，正在执行预定义查询",
+                "public_summary_allowed": True,
+            }
             result = self._execute_sql(sql)
 
             if metadata:
@@ -258,7 +263,12 @@ class NL2SQLTemplateSearchAdapter:
                     result = self._dedupe_result(result, dedupe_key)
         else:
             # No match — fall back to NL2SQL
-            yield {"type": "intermediate", "content": "模板未命中，使用自然语言查询"}
+            yield {
+                "type": "intermediate",
+                "content": "模板未命中，使用自然语言查询",
+                "public_summary": "模板未命中，改用自然语言查询",
+                "public_summary_allowed": True,
+            }
             result = self._execute_query(query)
 
         yield {

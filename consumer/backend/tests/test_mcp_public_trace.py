@@ -850,6 +850,10 @@ def test_mcp_trace_limit_configuration_loads_and_clamps_environment(monkeypatch,
     monkeypatch.setenv("MCP_CHAT_TRACE_MAX_EVENTS", "0")
     monkeypatch.setenv("MCP_CHAT_TRACE_MAX_BYTES", "100")
     monkeypatch.setenv("MCP_CHAT_TRACE_MAX_TEXT_CHARS", "99999")
+    monkeypatch.setenv("MCP_CHAT_PROGRESS_MAX_EVENTS", "99999")
+    monkeypatch.setenv("MCP_CHAT_PROGRESS_MAX_MESSAGE_BYTES", "100")
+    monkeypatch.setenv("MCP_CHAT_PROGRESS_QUEUE_SIZE", "1")
+    monkeypatch.setenv("MCP_CHAT_PROGRESS_HEARTBEAT_SECONDS", "999")
 
     config = load_mcp_runtime_config()
 
@@ -857,3 +861,7 @@ def test_mcp_trace_limit_configuration_loads_and_clamps_environment(monkeypatch,
     assert config.chat_trace_max_events == 1
     assert config.chat_trace_max_bytes == 1024
     assert config.chat_trace_max_text_chars == 4000
+    assert config.chat_progress_max_events == 500
+    assert config.chat_progress_max_message_bytes == 1024
+    assert config.chat_progress_queue_size == 16
+    assert config.chat_progress_heartbeat_seconds == 60
