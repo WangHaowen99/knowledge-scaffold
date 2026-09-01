@@ -1,6 +1,6 @@
 # OpenJiuwen ContextEngine 最终切换方案
 
-> 更新时间：2026-07-16  
+> 更新时间：2026-09-01
 > 本方案以“ContextEngine 优先、保持现有 ask-user 机制、不采用影子模式”为最终边界。
 > 已吸收 `openjiuwen-context-engine-final-cutover-plan-review.md` 中的代码核对意见。
 
@@ -112,11 +112,11 @@ ReAct / LLM / Tool
 - 不新增观测字段，不修改现有导出结构，避免扩大兼容范围；
 - 对应测试只验证该字段符合上述路径规则，不能将它作为窗口正确性的验收依据。
 
-openJiuwen 0.1.14 的 `before_model_call` 消息是 **最终窗口生成前的 preview**。`ReActAgent` 会在该回调之后调用 `get_context_window()`，再用返回值覆盖 `ctx.inputs.messages` 并调用模型。因此：
+openJiuwen 0.1.17 的 `before_model_call` 消息是 **最终窗口生成前的 preview**。`ReActAgent` 会在该回调之后调用 `get_context_window()`，再用返回值覆盖 `ctx.inputs.messages` 并调用模型。因此：
 
 - 不再把 `before_model_call` 解释为实际模型窗口；
 - 默认 local exporter 也不持久化 `LLM_STARTED.input.messages`，开启 runtime trace 不能解决该问题；
-- 本次发布验收使用真实 openJiuwen 0.1.14 和 fake model，在 fake model 的 `invoke()` / `stream()` 入参处直接断言最终 messages；
+- 本次发布验收使用真实 openJiuwen 0.1.17 和 fake model，在 fake model 的 `invoke()` / `stream()` 入参处直接断言最终 messages；
 - 生产发布不记录消息正文，避免引入新的敏感上下文采集；
 - 如果后续确实需要生产级实际窗口观测，必须单独增加“窗口生成后、模型调用前”的观测点，并同时设计 exporter 白名单、内容脱敏、访问控制和保留周期，不纳入本次最小切换。
 
@@ -129,9 +129,25 @@ ContextEngineConfig(
     max_context_message_num=None,
     default_window_round_num=effective_rounds,
     enable_reload=False,
-    enable_kv_cache_release=False,
 )
 ```
+
+本次 0.1.17 兼容升级同时通过 `ReActAgentConfig` 显式固定以下配置：
+
+```python
+ReActAgentConfig(
+    ...,
+    context_engine_config=context_engine_config,
+    kv_cache_affinity_config={
+        "enable_kv_cache_release": False,
+        "enable_kv_cache_affinity": False,
+    },
+    context_processors=[],
+    parallel_tool_calls=True,
+)
+```
+
+这些值用于保持当前行为：不启用 openJiuwen KV cache release/affinity 集成，不装载 ContextEngine 新处理器，并保持并行工具调用。openJiuwen KV cache release/affinity 集成、ContextEngine 新处理器等均属于后续独立能力适配，不在本次兼容升级中启用。
 
 其中：
 
@@ -271,12 +287,12 @@ ExecutionStore 校验并消费 pending interaction
 
 处理原则：
 
-1. openJiuwen 0.1.14 在 `context_max_rounds=1` 时无法原生保留完整问询恢复链，因此不再把原生行为作为待验证分支。
+1. openJiuwen 0.1.17 在 `context_max_rounds=1` 时无法原生保留完整问询恢复链，因此不再把原生行为作为待验证分支。
 2. 检测到已校验的 `interaction_response` 时，默认 agent 本次运行的 `effective_rounds` 固定至少为 2。
 3. 该调整仅影响 ContextEngineConfig，不修改 `request_user_interaction`、Orchestrator 状态机、ExecutionStore 或持久化配置。
 4. 主 ReAct `_agent_factory` 路径无法保证同样的轮次策略；只要存在历史消息或 `interaction_response`，本阶段明确拒绝该路径，不保留未定义的 factory 兜底。
 5. graph agent 的 factory 路径不消费 ExecutionStore 多轮历史，不参与 ask-user 恢复。
-6. 真实 0.1.14 + fake model 测试必须证明 N=1 普通请求仍按 1 轮工作，而 ask-user 恢复请求实际以 2 轮进入模型。
+6. 真实 0.1.17 + fake model 测试必须证明 N=1 普通请求仍按 1 轮工作，而 ask-user 恢复请求实际以 2 轮进入模型。
 
 ## 6. 实施步骤
 
@@ -285,7 +301,7 @@ ExecutionStore 校验并消费 pending interaction
 先补充或确认以下测试：
 
 - 多轮历史全部传入 ContextEngine，而不是在项目层提前裁剪；
-- 使用 `consumer/backend/requirements.txt` 固定安装的真实 openJiuwen 0.1.14 和 fake model，直接捕获 `invoke()` / `stream()` 的 `messages` 参数；
+- 使用 `consumer/backend/requirements.txt` 固定安装的真实 openJiuwen 0.1.17 和 fake model，直接捕获 `invoke()` / `stream()` 的 `messages` 参数；
 - 普通请求最终按 `configured_rounds` 控制模型窗口；
 - ask-user 恢复请求最终按 `max(configured_rounds, 2)` 控制模型窗口；
 - tool call / tool result 配对完整；
@@ -318,7 +334,7 @@ full history → ContextEngine → ReAct
 
 ### 阶段 C：执行定向回归
 
-测试环境以 `consumer/backend/requirements.txt` 为唯一依赖来源，其中已经固定 `openjiuwen==0.1.14`。
+测试环境以 `consumer/backend/requirements.txt` 为唯一依赖来源，其中已经固定 `openjiuwen==0.1.17`。
 
 Windows 本地只执行 backend 行为测试：
 
@@ -337,7 +353,7 @@ $env:PYTHONPATH = "."
   tests/test_context_engine_cutover_probe.py -q
 ```
 
-其中 `test_context_engine_model_window.py` 必须使用 requirements 安装的真实 openJiuwen 0.1.14 和 fake model，直接断言模型最终收到的 messages。
+其中 `test_context_engine_model_window.py` 必须使用 requirements 安装的真实 openJiuwen 0.1.17 和 fake model，直接断言模型最终收到的 messages。
 
 deploy、权限和 rollback E2E 只在 Linux CI 或 Linux 容器中作为门禁执行：
 
@@ -383,7 +399,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest \
    - 每个固定 case 的 `prompt_tokens_max` 不得增加超过 10%；
    - `tool_pair_error_count`、`ask_user_resume_failure_count` 必须为 0。
 
-最终窗口正确性只由真实 openJiuwen 0.1.14 + fake model 自动化测试确认，生产环境不记录消息正文。
+最终窗口正确性只由真实 openJiuwen 0.1.17 + fake model 自动化测试确认，生产环境不记录消息正文。
 
 probe 分为 `baseline` 和 `verify` 两种模式：
 
@@ -537,7 +553,7 @@ docker exec onto-agent-backend \
 | 当前 user message | history 与 invocation input 中不重复 |
 | run 起始候选输入 | `iteration_prepared` 是一次性候选快照，不解释为最终或逐轮窗口 |
 | `before_model_call` | 仅为裁剪前 preview |
-| 实际模型窗口 | 真实 0.1.14 + fake model 捕获的模型调用参数符合预期 |
+| 实际模型窗口 | 真实 0.1.17 + fake model 捕获的模型调用参数符合预期 |
 | `sliding_window_applied` | 兼容字段；True 仅表示 Jiuwen ContextEngine 轮次窗口已由项目配置，不表示项目层已裁剪消息，也不作为窗口正确性证据 |
 | 主 factory + 历史或 interaction response | 明确拒绝，避免无法保证轮次窗口 |
 | 主 factory + 无历史 | 允许单轮执行，静态标识为 False |
@@ -740,7 +756,7 @@ cd /opt/onto-agent
 4. 删除 context_prune_tools 的后端、前端、运行时行为和文档契约
 5. 将旧 JSON/env 遗留项的幂等清理接入现有 migrate.sh，并验证 code-only 回滚不会重新激活
 6. 在 _create_agent 前统一计算真实历史、interaction_response 和 effective_rounds
-7. 用 requirements 固定的真实 openJiuwen 0.1.14 + fake model 建立最终模型入参测试
+7. 用 requirements 固定的真实 openJiuwen 0.1.17 + fake model 建立最终模型入参测试
 8. 新增 synthetic probe，并使用现有 p90/p99、run success rate 和逐 case prompt_tokens_max
 9. 同时移除历史构建和 run 起始候选估算中的项目滑窗
 10. 将 sliding_window_applied 改为 trace bridge 必传参数并修正所有调用点
@@ -761,7 +777,7 @@ ContextEngine 优先、保留现有 ask-user 状态机的主体设计可以通�
 - ExecutionStore 继续管理完整历史和业务状态；
 - `request_user_interaction` 继续使用现有 terminal/checkpoint 流程；
 - 不做影子运行；
-- 使用真实 0.1.14 模型入参测试验证最终窗口；
+- 使用真实 0.1.17 模型入参测试验证最终窗口；
 - ask-user 恢复请求的有效轮次至少为 2；
 - `context_prune_tools` 能力和配置契约完整删除；旧配置可读取但不生效，并在升级迁移中自动清理；
 - 通过独立预发布环境验证后执行生产全量切换；

@@ -2005,7 +2005,6 @@ def create_default_jiuwen_agent(
         max_context_message_num=None,
         default_window_round_num=_normalize_context_max_rounds(context_max_rounds),
         enable_reload=False,
-        enable_kv_cache_release=False,
     )
     react_config = react_agent_config_cls(
         model_client_config=model_client_config,
@@ -2019,6 +2018,12 @@ def create_default_jiuwen_agent(
             else []
         ),
         context_engine_config=context_engine_config,
+        kv_cache_affinity_config={
+            "enable_kv_cache_release": False,
+            "enable_kv_cache_affinity": False,
+        },
+        context_processors=[],
+        parallel_tool_calls=True,
     )
     agent = react_agent_cls(
         card=agent_card_cls(
