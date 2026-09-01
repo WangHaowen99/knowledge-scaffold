@@ -10,7 +10,7 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-studio-read-'));
 
 const [
   { registerAgentCoreRoutes },
-  { StudioReadService, STUDIO_SCHEMA },
+  { resolveStudioWorkingSpec, StudioReadService, STUDIO_SCHEMA },
   { StudioOperationFlowService },
   { createProject },
   { getPackageArtifactStore },
@@ -209,6 +209,7 @@ test('Studio 固定 registry 与元素、关系、图谱共享稳定标识', () 
   const firstPage = studio.list({ sort: 'kind', limit: 2 });
   assert.equal(firstPage.total, 6);
   assert.equal(firstPage.items.length, 2);
+  assert.equal(Object.values(firstPage.kindTotals).reduce((total, count) => total + count, 0), 6);
   assert.ok(firstPage.nextCursor);
   const secondPage = studio.list({ sort: 'kind', limit: 2, cursor: firstPage.nextCursor });
   assert.equal(secondPage.items.length, 2);
@@ -242,6 +243,22 @@ test('Studio 固定 registry 与元素、关系、图谱共享稳定标识', () 
     () => new StudioReadService(workingPackage('revision-b')).list({ cursor: firstPage.nextCursor }),
     (error: any) => error.code === 'WORKING_REVISION_CHANGED',
   );
+});
+
+test('Studio 目录重建为空时保留导入制品中的权威元素', () => {
+  const base = fixtureSpec();
+  const rendered = renderPackage(base);
+  const manifestOnly = { 'manifest.yaml': rendered['manifest.yaml'] };
+  const fallback = resolveStudioWorkingSpec(base, manifestOnly);
+  assert.equal(fallback.objects.length, 2);
+  assert.equal(fallback.operations.length, 1);
+  assert.equal(fallback.metrics?.length, 1);
+
+  const emptyBase = { ...base, objects: [], operations: [], rules: [], metrics: [], scripts: [] };
+  const rebuilt = resolveStudioWorkingSpec(emptyBase, rendered);
+  assert.equal(rebuilt.objects.length, 2);
+  assert.equal(rebuilt.operations.length, 1);
+  assert.equal(rebuilt.metrics?.length, 1);
 });
 
 test('Studio 操作流程只按显式证据聚合步骤、业务流程和定位问题', () => {
@@ -378,7 +395,11 @@ test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图�
   assert.equal(bootstrap.json().elements.workingRevision, workingRevision);
   assert.equal(bootstrap.json().graph.workingRevision, workingRevision);
   assert.equal(bootstrap.json().elements.total, 6);
+  assert.equal(bootstrap.json().elements.kindTotals.object, 2);
+  assert.equal(bootstrap.json().elements.kindTotals.operation, 1);
+  assert.equal(bootstrap.json().elements.kindTotals.metric, 1);
   assert.equal(bootstrap.json().graph.nodes.length, 6);
+  assert.equal(bootstrap.json().graph.totals.byKind.object, 2);
   assert.equal(bootstrap.headers.etag, `"${workingRevision}"`);
 
   const detail = await app.inject({

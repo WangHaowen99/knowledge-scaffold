@@ -52,6 +52,7 @@ import {
   studioHistoryFromLocation,
   studioHistorySnapshot,
   studioHistoryUrl,
+  studioKindCounts,
   studioVisibleElementId,
   writeStudioSession,
 } from './studio-model.js';
@@ -174,6 +175,7 @@ export default function StudioView({ focus }) {
         error: null,
         schema,
         elements: list.items,
+        kindTotals: list.kindTotals || graph.totals?.byKind || studioKindCounts(list.items),
         total: list.total,
         nextCursor: list.nextCursor,
         graph,
@@ -468,6 +470,7 @@ export default function StudioView({ focus }) {
         ...latest,
         loadingMore: false,
         elements: [...new Map([...latest.elements, ...page.items].map((item) => [item.id, item])).values()],
+        kindTotals: page.kindTotals || latest.kindTotals,
         total: page.total,
         nextCursor: page.nextCursor,
       }));
@@ -501,6 +504,7 @@ export default function StudioView({ focus }) {
           : current.studioWarningCount,
         details,
         elements,
+        kindTotals: studioKindCounts(elements),
         selectedElementId: deleted.has(current.selectedElementId) ? '' : current.selectedElementId,
         selectedIds: current.selectedIds.filter((id) => !deleted.has(id)),
         total: Math.max(0, current.total - deleted.size, elements.length),
@@ -515,6 +519,7 @@ export default function StudioView({ focus }) {
       update((current) => ({
         ...current,
         elements: list.items,
+        kindTotals: list.kindTotals || graph.totals?.byKind || studioKindCounts(list.items),
         total: list.total,
         nextCursor: list.nextCursor,
         graph,
@@ -669,7 +674,8 @@ function StudioToolbar({ session, update, navigate, onRefresh }) {
             <button type="button" title="清除搜索" aria-label="清除搜索" onClick={clearSearch}><X size={13} /></button>
           )}
         </div>
-        <StudioKindTabs kinds={session.schema?.kinds} elements={session.elements} value={session.kind}
+        <StudioKindTabs kinds={session.schema?.kinds} elements={session.elements} counts={session.kindTotals}
+          value={session.kind}
           onChange={(kind) => update((current) => {
             const visibleNodes = (current.graph?.nodes || []).filter((node) => !kind || node.kind === kind);
             return {
@@ -690,17 +696,16 @@ function StudioToolbar({ session, update, navigate, onRefresh }) {
   );
 }
 
-export function StudioKindTabs({ kinds = [], elements = [], value = '', onChange = () => {} }) {
-  const counts = elements.reduce((result, element) => {
-    result[element.kind] = (result[element.kind] || 0) + 1;
-    return result;
-  }, {});
+export function StudioKindTabs({ kinds = [], elements = [], counts, value = '', onChange = () => {} }) {
+  const resolvedCounts = counts || studioKindCounts(elements);
   const tabs = [{ kind: '', label: '全部' }, ...kinds];
   return (
     <div className="seg studio-kind-tabs" role="tablist" aria-label="按知识类型筛选">
       {tabs.map((kind) => {
         const KindIcon = KIND_ICON[kind.kind];
-        const count = kind.kind ? counts[kind.kind] || 0 : elements.length;
+        const count = kind.kind
+          ? resolvedCounts[kind.kind] || 0
+          : Object.values(resolvedCounts).reduce((total, item) => total + Number(item || 0), 0);
         const selected = value === kind.kind;
         return (
           <button type="button" role="tab" key={kind.kind || 'all'} className={selected ? 'on' : ''}

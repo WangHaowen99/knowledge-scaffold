@@ -202,6 +202,7 @@
 
 .wb .studio-webgl-graph, .wb .studio-webgl-stage { position: absolute; inset: 0; overflow: hidden; }
 .wb .studio-webgl-graph { touch-action: none; }
+.wb .studio-webgl-stage { background: #f3f5f7; }
 .wb .studio-webgl-stage canvas, .wb .studio-pixi-webgl-canvas { width: 100%; height: 100%; display: block; outline: none; }
 .wb .studio-webgl-renderer-badge {
   position: absolute;

@@ -9,6 +9,8 @@ export const KIND_META = {
 };
 
 export const STUDIO_CLUSTER_NODE_THRESHOLD = 500;
+export const STUDIO_CLUSTER_COMPLEXITY_THRESHOLD = 280;
+export const STUDIO_CLUSTER_MIN_COMPLEX_NODE_COUNT = 200;
 
 export function createStudioSession() {
   return {
@@ -16,6 +18,7 @@ export function createStudioSession() {
     error: null,
     schema: null,
     elements: [],
+    kindTotals: {},
     total: 0,
     graph: null,
     details: {},
@@ -256,7 +259,7 @@ export function projectStudioLargeGraph(graph, {
 } = {}) {
   const nodes = graph?.nodes || [];
   const edges = graph?.edges || [];
-  if (nodes.length < threshold || String(query || '').trim()) {
+  if (String(query || '').trim() || !studioGraphNeedsClustering(nodes, edges, threshold)) {
     return { nodes, edges, clusters: {}, clustered: false };
   }
 
@@ -365,9 +368,36 @@ export function projectStudioLargeGraph(graph, {
   return { nodes: displayNodes, edges: [...aggregatedEdges.values()], clusters, clustered: true };
 }
 
+export function studioGraphNeedsClustering(
+  nodes = [],
+  edges = [],
+  threshold = STUDIO_CLUSTER_NODE_THRESHOLD,
+) {
+  const nodeCount = nodes.length;
+  if (nodeCount >= threshold) return true;
+  if (threshold !== STUDIO_CLUSTER_NODE_THRESHOLD
+    || nodeCount < STUDIO_CLUSTER_MIN_COMPLEX_NODE_COUNT
+    || !edges.length) return false;
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const validEdgeCount = edges.reduce((count, edge) => (
+    nodeIds.has(edge.source) && nodeIds.has(edge.target) ? count + 1 : count
+  ), 0);
+  if (validEdgeCount < nodeCount * 0.8) return false;
+  const edgeDensity = validEdgeCount / Math.max(1, nodeCount);
+  return edgeDensity >= 2
+    || nodeCount + validEdgeCount * 0.35 >= STUDIO_CLUSTER_COMPLEXITY_THRESHOLD;
+}
+
 export function studioVisibleElementId(selectedElementId, nodes = []) {
   const selected = String(selectedElementId || '');
   return selected && nodes.some((node) => node.id === selected) ? selected : '';
+}
+
+export function studioKindCounts(elements = []) {
+  return elements.reduce((result, element) => {
+    if (element?.kind) result[element.kind] = (result[element.kind] || 0) + 1;
+    return result;
+  }, {});
 }
 
 export function studioGraphScrollSurface(nodes = [], zoom = 1, viewport = {}, padding = 80, decorations = []) {

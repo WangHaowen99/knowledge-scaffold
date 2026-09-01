@@ -37,6 +37,7 @@ const StudioWebGLGraph = forwardRef(function StudioWebGLGraph({
   const selectedIdRef = useRef(selectedId);
   const initialViewportAppliedRef = useRef(false);
   const [ready, setReady] = useState(false);
+  const [presented, setPresented] = useState(false);
   const [rendererName, setRendererName] = useState('WebGL');
   const [pinned, setPinned] = useState(false);
   selectedIdRef.current = selectedId;
@@ -47,6 +48,9 @@ const StudioWebGLGraph = forwardRef(function StudioWebGLGraph({
       onReady: (name) => {
         setRendererName(name);
         setReady(true);
+      },
+      onScenePresented: () => {
+        if (active) setPresented(true);
       },
       onNodeClick,
       onNodeDoubleClick,
@@ -155,7 +159,7 @@ const StudioWebGLGraph = forwardRef(function StudioWebGLGraph({
         <button type="button" title="适配全部" aria-label="适配全部" onClick={() => runtimeRef.current?.fitView(true)}><LocateFixed size={15} /></button>
       </div>
       <canvas ref={minimapRef} className="studio-webgl-minimap" aria-label="图谱小地图，点击可导航" />
-      {!ready && <div className="studio-webgl-loading">正在初始化 WebGL 渲染器</div>}
+      {!presented && <div className="studio-webgl-loading">正在初始化 WebGL 渲染器</div>}
     </div>
   );
 });
