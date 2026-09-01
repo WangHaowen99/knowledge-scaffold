@@ -1117,6 +1117,7 @@ export class PackageArtifactStore {
       const structuredSpecChanged = contentChanges.some((change) => (
         change.kind === 'write' && change.path === SPEC_PATH
       ));
+      // Domain tools stage an authoritative structured spec for fields that Markdown cannot carry.
       const candidateSpec = structuredSpecChanged
         ? candidateView.spec
         : preserveUnrenderedPackageMetadata(renderedCandidateSpec, candidateView.spec, contentChanges);
@@ -2236,19 +2237,22 @@ function metadataChanges(current: readonly ArtifactFile[], spec: PackageSpec): A
   const encoder = new TextEncoder();
   const normalizedSpec = canonicalizePackageSpec(spec);
   const rendered = renderPackage(normalizedSpec, { validateScripts: false });
-  return [
+  const mappingPath = `${PACKAGE_PREFIX}mappings/object-data-mappings.json`;
+  const mapping = rendered['mappings/object-data-mappings.json'];
+  const changes: ArtifactChange[] = [
     { kind: 'write', path: SPEC_PATH, content: encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`) },
     {
       kind: 'write',
       path: `${PACKAGE_PREFIX}manifest.yaml`,
       content: encoder.encode(updateManifestMetadata(decodeText(manifest.content), normalizedSpec)),
     },
-    {
-      kind: 'write',
-      path: `${PACKAGE_PREFIX}mappings/object-data-mappings.json`,
-      content: encoder.encode(rendered['mappings/object-data-mappings.json']),
-    },
   ];
+  if (mapping !== undefined) {
+    changes.push({ kind: 'write', path: mappingPath, content: encoder.encode(mapping) });
+  } else if (current.some((file) => file.path === mappingPath)) {
+    changes.push({ kind: 'delete', path: mappingPath });
+  }
+  return changes;
 }
 
 function updateManifestMetadata(content: string, spec: PackageSpec): string {

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { diff } from '../lib/mock/fixtures.js';
-import { store } from '../lib/appStore.js';
+import { actions, store } from '../lib/appStore.js';
 import { displayEvidenceReferences } from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
 import { MermaidPreview } from './FlowView.jsx';
@@ -13,14 +13,25 @@ export default function DiffView() {
   const focus = useStore(store, (state) => state.focus);
   const candidate = useStore(store, (state) => state.candidateDiff);
   const materials = useStore(store, (state) => state.materials);
+  const interaction = useStore(store, (state) => state.interaction);
+  const groups = interaction?.kind === 'confirmation' ? (interaction.payload?.changeGroups || []) : [];
+  const currentIndex = Math.max(0, candidate.findIndex((file) => file.path === focus.target));
+  const current = candidate[currentIndex] || candidate[0];
+  const currentGroup = groups.find((group) => (group.impact || []).includes(current?.path));
+  useEffect(() => {
+    if (current?.path && currentGroup?.id) actions.reviewChangeGroup(currentGroup.id, current.path);
+  }, [current?.path, currentGroup?.id]);
   if (!demo) {
-    const files = candidate.filter((file) => !focus.target || file.path === focus.target);
     return (
       <>
-        {!files.length && <div className="empty">当前没有可对照的候选修改</div>}
-        {files.map((file) => (
-          <CandidateFileDiff key={file.path} file={file} materials={materials} />
-        ))}
+        {!candidate.length && <div className="empty">当前没有可对照的候选修改</div>}
+        {current && <div className="wb-diff-batch-nav">
+          <div><b>{currentGroup ? `第 ${Math.max(1, groups.indexOf(currentGroup) + 1)} 组 / 共 ${groups.length} 组` : `第 ${currentIndex + 1} 个文件 / 共 ${candidate.length} 个文件`}</b><span>{currentGroup?.title || '整批候选修改'}</span></div>
+          <div className="btn-row"><button type="button" className="btn btn-sm" disabled={currentIndex <= 0}
+            onClick={() => openCandidate(candidate, currentIndex - 1)}>上一项</button><button type="button" className="btn btn-sm" disabled={currentIndex >= candidate.length - 1}
+            onClick={() => openCandidate(candidate, currentIndex + 1)}>下一项</button></div>
+        </div>}
+        {current && <CandidateFileDiff key={current.path} file={current} materials={materials} />}
       </>
     );
   }
@@ -66,6 +77,17 @@ export default function DiffView() {
       )}
     </>
   );
+}
+
+function openCandidate(candidate, index) {
+  const file = candidate[index];
+  if (!file) return;
+  store.set({
+    selectedPath: file.path,
+    focus: { kind: 'diff', target: file.path },
+    follow: false,
+    pendingFocus: null,
+  });
 }
 
 function CandidateFileDiff({ file, materials }) {

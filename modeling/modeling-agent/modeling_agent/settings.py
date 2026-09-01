@@ -33,6 +33,9 @@ class Settings:
     skills_dir: Path
     llm_first_chunk_timeout_seconds: float = 120.0
     llm_idle_timeout_seconds: float = 60.0
+    context_max_messages: int = 64
+    context_window_messages: int = 48
+    context_window_rounds: int = 10
 
     @property
     def runtime_db(self) -> Path:
@@ -64,6 +67,9 @@ class Settings:
             llm_idle_timeout_seconds=_number(
                 "MODELING_LLM_IDLE_TIMEOUT_SECONDS", 60.0, 10.0, 300.0,
             ),
+            context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
+            context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
+            context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 30),
         )
 
     def with_runtime_llm(self, config: dict[str, object]) -> "Settings":
@@ -82,4 +88,10 @@ class Settings:
             "modelConfigured": bool(self.llm_base_url and self.llm_model),
             "dynamicModelConfig": len(self.service_token) >= 32,
             "maxIterations": self.max_iterations,
+            "contextPolicy": {
+                "maxMessages": self.context_max_messages,
+                "windowMessages": min(self.context_window_messages, self.context_max_messages),
+                "windowRounds": self.context_window_rounds,
+                "reloadArchivedHistory": False,
+            },
         }

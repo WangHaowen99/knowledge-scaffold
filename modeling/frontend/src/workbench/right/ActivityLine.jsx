@@ -46,9 +46,9 @@ function isPostToolPlanningActivity(activity) {
 
 export function visibleRunActivity({ activity, run, interaction, streaming, trace }, now = Date.now()) {
   const status = String(run?.status || '');
-  const active = ['queued', 'running'].includes(status);
+  const active = ['queued', 'running', 'stopping'].includes(status);
   if (interaction && !active) return null;
-  if (status && !['queued', 'running'].includes(status)) return null;
+  if (status && !['queued', 'running', 'stopping'].includes(status)) return null;
   const executionStart = executionStartedAt(run, now);
   let currentActivity = null;
   if (activity) {
@@ -57,16 +57,20 @@ export function visibleRunActivity({ activity, run, interaction, streaming, trac
       || (Number.isFinite(observedAt) && observedAt >= executionStart - 1_000)) currentActivity = activity;
   }
   if (currentActivity && !isPostToolPlanningActivity(currentActivity)) return currentActivity;
-  if (!['queued', 'running'].includes(status)) return currentActivity;
+  if (!['queued', 'running', 'stopping'].includes(status)) return currentActivity;
   const traceActivity = traceRunActivity(trace, run, executionStart);
   if (traceActivity) return traceActivity;
   if (currentActivity) return currentActivity;
   return {
     id: `run:${run?.id || 'active'}`,
-    text: status === 'queued'
+    text: status === 'stopping'
+      ? '正在停止任务'
+      : status === 'queued'
       ? '任务已提交，等待开始'
       : streaming ? '助手正在生成回复' : '助手正在处理当前步骤',
-    detail: status === 'queued'
+    detail: status === 'stopping'
+      ? '正在核对在途修改，确认不会继续写入后才算停止'
+      : status === 'queued'
       ? '任务会在服务端开始，你可以继续输入或离开页面'
       : streaming ? '内容正在实时输出，你可以随时插话' : '正在等待下一项进度，你可以继续输入',
     progress: {},
@@ -123,7 +127,9 @@ export default function ActivityLine() {
     : percent !== undefined ? `${Math.round(percent)}%` : '';
   const sub = Array.isArray(act.sub) ? act.sub : [];
   const activityText = userFacingText(act.text);
-  const canCancel = (elapsedSeconds ?? 0) >= 120 && ['queued', 'running'].includes(String(run?.status || ''));
+  const runStatus = String(run?.status || '');
+  const canCancel = ['queued', 'running'].includes(runStatus);
+  const stopping = runStatus === 'stopping';
 
   return (
     <div className="wb-act">
@@ -151,6 +157,7 @@ export default function ActivityLine() {
               <Icon name="x" size={12} />停止任务
             </button>
           )}
+          {stopping && <b className="wb-act-stopping">停止中…</b>}
         </div>
       </div>
       {open && (

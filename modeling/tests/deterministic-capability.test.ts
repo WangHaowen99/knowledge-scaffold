@@ -25,6 +25,12 @@ test('只把需要稳定重复执行的 operation 建议为脚本候选', () => 
       outputs: [{ field: 'yield_rate', cnName: '收率', type: 'number' }],
     }),
     operation('AllocateVolume', '分配批次加工量', ['按产能排序', '分配各装置加工量']),
+    operation('ChooseRoute', '减一线分流操作', ['按标记二选一', '激活唯一目标路线']),
+    operation('ValidatePlan', '校验完整计划', [
+      '执行 CalculateYield 计算收率',
+      '执行 AllocateVolume 分配加工量',
+      '汇总两个操作的结果',
+    ]),
     operation('ExpertReview', '专家综合研判', ['结合行业经验判断风险', '给出开放式建议']),
     operation('ExistingScript', '已有确定性脚本', ['按公式计算'], {
       script: { key: 'ExistingScriptRunner', required: true },
@@ -34,7 +40,13 @@ test('只把需要稳定重复执行的 operation 建议为脚本候选', () => 
   assert.deepEqual(candidates.map((item) => [item.operationKey, item.confidence]), [
     ['CalculateYield', 'high'],
     ['AllocateVolume', 'medium'],
+    ['ChooseRoute', 'medium'],
+    ['ValidatePlan', 'high'],
   ]);
+  assert.deepEqual(
+    candidates.find((item) => item.operationKey === 'ValidatePlan')?.invokesOperationKeys,
+    ['CalculateYield', 'AllocateVolume'],
+  );
   assert.match(candidates[0].reason, /数值输出|计算/);
   assert.match(candidates[0].suggestedContract ?? '', /输入：/);
   assert.match(candidates[0].suggestedContract ?? '', /输出：yield_rate\(number\)/);

@@ -15,11 +15,13 @@ import {
   locateEvidence as getEvidenceLocation,
   getSnapshot,
   steerAgent,
+  resumeAgentIssue,
   updateConfirmPolicy,
   updateMaterialDirectives,
   uploadMaterial,
   uploadPackageSource,
   savePackageDataSource,
+  respondChangePlan as respondChangePlanRequest,
 } from './api.js';
 
 /** demo 场景：对应设计草图的各屏状态。接后端后由真实事件驱动，这里只是入口。 */
@@ -49,14 +51,17 @@ const initial = {
   packageVersion: null,
   packageStatus: null,
   workflow: null,
+  changePlan: null,
   files: [],
   fileContents: {},
+  fileErrors: {},
   candidateDiff: [],
   materials: [],
   materialContents: {},
   materialReferrers: {},
   messages: [],
   interaction: null,
+  reviewedChangeGroups: [],
   run: null,
   statusText: '',
   loading: Boolean(initialProjectId),
@@ -172,6 +177,20 @@ function rejectedMessage(result, fallback) {
     : fallback;
 }
 
+async function waitForPlanContinuationBoundary(projectId, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const agent = await getAgentState(projectId);
+    const status = String(agent?.run?.status || '');
+    if (!['queued', 'running', 'stopping'].includes(status)) {
+      store.set({ run: agent?.run || null, statusText: agent?.statusText || '' });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('建模计划已经记录，但助手仍在收尾；请稍后在当前对话继续。');
+}
+
 export function resolveWorkbenchBootstrapResults(results) {
   const [snapshotResult, agentResult, candidateResult] = results;
   if (snapshotResult.status === 'rejected') throw snapshotResult.reason;
@@ -207,6 +226,7 @@ export const actions = {
       const activity = agent.activity ? progressActivity(agent.activity) : null;
       const restoredAgentFocus = agent.focus && availableFocusTarget(agent.focus, {
         files: snapshot.files,
+        fileErrors: {},
         materials: snapshot.materials,
         candidateDiff: candidate.files || [],
       }) ? agent.focus : null;
@@ -224,6 +244,7 @@ export const actions = {
         packageVersion: snapshot.packageVersion || null,
         packageStatus: snapshot.packageStatus || null,
         workflow: agent.state || null,
+        changePlan: null,
         files: snapshot.files,
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
         candidateDiff: candidate.files || [],
@@ -232,6 +253,7 @@ export const actions = {
         selectedMaterial: snapshot.materials[0]?.id || '',
         run: agent.run,
         interaction: agent.interaction,
+        reviewedChangeGroups: [],
         activity,
         loading: false,
         error: warning,
@@ -294,11 +316,21 @@ export const actions = {
   async loadFile(path) {
     const { projectId } = store.get();
     if (!projectId || !path || path.endsWith('/')) return;
+    store.set((state) => {
+      if (!state.fileErrors[path]) return state;
+      const fileErrors = { ...state.fileErrors };
+      delete fileErrors[path];
+      return { fileErrors };
+    });
     try {
       const result = await getPackageFile(projectId, path);
-      store.set((state) => ({ fileContents: { ...state.fileContents, [path]: result.content } }));
+      store.set((state) => ({
+        fileContents: { ...state.fileContents, [path]: result.content },
+        fileErrors: Object.fromEntries(Object.entries(state.fileErrors).filter(([key]) => key !== path)),
+      }));
     } catch (error) {
-      store.set({ error: error instanceof Error ? error.message : `无法读取 ${path}` });
+      const message = error instanceof Error ? error.message : `无法读取 ${path}`;
+      store.set((state) => ({ fileErrors: { ...state.fileErrors, [path]: message } }));
     }
   },
   async loadMaterial(id) {
@@ -360,6 +392,25 @@ export const actions = {
       if (event.target.kind === 'diff') void actions.refreshSnapshot();
     }
     if (eventType === 'state' && !replaying) store.set({ workflow: event });
+    if (eventType === 'change_plan' && event.plan) {
+      store.set({ changePlan: event.plan });
+      actions.appendMessage({
+        id: `change-plan-${event.plan.id}`,
+        role: 'assistant',
+        createdAt: event.createdAt,
+        blocks: [{
+          type: 'plan',
+          plan: event.plan,
+          items: (event.plan.tasks || []).map((task) => ({
+            t: task.title,
+            st: ['accepted', 'skipped'].includes(task.status)
+              ? 'done'
+              : ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : '',
+          })),
+        }],
+      });
+    }
+    if (eventType === 'change_set' && !replaying) void actions.refreshSnapshot();
     if (eventType === 'progress' && !replaying) {
       store.set({ activity: progressActivity(event, store.get().activity) });
     }
@@ -378,8 +429,65 @@ export const actions = {
               : state.activity,
         trace: mergeToolTrace(state.trace, event, seq),
       }));
-      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation', 'set_material_directive'].includes(event.name)) {
+      const resolvedIssueIds = new Set((event.resolvedIssueIds || []).map(String).filter(Boolean));
+      if (resolvedIssueIds.size) {
+        store.set((state) => ({
+          messages: state.messages.filter((message) => !message.blocks?.some((block) => (
+            ['error', 'recovery'].includes(block.type)
+              && resolvedIssueIds.has(String(block.issueId || ''))
+          ))),
+        }));
+      }
+      if (event.phase === 'repairing' && event.issueId) {
+        store.set((state) => ({
+          messages: state.messages.filter((message) => !message.blocks?.some((block) => (
+            ['error', 'recovery'].includes(block.type)
+              && String(block.issueId || '') === String(event.issueId)
+          ))),
+        }));
+      }
+      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_work_notes', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation', 'discard_rejected_candidate_changes', 'set_material_directive'].includes(event.name)) {
         void actions.refreshSnapshot({ openPurposeReview: event.name === 'set_material_directive' });
+      }
+      const automaticRecovery = event.phase === 'repairing' || event.problemVisibility === 'activity';
+      if (!automaticRecovery && event.code && (!replaying || event.issueId)
+        && ['failed', 'blocked', 'rejected', 'waiting'].includes(event.phase)) {
+        const issueId = String(event.issueId || '');
+        const recoveryActions = Array.isArray(event.recoveryActions)
+          ? event.recoveryActions.filter((item) => item && typeof item === 'object')
+          : event.recoveryAction && typeof event.recoveryAction === 'object'
+            ? [event.recoveryAction]
+            : event.repairStopped
+              ? [{
+                id: 'review_validation_findings',
+                label: '重新检查并继续',
+                description: '从已保存进展继续，只处理仍未解决的内容。',
+              }, {
+                id: 'keep_current_progress',
+                label: '保留当前成果，结束本轮',
+                description: '保留已经完成的候选修改，暂不继续自动修正。',
+              }]
+              : [];
+        const recoveryProblem = event.problemVisibility === 'recovery'
+          || event.phase === 'waiting'
+          || event.repairStopped
+          || recoveryActions.length > 0;
+        if (recoveryProblem) {
+          actions.appendMessage({
+            id: issueId
+              ? `tool-issue-${event.runId || 'run'}-${issueId}`
+              : `tool-recovery-${event.runId || 'run'}-${event.toolCallId || event.name || seq}`,
+            role: 'assistant',
+            createdAt,
+            blocks: [{
+              type: 'recovery',
+              issueId,
+              status: event.issueStatus || event.phase,
+              text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
+              actions: recoveryActions,
+            }],
+          });
+        }
       }
     }
     if (eventType === 'message') {
@@ -428,7 +536,7 @@ export const actions = {
     if (eventType === 'message_done' && event.messageId) {
       store.set((state) => ({
         messages: state.messages.map((message) => message.id === event.messageId
-          ? { ...message, streaming: false }
+          ? { ...message, streaming: false, incomplete: Boolean(event.incomplete) }
           : message),
       }));
     }
@@ -485,14 +593,14 @@ export const actions = {
       }));
     }
     if (eventType === 'interaction') {
-      if (event.status === 'answered') {
+      if (event.status !== 'pending') {
         store.set((state) => ({
-          interaction: null,
+          interaction: state.interaction?.id === event.id ? null : state.interaction,
           messages: state.messages.map((message) => message.id === `interaction-${event.id}`
             ? {
               ...message,
               blocks: message.blocks.map((block) => block.interaction
-                ? { ...block, interaction: { ...block.interaction, status: 'answered', answer: event.answer } }
+                ? { ...block, interaction: { ...block.interaction, status: event.status, answer: event.answer } }
                 : block),
             }
             : message),
@@ -504,20 +612,26 @@ export const actions = {
           payload: event.payload || {},
           status: event.status || 'pending',
         };
-        store.set({
-          interaction,
+        const authoritativeInteractionId = String(store.get().interaction?.id || '');
+        const restoreAsPending = !replaying || authoritativeInteractionId === interaction.id;
+        store.set((state) => ({
+          ...(restoreAsPending ? { interaction } : {}),
+          reviewedChangeGroups: state.interaction?.id === interaction.id
+            ? state.reviewedChangeGroups
+            : [],
           ...(!replaying ? {
             activity: null,
             run: { ...(store.get().run || {}), status: 'waiting' },
           } : {}),
-        });
+        }));
         actions.appendMessage({
           id: `interaction-${event.id}`,
           role: 'assistant',
           createdAt: event.createdAt,
           blocks: [{ type: interaction.kind === 'confirmation'
             ? 'confirm'
-            : interaction.kind === 'release_confirmation' ? 'release' : 'ask', interaction }],
+            : interaction.kind === 'release_confirmation' ? 'release' : 'ask',
+          interaction: restoreAsPending ? interaction : { ...interaction, status: 'superseded' } }],
         });
       }
     }
@@ -557,6 +671,37 @@ export const actions = {
       return { messages };
     });
   },
+  async respondChangePlan(planId, approved) {
+    const { projectId } = store.get();
+    if (!projectId || !planId) return null;
+    try {
+      const result = await respondChangePlanRequest(projectId, planId, approved);
+      store.set((state) => ({
+        changePlan: result.plan,
+        error: '',
+        messages: state.messages.map((message) => ({
+          ...message,
+          blocks: message.blocks?.map((block) => (
+            block.type === 'plan' && block.plan?.id === planId
+              ? { ...block, plan: result.plan }
+              : block
+          )) ?? [],
+        })),
+      }));
+      await waitForPlanContinuationBoundary(projectId);
+      await actions.send(approved
+        ? '我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。'
+        : '我已在页面拒绝当前建模计划。请读取计划的最终状态并停止这份计划，不要产生任何候选修改。');
+      return result;
+    } catch (error) {
+      store.set({ error: {
+        scope: 'change_plan',
+        message: error instanceof Error ? error.message : '计划决定提交失败',
+        recovery: '计划仍保持原状态，请在当前计划卡重试。',
+      } });
+      return null;
+    }
+  },
   async send(text, options = {}) {
     const value = String(text || '').trim();
     const { projectId } = store.get();
@@ -575,9 +720,37 @@ export const actions = {
       return result;
     } catch (error) {
       store.set((state) => ({
-        messages: state.messages.filter((message) => message.id !== messageId),
-        error: error instanceof Error ? error.message : '消息发送失败',
+        messages: state.messages.map((message) => message.id === messageId
+          ? { ...message, optimistic: false, sendFailed: true }
+          : message),
+        error: {
+          scope: 'send',
+          message: error instanceof Error ? error.message : '消息发送失败',
+          recovery: '输入内容仍保留在发送框中，请检查后重试。',
+        },
       }));
+      return null;
+    }
+  },
+  async resumeIssue(issueId, actionId) {
+    const { projectId } = store.get();
+    if (!projectId || !issueId || !actionId) return null;
+    try {
+      const result = await resumeAgentIssue(projectId, issueId, actionId);
+      if (result.run) store.set({ run: result.run, error: '' });
+      store.set((state) => ({
+        messages: state.messages.filter((message) => !message.blocks?.some((block) => (
+          ['error', 'recovery'].includes(block.type)
+            && String(block.issueId || '') === String(issueId)
+        ))),
+      }));
+      return result;
+    } catch (error) {
+      store.set({ error: {
+        scope: 'issue_recovery',
+        message: error instanceof Error ? error.message : '当前问题恢复失败',
+        recovery: '问题状态可能已经变化，请刷新后查看当前有效状态。',
+      } });
       return null;
     }
   },
@@ -925,7 +1098,12 @@ export const actions = {
   async cancel() {
     const { projectId, run, activity } = store.get();
     if (!projectId || !run || !['queued', 'running', 'suspended'].includes(run.status)) return null;
-    store.set({ run: { ...run, status: 'cancelled' }, activity: null, error: '' });
+    store.set({
+      run: { ...run, status: 'stopping' },
+      activity: activity ? { ...activity, detail: '正在停止并核对已发出的修改，请稍候' } : activity,
+      statusText: '正在停止并核对已完成内容',
+      error: '',
+    });
     try {
       const result = await cancelAgent(projectId);
       store.set({ run: result.run, activity: null, statusText: '已停止，已完成内容保留' });
@@ -1015,6 +1193,19 @@ export const actions = {
     store.set({ selectedPath: path, follow: false, pendingFocus: null, focus: focusForPath(path) });
     void actions.loadFile(path);
   },
+  reviewChangeGroup(groupId, path = '') {
+    store.set((state) => ({
+      reviewedChangeGroups: state.reviewedChangeGroups.includes(groupId)
+        ? state.reviewedChangeGroups
+        : [...state.reviewedChangeGroups, groupId],
+      ...(path ? {
+        selectedPath: path,
+        focus: { kind: 'diff', target: path },
+        follow: false,
+        pendingFocus: null,
+      } : {}),
+    }));
+  },
   selectMaterial(id) {
     store.set({ selectedMaterial: id, activeAnchor: 0, focus: { kind: 'doc', target: id }, follow: false });
     void actions.loadMaterial(id);
@@ -1080,6 +1271,11 @@ export function mergeToolTrace(trace, event, seq) {
     repairAttempt: event.repairAttempt ?? null,
     repairRoundId: event.repairRoundId || '',
     findingCount: Number(event.findingCount) || 0,
+    issueId: event.issueId || '',
+    issueStatus: event.issueStatus || '',
+    problemVisibility: event.problemVisibility || '',
+    recoveryActions: event.recoveryActions || [],
+    resolvedIssueIds: event.resolvedIssueIds || [],
     segmentCount: 1,
     toolCallIds: toolCallId ? [toolCallId] : [],
   };

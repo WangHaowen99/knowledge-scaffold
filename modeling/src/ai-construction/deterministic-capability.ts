@@ -6,6 +6,7 @@ export interface ScriptCandidate {
   confidence: 'medium' | 'high';
   reason: string;
   suggestedContract?: string;
+  invokesOperationKeys?: string[];
 }
 
 export interface ScriptDecision {
@@ -28,7 +29,7 @@ export class ScriptDecisionInputError extends Error {
 }
 
 const HIGH_SIGNAL = /(计算|公式|聚合|汇总|求和|平均|比率|比例|收率|换算|日期|天数|周期|金额|成本|产量|数量|数值|精确转换)/;
-const MEDIUM_SIGNAL = /(排序|排名|分配|去重|格式转换|编码转换|批量转换)/;
+const MEDIUM_SIGNAL = /(排序|排名|分配|分流|路由|二选一|唯一选择|条件分支|去重|格式转换|编码转换|批量转换)/;
 const OPEN_SEMANTIC = /(经验判断|综合研判|开放式|语义分析|主观判断|人工判断)/;
 const NUMBER_TYPE = /^(number|integer|float|double|decimal|int|long)$/i;
 
@@ -51,7 +52,7 @@ export function identifyScriptCandidates(
   metrics: SpecMetric[],
 ): ScriptCandidate[] {
   const metricKeys = new Set(metrics.map((item) => item.key));
-  return operations.flatMap<ScriptCandidate>((operation): ScriptCandidate[] => {
+  const candidates = operations.flatMap<ScriptCandidate>((operation): ScriptCandidate[] => {
     if (operation.script?.key) return [];
     const text = [operation.title, operation.description, ...(operation.flow ?? [])].join('\n');
     const numericOutput = operation.outputs?.some((item) => NUMBER_TYPE.test(item.type.trim()));
@@ -75,11 +76,22 @@ export function identifyScriptCandidates(
         operationKey: operation.key,
         title: operation.title,
         confidence: 'medium' as const,
-        reason: '流程包含排序、分配或确定性转换步骤',
+        reason: '流程包含分流、排序、分配、条件分支或确定性转换步骤',
         suggestedContract: operationContractSuggestion(operation),
       }];
     }
     return [];
+  });
+  const candidateKeys = new Set(candidates.map((candidate) => candidate.operationKey));
+  const operationByKey = new Map(operations.map((operation) => [operation.key, operation]));
+  return candidates.map((candidate) => {
+    const operation = operationByKey.get(candidate.operationKey);
+    const operationText = operation
+      ? [operation.title, operation.description, ...(operation.flow ?? [])].join('\n')
+      : '';
+    const invokesOperationKeys = [...candidateKeys]
+      .filter((key) => key !== candidate.operationKey && operationText.includes(key));
+    return invokesOperationKeys.length ? { ...candidate, invokesOperationKeys } : candidate;
   });
 }
 

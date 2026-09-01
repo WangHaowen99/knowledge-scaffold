@@ -24,7 +24,6 @@ export const PACKAGE_REQUIRED_FILES = [
   'index.md',
   'objects/index.md',
   'operations/index.md',
-  'mappings/object-data-mappings.json',
 ] as const;
 export const PACKAGE_INDEX_RESOURCES: Record<string, string> = {
   'index.md': 'root',
@@ -96,8 +95,9 @@ export function packageGenerationContract() {
       },
       mappings: {
         path: 'mappings/object-data-mappings.json',
-        required: true,
-        allowEmptyObjects: true,
+        required: 'when_physical_schema_exists',
+        forbidden: 'when_physical_schema_absent',
+        allowEmptyObjects: false,
         requiredFields: ['schema_version', 'default_provider_alias', 'objects'],
         termTableRules: [
           '资料 purpose=term 的表格是术语表，只能用于 value_bindings 和字段 value_binding_ref',
@@ -127,12 +127,21 @@ export function packageGenerationContract() {
     authoring: {
       managedResources: {
         deterministicTools: {
+          schemaObjects: 'sync_schema_objects',
+          virtualObjects: 'create_object',
           rules: 'upsert_rule',
           operations: 'upsert_operation',
           objectDataMappings: 'bind_object_source',
         },
-        enforcedPaths: ['mappings/object-data-mappings.json'],
-        deprecatedDirectWritePatterns: ['rules/*.md', 'operations/*.md'],
+        enforcedPaths: [
+          'objects/*.md', 'rules/*.md', 'operations/*.md', 'metrics/*.md',
+          'mappings/object-data-mappings.json',
+        ],
+        deprecatedDirectWritePatterns: [],
+        objectSourceModes: {
+          schema: '每张 purpose=schema Sheet 恰好生成一个已绑定物理对象和 mapping',
+          virtual: '没有 purpose=schema Sheet 时只生成无物理绑定对象且不生成 mapping',
+        },
         derivedFiles: [
           'rules/index.md',
           'operations/index.md',

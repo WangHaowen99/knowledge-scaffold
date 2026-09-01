@@ -12,6 +12,11 @@ import {
 import {
   decideScriptOptimization,
   normalizeOptimizationSuggestionTargets,
+  OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS,
+  OPTIMIZATION_APPLY_TIMEOUT_MS,
+  optimizationSuggestionDedupeKey,
+  OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS,
+  OPTIMIZATION_PROPOSAL_TIMEOUT_MS,
   proposeOptimizations,
   validateOptimizationSuggestions,
 } from '../src/evaluation/optimizer.js';
@@ -35,6 +40,26 @@ function result(id: string, question: string, groundTruth: string): EvalResult {
     createdAt: '2026-07-16T00:00:00.000Z',
   };
 }
+
+test('优化任务限制模型输出和单次等待时间', () => {
+  assert.equal(OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS, 12_000);
+  assert.equal(OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS, 32_000);
+  assert.equal(OPTIMIZATION_PROPOSAL_TIMEOUT_MS, 180_000);
+  assert.equal(OPTIMIZATION_APPLY_TIMEOUT_MS, 300_000);
+});
+
+test('同一根因和目标的优化建议不因标题改写而重复', () => {
+  const base = {
+    title: '修复统一计算入口', detail: '使用确定性脚本。', kind: 'modify_script', target: 'calculate_result',
+    diagnosisIds: ['dg-b', 'dg-a'], evidence: [], generalizationPlan: '', validationPlan: '',
+  };
+  assert.equal(optimizationSuggestionDedupeKey(base), optimizationSuggestionDedupeKey({
+    ...base, title: '调整计算脚本的权威执行路径', diagnosisIds: ['dg-a', 'dg-b'],
+  }));
+  assert.notEqual(optimizationSuggestionDedupeKey(base), optimizationSuggestionDedupeKey({
+    ...base, target: 'validate_result',
+  }));
+});
 
 const scriptedSpec = () => ({
   id: 'scripted-demo', name: 'scripted-demo', description: 'demo', version: '1.0.0', language: 'zh-CN',
@@ -581,6 +606,48 @@ test('语义失败诊断按输入预算分批并覆盖大量长回答', async ()
     report.diagnoses.flatMap((diagnosis) => diagnosis.resultIds).sort(),
     failures.map((failed) => failed.id).sort(),
   );
+  assert.equal(report.canProposeOptimizations, true);
+});
+
+test('语义诊断部分批次失败时保留成功结果并给出可重试诊断', async () => {
+  const failures = ['batch-ok', 'batch-timeout-a', 'batch-timeout-b'].map((id) => {
+    const failed = result(id, `核对 ${id} 的整体负荷`, '按全部输入分量汇总计算');
+    failed.finalAnswer = `长回答-${id}-`.repeat(5_000);
+    return failed;
+  });
+  const core = createFauxCore({ provider: 'partial-batch-diagnosis', models: [{ id: 'partial-batch-diagnosis' }] });
+  const llm: LlmDeps = {
+    model: core.getModel(), getApiKey: () => 'faux',
+    streamFn: ((model: unknown, context: any, options: unknown) => {
+      const input = JSON.stringify(context);
+      if (input.includes('batch-timeout-a') || input.includes('batch-timeout-b')) {
+        throw Object.assign(new Error('synthetic timeout'), { code: 'MODEL_REQUEST_TIMEOUT' });
+      }
+      core.setResponses([fauxAssistantMessage([fauxToolCall('submit_failure_diagnoses', {
+        diagnoses: [{
+          category: 'caliber_issue', title: '成功批次口径不完整',
+          summary: '回答未覆盖全部必需输入分量。', evidence: ['来源公式包含多个必需输入分量'],
+          confidence: 'high', blocking: false, repairScope: 'package', packageOptimizable: true,
+          resultIds: ['batch-ok'], relatedQuestions: ['核对 batch-ok 的整体负荷'],
+          suggestedAction: '补齐公式输入口径。',
+        }],
+      })])]);
+      return core.streamSimple(model as any, context, options as any);
+    }) as LlmDeps['streamFn'],
+  };
+
+  const report = await diagnoseEvaluationFailures({
+    projectId: 'project-1', results: failures,
+    spec: { id: 'demo', name: 'demo', description: 'demo', version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data', objects: [], operations: [], rules: [], metrics: [] },
+  }, llm);
+
+  const successful = report.diagnoses.find((diagnosis) => diagnosis.title === '成功批次口径不完整');
+  const retryable = report.diagnoses.find((diagnosis) => diagnosis.title === '部分失败原因分析未完成');
+  assert.deepEqual(successful?.resultIds, ['batch-ok']);
+  assert.deepEqual(retryable?.resultIds.sort(), ['batch-timeout-a', 'batch-timeout-b']);
+  assert.equal(retryable?.packageOptimizable, false);
+  assert.equal(retryable?.repairScope, 'runtime');
+  assert.match(retryable?.evidence.join('\n') ?? '', /MODEL_REQUEST_TIMEOUT/);
   assert.equal(report.canProposeOptimizations, true);
 });
 

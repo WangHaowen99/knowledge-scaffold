@@ -164,3 +164,46 @@ test('Agent 可以等待后台评测真实结束后再继续推进', async () =>
   assert.equal(round.status, 'done');
   assert.equal(round.passCount, 1);
 });
+
+test('评测进入终态后主动投递确定性事件且不携带用例正文', async (t) => {
+  const project = prepareProject('评测终态主动同步');
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({
+      url: String(url),
+      body: JSON.parse(String(init?.body || '{}')),
+    });
+    return new Response(JSON.stringify({ accepted: true, reconciled: true }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const started = startEvaluation({
+    projectId: project.id,
+    owner: 'alice',
+    token: 'access-token',
+    packageSnapshot: packageSnapshot('revision-terminal-event'),
+  }, {
+    runRound: async ({ roundId }) => {
+      m3repo.roundProgress(roundId, 1, 1);
+      m3repo.finishRound(roundId, 'done');
+    },
+  });
+
+  const round = await waitForEvaluation(project.id, started.roundId);
+
+  assert.equal(round.status, 'done');
+  const eventCall = calls.find((call) => call.url.endsWith('/evaluation-events'));
+  assert.ok(eventCall);
+  assert.deepEqual(eventCall.body, {
+    eventId: `evaluation:${round.id}:terminal`,
+    roundId: round.id,
+    status: 'done',
+    done: 1,
+    total: 1,
+    passed: 1,
+    finishedAt: round.finishedAt,
+  });
+  assert.equal('question' in eventCall.body, false);
+  assert.equal('results' in eventCall.body, false);
+});

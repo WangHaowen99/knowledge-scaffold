@@ -82,6 +82,11 @@ export function validateGeneratedScriptSyntax(script: SpecScript): void {
 
 export function validateGeneratedScriptExecutionContract(script: SpecScript): void {
   const source = script.sourceCode;
+  if (/hello[ _-]?world/iu.test(source)
+    || /^\s*pass\s*(?:#.*)?$/mu.test(source)
+    || /\b(?:TODO|FIXME)\b/u.test(source)) {
+    throw new Error(`脚本执行契约检查失败（${script.key}）：包含演示或占位实现`);
+  }
   if (/\b(?:raise\s+)?NotImplementedError\b/.test(source)) {
     throw new Error(`脚本执行契约检查失败（${script.key}）：包含 NotImplementedError 占位数据接口`);
   }
@@ -118,6 +123,52 @@ export function validateGeneratedScriptExecutionContract(script: SpecScript): vo
     }
     if (!source.includes(flag)) {
       throw new Error(`脚本执行契约检查失败（${script.key}）：源码未声明参数 ${flag}`);
+    }
+    const parameterType = String(parameter.type || 'string').trim().toLowerCase();
+    const booleanParameter = parameterType === 'bool' || parameterType === 'boolean';
+    const action = String(parameter.action || '').trim().toLowerCase();
+    if (action && !booleanParameter) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 的 action 只适用于 boolean 参数`);
+    }
+    if (action && parameter.required) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 使用 ${action} 时不能设为必填`);
+    }
+    if (action && parameter.multiple) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 使用 ${action} 时不能设为多值`);
+    }
+    const actionDefault = action === 'store_true' ? false : action === 'store_false' ? true : undefined;
+    if (actionDefault !== undefined
+      && parameter.defaultValue !== undefined
+      && parameter.defaultValue !== actionDefault) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：${flag} 的默认值与 ${action} 不一致`,
+      );
+    }
+    const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const declaration = source.match(new RegExp(
+      `\\.add_argument\\s*\\(\\s*["']${escapedFlag}["'][\\s\\S]*?\\)`,
+      'u',
+    ))?.[0] ?? '';
+    if (!declaration) {
+      throw new Error(`脚本执行契约检查失败（${script.key}）：${flag} 未通过 argparse 声明`);
+    }
+    const sourceAction = declaration.match(/\baction\s*=\s*["'](store_true|store_false)["']/u)?.[1] ?? '';
+    if (action && sourceAction !== action) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：${flag} 的源码 action 与契约 ${action} 不一致`,
+      );
+    }
+    if (!action && booleanParameter && sourceAction) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：${flag} 是普通 boolean 契约，源码不能使用 ${sourceAction}`,
+      );
+    }
+  }
+  for (const output of script.outputs) {
+    if (!source.includes(`"${output.key}"`) && !source.includes(`'${output.key}'`)) {
+      throw new Error(
+        `脚本执行契约检查失败（${script.key}）：源码没有输出契约字段 ${output.key}`,
+      );
     }
   }
 }

@@ -28,6 +28,7 @@ import {
   PACKAGE_MANIFEST_SCHEMA_VERSION,
   PACKAGE_STATUSES,
 } from './package-contract.js';
+import { packageNeedsObjectDataMapping } from './schema-object-policy.js';
 
 // PackageSpec → 标准知识包文件集（遵循 consumer 当前知识包导入格式）。
 // 返回 { path: content } 映射，供落盘或打 zip。
@@ -86,6 +87,7 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
   for (const f of o.fields) {
     fields[mappingFieldName(f)] = {
       source: f.key,
+      ...(f.sourceColumn && f.sourceColumn !== f.key ? { source_column: f.sourceColumn } : {}),
       type: f.type || 'string',
       required: !!f.required,
       readable: true,
@@ -299,16 +301,20 @@ function scriptMd(script: SpecScript): string {
     entrypoint: script.entrypoint, timeout_seconds: script.timeoutSeconds,
     evidence: script.evidence,
   });
-  const parameters = script.parameters.map((item) =>
-    `| ${cell(item.name)} | ${cell(item.flag)} | ${cell(item.type)} | ${item.required ? '是' : '否'} | ${cell(item.defaultValue == null ? '' : String(item.defaultValue))} | ${cell(item.description)} |`);
+  const parameters = script.parameters.map((item) => {
+    const actionDefault = item.action === 'store_true' ? false : item.action === 'store_false' ? true : undefined;
+    const defaultValue = item.defaultValue ?? actionDefault;
+    return `| ${cell(item.name)} | ${cell(item.flag)} | ${cell(item.type)} | ${item.required ? '是' : '否'} | ${cell(defaultValue == null ? '' : String(defaultValue))} | ${cell(item.description)} | ${item.multiple ? '是' : '否'} | ${cell(item.action)} |`;
+  });
   const outputs = script.outputs.map((item) =>
     `| ${cell(item.key)} | ${cell(item.type)} | ${cell(item.description)} |`);
   return [
     fm,
     '# 脚本用途', '', script.description, '',
     '# 输入参数', '',
-    '| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |', '| --- | --- | --- | --- | --- | --- |',
-    ...(parameters.length ? parameters : ['| — | — | — | — | — | — |']), '',
+    '| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 | 是否多值 | Action |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...(parameters.length ? parameters : ['| — | — | — | — | — | — | — | — |']), '',
     '# 输出', '',
     '| 输出 key | 类型 | 说明 |', '| --- | --- | --- |',
     ...(outputs.length ? outputs : ['| — | — | — |']), '',
@@ -420,7 +426,9 @@ export function renderPackage(spec: PackageSpec, options: RenderPackageOptions =
     files[`scripts/${script.key}.md`] = scriptMd(script);
     files[`scripts/${script.entrypoint}`] = script.sourceCode.endsWith('\n') ? script.sourceCode : `${script.sourceCode}\n`;
   }
-  files['mappings/object-data-mappings.json'] = mappingsJson(s);
+  if (packageNeedsObjectDataMapping(s)) {
+    files['mappings/object-data-mappings.json'] = mappingsJson(s);
+  }
   for (const o of s.objects) files[`objects/${o.key}.md`] = objectMd(s, o);
   for (const op of s.operations) files[`operations/${op.key}.md`] = operationMd(op);
   return files;
