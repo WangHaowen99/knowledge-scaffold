@@ -77,6 +77,7 @@ import {
   schemaObjectPolicyIssues,
   schemaTables,
 } from '../workflow/schema-object-policy.js';
+import { normalizeRelationName, relationNameProblem } from '../workflow/relation-name.js';
 import { tableSourcesFor } from '../workflow/source-references.js';
 import { validateKey, validateSpecKeys } from '../workflow/keys.js';
 import { canonicalizePackageSpec } from '../workflow/package-spec.js';
@@ -3772,6 +3773,7 @@ export class AgentCoreService {
     const current = await this.overlay(workspace);
     const key = domainKey(args.key, '对象');
     const title = text(args.title, 'title');
+    const aliases = stringArray(args.aliases);
     const fields: SpecField[] = requiredObjectArray(args.fields, 'fields').map((raw, index) => {
       if (typeof raw.required !== 'boolean') {
         throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `fields[${index}].required 必须是布尔值`, [], 400);
@@ -3788,12 +3790,31 @@ export class AgentCoreService {
     if (!fields.length) throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '对象至少要包含一个字段', [], 400);
     assertUniqueDomainKeys(fields.map((field) => field.key), '对象字段');
     const existing = current.spec.objects.find((item) => item.key === key);
-    const relations = requiredObjectArray(args.relations ?? [], 'relations').map((raw, index) => ({
-      relation: text(raw.relation, `relations[${index}].relation`),
-      target: domainKey(raw.target, `关系目标 relations[${index}]`),
-      ...(optionalInputText(raw.note) ? { note: optionalInputText(raw.note) } : {}),
-      ...(stringArray(raw.evidence).length ? { evidence: stringArray(raw.evidence) } : {}),
-    }));
+    const relations = requiredObjectArray(args.relations ?? [], 'relations').map((raw, index) => {
+      const relation = normalizeRelationName(text(raw.relation, `relations[${index}].relation`));
+      const target = domainKey(raw.target, `关系目标 relations[${index}]`);
+      const targetObject = target === key
+        ? { key, title, aliases }
+        : current.spec.objects.find((item) => item.key === target);
+      const problem = relationNameProblem(relation, {
+        source: { key, title, aliases },
+        target: targetObject,
+      });
+      if (problem) {
+        throw new AgentCoreError(
+          'INVALID_DOMAIN_PAYLOAD',
+          `relations[${index}].relation：${problem}`,
+          ['只填写关系谓词，并检查“源对象 -> 关系名称 -> 目标对象”连读符合业务逻辑'],
+          400,
+        );
+      }
+      return {
+        relation,
+        target,
+        ...(optionalInputText(raw.note) ? { note: optionalInputText(raw.note) } : {}),
+        ...(stringArray(raw.evidence).length ? { evidence: stringArray(raw.evidence) } : {}),
+      };
+    });
     assertReferences(
       '关系目标对象',
       relations.map((item) => item.target),
@@ -3910,7 +3931,7 @@ export class AgentCoreService {
       title,
       description: text(args.description, 'description'),
       fields,
-      ...(stringArray(args.aliases).length ? { aliases: stringArray(args.aliases) } : {}),
+      ...(aliases.length ? { aliases } : {}),
       ...(optionalInputText(args.query_boundary) ? { queryBoundary: optionalInputText(args.query_boundary) } : {}),
       ...(relations.length ? { relations } : {}),
       ...(sourceRefs?.length ? { sourceRefs } : {}),
