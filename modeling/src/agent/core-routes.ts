@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { PackageArtifactStoreError } from '../artifacts/package-store.js';
+import { getAuthoringState } from '../authoring/state.js';
 import { canReadProject, canWriteProject, claimAgentRuntime, getProject, projectMemberRole } from '../projects/repo.js';
 import { parsePackageArchive } from '../workflow/package-import.js';
 import {
@@ -256,7 +257,8 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     if (!project || !canReadProject(project.id, request.user!.username)) {
       return reply.code(404).send({ error: '项目不存在' });
     }
-    reply.header('Cache-Control', 'private, max-age=3600, must-revalidate');
+    // Studio 权限包含候选和租约状态，确认结算后必须立即重新验证。
+    reply.header('Cache-Control', 'private, no-cache');
     const role = projectMemberRole(project.id, request.user!.username);
     const lease = studioWrites.leaseStatus(project.id, request.user!.username);
     const schemaEtag = `${STUDIO_SCHEMA_VERSION}-${role}-${lease.mode}-${lease.owner ?? ''}-${lease.expiresAt ?? ''}`;
@@ -296,11 +298,15 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       const query = (request.query ?? {}) as Record<string, unknown>;
-      const { studio } = await studioRead(project, request.user!.username);
+      const { workingPackage, studio } = await studioRead(project, request.user!.username);
       studio.assertRevision(query.workingRevision);
       const response = studio.list(query);
       setRevisionEtag(reply, response.workingRevision);
-      return response;
+      return {
+        ...response,
+        reviewRequested: workingPackage.candidateRevision !== null
+          || studioReviews.reviewRequested(project.id, response.workingRevision),
+      };
     } catch (error) {
       return sendStudioReadError(reply, error);
     }
@@ -326,12 +332,18 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       return reply.code(404).send({ error: '项目不存在' });
     }
     try {
-      const response = await studioWrites.patch(
+      const elementId = String((request.params as any).elementId ?? '');
+      const response = await (elementId.startsWith('object:') ? studioWrites.patchObjectModel(
         project,
         request.user!.username,
-        String((request.params as any).elementId ?? ''),
+        elementId,
         request.body,
-      );
+      ) : studioWrites.patch(
+        project,
+        request.user!.username,
+        elementId,
+        request.body,
+      ));
       setRevisionEtag(reply, response.workingRevision);
       return response;
     } catch (error) {
@@ -412,8 +424,25 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
         request.body,
       );
       setRevisionEtag(reply, response.workingRevision);
-      triggerAgentProjectEventDelivery(request, project.id);
-      return reply.code(202).send(response);
+      if (response.mode === 'agent') {
+        triggerAgentProjectEventDelivery(request, project.id);
+      } else if (response.currentRevision) {
+        try {
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: project.id,
+            type: 'package.revision.created',
+            payload: {
+              revisionId: response.currentRevision,
+              cause: 'studio_deterministic_commit',
+              ...(response.packageVersion ? { packageVersion: response.packageVersion } : {}),
+            },
+          });
+        } catch (error) {
+          request.log.warn({ err: error, projectId: project.id }, 'Studio revision 刷新事件发送失败');
+        }
+      }
+      return reply.code(response.applied ? 200 : 202).send(response);
     } catch (error) {
       return sendStudioError(reply, error);
     }

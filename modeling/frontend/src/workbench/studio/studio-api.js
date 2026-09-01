@@ -13,7 +13,7 @@ function queryString(options = {}) {
   return query.size ? `?${query}` : '';
 }
 
-export const getStudioSchema = (projectId) => api(`${P(projectId)}/schema`);
+export const getStudioSchema = (projectId) => api(`${P(projectId)}/schema`, { cache: 'no-cache' });
 
 export function getStudioBootstrap(projectId, options = {}, requestOptions = {}) {
   const { signal, cache = 'default', ...apiOptions } = requestOptions;

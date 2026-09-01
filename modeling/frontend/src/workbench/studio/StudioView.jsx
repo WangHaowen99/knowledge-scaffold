@@ -22,6 +22,7 @@ import { store } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import EvidenceLinks from '../center/EvidenceLinks.jsx';
 import { getProjectSession } from '../../authoring-api.js';
+import { protectUnsavedBeforeUnload } from '../../flowchartNavigationGuard.js';
 import {
   batchStudioElements,
   applyStudioDeletions,
@@ -30,6 +31,7 @@ import {
   getStudioElement,
   getStudioElements,
   getStudioGraph,
+  invalidateStudioBootstrap,
   previewStudioDeletions,
   requestStudioReview,
   studioError,
@@ -53,14 +55,27 @@ import {
   studioVisibleElementId,
   writeStudioSession,
 } from './studio-model.js';
+import {
+  isStudioNoChangesFailure,
+  studioChangedFields,
+  studioDeleteCopy,
+  studioDraftEqual,
+  studioDraftFieldValue,
+  studioIncompleteDraftField,
+  studioRelationElements,
+  studioSaveStateAfterDraftChange,
+  studioSyncedSaveState,
+} from './studio-entry-state.js';
 import { useProjectEvents } from '../../projectEventStream.jsx';
 import { createProjectEventReplayGate } from '../../projectEventReplay.js';
 import StudioGraph from './StudioGraph.jsx';
 import {
   createStudioProjectEventBaseline,
+  markStudioDraftsForRefresh,
   planStudioProjectEvent,
   planStudioWindowRefresh,
   studioHasPendingLocalEdits,
+  studioPendingDraftRefresh,
   studioRefreshNoticeMessage,
 } from './studioRefresh.js';
 import './studio.css';
@@ -77,6 +92,7 @@ export default function StudioView({ focus }) {
   const [createKind, setCreateKind] = useState('');
   const [deleteIds, setDeleteIds] = useState([]);
   const [externalRefreshNotice, setExternalRefreshNotice] = useState({ pending: false, message: '', revisionId: '' });
+  const [reviewSubmitState, setReviewSubmitState] = useState({ phase: 'idle', message: '' });
   const [projectEventBaseline, setProjectEventBaseline] = useState({ projectId: '', cursor: 0, ready: false });
   const sessionRef = useRef(session);
   const requestRef = useRef(0);
@@ -152,6 +168,7 @@ export default function StudioView({ focus }) {
         || graph.nodes.some((node) => node.id === previous.selectedElementId);
       const selectedElementId = selectedExists ? previous.selectedElementId : '';
       const revisionChanged = previous.workingRevision !== list.workingRevision;
+      const pendingDraftRefresh = studioPendingDraftRefresh(previous.entryDrafts, list.workingRevision);
       update({
         phase: 'ready',
         error: null,
@@ -161,20 +178,47 @@ export default function StudioView({ focus }) {
         nextCursor: list.nextCursor,
         graph,
         workingRevision: list.workingRevision,
+        studioPendingReview: Boolean(list.hasStagedChanges && !list.candidateRevision && !list.reviewRequested),
         selectedElementId,
         view: previous.view === 'entry' && !selectedElementId ? previous.returnView : previous.view,
         details: revisionChanged ? {} : previous.details,
       });
-      deferredRefreshRef.current = null;
-      clearExternalNotice();
+      store.set({ studioPendingCount: list.hasStagedChanges ? 1 : 0 });
+      if (pendingDraftRefresh.pending) {
+        deferredRefreshRef.current = { revisionId: pendingDraftRefresh.revisionId };
+        setExternalNotice({
+          pending: true,
+          message: studioRefreshNoticeMessage(pendingDraftRefresh.revisionId),
+          revisionId: pendingDraftRefresh.revisionId,
+        });
+      } else {
+        deferredRefreshRef.current = null;
+        clearExternalNotice();
+      }
       if (selectedElementId) await loadDetail(selectedElementId, list.workingRevision);
     } catch (error) {
       if (!controller.signal.aborted && requestRef.current === requestId) markRequestFailure(error);
     } finally {
       if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
-  }, [clearExternalNotice, loadDetail, markRequestFailure, projectId, update]);
+  }, [clearExternalNotice, loadDetail, markRequestFailure, projectId, setExternalNotice, update]);
   const reloadStudio = useCallback(() => loadStudio({ cache: 'reload' }), [loadStudio]);
+
+  const discardLocalDraftsAndLoadStudio = useCallback(async () => {
+    localEditsRef.current = false;
+    deferredRefreshRef.current = null;
+    invalidateStudioBootstrap(projectId);
+    update({ entryDrafts: {}, details: {} });
+    await loadStudio();
+  }, [loadStudio, projectId, update]);
+
+  useEffect(() => {
+    const dirty = studioHasPendingLocalEdits(session);
+    if (!dirty) return undefined;
+    const beforeUnload = (event) => { protectUnsavedBeforeUnload(event, true); };
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, [session.entryDrafts]);
   const scheduleStudioRefresh = useCallback(() => {
     const state = refreshStateRef.current;
     if (state.loadTimer) return;
@@ -256,7 +300,7 @@ export default function StudioView({ focus }) {
   }, [loadDetail, session.detailLoading, session.details, session.selectedElementId, session.workingRevision]);
 
   useEffect(() => {
-    if (!projectId) return undefined;
+    if (!projectEventBaseline.ready || projectEventBaseline.projectId !== projectId) return undefined;
     void loadStudio();
     return () => {
       loadAbortRef.current?.abort();
@@ -265,7 +309,7 @@ export default function StudioView({ focus }) {
       if (refreshStateRef.current.loadTimer) clearTimeout(refreshStateRef.current.loadTimer);
       refreshStateRef.current.loadTimer = null;
     };
-  }, [loadStudio, projectId]);
+  }, [loadStudio, projectEventBaseline.projectId, projectEventBaseline.ready, projectId]);
 
   const entryDraftDirty = studioHasPendingLocalEdits(session);
   useEffect(() => {
@@ -274,6 +318,17 @@ export default function StudioView({ focus }) {
       scheduleStudioRefresh();
     }
   }, [entryDraftDirty, scheduleStudioRefresh]);
+
+  useEffect(() => {
+    if (!entryDraftDirty || !externalRefreshNotice.pending) return;
+    update((current) => ({
+      ...current,
+      entryDrafts: markStudioDraftsForRefresh(
+        current.entryDrafts,
+        externalRefreshNotice.revisionId,
+      ),
+    }));
+  }, [entryDraftDirty, externalRefreshNotice.pending, externalRefreshNotice.revisionId, update]);
 
   useEffect(() => {
     if (!projectEventBaseline.ready || projectEventBaseline.projectId !== projectId) {
@@ -297,6 +352,10 @@ export default function StudioView({ focus }) {
     });
     state.gate = plan.gate;
     if (plan.deferLoad) {
+      update((current) => ({
+        ...current,
+        entryDrafts: markStudioDraftsForRefresh(current.entryDrafts, plan.revisionId),
+      }));
       deferredRefreshRef.current = { revisionId: plan.revisionId || '' };
       setExternalNotice({
         pending: true,
@@ -309,12 +368,16 @@ export default function StudioView({ focus }) {
       deferredRefreshRef.current = null;
       scheduleStudioRefresh();
     }
-  }, [projectEventBaseline.cursor, scheduleStudioRefresh, setExternalNotice]);
+  }, [projectEventBaseline.cursor, scheduleStudioRefresh, setExternalNotice, update]);
 
   useEffect(() => {
     const refresh = () => {
       const plan = planStudioWindowRefresh({ localEdits: localEditsRef.current });
       if (plan.deferLoad) {
+        update((current) => ({
+          ...current,
+          entryDrafts: markStudioDraftsForRefresh(current.entryDrafts),
+        }));
         deferredRefreshRef.current = { revisionId: '' };
         setExternalNotice({
           pending: true,
@@ -337,7 +400,7 @@ export default function StudioView({ focus }) {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refreshOnVisible);
     };
-  }, [scheduleStudioRefresh, setExternalNotice]);
+  }, [scheduleStudioRefresh, setExternalNotice, update]);
 
   const navigate = useCallback((view, elementId = sessionRef.current.selectedElementId) => {
     const next = {
@@ -361,6 +424,35 @@ export default function StudioView({ focus }) {
     navigate('entry', elementId);
     if (!sessionRef.current.details[elementId]) void loadDetail(elementId);
   }, [loadDetail, navigate, update]);
+
+  const submitPendingReview = useCallback(async () => {
+    if (!sessionRef.current.studioPendingReview || reviewSubmitState.phase === 'saving') return;
+    if (studioHasPendingLocalEdits(sessionRef.current)) {
+      setReviewSubmitState({
+        phase: 'error',
+        message: '当前条目仍有未保存或不合法的输入，请先修正后再检查并应用',
+      });
+      return;
+    }
+    setReviewSubmitState({ phase: 'saving', message: '正在执行确定性检查并应用修改' });
+    try {
+      const response = await requestStudioReview(projectId, {
+        expectedRevision: sessionRef.current.workingRevision,
+        clientMutationId: mutationId('studio-review-recovery'),
+      });
+      update({ studioPendingReview: false });
+      if (response.applied) {
+        store.set({ studioPendingCount: 0 });
+        setReviewSubmitState({ phase: 'saved', message: response.display?.text || '确定性检查通过，修改已应用' });
+        await loadStudio();
+        window.dispatchEvent(new Event('mw-package-updated'));
+      } else {
+        setReviewSubmitState({ phase: 'saved', message: response.display?.text || '已提交复核' });
+      }
+    } catch (error) {
+      setReviewSubmitState({ phase: 'error', message: studioError(error).message });
+    }
+  }, [loadStudio, projectId, reviewSubmitState.phase, update]);
 
   const loadMore = useCallback(async () => {
     const current = sessionRef.current;
@@ -414,6 +506,7 @@ export default function StudioView({ focus }) {
         total: Math.max(0, current.total - deleted.size, elements.length),
       };
     });
+    store.set({ studioPendingCount: 1 });
     try {
       const [list, graph] = await Promise.all([
         getStudioElements(projectId, { limit: 200, workingRevision: response.workingRevision }),
@@ -465,7 +558,8 @@ export default function StudioView({ focus }) {
       {projectEvents}
       <div className="studio-root">
         {externalRefreshNotice.pending && (
-          <StudioExternalRefreshBanner message={externalRefreshNotice.message} onReload={reloadStudio} />
+          <StudioExternalRefreshBanner message={externalRefreshNotice.message}
+            onReload={discardLocalDraftsAndLoadStudio} />
         )}
         {(session.phase === 'conflict' || session.phase === 'error') && (
           <StudioBanner failure={session.error} conflict={session.phase === 'conflict'} onRetry={reloadStudio} />
@@ -475,6 +569,10 @@ export default function StudioView({ focus }) {
             onDismiss={() => update({ studioWarnings: [], studioWarningCount: 0 })} />
         )}
         <StudioAccessBanner access={session.schema?.access} />
+        {session.studioPendingReview && (
+          <StudioPendingReviewBanner state={reviewSubmitState} onSubmit={submitPendingReview}
+            blocked={entryDraftDirty} />
+        )}
         <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={reloadStudio} />
         {session.elements.length === 0 ? (
           <StudioEmpty schema={session.schema} onCreate={setCreateKind} onRefresh={reloadStudio} />
@@ -502,8 +600,8 @@ export default function StudioView({ focus }) {
         {deleteIds.length > 0 && (
           <StudioDeleteDialog projectId={projectId} session={session} elementIds={deleteIds}
             onClose={() => setDeleteIds([])}
-            onDeleted={async (response) => {
-              await applyMutation(response);
+            onMutation={applyMutation}
+            onCompleted={() => {
               setDeleteIds([]);
             navigate('table', '');
           }} />
@@ -667,9 +765,7 @@ function StudioTable({
   const applyBulk = async () => {
     const value = bulkDescription.trim();
     if (!selectedItems.length || mixedKinds || !value || bulkState.phase === 'saving') return;
-    let savedRevision = '';
-    const reviewMutationId = mutationId('studio-review');
-    setBulkState({ phase: 'saving', message: '正在保存为一组待确认修改' });
+    setBulkState({ phase: 'saving', message: '正在保存为一组工作草稿' });
     try {
       const response = await batchStudioElements(projectId, {
         expectedRevision: session.workingRevision,
@@ -681,40 +777,21 @@ function StudioTable({
         })),
       });
       await onMutation(response);
-      savedRevision = response.workingRevision;
-      setBulkState({ phase: 'reviewing', message: '修改已保存，正在交给助手整理整体确认', revision: response.workingRevision });
-      await requestStudioReview(projectId, {
-        expectedRevision: response.workingRevision,
-        clientMutationId: reviewMutationId,
-      });
       update({ selectedIds: [] });
-      update({ studioPendingReview: false });
       setBulkDescription('');
-      setBulkState({ phase: 'saved', message: '修改已保存，助手会在消息流中继续推进' });
+      setBulkState({ phase: 'saved', message: '修改已保存，请执行确定性检查后应用' });
     } catch (error) {
       const failure = studioError(error);
+      if (isStudioNoChangesFailure(failure)) {
+        update({ selectedIds: [] });
+        setBulkDescription('');
+        setBulkState({ phase: 'saved', message: '内容已同步，无需重复保存' });
+        return;
+      }
       setBulkState({
-        phase: savedRevision ? 'review_error' : failure.conflict ? 'conflict' : 'error',
-        message: savedRevision ? '修改已经保存，但助手暂未接手；可以直接重试通知' : failure.message,
-        revision: savedRevision,
-        reviewMutationId,
+        phase: failure.conflict ? 'conflict' : 'error',
+        message: failure.message,
       });
-    }
-  };
-  const retryBulkReview = async () => {
-    if (!bulkState.revision) return;
-    setBulkState((current) => ({ ...current, phase: 'reviewing', message: '正在通知助手' }));
-    try {
-      await requestStudioReview(projectId, {
-        expectedRevision: bulkState.revision,
-        clientMutationId: bulkState.reviewMutationId,
-      });
-      update({ selectedIds: [] });
-      update({ studioPendingReview: false });
-      setBulkDescription('');
-      setBulkState({ phase: 'saved', message: '助手已接手，会在消息流中继续推进' });
-    } catch (error) {
-      setBulkState((current) => ({ ...current, phase: 'review_error', message: studioError(error).message }));
     }
   };
   return (
@@ -726,15 +803,14 @@ function StudioTable({
             <label><span>统一说明</span><input className="input" value={bulkDescription}
               placeholder="输入这批条目共同的业务说明"
               onChange={(event) => setBulkDescription(event.target.value)} /></label>
-            <button className="btn btn-p" disabled={!bulkDescription.trim() || ['saving', 'reviewing'].includes(bulkState.phase)}
+            <button className="btn btn-p" disabled={!bulkDescription.trim() || bulkState.phase === 'saving'}
               onClick={applyBulk}>
-              <Save size={13} />{bulkState.phase === 'saving' ? '保存中…' : bulkState.phase === 'reviewing' ? '正在交给助手…' : '保存为待确认修改'}
+              <Save size={13} />{bulkState.phase === 'saving' ? '保存中…' : '保存为待检查修改'}
             </button>
           </>}
           <button className="btn btn-danger" onClick={() => onDelete(selectedItems.map((item) => item.id))}>
             <Trash2 size={13} />删除所选
           </button>
-          {bulkState.phase === 'review_error' && <button className="btn btn-sm" onClick={retryBulkReview}>重试通知助手</button>}
           <button className="btn btn-ghost" aria-label="取消批量选择" title="取消选择"
             onClick={() => update({ selectedIds: [] })}><X size={14} /></button>
           {bulkState.message && <span className={`studio-save-note ${bulkState.phase}`}>{bulkState.message}</span>}
@@ -794,6 +870,7 @@ function StudioTable({
 function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMutation, projectId }) {
   const detail = session.details[session.selectedElementId];
   const kindSchema = session.schema?.kinds.find((kind) => kind.kind === detail?.kind);
+  const canUpdate = Boolean(kindSchema?.capabilities?.update);
   const remembered = session.entryDrafts?.[session.selectedElementId]?.draft;
   const [draft, setDraft] = useState(() => remembered || editableDraft(detail, kindSchema));
   const [baseline, setBaseline] = useState(() => editableDraft(detail, kindSchema));
@@ -803,39 +880,95 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
   const pausedRef = useRef(false);
   const draftRef = useRef(draft);
   const revisionRef = useRef(session.workingRevision);
-  const reviewMutationIdRef = useRef(mutationId('studio-review'));
 
   useEffect(() => { revisionRef.current = session.workingRevision; }, [session.workingRevision]);
   useEffect(() => {
     if (!detail) return;
-    const next = session.entryDrafts?.[detail.id]?.draft || editableDraft(detail, kindSchema);
+    const nextBaseline = editableDraft(detail, kindSchema);
+    const next = session.entryDrafts?.[detail.id]?.draft || nextBaseline;
+    const dirty = !studioDraftEqual(next, nextBaseline);
     draftRef.current = next;
     setDraft(next);
-    setBaseline(editableDraft(detail, kindSchema));
-    setSaveState({ phase: deepEqual(next, editableDraft(detail, kindSchema)) ? 'idle' : 'dirty', message: '', failure: null, fieldErrors: {} });
-    pausedRef.current = false;
-  }, [detail?.id]);
+    setBaseline(nextBaseline);
+    pausedRef.current = dirty && !canUpdate;
+    setSaveState(dirty && !canUpdate
+      ? { phase: 'paused', message: '本地修改已保留，当前项目处于只读状态', failure: null, fieldErrors: {} }
+      : { phase: dirty ? 'dirty' : 'idle', message: '', failure: null, fieldErrors: {} });
+  }, [canUpdate, detail?.id]);
 
-  const remember = (next) => {
+  const forgetDraft = useCallback((elementId) => {
+    update((current) => {
+      if (!Object.prototype.hasOwnProperty.call(current.entryDrafts || {}, elementId)) return current;
+      const entryDrafts = { ...current.entryDrafts };
+      delete entryDrafts[elementId];
+      return { ...current, entryDrafts };
+    });
+  }, [update]);
+
+  const remember = (next, field = '') => {
+    const synced = !savingRef.current && studioDraftEqual(next, baseline);
+    pausedRef.current = false;
     draftRef.current = next;
     setDraft(next);
-    update((current) => ({
-      ...current,
-      entryDrafts: {
-        ...current.entryDrafts,
-        [session.selectedElementId]: { draft: next, updatedAt: Date.now() },
-      },
+    setSaveState((current) => studioSaveStateAfterDraftChange(current, {
+      baseline,
+      draft: next,
+      field,
+      saving: savingRef.current,
     }));
+    update((current) => {
+      const previousDraft = current.entryDrafts?.[session.selectedElementId];
+      return {
+        ...current,
+        entryDrafts: synced
+          ? Object.fromEntries(Object.entries(current.entryDrafts || {}).filter(([id]) => id !== session.selectedElementId))
+          : {
+            ...current.entryDrafts,
+            [session.selectedElementId]: {
+              ...(previousDraft || {}),
+              draft: next,
+              baseRevision: previousDraft?.baseRevision || revisionRef.current,
+              updatedAt: Date.now(),
+            },
+          },
+      };
+    });
   };
 
   const saveDraft = useCallback(() => {
     if (savingPromiseRef.current) return savingPromiseRef.current;
-    if (!detail || !kindSchema || pausedRef.current) return Promise.resolve(false);
+    if (!detail || !kindSchema) return Promise.resolve(false);
+    if (!canUpdate) {
+      pausedRef.current = true;
+      setSaveState({
+        phase: 'paused',
+        message: '本地修改已保留，当前项目处于只读状态',
+        failure: null,
+        fieldErrors: {},
+      });
+      return Promise.resolve(false);
+    }
+    if (pausedRef.current) return Promise.resolve(false);
     const snapshot = draftRef.current;
-    const changes = changedFields(baseline, snapshot);
-    if (!Object.keys(changes).length) return Promise.resolve(true);
+    const incompleteField = studioIncompleteDraftField(snapshot, kindSchema);
+    if (incompleteField) {
+      setSaveState({
+        phase: 'error',
+        message: '请先补完整必填内容',
+        failure: null,
+        fieldErrors: { [`changes.${incompleteField}`]: '必填内容不能为空' },
+      });
+      return Promise.resolve(false);
+    }
+    const changes = studioChangedFields(baseline, snapshot);
+    if (!Object.keys(changes).length) {
+      pausedRef.current = false;
+      forgetDraft(detail.id);
+      setSaveState(studioSyncedSaveState());
+      return Promise.resolve(true);
+    }
     savingRef.current = true;
-    setSaveState({ phase: 'saving', message: '正在保存为待确认修改', failure: null, fieldErrors: {} });
+    setSaveState({ phase: 'saving', message: '正在保存工作草稿', failure: null, fieldErrors: {} });
     const promise = (async () => {
       try {
         const response = await updateStudioElement(projectId, detail.id, {
@@ -848,7 +981,7 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
         await onMutation(response);
         const saved = editableDraft(response.element, kindSchema);
         setBaseline(saved);
-        const unchangedDuringSave = deepEqual(draftRef.current, snapshot);
+        const unchangedDuringSave = studioDraftEqual(draftRef.current, snapshot);
         if (unchangedDuringSave) {
           draftRef.current = saved;
           setDraft(saved);
@@ -857,10 +990,23 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
             delete entryDrafts[detail.id];
             return { ...current, entryDrafts };
           });
+        } else {
+          update((current) => {
+            const entry = current.entryDrafts?.[detail.id];
+            if (!entry) return current;
+            const { newerRevision: _newerRevision, refreshPending: _refreshPending, ...rest } = entry;
+            return {
+              ...current,
+              entryDrafts: {
+                ...current.entryDrafts,
+                [detail.id]: { ...rest, baseRevision: response.workingRevision },
+              },
+            };
+          });
         }
         setSaveState({
           phase: unchangedDuringSave ? 'saved' : 'dirty',
-          message: unchangedDuringSave ? (response.display?.text || '待确认修改已保存') : '有新的修改等待保存',
+          message: unchangedDuringSave ? (response.display?.text || '工作草稿已保存') : '有新的修改等待保存',
           savedAt: unchangedDuringSave ? new Date().toLocaleTimeString('zh-CN', { hour12: false }) : undefined,
           failure: null,
           fieldErrors: {},
@@ -868,6 +1014,45 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
         return true;
       } catch (error) {
         const failure = studioError(error);
+        if (isStudioNoChangesFailure(failure)) {
+          let synced = snapshot;
+          try {
+            const latest = await getStudioElement(projectId, detail.id, revisionRef.current);
+            revisionRef.current = latest.workingRevision;
+            synced = editableDraft(latest.element, kindSchema);
+            update((current) => ({
+              ...current,
+              workingRevision: latest.workingRevision,
+              details: { ...current.details, [detail.id]: latest.element },
+              elements: current.elements.map((element) => (
+                element.id === detail.id ? elementSummary(latest.element) : element
+              )),
+            }));
+          } catch {
+            // NO_CHANGES proves the working package is already equivalent to this submission.
+          }
+          draftRef.current = synced;
+          setDraft(synced);
+          setBaseline(synced);
+          pausedRef.current = false;
+          forgetDraft(detail.id);
+          setSaveState(studioSyncedSaveState());
+          return true;
+        }
+        if (failure.code === 'STUDIO_WRITE_LOCKED') {
+          try {
+            const schema = await getStudioSchema(projectId);
+            update({ schema });
+          } catch {
+            // Keep the original lock failure visible if access refresh is unavailable.
+          }
+        }
+        if (failure.actualRevision) {
+          update((current) => ({
+            ...current,
+            entryDrafts: markStudioDraftsForRefresh(current.entryDrafts, failure.actualRevision),
+          }));
+        }
         pausedRef.current = true;
         setSaveState({
           phase: failure.conflict ? 'conflict' : 'error',
@@ -883,16 +1068,30 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
     })();
     savingPromiseRef.current = promise;
     return promise;
-  }, [baseline, detail, kindSchema, onMutation, projectId, update]);
+  }, [baseline, canUpdate, detail, forgetDraft, kindSchema, onMutation, projectId, update]);
 
   useEffect(() => {
-    if (!detail || deepEqual(draft, baseline) || pausedRef.current || savingRef.current) return undefined;
+    if (!detail) return undefined;
+    if (studioDraftEqual(draft, baseline)) {
+      if (!savingRef.current) {
+        pausedRef.current = false;
+        setSaveState((current) => ['idle', 'saved'].includes(current.phase)
+          ? current
+          : studioSyncedSaveState());
+      }
+      return undefined;
+    }
+    if (pausedRef.current || savingRef.current) return undefined;
+    if (studioIncompleteDraftField(draft, kindSchema)) {
+      setSaveState((current) => ({ ...current, phase: 'dirty', message: '请先补完整必填内容' }));
+      return undefined;
+    }
     setSaveState((current) => current.phase === 'dirty'
       ? current
       : { phase: 'dirty', message: '有未保存修改', failure: null, fieldErrors: {} });
     const timer = setTimeout(() => { void saveDraft(); }, 600);
     return () => clearTimeout(timer);
-  }, [baseline, detail, draft, saveDraft]);
+  }, [baseline, detail, draft, kindSchema, saveDraft]);
 
   const reloadAndRetry = async () => {
     const actualRevision = saveState.failure?.actualRevision;
@@ -904,6 +1103,18 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
       revisionRef.current = latest.workingRevision;
       setBaseline(latestBaseline);
       await onMutation({ ...latest, elements: [latest.element] });
+      update((current) => {
+        const entry = current.entryDrafts?.[detail.id];
+        if (!entry) return current;
+        const { newerRevision: _newerRevision, refreshPending: _refreshPending, ...rest } = entry;
+        return {
+          ...current,
+          entryDrafts: {
+            ...current.entryDrafts,
+            [detail.id]: { ...rest, baseRevision: latest.workingRevision },
+          },
+        };
+      });
       pausedRef.current = false;
       setSaveState({ phase: 'dirty', message: '已载入新版，正在保留你的修改并重试', failure: null, fieldErrors: {} });
     } catch (error) {
@@ -913,30 +1124,14 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
   };
 
   const leave = async () => {
-    let needsReview = session.studioPendingReview;
-    if (!deepEqual(draftRef.current, baseline) && !pausedRef.current) {
+    if (!studioDraftEqual(draftRef.current, baseline) && !pausedRef.current) {
       const saved = await saveDraft();
       if (!saved) return;
-      needsReview = true;
-    }
-    if (needsReview) {
-      setSaveState({ phase: 'saving', message: '正在交给助手整理整体确认', failure: null, fieldErrors: {} });
-      try {
-        await requestStudioReview(projectId, {
-          expectedRevision: revisionRef.current,
-          clientMutationId: reviewMutationIdRef.current,
-        });
-        update({ studioPendingReview: false });
-      } catch (error) {
-        const failure = studioError(error);
-        setSaveState({ phase: 'error', message: failure.message, failure, fieldErrors: failure.fieldErrors });
-        return;
-      }
     }
     onBack();
   };
   const openRelated = async (elementId) => {
-    if (!deepEqual(draftRef.current, baseline) && !pausedRef.current) {
+    if (!studioDraftEqual(draftRef.current, baseline) && !pausedRef.current) {
       const saved = await saveDraft();
       if (!saved) return;
     }
@@ -957,11 +1152,11 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
         }} onReload={reloadAndRetry} onPause={() => {
           pausedRef.current = true;
           setSaveState((current) => ({ ...current, phase: 'paused', message: '本地修改已保留，稍后再处理' }));
-        }} />
-        {kindSchema?.capabilities?.delete && (
-          <button className="btn btn-danger" onClick={() => onDelete(detail.id)}>
-            <Trash2 size={13} />删除条目
-          </button>
+          }} />
+          {kindSchema?.capabilities?.delete && (
+            <button className="btn btn-danger" onClick={() => onDelete(detail.id)}>
+              <Trash2 size={13} />{studioDeleteCopy(detail.kind, detail.title).button}
+            </button>
         )}
         <code className="k">{detail.sourcePath}</code>
       </div>
@@ -978,11 +1173,11 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
             {!studioFieldEditable(kindSchema, field) ? (
               field.type === 'evidence_list'
                 ? <EvidenceLinks references={detail.values[field.key]} />
-                : <FieldValue value={detail.values[field.key]} />
+                : <FieldValue value={studioDraftFieldValue(draft, detail.values, field.key)} />
             ) : (
               <StudioFieldEditor field={field} value={draft[field.key]}
                 error={fieldErrorFor(saveState.fieldErrors, field.key)}
-                onChange={(value) => remember({ ...draftRef.current, [field.key]: value })} />
+                onChange={(value) => remember({ ...draftRef.current, [field.key]: value }, field.key)} />
             )}
           </section>
         ))}
@@ -990,8 +1185,9 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
       <section className={`studio-relations${kindSchema?.capabilities?.update ? ' studio-relations-edit' : ''}`}>
         <h3>关系 <span>{(draft.relations || []).length}</span></h3>
         {kindSchema?.capabilities?.update && (
-          <RelationEditor key={detail.id} schema={kindSchema} value={draft.relations || []} elements={session.elements}
-            onChange={(relations) => remember({ ...draftRef.current, relations })} />
+          <RelationEditor key={detail.id} sourceId={detail.id} schema={kindSchema} value={draft.relations || []}
+            elements={studioRelationElements(session.elements, session.graph)}
+            onChange={(relations) => remember({ ...draftRef.current, relations }, 'relations')} />
         )}
         {detail.relations.length > 0 && (
           <div className="studio-relation-links">
@@ -1014,7 +1210,7 @@ function StudioSaveState({ state, onRetry, onReload, onPause }) {
     idle: '当前内容已同步',
     dirty: '有未保存修改',
     saving: '保存中',
-    saved: `待确认修改已保存${state.savedAt ? ` · ${state.savedAt}` : ''}`,
+    saved: `工作草稿已保存${state.savedAt ? ` · ${state.savedAt}` : ''}`,
     conflict: '知识包已有新修改',
     error: '保存失败',
     paused: '本地修改已保留',
@@ -1074,12 +1270,16 @@ function StudioFieldEditor({ field, value, onChange, error }) {
   return <FieldValue value={value} />;
 }
 
-function RelationEditor({ schema, value, elements, onChange }) {
+function RelationEditor({ sourceId, schema, value, elements, onChange }) {
   const [kind, setKind] = useState(schema?.legalRelations?.[0]?.kind || '');
   const [targetId, setTargetId] = useState('');
   const legal = schema?.legalRelations?.find((item) => item.kind === kind);
   const existing = new Set(value.map((relation) => relation.targetId));
-  const targets = elements.filter((element) => legal?.targetKinds?.includes(element.kind) && !existing.has(element.id));
+  const targets = elements.filter((element) => (
+    element.id !== sourceId
+    && legal?.targetKinds?.includes(element.kind)
+    && !existing.has(element.id)
+  ));
   const add = () => {
     if (!kind || !targetId) return;
     onChange([...value, { kind, targetId, label: relationLabel(kind) }]);
@@ -1109,8 +1309,12 @@ function RelationEditor({ schema, value, elements, onChange }) {
   );
 }
 
-function StudioDeleteDialog({ projectId, session, elementIds, onClose, onDeleted }) {
+function StudioDeleteDialog({ projectId, session, elementIds, onClose, onMutation, onCompleted }) {
   const [state, setState] = useState({ phase: 'loading', preview: null, message: '' });
+  const selectedElement = elementIds.length === 1
+    ? session.elements.find((element) => element.id === elementIds[0])
+    : null;
+  const deleteCopy = studioDeleteCopy(selectedElement?.kind, selectedElement?.title, elementIds.length);
 
   useEffect(() => {
     let active = true;
@@ -1128,7 +1332,11 @@ function StudioDeleteDialog({ projectId, session, elementIds, onClose, onDeleted
 
   const apply = async () => {
     if (!state.preview || state.phase === 'saving') return;
-    setState((current) => ({ ...current, phase: 'saving', message: '正在删除并整理关系' }));
+    setState((current) => ({
+      ...current,
+      phase: 'saving',
+      message: '正在删除并整理关系',
+    }));
     try {
       const response = await applyStudioDeletions(projectId, {
         expectedRevision: state.preview.workingRevision,
@@ -1138,11 +1346,8 @@ function StudioDeleteDialog({ projectId, session, elementIds, onClose, onDeleted
         previewToken: state.preview.previewToken,
         cleanupReferences: true,
       });
-      await onDeleted(response);
-      await requestStudioReview(projectId, {
-        expectedRevision: response.workingRevision,
-        clientMutationId: mutationId('studio-delete-review'),
-      });
+      await onMutation(response);
+      onCompleted();
     } catch (error) {
       const failure = studioError(error);
       setState((current) => ({
@@ -1157,12 +1362,12 @@ function StudioDeleteDialog({ projectId, session, elementIds, onClose, onDeleted
     <div className="studio-dialog-backdrop" role="presentation">
       <section className="studio-dialog" role="dialog" aria-modal="true" aria-labelledby="studio-delete-title">
         <header>
-          <div><h2 id="studio-delete-title">确认删除 {elementIds.length} 个知识条目</h2></div>
+          <div><h2 id="studio-delete-title">{deleteCopy.heading}</h2></div>
           <button type="button" className="btn btn-ghost" aria-label="关闭" onClick={onClose}><X size={15} /></button>
         </header>
         {state.phase === 'loading' && <div className="studio-dialog-message">正在核对关系影响…</div>}
         {state.preview && <>
-          <p>{state.preview.display.text}。删除会先保存为待确认修改，不会直接发布。</p>
+          <p>{state.preview.display.text}。{deleteCopy.clarification}删除会先保存为工作草稿，确定性检查通过后才应用。</p>
           {state.preview.references.length > 0 && <div className="studio-delete-impact">
             <b>将同时清理的关系</b>
             <ul>{state.preview.references.map((reference) => (
@@ -1171,12 +1376,24 @@ function StudioDeleteDialog({ projectId, session, elementIds, onClose, onDeleted
               </li>
             ))}</ul>
           </div>}
+          {state.preview.textReferences?.length > 0 && <div className="studio-delete-impact error">
+            <b>必须先修改的正文引用</b>
+            <ul>{state.preview.textReferences.map((reference) => (
+              <li key={`${reference.sourceId}:${reference.field}:${reference.targetId}`}>
+                《{reference.sourceTitle}》的“{reference.field}”：{reference.excerpt}
+              </li>
+            ))}</ul>
+          </div>}
         </>}
         {state.message && <div className={`studio-dialog-message ${state.phase}`} role="alert">{state.message}</div>}
         <footer>
           <button className="btn" onClick={onClose} disabled={state.phase === 'saving'}>取消</button>
-          <button className="btn btn-danger" disabled={!state.preview || state.phase === 'saving'} onClick={apply}>
-            <Trash2 size={13} />{state.phase === 'saving' ? '正在删除…' : state.preview?.cleanupRequired ? '删除并清理关系' : '确认删除'}
+          <button className="btn btn-danger" disabled={!state.preview || state.preview.blocked || state.phase === 'saving'} onClick={apply}>
+            <Trash2 size={13} />{state.phase === 'saving'
+              ? '正在删除…'
+              : state.preview?.cleanupRequired
+                ? `${deleteCopy.button}并清理关系`
+                : `确认${deleteCopy.button}`}
           </button>
         </footer>
       </section>
@@ -1192,26 +1409,44 @@ function StudioCreateDialog({ kind, session, projectId, materials, onClose, onCr
   )));
   const [key, setKey] = useState('');
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [coreContent, setCoreContent] = useState('');
   const [materialId, setMaterialId] = useState(materials[0]?.id || '');
   const [anchor, setAnchor] = useState('');
   const [state, setState] = useState({ phase: 'idle', message: '', issues: [] });
   const selectedMaterial = materials.find((material) => material.id === materialId);
   const evidenceReady = !evidenceRequired || Boolean(selectedMaterial && anchor.trim());
+  const coreContentRequired = ['operation', 'rule', 'metric'].includes(kind);
+  const creationReady = Boolean(
+    key.trim()
+    && title.trim()
+    && description.trim()
+    && (!coreContentRequired || coreContent.trim())
+    && evidenceReady,
+  );
   const submit = async (event) => {
     event.preventDefault();
-    if (!key.trim() || !title.trim() || !evidenceReady || state.phase === 'saving') return;
-    setState({ phase: 'saving', message: '正在建立待确认草稿', issues: [] });
+    if (!creationReady || state.phase === 'saving') return;
+    setState({ phase: 'saving', message: '正在建立工作草稿', issues: [] });
     try {
       const evidence = evidenceRequired
         ? [`material:${selectedMaterial.sourceKey || selectedMaterial.id}#${anchor.trim()}`]
         : undefined;
+      const values = {
+        title: title.trim(),
+        description: description.trim(),
+        ...(kind === 'operation' ? { flow: [coreContent.trim()] } : {}),
+        ...(kind === 'rule' ? { content: coreContent.trim() } : {}),
+        ...(kind === 'metric' ? { caliber: coreContent.trim(), boundaries: [coreContent.trim()] } : {}),
+        ...(evidence ? { evidence } : {}),
+      };
       const response = await createStudioElement(projectId, {
         expectedRevision: session.workingRevision,
         clientMutationId: mutationId('studio-create'),
         editSessionId: mutationId('studio-create-session'),
         kind,
         key: key.trim(),
-        values: { title: title.trim(), ...(evidence ? { evidence } : {}) },
+        values,
       });
       await onCreated(response);
     } catch (error) {
@@ -1235,6 +1470,16 @@ function StudioCreateDialog({ kind, session, projectId, materials, onClose, onCr
           <small>创建后不能修改；名称和业务内容可以继续编辑。</small></label>
         <label><span>名称</span><input className="input" value={title}
           placeholder={`输入${meta.label}名称`} onChange={(event) => setTitle(event.target.value)} /></label>
+        <label><span>{kind === 'object' ? '业务定义' : kind === 'operation' ? '业务目标' : '说明'}</span>
+          <textarea className="input" rows={3} value={description}
+            placeholder={`说明这条${meta.label}解决什么问题`} onChange={(event) => setDescription(event.target.value)} required />
+        </label>
+        {coreContentRequired && <label>
+          <span>{kind === 'operation' ? '首个流程步骤' : kind === 'rule' ? '规则内容' : '业务口径'}</span>
+          <textarea className="input" rows={3} value={coreContent}
+            placeholder={kind === 'operation' ? '输入一个可执行的流程步骤' : `输入${meta.label}的核心内容`}
+            onChange={(event) => setCoreContent(event.target.value)} required />
+        </label>}
         {evidenceRequired && <div className="studio-dialog-evidence">
           <label><span>依据资料</span><select className="input" aria-label="依据资料" value={materialId}
             onChange={(event) => setMaterialId(event.target.value)} required>
@@ -1253,7 +1498,7 @@ function StudioCreateDialog({ kind, session, projectId, materials, onClose, onCr
           {state.issues.map((issue) => <li key={issue}>{issue}</li>)}
         </ul>}
         <footer><button type="button" className="btn" onClick={onClose}>取消</button>
-          <button className="btn btn-p" disabled={!key.trim() || !title.trim() || !evidenceReady || state.phase === 'saving'}>
+          <button className="btn btn-p" disabled={!creationReady || state.phase === 'saving'}>
             {state.phase === 'saving' ? '正在建立…' : '建立并继续编辑'}
           </button></footer>
       </form>
@@ -1277,15 +1522,7 @@ function editableDraft(detail, schema) {
 }
 
 function defaultFieldValue(type) {
-  return ['text_list', 'ordered_text_list', 'parameter_table', 'output_table', 'condition_table', 'key_value_table'].includes(type) ? [] : '';
-}
-
-function changedFields(baseline, draft) {
-  return Object.fromEntries(Object.keys(draft).filter((key) => !deepEqual(draft[key], baseline[key])).map((key) => [key, draft[key]]));
-}
-
-function deepEqual(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return ['text_list', 'ordered_text_list', 'parameter_table', 'output_table', 'condition_table', 'key_value_table', 'field_table'].includes(type) ? [] : '';
 }
 
 function mutationId(prefix) {
@@ -1311,6 +1548,10 @@ function FieldError({ text }) {
 }
 
 function structuredColumns(field) {
+  if (field.type === 'field_table') return [
+    { key: 'key', label: 'Key' }, { key: 'cnName', label: '中文名' }, { key: 'type', label: '类型' },
+    { key: 'required', label: '必填', type: 'boolean' }, { key: 'note', label: '说明' },
+  ];
   if (field.type === 'parameter_table') return [
     { key: 'param', label: '参数' }, { key: 'cnName', label: '中文名' }, { key: 'type', label: '类型' },
     { key: 'required', label: '必填', type: 'boolean' }, { key: 'note', label: '说明' },
@@ -1410,7 +1651,7 @@ function StudioBanner({ failure, conflict, onRetry }) {
 function StudioExternalRefreshBanner({ message, onReload }) {
   return <div className="studio-banner warning" role="status">
     <AlertCircle size={14} /><span>{message}</span>
-    <button className="btn btn-sm" onClick={onReload}>载入最新版本</button>
+    <button className="btn btn-sm" onClick={onReload}>放弃草稿并载入新版</button>
   </div>;
 }
 
@@ -1443,6 +1684,19 @@ export function StudioAccessBanner({ access }) {
   }
   return <div className="studio-banner warning" role="status">
     <AlertCircle size={14} /><span>上一位建模者的租约已结束。首次编辑会接管现有候选，请先检查消息流中的待答问题。</span>
+  </div>;
+}
+
+function StudioPendingReviewBanner({ state, onSubmit, blocked = false }) {
+  return <div className={`studio-banner ${state.phase === 'error' ? 'error' : 'warning'}`} role="status">
+    <Save size={14} />
+    <span>{blocked
+      ? '当前条目仍有未保存或不合法的输入，修正并保存后才能应用工作草稿。'
+      : state.message || '已有 Studio 修改保存为工作草稿；应用前只执行确定性代码检查，不调用建模助手。'}</span>
+    <button className="btn btn-sm btn-p" disabled={state.phase === 'saving' || blocked} onClick={onSubmit}
+      title={blocked ? '请先修正并保存当前条目的本地输入' : '执行确定性检查并应用工作草稿'}>
+      {state.phase === 'saving' ? '检查中…' : '检查并应用修改'}
+    </button>
   </div>;
 }
 

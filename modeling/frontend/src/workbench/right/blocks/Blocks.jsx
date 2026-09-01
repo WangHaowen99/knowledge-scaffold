@@ -188,7 +188,7 @@ function LiveAsk({ interaction }) {
     try { await actions.answer(interaction.id, answer); } finally { setSending(false); }
   };
   return (
-    <div className={`card ${material ? 'card-accent' : 'card-wait'}`}>
+    <div className={`card ${material ? 'card-accent' : 'card-wait'}`} data-pending-interaction={interaction.id}>
       <div className="card-h">{material
         ? <><Icon name="upload" size={12} />需要补充资料</>
         : options.length ? '需要你决定' : '需要你补充'}</div>
@@ -293,9 +293,12 @@ function LiveConfirm({ interaction }) {
     try { await actions.answer(interaction.id, answer); } finally { setSending(false); }
   };
   return (
-    <div className="card card-accent">
+    <div className="card card-accent" data-pending-interaction={interaction.id}>
       <div className="card-h">确认待修改内容<span className="spacer" />已查看 {reviewed.filter((id) => groups.some((group) => group.id === id)).length}/{groups.length} · 已选 {selectedForSubmit.length}</div>
       <div className="card-b">
+        <div className="wb-confirm-semantics">
+          接受后才会写入正式版本；退回调整会保留 Studio 工作草稿并解除编辑锁，方便继续修改。
+        </div>
         {payload.lastSubmissionError && <div className="wb-confirm-submit-error" role="alert">
           <b>刚才没有接受成功</b>
           <span>{userFacingText(payload.lastSubmissionError)}</span>
@@ -380,7 +383,7 @@ function LiveRelease({ interaction }) {
     try { await actions.answer(interaction.id, answer); } finally { setSending(false); }
   };
   return (
-    <div className="card card-accent wb-release-confirm">
+    <div className="card card-accent wb-release-confirm" data-pending-interaction={interaction.id}>
       <div className="card-h">正式发布确认<span className="spacer" /><code className="k">{payload.version}</code></div>
       <div className="card-b">
         <div className="wb-release-summary">

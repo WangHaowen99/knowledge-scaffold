@@ -193,9 +193,36 @@ test('Studio 新建规则必须引用当前项目的真实资料，后续编辑�
     patchEvidence.json().fieldErrors['changes.evidence'],
     '该字段由建模流程维护，不能在 Studio 中直接编辑',
   );
+
+  const emptyContent = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('rule:replenishment')}`,
+    payload: {
+      expectedRevision: created.json().workingRevision,
+      clientMutationId: 'patch-rule-empty-content',
+      changes: { content: '   ' },
+    },
+  });
+  assert.equal(emptyContent.statusCode, 422, emptyContent.body);
+  assert.equal(emptyContent.json().fieldErrors['changes.content'], '必填文本不能为空');
+
+  const reviewed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: created.json().workingRevision,
+      clientMutationId: 'review-rule-deterministically',
+    },
+  });
+  assert.equal(reviewed.statusCode, 200, reviewed.body);
+  assert.equal(reviewed.json().mode, 'deterministic');
+  assert.equal(reviewed.json().applied, true);
+  assert.deepEqual(reviewed.json().elementIds, ['rule:replenishment']);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
+    WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
 });
 
-test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认后 Git 原子生效', async (t) => {
+test('Studio 单条创建和编辑形成工作草稿，确定性检查后直接提交且不触发 Agent', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Studio 写入', runtime: 'agent' });
   const app = appFor(t);
   const artifacts = getPackageArtifactStore();
@@ -231,7 +258,7 @@ test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认�
   assert.equal(created.statusCode, 201, created.body);
   assert.equal(created.json().candidate, true);
   assert.equal(created.json().element.id, 'object:inventory');
-  assert.match(created.json().display.text, /待确认修改/u);
+  assert.match(created.json().display.text, /工作草稿/u);
   assert.deepEqual(created.json().warnings, []);
   assert.equal(created.json().historicalProblemCount, 0);
   assert.equal((await artifacts.current(project.id))!.revision.oid, gitBefore);
@@ -343,14 +370,43 @@ test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认�
   assert.equal(getDb().prepare(`SELECT candidate_id FROM agent_candidate_workspaces
     WHERE project_id = ?`).get(project.id)!.candidate_id, null);
 
+  const operation = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: patchedAgain.json().workingRevision,
+      clientMutationId: 'create-inspect-inventory',
+      kind: 'operation',
+      key: 'inspect_inventory',
+      values: {
+        title: '检查库存',
+        description: '读取并检查库存工作草稿。',
+        flow: ['读取 object:inventory 并返回结果。'],
+        relations: [{ kind: 'uses_object', targetId: 'object:inventory', label: '使用对象' }],
+      },
+    },
+  });
+  assert.equal(operation.statusCode, 201, operation.body);
+  const emptyFlow = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('operation:inspect_inventory')}`,
+    payload: {
+      expectedRevision: operation.json().workingRevision,
+      clientMutationId: 'patch-operation-empty-flow',
+      changes: { flow: [] },
+    },
+  });
+  assert.equal(emptyFlow.statusCode, 422, emptyFlow.body);
+  assert.ok(Object.keys(emptyFlow.json().fieldErrors).some((path) => path.startsWith('changes.flow')));
+
   const reviewPayload = {
-    expectedRevision: patchedAgain.json().workingRevision,
+    expectedRevision: operation.json().workingRevision,
     clientMutationId: 'review-inventory-1',
   };
   const staleReview = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/studio/review`,
-    payload: { ...reviewPayload, expectedRevision: patched.json().workingRevision },
+    payload: { ...reviewPayload, expectedRevision: patchedAgain.json().workingRevision },
   });
   assert.equal(staleReview.statusCode, 409, staleReview.body);
   assert.equal(staleReview.json().code, 'REVISION_CONFLICT');
@@ -362,27 +418,25 @@ test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认�
     url: `/api/projects/${project.id}/studio/review`,
     payload: reviewPayload,
   });
-  assert.equal(review.statusCode, 202, review.body);
-  assert.equal(review.json().reviewRequested, true);
-  assert.deepEqual(review.json().elementIds, ['object:inventory']);
-  assert.match(review.json().display.text, /整体复核/u);
-  const studioEvent = getDb().prepare(`SELECT event_type, payload_json, delivered_at
-    FROM agent_project_event_outbox WHERE id = ?`).get(
-    `studio-review:${project.id}:review-inventory-1`,
-  ) as { event_type: string; payload_json: string; delivered_at: string | null };
-  assert.equal(studioEvent.event_type, 'studio_review');
-  assert.equal(studioEvent.delivered_at, null);
-  assert.deepEqual(JSON.parse(studioEvent.payload_json).elementIds, ['object:inventory']);
+  assert.equal(review.statusCode, 200, review.body);
+  assert.equal(review.json().reviewRequested, false);
+  assert.equal(review.json().mode, 'deterministic');
+  assert.equal(review.json().applied, true);
+  assert.deepEqual(review.json().elementIds, ['object:inventory', 'operation:inspect_inventory']);
+  assert.match(review.json().display.text, /确定性检查通过/u);
+  assert.notEqual(review.json().currentRevision, gitBefore);
+  assert.equal((await artifacts.current(project.id))!.revision.oid, review.json().currentRevision);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
+    WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
 
   const reviewReplay = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/studio/review`,
     payload: reviewPayload,
   });
-  assert.equal(reviewReplay.statusCode, 202, reviewReplay.body);
+  assert.equal(reviewReplay.statusCode, 200, reviewReplay.body);
   assert.equal(reviewReplay.json().replayed, true);
-  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
-    WHERE id = ?`).get(`studio-review:${project.id}:review-inventory-1`)!.count, 1);
+  assert.equal(reviewReplay.json().currentRevision, review.json().currentRevision);
   const reusedReview = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/studio/review`,
@@ -391,45 +445,144 @@ test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认�
   assert.equal(reusedReview.statusCode, 409, reusedReview.body);
   assert.equal(reusedReview.json().code, 'MUTATION_ID_REUSED');
 
-  const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
-    WHERE project_id = ?`).get(project.id) as { run_id: string };
-  const groups = getDb().prepare(`SELECT DISTINCT group_id FROM agent_candidate_changes
-    WHERE project_id = ? AND group_id <> 'compiled_resources' ORDER BY group_id`)
-    .all(project.id) as Array<{ group_id: string }>;
-  const confirmationGroups = groups.map((row) => ({
-    id: row.group_id,
-    tier: 'structural',
-    title: '确认 Studio 修改',
-  }));
-  const preflight = await tool(
-    app,
-    project.id,
-    workspace.run_id,
-    'request_confirmation_preflight',
-    { summary: '确认 Studio 修改', change_groups: confirmationGroups },
-  );
-  assert.equal(preflight.statusCode, 200, preflight.body);
-  const confirmed = await tool(
-    app,
-    project.id,
-    workspace.run_id,
-    'request_confirmation',
-    {
-      expected_candidate_revision: preflight.json().candidate_revision,
-      expected_candidate_hash: preflight.json().validation_receipt.candidateHash,
-      expected_validator_version: preflight.json().validation_receipt.validatorVersion,
-      review: {
-        approved: true,
-        review_mode: 'full',
-        selected_groups: confirmationGroups.map((group) => group.id),
-      },
-    },
-  );
-  assert.equal(confirmed.statusCode, 200, confirmed.body);
-  assert.notEqual(confirmed.json().revision, gitBefore);
-  assert.equal((await artifacts.current(project.id))!.revision.oid, confirmed.json().revision);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ?`).get(project.id)!.count, 0);
+  assert.equal(getDb().prepare(`SELECT candidate_id FROM agent_candidate_workspaces
+    WHERE project_id = ?`).get(project.id)!.candidate_id, null);
   const history = await artifacts.history(project.id);
-  assert.equal(history[0].oid, confirmed.json().revision);
+  assert.equal(history[0].oid, review.json().currentRevision);
+  assert.equal(history[0].cause, 'studio_deterministic_commit');
+});
+
+test('Studio Rule 确定性检查返回关联 Object 与 Operation 影响', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio Rule 影响检查', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initialized = await artifacts.initializeDraftPackage(project.id, {
+    id: 'studio-rule-impact',
+    name: 'Studio Rule 影响检查',
+    description: '合成测试知识包。',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initialized.revision.oid,
+    spec: {
+      ...initialized.spec,
+      objects: [{ key: 'record', title: '记录', description: '合成记录。', fields: [] }],
+      operations: [{
+        key: 'read_record', title: '读取记录', description: '读取合成记录。', inputs: [], outputs: [],
+        flow: ['读取 object:record 并执行 rule:record_valid。'], relatedObjects: ['record'], usesRules: ['record_valid'],
+      }],
+      rules: [{
+        key: 'record_valid', title: '记录有效规则', description: '判断合成记录是否有效。',
+        content: 'record_id 非空时记录有效。', appliesToObjects: ['record'], appliesToOperations: ['read_record'],
+        evidence: ['material:synthetic_source.md#记录有效规则'],
+      }],
+    },
+    coverage: initialized.coverage,
+    action: { cause: 'studio_rule_impact_seed', summary: '建立 Rule 影响基线', actorKind: 'system', actorName: '测试系统' },
+  });
+  const app = appFor(t);
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const patched = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('rule:record_valid')}`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'patch-rule-title-for-impact',
+      changes: { title: '合成记录有效规则' },
+    },
+  });
+  assert.equal(patched.statusCode, 200, patched.body);
+  const reviewed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: patched.json().workingRevision,
+      clientMutationId: 'review-rule-impact-deterministically',
+    },
+  });
+  assert.equal(reviewed.statusCode, 200, reviewed.body);
+  assert.deepEqual(reviewed.json().impacts.changedElementIds, ['rule:record_valid']);
+  assert.deepEqual(reviewed.json().impacts.affectedElementIds, ['object:record', 'operation:read_record']);
+  assert.equal(reviewed.json().impacts.relationCount, 3);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
+    WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
+});
+
+test('Studio Operation 影响与删除预览包含绑定 Script', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio Script 影响检查', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initialized = await artifacts.initializeDraftPackage(project.id, {
+    id: 'studio-script-impact',
+    name: 'Studio Script 影响检查',
+    description: '合成测试知识包。',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initialized.revision.oid,
+    spec: {
+      ...initialized.spec,
+      objects: [{ key: 'record', title: '记录', description: '合成记录。', fields: [] }],
+      operations: [{
+        key: 'read_record', title: '读取记录', description: '读取合成记录。', inputs: [], outputs: [],
+        flow: ['读取 object:record。'], relatedObjects: ['record'],
+        script: { key: 'read_record_script', required: true },
+      }],
+      scripts: [{
+        key: 'read_record_script', title: '读取记录脚本', description: '读取合成记录。',
+        boundOperation: 'read_record', runtime: 'python', entrypoint: 'read_record.py', timeoutSeconds: 30,
+        parameters: [{ name: 'record_id', flag: '--record-id', type: 'string', required: true }],
+        outputs: [{ key: 'result', type: 'string' }], boundaries: ['只处理合成记录。'],
+        sourceCode: [
+          'import argparse',
+          'import json',
+          'parser = argparse.ArgumentParser()',
+          'parser.add_argument("--record-id", required=True)',
+          'args = parser.parse_args()',
+          'print(json.dumps({"result": args.record_id}))',
+        ].join('\n'),
+      }],
+    },
+    coverage: initialized.coverage,
+    action: { cause: 'studio_script_impact_seed', summary: '建立 Script 影响基线', actorKind: 'system', actorName: '测试系统' },
+  });
+  const app = appFor(t);
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const patched = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('operation:read_record')}`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'patch-script-bound-operation',
+      changes: { title: '读取合成记录' },
+    },
+  });
+  assert.equal(patched.statusCode, 200, patched.body);
+  const reviewed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: patched.json().workingRevision,
+      clientMutationId: 'review-script-bound-operation',
+    },
+  });
+  assert.equal(reviewed.statusCode, 200, reviewed.body);
+  assert.ok(reviewed.json().impacts.affectedElementIds.includes('script:read_record_script'));
+
+  const current = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const preview = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/deletions/preview`,
+    payload: {
+      expectedRevision: current.json().workingRevision,
+      elementIds: ['operation:read_record'],
+    },
+  });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.json().blocked, true);
+  assert.ok(preview.json().textReferences.some((reference: any) => (
+    reference.sourceId === 'script:read_record_script'
+    && reference.field === 'boundOperation'
+    && reference.targetId === 'operation:read_record'
+  )));
 });
 
 test('Studio 允许在存在历史悬空引用时创建无关条目并返回非阻断告警', async (t) => {
@@ -696,6 +849,60 @@ test('Studio 删除先预览真实引用，并原子完成跨类型删除与关�
     WHERE project_id = ? ORDER BY path`).all(project.id) as Array<{ path: string; kind: string }>;
   assert.ok(staged.some((item) => item.path === 'objects/inventory.md' && item.kind === 'delete'));
   assert.ok(staged.some((item) => item.path === 'rules/obsolete-rule.md' && item.kind === 'delete'));
+
+  const applied = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: removed.json().workingRevision,
+      clientMutationId: 'apply-delete-deterministically',
+    },
+  });
+  assert.equal(applied.statusCode, 200, applied.body);
+  assert.equal(applied.json().mode, 'deterministic');
+  assert.deepEqual((await artifacts.current(project.id))!.spec.objects, []);
+  assert.deepEqual((await artifacts.current(project.id))!.spec.rules?.map((rule) => rule.key), ['safety-stock']);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ?`).get(project.id)!.count, 0);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
+    WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
+});
+
+test('Studio 确定性直提交并发竞争最多一个成功', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio 直提交并发', runtime: 'agent' });
+  const app = appFor(t);
+  const artifacts = getPackageArtifactStore();
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const formalBefore = (await artifacts.current(project.id))!.revision.oid;
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'concurrent-direct-create',
+      kind: 'object',
+      key: 'record',
+      values: { title: '记录', description: '用于直提交并发测试的合成记录。' },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const [left, right] = await Promise.all([
+    app.inject({
+      method: 'POST', url: `/api/projects/${project.id}/studio/review`,
+      payload: { expectedRevision: created.json().workingRevision, clientMutationId: 'concurrent-direct-left' },
+    }),
+    app.inject({
+      method: 'POST', url: `/api/projects/${project.id}/studio/review`,
+      payload: { expectedRevision: created.json().workingRevision, clientMutationId: 'concurrent-direct-right' },
+    }),
+  ]);
+  assert.deepEqual([left.statusCode, right.statusCode].sort(), [200, 409]);
+  const successful = [left, right].find((response) => response.statusCode === 200)!;
+  assert.equal(successful.json().applied, true);
+  assert.notEqual((await artifacts.current(project.id))!.revision.oid, formalBefore);
+  assert.equal((await artifacts.history(project.id)).filter((revision) => (
+    revision.cause === 'studio_deterministic_commit'
+  )).length, 1);
 });
 
 test('Studio 删除预览绑定工作修订，过期确认整批零删除', async (t) => {
@@ -887,4 +1094,242 @@ test('Studio 成员权限与写租约共用服务端事实，过期后首个编�
     WHERE project_id = ?`).get(project.id) as { owner: string; run_id: string };
   assert.equal(workspace.owner, 'carol');
   assert.equal(workspace.run_id, originalWorkspace.run_id);
+});
+
+test('Studio 确定性应用成功后立即释放写租约供其他 Modeler 接管', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio 应用后释放租约', runtime: 'agent' });
+  setProjectMember(project.id, 'alice', 'carol', 'modeler');
+  const ownerApp = appFor(t, 'alice');
+  const modelerApp = appFor(t, 'carol');
+  const initial = await ownerApp.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const created = await ownerApp.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'release-lease-create',
+      kind: 'operation',
+      key: 'inspect_record',
+      values: {
+        title: '检查记录',
+        description: '检查合成记录。',
+        flow: ['读取输入并返回结果。'],
+      },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const locked = await modelerApp.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/schema` });
+  assert.equal(locked.json().access.lease.mode, 'readonly');
+
+  const applied = await ownerApp.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: created.json().workingRevision,
+      clientMutationId: 'release-lease-apply',
+    },
+  });
+  assert.equal(applied.statusCode, 200, applied.body);
+  const available = await modelerApp.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/schema` });
+  assert.equal(available.json().access.lease.mode, 'takeover');
+  assert.equal(available.json().capabilities.update, true);
+  const takenOver = await modelerApp.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('operation:inspect_record')}`,
+    payload: {
+      expectedRevision: applied.json().currentRevision,
+      clientMutationId: 'release-lease-takeover',
+      changes: { description: '由另一个建模成员继续检查合成记录。' },
+    },
+  });
+  assert.equal(takenOver.statusCode, 200, takenOver.body);
+  assert.equal(takenOver.json().element.values.description, '由另一个建模成员继续检查合成记录。');
+});
+
+test('Studio 新建 Object 带默认主键字段且字段可继续编辑', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio Object 完整创建', runtime: 'agent' });
+  const app = appFor(t);
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'create-complete-object',
+      kind: 'object',
+      key: 'record',
+      values: { title: '记录', description: '合成记录对象。' },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.deepEqual(created.json().element.values.fields, [{
+    key: 'id', cnName: '标识', type: 'string', required: true, note: 'Studio 新建对象的默认主键字段。',
+  }]);
+
+  const patched = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('object:record')}`,
+    payload: {
+      expectedRevision: created.json().workingRevision,
+      clientMutationId: 'edit-created-object-fields',
+      changes: {
+        fields: [
+          { key: 'id', cnName: '标识', type: 'string', required: true },
+          { key: 'name', cnName: '名称', type: 'string', required: false },
+        ],
+      },
+    },
+  });
+  assert.equal(patched.statusCode, 200, patched.body);
+  assert.deepEqual(patched.json().element.values.fields.map((field: any) => field.key), ['id', 'name']);
+
+  const selfRelation = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('object:record')}`,
+    payload: {
+      expectedRevision: patched.json().workingRevision,
+      clientMutationId: 'reject-object-self-relation',
+      changes: { relations: [{ kind: 'object_relation', targetId: 'object:record', label: '关联对象' }] },
+    },
+  });
+  assert.equal(selfRelation.statusCode, 422, selfRelation.body);
+  assert.equal(
+    selfRelation.json().fieldErrors['changes.relations[0].targetId'],
+    '不能把知识条目关联到自身',
+  );
+});
+
+test('Studio 刷新可恢复工作草稿且确定性直提交幂等', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio 复核恢复', runtime: 'agent' });
+  const app = appFor(t);
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'review-state-create',
+      kind: 'object',
+      key: 'record',
+      values: { title: '记录', description: '合成记录对象。' },
+    },
+  });
+  const staged = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  assert.equal(staged.json().hasStagedChanges, true);
+  assert.equal(staged.json().reviewRequested, false);
+  const snapshot = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/snapshot` });
+  assert.equal(snapshot.statusCode, 200, snapshot.body);
+  assert.equal(snapshot.json().studioPendingCount, 1);
+
+  const first = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/studio/review`,
+    payload: { expectedRevision: created.json().workingRevision, clientMutationId: 'review-state-first' },
+  });
+  assert.equal(first.statusCode, 200, first.body);
+  assert.equal(first.json().mode, 'deterministic');
+  assert.equal(first.json().applied, true);
+  const second = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/studio/review`,
+    payload: { expectedRevision: created.json().workingRevision, clientMutationId: 'review-state-first' },
+  });
+  assert.equal(second.statusCode, 200, second.body);
+  assert.equal(second.json().replayed, true);
+  const refreshed = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  assert.equal(refreshed.json().hasStagedChanges, false);
+  assert.equal(refreshed.json().reviewRequested, false);
+  const settledSnapshot = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/snapshot` });
+  assert.equal(settledSnapshot.json().studioPendingCount, 0);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
+    WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
+});
+
+test('Studio 确定性检查阻止新增格式错误并保留工作草稿', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio 确定性检查', runtime: 'agent' });
+  const app = appFor(t);
+  const artifacts = getPackageArtifactStore();
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const formalBefore = (await artifacts.current(project.id))!.revision.oid;
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'create-format-check-object',
+      kind: 'object',
+      key: 'record',
+      values: { title: '记录', description: '用于确定性格式检查的合成记录。' },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
+    WHERE project_id = ?`).get(project.id) as { run_id: string };
+  const corrupted = getDb().prepare(`UPDATE agent_candidate_changes SET kind = 'delete', content = NULL
+    WHERE project_id = ? AND run_id = ? AND path = 'objects/record.md'`)
+    .run(project.id, workspace.run_id);
+  assert.equal(Number(corrupted.changes), 1);
+  const current = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  assert.equal(current.statusCode, 200, current.body);
+
+  const checked = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: current.json().workingRevision,
+      clientMutationId: 'check-corrupted-studio-draft',
+    },
+  });
+  assert.equal(checked.statusCode, 422, checked.body);
+  assert.equal(checked.json().code, 'DETERMINISTIC_CHECK_FAILED');
+  assert.match(checked.json().reason, /详情文件 .* 不存在/u);
+  assert.equal((await artifacts.current(project.id))!.revision.oid, formalBefore);
+  assert.ok(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ?`).get(project.id)!.count > 0);
+  assert.equal(getDb().prepare(`SELECT candidate_id FROM agent_candidate_workspaces
+    WHERE project_id = ?`).get(project.id)!.candidate_id, null);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
+    WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
+});
+
+test('Studio 删除会阻止仍被流程正文显式引用的知识条目', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio 正文引用删除保护', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: 'studio-text-delete', name: 'Studio 正文引用删除保护', description: '合成测试。',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: {
+      ...initial.spec,
+      objects: [{ key: 'record', title: '记录', description: '合成记录。', fields: [] }],
+      operations: [{
+        key: 'read_record', title: '读取记录', description: '读取记录。', inputs: [], outputs: [],
+        flow: ['读取 object:record 并返回结果'], relatedObjects: [],
+      }],
+    },
+    coverage: initial.coverage,
+    action: { cause: 'studio_text_delete_seed', summary: '建立合成基线', actorKind: 'system', actorName: '测试系统' },
+  });
+  const app = appFor(t);
+  const list = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const preview = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/studio/deletions/preview`,
+    payload: { expectedRevision: list.json().workingRevision, elementIds: ['object:record'] },
+  });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.json().blocked, true);
+  assert.equal(preview.json().textReferences[0].sourceId, 'operation:read_record');
+  assert.equal(preview.json().textReferences[0].field, 'flow[0]');
+
+  const removed = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/studio/deletions/apply`,
+    payload: {
+      expectedRevision: preview.json().workingRevision,
+      clientMutationId: 'blocked-text-delete',
+      elementIds: ['object:record'],
+      previewToken: preview.json().previewToken,
+      cleanupReferences: true,
+    },
+  });
+  assert.equal(removed.statusCode, 409, removed.body);
+  assert.equal(removed.json().code, 'DELETE_TEXT_REFERENCE_BLOCKED');
 });
