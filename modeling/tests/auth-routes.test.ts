@@ -969,6 +969,27 @@ test('知识包工作区：导入 ZIP 后建立 Agent 增量基线和原始文�
   assert.ok(imported.json().revision);
   assert.equal(imported.json().aiConstruction, undefined);
 
+  const duplicateSpec: PackageSpec = {
+    ...spec,
+    id: 'route-import-duplicate',
+  };
+  const duplicateUpload = multipartZip(
+    'duplicate.zip',
+    Buffer.from(zipPackage(renderPackage(duplicateSpec), duplicateSpec.id)),
+  );
+  const duplicate = await app.inject({
+    method: 'POST', url: '/api/package-workspaces/import',
+    headers: { authorization, ...duplicateUpload.headers }, payload: duplicateUpload.payload,
+  });
+  assert.equal(duplicate.statusCode, 409, duplicate.body);
+  assert.deepEqual(duplicate.json(), {
+    error: (
+      '知识包名称「路由导入演示」已存在，不可重复导入。'
+      + '请修改 manifest.yaml 中的 name 字段后重新导入。'
+    ),
+    code: 'PACKAGE_NAME_CONFLICT',
+  });
+
   const projectId = imported.json().project.id;
   const { getDb } = await import('../src/db/index.js');
   const baselineEvent = getDb().prepare(`SELECT event_type, payload_json, delivered_at

@@ -158,6 +158,22 @@ class OntologyImportError(ValueError):
     """A stable client-visible import validation error."""
 
 
+class OntologyNameConflictError(ValueError):
+    """Raised when another package already uses the imported display name."""
+
+    def __init__(
+        self,
+        *,
+        ontology_id: str,
+        ontology_name: str,
+        existing_ontology_id: str,
+    ) -> None:
+        super().__init__(ontology_name)
+        self.ontology_id = ontology_id
+        self.ontology_name = ontology_name
+        self.existing_ontology_id = existing_ontology_id
+
+
 def _mutation_coordinator(workspace_id: str) -> OntologyMutationCoordinator:
     return OntologyMutationCoordinator(get_workspace_paths(workspace_id).runtime_dir)
 
@@ -360,6 +376,86 @@ def _is_safe_path(base_dir: Path, target_path: Path) -> bool:
 
 def _get_ontologies_dir() -> Path:
     return get_workspace_ontologies_root()
+
+
+def _normalized_ontology_name(value: object) -> str:
+    return unicodedata.normalize("NFKC", str(value or "").strip()).casefold()
+
+
+def _find_ontology_name_conflict(
+    ontologies_dir: Path,
+    *,
+    ontology_id: str,
+    ontology_name: str,
+) -> Optional[str]:
+    normalized_name = _normalized_ontology_name(ontology_name)
+    if not normalized_name or not ontologies_dir.is_dir():
+        return None
+
+    try:
+        candidates = sorted(ontologies_dir.iterdir(), key=lambda item: item.name.casefold())
+    except OSError:
+        return None
+
+    for candidate in candidates:
+        if (
+            candidate.name.startswith(".")
+            or candidate.name == ontology_id
+            or candidate.is_symlink()
+            or not candidate.is_dir()
+        ):
+            continue
+        manifest_path = candidate / "manifest.yaml"
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            continue
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        existing_ontology_id = str(manifest.get("id") or candidate.name).strip()
+        if existing_ontology_id == ontology_id:
+            continue
+        if _normalized_ontology_name(manifest.get("name")) == normalized_name:
+            return existing_ontology_id
+    return None
+
+
+def _ensure_unique_ontology_name(
+    ontologies_dir: Path,
+    *,
+    ontology_id: str,
+    ontology_name: str,
+) -> None:
+    existing_ontology_id = _find_ontology_name_conflict(
+        ontologies_dir,
+        ontology_id=ontology_id,
+        ontology_name=ontology_name,
+    )
+    if existing_ontology_id is not None:
+        raise OntologyNameConflictError(
+            ontology_id=ontology_id,
+            ontology_name=ontology_name,
+            existing_ontology_id=existing_ontology_id,
+        )
+
+
+def _ontology_name_conflict_response(exc: OntologyNameConflictError) -> JSONResponse:
+    return JSONResponse(
+        content={
+            "error": (
+                f"知识包名称「{exc.ontology_name}」已存在，不可重复导入。"
+                "请修改 manifest.yaml 中的 name 字段后重新导入。"
+            ),
+            "error_code": "ontology_name_conflict",
+            "conflict_type": "name_exists",
+            "ontology_id": exc.ontology_id,
+            "ontology_name": exc.ontology_name,
+            "existing_ontology_id": exc.existing_ontology_id,
+        },
+        status_code=409,
+    )
 
 
 def _resolve_ontology_dir(ontology_id: str) -> Optional[Path]:
@@ -2626,7 +2722,13 @@ def _install_ontology_version_package(
     staged_dir = staging_root / ontology_id
     backup_dir = staging_root / f"{ontology_id}.backup"
     try:
-        with _ontology_install_lock(ontology_dir):
+        name_lock_target = ontology_dir.parent / "ontology-name-uniqueness"
+        with _ontology_install_lock(name_lock_target), _ontology_install_lock(ontology_dir):
+            _ensure_unique_ontology_name(
+                ontology_dir.parent,
+                ontology_id=ontology_id,
+                ontology_name=ontology_name,
+            )
             # Re-read the authoritative state while holding the install lock so
             # a stably-serialized concurrent install is not based on a stale
             # mutation revision or before-state captured before lock acquisition.
@@ -2900,6 +3002,15 @@ def import_ontology_zip_with_auto_create(
             ontologies_dir = _get_ontologies_dir()
             ontologies_dir.mkdir(parents=True, exist_ok=True)
 
+            try:
+                _ensure_unique_ontology_name(
+                    ontologies_dir,
+                    ontology_id=ontology_id,
+                    ontology_name=ontology_name,
+                )
+            except OntologyNameConflictError as exc:
+                return _ontology_name_conflict_response(exc)
+
             ontology_dir = ontologies_dir / ontology_id
             existed = ontology_dir.is_dir()
             active_version = ""
@@ -3067,6 +3178,18 @@ def import_ontology_zip_with_auto_create(
                 operations_count = _count_markdown_files(version_dir / "operations")
                 objects_index_path = _optional_path_str(version_dir / "objects" / "index.md")
                 operations_index_path = _optional_path_str(version_dir / "operations" / "index.md")
+            except OntologyNameConflictError as exc:
+                if checkpoint_reset_for_import and not existed:
+                    try:
+                        delete_ontology_capabilities(ontology_id, workspace_id=workspace_id)
+                    except OntologyCapabilityStoreError:
+                        logger.warning(
+                            "Failed to clean up CheckPoint capability after ontology name conflict: workspace_id=%s ontology_id=%s",
+                            workspace_id,
+                            ontology_id,
+                            exc_info=True,
+                        )
+                return _ontology_name_conflict_response(exc)
             except PackageNormalizationError as exc:
                 logger.warning(
                     "Import rejected by normalization: ontology_id=%s error=%s",

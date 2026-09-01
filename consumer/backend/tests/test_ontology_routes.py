@@ -466,6 +466,7 @@ def _build_source_ontology_zip(
 def _build_v01_ontology_zip(
     *,
     ontology_id: str = "source-demo",
+    ontology_name: str = "",
     version: str = "",
 ) -> io.BytesIO:
     version_line = "version: {}\n".format(version or "1.0.0")
@@ -474,7 +475,7 @@ def _build_v01_ontology_zip(
             "kind: ontology-package\n"
             "schema_version: 0.1\n"
             "id: {}\n".format(ontology_id)
-            + "name: {}\n".format(ontology_id)
+            + "name: {}\n".format(ontology_name or ontology_id)
             + "description: standard test package\n"
             + version_line
             + "language: zh-CN\n"
@@ -500,6 +501,56 @@ def _build_v01_ontology_zip(
         ),
     }
     return _build_zip_file(entries)
+
+
+def test_import_ontology_zip_rejects_name_used_by_another_package(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+
+    first_response = _post(
+        client,
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={
+            "file": (
+                _build_v01_ontology_zip(
+                    ontology_id="package-alpha",
+                    ontology_name="Shared Package",
+                ),
+                "package-alpha.zip",
+            )
+        },
+    )
+    conflict_response = _post(
+        client,
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={
+            "file": (
+                _build_v01_ontology_zip(
+                    ontology_id="package-beta",
+                    ontology_name="ＳＨＡＲＥＤ ＰＡＣＫＡＧＥ",
+                ),
+                "package-beta.zip",
+            )
+        },
+    )
+
+    assert first_response.status_code == 201
+    assert conflict_response.status_code == 409
+    assert conflict_response.json() == {
+        "error": (
+            "知识包名称「ＳＨＡＲＥＤ ＰＡＣＫＡＧＥ」已存在，不可重复导入。"
+            "请修改 manifest.yaml 中的 name 字段后重新导入。"
+        ),
+        "error_code": "ontology_name_conflict",
+        "conflict_type": "name_exists",
+        "ontology_id": "package-beta",
+        "ontology_name": "ＳＨＡＲＥＤ ＰＡＣＫＡＧＥ",
+        "existing_ontology_id": "package-alpha",
+    }
+    assert (workspace_paths.ontologies_dir / "package-alpha").is_dir()
+    assert not (workspace_paths.ontologies_dir / "package-beta").exists()
 
 
 def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
