@@ -280,7 +280,7 @@ def _decode_sse_data(data_lines: list[str]) -> dict[str, Any]:
 def _decode_json_bytes(raw: bytes) -> Any:
     try:
         return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         return None
 
 

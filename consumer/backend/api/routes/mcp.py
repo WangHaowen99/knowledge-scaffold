@@ -395,8 +395,6 @@ async def stream_internal_mcp_chat(
                 trace_config=cfg,
                 progress_sink=publish_progress,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception:
             body = {
                 "ok": False,

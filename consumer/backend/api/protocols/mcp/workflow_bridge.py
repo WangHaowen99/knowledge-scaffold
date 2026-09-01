@@ -1010,8 +1010,6 @@ async def _emit_mcp_progress(
         return
     try:
         await sink(event)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         logger.warning(
             "MCP chat progress delivery failed event=%s",
