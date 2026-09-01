@@ -62,6 +62,7 @@ import {
   studioHistoryFromLocation,
   studioHistorySnapshot,
   studioHistoryUrl,
+  studioKindCounts,
   studioSearchDraft,
   studioTextMatchesQuery,
   studioSummaryVisible,
@@ -133,7 +134,7 @@ try {
     || !storeSource.includes('prefetchStudioBootstrap(initialProjectId, { limit: 200 })')
     || !appSource.includes("store.get().focus.kind === 'studio'")
     || !appSource.includes('prefetchStudioBootstrap(projectId, { limit: 200 })')
-    || !readFileSync('src/App.jsx', 'utf8').includes('window.location.assign(importedPackageStudioUrl(id))')
+    || !readFileSync('src/App.jsx', 'utf8').includes('window.location.assign(projectWorkbenchUrl(id))')
     || !apiSource.includes('const bootstrapRequests = new Map()')
     || !apiSource.includes("if (cache === 'reload') invalidateStudioBootstrap(projectId)")
     || !studioSource.includes("loadStudio({ cache: 'reload' })")) {
@@ -213,6 +214,18 @@ try {
   }
   console.log('✓ Studio WebGL 主动销毁不触发不可用回退');
 } catch (e) { console.log('✗ Studio WebGL 生命周期:', e.message); bad++; }
+
+try {
+  const graphSource = readFileSync('src/workbench/studio/webgl/StudioWebGLGraph.jsx', 'utf8');
+  const runtimeSource = readFileSync('src/workbench/studio/webgl/StudioWebGLRuntime.js', 'utf8');
+  if (!graphSource.includes('onScenePresented')
+    || !graphSource.includes('!presented &&')
+    || !runtimeSource.includes('notifyScenePresented()')
+    || (runtimeSource.match(/window\.requestAnimationFrame/g) || []).length < 2) {
+    throw new Error('WebGL 初始化遮罩在场景首帧呈现前被移除');
+  }
+  console.log('✓ Studio WebGL 场景首帧后移除初始化遮罩');
+} catch (e) { console.log('✗ Studio WebGL 首帧遮罩:', e.message); bad++; }
 
 try {
   const steps = operationStepsDiagram('operation:a', '操作 A', ['步骤一', '步骤二']);
@@ -317,7 +330,41 @@ try {
     })),
   };
   const thresholdClustered = projectStudioLargeGraph(thresholdSource);
-  const belowThreshold = projectStudioLargeGraph({ ...thresholdSource, nodes: thresholdSource.nodes.slice(0, 499) });
+  const unlinkedBelowThreshold = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 499), edges: [],
+  });
+  const mediumSparse = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 250),
+    edges: Array.from({ length: 300 }, (_, index) => ({
+      id: `edge:medium-sparse_${index}`,
+      source: `rule:threshold_${index % 250}`,
+      target: `rule:threshold_${(index + 1) % 250}`,
+    })),
+  });
+  const lowDensity = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 200),
+    edges: Array.from({ length: 180 }, (_, index) => ({
+      id: `edge:low-density_${index}`,
+      source: `rule:threshold_${index % 200}`,
+      target: `rule:threshold_${(index + 1) % 200}`,
+    })),
+  });
+  const mediumDense = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 200),
+    edges: Array.from({ length: 400 }, (_, index) => ({
+      id: `edge:medium-dense_${index}`,
+      source: `rule:threshold_${index % 200}`,
+      target: `rule:threshold_${(index + 1) % 200}`,
+    })),
+  });
+  const largerSparse = projectStudioLargeGraph({
+    nodes: thresholdSource.nodes.slice(0, 300),
+    edges: Array.from({ length: 360 }, (_, index) => ({
+      id: `edge:larger-sparse_${index}`,
+      source: `rule:threshold_${index % 300}`,
+      target: `rule:threshold_${(index + 1) % 300}`,
+    })),
+  });
   if (filtered.nodes.some((node) => node.kind === 'rule') || filtered.edges.some((edge) => edge.id === 'e1')
     || neighborhood.edges.size !== 2 || metricChain.edges.size !== 2
     || metricStyle.color !== '#5935a4' || metricStyle.dash
@@ -343,7 +390,11 @@ try {
     || expanded.nodes.filter((node) => node.kind !== 'cluster').length !== 4
     || searchedLarge.clustered || searchedLarge.nodes.length !== largeSource.nodes.length
     || !thresholdClustered.clustered || thresholdClustered.nodes.length > 30
-    || belowThreshold.clustered
+    || unlinkedBelowThreshold.clustered
+    || !mediumSparse.clustered
+    || lowDensity.clustered
+    || !mediumDense.clustered
+    || !largerSparse.clustered
     || studioVisibleElementId('operation:a', objectNodes) !== ''
     || studioVisibleElementId('object:a', objectNodes) !== 'object:a'
     || STUDIO_NODE_CLICK_DISTANCE < 4
@@ -533,19 +584,22 @@ try {
 } catch (e) { console.log('✗ Studio 标签距离约束:', e.message); bad++; }
 
 try {
+  const counts = studioKindCounts([
+    { kind: 'object' }, { kind: 'object' }, { kind: 'operation' }, { kind: 'rule' }, { kind: 'metric' },
+  ]);
   const html = renderToString(<StudioKindTabs value="operation" kinds={[
     { kind: 'object', label: '对象' },
     { kind: 'operation', label: '操作' },
     { kind: 'rule', label: '规则' },
     { kind: 'metric', label: '指标' },
     { kind: 'script', label: '脚本' },
-  ]} elements={[
-    { kind: 'object' }, { kind: 'object' }, { kind: 'operation' }, { kind: 'rule' }, { kind: 'metric' },
-  ]} />);
+  ]} elements={[]} counts={counts} />);
   if (!html.includes('按知识类型筛选') || !html.includes('<span>全部</span>')
     || !html.includes('<span>对象</span>') || !html.includes('<span>操作</span>')
     || !html.includes('<span>规则</span>') || !html.includes('<span>指标</span>')
     || !html.includes('<span>脚本</span>') || (html.match(/role="tab"/g) || []).length !== 6
+    || !html.includes('<span>对象</span><small>2</small>')
+    || !html.includes('<span>全部</span><small>5</small>')
     || !html.includes('aria-selected="true"')) {
     throw new Error('Studio 类型没有以并列切换项完整展示');
   }

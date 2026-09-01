@@ -275,6 +275,7 @@ export class StudioReadService {
       hasStagedChanges: this.workingPackage.workingRevision !== this.workingPackage.baseRevision,
       items,
       total: filtered.length,
+      kindTotals: this.kindTotals(),
       nextCursor: nextOffset < filtered.length
         ? encodeCursor(nextOffset, this.workingPackage.workingRevision)
         : null,
@@ -319,8 +320,14 @@ export class StudioReadService {
       edges,
       aggregates: [],
       nextCursor: null,
-      totals: { elements: elements.length, relations: edges.length },
+      totals: { elements: elements.length, relations: edges.length, byKind: this.kindTotals() },
     };
+  }
+
+  kindTotals(): Record<StudioKind, number> {
+    const totals = Object.fromEntries(KIND_ORDER.map((kind) => [kind, 0])) as Record<StudioKind, number>;
+    this.elements.forEach((element) => { totals[element.kind] += 1; });
+    return totals;
   }
 
   private filter(options: GraphOptions): StudioElement[] {
@@ -331,6 +338,27 @@ export class StudioReadService {
       && (!query || searchableText(element).includes(query))
     ));
   }
+}
+
+export function resolveStudioWorkingSpec(
+  baseSpec: PackageSpec,
+  files: Record<string, string>,
+): PackageSpec {
+  try {
+    const renderedSpec = parseRenderedPackageFiles(files);
+    const renderedCount = studioSpecElementCount(renderedSpec);
+    return renderedCount > 0 || studioSpecElementCount(baseSpec) === 0 ? renderedSpec : baseSpec;
+  } catch {
+    return baseSpec;
+  }
+}
+
+function studioSpecElementCount(spec: PackageSpec): number {
+  return spec.objects.length
+    + spec.operations.length
+    + (spec.rules?.length || 0)
+    + (spec.metrics?.length || 0)
+    + (spec.scripts?.length || 0);
 }
 
 function elementSeeds(spec: PackageSpec): ElementSeed[] {

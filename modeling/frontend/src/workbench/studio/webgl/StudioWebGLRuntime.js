@@ -6,7 +6,6 @@ const MAX_ZOOM = 2.2;
 const CLICK_DISTANCE = 6;
 const DOUBLE_CLICK_MS = 320;
 const MAX_PARTICLE_EDGES = 20;
-const FULL_EDGE_LABEL_LIMIT = 300;
 const LARGE_GRAPH_NODE_LIMIT = 200;
 const MINIMAP_FRAME_INTERVAL_MS = 100;
 const FORCE_POSITION_FRAME_MS = 33;
@@ -109,6 +108,7 @@ export class WebGLGraphRuntime {
     this.labelMaxFrameStep = 0;
     this.destroyed = false;
     this.sceneSignature = '';
+    this.scenePresentationGeneration = 0;
     this.handleContextLost = this.handleContextLost.bind(this);
     this.handleWheel = this.handleWheel.bind(this);
     this.handleMinimapPointer = this.handleMinimapPointer.bind(this);
@@ -245,6 +245,7 @@ export class WebGLGraphRuntime {
       this.drawNodes();
       this.drawEdges();
       this.drawMinimap();
+      this.notifyScenePresented();
       return;
     }
     this.layers?.labels.removeChildren().forEach((child) => child.destroy({ children: true }));
@@ -278,6 +279,20 @@ export class WebGLGraphRuntime {
       if (scene.nodes.length) this.startForce();
       else this.stopForce();
     } else this.fitView(false);
+    this.notifyScenePresented();
+  }
+
+  notifyScenePresented() {
+    const generation = this.scenePresentationGeneration + 1;
+    this.scenePresentationGeneration = generation;
+    this.app?.ticker.start();
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (!this.destroyed && generation === this.scenePresentationGeneration) {
+          this.callbacks.onScenePresented?.();
+        }
+      });
+    });
   }
 
   setInteractionState(state) {
@@ -748,7 +763,7 @@ export class WebGLGraphRuntime {
         placed,
         nodeObstacles,
       );
-      if (clustered && placement.blocked && !emphasized) {
+      if (placement.blocked && !emphasized) {
         container.visible = false;
         visibleLabelIds.add(edge.id);
         return;
@@ -808,12 +823,17 @@ export class WebGLGraphRuntime {
       if (zoom < 0.9) return 10;
       return 16;
     }
-    if (this.scene.edges.length <= FULL_EDGE_LABEL_LIMIT) return Infinity;
-    if (this.forceStatus === 'initializing' || this.forceStatus === 'running') return 40;
-    if (this.interactionState.selectedId) return 260;
-    if (zoom < 0.62) return 80;
-    if (zoom < 0.9) return 160;
-    return 320;
+    const edgeCount = this.scene.edges.length;
+    if (this.forceStatus === 'initializing' || this.forceStatus === 'running') {
+      return Math.min(edgeCount, 40, Math.max(18, Math.round(edgeCount * 0.15)));
+    }
+    if (this.interactionState.selectedId) return Math.min(edgeCount, 260);
+    const compact = zoom < 0.62;
+    const standard = !compact && zoom < 0.9;
+    const factor = compact ? 0.24 : standard ? 0.4 : 0.64;
+    const floor = compact ? 24 : standard ? 36 : 48;
+    const ceiling = compact ? 80 : standard ? 160 : 320;
+    return Math.min(edgeCount, ceiling, Math.max(floor, Math.round(edgeCount * factor)));
   }
 
   attributeObstacles() {
@@ -1190,7 +1210,7 @@ export class WebGLGraphRuntime {
       if (!view.title && mayCreateText) this.attachNodeTexts(view);
       if (!view.title) return;
       view.metaText.visible = zoom >= 0.68 && (!largeGraph || zoom >= 0.86 || priority);
-      view.title.visible = !largeGraph || zoom >= 0.62 || priority;
+      view.title.visible = true;
       const desiredBoost = Math.max(1, MIN_TITLE_SCREEN_SCALE / zoom);
       const widthLimit = view.item.width * 0.82;
       const maxBoost = Math.max(1, widthLimit / Math.max(1, view.titleBaseWidth));
@@ -1522,6 +1542,7 @@ export class WebGLGraphRuntime {
 
   destroy() {
     this.destroyed = true;
+    this.scenePresentationGeneration += 1;
     window.clearTimeout(this.viewportReportTimer);
     this.stopForce(false);
     this.resizeObserver?.disconnect();
