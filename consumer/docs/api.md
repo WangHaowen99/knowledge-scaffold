@@ -1440,7 +1440,7 @@ PUT 请求体：
 
 ### 7.2 `GET /agentic/workspaces`
 
-列出全部工作空间。
+列出当前用户在工作台中可选择的工作空间。普通用户列表仅包含自己拥有或作为成员加入的空间；该列表过滤不改变其他接口已有的授权规则。普通用户首次调用时，如果还没有自己拥有的工作空间，服务会创建名称为“默认工作空间”的个人空间；全局管理员不会触发该自动创建流程。
 
 响应 `200`：
 
@@ -1453,13 +1453,21 @@ PUT 请求体：
       "description": "示例工作空间",
       "created_at": "2026-04-16T04:00:00+00:00",
       "updated_at": "2026-04-16T04:00:00+00:00",
-      "is_default": true
+      "is_default": true,
+      "owner": "admin",
+      "members": [],
+      "role": "admin"
     }
   ],
   "total": 1,
-  "default_workspace_id": "demo-workspace"
+  "default_workspace_id": "demo-workspace",
+  "preferred_workspace_id": "demo-workspace"
 }
 ```
+
+`default_workspace_id` 是平台管理员设置的全局默认空间；`preferred_workspace_id` 是当前用户进入平台时应优先选择的空间。普通用户返回其个人空间，管理员返回全局默认空间。前端仍会优先恢复当前账号已保存且仍可访问的选择。
+
+普通用户首次自动创建个人空间时，认证目录不可用返回 `503 AUTH_DIRECTORY_UNAVAILABLE`，身份删除状态不可用返回 `503 USER_DELETION_STATE_UNAVAILABLE`，身份正在删除返回 `409 USER_DELETION_RECONCILIATION_PENDING`；无法分配个人空间 ID 时返回 `409 PERSONAL_WORKSPACE_PROVISIONING_FAILED`。
 
 ### 7.3 `POST /agentic/workspaces` (`admin`)
 
@@ -1478,7 +1486,7 @@ PUT 请求体：
 
 字段说明：
 
-- `id` 可选；不传时会根据 `name` 自动 slugify，并在冲突时追加随机后缀
+- `id` 可选；不传时会根据 `name` 自动 slugify，并在冲突时追加随机后缀。匹配 `home-<20 位小写十六进制>` 或其 `-<8 位小写十六进制>` 冲突后缀形式的 ID 由系统个人空间保留，用户请求返回 `400`
 - `name` 必填
 - `description` 可选
 - `set_as_default` 可选
