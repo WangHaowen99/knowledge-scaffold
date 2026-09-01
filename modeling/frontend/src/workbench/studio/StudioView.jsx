@@ -391,7 +391,16 @@ export default function StudioView({ focus }) {
       scheduleStudioRefresh();
     };
     window.addEventListener('mw-package-updated', refresh);
-    return () => window.removeEventListener('mw-package-updated', refresh);
+    const refreshOnVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => {
+      window.removeEventListener('mw-package-updated', refresh);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refreshOnVisible);
+    };
   }, [scheduleStudioRefresh, setExternalNotice, update]);
 
   const navigate = useCallback((view, elementId = sessionRef.current.selectedElementId) => {

@@ -397,11 +397,10 @@ cmd_up() {
     fi
 
     log "启动 Modeling Workbench（core + MCP + Agent）…"
-    modeling_compose "${eval_args[@]+"${eval_args[@]}"}" up -d --build
+    modeling_compose "${eval_args[@]+"${eval_args[@]}"}" up -d --build --remove-orphans
     wait_for_container "mw-modeling-agent" 180
-    wait_for_container "mw-modeling-mcp" 180
     wait_http "modeling" "http://127.0.0.1:${MODELING_PORT:-5100}/health" 120 modeling
-    wait_http "modeling-mcp" "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 120 modeling-mcp
+    wait_http "modeling-mcp" "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 120 modeling
     wait_http "modeling-workbench" "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 modeling
   fi
 
@@ -444,8 +443,8 @@ cmd_logs() {
   local svc="${1:-}"
   case "$svc" in
     backend|frontend|mcp|auth-server|jiuwenbox) consumer_compose logs -f --tail 200 "$svc" ;;
-    modeling|modeling-mcp|modeling-agent|modeling-nl2sql|eval-mysql) modeling_compose logs -f --tail 200 "$svc" ;;
-    *) fail "用法：./deploy-stack.sh logs <backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-mcp|modeling-agent|modeling-nl2sql|eval-mysql>" 2 ;;
+    modeling|modeling-agent|modeling-nl2sql|eval-mysql) modeling_compose logs -f --tail 200 "$svc" ;;
+    *) fail "用法：./deploy-stack.sh logs <backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-agent|modeling-nl2sql|eval-mysql>" 2 ;;
   esac
 }
 
@@ -462,7 +461,7 @@ cmd_help() {
       --tag <tag>               consumer 镜像 tag（默认 latest）
   status                        容器状态 + 健康检查
   down [--volumes]              停止（--volumes 同时删数据卷，慎用）
-  logs <service>                跟踪日志：backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-mcp|modeling-agent|eval-mysql
+  logs <service>                跟踪日志：backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-agent|eval-mysql
 
 环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=5100 MODELING_MCP_PORT=5188
   EVAL_MYSQL_PORT=3306 EVAL_MYSQL_ROOT_PASSWORD=<启用评测库时必填的强随机值>

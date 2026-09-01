@@ -12,7 +12,11 @@ import { registerProjectMcpTransportRoutes } from './mcp/transport.js';
 
 const HEARTBEAT_MS = 10_000;
 
-async function main() {
+export interface ModelingMcpServerHandle {
+  close: (detail?: string) => Promise<void>;
+}
+
+export async function startModelingMcpServer(): Promise<ModelingMcpServerHandle> {
   getDb();
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
   app.get('/health', async () => ({ status: 'ok' }));
@@ -28,20 +32,17 @@ async function main() {
     }
   }, HEARTBEAT_MS);
   heartbeat.unref();
-  const shutdown = async (signal: string) => {
+  let closed = false;
+  const close = async (detail = 'modeling 服务停止') => {
+    if (closed) return;
+    closed = true;
     clearInterval(heartbeat);
     try {
-      markModelingMcpRuntimeStopped(instanceId, `收到 ${signal}`);
+      markModelingMcpRuntimeStopped(instanceId, detail);
     } finally {
       await app.close();
     }
   };
-  process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
-  process.once('SIGINT', () => { void shutdown('SIGINT'); });
   app.log.info(`建模 MCP 服务已启动：${config.mcp.host}:${config.mcp.port}`);
+  return { close };
 }
-
-main().catch((error) => {
-  console.error('MCP 服务启动失败：', error);
-  process.exit(1);
-});

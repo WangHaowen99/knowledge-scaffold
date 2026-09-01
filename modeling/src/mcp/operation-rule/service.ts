@@ -103,7 +103,7 @@ export class OperationRuleMcpService {
     const current = await this.artifacts.readPackageFiles(project.id, requestedRevision || undefined);
     const query = optionalText(args.query).toLocaleLowerCase('zh-CN');
     const limit = integer(args.limit, DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
-    const offset = decodeCursor(args.cursor, current.revision.oid, type);
+    const offset = decodeCursor(args.cursor, current.revision.oid, type, query);
     const resources = type === 'operation' ? current.spec.operations : current.spec.rules ?? [];
     const items = resources
       .filter((item) => !query || resourceSearchText(item, type).includes(query))
@@ -116,7 +116,7 @@ export class OperationRuleMcpService {
         ? operationSummary(item as SpecOperation)
         : ruleSummary(item as SpecRule)),
       total: items.length,
-      next_cursor: nextOffset < items.length ? encodeCursor(current.revision.oid, type, nextOffset) : null,
+      next_cursor: nextOffset < items.length ? encodeCursor(current.revision.oid, type, nextOffset, query) : null,
       display: { text: `已返回 ${page.length}/${items.length} 个${type === 'operation' ? '操作' : '规则'}` },
     };
   }
@@ -170,6 +170,14 @@ export class OperationRuleMcpService {
           summary: actionSummary(command),
           actorKind: 'user',
           actorName: username,
+        },
+        preserveUnchangedManagedFiles: true,
+        beforeCommit: async () => {
+          const issue = await this.editingStateImpact(project.id);
+          if (issue) throw new ModelingMcpToolError('PROJECT_EDITING_BUSY', issue.message, 409, [], {
+            phase: 'persist', resource: analysis.resource, reason_code: 'PROJECT_EDITING_BUSY',
+            issues: [issue], retryable: true,
+          });
         },
       });
       const eventWarning = tryPublishModelingMcpRevisionEvent({
@@ -259,14 +267,25 @@ export class OperationRuleMcpService {
         ));
       }
       try {
-        const beforeFiles = renderPackage(current.spec);
+        const beforeFiles = current.files;
         const afterFiles = renderPackage(nextSpec);
         parseRenderedPackageFiles(afterFiles);
         const selectedQuestions = coverageQuestions(current.coverage);
         coverage = coverageFor(nextSpec, selectedQuestions);
-        changedPaths = changedRenderedPaths(beforeFiles, afterFiles, current.coverage, coverage);
+        changedPaths = (await this.artifacts.planPackageVersionChanges(project.id, {
+          expectedRevision: current.revision.oid,
+          spec: nextSpec,
+          coverage,
+          preserveUnchangedManagedFiles: true,
+        })).changedPaths;
+        if (!changedPaths.length) impacts.push(impact(
+          'NO_CHANGES', 'blocking', resourceTarget(command), '没有产生有效修改', '无需重复提交相同内容',
+        ));
         impacts.push(...this.findingImpacts(project.id, current.spec, beforeFiles, nextSpec, afterFiles, selectedQuestions));
       } catch (error) {
+        if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
+          throw mapArtifactError(error, { phase: 'validate', resource });
+        }
         impacts.push(impact(
           'PACKAGE_RENDER_FAILED',
           'blocking',
@@ -563,19 +582,6 @@ function affectedResourcesFor(spec: PackageSpec, command: MutationCommand) {
   return [...result.values()].sort((left, right) => compareText(`${left.type}:${left.key}`, `${right.type}:${right.key}`));
 }
 
-function changedRenderedPaths(
-  before: Record<string, string>,
-  after: Record<string, string>,
-  beforeCoverage: CoverageResult,
-  afterCoverage: CoverageResult,
-): string[] {
-  const paths = [...new Set([...Object.keys(before), ...Object.keys(after)])]
-    .filter((path) => before[path] !== after[path]);
-  paths.push('model/package-spec.json');
-  if (JSON.stringify(beforeCoverage) !== JSON.stringify(afterCoverage)) paths.push('model/coverage.json');
-  return [...new Set(paths)].sort(compareText);
-}
-
 function publicOperation(operation: SpecOperation) {
   return {
     key: operation.key,
@@ -757,18 +763,20 @@ function withoutEnvelope(args: Record<string, unknown>, fields: string[]): Recor
   return Object.fromEntries(Object.entries(args).filter(([key]) => !fields.includes(key)));
 }
 
-function encodeCursor(revision: string, type: ResourceType, offset: number): string {
-  return Buffer.from(JSON.stringify({ revision, type, offset }), 'utf8').toString('base64url');
+function encodeCursor(revision: string, type: ResourceType, offset: number, query: string): string {
+  return Buffer.from(JSON.stringify({ version: 1, revision, type, offset, query }), 'utf8').toString('base64url');
 }
 
-function decodeCursor(value: unknown, revision: string, type: ResourceType): number {
+function decodeCursor(value: unknown, revision: string, type: ResourceType, query: string): number {
   const cursor = optionalText(value);
   if (!cursor) return 0;
+  let parsed: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
-    if (parsed.revision !== revision || parsed.type !== type) throw new Error('stale');
-    return integer(parsed.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+    parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
   } catch {
+    throw new ModelingMcpToolError('INVALID_CURSOR', '分页游标格式无效', 400);
+  }
+  if (parsed.version !== 1 || parsed.revision !== revision) {
     throw new ModelingMcpToolError(
       'REVISION_CONFLICT',
       '分页游标对应的 revision 已变化，请从第一页重新读取',
@@ -777,6 +785,10 @@ function decodeCursor(value: unknown, revision: string, type: ResourceType): num
       { phase: 'load', reason_code: 'REVISION_CONFLICT', retryable: true },
     );
   }
+  if (parsed.type !== type || parsed.query !== query) {
+    throw new ModelingMcpToolError('CURSOR_CONTEXT_MISMATCH', '分页游标与当前查询条件不匹配', 400);
+  }
+  return integer(parsed.offset, 0, 0, Number.MAX_SAFE_INTEGER);
 }
 
 function coverageQuestions(coverage: CoverageResult): string[] {
@@ -874,6 +886,14 @@ function mapArtifactError(
         retryable: true,
       } satisfies ModelingMcpToolDetails,
     );
+  }
+  if (error instanceof ArtifactRepositoryError && error.code === 'no_change') {
+    return new ModelingMcpToolError('NO_CHANGES', '提交内容与当前资源一致，没有产生修改', 409, [], {
+      phase: context.phase,
+      ...(context.resource ? { resource: context.resource } : {}),
+      reason_code: 'NO_CHANGES',
+      retryable: false,
+    });
   }
   if (error instanceof ArtifactRepositoryError && error.code === 'revision_not_found') {
     return new ModelingMcpToolError(
