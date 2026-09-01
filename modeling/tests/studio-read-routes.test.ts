@@ -11,6 +11,7 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-studio-read-'));
 const [
   { registerAgentCoreRoutes },
   { StudioReadService, STUDIO_SCHEMA },
+  { StudioOperationFlowService },
   { createProject },
   { getPackageArtifactStore },
   { getDb },
@@ -18,6 +19,7 @@ const [
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/agent/studio-read-service.js'),
+  import('../src/agent/studio-operation-flow-service.js'),
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
   import('../src/db/index.js'),
@@ -60,6 +62,7 @@ function fixtureSpec() {
       relatedObjects: ['inventory'],
       usesRules: ['safety-stock'],
       usesMetrics: ['available-rate'],
+      script: { key: 'normalize-inventory', required: true },
       competencyQuestion: '库存不足时应该补多少货？',
       evidence: ['user-decision:studio-fixture'],
     }],
@@ -83,7 +86,26 @@ function fixtureSpec() {
       boundaries: ['总库存为零时不计算。'],
       evidence: ['user-decision:studio-fixture'],
     }],
-    scripts: [],
+    scripts: [{
+      key: 'normalize-inventory',
+      title: '库存归一脚本',
+      description: '将结构化库存输入转换为统一输出。',
+      boundOperation: 'replenish',
+      runtime: 'python',
+      entrypoint: 'normalize-inventory.py',
+      timeoutSeconds: 30,
+      parameters: [],
+      outputs: [{ key: 'normalized', type: 'object', description: '归一结果' }],
+      boundaries: ['只处理结构化输入。'],
+      evidence: ['user-decision:studio-fixture'],
+      sourceCode: [
+        'import argparse',
+        'import json',
+        'parser = argparse.ArgumentParser()',
+        'parser.parse_args()',
+        'print(json.dumps({"normalized": {}}))',
+      ].join('\n'),
+    }],
   } as any;
 }
 
@@ -125,6 +147,47 @@ function fusionWorkingPackage(revision: string) {
   };
 }
 
+function operationFlowWorkingPackage(revision: string) {
+  const spec = fixtureSpec();
+  spec.operations[0].evidence = [
+    'diagram:replenishment_process',
+    'flow-node:calculate_quantity',
+    'flow-node:missing_node',
+    'diagram:missing_process',
+    '说明文本 diagram:ignored_process',
+  ];
+  const files = renderPackage(spec);
+  files['diagrams/processes.json'] = `${JSON.stringify({
+    diagrams: [{
+      id: 'replenishment_process',
+      title: '补货流程',
+      nodes: [
+        { id: 'start', label: '开始', kind: 'start' },
+        { id: 'calculate_quantity', label: '计算补货量', kind: 'action' },
+        { id: 'end', label: '完成', kind: 'end' },
+      ],
+      edges: [
+        { id: 'start-calculate', from: 'start', to: 'calculate_quantity', kind: 'sequence' },
+        { id: 'calculate-end', from: 'calculate_quantity', to: 'end', kind: 'sequence' },
+      ],
+      layout: {
+        direction: 'LR',
+        positions: {
+          start: { x: 0, y: 0 },
+          calculate_quantity: { x: 220, y: 0 },
+          end: { x: 440, y: 0 },
+        },
+      },
+    }],
+  }, null, 2)}\n`;
+  return {
+    workingRevision: revision,
+    baseRevision: 'git-base',
+    candidateRevision: null,
+    files,
+  };
+}
+
 function appFor(t: test.TestContext, username = 'alice') {
   const app = Fastify();
   app.addHook('preHandler', async (request) => {
@@ -137,13 +200,14 @@ function appFor(t: test.TestContext, username = 'alice') {
 
 test('Studio 固定 registry 与元素、关系、图谱共享稳定标识', () => {
   assert.deepEqual(STUDIO_SCHEMA.kinds.map((item) => item.kind), [
-    'object', 'operation', 'rule', 'metric', 'concept',
+    'object', 'operation', 'rule', 'metric', 'script',
   ]);
   assert.equal(STUDIO_SCHEMA.capabilities.update, true);
+  assert.equal(STUDIO_SCHEMA.capabilities.operationFlow, true);
 
   const studio = new StudioReadService(workingPackage('revision-a'));
   const firstPage = studio.list({ sort: 'kind', limit: 2 });
-  assert.equal(firstPage.total, 5);
+  assert.equal(firstPage.total, 6);
   assert.equal(firstPage.items.length, 2);
   assert.ok(firstPage.nextCursor);
   const secondPage = studio.list({ sort: 'kind', limit: 2, cursor: firstPage.nextCursor });
@@ -155,18 +219,18 @@ test('Studio 固定 registry 与元素、关系、图谱共享稳定标识', () 
 
   const operation = studio.detail('operation:replenish').element;
   assert.deepEqual(operation.relations.map((relation) => relation.targetId).sort(), [
-    'metric:available-rate', 'object:inventory', 'rule:safety-stock',
+    'metric:available-rate', 'object:inventory', 'rule:safety-stock', 'script:normalize-inventory',
   ]);
   assert.ok(operation.relations.every((relation) => relation.targetExists));
 
   const graph = studio.graph();
-  assert.equal(graph.nodes.length, 5);
+  assert.equal(graph.nodes.length, 6);
   assert.ok(graph.nodes.some((node) => node.id === operation.id));
   assert.ok(graph.edges.some((edge) => (
     edge.source === operation.id && edge.target === 'rule:safety-stock'
   )));
   assert.ok(graph.nodes.some((node) => node.id === 'object:warehouse'));
-  assert.ok(Math.max(...graph.nodes.map((node) => node.x)) - Math.min(...graph.nodes.map((node) => node.x)) <= 720);
+  assert.ok(Math.max(...graph.nodes.map((node) => node.x)) - Math.min(...graph.nodes.map((node) => node.x)) <= 960);
   assert.ok(Math.max(...graph.nodes.map((node) => node.y)) - Math.min(...graph.nodes.map((node) => node.y)) <= 644);
 
   const nextRevisionGraph = new StudioReadService(workingPackage('revision-b')).graph();
@@ -180,30 +244,52 @@ test('Studio 固定 registry 与元素、关系、图谱共享稳定标识', () 
   );
 });
 
-test('Studio 将融合 ledger 概念投影为只读元素并指向真实 fusedKey', () => {
-  const conceptSchema = STUDIO_SCHEMA.kinds.find((item) => item.kind === 'concept')!;
-  assert.deepEqual(conceptSchema.capabilities, {
+test('Studio 操作流程只按显式证据聚合步骤、业务流程和定位问题', () => {
+  const working = operationFlowWorkingPackage('revision-flow');
+  const response = new StudioOperationFlowService(working).read('operation:replenish');
+  assert.equal(response.workingRevision, 'revision-flow');
+  assert.equal(response.operationId, 'operation:replenish');
+  assert.equal(response.defaultView, 'business-flow');
+  assert.deepEqual(response.steps, ['读取库存', '应用安全库存规则', '计算建议量']);
+  assert.deepEqual(response.diagrams.map((diagram) => diagram.id), ['replenishment_process']);
+  assert.deepEqual(response.diagrams[0].focusedNodeIds, ['calculate_quantity']);
+  assert.ok(response.issues.some((issue) => (
+    issue.code === 'DIAGRAM_NOT_FOUND' && issue.reference === 'diagram:missing_process'
+  )));
+  assert.ok(response.issues.some((issue) => (
+    issue.code === 'FLOW_NODE_NOT_FOUND' && issue.reference === 'flow-node:missing_node'
+  )));
+  assert.ok(!response.issues.some((issue) => issue.reference === 'diagram:ignored_process'));
+  assert.throws(
+    () => new StudioOperationFlowService(working).read('object:inventory'),
+    (error: any) => error.code === 'OPERATION_FLOW_TARGET_INVALID',
+  );
+});
+
+test('Studio 投影受控脚本并不再把融合概念作为图节点', () => {
+  const scriptSchema = STUDIO_SCHEMA.kinds.find((item) => item.kind === 'script')!;
+  assert.deepEqual(scriptSchema.capabilities, {
     create: false, update: false, delete: false, batch: false,
   });
 
   const studio = new StudioReadService(fusionWorkingPackage('revision-fusion'));
-  const concepts = studio.list({ kind: 'concept' });
-  assert.equal(concepts.total, 1);
-  assert.deepEqual(concepts.items.map((item) => item.id), ['concept:inventory-view']);
-
-  const concept = studio.detail('concept:inventory-view').element;
-  assert.equal(concept.values.layer, 'parameterized');
-  assert.equal(concept.sourcePath, 'mappings/package-fusion.json');
-  assert.deepEqual(concept.relations.map((relation) => ({
-    targetId: relation.targetId,
-    targetExists: relation.targetExists,
-  })), [
-    { targetId: 'object:inventory', targetExists: true },
-    { targetId: 'object:warehouse', targetExists: true },
+  const scripts = studio.list({ kind: 'script' });
+  assert.deepEqual(scripts.items.map((item) => item.id), ['script:normalize-inventory']);
+  const script = studio.detail('script:normalize-inventory').element;
+  assert.equal(script.values.boundOperation, 'replenish');
+  assert.equal(script.values.runtime, 'python');
+  assert.equal(script.sourcePath, 'scripts/normalize-inventory.md');
+  assert.deepEqual(script.relations.map((relation) => relation.targetId).sort(), [
+    'object:inventory', 'operation:replenish',
   ]);
   const graph = studio.graph();
-  assert.ok(graph.nodes.some((node) => node.id === concept.id));
-  assert.equal(graph.edges.filter((edge) => edge.source === concept.id).length, 2);
+  assert.ok(graph.nodes.some((node) => node.id === script.id));
+  assert.equal(graph.edges.filter((edge) => edge.source === script.id).length, 2);
+  assert.ok(!graph.nodes.some((node) => node.kind === 'concept'));
+  assert.throws(
+    () => studio.list({ kind: 'concept' }),
+    (error: any) => error.code === 'INVALID_STUDIO_QUERY',
+  );
 });
 
 test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图一致性', async (t) => {
@@ -215,7 +301,7 @@ test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图�
     url: `/api/projects/${project.id}/studio/schema`,
   });
   assert.equal(schema.statusCode, 200, schema.body);
-  assert.equal(schema.json().schemaVersion, 'studio-v3');
+  assert.equal(schema.json().schemaVersion, 'studio-v5');
   const cachedSchema = await app.inject({
     method: 'GET',
     url: `/api/projects/${project.id}/studio/schema`,
@@ -263,6 +349,9 @@ test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图�
     'operations/replenish.md',
     'rules/safety-stock.md',
     'metrics/available-rate.md',
+    'scripts/index.md',
+    'scripts/normalize-inventory.md',
+    'scripts/normalize-inventory.py',
   ]) {
     insert.run(project.id, runId, path, rendered[path], now);
   }
@@ -272,11 +361,24 @@ test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图�
     url: `/api/projects/${project.id}/studio/elements?query=${encodeURIComponent('库存')}`,
   });
   assert.equal(list.statusCode, 200, list.body);
-  assert.equal(list.json().total, 5);
+  assert.equal(list.json().total, 6);
   assert.ok(list.json().items.some((item: any) => item.id === 'object:inventory'));
   assert.match(list.json().workingRevision, /^sha256:[a-f0-9]{64}$/u);
   assert.equal(list.headers.etag, `"${list.json().workingRevision}"`);
   const workingRevision = list.json().workingRevision as string;
+
+  const bootstrap = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/studio/bootstrap?workingRevision=${encodeURIComponent(workingRevision)}`,
+  });
+  assert.equal(bootstrap.statusCode, 200, bootstrap.body);
+  assert.equal(bootstrap.json().schema.schemaVersion, 'studio-v5');
+  assert.equal(bootstrap.json().workingRevision, workingRevision);
+  assert.equal(bootstrap.json().elements.workingRevision, workingRevision);
+  assert.equal(bootstrap.json().graph.workingRevision, workingRevision);
+  assert.equal(bootstrap.json().elements.total, 6);
+  assert.equal(bootstrap.json().graph.nodes.length, 6);
+  assert.equal(bootstrap.headers.etag, `"${workingRevision}"`);
 
   const detail = await app.inject({
     method: 'GET',
@@ -288,13 +390,25 @@ test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图�
   assert.equal(detail.json().element.id, 'operation:replenish');
   assert.equal(detail.json().element.values.flow.length, 3);
 
+  const operationFlow = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('operation:replenish')}/flow`
+      + `?workingRevision=${encodeURIComponent(workingRevision)}`,
+  });
+  assert.equal(operationFlow.statusCode, 200, operationFlow.body);
+  assert.equal(operationFlow.json().workingRevision, workingRevision);
+  assert.equal(operationFlow.json().operationId, 'operation:replenish');
+  assert.equal(operationFlow.json().defaultView, 'operation-steps');
+  assert.equal(operationFlow.json().steps.length, 3);
+  assert.deepEqual(operationFlow.json().diagrams, []);
+
   const graph = await app.inject({
     method: 'GET',
     url: `/api/projects/${project.id}/studio/graph?workingRevision=${encodeURIComponent(workingRevision)}`,
   });
   assert.equal(graph.statusCode, 200, graph.body);
   assert.equal(graph.json().workingRevision, workingRevision);
-  assert.equal(graph.json().nodes.length, 5);
+  assert.equal(graph.json().nodes.length, 6);
   assert.ok(graph.json().nodes.some((node: any) => node.id === detail.json().element.id));
 
   const stale = await app.inject({
@@ -307,7 +421,7 @@ test('Studio 路由读取候选覆盖层并用 workingRevision 约束跨视图�
 
   const invalidKind = await app.inject({
     method: 'GET',
-    url: `/api/projects/${project.id}/studio/elements?kind=script`,
+    url: `/api/projects/${project.id}/studio/elements?kind=concept`,
   });
   assert.equal(invalidKind.statusCode, 400, invalidKind.body);
   assert.equal(invalidKind.json().code, 'INVALID_STUDIO_QUERY');
