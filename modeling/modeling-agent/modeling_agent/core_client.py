@@ -29,6 +29,16 @@ class CoreGateway(Protocol):
         arguments: dict[str, Any],
     ) -> dict[str, Any]: ...
 
+    async def acceptance_fault(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+        fault_id: str,
+        sticky_run: bool = False,
+    ) -> dict[str, Any]: ...
+
     async def aclose(self) -> None: ...
 
     def run_credential(self, run_id: str) -> str: ...
@@ -175,6 +185,40 @@ class HttpCoreGateway:
                 "display": payload.get("display") or {"text": reason},
             }
         return payload
+
+    async def acceptance_fault(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+        fault_id: str,
+        sticky_run: bool = False,
+    ) -> dict[str, Any]:
+        headers = {
+            "X-Modeling-Project": project_id,
+            "X-Modeling-Run": run_id,
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        credential = self._run_credentials.get(run_id)
+        if credential:
+            headers["X-Modeling-Agent-Credential"] = credential
+        try:
+            response = await self._client.post(
+                f"{self._base_url}/internal/agent/acceptance/faults/{fault_id}/consume",
+                json={"stickyRun": sticky_run},
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            return {"active": False}
+        if response.status_code == 404:
+            return {"active": False}
+        try:
+            payload = response.json()
+        except ValueError:
+            return {"active": False}
+        return payload if isinstance(payload, dict) else {"active": False}
 
     async def aclose(self) -> None:
         self._run_credentials.clear()

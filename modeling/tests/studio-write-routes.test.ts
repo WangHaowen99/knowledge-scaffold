@@ -240,7 +240,7 @@ test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认�
     WHERE project_id = ?`).get(project.id)!.count, 0);
 
   const rows = getDb().prepare(`SELECT DISTINCT group_id FROM agent_candidate_changes
-    WHERE project_id = ?`).all(project.id) as Array<{ group_id: string }>;
+    WHERE project_id = ? AND group_id <> 'compiled_resources'`).all(project.id) as Array<{ group_id: string }>;
   assert.deepEqual(rows.map((row) => row.group_id), [created.json().changeGroup.id]);
 
   const replay = await app.inject({
@@ -394,7 +394,8 @@ test('Studio 单条创建和编辑只形成候选，CAS、幂等及人工确认�
   const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
     WHERE project_id = ?`).get(project.id) as { run_id: string };
   const groups = getDb().prepare(`SELECT DISTINCT group_id FROM agent_candidate_changes
-    WHERE project_id = ? ORDER BY group_id`).all(project.id) as Array<{ group_id: string }>;
+    WHERE project_id = ? AND group_id <> 'compiled_resources' ORDER BY group_id`)
+    .all(project.id) as Array<{ group_id: string }>;
   const confirmationGroups = groups.map((row) => ({
     id: row.group_id,
     tier: 'structural',
@@ -563,7 +564,7 @@ test('Studio 批量创建支持同批关系，批量编辑逐字段约束且失�
   const rule = created.json().elements.find((item: any) => item.id === 'rule:safety-stock');
   assert.deepEqual(rule.relations.map((relation: any) => relation.targetId), ['object:inventory']);
   const groupRows = getDb().prepare(`SELECT DISTINCT group_id FROM agent_candidate_changes
-    WHERE project_id = ?`).all(project.id) as Array<{ group_id: string }>;
+    WHERE project_id = ? AND group_id <> 'compiled_resources'`).all(project.id) as Array<{ group_id: string }>;
   assert.deepEqual(groupRows.map((row) => row.group_id), [created.json().changeGroup.id]);
 
   const evidencePatch = await app.inject({
@@ -837,7 +838,8 @@ test('Studio 成员权限与写租约共用服务端事实，过期后首个编�
   assert.equal(originalWorkspace.owner, 'alice');
 
   const groups = getDb().prepare(`SELECT DISTINCT group_id FROM agent_candidate_changes
-    WHERE project_id = ? ORDER BY group_id`).all(project.id) as Array<{ group_id: string }>;
+    WHERE project_id = ? AND group_id <> 'compiled_resources' ORDER BY group_id`)
+    .all(project.id) as Array<{ group_id: string }>;
   const preflight = await tool(ownerApp, project.id, originalWorkspace.run_id, 'request_confirmation_preflight', {
     summary: '确认租约接管前的 Studio 修改',
     change_groups: groups.map((row) => ({

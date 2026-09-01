@@ -51,6 +51,7 @@ import type {
   SpecObject,
   SpecOperation,
   SpecRule,
+  SpecScript,
   TableSourceRef,
   MaterialPurpose,
 } from '../types.js';
@@ -68,6 +69,13 @@ import {
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
 import { renderPackage } from '../workflow/package-render.js';
+import {
+  expectedSchemaObjects,
+  OBJECT_DATA_MAPPING_PATH,
+  packageNeedsObjectDataMapping,
+  schemaObjectPolicyIssues,
+  schemaTables,
+} from '../workflow/schema-object-policy.js';
 import { tableSourcesFor } from '../workflow/source-references.js';
 import { validateKey, validateSpecKeys } from '../workflow/keys.js';
 import { canonicalizePackageSpec } from '../workflow/package-spec.js';
@@ -76,7 +84,11 @@ import {
   validateMermaidSource,
 } from '../workflow/mermaid-source-contract.js';
 import { previewOntologyObjectMutation } from '../workflow/ontology-object-model-mutation.js';
-import { parseRenderedPackageFiles } from '../workflow/package-import.js';
+import {
+  parseRenderedPackageFiles,
+  parseRenderedScriptFile,
+} from '../workflow/package-import.js';
+import { buildScriptCliArguments } from '../workflow/script-cli.js';
 import {
   isReleaseCandidateVersion,
   nextValidationCandidateVersion,
@@ -84,6 +96,7 @@ import {
 } from '../workflow/package-version-lifecycle.js';
 import { ensureFullDocumentSummaries } from '../workflow/material-analysis-map-reduce.js';
 import { buildTaskLlm } from '../llm/provider.js';
+import { identifyScriptCandidates } from '../ai-construction/deterministic-capability.js';
 import {
   getRound,
   latestEffectiveEvaluation,
@@ -99,7 +112,11 @@ import {
   type StudioElement,
 } from './studio-read-service.js';
 import { StudioReviewService } from './studio-review-service.js';
-import { StudioWriteError, StudioWriteService } from './studio-write-service.js';
+import {
+  StudioWriteError,
+  StudioWriteService,
+  type StudioMutationResponse,
+} from './studio-write-service.js';
 import {
   packageFusionScopeDependencyGraph,
   PackageFusionService,
@@ -115,6 +132,22 @@ import {
 } from './package-merge.js';
 import type { ImportedPackageArchive } from '../workflow/package-import.js';
 import { ValidationReportStore } from './validation-report-store.js';
+import {
+  compileDomainPatchActions,
+  compileObjectPatchActions,
+  domainResourceHash,
+  domainResourcePayload,
+  DomainPatchError,
+  type DomainKind,
+} from './domain-resource-mutation.js';
+import {
+  ChangeControlError,
+  ChangeControlStore,
+  CHANGE_PLAN_DIRECT_TOOLS,
+  CHANGE_SET_DOMAIN_TOOLS,
+  parseChangeSetActions,
+  type ChangeSetActionInput,
+} from './change-control.js';
 
 const WORKSPACE_LEASE_MS = 30 * 60 * 1000;
 const RUNTIME_GROUP = 'runtime_context';
@@ -122,17 +155,34 @@ const LEGACY_RUNTIME_GROUP = '__runtime_context';
 const COMPILED_RESOURCES_GROUP = 'compiled_resources';
 const MAX_FILE_CHARS = 1_000_000;
 const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
+const STUDIO_SPEC_SOURCE_PATH = /^(?:manifest\.yaml|mappings\/object-data-mappings\.json|objects\/.*\.md|operations\/.*\.md|rules\/.*\.md|metrics\/.*\.md|scripts\/)/u;
 const PACKAGE_REQUIRED_FILE_SET: ReadonlySet<string> = new Set(PACKAGE_REQUIRED_FILES);
 const AGENT_REQUIRED_FILES: ReadonlySet<string> = new Set([
   '.modeling/goal.md',
   ...PACKAGE_REQUIRED_FILES,
 ]);
 const CHANGE_GROUP_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/u;
+const DOMAIN_TOOL_CONTRACT_VERSION = 'domain-patch-v2';
+const DOMAIN_TOOL_NAMES = new Set([
+  'list_domain_resources', 'get_domain_resource',
+  'create_object', 'create_rule', 'create_operation', 'create_metric',
+  'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
+  'sync_schema_objects',
+  'patch_object_source_binding',
+  'preview_domain_delete', 'delete_domain_resource',
+]);
+const CHANGE_CONTROL_TOOLS = new Set([
+  'create_change_plan', 'get_change_plan', 'revise_change_plan',
+  'stage_change_set', 'get_change_set_receipt', 'validate_change_set', 'discard_change_set',
+]);
+const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
+const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
 const GATE_LABELS: Record<string, string> = {
   materials_ready: '资料准备',
   goal_confirmed: '建模目标确认',
   process_confirmed: '业务流程确认',
   knowledge_confirmed: '知识内容确认',
+  deterministic_confirmed: '确定性计算范围确认',
   modeling_complete: '建模完成',
   ready_for_eval: '评测准备',
   evaluation_passed: '正式评测',
@@ -176,6 +226,40 @@ interface ChangeGroupInput {
   warning?: string;
 }
 
+interface DeterministicCapabilityCandidateView {
+  operation_key: string;
+  title: string;
+  confidence: 'medium' | 'high';
+  reason: string;
+  suggested_contract?: string;
+  composes_operation_keys: string[];
+  already_covered: boolean;
+  bound_script_key: string | null;
+}
+
+interface DeterministicCapabilityView {
+  scope_hash: string;
+  status: 'not_required' | 'covered' | 'decision_required' | 'implementation_required' | 'ready';
+  candidates: DeterministicCapabilityCandidateView[];
+  selected_operation_keys: string[];
+  skipped_operation_keys: string[];
+  missing_script_bindings: string[];
+  missing_script_tests: string[];
+  decision: null | {
+    reason: string;
+    decided_by: string;
+    decided_at: string;
+  };
+  display: { text: string };
+}
+
+interface DomainFailureReceiptContext {
+  mutationId: string;
+  requestHash: string;
+  workingRevision: string;
+  dependencyRevision: string;
+}
+
 export class AgentCoreError extends Error {
   constructor(
     public readonly code: string,
@@ -202,6 +286,7 @@ export class AgentCoreService {
   private readonly validationReports: ValidationReportStore;
   private readonly studioWrites: StudioWriteService;
   private readonly studioReviews: StudioReviewService;
+  private readonly changeControl: ChangeControlStore;
   private readonly materialPurposeReviews: MaterialPurposeReviewStore;
 
   constructor(
@@ -213,6 +298,7 @@ export class AgentCoreService {
     this.validationReports = new ValidationReportStore(db);
     this.studioWrites = new StudioWriteService(db, this.artifacts);
     this.studioReviews = new StudioReviewService(db, this.artifacts);
+    this.changeControl = new ChangeControlStore(db);
     this.materialPurposeReviews = new MaterialPurposeReviewStore(db);
   }
 
@@ -264,13 +350,20 @@ export class AgentCoreService {
     const packageFiles = readableWorkspace
       ? await this.overlay(readableWorkspace, workspaceChanges)
       : await this.artifacts.readPackageFiles(project.id, current.revision.oid);
+    const studioFiles = { ...packageFiles.files };
+    const internalSpecChange = workspaceChanges.find((change) => change.path === INTERNAL_SPEC_CHANGE_PATH);
+    if (internalSpecChange?.kind === 'write') {
+      studioFiles[INTERNAL_SPEC_CHANGE_PATH] = internalSpecChange.content ?? '';
+    } else if (!workspaceChanges.some((change) => STUDIO_SPEC_SOURCE_PATH.test(change.path))) {
+      studioFiles[INTERNAL_SPEC_CHANGE_PATH] = `${JSON.stringify(packageFiles.spec, null, 2)}\n`;
+    }
     return {
       workingRevision: workspaceChanges.length
-        ? workingContentRevision(current.revision.oid, packageFiles.files)
+        ? workingContentRevision(current.revision.oid, studioFiles)
         : current.revision.oid,
       baseRevision: current.revision.oid,
       candidateRevision: readableWorkspace?.candidate_id ?? null,
-      files: packageFiles.files,
+      files: studioFiles,
     };
   }
 
@@ -281,6 +374,27 @@ export class AgentCoreService {
       { tier: 'index', mode: 'auto', locked: true, label: '索引同步' },
       { tier: 'script', mode: 'ask', locked: true, label: '脚本' },
     ];
+  }
+
+  respondChangePlan(project: Project, username: string, planId: string, approved: boolean) {
+    try {
+      const plan = this.changeControl.respondPlan({
+        projectId: project.id,
+        planId,
+        username,
+        approved,
+      });
+      return {
+        plan,
+        display: {
+          text: approved
+            ? '已批准这份建模计划，可以按计划开始生成'
+            : '已拒绝这份建模计划，当前计划不会产生修改',
+        },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
   }
 
   workbenchPackageSources(project: Project) {
@@ -460,11 +574,32 @@ export class AgentCoreService {
   }
 
   private async invokeRaw(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
+    if (DOMAIN_TOOL_NAMES.has(tool) || CHANGE_CONTROL_TOOLS.has(tool)) this.adoptDomainToolContract(context);
+    this.assertObjectSourceToolMode(context.project.id, tool, args);
+    if (CHANGE_SET_DOMAIN_TOOLS.has(tool)
+      && this.changeControl.activePlan(context.project.id, context.runId)) {
+      throw new AgentCoreError(
+        'CHANGE_PLAN_REQUIRES_CHANGE_SET',
+        '当前运行已经采用受控建模计划，领域修改必须作为原子 Change Set 提交',
+        ['读取当前计划，把对应任务和领域动作一次交给 stage_change_set'],
+        409,
+        { retryable: false, required_tool: 'stage_change_set' },
+      );
+    }
     if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
-    if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id);
+    if (tool === 'evaluation_status') return this.evaluationStatus(context.project.id);
+    if (tool === 'cancel_evaluation') return this.cancelEvaluation(context.project.id, args);
     switch (tool) {
+      case 'create_change_plan': return this.createChangePlan(context, args);
+      case 'get_change_plan': return this.getChangePlan(context, args);
+      case 'revise_change_plan': return this.reviseChangePlan(context, args);
+      case 'get_change_set_receipt': return this.getChangeSetReceipt(context, args);
+      case 'list_domain_resources': return this.listDomainResources(context, args);
+      case 'get_domain_resource': return this.getDomainResource(context, args);
+      case 'preview_domain_delete': return this.previewDomainDelete(context, args);
+      case 'get_script_contract': return this.getScriptContract(context, args);
       case 'list_ontology_objects': return this.listOntologyObjects(context, args);
       case 'get_ontology_object': return this.getOntologyObject(context, args);
       case 'get_ontology_object_review_status': return this.getOntologyObjectReviewStatus(context, args);
@@ -483,6 +618,48 @@ export class AgentCoreService {
       case 'describe_table': return this.describeTable(context.project.id, args);
       case 'read_table_rows': return this.readTableRows(context.project.id, args);
       case 'apply_ontology_object_patch': return this.applyOntologyObjectPatch(context, args);
+      case 'create_object': return this.createDomainResource(context, args, 'object');
+      case 'create_rule': return this.createDomainResource(context, args, 'rule');
+      case 'create_operation': return this.createDomainResource(context, args, 'operation');
+      case 'create_metric': return this.createDomainResource(context, args, 'metric');
+      case 'patch_object': return this.patchObjectResource(context, args);
+      case 'patch_rule': return this.patchDomainResource(context, args, 'rule');
+      case 'patch_operation': return this.patchDomainResource(context, args, 'operation');
+      case 'patch_metric': return this.patchDomainResource(context, args, 'metric');
+      case 'patch_object_source_binding': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        domainTargetKey(args.resource_id),
+        () => this.patchObjectSourceBinding(workspace, context, args),
+      );
+      case 'sync_schema_objects': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        '__schema__',
+        () => this.syncSchemaObjects(workspace, context, args),
+      );
+      case 'delete_domain_resource': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        singleDomainTargetKey(args.resource_ids),
+        () => this.deleteDomainResource(context, args),
+      );
+      case 'stage_change_set': return this.stageChangeSet(context, args);
+      case 'validate_change_set': return this.validateChangeSet(workspace, context, args);
+      case 'discard_change_set': return this.discardChangeSet(workspace, context, args);
+      case 'analyze_deterministic_capabilities': return this.analyzeDeterministicCapabilities(workspace);
+      case 'confirm_deterministic_scope': return this.confirmDeterministicScope(workspace, context, args);
+      case 'define_script_contract': return this.defineScriptContract(context, args);
+      case 'stage_script_source': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        text(args.script_key, 'script_key'),
+        () => this.stageScriptSource(workspace, context, args),
+      );
       case 'submit_ontology_object_review': return this.submitOntologyObjectReview(context, args);
       case 'stage_tabular_dataset': return this.stageTabularDataset(workspace, context, args);
       case 'list_dir': return this.listDir(workspace, args);
@@ -526,8 +703,9 @@ export class AgentCoreService {
       case 'read_package_source_file': return this.readPackageSourceFile(workspace, args);
       case 'stage_package_merge': return this.stagePackageMerge(workspace, context, args);
       case 'diff': return this.diff(workspace, args);
+      case 'update_work_notes':
       case 'update_plan': return this.updateRuntimeFile(workspace, context, '.modeling/plan.md', args);
-      case 'request_confirmation_preflight': return this.preflight(workspace, context, args);
+      case 'request_confirmation_preflight': return this.preflightWithChangePlan(workspace, context, args);
       case 'request_confirmation': return this.confirm(workspace, context, args);
       case 'request_confirmation_rejected': return this.rejectConfirmation(workspace, context, args);
       case 'release_preflight': return this.releasePreflight(workspace);
@@ -654,6 +832,1532 @@ export class AgentCoreService {
     };
   }
 
+  private adoptDomainToolContract(context: AgentToolContext): void {
+    this.db.prepare(`INSERT INTO agent_domain_tool_adoptions (
+      project_id, run_id, contract_version, adopted_at
+    ) VALUES (?,?,?,?) ON CONFLICT(project_id, run_id) DO UPDATE SET
+      contract_version = excluded.contract_version`)
+      .run(context.project.id, context.runId, DOMAIN_TOOL_CONTRACT_VERSION, nowIso());
+  }
+
+  private usesDomainToolContract(context: AgentToolContext): boolean {
+    const row = this.db.prepare(`SELECT contract_version FROM agent_domain_tool_adoptions
+      WHERE project_id = ? AND run_id = ?`).get(context.project.id, context.runId) as
+      | { contract_version: string }
+      | undefined;
+    return row?.contract_version === DOMAIN_TOOL_CONTRACT_VERSION;
+  }
+
+  private usesScriptContract(context: AgentToolContext): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM agent_script_contract_drafts
+      WHERE project_id = ? AND run_id = ? LIMIT 1`).get(context.project.id, context.runId));
+  }
+
+  private async createChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const working = await this.workbenchStudioFiles(context.project, context.username);
+      const sourcePolicy = this.normalizeObjectSourcePlan(
+        context.project.id,
+        args.mode,
+        args.tasks,
+      );
+      const plan = this.changeControl.createPlan({
+        projectId: context.project.id,
+        runId: context.runId,
+        goal: args.goal,
+        mode: args.mode,
+        expectedRevision: args.expected_revision,
+        currentRevision: working.workingRevision,
+        tasks: sourcePolicy.tasks,
+      });
+      return {
+        plan,
+        object_source_policy: {
+          mode: sourcePolicy.mode,
+          schema_table_count: sourcePolicy.schemaTableCount,
+          object_generation: sourcePolicy.mode === 'schema'
+            ? 'deterministic_schema_sync'
+            : 'virtual_objects_only',
+        },
+        display: { text: plan.approval_status === 'pending'
+          ? `已建立 ${plan.task_count} 项受控建模计划，等待你批准后再写入`
+          : `已建立 ${plan.task_count} 项受控建模计划，写入前会逐项核对范围` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private normalizeObjectSourcePlan(projectId: string, rawMode: unknown, rawTasks: unknown) {
+    const mode = String(rawMode ?? 'expert_edit');
+    const physicalTables = schemaTables(this.tables(projectId));
+    const sourceMode = physicalTables.length ? 'schema' : 'virtual';
+    if (!Array.isArray(rawTasks)) {
+      return { tasks: rawTasks, mode: sourceMode, schemaTableCount: physicalTables.length };
+    }
+    const tasks = rawTasks.map((task) => (
+      task && typeof task === 'object' && !Array.isArray(task)
+        ? { ...(task as Record<string, unknown>) }
+        : task
+    ));
+    const toolsFor = (task: unknown) => (
+      task && typeof task === 'object' && !Array.isArray(task)
+        && Array.isArray((task as Record<string, unknown>).allowed_tools)
+        ? (task as Record<string, unknown>).allowed_tools as unknown[]
+        : []
+    ).map(String);
+
+    if (!physicalTables.length) {
+      const forbidden = tasks.find((task) => toolsFor(task).some((tool) => (
+        tool === 'sync_schema_objects' || tool === 'patch_object_source_binding'
+      )));
+      if (forbidden) {
+        throw new AgentCoreError(
+          'PHYSICAL_SCHEMA_REQUIRED',
+          '项目没有明确标记为数据 Schema 的资料，只能生成不绑定物理表的虚拟对象',
+          ['移除 Schema 同步和物理绑定任务；虚拟对象不得生成 mapping'],
+          409,
+          { retryable: false, object_source_mode: 'virtual' },
+        );
+      }
+      return { tasks, mode: sourceMode, schemaTableCount: 0 };
+    }
+
+    const createsPhysicalObject = (task: unknown) => toolsFor(task).includes('create_object');
+    if (mode !== 'generation' && tasks.some(createsPhysicalObject)) {
+      throw new AgentCoreError(
+        'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE',
+        '项目已有确定数据 Schema，不能由模型另行创建对象',
+        ['使用 sync_schema_objects 按全部 Sheet 确定性同步，或只修改现有对象的非物理元数据'],
+        409,
+        { retryable: false, object_source_mode: 'schema', schema_table_count: physicalTables.length },
+      );
+    }
+    if (mode !== 'generation') {
+      return { tasks, mode: sourceMode, schemaTableCount: physicalTables.length };
+    }
+
+    const replacedKeys = new Set<string>();
+    const retained = tasks.filter((task) => {
+      const tools = toolsFor(task);
+      const replaced = tools.some((tool) => (
+        tool === 'create_object' || tool === 'patch_object_source_binding' || tool === 'sync_schema_objects'
+      ));
+      if (replaced && task && typeof task === 'object' && !Array.isArray(task)) {
+        replacedKeys.add(String((task as Record<string, unknown>).client_key ?? ''));
+      }
+      return !replaced;
+    });
+    const schemaTaskKey = 'schema_object_sync';
+    const normalized = retained.map((task) => {
+      if (!task || typeof task !== 'object' || Array.isArray(task)) return task;
+      const record = task as Record<string, unknown>;
+      const dependencies = Array.isArray(record.depends_on) ? record.depends_on.map(String) : [];
+      return {
+        ...record,
+        depends_on: [...new Set([
+          schemaTaskKey,
+          ...dependencies.filter((dependency) => !replacedKeys.has(dependency)),
+        ])],
+      };
+    });
+    return {
+      mode: sourceMode,
+      schemaTableCount: physicalTables.length,
+      tasks: [{
+        client_key: schemaTaskKey,
+        title: `按 ${physicalTables.length} 张 Schema Sheet 同步物理对象`,
+        resource_kind: 'binding',
+        target_key: '__schema__',
+        allowed_tools: ['sync_schema_objects'],
+        depends_on: [],
+        acceptance: '每张 Schema Sheet 恰好对应一个对象，字段、主键、物理来源和 mapping 全部由平台确定性生成',
+        required: true,
+      }, ...normalized],
+    };
+  }
+
+  private assertObjectSourceToolMode(
+    projectId: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ): void {
+    const hasSchema = schemaTables(this.tables(projectId)).length > 0;
+    if (hasSchema && (tool === 'create_object' || tool === 'upsert_object')) {
+      throw new AgentCoreError(
+        'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE',
+        '项目已有确定数据 Schema，对象只能按物理 Sheet 由平台同步生成',
+        ['使用 sync_schema_objects；不要创建、合并或省略 Sheet 对象'],
+        409,
+        { retryable: false, object_source_mode: 'schema' },
+      );
+    }
+    const virtualBindingAttempt = ['sync_schema_objects', 'patch_object_source_binding', 'bind_object_source'].includes(tool)
+      || (tool === 'upsert_object' && (args.schema_source !== undefined || args.source !== undefined));
+    if (!hasSchema && virtualBindingAttempt) {
+      throw new AgentCoreError(
+        'PHYSICAL_SCHEMA_REQUIRED',
+        '项目没有确定数据 Schema，虚拟对象不能绑定物理表或生成 mapping',
+        ['保留虚拟对象，不设置 sourceTable、table source 或 mapping'],
+        409,
+        { retryable: false, object_source_mode: 'virtual' },
+      );
+    }
+  }
+
+  private getChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const plan = this.changeControl.snapshot(
+        context.project.id,
+        context.runId,
+        String(args.plan_id ?? '').trim(),
+      );
+      return {
+        plan,
+        display: {
+          text: plan.remaining_count
+            ? `建模计划还有 ${plan.remaining_count} 项必选任务待完成`
+            : '建模计划的必选任务已经全部形成可校验结果',
+        },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private reviseChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const active = this.changeControl.activePlan(context.project.id, context.runId);
+      const additions = Array.isArray(args.add_tasks) ? args.add_tasks : [];
+      const addedTools = additions.flatMap((task) => (
+        task && typeof task === 'object' && !Array.isArray(task)
+          && Array.isArray((task as Record<string, unknown>).allowed_tools)
+          ? ((task as Record<string, unknown>).allowed_tools as unknown[]).map(String)
+          : []
+      ));
+      const hasSchema = schemaTables(this.tables(context.project.id)).length > 0;
+      const forbidden = hasSchema
+        ? addedTools.some((tool) => tool === 'create_object'
+          || (active?.mode === 'generation'
+            && ['sync_schema_objects', 'patch_object_source_binding'].includes(tool)))
+        : addedTools.some((tool) => ['sync_schema_objects', 'patch_object_source_binding'].includes(tool));
+      if (forbidden) {
+        throw new AgentCoreError(
+          hasSchema ? 'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE' : 'PHYSICAL_SCHEMA_REQUIRED',
+          hasSchema
+            ? '计划修订不能绕过已确定 Schema 的对象同步边界'
+            : '没有确定数据 Schema 时不能追加物理绑定任务',
+          [hasSchema ? '保留原计划中的 Schema 同步任务' : '只追加不绑定物理表的虚拟对象任务'],
+          409,
+          { retryable: false, object_source_mode: hasSchema ? 'schema' : 'virtual' },
+        );
+      }
+      const plan = this.changeControl.revisePlan({
+        projectId: context.project.id,
+        runId: context.runId,
+        planId: args.plan_id,
+        expectedVersion: args.expected_version,
+        reason: args.reason,
+        addTasks: args.add_tasks,
+        skipTaskIds: args.skip_task_ids,
+        scopeApproved: args.scope_approved,
+      });
+      return {
+        plan,
+        display: { text: `建模计划已更新为第 ${plan.version} 版，共 ${plan.task_count} 项任务` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async stageChangeSet(context: AgentToolContext, args: Record<string, unknown>) {
+    let changeSetId = '';
+    try {
+      const planId = text(args.plan_id, 'plan_id');
+      const mutationId = text(args.mutation_id, 'mutation_id');
+      const expectedRevision = text(args.expected_revision, 'expected_revision');
+      const actions = parseChangeSetActions(args.actions);
+      const requestHash = domainMutationRequestHash('change-set', args);
+      const prepared = this.changeControl.prepareChangeSet({
+        projectId: context.project.id,
+        runId: context.runId,
+        planId,
+        mutationId,
+        requestHash,
+        expectedRevision,
+        actions,
+      });
+      changeSetId = prepared.changeSetId;
+      if (prepared.replay) return { ...prepared.replay, replayed: true };
+      if (prepared.staging !== undefined) {
+        const previous = this.changeControl.changeSetContext(context.project.id, context.runId, mutationId);
+        return {
+          ...this.changeControl.changeSetReceipt(context.project.id, context.runId, mutationId),
+          result_unknown: previous.status === 'staging',
+          display: { text: previous.status === 'staging'
+            ? '上一批修改仍在结算，请先查询回执，不要重复提交'
+            : '上一批修改没有生效，请根据失败原因生成新的操作标识' },
+        };
+      }
+      const working = await this.workbenchStudioFiles(context.project, context.username);
+      if (expectedRevision !== working.workingRevision) {
+        throw new AgentCoreError(
+          'REVISION_CONFLICT',
+          '知识包内容已经变化，请重新读取计划目标后生成新的 Change Set',
+          ['读取当前建模计划和资源快照，不要原样重试旧参数'],
+          409,
+          {
+            expected_revision: expectedRevision,
+            current_revision: working.workingRevision,
+            retryable: false,
+            recovery: {
+              owner: 'agent',
+              strategy: 'refresh_change_set',
+              requiredTool: 'stage_change_set',
+              maxAttempts: 2,
+            },
+          },
+        );
+      }
+      const batch = this.compileChangeSetBatch(context, working, actions);
+      const response = await this.studioWrites.batchDomainModel(
+        context.project,
+        context.username,
+        {
+          expectedRevision,
+          clientMutationId: mutationId,
+          editSessionId: changeSetId,
+          creates: batch.creates,
+          patches: batch.patches,
+        },
+        requestHash,
+      );
+      const staged = {
+        ...domainMutationResponse(response, batch.summary),
+        action_count: batch.summary.action_count,
+        operations: batch.summary.operations,
+        change_set_id: changeSetId,
+        plan_id: planId,
+        mutation_id: mutationId,
+        status: 'staged',
+      };
+      this.changeControl.completeChangeSet(changeSetId, staged);
+      return staged;
+    } catch (error) {
+      const normalized = error instanceof ChangeControlError
+        ? normalizeChangeControlError(error)
+        : normalizeDomainAgentError(error);
+      if (changeSetId) {
+        this.changeControl.failChangeSet(changeSetId, {
+          code: normalized.code,
+          message: normalized.message,
+          retryable: normalized.details.retryable === true,
+          details: normalized.details,
+        });
+      }
+      throw normalized;
+    }
+  }
+
+  private async runPlannedDirectTask(
+    context: AgentToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+    targetKey: string,
+    action: () => Promise<Record<string, unknown>>,
+  ) {
+    if (!CHANGE_PLAN_DIRECT_TOOLS.has(tool)) return action();
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (!active) return action();
+    const taskId = text(args.plan_task_id, 'plan_task_id');
+    try {
+      this.changeControl.authorizeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        targetKey,
+      });
+      const result = await action();
+      const plan = this.changeControl.completeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        receiptId: text(args.mutation_id, 'mutation_id'),
+        resultingRevision: String(result.working_revision ?? ''),
+      });
+      return { ...result, plan };
+    } catch (error) {
+      if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
+      throw error;
+    }
+  }
+
+  private compileChangeSetBatch(
+    context: AgentToolContext,
+    working: Awaited<ReturnType<AgentCoreService['workbenchStudioFiles']>>,
+    actions: ChangeSetActionInput[],
+  ) {
+    const studio = new StudioReadService(working);
+    const creates: Array<{ kind: DomainKind; key: string; values: Record<string, unknown> }> = [];
+    const patches: Array<{ elementId: string; changes: Record<string, unknown> }> = [];
+    const operations: string[] = [];
+    let actionCount = 0;
+    for (const action of actions) {
+      const input = action.arguments;
+      const kind = action.tool.split('_').at(-1) as DomainKind;
+      if (action.tool.startsWith('create_')) {
+        if (kind === 'object' && schemaTables(this.tables(context.project.id)).length) {
+          throw new AgentCoreError(
+            'DERIVED_OBJECT_FORBIDDEN_IN_SCHEMA_MODE',
+            'Schema 模式不接受模型创建对象，必须先执行计划中的 Schema 同步任务',
+            ['调用 get_change_plan 读取 sync_schema_objects 任务并执行'],
+            409,
+            { retryable: false, object_source_mode: 'schema' },
+          );
+        }
+        creates.push({ kind, key: domainKey(input.key, domainKindLabel(kind)), values: domainCreateValues(kind, input) });
+        operations.push(action.tool);
+        actionCount += 1;
+        continue;
+      }
+      const resourceId = domainResourceIdArg(input.resource_id);
+      const element = studio.detail(resourceId).element;
+      if (element.kind !== kind) {
+        throw new AgentCoreError('DOMAIN_KIND_MISMATCH', 'Change Set 中的工具与资源类型不一致', [], 400, {
+          resource_id: resourceId, expected_kind: kind, actual_kind: element.kind, retryable: false,
+        });
+      }
+      assertDomainResourceHash(element, input.expected_resource_hash, working.workingRevision);
+      if (kind === 'object') {
+        const compiled = compileObjectPatchActions(element, input.actions);
+        const preview = previewOntologyObjectMutation(
+          parseWorkingPackageSpec(working.files),
+          element.key,
+          {
+            metadata: compiled.metadata,
+            field_ops: compiled.field_ops,
+            relation_ops: compiled.relation_ops,
+          },
+          { tables: this.projectTables(context.project.id) },
+        );
+        if (!preview.ok) {
+          throw new AgentCoreError('DOMAIN_PATCH_INVALID', '对象增量修改未通过确定性校验', [], 422, {
+            fieldErrors: preview.fieldErrors,
+            errors: preview.issues,
+            warnings: preview.warnings,
+            retryable: false,
+          });
+        }
+        patches.push({ elementId: resourceId, changes: preview.patchChanges });
+        actionCount += compiled.summary.actionCount;
+        operations.push(...compiled.summary.operations);
+      } else {
+        const compiled = compileDomainPatchActions(element, input.actions);
+        patches.push({ elementId: resourceId, changes: compiled.changes });
+        actionCount += compiled.summary.actionCount;
+        operations.push(...compiled.summary.operations);
+      }
+    }
+    return { creates, patches, summary: { action_count: actionCount, operations } };
+  }
+
+  private async getChangeSetReceipt(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const mutationId = text(args.mutation_id, 'mutation_id');
+      const current = this.changeControl.changeSetContext(context.project.id, context.runId, mutationId);
+      if (current.status === 'staging') {
+        const replay = this.studioWrites.replayDomainMutation(
+          context.project.id,
+          mutationId,
+          current.requestHash,
+        );
+        if (replay) {
+          const staged = {
+            ...domainMutationResponse(replay, {
+              action_count: replay.elements.length || 1,
+              operations: ['reconciled_change_set'],
+            }),
+            change_set_id: current.id,
+            mutation_id: mutationId,
+            status: 'staged',
+            action_count: replay.elements.length || 1,
+            reconciled: true,
+          };
+          this.changeControl.completeChangeSet(current.id, staged);
+        }
+      }
+      const receipt = this.changeControl.changeSetReceipt(context.project.id, context.runId, mutationId);
+      return {
+        change_set: receipt,
+        display: { text: receipt.status === 'staging'
+          ? '这批修改的结果仍未确定，当前禁止重复提交'
+          : `这批修改当前为“${changeSetStatusLabel(String(receipt.status))}”` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async validateChangeSet(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    try {
+      const planId = text(args.plan_id, 'plan_id');
+      this.changeControl.readyForValidation(context.project.id, context.runId, planId);
+      const prepared = await this.prepareConfirmationGroups(workspace);
+      const result = await this.preflight(workspace, context, {
+        summary: String(args.summary ?? '核对完整建模计划'),
+        change_groups: prepared.change_groups,
+      });
+      const plan = this.changeControl.markValidated(context.project.id, context.runId, planId, result);
+      return {
+        plan,
+        validation: result,
+        display: { text: `完整计划的 ${plan.task_count} 项任务已通过校验，可以进入人工审阅` },
+      };
+    } catch (error) {
+      if (error instanceof AgentCoreError) throw error;
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async preflightWithChangePlan(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (active) this.changeControl.readyForValidation(context.project.id, context.runId, active.id);
+    const result = await this.preflight(workspace, context, args);
+    if (active) {
+      this.changeControl.markWaitingUser(
+        context.project.id,
+        context.runId,
+        String(result.candidate_revision ?? ''),
+      );
+    }
+    return result;
+  }
+
+  private discardChangeSet(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    try {
+      const planId = text(args.plan_id, 'plan_id');
+      if (workspace.candidate_id) {
+        throw new AgentCoreError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在页面退回', [], 409);
+      }
+      const result = this.discardRejectedCandidateChanges(workspace);
+      this.changeControl.discardPlan(context.project.id, context.runId, planId);
+      return { ...result, plan_id: planId, display: { text: '已放弃这份计划的待确认修改，正式版本保持不变' } };
+    } catch (error) {
+      if (error instanceof AgentCoreError) throw error;
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async listDomainResources(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+      const studio = new StudioReadService(workingPackage);
+      const requestedRevision = String(
+        args.working_revision ?? args.workingRevision ?? args.expected_revision ?? args.expectedRevision ?? '',
+      ).trim();
+      if (requestedRevision) studio.assertRevision(requestedRevision);
+      const kind = domainKindArg(args.kind);
+      const response = studio.list({
+        kind,
+        query: args.query,
+        sort: args.sort,
+        order: args.order,
+        cursor: args.cursor,
+        limit: args.limit,
+      });
+      return {
+        working_revision: response.workingRevision,
+        kind,
+        items: response.items.map((item) => {
+          const element = studio.detail(item.id).element;
+          return { ...item, resource_id: item.id, resource_hash: domainResourceHash(element) };
+        }),
+        total: response.total,
+        next_cursor: response.nextCursor,
+        display: {
+          text: response.total
+            ? `已返回 ${response.items.length}/${response.total} 个${domainKindLabel(kind)}`
+            : `当前知识包还没有${domainKindLabel(kind)}`,
+        },
+      };
+    } catch (error) {
+      throw normalizeDomainAgentError(error);
+    }
+  }
+
+  private async getDomainResource(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const { workingPackage, element } = await this.loadDomainResourceContext(context, args, false);
+      const resource = domainResourcePayload(element);
+      return {
+        working_revision: workingPackage.workingRevision,
+        resource: element.kind === 'operation'
+          ? { ...resource, operation_contract_hash: scriptOperationContractHash(element) }
+          : resource,
+        display: { text: `已返回${domainKindLabel(element.kind as DomainKind)}《${element.title}》的结构化快照` },
+      };
+    } catch (error) {
+      throw normalizeDomainAgentError(error);
+    }
+  }
+
+  private async loadDomainResourceContext(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+    requireExpectedRevision: boolean,
+  ): Promise<{
+    workingPackage: Awaited<ReturnType<AgentCoreService['workbenchStudioFiles']>>;
+    resourceId: string;
+    element: StudioElement;
+  }> {
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const studio = new StudioReadService(workingPackage);
+    const requestedRevision = requireExpectedRevision
+      ? text(args.expected_revision ?? args.expectedRevision, 'expected_revision')
+      : String(
+        args.working_revision ?? args.workingRevision ?? args.expected_revision ?? args.expectedRevision ?? '',
+      ).trim();
+    if (requestedRevision) studio.assertRevision(requestedRevision);
+    const resourceId = domainResourceIdArg(args.resource_id ?? args.element_id ?? args.resourceId ?? args.elementId);
+    return { workingPackage, resourceId, element: studio.detail(resourceId).element };
+  }
+
+  private async prepareDomainFailureReceipt(
+    context: AgentToolContext,
+    mutationId: string,
+    requestHash: string,
+  ): Promise<DomainFailureReceiptContext> {
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const dependencyRevision = domainDependencyRevision(context.project.id);
+    const reused = this.db.prepare(`SELECT request_hash FROM agent_domain_mutation_failure_receipts
+      WHERE project_id = ? AND mutation_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .get(context.project.id, mutationId) as { request_hash: string } | undefined;
+    if (reused && reused.request_hash !== requestHash) {
+      throw new AgentCoreError(
+        'MUTATION_ID_REUSED',
+        '这个操作标识已经用于另一项修改，请生成新的操作标识后重试',
+        [],
+        409,
+        { mutation_id: mutationId, error_class: 'conflict', retryable: false, repairable: true },
+      );
+    }
+    const receipt = this.db.prepare(`SELECT error_json FROM agent_domain_mutation_failure_receipts
+      WHERE project_id = ? AND mutation_id = ? AND request_hash = ?
+        AND working_revision = ? AND dependency_revision = ?`)
+      .get(
+        context.project.id,
+        mutationId,
+        requestHash,
+        workingPackage.workingRevision,
+        dependencyRevision,
+      ) as { error_json: string } | undefined;
+    if (receipt) {
+      const stored = JSON.parse(receipt.error_json) as {
+        code: string;
+        message: string;
+        next: string[];
+        statusCode: number;
+        details: Record<string, unknown>;
+      };
+      throw new AgentCoreError(
+        stored.code,
+        stored.message,
+        stored.next,
+        stored.statusCode,
+        { ...stored.details, replayed: true, negative_receipt: true },
+      );
+    }
+    return {
+      mutationId,
+      requestHash,
+      workingRevision: workingPackage.workingRevision,
+      dependencyRevision,
+    };
+  }
+
+  private recordDomainFailure(
+    context: AgentToolContext,
+    receipt: DomainFailureReceiptContext | undefined,
+    rawError: unknown,
+  ): AgentCoreError {
+    const error = normalizeDomainAgentError(rawError);
+    if (!receipt || error.statusCode >= 500 || error.code === 'MUTATION_ID_REUSED') return error;
+    this.db.prepare(`INSERT OR IGNORE INTO agent_domain_mutation_failure_receipts (
+      project_id, mutation_id, request_hash, working_revision, dependency_revision, error_json, created_at
+    ) VALUES (?,?,?,?,?,?,?)`).run(
+      context.project.id,
+      receipt.mutationId,
+      receipt.requestHash,
+      receipt.workingRevision,
+      receipt.dependencyRevision,
+      JSON.stringify({
+        code: error.code,
+        message: error.message,
+        next: error.next,
+        statusCode: error.statusCode,
+        details: error.details,
+      }),
+      nowIso(),
+    );
+    return error;
+  }
+
+  private async createDomainResource(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+    kind: DomainKind,
+  ) {
+    let failureReceipt: DomainFailureReceiptContext | undefined;
+    try {
+      const mutationId = text(args.mutation_id ?? args.client_mutation_id, 'mutation_id');
+      const requestHash = domainMutationRequestHash(`create:${kind}`, args);
+      const replay = this.studioWrites.replayDomainMutation(context.project.id, mutationId, requestHash);
+      if (replay) {
+        return domainMutationResponse(replay, { action_count: 1, operations: [`create_${kind}`] });
+      }
+      failureReceipt = await this.prepareDomainFailureReceipt(context, mutationId, requestHash);
+      const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+      const studio = new StudioReadService(workingPackage);
+      const expectedRevision = text(args.expected_revision ?? args.expectedRevision, 'expected_revision');
+      studio.assertRevision(expectedRevision);
+      const editSessionId = String(args.edit_session_id ?? '').trim();
+      const body = {
+        expectedRevision,
+        clientMutationId: mutationId,
+        ...(editSessionId ? { editSessionId } : {}),
+        kind,
+        key: text(args.key, 'key'),
+        values: domainCreateValues(kind, args),
+      };
+      const response = await this.studioWrites.createDomainModel(
+        context.project,
+        context.username,
+        body,
+        requestHash,
+        { allowObjectFieldWrite: kind === 'object' },
+      );
+      return domainMutationResponse(response, {
+        action_count: 1,
+        operations: [`create_${kind}`],
+      });
+    } catch (error) {
+      throw this.recordDomainFailure(context, failureReceipt, error);
+    }
+  }
+
+  private async patchDomainResource(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+    expectedKind: Exclude<DomainKind, 'object'>,
+  ) {
+    let failureReceipt: DomainFailureReceiptContext | undefined;
+    try {
+      const mutationId = text(args.mutation_id ?? args.client_mutation_id, 'mutation_id');
+      const requestHash = domainMutationRequestHash(`patch:${expectedKind}`, args);
+      const replay = this.studioWrites.replayDomainMutation(context.project.id, mutationId, requestHash);
+      if (replay) return domainMutationResponse(replay, domainMutationSummary(args));
+      failureReceipt = await this.prepareDomainFailureReceipt(context, mutationId, requestHash);
+      const { workingPackage, resourceId, element } = await this.loadDomainResourceContext(context, args, true);
+      if (element.kind !== expectedKind) {
+        throw new AgentCoreError(
+          'DOMAIN_KIND_MISMATCH',
+          `当前工具只能修改${domainKindLabel(expectedKind)}`,
+          [`改用与 ${element.kind} 类型对应的 Patch 工具`],
+          400,
+          { resource_id: resourceId, actual_kind: element.kind, expected_kind: expectedKind },
+        );
+      }
+      assertDomainResourceHash(element, args.expected_resource_hash, workingPackage.workingRevision);
+      const compiled = compileDomainPatchActions(element, args.actions);
+      const editSessionId = String(args.edit_session_id ?? '').trim();
+      const response = await this.studioWrites.patchDomainModel(
+        context.project,
+        context.username,
+        resourceId,
+        {
+          expectedRevision: workingPackage.workingRevision,
+          clientMutationId: mutationId,
+          ...(editSessionId ? { editSessionId } : {}),
+          changes: compiled.changes,
+        },
+        requestHash,
+      );
+      return domainMutationResponse(response, {
+        action_count: compiled.summary.actionCount,
+        operations: compiled.summary.operations,
+      });
+    } catch (error) {
+      throw this.recordDomainFailure(context, failureReceipt, error);
+    }
+  }
+
+  private async patchObjectResource(context: AgentToolContext, args: Record<string, unknown>) {
+    let failureReceipt: DomainFailureReceiptContext | undefined;
+    try {
+      const mutationId = text(args.mutation_id ?? args.client_mutation_id, 'mutation_id');
+      const requestHash = domainMutationRequestHash('patch:object', args);
+      const replay = this.studioWrites.replayDomainMutation(context.project.id, mutationId, requestHash);
+      if (replay) return domainMutationResponse(replay, domainMutationSummary(args));
+      failureReceipt = await this.prepareDomainFailureReceipt(context, mutationId, requestHash);
+      const { workingPackage, resourceId, element } = await this.loadDomainResourceContext(context, args, true);
+      if (element.kind !== 'object') {
+        throw new AgentCoreError(
+          'DOMAIN_KIND_MISMATCH',
+          '当前工具只能修改对象',
+          ['改用与资源类型对应的 Patch 工具'],
+          400,
+          { resource_id: resourceId, actual_kind: element.kind, expected_kind: 'object' },
+        );
+      }
+      assertDomainResourceHash(element, args.expected_resource_hash, workingPackage.workingRevision);
+      const compiled = compileObjectPatchActions(element, args.actions);
+      const preview = previewOntologyObjectMutation(
+        parseWorkingPackageSpec(workingPackage.files),
+        element.key,
+        {
+          metadata: compiled.metadata,
+          field_ops: compiled.field_ops,
+          relation_ops: compiled.relation_ops,
+        },
+        { tables: this.projectTables(context.project.id) },
+      );
+      if (!preview.ok) {
+        throw new AgentCoreError(
+          'DOMAIN_PATCH_INVALID',
+          '对象增量修改未通过确定性校验',
+          ['根据 fieldErrors 只修正对应动作后重新提交，不要完整重写对象'],
+          422,
+          {
+            fieldErrors: preview.fieldErrors,
+            errors: preview.issues,
+            warnings: preview.warnings,
+            impact_summary: preview.impactSummary,
+          },
+        );
+      }
+      const editSessionId = String(args.edit_session_id ?? '').trim();
+      const response = await this.studioWrites.patchDomainModel(
+        context.project,
+        context.username,
+        resourceId,
+        {
+          expectedRevision: workingPackage.workingRevision,
+          clientMutationId: mutationId,
+          ...(editSessionId ? { editSessionId } : {}),
+          changes: preview.patchChanges,
+        },
+        requestHash,
+        { allowObjectFieldWrite: true },
+      );
+      return {
+        ...domainMutationResponse(response, {
+          action_count: compiled.summary.actionCount,
+          operations: compiled.summary.operations,
+        }),
+        impact_summary: preview.impactSummary,
+        normalized_mutation: preview.normalizedMutation,
+      };
+    } catch (error) {
+      throw this.recordDomainFailure(context, failureReceipt, error);
+    }
+  }
+
+  private async patchObjectSourceBinding(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const tool = 'patch_object_source_binding';
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+    const { workingPackage, element } = await this.loadDomainResourceContext(context, args, true);
+    if (element.kind !== 'object') {
+      throw new AgentCoreError('DOMAIN_KIND_MISMATCH', '数据源只能绑定对象资源', [], 400);
+    }
+    assertDomainResourceHash(element, args.expected_resource_hash, workingPackage.workingRevision);
+    const result = await this.bindObjectSource(workspace, context, {
+      key: element.key,
+      document_id: args.document_id,
+      table: args.table,
+      field_bindings: args.field_bindings,
+      primary_key: args.primary_key,
+      evidence: args.evidence,
+      change_group: `binding-${createHash('sha256').update(mutationId).digest('hex').slice(0, 20)}`,
+    });
+    const nextWorking = await this.workbenchStudioFiles(context.project, context.username);
+    const nextElement = new StudioReadService(nextWorking).detail(element.id).element;
+    const response = {
+      ...result,
+      working_revision: nextWorking.workingRevision,
+      mutation_id: mutationId,
+      resource: domainResourcePayload(nextElement),
+      candidate: true,
+    };
+    this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
+    return response;
+  }
+
+  private async syncSchemaObjects(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const tool = 'sync_schema_objects';
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    new StudioReadService(workingPackage).assertRevision(text(args.expected_revision, 'expected_revision'));
+    const tables = schemaTables(this.tables(context.project.id));
+    if (!tables.length) {
+      throw new AgentCoreError(
+        'PHYSICAL_SCHEMA_REQUIRED',
+        '没有找到明确标记为数据 Schema 的已解析 Sheet',
+        ['先在资料设置中把确定的 Excel 或 CSV 标记为数据 Schema'],
+        409,
+        { retryable: false },
+      );
+    }
+
+    const current = await this.overlay(workspace);
+    const physical = expectedSchemaObjects(tables);
+    const nextSpec = validateSpecKeys(canonicalizePackageSpec({
+      ...current.spec,
+      objects: physical.map((item) => item.object),
+    }));
+    const rendered = renderPackage(nextSpec);
+    const mapping = rendered[OBJECT_DATA_MAPPING_PATH];
+    if (!mapping) {
+      throw new AgentCoreError(
+        'SCHEMA_MAPPING_MISSING',
+        '确定性编译没有生成 Schema 对象 mapping',
+        [],
+        500,
+      );
+    }
+    const objectPaths = physical.map((item) => `objects/${item.object.key}.md`);
+    const expectedObjectPaths = new Set(objectPaths);
+    const staleObjectPaths = Object.keys(current.files).filter((path) => (
+      /^objects\/[^/]+\.md$/u.test(path)
+      && path !== 'objects/index.md'
+      && !expectedObjectPaths.has(path)
+    ));
+    const detailPath = objectPaths[0];
+    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
+    await this.discardFrozenCandidate(workspace, context, 'Schema 物理对象重新同步，旧确认请求已失效');
+
+    this.db.exec('SAVEPOINT agent_schema_object_sync');
+    try {
+      for (const path of objectPaths) {
+        this.upsertChange(workspace, {
+          path,
+          kind: 'write',
+          content: rendered[path],
+          groupId: 'schema_objects',
+          evidence: [],
+          reason: '根据已确认数据 Schema 确定性生成物理对象',
+        });
+      }
+      for (const path of staleObjectPaths) {
+        this.upsertChange(workspace, {
+          path,
+          kind: 'delete',
+          content: null,
+          groupId: 'schema_objects',
+          evidence: [],
+          reason: 'Schema 模式移除不对应物理 Sheet 的派生对象',
+        });
+      }
+      for (const path of ['objects/index.md', OBJECT_DATA_MAPPING_PATH]) {
+        this.upsertChange(workspace, {
+          path,
+          kind: 'write',
+          content: rendered[path],
+          groupId: COMPILED_RESOURCES_GROUP,
+          evidence: [],
+          reason: 'Schema 对象确定性编译产物',
+        });
+      }
+      this.upsertChange(workspace, {
+        path: INTERNAL_SPEC_CHANGE_PATH,
+        kind: 'write',
+        content: `${JSON.stringify(nextSpec, null, 2)}\n`,
+        groupId: COMPILED_RESOURCES_GROUP,
+        evidence: [],
+        reason: 'Schema 对象确定性编译的语义规格',
+      });
+      this.db.exec('RELEASE SAVEPOINT agent_schema_object_sync');
+    } catch (error) {
+      this.db.exec('ROLLBACK TO SAVEPOINT agent_schema_object_sync');
+      this.db.exec('RELEASE SAVEPOINT agent_schema_object_sync');
+      throw error;
+    }
+
+    const nextWorking = await this.workbenchStudioFiles(context.project, context.username);
+    const response = {
+      ok: true,
+      deterministic: true,
+      mutation_id: mutationId,
+      working_revision: nextWorking.workingRevision,
+      schema_table_count: tables.length,
+      object_count: physical.length,
+      removed_derived_object_count: staleObjectPaths.length,
+      objects: physical.map(({ table, object }) => ({
+        resource_id: `object:${object.key}`,
+        key: object.key,
+        title: object.title,
+        document_id: table.documentId,
+        table: table.name,
+        field_count: object.fields.length,
+        primary_key: object.primaryKey ?? [],
+      })),
+      rendered_paths: [...objectPaths, 'objects/index.md', OBJECT_DATA_MAPPING_PATH],
+      candidate: true,
+      display: { text: `已按 ${tables.length} 张 Schema Sheet 确定性同步 ${physical.length} 个物理对象及 mapping` },
+    };
+    this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
+    return response;
+  }
+
+  private async previewDomainDelete(context: AgentToolContext, args: Record<string, unknown>) {
+    try {
+      const expectedRevision = text(args.expected_revision ?? args.expectedRevision, 'expected_revision');
+      const resourceIds = requiredStringArray(args.resource_ids ?? args.element_ids, 'resource_ids');
+      const response = await this.studioWrites.previewDelete(context.project, context.username, {
+        expectedRevision,
+        elementIds: resourceIds,
+      });
+      return {
+        working_revision: response.workingRevision,
+        resource_ids: response.elementIds,
+        references: response.references.map((item) => ({
+          source_id: item.sourceId,
+          source_title: item.sourceTitle,
+          field: item.field,
+          target_id: item.targetId,
+        })),
+        affected_resource_ids: response.affectedElementIds,
+        preview_token: response.previewToken,
+        cleanup_required: response.cleanupRequired,
+        display: response.display,
+      };
+    } catch (error) {
+      throw normalizeDomainAgentError(error);
+    }
+  }
+
+  private async deleteDomainResource(context: AgentToolContext, args: Record<string, unknown>) {
+    let failureReceipt: DomainFailureReceiptContext | undefined;
+    try {
+      const mutationId = text(args.mutation_id ?? args.client_mutation_id, 'mutation_id');
+      const requestHash = domainMutationRequestHash('delete', args);
+      const replay = this.studioWrites.replayDomainMutation(context.project.id, mutationId, requestHash);
+      if (replay) return domainMutationResponse(replay, domainMutationSummary(args, 'delete_resource'));
+      failureReceipt = await this.prepareDomainFailureReceipt(context, mutationId, requestHash);
+      const expectedRevision = text(args.expected_revision ?? args.expectedRevision, 'expected_revision');
+      const resourceIds = requiredStringArray(args.resource_ids ?? args.element_ids, 'resource_ids');
+      const editSessionId = String(args.edit_session_id ?? '').trim();
+      const response = await this.studioWrites.deleteDomainModel(context.project, context.username, {
+        expectedRevision,
+        clientMutationId: mutationId,
+        ...(editSessionId ? { editSessionId } : {}),
+        elementIds: resourceIds,
+        previewToken: text(args.preview_token ?? args.previewToken, 'preview_token'),
+        cleanupReferences: args.cleanup_references === true,
+      }, requestHash);
+      return domainMutationResponse(response, {
+        action_count: resourceIds.length,
+        operations: resourceIds.map(() => 'delete_resource'),
+      });
+    } catch (error) {
+      throw this.recordDomainFailure(context, failureReceipt, error);
+    }
+  }
+
+  private replayStructuredMutation(
+    context: AgentToolContext,
+    tool: string,
+    mutationId: string,
+    requestHash: string,
+  ): Record<string, unknown> | null {
+    const receipt = this.db.prepare(`SELECT tool, request_hash, response_json
+      FROM agent_structured_mutation_receipts WHERE project_id = ? AND mutation_id = ?`)
+      .get(context.project.id, mutationId) as
+      | { tool: string; request_hash: string; response_json: string }
+      | undefined;
+    if (!receipt) return null;
+    if (receipt.tool !== tool || receipt.request_hash !== requestHash) {
+      throw new AgentCoreError(
+        'MUTATION_ID_REUSED',
+        '这个操作标识已经用于另一项修改，请生成新的操作标识后重试',
+        [],
+        409,
+        { mutation_id: mutationId, error_class: 'conflict', retryable: false, repairable: true },
+      );
+    }
+    return { ...(JSON.parse(receipt.response_json) as Record<string, unknown>), replayed: true };
+  }
+
+  private saveStructuredMutation(
+    context: AgentToolContext,
+    tool: string,
+    mutationId: string,
+    requestHash: string,
+    response: Record<string, unknown>,
+  ): void {
+    this.db.prepare(`INSERT INTO agent_structured_mutation_receipts (
+      project_id, mutation_id, tool, request_hash, response_json, created_at
+    ) VALUES (?,?,?,?,?,?)`).run(
+      context.project.id,
+      mutationId,
+      tool,
+      requestHash,
+      JSON.stringify(response),
+      nowIso(),
+    );
+  }
+
+  private deterministicCapabilityState(
+    projectId: string,
+    spec: PackageSpec,
+  ): DeterministicCapabilityView {
+    const scopeHash = hashStructuredValue('deterministic-capability-scope-v1', {
+      objects: spec.objects ?? [],
+      operations: (spec.operations ?? []).map((operation) => {
+        const value = structuredClone(operation);
+        delete value.script;
+        return value;
+      }),
+      rules: spec.rules ?? [],
+      metrics: spec.metrics ?? [],
+      dataSourceType: spec.dataSourceType ?? null,
+    });
+    const operationsForAnalysis = (spec.operations ?? []).map((operation) => {
+      const value = structuredClone(operation);
+      delete value.script;
+      return value;
+    });
+    const scripts = new Map((spec.scripts ?? []).map((script) => [script.key, script]));
+    const operationByKey = new Map((spec.operations ?? []).map((operation) => [operation.key, operation]));
+    const candidates: DeterministicCapabilityCandidateView[] = identifyScriptCandidates(
+      operationsForAnalysis,
+      spec.metrics ?? [],
+    ).map((candidate) => {
+      const operation = operationByKey.get(candidate.operationKey);
+      const scriptKey = operation?.script?.key ?? '';
+      const script = scriptKey ? scripts.get(scriptKey) : undefined;
+      const covered = Boolean(script && script.boundOperation === candidate.operationKey);
+      return {
+        operation_key: candidate.operationKey,
+        title: candidate.title,
+        confidence: candidate.confidence,
+        reason: candidate.reason,
+        ...(candidate.suggestedContract ? { suggested_contract: candidate.suggestedContract } : {}),
+        composes_operation_keys: candidate.invokesOperationKeys ?? [],
+        already_covered: covered,
+        bound_script_key: covered ? scriptKey : null,
+      };
+    });
+    const uncovered = candidates.filter((candidate) => !candidate.already_covered);
+    const row = this.db.prepare(`SELECT scope_hash, selected_operation_keys_json, reason, decided_by, decided_at
+      FROM agent_deterministic_scope_decisions WHERE project_id = ?`).get(projectId) as
+      | {
+        scope_hash: string;
+        selected_operation_keys_json: string;
+        reason: string;
+        decided_by: string;
+        decided_at: string;
+      }
+      | undefined;
+    const currentDecision = row?.scope_hash === scopeHash ? row : undefined;
+    const staleDecision = Boolean(row && row.scope_hash !== scopeHash);
+    const allowed = new Set(candidates.map((candidate) => candidate.operation_key));
+    const selected = currentDecision
+      ? parseArray(currentDecision.selected_operation_keys_json).filter((key) => allowed.has(key))
+      : [];
+    const selectedSet = new Set(selected);
+    const missingBindings = selected.filter((key) => (
+      !candidates.find((candidate) => candidate.operation_key === key)?.already_covered
+    ));
+    const missingTests = currentDecision ? selected.filter((key) => {
+      const operation = operationByKey.get(key);
+      const scriptKey = operation?.script?.key ?? '';
+      const script = scriptKey ? scripts.get(scriptKey) : undefined;
+      if (!script || script.boundOperation !== key) return false;
+      return !this.db.prepare(`SELECT 1 FROM agent_script_test_receipts
+        WHERE project_id = ? AND script_path = ? AND source_hash = ? AND created_at >= ? LIMIT 1`)
+        .get(
+          projectId,
+          `scripts/${script.entrypoint}`,
+          scriptSourceHash(script.sourceCode),
+          currentDecision.decided_at,
+        );
+    }) : [];
+    const skipped = currentDecision
+      ? uncovered.map((candidate) => candidate.operation_key).filter((key) => !selectedSet.has(key))
+      : [];
+    let status: DeterministicCapabilityView['status'];
+    let displayText: string;
+    if (!candidates.length) {
+      status = 'not_required';
+      displayText = '未发现需要确定性脚本的业务操作';
+    } else if (!uncovered.length && !row) {
+      status = 'covered';
+      displayText = `已存在 ${candidates.length} 个有效脚本绑定`;
+    } else if (!currentDecision || staleDecision) {
+      status = 'decision_required';
+      displayText = staleDecision
+        ? '业务知识已经变化，等待专家重新确认确定性脚本范围'
+        : `发现 ${uncovered.length} 个可能需要确定性计算的业务操作，等待专家确认范围`;
+    } else if (missingBindings.length || missingTests.length) {
+      status = 'implementation_required';
+      displayText = `已确认 ${selected.length} 个确定性脚本，仍需完成 ${missingBindings.length} 个绑定和 ${missingTests.length} 个沙箱验证`;
+    } else {
+      status = 'ready';
+      displayText = selected.length
+        ? `确定性脚本范围已确认，${selected.length} 个脚本均已完成绑定`
+        : '专家已确认本轮不生成确定性脚本';
+    }
+    return {
+      scope_hash: scopeHash,
+      status,
+      candidates,
+      selected_operation_keys: selected,
+      skipped_operation_keys: skipped,
+      missing_script_bindings: missingBindings,
+      missing_script_tests: missingTests,
+      decision: currentDecision ? {
+        reason: currentDecision.reason,
+        decided_by: currentDecision.decided_by,
+        decided_at: currentDecision.decided_at,
+      } : null,
+      display: { text: displayText },
+    };
+  }
+
+  private async analyzeDeterministicCapabilities(
+    workspace: WorkspaceRow,
+  ): Promise<DeterministicCapabilityView> {
+    const { spec } = await this.overlay(workspace);
+    return this.deterministicCapabilityState(
+      workspace.project_id,
+      spec,
+    );
+  }
+
+  private async confirmDeterministicScope(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ): Promise<DeterministicCapabilityView> {
+    const expectedScopeHash = text(args.expected_scope_hash, 'expected_scope_hash');
+    const current = await this.analyzeDeterministicCapabilities(workspace);
+    if (expectedScopeHash !== current.scope_hash) {
+      throw new AgentCoreError(
+        'DETERMINISTIC_SCOPE_CHANGED',
+        '业务知识已经变化，不能沿用刚才的脚本范围决定',
+        ['重新分析当前确定性计算候选，并请专家按最新范围确认'],
+        409,
+        {
+          expected_scope_hash: expectedScopeHash,
+          actual_scope_hash: current.scope_hash,
+          candidates: current.candidates,
+          retryable: false,
+        },
+      );
+    }
+    if (!Array.isArray(args.selected_operation_keys)) {
+      throw new AgentCoreError(
+        'INVALID_INPUT',
+        'selected_operation_keys 必须是数组；空数组表示明确不生成脚本',
+        [],
+        400,
+      );
+    }
+    const selected = [...new Set(args.selected_operation_keys.map((item) => String(item).trim())
+      .filter(Boolean))];
+    const allowed = new Set(current.candidates.map((candidate) => candidate.operation_key));
+    const unknown = selected.filter((key) => !allowed.has(key));
+    if (unknown.length) {
+      throw new AgentCoreError(
+        'INVALID_INPUT',
+        `所选业务操作不属于当前确定性计算候选：${unknown.join('、')}`,
+        ['使用最新分析结果中的候选范围重新确认'],
+        400,
+      );
+    }
+    const reason = text(args.reason, 'reason');
+    this.db.prepare(`INSERT INTO agent_deterministic_scope_decisions (
+      project_id, scope_hash, candidates_json, selected_operation_keys_json,
+      reason, decided_by, decided_at
+    ) VALUES (?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+      scope_hash = excluded.scope_hash,
+      candidates_json = excluded.candidates_json,
+      selected_operation_keys_json = excluded.selected_operation_keys_json,
+      reason = excluded.reason,
+      decided_by = excluded.decided_by,
+      decided_at = excluded.decided_at`).run(
+      workspace.project_id,
+      current.scope_hash,
+      JSON.stringify(current.candidates),
+      JSON.stringify(selected),
+      reason,
+      context.username,
+      nowIso(),
+    );
+    return this.analyzeDeterministicCapabilities(workspace);
+  }
+
+  private async defineScriptContract(context: AgentToolContext, args: Record<string, unknown>) {
+    const tool = 'define_script_contract';
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const studio = new StudioReadService(workingPackage);
+    const expectedRevision = text(args.expected_revision, 'expected_revision');
+    studio.assertRevision(expectedRevision);
+    const operationId = operationResourceIdArg(args.operation_id);
+    const operation = studio.detail(operationId).element;
+    const deterministic = this.deterministicCapabilityState(
+      context.project.id,
+      parseWorkingPackageSpec(workingPackage.files),
+    );
+    const deterministicCandidate = deterministic.candidates.find(
+      (candidate) => candidate.operation_key === operation.key,
+    );
+    if (deterministicCandidate
+      && (deterministic.status === 'decision_required'
+        || (!deterministicCandidate.already_covered
+          && !deterministic.selected_operation_keys.includes(operation.key)))) {
+      throw new AgentCoreError(
+        'SCRIPT_SCOPE_NOT_CONFIRMED',
+        '这个确定性计算操作尚未被专家纳入脚本生成范围',
+        ['先分析确定性计算候选并通过人工确认卡确定脚本范围'],
+        409,
+        {
+          operation_key: operation.key,
+          scope_hash: deterministic.scope_hash,
+          deterministic_status: deterministic.status,
+          retryable: false,
+        },
+      );
+    }
+    const expectedOperationHash = text(args.expected_operation_hash, 'expected_operation_hash');
+    const actualOperationHash = scriptOperationContractHash(operation);
+    if (expectedOperationHash !== actualOperationHash) {
+      throw new AgentCoreError(
+        'RESOURCE_HASH_CONFLICT',
+        '绑定操作已经变化，请重新读取后定义脚本契约',
+        ['重新调用 get_domain_resource 读取操作，并使用 operation_contract_hash'],
+        409,
+        {
+          expected_operation_hash: expectedOperationHash,
+          actual_operation_hash: actualOperationHash,
+          actual_revision: workingPackage.workingRevision,
+          retryable: false,
+        },
+      );
+    }
+    const contract = scriptContractFromArgs(args, operation.key);
+    assertMaterialEvidenceReferences(context.project.id, contract.evidence ?? []);
+    const contractHash = hashStructuredValue('script-contract-v1', contract);
+    this.db.prepare(`INSERT INTO agent_script_contract_drafts (
+      project_id, run_id, script_key, operation_hash, contract_hash, contract_json, updated_at
+    ) VALUES (?,?,?,?,?,?,?) ON CONFLICT(project_id, run_id, script_key) DO UPDATE SET
+      operation_hash = excluded.operation_hash,
+      contract_hash = excluded.contract_hash,
+      contract_json = excluded.contract_json,
+      updated_at = excluded.updated_at`).run(
+      context.project.id,
+      context.runId,
+      contract.key,
+      actualOperationHash,
+      contractHash,
+      JSON.stringify(contract),
+      nowIso(),
+    );
+    const response = {
+      working_revision: workingPackage.workingRevision,
+      contract_hash: contractHash,
+      operation_contract_hash: actualOperationHash,
+      contract: scriptContractView(contract),
+      candidate: false,
+      next: ['提交与契约一致的 Python 源码；源码通过确定性校验后才形成待确认候选'],
+      display: { text: `已定义脚本《${contract.title}》的执行契约` },
+    };
+    this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
+    return response;
+  }
+
+  private async getScriptContract(context: AgentToolContext, args: Record<string, unknown>) {
+    const key = domainKey(args.script_key, '脚本');
+    const row = this.db.prepare(`SELECT operation_hash, contract_hash, contract_json, updated_at
+      FROM agent_script_contract_drafts WHERE project_id = ? AND run_id = ? AND script_key = ?`)
+      .get(context.project.id, context.runId, key) as
+      | { operation_hash: string; contract_hash: string; contract_json: string; updated_at: string }
+      | undefined;
+    if (!row) {
+      throw new AgentCoreError(
+        'SCRIPT_CONTRACT_NOT_FOUND',
+        `脚本契约不存在：${key}`,
+        ['先读取目标操作并调用 define_script_contract'],
+        404,
+      );
+    }
+    const contract = JSON.parse(row.contract_json) as Omit<SpecScript, 'sourceCode'>;
+    return {
+      contract_hash: row.contract_hash,
+      operation_contract_hash: row.operation_hash,
+      updated_at: row.updated_at,
+      contract: scriptContractView(contract),
+      display: { text: `已返回脚本《${contract.title}》的执行契约` },
+    };
+  }
+
+  private async stageScriptSource(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const tool = 'stage_script_source';
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+    const expectedRevision = text(args.expected_revision, 'expected_revision');
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const studio = new StudioReadService(workingPackage);
+    studio.assertRevision(expectedRevision);
+    const key = domainKey(args.script_key, '脚本');
+    const row = this.db.prepare(`SELECT operation_hash, contract_hash, contract_json
+      FROM agent_script_contract_drafts WHERE project_id = ? AND run_id = ? AND script_key = ?`)
+      .get(context.project.id, context.runId, key) as
+      | { operation_hash: string; contract_hash: string; contract_json: string }
+      | undefined;
+    if (!row) {
+      throw new AgentCoreError(
+        'SCRIPT_CONTRACT_NOT_FOUND',
+        `脚本契约不存在：${key}`,
+        ['先调用 define_script_contract，确认输入、输出、超时和执行边界'],
+        404,
+      );
+    }
+    if (text(args.expected_contract_hash, 'expected_contract_hash') !== row.contract_hash) {
+      throw new AgentCoreError(
+        'SCRIPT_CONTRACT_CONFLICT',
+        '脚本契约已经变化，请重新读取后再提交源码',
+        ['调用 get_script_contract 获取当前 contract_hash'],
+        409,
+        { actual_contract_hash: row.contract_hash, retryable: false },
+      );
+    }
+    const contract = JSON.parse(row.contract_json) as Omit<SpecScript, 'sourceCode'>;
+    const operationElement = studio.detail(`operation:${contract.boundOperation}`).element;
+    const operationHash = scriptOperationContractHash(operationElement);
+    if (operationHash !== row.operation_hash) {
+      throw new AgentCoreError(
+        'RESOURCE_HASH_CONFLICT',
+        '绑定操作已经变化，旧脚本契约不能继续使用',
+        ['重新定义脚本契约后再提交源码'],
+        409,
+        { actual_operation_hash: operationHash, retryable: false },
+      );
+    }
+    const sourceCode = text(args.source_code, 'source_code', true);
+    const script: SpecScript = { ...contract, sourceCode };
+    const spec = parseWorkingPackageSpec(workingPackage.files);
+    const existing = (spec.scripts ?? []).find((item) => item.key === key);
+    if (existing && existing.entrypoint !== contract.entrypoint) {
+      throw new AgentCoreError(
+        'SCRIPT_ENTRYPOINT_IMMUTABLE',
+        '已有脚本的 entrypoint 不能通过源码提交隐式重命名',
+        ['保持原 entrypoint；脚本文件重命名需要独立的引用预览和原子迁移'],
+        409,
+        { existing_entrypoint: existing.entrypoint, requested_entrypoint: contract.entrypoint },
+      );
+    }
+    const conflicting = (spec.scripts ?? []).find((item) => (
+      item.key !== key && item.boundOperation === contract.boundOperation
+    ));
+    if (conflicting) {
+      throw new AgentCoreError(
+        'SCRIPT_OPERATION_ALREADY_BOUND',
+        `操作 ${contract.boundOperation} 已绑定脚本 ${conflicting.key}`,
+        ['先由专家决定保留哪一个脚本契约，不要静默覆盖绑定'],
+        409,
+      );
+    }
+    const scripts = [...(spec.scripts ?? [])];
+    const scriptIndex = scripts.findIndex((item) => item.key === key);
+    if (scriptIndex >= 0) scripts[scriptIndex] = script;
+    else scripts.push(script);
+    const operations = spec.operations.map((operation) => {
+      if (existing && operation.key === existing.boundOperation && operation.key !== contract.boundOperation) {
+        return { ...operation, script: undefined };
+      }
+      if (operation.key === contract.boundOperation) {
+        return { ...operation, script: { key, required: true } };
+      }
+      return operation;
+    });
+    const renderedPaths = [
+      `scripts/${key}.md`,
+      `scripts/${contract.entrypoint}`,
+      'scripts/index.md',
+      `operations/${contract.boundOperation}.md`,
+      ...(existing && existing.boundOperation !== contract.boundOperation
+        ? [`operations/${existing.boundOperation}.md`]
+        : []),
+      'operations/index.md',
+      'index.md',
+    ];
+    const sourceHash = hashStructuredValue('script-source-v1', sourceCode);
+    await this.stageCompiledSpec(
+      workspace,
+      context,
+      { ...spec, operations, scripts },
+      renderedPaths,
+      `script-${sourceHash.slice('sha256:'.length, 'sha256:'.length + 20)}`,
+      contract.evidence ?? [],
+      `脚本 ${key} 的契约、源码和操作绑定`,
+    );
+    const response = {
+      working_revision: (await this.workbenchStudioFiles(context.project, context.username)).workingRevision,
+      script_key: key,
+      contract_hash: row.contract_hash,
+      source_hash: sourceHash,
+      bound_operation: contract.boundOperation,
+      rendered_paths: renderedPaths,
+      deterministic: true,
+      candidate: true,
+      next: ['使用当前源码对应的真实用例运行脚本沙箱测试，通过后再发起候选确认'],
+      display: { text: `脚本《${contract.title}》已通过本地契约检查并形成待确认修改` },
+    };
+    this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
+    return response;
+  }
+
   private async listOntologyObjects(context: AgentToolContext, args: Record<string, unknown>) {
     try {
       const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
@@ -703,7 +2407,7 @@ export class AgentCoreService {
     try {
       const { workingPackage, element, objectId } = await this.loadOntologyObjectContext(context, args, true);
       const preview = previewOntologyObjectMutation(
-        parseRenderedPackageFiles(workingPackage.files),
+        parseWorkingPackageSpec(workingPackage.files),
         element.key,
         {
           metadata: args.metadata,
@@ -735,7 +2439,7 @@ export class AgentCoreService {
     try {
       const { workingPackage, objectId, element } = await this.loadOntologyObjectContext(context, args, true);
       const preview = previewOntologyObjectMutation(
-        parseRenderedPackageFiles(workingPackage.files),
+        parseWorkingPackageSpec(workingPackage.files),
         element.key,
         {
           metadata: args.metadata,
@@ -1223,7 +2927,7 @@ export class AgentCoreService {
         );
       }
       const supersededChanges = this.changes(existing).length;
-      const workspace = this.resetWorkspaceToCurrent(context, current.revision.oid);
+      const workspace = this.resetWorkspaceToCurrent(context, current.revision.oid, current.spec);
       return {
         projectId: workspace.project_id,
         runId: workspace.run_id,
@@ -1274,6 +2978,7 @@ export class AgentCoreService {
           existing.run_id,
           context.username,
         );
+      this.changeControl.transferActiveRun(context.project.id, existing.run_id, context.runId);
       this.db.exec('COMMIT');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
@@ -1319,11 +3024,11 @@ export class AgentCoreService {
       if (existing.owner !== context.username) {
         throw new AgentCoreError('FORBIDDEN', '无法使用其他用户的建模工作区', [], 403);
       }
-      return this.resetWorkspaceToCurrent(context, current.revision.oid);
+      return this.resetWorkspaceToCurrent(context, current.revision.oid, current.spec);
     }
 
     if (!existing || existing.run_id !== context.runId) {
-      const packageDataSourceType = getProjectPackageDataSourceSelection(context.project.id).dataSourceType;
+      const packageDataSourceType = workspacePackageDataSourceType(context.project.id, current.spec);
       this.db.exec('BEGIN IMMEDIATE');
       try {
         this.db.prepare('DELETE FROM agent_candidate_changes WHERE project_id = ?').run(context.project.id);
@@ -1366,7 +3071,11 @@ export class AgentCoreService {
     return this.workspace(context.project.id)!;
   }
 
-  private resetWorkspaceToCurrent(context: AgentToolContext, currentRevision: string): WorkspaceRow {
+  private resetWorkspaceToCurrent(
+    context: AgentToolContext,
+    currentRevision: string,
+    currentSpec: PackageSpec,
+  ): WorkspaceRow {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + WORKSPACE_LEASE_MS).toISOString();
     this.db.exec('BEGIN IMMEDIATE');
@@ -1380,7 +3089,7 @@ export class AgentCoreService {
           context.runId,
           context.username,
           currentRevision,
-          getProjectPackageDataSourceSelection(context.project.id).dataSourceType,
+          workspacePackageDataSourceType(context.project.id, currentSpec),
           expiresAt,
           now.toISOString(),
           now.toISOString(),
@@ -1546,12 +3255,13 @@ export class AgentCoreService {
         ? purposeReview.sheetDecisions
         : purposeReview?.sheetSuggestions ?? [];
       const purposeBySheet = new Map(sheetPurposes.map((item) => [item.sheet, item]));
-      const schemaTables = (updated.tables ?? []).filter((table) => (
+      const reviewedSchemaTables = (updated.tables ?? []).filter((table) => (
         purposeBySheet.get(table.name)?.semanticRole === 'schema'
       ));
-      const objectTables = schemaTables.filter((table) => (
+      const objectTables = reviewedSchemaTables.filter((table) => (
         purposeBySheet.get(table.name)?.importDisposition === 'object'
       ));
+      const currentSchemaTables = schemaTables(this.tables(projectId));
       return {
         document: {
           id: updated.id, filename: updated.filename, kind: updated.kind,
@@ -1563,7 +3273,7 @@ export class AgentCoreService {
           requiresUserConfirmation: purposeReview.status !== 'confirmed',
         } : {}),
         ...(updated.purpose === 'schema' ? {
-          schema: schemaTables.map((table) => ({
+          schema: reviewedSchemaTables.map((table) => ({
             ...schemaTableFact(updated, table),
             importDisposition: purposeBySheet.get(table.name)?.importDisposition,
           })),
@@ -1579,6 +3289,16 @@ export class AgentCoreService {
             })),
           })),
         } : {}),
+        objectSourcePolicy: currentSchemaTables.length ? {
+          mode: 'schema',
+          schemaTableCount: currentSchemaTables.length,
+          rule: '一张 Schema Sheet 恰好对应一个物理对象；禁止派生对象，字段、binding 和 mapping 由平台同步',
+          requiredTool: 'sync_schema_objects',
+        } : {
+          mode: 'virtual',
+          schemaTableCount: 0,
+          rule: '只允许不绑定物理表的虚拟对象，不生成 mapping',
+        },
         recommendedPhase: updated.purpose === 'goal'
           ? 'goal'
           : ['schema', 'term'].includes(updated.purpose ?? '') ? 'knowledge' : null,
@@ -1756,11 +3476,25 @@ export class AgentCoreService {
   }
 
   private tables(projectId: string): DataDictTable[] {
-    return listDocuments(projectId).flatMap((document) => (document.tables ?? []).map((table) => ({
-      ...table,
-      documentId: document.id,
-      materialPurpose: document.purpose ?? 'auto',
-    })));
+    return listDocuments(projectId).flatMap((document) => {
+      const review = this.materialPurposeReviews.get(document.id);
+      const confirmedDecisions = review?.status === 'confirmed'
+        ? new Map(review.sheetDecisions.map((decision) => [decision.sheet, decision]))
+        : null;
+      return (document.tables ?? []).map((table) => {
+        const decision = confirmedDecisions?.get(table.name);
+        const materialPurpose = review?.status === 'confirmed' && review.confirmedPurpose === 'schema'
+          ? decision?.importDisposition === 'object' ? 'schema' : 'evidence'
+          : review?.status === 'confirmed'
+            ? review.confirmedPurpose ?? document.purpose ?? 'auto'
+            : document.purpose ?? 'auto';
+        return {
+          ...table,
+          documentId: document.id,
+          materialPurpose,
+        };
+      });
+    });
   }
 
   private listTables(projectId: string) {
@@ -2120,11 +3854,16 @@ export class AgentCoreService {
     const objectIndex = objects.findIndex((item) => item.key === key);
     if (objectIndex >= 0) objects[objectIndex] = nextObject;
     else objects.push(nextObject);
-    const renderedPaths = [`objects/${key}.md`, 'objects/index.md', 'mappings/object-data-mappings.json'];
+    const nextSpec = { ...current.spec, objects };
+    const renderedPaths = [
+      `objects/${key}.md`,
+      'objects/index.md',
+      ...(packageNeedsObjectDataMapping(nextSpec) ? [OBJECT_DATA_MAPPING_PATH] : []),
+    ];
     await this.stageCompiledSpec(
       workspace,
       context,
-      { ...current.spec, objects },
+      nextSpec,
       renderedPaths,
       changeGroupId(args.change_group, 'change_group'),
       compiledEvidence,
@@ -2637,9 +4376,8 @@ export class AgentCoreService {
     reason: string,
   ) {
     assertMaterialEvidenceReferences(workspace.project_id, evidence);
-    const detailPath = renderedPaths.find((path) => !path.endsWith('/index.md')
+    const declaredDetailPath = renderedPaths.find((path) => !path.endsWith('/index.md')
       && path !== 'mappings/object-data-mappings.json');
-    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
     let compiledSpec: PackageSpec;
     let rendered: Record<string, string>;
     try {
@@ -2653,7 +4391,14 @@ export class AgentCoreService {
         400,
       );
     }
-    const currentFiles = (await this.overlay(workspace)).files;
+    const current = await this.overlay(workspace);
+    const detailPath = renderedPaths.find((path) => (
+      !path.endsWith('/index.md')
+      && path !== 'mappings/object-data-mappings.json'
+      && rendered[path] !== current.files[path]
+    )) ?? declaredDetailPath;
+    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
+    const currentFiles = current.files;
     await this.discardFrozenCandidate(workspace, context, '领域结构继续修改，旧确认请求已失效');
     this.db.exec('SAVEPOINT agent_domain_compile');
     try {
@@ -2675,6 +4420,17 @@ export class AgentCoreService {
           groupId: path === detailPath ? changeGroup : COMPILED_RESOURCES_GROUP,
           evidence,
           reason,
+        });
+      }
+      if (rendered[OBJECT_DATA_MAPPING_PATH] === undefined
+        && Object.hasOwn(current.files, OBJECT_DATA_MAPPING_PATH)) {
+        this.upsertChange(workspace, {
+          path: OBJECT_DATA_MAPPING_PATH,
+          kind: 'delete',
+          content: null,
+          groupId: COMPILED_RESOURCES_GROUP,
+          evidence: [],
+          reason: '虚拟对象模式不生成物理数据 mapping',
         });
       }
       this.upsertChange(workspace, {
@@ -2702,17 +4458,98 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'INTERNAL_FILE_WRITE_FORBIDDEN',
         '内部语义规格只能由领域工具生成',
-        ['使用 upsert_object、upsert_rule、upsert_operation 或 bind_object_source'],
+        ['使用 create_*、patch_*、领域删除或脚本契约工具'],
         400,
       );
     }
     if (path === 'mappings/object-data-mappings.json') {
+      const physicalTables = schemaTables(this.tables(context.project.id));
+      if (!physicalTables.length) {
+        throw new AgentCoreError(
+          'PHYSICAL_SCHEMA_REQUIRED',
+          '项目没有确定数据 Schema，虚拟对象不能写入物理数据 mapping',
+          ['移除 mapping 修改；只保留不绑定物理表的虚拟对象'],
+          409,
+          {
+            managedPath: path,
+            object_source_mode: 'virtual',
+            retryable: false,
+          },
+        );
+      }
+      const active = this.changeControl.activePlan(context.project.id, context.runId);
+      const plan = active
+        ? this.changeControl.snapshot(context.project.id, context.runId, active.id)
+        : null;
+      const planTools = new Set(
+        plan?.tasks.flatMap((task) => task.allowed_tools) ?? [],
+      );
+      const requiredTool = planTools.has('patch_object_source_binding')
+        && !planTools.has('sync_schema_objects')
+        ? 'patch_object_source_binding'
+        : 'sync_schema_objects';
+      const schemaSync = requiredTool === 'sync_schema_objects';
+      const issueId = stableAgentIssueId(
+        schemaSync ? 'managed-schema-objects' : 'managed-object-binding',
+        path,
+      );
       throw new AgentCoreError(
         'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
         '对象数据映射是受管文件，不能直接写入',
-        ['创建对象时使用 upsert_object；已有对象重绑时使用 bind_object_source，由核心重新生成映射'],
+        [schemaSync
+          ? '读取当前计划后使用 sync_schema_objects，由核心按全部 Schema Sheet 重新生成对象与 mapping'
+          : '读取当前计划、对象资源和来源表后，使用 patch_object_source_binding 由核心重新生成对象与 mapping'],
         409,
-        { managedPath: path, requiredTool: 'bind_object_source' },
+        {
+          managedPath: path,
+          requiredAction: 'redirect_tool',
+          requiredTool,
+          targetKind: schemaSync ? 'schema_objects' : 'object_binding',
+          issueId,
+          retryable: false,
+          recoveryAction: {
+            id: schemaSync ? 'resume_schema_object_sync' : 'resume_object_binding',
+            label: schemaSync ? '自动完成 Schema 对象同步' : '自动完成对象绑定',
+          },
+        },
+      );
+    }
+    if (MANAGED_DOMAIN_MARKDOWN.test(path)) {
+      const kind = path.split('/', 1)[0].replace(/s$/u, '');
+      const requiredTool = path.endsWith('/index.md') ? `create_${kind} / patch_${kind}` : `patch_${kind}`;
+      throw new AgentCoreError(
+        'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+        `${path} 是领域编译器受管文件，不能直接写入`,
+        [`先读取结构化资源，再使用 ${requiredTool}；索引由核心自动生成`],
+        409,
+        {
+          managedPath: path,
+          requiredTool,
+          ...(!path.endsWith('/index.md') ? {
+            requiredAction: 'redirect_tool',
+            targetKind: `${kind}_resource`,
+            issueId: stableAgentIssueId(`managed-${kind}`, path),
+          } : {}),
+          contractVersion: DOMAIN_TOOL_CONTRACT_VERSION,
+          retryable: false,
+        },
+      );
+    }
+    if (MANAGED_SCRIPT_PATH.test(path) && this.usesScriptContract(context)) {
+      throw new AgentCoreError(
+        'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+        `${path} 是脚本契约受管文件，不能直接写入`,
+        ['使用 get_script_contract 核对契约，再通过 stage_script_source 提交源码'],
+        409,
+        {
+          managedPath: path,
+          requiredAction: 'redirect_tool',
+          requiredTool: 'stage_script_source',
+          targetKind: 'script_source',
+          issueId: stableAgentIssueId('managed-script', path),
+          contractVersion: 'script-contract-v1',
+          retryable: false,
+        },
       );
     }
     if (path.startsWith('knowledge/')) {
@@ -2823,10 +4660,10 @@ export class AgentCoreService {
       path, kind: 'write', content, groupId,
       evidence, reason: null,
     });
-    const managedWriteWarning = /^(?:objects|operations|rules)\/.+\.md$/u.test(path)
+    const managedWriteWarning = MANAGED_DOMAIN_MARKDOWN.test(path)
       ? {
         code: 'MANAGED_WRITE_DEPRECATED',
-        message: `${path} 已进入领域工具灰度管理；请改用 ${path.startsWith('objects/') ? 'upsert_object' : path.startsWith('rules/') ? 'upsert_rule' : 'upsert_operation'}`,
+        message: `${path} 已进入领域工具灰度管理；请改用 list_domain_resources、get_domain_resource 和对应 create_*/patch_* 工具`,
       }
       : undefined;
     return { ok: true, path, changeGroup: groupId, candidate: true,
@@ -2837,6 +4674,40 @@ export class AgentCoreService {
 
   private async deleteFile(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
     const path = packagePath(text(args.path, 'path'));
+    if (MANAGED_DOMAIN_MARKDOWN.test(path) || path === OBJECT_DATA_MAPPING_PATH) {
+      throw new AgentCoreError(
+        'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+        `${path} 是领域编译器受管文件，不能按路径删除`,
+        ['使用 preview_domain_delete 查看引用影响，再用 delete_domain_resource 原子删除'],
+        409,
+        {
+          managedPath: path,
+          requiredAction: 'redirect_tool',
+          requiredTool: 'preview_domain_delete',
+          targetKind: 'domain_delete',
+          issueId: stableAgentIssueId('managed-domain-delete', path),
+          contractVersion: DOMAIN_TOOL_CONTRACT_VERSION,
+          retryable: false,
+        },
+      );
+    }
+    if (MANAGED_SCRIPT_PATH.test(path) && this.usesScriptContract(context)) {
+      throw new AgentCoreError(
+        'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+        `${path} 是脚本契约受管文件，不能按路径删除`,
+        ['脚本删除需要结构化解绑和引用预览；当前版本请保留脚本或放弃整批候选'],
+        409,
+        {
+          managedPath: path,
+          requiredAction: 'redirect_tool',
+          requiredTool: 'stage_script_source',
+          targetKind: 'script_source',
+          issueId: stableAgentIssueId('managed-script-delete', path),
+          contractVersion: 'script-contract-v1',
+          retryable: false,
+        },
+      );
+    }
     if (path === INTERNAL_SPEC_CHANGE_PATH) {
       throw new AgentCoreError(
         'INTERNAL_FILE_DELETE_FORBIDDEN',
@@ -2939,7 +4810,7 @@ export class AgentCoreService {
         };
       }
     }
-    const changes = this.changes(workspace).filter((change) => (
+    const changes = (await this.effectiveChanges(workspace)).filter((change) => (
       !isHiddenCandidateGroup(change.group_id)
     ));
     if (!changes.length) {
@@ -2982,7 +4853,7 @@ export class AgentCoreService {
         400,
       );
     }
-    const changes = this.changes(workspace);
+    const changes = await this.effectiveChanges(workspace);
     const pendingPaths = new Set(changes.map((change) => change.path));
     const confirmed = this.confirmedPaths(workspace.project_id);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
@@ -3022,7 +4893,8 @@ export class AgentCoreService {
         && !candidate.endsWith('/index.md')
       ));
       const knowledgePending = changes.some((change) => (
-        /^(objects|operations|rules|metrics)\//u.test(change.path)
+        !isHiddenCandidateGroup(change.group_id)
+        && /^(objects|operations|rules|metrics)\//u.test(change.path)
       ));
       const knowledgeConfirmed = !knowledgePending && (trustedProcessBaseline
         || (processConfirmed && knowledgePaths.length > 0
@@ -3080,6 +4952,31 @@ export class AgentCoreService {
         workspace.project_id, workspace.run_id, change.path, change.kind, change.content,
         change.groupId, JSON.stringify(change.evidence), change.reason, nowIso(),
       );
+  }
+
+  private async effectiveChanges(workspace: WorkspaceRow): Promise<ChangeRow[]> {
+    const changes = this.changes(workspace);
+    if (!changes.length) return changes;
+    const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
+    const noOpPaths = changes.filter((change) => (
+      change.kind === 'write'
+        ? base.files[change.path] === change.content
+        : !Object.hasOwn(base.files, change.path)
+    )).map((change) => change.path);
+    if (!noOpPaths.length) return changes;
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const remove = this.db.prepare(`DELETE FROM agent_candidate_changes
+        WHERE project_id = ? AND run_id = ? AND path = ?`);
+      for (const path of noOpPaths) remove.run(workspace.project_id, workspace.run_id, path);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+    const removed = new Set(noOpPaths);
+    return changes.filter((change) => !removed.has(change.path));
   }
 
   private async grepPackage(workspace: WorkspaceRow, args: Record<string, unknown>) {
@@ -3586,7 +5483,7 @@ export class AgentCoreService {
     this.db.prepare(`UPDATE agent_candidate_changes SET group_id = ?
       WHERE project_id = ? AND run_id = ? AND group_id = ?`)
       .run(RUNTIME_GROUP, workspace.project_id, workspace.run_id, LEGACY_RUNTIME_GROUP);
-    const changes = this.changes(workspace);
+    const changes = await this.effectiveChanges(workspace);
     const businessIds = [...new Set(changes.map((item) => item.group_id).filter((id) => !isHiddenCandidateGroup(id)))];
     if (!businessIds.length && workspace.candidate_id) {
       const candidate = await this.artifacts.getCandidateRevision(workspace.project_id, workspace.candidate_id);
@@ -3750,6 +5647,7 @@ export class AgentCoreService {
     this.assertMaterialPurposeReviews(workspace.project_id, candidate.spec, {
       requireObjectMappings: candidateRequiresObjectMappings(changes.map((change) => change.path)),
     });
+    this.assertObjectSourcePolicy(workspace, candidate, changes.map((change) => change.path));
     this.assertPackageFilesValid(base, candidate);
   }
 
@@ -3762,7 +5660,48 @@ export class AgentCoreService {
     this.assertMaterialPurposeReviews(workspace.project_id, preview.spec, {
       requireObjectMappings: candidateRequiresObjectMappings(candidatePaths),
     });
+    this.assertObjectSourcePolicy(
+      workspace,
+      preview,
+      candidatePaths,
+    );
     this.assertPackageFilesValid(base, preview);
+  }
+
+  private assertObjectSourcePolicy(
+    workspace: WorkspaceRow,
+    candidate: Pick<PackageArtifactFiles, 'spec' | 'files'>,
+    changedPaths: string[],
+  ): void {
+    const plan = this.changeControl.activePlan(workspace.project_id, workspace.run_id);
+    const touchesObjects = changedPaths.some((path) => (
+      path === INTERNAL_SPEC_CHANGE_PATH
+      || path === OBJECT_DATA_MAPPING_PATH
+      || /^objects\//u.test(path)
+    ));
+    const physicalTables = schemaTables(this.tables(workspace.project_id));
+    if (plan?.mode !== 'generation' && !(physicalTables.length && touchesObjects)) return;
+    const issues = schemaObjectPolicyIssues(
+      candidate.spec,
+      knowledgePackageFiles(candidate.files),
+      this.tables(workspace.project_id),
+    );
+    if (!issues.length) return;
+    throw new AgentCoreError(
+      'CANDIDATE_OBJECT_SOURCE_POLICY_INVALID',
+      `对象来源策略校验未通过：${issues.map((issue) => issue.message).join('；')}`,
+      [physicalTables.length
+        ? '重新执行 sync_schema_objects，禁止手工创建、合并或遗漏 Sheet 对象'
+        : '移除物理来源和 mapping，只保留不绑定物理表的虚拟对象'],
+      422,
+      {
+        retryable: false,
+        object_source_mode: physicalTables.length ? 'schema' : 'virtual',
+        findingCount: issues.length,
+        findings: issues,
+
+      },
+    );
   }
 
   private assertMaterialPurposeReviews(
@@ -4059,6 +5998,12 @@ export class AgentCoreService {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
+    this.changeControl.settlePlan(
+      workspace.project_id,
+      context.runId,
+      'accepted',
+      accepted.candidate.id,
+    );
     return {
       approved: true,
       candidateRevision: accepted.candidate.id,
@@ -4073,9 +6018,10 @@ export class AgentCoreService {
     this.assertExpectedCandidate(workspace, args);
     if (!workspace.candidate_id) return { rejected: true, replayed: true, display: { text: '候选确认已退回' } };
     const candidateId = workspace.candidate_id;
+    const feedback = auditNote(object(args.review).feedback, '专家退回了这批候选');
     await this.artifacts.rejectCandidateRevision(workspace.project_id, {
       candidateId,
-      note: auditNote(object(args.review).feedback, '专家退回了这批候选'),
+      note: feedback,
       action: {
         cause: 'agent_candidate_rejected',
         summary: '退回 Agent 提出的修改',
@@ -4086,7 +6032,13 @@ export class AgentCoreService {
     this.db.prepare(`UPDATE agent_candidate_workspaces SET candidate_id = NULL, updated_at = ?
       WHERE project_id = ? AND run_id = ?`).run(nowIso(), workspace.project_id, workspace.run_id);
     workspace.candidate_id = null;
-    return { rejected: true, candidateRevision: candidateId, display: { text: '候选确认已退回，可继续调整' } };
+    this.changeControl.settlePlan(workspace.project_id, context.runId, 'rejected', candidateId);
+    return {
+      rejected: true,
+      candidateRevision: candidateId,
+      feedback,
+      display: { text: '候选确认已退回，可继续调整' },
+    };
   }
 
   private discardRejectedCandidateChanges(workspace: WorkspaceRow) {
@@ -4232,7 +6184,7 @@ export class AgentCoreService {
     const parsed = documents.filter((item) => item.parseStatus === 'parsed').length;
     const failed = documents.filter((item) => item.parseStatus === 'failed');
     const confirmedPaths = this.confirmedPaths(workspace.project_id);
-    const { files } = await this.overlay(workspace);
+    const { files, spec: workingSpec } = await this.overlay(workspace);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
     const pendingPaths = new Set(this.changes(workspace).map((change) => change.path));
     const diagramPaths = Object.keys(files).filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd'));
@@ -4258,6 +6210,10 @@ export class AgentCoreService {
     )).length;
     const pendingCandidates = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM artifact_candidate_revisions
       WHERE project_id = ? AND status = 'pending'`).get(workspace.project_id) as any)?.count ?? 0);
+    const deterministic = this.deterministicCapabilityState(
+      workspace.project_id,
+      workingSpec,
+    );
     const manualCases = listTestcases(workspace.project_id).filter((item) => item.source === 'manual');
     const { latestRound: latestEval, results: latestResults } = latestEffectiveEvaluation(
       workspace.project_id,
@@ -4313,6 +6269,20 @@ export class AgentCoreService {
           ...(pendingCandidates ? [`还有 ${pendingCandidates} 个确认请求待处理`] : []),
         ],
       },
+      deterministic_confirmed: {
+        pass: !['decision_required', 'implementation_required'].includes(deterministic.status),
+        blockers: deterministic.status === 'decision_required'
+          ? ['确认当前确定性计算候选是否生成或继续使用脚本']
+          : [
+            ...deterministic.missing_script_bindings
+              .map((key) => `完成已确认业务操作“${key}”的脚本契约、实现和绑定`),
+            ...deterministic.missing_script_tests
+              .map((key) => `让业务操作“${key}”的当前脚本通过已确认契约的隔离测试`),
+          ],
+        warnings: deterministic.skipped_operation_keys.length
+          ? [`专家已明确跳过 ${deterministic.skipped_operation_keys.length} 个确定性计算候选`]
+          : [],
+      },
       evaluation_passed: {
         pass: evaluationMatchesCurrentFacts,
         blockers: evaluationMatchesCurrentFacts ? [] : [
@@ -4320,7 +6290,14 @@ export class AgentCoreService {
         ],
       },
     };
-    const modelingReady = combine(gates, ['materials_ready', 'goal_confirmed', 'process_confirmed', 'knowledge_confirmed', 'modeling_complete']);
+    const modelingReady = combine(gates, [
+      'materials_ready',
+      'goal_confirmed',
+      'process_confirmed',
+      'knowledge_confirmed',
+      'modeling_complete',
+      'deterministic_confirmed',
+    ]);
     const dataSource = getProjectDataSource(workspace.project_id);
     const runningImport = getRunningEvaluationDatabaseImportRun(workspace.project_id);
     const readyForEval = {
@@ -4366,31 +6343,72 @@ export class AgentCoreService {
   }
 
   private evaluationStatus(projectId: string) {
-    const ready = this.db.prepare(`SELECT status, progress_total, pass_count, id FROM eval_rounds
-      WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`).get(projectId) as any;
+    const ready = this.db.prepare(`SELECT id, status, progress_done, progress_total, pass_count,
+        created_at, finished_at FROM eval_rounds
+      WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId) as any;
     if (!ready) return this.unavailable(
       'EVALUATION_NOT_STARTED',
       '尚未创建可运行的评测轮次，未伪造评测结果',
       ['先在评测中心配置数据源和用例，再调用 run_evaluation'],
     );
-    return { roundId: ready.id, status: ready.status, total: ready.progress_total, passed: ready.pass_count,
+    const status = String(ready.status);
+    const terminal = ['done', 'failed', 'cancelled'].includes(status);
+    return { available: true, roundId: ready.id, status, terminal,
+      done: Number(ready.progress_done || 0), total: Number(ready.progress_total || 0),
+      passed: Number(ready.pass_count || 0), createdAt: ready.created_at,
+      finishedAt: ready.finished_at || null,
       scope: getRound(String(ready.id))?.scope ?? { kind: 'current' },
-      display: { text: ready.status === 'running' ? '评测正在后台运行' : '已读取最近一轮真实评测结果' } };
+      display: { text: status === 'running' ? '评测正在后台运行' : '最近一轮评测已经结束' } };
   }
 
-  private async cancelEvaluation(projectId: string) {
+  private async cancelEvaluation(projectId: string, args: Record<string, unknown> = {}) {
+    const requestedRoundId = typeof args.round_id === 'string' ? args.round_id.trim() : '';
+    const latest = this.evaluationStatus(projectId);
+    if (requestedRoundId) {
+      const requested = this.db.prepare(`SELECT id, status, progress_done, progress_total, pass_count,
+          created_at, finished_at FROM eval_rounds WHERE project_id = ? AND id = ?`)
+        .get(projectId, requestedRoundId) as any;
+      if (!requested) {
+        throw new AgentCoreError(
+          'EVALUATION_NOT_FOUND',
+          '指定评测轮次不存在',
+          ['重新读取项目状态后，使用其中最近一轮评测编号'],
+          404,
+        );
+      }
+      if (requested.status !== 'running') {
+        return {
+          cancelled: false,
+          idempotent: true,
+          roundId: requested.id,
+          status: requested.status,
+          terminal: true,
+          done: Number(requested.progress_done || 0),
+          total: Number(requested.progress_total || 0),
+          passed: Number(requested.pass_count || 0),
+          finishedAt: requested.finished_at || null,
+          display: { text: '指定评测已经结束，无需重复停止' },
+        };
+      }
+    }
     if (!isEvaluationActive(projectId)) {
       return {
         cancelled: false,
         idempotent: true,
+        ...(!('error' in latest) ? latest : {}),
         display: { text: '当前没有运行中的评测' },
       };
     }
-    const round = await cancelEvaluation(projectId);
+    const round = await cancelEvaluation(projectId, requestedRoundId || undefined);
     return {
       cancelled: true,
       roundId: round.id,
       status: round.status,
+      terminal: round.status !== 'running',
+      done: round.progressDone,
+      total: round.progressTotal,
+      passed: round.passCount,
+      finishedAt: round.finishedAt ?? null,
       display: { text: '当前评测已停止' },
     };
   }
@@ -4724,13 +6742,43 @@ export class AgentCoreService {
           409,
         );
       }
-      return item as Record<string, unknown>;
+      if (Object.hasOwn(item, 'argv') || Object.hasOwn(item, 'function')) {
+        throw new AgentCoreError(
+          'CONTRACT_REQUIRED',
+          `第 ${index + 1} 个脚本用例不能提供 argv 或 function`,
+          ['只提供业务 input 和完整 expected；平台会按 Markdown 契约拼装 CLI'],
+          409,
+        );
+      }
+      const caseInput = (item as Record<string, unknown>).input;
+      if (!caseInput || typeof caseInput !== 'object' || Array.isArray(caseInput)) {
+        throw new AgentCoreError(
+          'CONTRACT_REQUIRED',
+          `第 ${index + 1} 个脚本用例的 input 必须是业务参数对象`,
+          ['按脚本 Markdown 契约中的参数 key 提供输入'],
+          409,
+        );
+      }
+      return item as { input: Record<string, unknown>; expected: unknown };
     });
-    const source = await this.scriptSourceForTest(workspace, script);
+    const artifact = await this.scriptArtifactForTest(workspace, script);
+    const cliCases = cases.map((item, index) => {
+      const built = buildScriptCliArguments(artifact.contract.parameters, item.input);
+      if (built.missing.length || built.invalid.length) {
+        throw new AgentCoreError(
+          'CONTRACT_REQUIRED',
+          `第 ${index + 1} 个脚本用例无法按 Markdown 契约拼装 CLI`,
+          ['补齐必填参数并移除未知或类型不正确的输入'],
+          409,
+          { missing: built.missing, invalid: built.invalid },
+        );
+      }
+      return { argv: built.args, expected: item.expected };
+    });
     const result = await runScriptCasesInJiuwenbox({
         runId: workspace.run_id,
-        source,
-        cases,
+        source: artifact.source,
+        cases: cliCases,
       }).catch((error: unknown) => {
       throw new AgentCoreError(
         'SANDBOX_UNAVAILABLE',
@@ -4740,7 +6788,7 @@ export class AgentCoreService {
         { technical: error instanceof Error ? error.message : String(error) },
       );
     });
-    const sourceHash = scriptSourceHash(source);
+    const sourceHash = scriptSourceHash(artifact.source);
     if (result.failed === 0) {
       this.db.prepare(`INSERT INTO agent_script_test_receipts (
         project_id, run_id, script_path, source_hash, total, passed, failed, sandbox, created_at
@@ -4771,7 +6819,11 @@ export class AgentCoreService {
     };
   }
 
-  private async scriptSourceForTest(workspace: WorkspaceRow, script: string): Promise<string> {
+  private async scriptArtifactForTest(
+    workspace: WorkspaceRow,
+    script: string,
+  ): Promise<{ source: string; contract: SpecScript }> {
+    let files: Record<string, string>;
     if (workspace.candidate_id) {
       const candidate = await this.artifacts.getCandidateRevision(
         workspace.project_id,
@@ -4782,10 +6834,41 @@ export class AgentCoreService {
           workspace.project_id,
           candidate.id,
         );
-        if (script in preview.files) return preview.files[script];
+        files = preview.files;
+      } else {
+        files = (await this.overlay(workspace)).files;
       }
+    } else {
+      files = (await this.overlay(workspace)).files;
     }
-    return (await this.readFile(workspace, { path: script })).content;
+    const source = files[script];
+    if (source === undefined) {
+      throw new AgentCoreError('FILE_NOT_FOUND', `脚本文件不存在：${script}`, ['调用 list_dir 核对脚本路径'], 404);
+    }
+    const parseErrors: string[] = [];
+    const contracts = Object.keys(files)
+      .filter((path) => /^scripts\/[^/]+\.md$/u.test(path) && path !== 'scripts/index.md')
+      .flatMap((path) => {
+        try {
+          return [parseRenderedScriptFile(path, files[path], files)];
+        } catch (error) {
+          parseErrors.push(error instanceof Error ? error.message : `脚本契约无法解析：${path}`);
+          return [];
+        }
+      })
+      .filter((contract) => `scripts/${contract.entrypoint}` === script);
+    if (contracts.length !== 1) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        contracts.length
+          ? `脚本文件绑定了多个 Markdown 契约：${script}`
+          : `没有找到脚本文件对应的 Markdown 契约：${script}`,
+        ['确认 scripts/*.md 的 entrypoint 与待测脚本一致'],
+        409,
+        parseErrors.length ? { parseErrors } : undefined,
+      );
+    }
+    return { source, contract: contracts[0] };
   }
 
   private assertScriptCandidatesTested(
@@ -4833,6 +6916,12 @@ export class AgentCoreService {
         '评测库尚未配置，未执行查询',
         ['配置 EVAL_DB_URL 并导入项目评测数据后重试'],
         409,
+        {
+          retryable: false,
+          tracePhase: 'rejected',
+          problemVisibility: 'activity',
+          customerSummary: '可选评测库未配置，已跳过本次查询',
+        },
       );
     }
     const target = resolveEvaluationDatabaseTarget(projectEvaluationDatabaseName(projectId), config.evalDbUrl);
@@ -5118,6 +7207,608 @@ function packagePath(value: string): string {
     throw new AgentCoreError('WRITE_UNSAFE', '知识包路径必须是安全的包内相对路径', ['改用不含空段、反斜杠或 .. 的相对路径'], 400);
   }
   return path;
+}
+
+function stableAgentIssueId(kind: string, target: string): string {
+  return `agent-issue-${createHash('sha256').update(`${kind}\0${target}`).digest('hex').slice(0, 20)}`;
+}
+
+function domainTargetKey(value: unknown): string {
+  const resourceId = domainResourceIdArg(value);
+  return resourceId.slice(resourceId.indexOf(':') + 1);
+}
+
+function singleDomainTargetKey(value: unknown): string {
+  const resourceIds = requiredStringArray(value, 'resource_ids');
+  if (resourceIds.length !== 1) {
+    throw new AgentCoreError(
+      'CHANGE_SET_OUT_OF_SCOPE',
+      '一个受控独立计划任务只能删除一个目标资源',
+      ['把每个删除目标拆成独立计划任务'],
+      409,
+      { retryable: false },
+    );
+  }
+  return domainTargetKey(resourceIds[0]);
+}
+
+function parseWorkingPackageSpec(files: Record<string, string>): PackageSpec {
+  const internal = files[INTERNAL_SPEC_CHANGE_PATH];
+  return internal ? JSON.parse(internal) as PackageSpec : parseRenderedPackageFiles(files);
+}
+
+function workspacePackageDataSourceType(
+  projectId: string,
+  currentSpec: PackageSpec,
+): 'nl2sql' | 'neo4j' {
+  const selection = getProjectPackageDataSourceSelection(projectId);
+  if (selection.createdAt) return selection.dataSourceType;
+  return currentSpec.dataSourceType === 'nl2sql' || currentSpec.dataSourceType === 'neo4j'
+    ? currentSpec.dataSourceType
+    : selection.dataSourceType;
+}
+
+function scriptContractFromArgs(
+  args: Record<string, unknown>,
+  operationKey: string,
+): Omit<SpecScript, 'sourceCode'> {
+  const key = domainKey(args.script_key, '脚本');
+  const entrypoint = text(args.entrypoint, 'entrypoint');
+  if (!/^[A-Za-z0-9_.-]+\.py$/u.test(entrypoint) || entrypoint.includes('..')) {
+    throw new AgentCoreError(
+      'INVALID_SCRIPT_CONTRACT',
+      'entrypoint 必须是安全且唯一的 Python 文件名',
+      ['使用不含路径分隔符和 .. 的 *.py 文件名'],
+      400,
+    );
+  }
+  const timeoutSeconds = Number(args.timeout_seconds);
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 300) {
+    throw new AgentCoreError(
+      'INVALID_SCRIPT_CONTRACT',
+      'timeout_seconds 必须是 1 到 300 之间的整数',
+      [],
+      400,
+    );
+  }
+  const parameters = requiredObjectArray(args.parameters ?? [], 'parameters').map((parameter, index) => {
+    if (typeof parameter.required !== 'boolean') {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].required 必须是布尔值`,
+        [],
+        400,
+      );
+    }
+    const flag = text(parameter.flag, `parameters[${index}].flag`);
+    if (!/^--[a-z][a-z0-9-]*$/u.test(flag)) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].flag 必须是 -- 开头的小写 CLI 参数`,
+        [],
+        400,
+      );
+    }
+    const defaultValue = parameter.default_value;
+    if (defaultValue !== undefined
+      && !['string', 'number', 'boolean'].includes(typeof defaultValue)) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].default_value 只能是字符串、数字或布尔值`,
+        [],
+        400,
+      );
+    }
+    const parameterType = text(parameter.type, `parameters[${index}].type`);
+    const rawAction = optionalInputText(parameter.action)?.toLowerCase();
+    if (rawAction && rawAction !== 'store_true' && rawAction !== 'store_false') {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].action 只能是 store_true 或 store_false`,
+        [],
+        400,
+      );
+    }
+    const action: SpecScript['parameters'][number]['action'] =
+      rawAction === 'store_true' || rawAction === 'store_false' ? rawAction : undefined;
+    if (action && !['bool', 'boolean'].includes(parameterType.toLowerCase())) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].action 只适用于 boolean 参数`,
+        [],
+        400,
+      );
+    }
+    if (action && parameter.required) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}] 使用 ${action} 时不能设为必填`,
+        [],
+        400,
+      );
+    }
+    if (action && parameter.multiple === true) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}] 使用 ${action} 时不能同时设为多值`,
+        [],
+        400,
+      );
+    }
+    const actionDefault = action === 'store_true' ? false : action === 'store_false' ? true : undefined;
+    if (actionDefault !== undefined && defaultValue !== undefined && defaultValue !== actionDefault) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}] 的默认值与 ${action} 语义不一致`,
+        [`${action} 的默认值必须为 ${String(actionDefault)}`],
+        400,
+      );
+    }
+    const normalizedDefaultValue = defaultValue ?? actionDefault;
+    if (parameter.multiple !== undefined && typeof parameter.multiple !== 'boolean') {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_CONTRACT',
+        `parameters[${index}].multiple 必须是布尔值`,
+        [],
+        400,
+      );
+    }
+    return {
+      name: domainKey(parameter.name, `脚本参数 parameters[${index}]`),
+      flag,
+      type: parameterType,
+      required: parameter.required,
+      ...(normalizedDefaultValue !== undefined ? { defaultValue: normalizedDefaultValue } : {}),
+      ...(optionalInputText(parameter.description)
+        ? { description: optionalInputText(parameter.description) }
+        : {}),
+      ...(parameter.multiple === true ? { multiple: true } : {}),
+      ...(action ? { action } : {}),
+    };
+  });
+  assertUniqueDomainKeys(parameters.map((parameter) => parameter.name), '脚本参数 key');
+  assertUniqueDomainKeys(parameters.map((parameter) => parameter.flag), '脚本参数 flag');
+  const outputs = requiredObjectArray(args.outputs, 'outputs').map((output, index) => ({
+    key: domainKey(output.key, `脚本输出 outputs[${index}]`),
+    type: text(output.type, `outputs[${index}].type`),
+    ...(optionalInputText(output.description)
+      ? { description: optionalInputText(output.description) }
+      : {}),
+  }));
+  assertUniqueDomainKeys(outputs.map((output) => output.key), '脚本输出 key');
+  if (!outputs.length) {
+    throw new AgentCoreError('INVALID_SCRIPT_CONTRACT', '脚本至少要声明一个结构化输出', [], 400);
+  }
+  return {
+    key,
+    title: text(args.title, 'title'),
+    description: text(args.description, 'description'),
+    boundOperation: operationKey,
+    runtime: 'python',
+    entrypoint,
+    timeoutSeconds,
+    parameters,
+    outputs,
+    boundaries: requiredStringArray(args.boundaries, 'boundaries'),
+    evidence: requiredStringArray(args.evidence, 'evidence'),
+  };
+}
+
+function scriptContractView(contract: Omit<SpecScript, 'sourceCode'>) {
+  return {
+    key: contract.key,
+    title: contract.title,
+    description: contract.description,
+    bound_operation: `operation:${contract.boundOperation}`,
+    runtime: contract.runtime,
+    entrypoint: contract.entrypoint,
+    timeout_seconds: contract.timeoutSeconds,
+    parameters: contract.parameters.map((parameter) => ({
+      name: parameter.name,
+      flag: parameter.flag,
+      type: parameter.type,
+      required: parameter.required,
+      ...(parameter.defaultValue !== undefined ? { default_value: parameter.defaultValue } : {}),
+      ...(parameter.description ? { description: parameter.description } : {}),
+      ...(parameter.multiple ? { multiple: true } : {}),
+      ...(parameter.action ? { action: parameter.action } : {}),
+    })),
+    outputs: contract.outputs,
+    boundaries: contract.boundaries,
+    evidence: contract.evidence ?? [],
+  };
+}
+
+function operationResourceIdArg(value: unknown): string {
+  const resourceId = domainResourceIdArg(value);
+  if (!resourceId.startsWith('operation:')) {
+    throw new AgentCoreError(
+      'INVALID_INPUT',
+      'operation_id 必须是 operation:key',
+      ['使用 get_domain_resource 返回的操作 resource_id'],
+      400,
+    );
+  }
+  return resourceId;
+}
+
+function scriptOperationContractHash(element: StudioElement): string {
+  if (element.kind !== 'operation') {
+    throw new AgentCoreError('DOMAIN_KIND_MISMATCH', '脚本只能绑定操作资源', [], 400);
+  }
+  const values = structuredClone(element.values);
+  delete values.script;
+  return hashStructuredValue('script-operation-contract-v1', {
+    key: element.key,
+    values,
+    relations: element.relations.map((relation) => ({
+      kind: relation.kind,
+      targetId: relation.targetId,
+      label: relation.label,
+    })),
+  });
+}
+
+function hashStructuredValue(namespace: string, value: unknown): string {
+  return `sha256:${createHash('sha256')
+    .update(namespace)
+    .update('\0')
+    .update(stableDomainJson(value))
+    .digest('hex')}`;
+}
+
+function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Record<string, unknown> {
+  if (kind === 'object') {
+    const fields = requiredObjectArray(args.fields, 'fields').map((field, index) => {
+      if (typeof field.required !== 'boolean') {
+        throw new AgentCoreError(
+          'INVALID_DOMAIN_PAYLOAD',
+          `fields[${index}].required 必须是布尔值`,
+          [],
+          400,
+        );
+      }
+      return {
+        key: text(field.key, `fields[${index}].key`),
+        ...(optionalInputText(field.cn_name) ? { cnName: optionalInputText(field.cn_name) } : {}),
+        ...(optionalInputText(field.type) ? { type: optionalInputText(field.type) } : {}),
+        required: field.required,
+        ...(optionalInputText(field.note) ? { note: optionalInputText(field.note) } : {}),
+        ...(optionalInputText(field.alias) ? { alias: optionalInputText(field.alias) } : {}),
+      };
+    });
+    return {
+      title: text(args.title, 'title'),
+      description: text(args.description, 'description'),
+      fields,
+      aliases: stringArray(args.aliases),
+      queryBoundary: String(args.query_boundary ?? '').trim(),
+      relations: requiredObjectArray(args.relations ?? [], 'relations').map((relation, index) => ({
+        kind: 'object_relation',
+        targetId: text(relation.target_id, `relations[${index}].target_id`),
+        ...(optionalInputText(relation.label) ? { label: optionalInputText(relation.label) } : {}),
+        ...(optionalInputText(relation.description)
+          ? { description: optionalInputText(relation.description) }
+          : {}),
+      })),
+    };
+  }
+  if (kind === 'rule') {
+    return {
+      title: text(args.title, 'title'),
+      description: String(args.description ?? '').trim(),
+      content: text(args.content, 'content'),
+      conditions: requiredObjectArray(args.conditions ?? [], 'conditions').map((condition, index) => ({
+        condition: text(condition.condition, `conditions[${index}].condition`),
+        conclusion: text(condition.conclusion, `conditions[${index}].conclusion`),
+      })),
+      exceptions: stringArray(args.exceptions),
+      evidence: requiredStringArray(args.evidence, 'evidence'),
+      relations: domainReferenceRelations('rule', requiredStringArray(args.targets ?? [], 'targets', true)),
+    };
+  }
+  if (kind === 'operation') {
+    return {
+      title: text(args.title, 'title'),
+      description: text(args.description, 'description'),
+      inputs: requiredObjectArray(args.inputs ?? [], 'inputs').map((input, index) => {
+        if (typeof input.required !== 'boolean') {
+          throw new AgentCoreError(
+            'INVALID_DOMAIN_PAYLOAD',
+            `inputs[${index}].required 必须是布尔值`,
+            [],
+            400,
+          );
+        }
+        return {
+          param: text(input.param, `inputs[${index}].param`),
+          ...(optionalInputText(input.cn_name) ? { cnName: optionalInputText(input.cn_name) } : {}),
+          type: text(input.type, `inputs[${index}].type`),
+          required: input.required,
+          ...(optionalInputText(input.note) ? { note: optionalInputText(input.note) } : {}),
+        };
+      }),
+      outputs: requiredObjectArray(args.outputs ?? [], 'outputs').map((output, index) => ({
+        field: text(output.field, `outputs[${index}].field`),
+        ...(optionalInputText(output.cn_name) ? { cnName: optionalInputText(output.cn_name) } : {}),
+        type: text(output.type, `outputs[${index}].type`),
+        ...(optionalInputText(output.note) ? { note: optionalInputText(output.note) } : {}),
+      })),
+      flow: requiredStringArray(args.flow, 'flow'),
+      notes: stringArray(args.notes),
+      evidence: requiredStringArray(args.evidence, 'evidence'),
+      relations: domainReferenceRelations(
+        'operation',
+        requiredStringArray(args.references ?? [], 'references', true),
+      ),
+    };
+  }
+  return {
+    title: text(args.title, 'title'),
+    description: String(args.description ?? '').trim(),
+    unit: String(args.unit ?? '').trim(),
+    grain: String(args.grain ?? '').trim(),
+    caliber: text(args.caliber, 'caliber'),
+    boundaries: requiredStringArray(args.boundaries, 'boundaries'),
+    nullPolicy: requiredObjectArray(args.null_policy ?? [], 'null_policy').map((item, index) => ({
+      field: text(item.field, `null_policy[${index}].field`),
+      handling: text(item.handling, `null_policy[${index}].handling`),
+    })),
+    dimensions: requiredObjectArray(args.dimensions ?? [], 'dimensions').map((item, index) => ({
+      key: text(item.key, `dimensions[${index}].key`),
+      note: text(item.note, `dimensions[${index}].note`),
+    })),
+    evidence: requiredStringArray(args.evidence, 'evidence'),
+    relations: domainReferenceRelations(
+      'metric',
+      requiredStringArray(args.object_references ?? [], 'object_references', true),
+    ),
+  };
+}
+
+function domainReferenceRelations(
+  sourceKind: Exclude<DomainKind, 'object'>,
+  targets: string[],
+): Array<{ kind: string; targetId: string }> {
+  const legal: Record<typeof sourceKind, Record<string, string>> = {
+    rule: { object: 'applies_to_object', operation: 'applies_to_operation' },
+    operation: { object: 'uses_object', rule: 'uses_rule', metric: 'uses_metric' },
+    metric: { object: 'uses_object' },
+  };
+  return targets.map((targetId, index) => {
+    const targetKind = targetId.split(':', 1)[0];
+    const relationKind = legal[sourceKind][targetKind];
+    if (!relationKind) {
+      throw new AgentCoreError(
+        'DOMAIN_REFERENCE_KIND_INVALID',
+        `${sourceKind} 不能引用 ${targetKind || '未知'} 类型`,
+        ['使用 get_domain_resource 返回的 resource_id'],
+        400,
+        { path: `references[${index}]`, target_id: targetId },
+      );
+    }
+    return { kind: relationKind, targetId };
+  });
+}
+
+function domainMutationResponse(
+  response: StudioMutationResponse,
+  summary: { action_count: number; operations: string[] },
+) {
+  return {
+    working_revision: response.workingRevision,
+    mutation_id: response.clientMutationId,
+    ...(response.editSessionId ? { edit_session_id: response.editSessionId } : {}),
+    candidate: response.candidate,
+    ...(response.replayed ? { replayed: true } : {}),
+    change_group: response.changeGroup,
+    changed_paths: response.changedPaths,
+    ...(response.element ? { resource: domainResourcePayload(response.element) } : {}),
+    resources: response.elements.map((element) => domainResourcePayload(element)),
+    ...(response.deletedElementIds?.length ? { deleted_resource_ids: response.deletedElementIds } : {}),
+    warnings: response.warnings,
+    historical_problem_count: response.historicalProblemCount,
+    mutation_summary: summary,
+    display: response.display,
+  };
+}
+
+function domainMutationRequestHash(operation: string, args: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update('agent-domain-mutation-v2\0')
+    .update(operation)
+    .update('\0')
+    .update(stableDomainJson(args))
+    .digest('hex');
+}
+
+function domainDependencyRevision(projectId: string): string {
+  const dependencies = listDocuments(projectId).map((document) => ({
+    id: document.id,
+    sourceKey: document.sourceKey,
+    parseStatus: document.parseStatus,
+    revisionId: (document as any).revisionId ?? (document as any).revision_id ?? '',
+    updatedAt: (document as any).updatedAt ?? (document as any).updated_at ?? '',
+    tables: (document.tables ?? []).map((table) => ({
+      name: table.name,
+      fields: table.fields.map((field) => field.name),
+    })),
+  }));
+  return createHash('sha256')
+    .update('agent-domain-dependencies-v1\0')
+    .update(stableDomainJson(dependencies))
+    .digest('hex');
+}
+
+function domainMutationSummary(
+  args: Record<string, unknown>,
+  fallbackOperation = 'patch_resource',
+): { action_count: number; operations: string[] } {
+  const operations = Array.isArray(args.actions)
+    ? args.actions.map((action) => (
+      action && typeof action === 'object' && !Array.isArray(action)
+        ? String((action as Record<string, unknown>).op ?? fallbackOperation)
+        : fallbackOperation
+    ))
+    : requiredStringArray(args.resource_ids ?? [], 'resource_ids', true).map(() => fallbackOperation);
+  return { action_count: operations.length || 1, operations: operations.length ? operations : [fallbackOperation] };
+}
+
+function stableDomainJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableDomainJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableDomainJson(item)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function assertDomainResourceHash(
+  element: StudioElement,
+  expectedValue: unknown,
+  actualRevision: string,
+): void {
+  const expected = text(expectedValue, 'expected_resource_hash');
+  const actual = domainResourceHash(element);
+  if (expected === actual) return;
+  throw new AgentCoreError(
+    'RESOURCE_HASH_CONFLICT',
+    '目标资源已经变化，请重新读取后生成增量修改',
+    ['重新调用 get_domain_resource，并基于新的 resource_hash 生成 Patch'],
+    409,
+    {
+      error_class: 'conflict',
+      retryable: false,
+      repairable: true,
+      expected_resource_hash: expected,
+      actual_resource_hash: actual,
+      actual_revision: actualRevision,
+    },
+  );
+}
+
+function domainKindArg(value: unknown): DomainKind {
+  const normalized = String(value ?? '').trim();
+  if (['object', 'rule', 'operation', 'metric'].includes(normalized)) return normalized as DomainKind;
+  throw new AgentCoreError(
+    'INVALID_INPUT',
+    'kind 必须是 object、rule、operation 或 metric',
+    [],
+    400,
+  );
+}
+
+function domainResourceIdArg(value: unknown): string {
+  const normalized = String(value ?? '').trim();
+  const separator = normalized.indexOf(':');
+  if (separator > 0) {
+    const kind = normalized.slice(0, separator);
+    const key = normalized.slice(separator + 1);
+    if (['object', 'rule', 'operation', 'metric'].includes(kind)) {
+      try {
+        return `${kind}:${validateKey(key, '知识资源')}`;
+      } catch {
+        // Normalize invalid IDs to the stable public error below.
+      }
+    }
+  }
+  throw new AgentCoreError(
+    'INVALID_INPUT',
+    'resource_id 必须是 kind:key',
+    ['使用 list_domain_resources 或 get_domain_resource 返回的 resource_id'],
+    400,
+  );
+}
+
+function domainKindLabel(kind: DomainKind): string {
+  return ({ object: '对象', rule: '规则', operation: '操作', metric: '指标' } as const)[kind];
+}
+
+function normalizeChangeControlError(error: unknown): AgentCoreError {
+  if (error instanceof AgentCoreError) return error;
+  if (error instanceof ChangeControlError) {
+    return new AgentCoreError(
+      error.code,
+      error.message,
+      error.details.requires_user_decision
+        ? ['先通过问题卡获得用户决定，再修订原建模计划']
+        : [],
+      error.statusCode,
+      {
+        error_class: error.statusCode === 409 ? 'conflict' : 'deterministic',
+        retryable: false,
+        repairable: error.statusCode < 500,
+        ...error.details,
+      },
+    );
+  }
+  return normalizeDomainAgentError(error);
+}
+
+function changeSetStatusLabel(status: string): string {
+  return ({
+    staging: '正在结算',
+    staged: '已形成候选',
+    validated: '校验通过',
+    waiting_user: '等待确认',
+    accepted: '已接受',
+    rejected: '已退回',
+    failed: '未生效',
+    discarded: '已放弃',
+    cancelled: '已取消',
+  } as Record<string, string>)[status] || '状态未知';
+}
+
+function normalizeDomainAgentError(error: unknown): AgentCoreError {
+  if (error instanceof DomainPatchError) {
+    const fingerprint = createHash('sha256')
+      .update(`${error.code}\0${error.path}\0${error.message}`)
+      .digest('hex');
+    return new AgentCoreError(
+      error.code,
+      error.message,
+      ['只修正错误 path 对应的动作后，使用同一业务语义重新提交'],
+      error.code.endsWith('_CONFLICT') ? 409 : 400,
+      {
+        error_class: error.code.endsWith('_CONFLICT') ? 'conflict' : 'deterministic',
+        retryable: false,
+        repairable: true,
+        failure_fingerprint: `sha256:${fingerprint}`,
+        path: error.path,
+        ...error.details,
+      },
+    );
+  }
+  if (error instanceof AgentCoreError) return error;
+  if (error instanceof StudioReadError || error instanceof StudioWriteError) {
+    const conflict = ['REVISION_CONFLICT', 'WORKING_REVISION_CHANGED', 'DELETE_PREVIEW_STALE'].includes(error.code);
+    const precondition = ['ELEMENT_NOT_FOUND', 'STUDIO_WRITE_LOCKED'].includes(error.code);
+    const fingerprint = createHash('sha256')
+      .update(`${error.code}\0${error.message}\0${JSON.stringify(error.details)}`)
+      .digest('hex');
+    return new AgentCoreError(
+      error.code,
+      error.message,
+      [],
+      error.statusCode,
+      {
+        error_class: conflict ? 'conflict' : precondition ? 'precondition' : 'deterministic',
+        retryable: false,
+        repairable: error.statusCode < 500,
+        failure_fingerprint: `sha256:${fingerprint}`,
+        ...error.details,
+      },
+    );
+  }
+  return new AgentCoreError(
+    'INTERNAL_ERROR',
+    error instanceof Error ? error.message : String(error),
+    [],
+    500,
+    { error_class: 'transient', retryable: true, repairable: false },
+  );
 }
 
 function ontologyObjectPayload(element: StudioElement) {
@@ -5832,7 +8523,7 @@ async function parallelMap<T, R>(items: T[], concurrency: number, mapper: (item:
 
 function workingContentRevision(baseRevision: string, files: Record<string, string>): string {
   const hash = createHash('sha256').update('studio-working-v1\0').update(baseRevision);
-  for (const path of Object.keys(files).sort()) {
+  for (const path of Object.keys(files).filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH).sort()) {
     const content = files[path];
     hash.update('\0').update(String(Buffer.byteLength(path))).update(':').update(path);
     hash.update('\0').update(String(Buffer.byteLength(content))).update(':').update(content);
@@ -5840,6 +8531,8 @@ function workingContentRevision(baseRevision: string, files: Record<string, stri
   return `sha256:${hash.digest('hex')}`;
 }
 
-function scriptSourceHash(source: string | Uint8Array): string {
-  return `sha256:${createHash('sha256').update('agent-script-test-v1\0').update(source).digest('hex')}`;
+export function scriptSourceHash(source: string | Uint8Array): string {
+  const text = typeof source === 'string' ? source : Buffer.from(source).toString('utf8');
+  const canonical = `${text.replace(/\r\n?/gu, '\n').replace(/\n+$/u, '')}\n`;
+  return `sha256:${createHash('sha256').update('agent-script-test-v1\0').update(canonical).digest('hex')}`;
 }

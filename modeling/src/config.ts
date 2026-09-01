@@ -37,6 +37,7 @@ const evaluationLlmModel = env('MODELING_EVALUATION_LLM_MODEL');
 export const config = {
   port: Number(env('PORT', '5100')),
   dataDir: resolve(env('DATA_DIR', './data')),
+  acceptanceMode: booleanEnv('MODELING_ACCEPTANCE_MODE', false),
 
   llm: {
     baseUrl: env('MODELING_LLM_BASE_URL'),

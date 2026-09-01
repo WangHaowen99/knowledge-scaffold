@@ -103,6 +103,7 @@ const KIND_LABEL: Record<StudioKind, string> = {
   metric: '指标',
   concept: '融合概念',
 };
+const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
 
 const COMMON_COLUMNS = [
   { key: 'title', label: '名称', sortable: true },
@@ -233,7 +234,10 @@ export class StudioReadService {
   constructor(private readonly workingPackage: StudioWorkingPackage) {
     let spec: PackageSpec;
     try {
-      spec = parseRenderedPackageFiles(workingPackage.files);
+      const internalSpec = workingPackage.files[INTERNAL_SPEC_CHANGE_PATH];
+      spec = internalSpec
+        ? JSON.parse(internalSpec) as PackageSpec
+        : parseRenderedPackageFiles(workingPackage.files);
     } catch (error) {
       throw new StudioReadError(
         'INVALID_WORKING_PACKAGE',

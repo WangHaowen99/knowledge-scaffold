@@ -28,10 +28,15 @@ interface JiuwenboxExecResult {
   stderr?: string;
 }
 
+export interface ScriptCliCase {
+  argv: string[];
+  expected: unknown;
+}
+
 export async function runScriptCasesInJiuwenbox(input: {
   runId: string;
   source: string;
-  cases: Record<string, unknown>[];
+  cases: ScriptCliCase[];
   socketPath?: string;
 }): Promise<ScriptTestResult> {
   if (Buffer.byteLength(input.source, 'utf8') > MAX_SCRIPT_BYTES) {
@@ -194,13 +199,10 @@ const BLOCKED_SYSCALLS = [
 ];
 
 const SCRIPT_CASE_RUNNER = String.raw`
-import ast
 import base64
 import json
-import runpy
 import subprocess
 import sys
-import traceback
 
 PREFIX = "__MODELING_RESULT__"
 source = base64.b64decode(sys.argv[1]).decode("utf-8")
@@ -209,38 +211,10 @@ path = "/tmp/modeling_candidate.py"
 with open(path, "w", encoding="utf-8") as handle:
     handle.write(source)
 
-tree = ast.parse(source, filename=path)
-functions = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")]
-force_cli = all(isinstance(case.get("argv"), list) for case in cases)
-namespace = None if force_cli or not functions else runpy.run_path(path, run_name="modeling_contract")
-
 def invoke(case):
-    if namespace is not None:
-        requested = str(case.get("function") or "").strip()
-        candidates = [requested] if requested else ["run", "main", "execute", "calculate"] + functions
-        function = next((namespace.get(name) for name in candidates if callable(namespace.get(name))), None)
-        if function is None:
-            raise RuntimeError("没有找到可测试的公开函数")
-        value = case.get("input")
-        if isinstance(value, dict):
-            return function(**value)
-        if isinstance(value, list):
-            return function(*value)
-        return function(value)
-
     argv = case.get("argv")
     if not isinstance(argv, list):
-        argv = []
-        value = case.get("input")
-        if not isinstance(value, dict):
-            raise RuntimeError("命令行脚本用例的 input 必须是对象，或显式提供 argv")
-        for key, item in value.items():
-            flag = "--" + str(key).replace("_", "-")
-            if isinstance(item, bool):
-                if item:
-                    argv.append(flag)
-            else:
-                argv.extend([flag, json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else str(item)])
+        raise RuntimeError("沙箱只接受由脚本契约生成的 argv")
     completed = subprocess.run(
         [sys.executable, "-I", path, *[str(item) for item in argv]],
         cwd="/tmp", capture_output=True, text=True, timeout=20, check=False,
@@ -248,7 +222,7 @@ def invoke(case):
     )
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or completed.stdout or f"exit {completed.returncode}")[-2000:])
-    output = next((line for line in reversed(completed.stdout.splitlines()) if line.strip()), "")
+    output = completed.stdout.strip()
     try:
         return json.loads(output)
     except json.JSONDecodeError:

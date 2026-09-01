@@ -69,7 +69,7 @@ test('知识包分阶段生成过程持久化', async () => {
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer', rowCount: 1,
+      name: 'customer', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }],
     documents: [],
@@ -129,7 +129,7 @@ test('AI 辅助构建按人工确认流程生成业务操作', async () => {
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'application', rowCount: 1,
+      name: 'application', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['A001'], distinctRatio: 1 }],
     }],
     documents: [],
@@ -172,7 +172,7 @@ test('物理 Sheet 全量生成对象，不由模型挑选或静默遗漏', asyn
 
   const result = await generatePackage(project, {
     tables: candidates.map((candidate) => ({
-      name: candidate.sourceTables[0], rowCount: 1,
+      name: candidate.sourceTables[0], rowCount: 1, materialPurpose: 'schema' as const,
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1 }],
     })),
     documents: [],
@@ -208,7 +208,7 @@ test('存在 Excel Schema 时忽略文档逻辑对象候选且不调用对象模
   const faux = createFauxCore({ provider: 'excel-object-priority', models: [{ id: 'excel-object-priority' }] });
   faux.setResponses([fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })])]);
   const result = await generatePackage(project, {
-    tables: [{ name: 'business_sheet', documentId: 'doc-excel', rowCount: 1, fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1 }] }],
+    tables: [{ name: 'business_sheet', documentId: 'doc-excel', rowCount: 1, materialPurpose: 'schema', fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1 }] }],
     documents: [{ id: 'doc-manual', filename: 'manual.md', textContent: '产品和场景说明' }],
   }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
   assert.deepEqual(result.spec.objects.map((object) => object.key), ['business_sheet']);
@@ -253,7 +253,7 @@ test('操作批次引用不存在对象或漏掉确认流程时会自动重交',
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'warehouse_location', rowCount: 1,
+      name: 'warehouse_location', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1 }],
     }], documents: [],
   }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
@@ -298,7 +298,7 @@ test('操作批次引用尚未生成的脚本时自动补交并移除幽灵脚�
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer', rowCount: 1,
+      name: 'customer', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }], documents: [],
   }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
@@ -341,7 +341,7 @@ test('操作通过确认流程 ID 绑定并由服务端回填流程目标文本'
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer', rowCount: 1,
+      name: 'customer', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }], documents: [],
   }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
@@ -375,7 +375,7 @@ test('知识包自动补交耗尽后等待专家决定是否跳过', async () =>
 
   await assert.rejects(generatePackage(project, {
     tables: [{
-      name: 'customer', rowCount: 1,
+      name: 'customer', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }], documents: [],
   }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart), /等待专家确认是否跳过/);
@@ -409,7 +409,7 @@ test('知识生成额度耗尽时保留检查点且不创建跳过知识的专�
 
   await assert.rejects(generatePackage(project, {
     tables: [{
-      name: 'customer', rowCount: 1,
+      name: 'customer', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }],
     documents: [],
@@ -461,7 +461,7 @@ test('专家确认后沿用原任务跳过失败批次并生成其余知识草�
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer', rowCount: 1,
+      name: 'customer', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C1'], distinctRatio: 1 }],
     }], documents: [],
   }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart, {
@@ -501,7 +501,7 @@ test('知识生成恢复时复用成功批次且不重复调用模型', async ()
   ]);
   const context = {
     tables: [{
-      name: 'customer', rowCount: 1,
+      name: 'customer', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C1'], distinctRatio: 1 }],
     }],
     documents: [],
@@ -577,7 +577,7 @@ test('历史分析和对象提交中的表格展示标签在生成时规范化',
 
   const result = await generatePackage(project, {
     tables: [{
-      name: '十一个穿透式监管场景', rowCount: 11,
+      name: '十一个穿透式监管场景', rowCount: 11, materialPurpose: 'schema',
       fields: [{ name: '序号', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 }],
     }],
     documents: [],

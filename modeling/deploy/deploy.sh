@@ -95,7 +95,8 @@ load_modeling_env() {
                    MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
                    MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS \
                    MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
-                   MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN; do
+                   MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN \
+                   MODELING_ACCEPTANCE_MODE; do
             load_env_if_unset "${file}" "${key}"
         done
     done

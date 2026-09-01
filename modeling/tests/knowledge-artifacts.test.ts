@@ -350,7 +350,7 @@ test('规则指标候选可以逐项生成或延期，但不得静默遗漏', as
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer_table', rowCount: 1,
+      name: 'customer_table', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'customer_id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }],
     documents: [{ id: 'product-manual', filename: '产品手册.docx', textContent: '资产规模与产品覆盖率计算口径。' }],
@@ -395,7 +395,7 @@ test('operation 用来源表名引用对象时转换为对象 key', async () => 
 
   const result = await generatePackage(project, {
     tables: [{
-      name: 'customer_table', rowCount: 1,
+      name: 'customer_table', rowCount: 1, materialPurpose: 'schema',
       fields: [{ name: 'customer_id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }],
     documents: [],

@@ -45,7 +45,10 @@ export interface ScriptOptimizationDecision {
 const STABLE_DIAGNOSIS_ID = /^dg[_-][A-Za-z0-9][A-Za-z0-9_-]*$/u;
 const EVALUATION_ORACLE_LANGUAGE = /(?:标准答案|参考答案|地面真值|(?:智能体|模型)(?:回答|答案|输出原文)|评测(?:答案|结果|得分|通过率)|(?:当前|本次|该条|单个|全部|所有)用例)/u;
 const OPTIMIZATION_MAX_ATTEMPTS = 2;
-const OPTIMIZATION_MAX_OUTPUT_TOKENS = 65_536;
+export const OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS = 12_000;
+export const OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS = 32_000;
+export const OPTIMIZATION_PROPOSAL_TIMEOUT_MS = 3 * 60_000;
+export const OPTIMIZATION_APPLY_TIMEOUT_MS = 5 * 60_000;
 
 export class OptimizationExpertReviewRequiredError extends Error {
   readonly validationErrors: string[];
@@ -119,6 +122,32 @@ export function normalizeOptimizationSuggestionTargets<T extends RawSuggestion>(
     }
     return { ...suggestion, target: unique[0].key };
   });
+}
+
+function normalizedSuggestionIdentityText(value: string | undefined): string {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .trim()
+    .toLocaleLowerCase('zh-CN')
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function normalizedSuggestionTarget(value: string | undefined): string {
+  return String(value ?? '').normalize('NFKC').trim();
+}
+
+/**
+ * 重复建议优先按稳定业务锚点识别。模型即使换了标题表述，只要根因、动作和目标资源
+ * 没有变化，就仍是同一条建议；新增资源未提供 target 时才退回问题或标题文本。
+ */
+export function optimizationSuggestionDedupeKey(suggestion: RawSuggestion): string {
+  const diagnosisIds = [...new Set((suggestion.diagnosisIds ?? [])
+    .map((id) => id.trim()).filter(Boolean))].sort().join(',');
+  const kind = normalizedSuggestionIdentityText(suggestion.kind);
+  const target = normalizedSuggestionTarget(suggestion.target);
+  const fallback = normalizedSuggestionIdentityText(suggestion.relatedQuestion)
+    || normalizedSuggestionIdentityText(suggestion.title);
+  return `${diagnosisIds}|${kind}|${target ? `target:${target}` : `subject:${fallback}`}`;
 }
 
 function diagnosisText(diagnosis: OptimizationDiagnosis): string {
@@ -704,7 +733,7 @@ export async function proposeOptimizations(
   const initialPrompt = diagnoses.length
     ? `请仅根据以下已确认诊断和包体检事实生成通用优化建议。不要索取、推测或复述原始评测问题与答案。${diagnosisBlock}${checkBlock}`
     : `未通过的评测用例如下，请给出优化建议：\n${failLines.join('\n')}${checkBlock}`;
-  const llm = llmOverride ?? buildTaskLlm({ maxTokensCap: OPTIMIZATION_MAX_OUTPUT_TOKENS });
+  const llm = llmOverride ?? buildTaskLlm({ maxTokensCap: OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS });
   let validationError: Error | undefined;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     cap.suggestions = undefined;
@@ -724,7 +753,7 @@ export async function proposeOptimizations(
         ].join('\n');
     // 每次重试使用全新上下文，避免上一轮包含具体数值的建议继续锚定后续输出。
     const agent = makeAgent(llm, sys, [submitSuggestions] as any);
-    await runAgent(agent, prompt);
+    await runAgent(agent, prompt, undefined, { timeoutMs: OPTIMIZATION_PROPOSAL_TIMEOUT_MS });
     const suggestions = cap.suggestions as RawSuggestion[] | undefined;
     if (!suggestions?.length) {
       validationError = new Error('优化器未产出建议，请重试');
@@ -1963,7 +1992,7 @@ export async function applyOptimizations(
     return evidenced;
   };
 
-  const llm = llmOverride ?? buildTaskLlm({ maxTokensCap: OPTIMIZATION_MAX_OUTPUT_TOKENS });
+  const llm = llmOverride ?? buildTaskLlm({ maxTokensCap: OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS });
   let lastValidationError = '';
   let lastRejectedRevision: RevisedSpec | undefined;
   const validationErrors: string[] = [];
@@ -2019,7 +2048,7 @@ export async function applyOptimizations(
     ].join('\n');
     await onProgress?.({ phase: 'revision_started', attempt, maxAttempts: OPTIMIZATION_MAX_ATTEMPTS });
     const agent = makeAgent(llm, sys, [submitPatch, submitRevised] as any);
-    await runAgent(agent, repairPrompt);
+    await runAgent(agent, repairPrompt, undefined, { timeoutMs: OPTIMIZATION_APPLY_TIMEOUT_MS });
     try {
       const revised = validateRevision(cap.revised);
       await onProgress?.({ phase: 'validation_passed', attempt, maxAttempts: OPTIMIZATION_MAX_ATTEMPTS });

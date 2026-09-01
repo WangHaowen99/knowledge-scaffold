@@ -6,6 +6,9 @@ import puppeteer, { type Browser, type ElementHandle, type Page } from 'puppetee
 
 const SUPPORTED_ACTIONS = new Set([
   'goto', 'click', 'fill', 'select', 'upload', 'press', 'waitFor', 'assertText',
+  'waitForGone', 'assertNotText', 'assertValue', 'assertEnabled', 'assertDisabled',
+  'assertCount', 'assertVisible', 'assertLayout', 'reload', 'goBack',
+  'clickAll', 'reviewAndAccept',
   'screenshot', 'sleep', 'scroll', 'guidedConstruction',
 ]);
 
@@ -22,8 +25,15 @@ const GUIDED_ACTION_PRIORITY = [
   'confirm_construction',
 ] as const;
 
+export const GUIDED_PENDING_INTERACTION_SELECTOR = [
+  'section[aria-label="待确认事项"]',
+  '[data-interaction-id] .card.card-accent',
+  '[data-interaction-id] .card.card-wait',
+].join(', ');
+
 export interface GuidedConstructionSnapshot {
   pendingInteraction: null | { type?: string; canSubmit: boolean };
+  pendingPlanApproval?: boolean;
   warningAcceptance?: null | { canSubmit: boolean };
   nextActionIds: string[];
   completed?: boolean;
@@ -32,6 +42,7 @@ export interface GuidedConstructionSnapshot {
 
 export type GuidedConstructionAction =
   | { kind: 'answer_interaction' }
+  | { kind: 'approve_plan' }
   | { kind: 'accept_warnings' }
   | { kind: 'click_action'; actionId: string }
   | { kind: 'complete' }
@@ -47,15 +58,26 @@ export function guidedInteractionCanAdvance(input: {
 export function guidedConstructionIsProcessing(input: {
   hasSpinner: boolean;
   hasRunningTask: boolean;
+  hasActiveOperation?: boolean;
   hasPendingInteraction: boolean;
 }) {
-  return input.hasSpinner || (input.hasRunningTask && !input.hasPendingInteraction);
+  return input.hasSpinner || Boolean(input.hasActiveOperation)
+    || (input.hasRunningTask && !input.hasPendingInteraction);
 }
 
 export function isGuidedInteractionResponse(url: string, method: string) {
   if (method.toUpperCase() !== 'POST') return false;
   try {
-    return /\/api\/projects\/[^/]+\/interactions\/[^/]+\/respond$/.test(new URL(url).pathname);
+    return /\/api\/projects\/[^/]+\/(?:agent\/)?interactions\/[^/]+\/(?:answer|respond)$/.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+export function isGuidedPlanResponse(url: string, method: string) {
+  if (method.toUpperCase() !== 'POST') return false;
+  try {
+    return /\/api\/projects\/[^/]+\/agent\/change-plans\/[^/]+\/respond$/.test(new URL(url).pathname);
   } catch {
     return false;
   }
@@ -68,6 +90,7 @@ export function shouldRecoverGuidedRepairConflict(status: number, code?: string)
 export function chooseGuidedConstructionAction(
   snapshot: GuidedConstructionSnapshot,
 ): GuidedConstructionAction {
+  if (snapshot.pendingPlanApproval) return { kind: 'approve_plan' };
   if (snapshot.processing) return { kind: 'wait' };
   if (snapshot.pendingInteraction) {
     if (snapshot.pendingInteraction.canSubmit) return { kind: 'answer_interaction' };
@@ -101,6 +124,8 @@ export interface JourneyStep {
   path?: string;
   selector?: string;
   text?: string;
+  triggerSelector?: string;
+  triggerText?: string;
   exact?: boolean;
   value?: string;
   valueEnv?: string;
@@ -113,6 +138,10 @@ export interface JourneyStep {
   durationMs?: number;
   direction?: 'up' | 'down';
   pixels?: number;
+  clickCount?: number;
+  waitForSelector?: string;
+  maxAttempts?: number;
+  expectedCount?: number;
   content?: unknown;
 }
 
@@ -190,14 +219,29 @@ export function validateJourneyPlan(value: unknown): asserts value is JourneyPla
       throw new Error(`第 ${index + 1} 步是不支持的前端动作: ${String(step.action ?? '')}`);
     }
     if (step.action === 'goto' && typeof step.path !== 'string') throw new Error(`第 ${index + 1} 步缺少 path`);
-    if (['click', 'fill', 'select', 'upload', 'waitFor'].includes(step.action)
+    if (['click', 'fill', 'select', 'waitFor', 'waitForGone', 'assertValue', 'assertEnabled', 'assertDisabled', 'assertVisible'].includes(step.action)
       && typeof step.selector !== 'string' && typeof step.text !== 'string') {
       throw new Error(`第 ${index + 1} 步缺少 selector 或 text`);
+    }
+    if (step.maxAttempts !== undefined
+      && (step.action !== 'click' || !Number.isSafeInteger(step.maxAttempts) || Number(step.maxAttempts) < 1 || Number(step.maxAttempts) > 5)) {
+      throw new Error(`第 ${index + 1} 步的 maxAttempts 必须是 1 到 5 的点击次数`);
+    }
+    if (Number(step.maxAttempts ?? 1) > 1 && typeof step.waitForSelector !== 'string') {
+      throw new Error(`第 ${index + 1} 步的重复点击必须提供 waitForSelector`);
     }
     if (step.action === 'upload'
       && typeof step.file !== 'string' && typeof step.fileEnv !== 'string'
       && !Array.isArray(step.files) && typeof step.filesEnv !== 'string') {
       throw new Error('上传步骤必须提供 file 或 fileEnv');
+    }
+    if (step.action === 'upload'
+      && typeof step.triggerSelector !== 'string' && typeof step.triggerText !== 'string') {
+      throw new Error('上传步骤必须提供可见的 triggerSelector 或 triggerText');
+    }
+    if (step.action === 'assertCount'
+      && (typeof step.selector !== 'string' || !Number.isSafeInteger(step.expectedCount))) {
+      throw new Error('assertCount 步骤必须提供 selector 和整数 expectedCount');
     }
   }
 }
@@ -299,22 +343,62 @@ async function targetElement(page: Page, step: JourneyStep, options: { visible?:
   throw new Error('步骤缺少 selector 或 text');
 }
 
+async function visibleEnabledButton(
+  root: Page | ElementHandle<Element>,
+  pattern: RegExp,
+  selector = 'button',
+): Promise<ElementHandle<HTMLButtonElement> | null> {
+  const buttons = await root.$$(selector);
+  for (const button of buttons) {
+    const state = await button.evaluate((node) => ({
+      disabled: node.disabled,
+      text: (node.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    }));
+    const box = await button.boundingBox();
+    if (!state.disabled && box && box.width > 0 && box.height > 0 && pattern.test(state.text)) {
+      return button as ElementHandle<HTMLButtonElement>;
+    }
+    await button.dispose();
+  }
+  return null;
+}
+
+async function clickLatestActionButton(page: Page, actionId: string) {
+  const buttons = await page.$$(`button[data-action="${actionId}"]`);
+  for (const button of buttons.reverse()) {
+    const disabled = await button.evaluate((node) => node.disabled);
+    const box = await button.boundingBox();
+    if (!disabled && box && box.width > 0 && box.height > 0) {
+      await button.click();
+      await button.dispose();
+      return true;
+    }
+    await button.dispose();
+  }
+  return false;
+}
+
 async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
-  return page.evaluate(() => {
+  return page.evaluate((pendingSelector) => {
     const visible = (element: Element) => {
       const style = window.getComputedStyle(element);
       const box = element.getBoundingClientRect();
       return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
     };
-    const pending = [...document.querySelectorAll<HTMLElement>('section[aria-label="待确认事项"]')]
-      .find(visible);
+    const pending = [...document.querySelectorAll<HTMLElement>(pendingSelector)]
+      .filter(visible)
+      .at(-1);
     const submit = pending
-      ? [...pending.querySelectorAll<HTMLButtonElement>('button')]
-        .find((button) => visible(button) && !button.disabled && /提交答案|确认修改|确认|通过|采用建议/.test(button.textContent ?? ''))
+      ? [...pending.querySelectorAll<HTMLButtonElement>('button:not(.wb-opt)')]
+        .find((button) => visible(button) && !button.disabled && /提交答案|确认修改|确认|通过|采用建议|接受(?:已选|已查看)/.test(button.textContent ?? ''))
       : undefined;
     const selectableChoice = pending
-      ? [...pending.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
+      ? ([...pending.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
         .find((input) => visible(input) && !input.disabled)
+        ?? [...pending.querySelectorAll<HTMLButtonElement>('button.wb-opt')]
+          .find((button) => visible(button) && !button.disabled && !button.hasAttribute('aria-expanded'))
+        ?? [...pending.querySelectorAll<HTMLButtonElement>('button.wb-review-group')]
+          .find((button) => visible(button) && !button.disabled && button.textContent?.trim() !== '已查看'))
       : undefined;
     const warningSection = [...document.querySelectorAll<HTMLElement>('.pcheck-warning-acceptance')]
       .find(visible);
@@ -333,88 +417,165 @@ async function guidedSnapshot(page: Page): Promise<GuidedConstructionSnapshot> {
       .map((button) => button.dataset.action ?? '')
       .filter(Boolean);
     const bodyText = document.body.innerText;
+    const pendingPlanApproval = [...document.querySelectorAll<HTMLButtonElement>('button')]
+      .some((button) => visible(button) && !button.disabled && button.textContent?.trim() === '批准并开始');
     const hasSpinner = [...document.querySelectorAll<HTMLElement>('.pchat .spinner')].some(visible);
     const hasRunningTask = [...document.querySelectorAll<HTMLElement>('.ac-message-task-list article.running')]
       .some(visible);
+    const hasActiveOperation = [...document.querySelectorAll<HTMLElement>('.wb-act-stop')]
+      .some(visible);
+    const phaseLabel = [...document.querySelectorAll<HTMLElement>('.wb-phase-pill')]
+      .filter(visible).at(-1)?.textContent?.trim() ?? '';
     return {
       pendingInteraction: pending ? {
-        type: pending.dataset.interactionType,
+        type: pending.dataset.interactionType
+          ?? pending.closest<HTMLElement>('[data-interaction-id]')?.dataset.interactionType,
         canSubmit: Boolean(submit || selectableChoice),
       } : null,
+      pendingPlanApproval,
       warningAcceptance: warningSection ? { canSubmit: Boolean(warningSubmit && !warningSubmit.disabled) } : null,
       nextActionIds,
-      completed: bodyText.includes('AI 辅助构建已完成') && !nextActionIds.includes('confirm_construction'),
-      processing: hasSpinner || (hasRunningTask && !pending),
+      completed: (bodyText.includes('AI 辅助构建已完成')
+        || ['确定性验证', '评测优化', '发布交付'].includes(phaseLabel))
+        && !nextActionIds.includes('confirm_construction'),
+      processing: hasSpinner || hasActiveOperation || (hasRunningTask && !pending),
     };
-  });
+  }, GUIDED_PENDING_INTERACTION_SELECTOR);
 }
 
 async function acceptVisibleWarnings(page: Page) {
   const textarea = await page.$('.pcheck-warning-acceptance textarea');
   if (!textarea) return false;
   await textarea.click({ clickCount: 3 });
+  await page.keyboard.down('Control');
+  await page.keyboard.press('a');
+  await page.keyboard.up('Control');
   await textarea.press('Backspace');
   await textarea.type('已查看影响范围；这些非阻断项不改变当前业务结论，进入验证后继续保留为已知限制。');
-  const clicked = await page.evaluate(() => {
-    const section = document.querySelector<HTMLElement>('.pcheck-warning-acceptance');
-    const button = section
-      ? [...section.querySelectorAll<HTMLButtonElement>('button')]
-        .find((item) => !item.disabled && /接受\s*\d+\s*条警告/.test(item.textContent ?? ''))
-      : undefined;
-    button?.click();
-    return Boolean(button);
-  });
+  const section = await page.$('.pcheck-warning-acceptance');
+  const button = section ? await visibleEnabledButton(section, /接受\s*\d+\s*条警告/) : null;
+  if (button) await button.click();
+  const clicked = Boolean(button);
+  await button?.dispose();
+  await section?.dispose();
   await textarea.dispose();
   return clicked;
 }
 
 async function answerGuidedInteraction(page: Page) {
-  const submitToken = `guided-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const prepared = await page.evaluate((token) => {
-    const visible = (element: Element) => {
-      const style = window.getComputedStyle(element);
-      const box = element.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
-    };
-    const section = [...document.querySelectorAll<HTMLElement>('section[aria-label="待确认事项"]')]
-      .find(visible);
-    if (!section) return false;
-    const groups = [...section.querySelectorAll<HTMLFieldSetElement>('fieldset')];
-    let changed = false;
-    for (const group of groups) {
-      const inputs = [...group.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
-        .filter((input) => !input.disabled && !input.closest('label')?.textContent?.trim().startsWith('其他'));
-      if (!inputs.length) {
-        const question = group.querySelector('legend')?.textContent?.replace(/\s+/g, ' ').trim() ?? '未知问题';
-        throw new Error(`当前待办仍要求自由输入：${question}`);
+  const sections = await page.$$(GUIDED_PENDING_INTERACTION_SELECTOR);
+  let section: ElementHandle<Element> | undefined;
+  for (const candidate of sections) {
+    const box = await candidate.boundingBox();
+    if (box && box.width > 0 && box.height > 0) section = candidate;
+    else await candidate.dispose();
+  }
+  if (!section) return false;
+
+  const groups = await section.$$('fieldset');
+  let changed = false;
+  for (const group of groups) {
+    const allInputs = await group.$$('input[type="radio"], input[type="checkbox"]') as ElementHandle<HTMLInputElement>[];
+    const inputs: Array<{ handle: ElementHandle<HTMLInputElement>; type: string; checked: boolean; preferred: boolean }> = [];
+    for (const input of allInputs) {
+      const state = await input.evaluate((node) => {
+        const label = node.closest('label')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          disabled: node.disabled,
+          type: node.type,
+          checked: node.checked,
+          preferred: !label.startsWith('其他')
+            && !['__none__', '__other__', '无'].includes(node.value)
+            && !/暂不|没有额外/.test(label),
+        };
+      });
+      if (state.disabled || !state.preferred) {
+        await input.dispose();
+      } else {
+        inputs.push({ handle: input, ...state });
       }
-      if (inputs[0]?.type === 'checkbox') {
-        const preferred = inputs.filter((input) => {
-          const label = input.closest('label')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-          return !['__none__', '__other__', '无'].includes(input.value) && !/暂不|没有额外/.test(label);
-        });
-        const targets = preferred.length ? preferred : [inputs[0]];
-        for (const input of targets) if (input && !input.checked) {
-          input.click();
-          changed = true;
+    }
+    if (!inputs.length) {
+      const question = await group.$eval('legend', (node) => node.textContent?.replace(/\s+/g, ' ').trim() ?? '未知问题')
+        .catch(() => '未知问题');
+      await group.dispose();
+      await section.dispose();
+      throw new Error(`当前待办仍要求自由输入：${question}`);
+    }
+    if (inputs[0]?.type === 'checkbox') {
+      for (const input of inputs) if (!input.checked) {
+        await input.handle.click();
+        changed = true;
+      }
+    } else if (!inputs.some((input) => input.checked)) {
+      await inputs[0]!.handle.click();
+      changed = true;
+    }
+    for (const input of inputs) await input.handle.dispose();
+    await group.dispose();
+  }
+
+  if (!groups.length) {
+    const inputs = await section.$$('input[type="radio"], input[type="checkbox"]') as ElementHandle<HTMLInputElement>[];
+    if (inputs.length) {
+      let hasChecked = false;
+      for (const input of inputs) {
+        if (await input.evaluate((node) => node.checked)) hasChecked = true;
+      }
+      if (!hasChecked) {
+        for (const input of inputs) {
+          if (!(await input.evaluate((node) => node.disabled))) {
+            await input.click();
+            changed = true;
+            break;
+          }
         }
-      } else if (!inputs.some((input) => input.checked)) {
-        inputs[0]?.click();
-        changed = Boolean(inputs[0]);
       }
+      for (const input of inputs) await input.dispose();
+    } else {
+      const options = await section.$$('button.wb-opt') as ElementHandle<HTMLButtonElement>[];
+      let hasSelectedWithoutText = false;
+      let firstEligible: ElementHandle<HTMLButtonElement> | undefined;
+      for (const option of options) {
+        const state = await option.evaluate((node) => ({
+          disabled: node.disabled,
+          selected: node.getAttribute('aria-pressed') === 'true',
+          requiresText: node.hasAttribute('aria-expanded'),
+        }));
+        if (state.selected && !state.requiresText) hasSelectedWithoutText = true;
+        if (!firstEligible && !state.disabled && !state.requiresText) firstEligible = option;
+      }
+      if (!hasSelectedWithoutText && firstEligible) {
+        await firstEligible.click();
+        changed = true;
+      }
+      for (const option of options) await option.dispose();
     }
-    const standaloneInputs = [...section.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')]
-      .filter((input) => !input.disabled);
-    if (!groups.length && standaloneInputs.length && !standaloneInputs.some((input) => input.checked)) {
-      standaloneInputs[0]?.click();
-      changed = Boolean(standaloneInputs[0]);
+  }
+
+  const reviewButtons = await section.$$('.wb-review-group');
+  for (const button of reviewButtons) {
+    const state = await button.evaluate((node) => ({
+      disabled: (node as HTMLButtonElement).disabled,
+      text: (node.textContent ?? '').trim(),
+    }));
+    if (!state.disabled && state.text !== '已查看') {
+      await (button as ElementHandle<HTMLElement>).click();
+      changed = true;
     }
-    const submit = [...section.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => visible(button) && !button.disabled && /提交答案|确认修改|确认|通过|采用建议/.test(button.textContent ?? ''));
-    if (submit) submit.dataset.guidedSubmit = token;
-    return { hasSubmit: Boolean(submit), changed };
-  }, submitToken);
-  if (!prepared.hasSubmit) return prepared.changed;
+    await button.dispose();
+  }
+  if (changed) await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const submit = await visibleEnabledButton(
+    section,
+    /提交答案|确认修改|确认|通过|采用建议|接受(?:已选|已查看)/,
+    'button:not(.wb-opt)',
+  );
+  if (!submit) {
+    await section.dispose();
+    return changed;
+  }
 
   const requestPromise = page.waitForRequest((request) => (
     isGuidedInteractionResponse(request.url(), request.method())
@@ -422,7 +583,9 @@ async function answerGuidedInteraction(page: Page) {
   const responsePromise = page.waitForResponse((response) => (
     isGuidedInteractionResponse(response.url(), response.request().method())
   ), { timeout: 15 * 60_000 });
-  await page.click(`[data-guided-submit="${submitToken}"]`);
+  await submit.click();
+  await submit.dispose();
+  await section.dispose();
   try {
     await requestPromise;
   } catch {
@@ -441,6 +604,45 @@ async function answerGuidedInteraction(page: Page) {
   return true;
 }
 
+async function approveVisiblePlan(page: Page) {
+  const buttons = await page.$$('button') as ElementHandle<HTMLButtonElement>[];
+  let button: ElementHandle<HTMLButtonElement> | undefined;
+  for (let index = buttons.length - 1; index >= 0; index -= 1) {
+    const candidate = buttons[index]!;
+    const state = await candidate.evaluate((node) => ({
+      disabled: node.disabled,
+      text: (node.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    }));
+    const box = await candidate.boundingBox();
+    if (!state.disabled && box && box.width > 0 && box.height > 0 && state.text === '批准并开始') {
+      button = candidate;
+      break;
+    }
+  }
+  for (const candidate of buttons) if (candidate !== button) await candidate.dispose();
+  if (!button) return false;
+  const requestPromise = page.waitForRequest((request) => (
+    isGuidedPlanResponse(request.url(), request.method())
+  ), { timeout: 3_000 });
+  const responsePromise = page.waitForResponse((response) => (
+    isGuidedPlanResponse(response.url(), response.request().method())
+  ), { timeout: 15 * 60_000 });
+  await button.click();
+  await button.dispose();
+  try {
+    await requestPromise;
+  } catch {
+    void responsePromise.catch(() => undefined);
+    throw new Error('批准按钮没有发起计划响应请求，请检查最新计划卡状态');
+  }
+  const response = await responsePromise;
+  if (!response.ok()) {
+    const payload = await response.json().catch(() => ({})) as { error?: string; code?: string };
+    throw new Error(payload.error || payload.code || `批准建模计划失败（${response.status()}）`);
+  }
+  return true;
+}
+
 async function runGuidedConstruction(page: Page, timeoutMs: number) {
   const startedAt = Date.now();
   let idleIterations = 0;
@@ -454,19 +656,17 @@ async function runGuidedConstruction(page: Page, timeoutMs: number) {
       lastStateSignature = stateSignature;
     }
     if (action.kind === 'complete') return;
-    if (action.kind === 'answer_interaction') {
+    if (action.kind === 'approve_plan') {
+      const progressed = await approveVisiblePlan(page);
+      idleIterations = nextGuidedIdleIterations(idleIterations, { progressed, processing: Boolean(snapshot.processing) });
+    } else if (action.kind === 'answer_interaction') {
       const progressed = await answerGuidedInteraction(page);
       idleIterations = nextGuidedIdleIterations(idleIterations, { progressed, processing: Boolean(snapshot.processing) });
     } else if (action.kind === 'accept_warnings') {
       const progressed = await acceptVisibleWarnings(page);
       idleIterations = nextGuidedIdleIterations(idleIterations, { progressed, processing: Boolean(snapshot.processing) });
     } else if (action.kind === 'click_action') {
-      const clicked = await page.evaluate((actionId) => {
-        const button = [...document.querySelectorAll<HTMLButtonElement>('button[data-action]')]
-          .find((item) => item.dataset.action === actionId && !item.disabled);
-        button?.click();
-        return Boolean(button);
-      }, action.actionId);
+      const clicked = await clickLatestActionButton(page, action.actionId);
       idleIterations = nextGuidedIdleIterations(idleIterations, { progressed: clicked, processing: Boolean(snapshot.processing) });
     } else {
       idleIterations = nextGuidedIdleIterations(idleIterations, { progressed: false, processing: Boolean(snapshot.processing) });
@@ -480,19 +680,11 @@ async function runGuidedConstruction(page: Page, timeoutMs: number) {
 }
 
 async function dismissVisibleTour(page: Page) {
-  const dismissed = await page.evaluate(() => {
-    const overlay = document.querySelector<HTMLElement>('.tour-ov');
-    if (!overlay) return false;
-    const style = window.getComputedStyle(overlay);
-    const box = overlay.getBoundingClientRect();
-    if (style.display === 'none' || style.visibility === 'hidden' || box.width === 0 || box.height === 0) {
-      return false;
-    }
-    const skip = overlay.querySelector<HTMLButtonElement>('.tour-skip');
-    if (!skip || skip.disabled) return false;
-    skip.click();
-    return true;
-  });
+  const skip = await page.$('.tour-ov .tour-skip');
+  const box = await skip?.boundingBox();
+  const dismissed = Boolean(skip && box && box.width > 0 && box.height > 0);
+  if (dismissed) await skip!.click();
+  await skip?.dispose();
   if (dismissed) {
     await page.waitForFunction(() => !document.querySelector('.tour-ov'), { timeout: 3_000 });
   }
@@ -506,46 +698,138 @@ async function runStep(page: Page, step: JourneyStep, baseUrl: string, outputDir
     await page.goto(url, { waitUntil: 'networkidle2', timeout });
     return;
   }
-  if (['click', 'fill', 'select', 'upload', 'press', 'guidedConstruction'].includes(step.action)) {
+  if (step.action === 'reload') {
+    await page.reload({ waitUntil: 'networkidle2', timeout });
+    return;
+  }
+  if (step.action === 'goBack') {
+    await page.goBack({ waitUntil: 'networkidle2', timeout });
+    return;
+  }
+  if ([
+    'click', 'fill', 'select', 'upload', 'press', 'guidedConstruction',
+    'assertText', 'assertNotText', 'assertValue', 'assertEnabled', 'assertDisabled',
+    'assertCount', 'assertVisible', 'assertLayout', 'screenshot',
+  ].includes(step.action)) {
     await dismissVisibleTour(page);
   }
   if (step.action === 'click') {
-    const element = await targetElement(page, step);
-    await (element as ElementHandle<HTMLElement>).evaluate((node) => {
-      node.scrollIntoView({ block: 'center', inline: 'center' });
-      node.click();
-    });
-    await element.dispose();
+    const attempts = Math.max(1, step.maxAttempts ?? 1);
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const element = await targetElement(page, step);
+      await (element as ElementHandle<HTMLElement>).hover();
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      await (element as ElementHandle<HTMLElement>).click({ clickCount: Math.max(1, step.clickCount ?? 1) });
+      await element.dispose();
+      if (!step.waitForSelector) return;
+      try {
+        const expected = await page.waitForSelector(step.waitForSelector, {
+          visible: true,
+          timeout: Math.min(timeout, 10_000),
+        });
+        await expected?.dispose();
+        return;
+      } catch (error) {
+        if (attempt === attempts) throw error;
+      }
+    }
+    return;
+  }
+  if (step.action === 'clickAll') {
+    if (!step.selector) throw new Error('clickAll 步骤必须使用 selector');
+    const elements = await page.$$(step.selector);
+    let clicked = 0;
+    for (const element of elements) {
+      const disabled = await element.evaluate((node) => (
+        (node as HTMLButtonElement | HTMLInputElement).disabled === true
+        || node.getAttribute('aria-disabled') === 'true'
+      ));
+      const box = await element.boundingBox();
+      if (!disabled && box && box.width > 0 && box.height > 0) {
+        await (element as ElementHandle<HTMLElement>).click();
+        clicked += 1;
+      }
+      await element.dispose();
+    }
+    if (!clicked) throw new Error(`没有可点击的控件 ${step.selector}`);
+    return;
+  }
+  if (step.action === 'reviewAndAccept') {
+    await page.waitForSelector('[data-interaction-id] .wb-review-group', { visible: true, timeout });
+    const cards = await page.$$('[data-interaction-id] .card.card-accent');
+    const card = cards.at(-1);
+    for (const stale of cards.slice(0, -1)) await stale.dispose();
+    if (!card) throw new Error('找不到当前确认卡');
+    const checkboxes = await card.$$('.wb-grp input[type="checkbox"]') as ElementHandle<HTMLInputElement>[];
+    for (const checkbox of checkboxes) {
+      const state = await checkbox.evaluate((node) => ({ checked: node.checked, disabled: node.disabled }));
+      if (!state.checked && !state.disabled) await checkbox.click();
+      await checkbox.dispose();
+    }
+    const reviewButtons = await card.$$('.wb-review-group');
+    for (const button of reviewButtons) {
+      const state = await button.evaluate((node) => ({
+        disabled: (node as HTMLButtonElement).disabled,
+        text: (node.textContent ?? '').trim(),
+      }));
+      if (!state.disabled && state.text !== '已查看') {
+        await (button as ElementHandle<HTMLElement>).click();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      await button.dispose();
+    }
+    const accept = await visibleEnabledButton(card, /^接受(?:已选|已查看)/);
+    if (!accept) {
+      await card.dispose();
+      throw new Error('所有变更查看后，确认卡仍没有可用的接受按钮');
+    }
+    await accept.click();
+    await accept.dispose();
+    await card.dispose();
     return;
   }
   if (step.action === 'fill') {
     const element = await targetElement(page, step) as ElementHandle<HTMLInputElement | HTMLTextAreaElement>;
-    await element.evaluate((field) => {
-      const prototype = field instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-      setter?.call(field, '');
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-      field.dispatchEvent(new Event('change', { bubbles: true }));
-      field.focus();
-    });
+    await element.click({ clickCount: 3 });
+    await page.keyboard.down('Control');
+    await page.keyboard.press('a');
+    await page.keyboard.up('Control');
+    await element.press('Backspace');
     await element.type(resolveJourneyValue(step, environment));
     await element.dispose();
     return;
   }
   if (step.action === 'select') {
     if (!step.selector) throw new Error('select 步骤必须使用 selector');
-    await page.waitForSelector(step.selector, { timeout, visible: true });
-    await page.select(step.selector, resolveJourneyValue(step, environment));
+    const element = await page.waitForSelector(step.selector, { timeout, visible: true }) as ElementHandle<HTMLSelectElement> | null;
+    if (!element) throw new Error(`找不到下拉框 ${step.selector}`);
+    const value = resolveJourneyValue(step, environment);
+    const enabledBefore = await element.$$eval('option', (options, targetValue) => {
+      const target = options.findIndex((option) => option.value === targetValue && !option.disabled);
+      if (target < 0) return -1;
+      return options.slice(0, target).filter((option) => !option.disabled).length;
+    }, value);
+    if (enabledBefore < 0) throw new Error(`下拉框中没有可选值 ${value}`);
+    await element.click();
+    await element.press('Home');
+    for (let index = 0; index < enabledBefore; index += 1) await element.press('ArrowDown');
+    await element.press('Enter');
+    await element.dispose();
     return;
   }
   if (step.action === 'upload') {
-    // 浏览器原生文件控件通常由可视化 dropzone 代理并保持 hidden；上传只要求元素存在。
-    const element = await targetElement(page, step, { visible: false }) as ElementHandle<HTMLInputElement>;
+    const triggerStep = {
+      ...step,
+      selector: step.triggerSelector,
+      text: step.triggerText,
+    };
+    const trigger = await targetElement(page, triggerStep);
     const files = resolveJourneyFiles(step, environment).map((file) => path.resolve(file));
-    await element.uploadFile(...files);
-    await element.dispose();
+    const chooserPromise = page.waitForFileChooser({ timeout });
+    await (trigger as ElementHandle<HTMLElement>).click();
+    const chooser = await chooserPromise;
+    await chooser.accept(files);
+    await trigger.dispose();
     return;
   }
   if (step.action === 'press') {
@@ -561,14 +845,115 @@ async function runStep(page: Page, step: JourneyStep, baseUrl: string, outputDir
     await element.dispose();
     return;
   }
+  if (step.action === 'waitForGone') {
+    if (step.text && !step.selector) {
+      const found = await page.waitForFunction(
+        (needle) => !document.body.innerText.includes(needle),
+        { timeout },
+        step.text,
+      );
+      await found.dispose();
+      return;
+    }
+    if (!step.selector) throw new Error('waitForGone 步骤必须提供 selector 或 text');
+    await page.waitForFunction(
+      (selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return true;
+        const style = window.getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return style.display === 'none' || style.visibility === 'hidden' || box.width === 0 || box.height === 0;
+      },
+      { timeout },
+      step.selector,
+    );
+    return;
+  }
   if (step.action === 'assertText') {
     if (!step.text) throw new Error('assertText 步骤缺少 text');
-    const found = await page.waitForFunction((needle) => document.body.innerText.includes(needle), { timeout }, step.text);
+    const found = await page.waitForFunction((needle, selector) => {
+      const root = selector ? document.querySelector<HTMLElement>(selector) : document.body;
+      return Boolean(root?.innerText.includes(needle));
+    }, { timeout }, step.text, step.selector ?? '');
     await found.dispose();
+    return;
+  }
+  if (step.action === 'assertNotText') {
+    if (!step.text) throw new Error('assertNotText 步骤缺少 text');
+    if (step.durationMs) await new Promise((resolve) => setTimeout(resolve, step.durationMs));
+    const present = await page.evaluate((needle, selector) => {
+      const root = selector ? document.querySelector<HTMLElement>(selector) : document.body;
+      return Boolean(root?.innerText.includes(needle));
+    }, step.text, step.selector ?? '');
+    if (present) throw new Error(`${step.selector ? `区域 ${step.selector}` : '页面'}不应出现文字：${step.text}`);
+    return;
+  }
+  if (step.action === 'assertValue') {
+    const element = await targetElement(page, step) as ElementHandle<HTMLInputElement | HTMLTextAreaElement>;
+    const actual = await element.evaluate((node) => node.value);
+    const expected = resolveJourneyValue(step, environment);
+    await element.dispose();
+    if (actual !== expected) throw new Error(`输入值不一致：期望 ${expected.length} 个字符，实际 ${actual.length} 个字符`);
+    return;
+  }
+  if (step.action === 'assertEnabled' || step.action === 'assertDisabled') {
+    const element = await targetElement(page, step);
+    const disabled = await element.evaluate((node) => (
+      (node as HTMLButtonElement | HTMLInputElement).disabled === true
+      || node.getAttribute('aria-disabled') === 'true'
+    ));
+    await element.dispose();
+    const expectedDisabled = step.action === 'assertDisabled';
+    if (disabled !== expectedDisabled) throw new Error(`控件${expectedDisabled ? '没有禁用' : '没有启用'}`);
+    return;
+  }
+  if (step.action === 'assertCount') {
+    const count = await page.$$eval(step.selector!, (elements) => elements.length);
+    if (count !== step.expectedCount) throw new Error(`元素数量不一致：期望 ${step.expectedCount}，实际 ${count}`);
+    return;
+  }
+  if (step.action === 'assertVisible') {
+    const element = await targetElement(page, step);
+    const box = await element.boundingBox();
+    const viewport = page.viewport();
+    await element.dispose();
+    if (!box || !viewport || box.x < 0 || box.y < 0
+      || box.x + box.width > viewport.width || box.y + box.height > viewport.height) {
+      throw new Error('目标控件没有完整显示在当前可见区域内');
+    }
+    return;
+  }
+  if (step.action === 'assertLayout') {
+    const report = await page.evaluate(() => {
+      const root = document.documentElement;
+      const horizontalOverflow = root.scrollWidth > window.innerWidth + 1;
+      const visible = [...document.querySelectorAll<HTMLElement>('.wb-top, .wb-body, .wb-pane-c, .wb-pane-r, [role="dialog"]')]
+        .filter((element) => {
+          const style = window.getComputedStyle(element);
+          const box = element.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+        })
+        .map((element) => ({
+          className: element.className,
+          left: element.getBoundingClientRect().left,
+          right: element.getBoundingClientRect().right,
+          top: element.getBoundingClientRect().top,
+          bottom: element.getBoundingClientRect().bottom,
+        }));
+      const outside = visible.filter((box) => box.left < -1 || box.right > window.innerWidth + 1 || box.top < -1);
+      return { horizontalOverflow, outside };
+    });
+    if (report.horizontalOverflow || report.outside.length) {
+      throw new Error(`页面布局超出可见区域：横向溢出=${report.horizontalOverflow}，越界区域=${report.outside.length}`);
+    }
     return;
   }
   if (step.action === 'screenshot') {
     const name = (step.name ?? `step-${Date.now()}`).replace(/[^a-zA-Z0-9_-]+/g, '-');
+    // Keep visual evidence out of finite entrance/transition frames. The UI's
+    // longest normal entrance animation is 350 ms; this does not wait on
+    // indefinite progress spinners.
+    await new Promise((resolve) => setTimeout(resolve, 500));
     await page.screenshot({ path: path.join(outputDir, `${name}.png`), fullPage: true });
     return;
   }
@@ -612,6 +997,14 @@ export async function runBrowserJourney(input: {
       if (message.type() === 'error' || message.type() === 'warning') events.push({ type: message.type(), message: message.text().slice(0, 500) });
     });
     page.on('pageerror', (error) => events.push({ type: 'pageerror', message: error.message.slice(0, 500) }));
+    page.on('request', (request) => {
+      if (!request.isNavigationRequest()) return;
+      const url = new URL(request.url());
+      events.push({ type: 'navigation', message: `${request.method()} ${url.pathname}${url.search}`.slice(0, 500) });
+    });
+    page.on('requestfailed', (request) => {
+      events.push({ type: 'requestfailed', message: `${request.method()} ${request.url()} ${request.failure()?.errorText ?? ''}`.slice(0, 500) });
+    });
     page.on('dialog', (dialog) => { void dialog.accept(); });
 
     for (const [index, step] of input.plan.steps.entries()) {
@@ -621,6 +1014,8 @@ export async function runBrowserJourney(input: {
       } catch (error) {
         await page.screenshot({ path: path.join(input.outputDir, `failure-${index + 1}.png`), fullPage: true });
         await writeFile(path.join(input.outputDir, `failure-${index + 1}.html`), await page.content());
+        await writeFile(path.join(input.outputDir, 'browser-events.json'), JSON.stringify(events, null, 2));
+        await writeFile(path.join(input.outputDir, 'failure-meta.json'), JSON.stringify({ url: page.url() }, null, 2));
         throw error;
       }
     }

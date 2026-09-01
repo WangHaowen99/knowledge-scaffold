@@ -8,6 +8,8 @@ import Icon from '../ui/Icon.jsx';
    同时接受拖放——用户想补材料时最自然的位置就是他正在说话的地方。 */
 export default function Composer() {
   const [drag, setDrag] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
   const demo = useStore(store, (state) => state.demo);
   const ta = useRef(null);
   const fileInput = useRef(null);
@@ -20,13 +22,21 @@ export default function Composer() {
     el.style.overflowY = el.scrollHeight > 132 ? 'auto' : 'hidden';
   };
 
-  const send = () => {
-    const v = ta.current?.value.trim();
-    if (!v) return;
-    if (demo) actions.pushMessage({ role: 'user', at: now(), blocks: [{ type: 'text', text: v }] });
-    else void actions.send(v);
-    ta.current.value = '';
-    grow();
+  const send = async () => {
+    const value = draft.trim();
+    if (!value || sending) return;
+    if (demo) {
+      actions.pushMessage({ role: 'user', at: now(), blocks: [{ type: 'text', text: value }] });
+      setDraft('');
+      requestAnimationFrame(grow);
+      return;
+    }
+    setSending(true);
+    const result = await actions.send(value);
+    setSending(false);
+    if (result) setDraft('');
+    else ta.current?.focus();
+    requestAnimationFrame(grow);
   };
 
   return (
@@ -39,7 +49,7 @@ export default function Composer() {
       }}
     >
       <div className="box">
-        <button className="btn btn-ghost btn-sm" type="button" title="上传资料"
+        <button className="btn btn-ghost btn-sm" type="button" title="上传资料" aria-label="上传资料"
           onClick={() => fileInput.current?.click()}><Icon name="upload" size={14} /></button>
         <input id="wb-inline-upload" ref={fileInput} type="file" multiple hidden
           accept=".md,.txt,.pdf,.doc,.docx,.xls,.xlsx,.csv,.zip"
@@ -47,7 +57,9 @@ export default function Composer() {
             if (!demo && event.target.files?.length) void actions.upload(event.target.files);
             event.target.value = '';
           }} />
-        <textarea ref={ta} rows={1} onInput={grow} aria-label="给建模助手发送消息" aria-keyshortcuts="Enter"
+        <textarea ref={ta} rows={1} value={draft}
+          onChange={(event) => setDraft(event.target.value)} onInput={grow}
+          aria-label="给建模助手发送消息" aria-keyshortcuts="Enter"
           onPaste={(event) => {
             const files = [...(event.clipboardData?.files || [])];
             if (!demo && files.length) { event.preventDefault(); void actions.upload(files); }
@@ -56,10 +68,11 @@ export default function Composer() {
           onKeyDown={(event) => {
             if (!shouldSendComposerMessage(event)) return;
             event.preventDefault();
-            send();
+            void send();
           }} />
-        <button className="btn btn-p btn-sm" type="button" onClick={send} aria-label="发送">
-          <Icon name="arrow" size={13} />发送
+        <button className="btn btn-p btn-sm" type="button" disabled={sending || !draft.trim()}
+          onClick={() => void send()} aria-label="发送">
+          <Icon name="arrow" size={13} />{sending ? '发送中…' : '发送'}
         </button>
       </div>
       <div className="note">助手在服务端继续工作，关掉页面也不会中断；输入框始终可用。</div>

@@ -92,10 +92,10 @@ export default function LoginPage({ onLogin }) {
       <form className="lcard" onSubmit={submit}>
         <h2>欢迎回来</h2>
         <div className="ld">使用知识工程平台账号登录</div>
-        <div className="field"><label>用户名</label>
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" /></div>
-        <div className="field"><label>密码</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></div>
+        <div className="field"><label htmlFor="login-username">用户名</label>
+          <input id="login-username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" /></div>
+        <div className="field"><label htmlFor="login-password">密码</label>
+          <input id="login-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></div>
         {notice && <div className="lok">{notice}</div>}
         {err && <div className="lerr">{err}</div>}
         <button className="lbtn" type="submit" disabled={busy}>{busy ? '登录中…' : '登 录'}</button>
@@ -111,12 +111,12 @@ export default function LoginPage({ onLogin }) {
       <form className="lcard" onSubmit={submitRegister}>
         <h2>注册账号</h2>
         <div className="ld">创建你的知识包建模工具账号</div>
-        <div className="field"><label>用户名</label>
-          <input value={regUsername} onChange={(e) => setRegUsername(e.target.value)} autoFocus autoComplete="username" /></div>
-        <div className="field"><label>邮箱</label>
-          <input type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)} autoComplete="email" /></div>
-        <div className="field"><label>密码</label>
-          <input type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} autoComplete="new-password" /></div>
+        <div className="field"><label htmlFor="register-username">用户名</label>
+          <input id="register-username" value={regUsername} onChange={(e) => setRegUsername(e.target.value)} autoFocus autoComplete="username" /></div>
+        <div className="field"><label htmlFor="register-email">邮箱</label>
+          <input id="register-email" type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)} autoComplete="email" /></div>
+        <div className="field"><label htmlFor="register-password">密码</label>
+          <input id="register-password" type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} autoComplete="new-password" /></div>
         {regErrBox}
         <button className="lbtn" type="submit" disabled={regBusy}>{regBusy ? '提交中…' : '注 册'}</button>
         <div className="lswitch">

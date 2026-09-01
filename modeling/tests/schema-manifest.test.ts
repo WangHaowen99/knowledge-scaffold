@@ -53,11 +53,11 @@ test('表名和标识列使用通用中文列名时也能识别 Manifest', () =>
 
   assert.equal(detectSchemaManifests(tables).length, 1);
   assert.deepEqual(buildPhysicalSchemaObjects(tables).map((item) => item.object.key), [
-    'customer', 'order', 'product',
+    '元数据', 'customer', 'order', 'product',
   ]);
 });
 
-test('Manifest 仅做目录，其余每个 Sheet 都形成一个物理对象', () => {
+test('Manifest Sheet 本身也属于确定 Schema，每个 Sheet 都形成一个物理对象', () => {
   const tables = [
     table('目录', manifestFields, [
       ['设备A', 'Device', 'd1', '设备A', '设备'],
@@ -69,11 +69,11 @@ test('Manifest 仅做目录，其余每个 Sheet 都形成一个物理对象', (
     table('空表', [{ name: 'ProductID', inferredType: 'string', sampleValues: [], distinctRatio: 0 }], []),
   ];
   const objects = buildPhysicalSchemaObjects(tables);
-  assert.deepEqual(objects.map((item) => item.table.name), ['设备A', '设备B', '空表']);
-  assert.deepEqual(objects.map((item) => item.object.key), ['d1', 'd2', 'p1']);
-  assert.deepEqual(objects.map((item) => item.object.sourceTable), ['设备A', '设备B', '空表']);
-  assert.equal(objects[0].object.fields[0].sourceColumn, 'DeviceID');
-  assert.equal(objects[2].object.fields[0].sourceColumn, 'ProductID');
+  assert.deepEqual(objects.map((item) => item.table.name), ['目录', '设备A', '设备B', '空表']);
+  assert.deepEqual(objects.map((item) => item.object.key), ['目录', 'd1', 'd2', 'p1']);
+  assert.deepEqual(objects.map((item) => item.object.sourceTable), ['目录', '设备A', '设备B', '空表']);
+  assert.equal(objects[1].object.fields[0].sourceColumn, 'DeviceID');
+  assert.equal(objects[3].object.fields[0].sourceColumn, 'ProductID');
 });
 
 test('没有 Manifest 的普通多 Sheet 工作簿仍按一表一对象', () => {
@@ -99,8 +99,9 @@ test('79 行 Manifest 对应的 Sheet 全部生成物理对象，不触发逐对
   ];
 
   const objects = buildPhysicalSchemaObjects(tables);
-  assert.equal(objects.length, 79);
-  assert.equal(objects[0].object.key, 'device_1');
-  assert.equal(objects[78].object.key, 'device_79');
+  assert.equal(objects.length, 80);
+  assert.equal(objects[0].object.key, '设备目录');
+  assert.equal(objects[1].object.key, 'device_1');
+  assert.equal(objects[79].object.key, 'device_79');
   assert.ok(objects.every(({ object }) => object.sourceRefs?.length === 1));
 });

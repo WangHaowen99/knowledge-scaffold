@@ -45,7 +45,8 @@ _CONFIRMATION_CARD_CLAIMS = (
 
 MERMAID_SOURCE_VALIDATOR_VERSION = "mermaid-source-v1"
 _STABLE_READ_TOOLS = frozenset({"get_evaluation_results"})
-_STABLE_READ_INVALIDATORS = frozenset({"run_evaluation"})
+_STABLE_READ_INVALIDATORS = frozenset({"run_evaluation", "cancel_evaluation"})
+_CONTEXT_DEPENDENT_RECEIPT_TOOLS = frozenset({"run_script_test"})
 
 
 def requests_explicit_decision(text: str) -> bool:
@@ -227,12 +228,21 @@ def _contract_validator_version(
 class WriteSafetyRail(AgentRail):
     priority = 100
     WRITE_TOOLS = frozenset({
+        "create_change_plan", "revise_change_plan", "stage_change_set",
+        "validate_change_set", "discard_change_set",
         "write_file", "delete_file", "import_zip", "stage_package_merge",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "bind_object_sources",
         "compile_package_fusion_plan", "discard_rejected_candidate_changes",
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+        "sync_schema_objects", "patch_object_source_binding",
+        "delete_domain_resource",
+        "stage_script_source",
     })
-    RECOVERY_TOOLS = frozenset({"delete_file", "discard_rejected_candidate_changes"})
+    RECOVERY_TOOLS = frozenset({
+        "delete_file", "delete_domain_resource", "discard_rejected_candidate_changes", "discard_change_set",
+    })
 
     def __init__(self, context: ToolContext) -> None:
         self._context = context
@@ -245,12 +255,6 @@ class WriteSafetyRail(AgentRail):
         repair_recovery = (
             self._context.validation_repair.stopped and name in self.RECOVERY_TOOLS
         )
-        if self._context.validation_repair.stopped and not repair_recovery:
-            result = self._context.validation_repair.blocked_result()
-            if not self._context.validation_repair.claim_stop_notice():
-                result["suppressTrace"] = True
-            _skip_tool(ctx, result)
-            return
         args = _call_args(ctx)
         mermaid_findings = _mermaid_source_findings(name, args)
         if mermaid_findings:
@@ -351,11 +355,10 @@ class WriteSafetyRail(AgentRail):
                 "改用不含特殊字符的包内相对路径或资源 key 后重试"
                 if unsafe else "先完成当前阶段的人工确认；Agent 会在进入对应业务阶段后自动继续"
             ],
-            retryable=unsafe,
-            repair_scope="recovery" if repair_recovery else "candidate",
+            retryable=False,
+            repair_scope="recovery" if repair_recovery else ("tool" if unsafe else "dependency"),
         )
-        if not repair_recovery and unsafe:
-            result = self._context.validation_repair.decorate(result)
+        result["tracePhase"] = "rejected" if unsafe else "waiting"
         _skip_tool(ctx, result)
 
 
@@ -385,6 +388,17 @@ def _mermaid_source_findings(tool: str, arguments: dict[str, Any]) -> list[dict[
 
 
 def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> str:
+    if tool in {"stage_change_set", "validate_change_set"}:
+        return "受控领域修改只能在知识建模或增量建模阶段执行" if phase not in {"knowledge", "increment"} else ""
+    if tool in {
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+        "sync_schema_objects", "patch_object_source_binding",
+        "delete_domain_resource",
+    }:
+        return "领域知识只能在知识建模或增量建模阶段修改" if phase not in {"knowledge", "increment"} else ""
+    if tool == "stage_script_source":
+        return "脚本源码只能在确定性验证或增量建模阶段提交" if phase not in {"validation", "increment"} else ""
     if tool == "compile_package_fusion_plan":
         # 批量融合只消费只读来源和已裁决账本，并生成整体待确认候选；
         # 它不是资料驱动的分阶段建模，不能要求用户先补文档走完整流程。
@@ -421,13 +435,21 @@ def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> st
 class InterjectionSafetyRail(AgentRail):
     priority = 110
     MUTATING_TOOLS = frozenset({
-        "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_plan",
+        "create_change_plan", "revise_change_plan", "stage_change_set",
+        "validate_change_set", "discard_change_set",
+        "write_file", "delete_file", "stage_package_merge", "regroup_changes", "update_work_notes", "update_plan",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
         "bind_object_sources",
         "discard_rejected_candidate_changes",
+        "create_object", "create_rule", "create_operation", "create_metric",
+        "patch_object", "patch_rule", "patch_operation", "patch_metric",
+        "sync_schema_objects", "patch_object_source_binding",
+        "delete_domain_resource",
+        "confirm_deterministic_scope",
+        "define_script_contract", "stage_script_source",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
         "update_project_context", "transition_project_state",
-        "run_script_test", "run_evaluation",
+        "run_script_test", "run_evaluation", "cancel_evaluation",
         "ask", "request_confirmation", "request_release",
     })
 
@@ -436,6 +458,19 @@ class InterjectionSafetyRail(AgentRail):
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         name = _tool_name(ctx)
+        if self._context.recovery_waiting:
+            result = {
+                "error": "RECOVERY_AWAITING_USER",
+                "instruction": "停止继续执行，等待用户选择后续处理。",
+                "suppressTrace": True,
+            }
+            _skip_tool(ctx, result)
+            ctx.request_force_finish({
+                "result_type": "answer",
+                "output": "",
+                "recovery_wait": True,
+            })
+            return
         if not self._context.interjection_reply_required or name not in self.MUTATING_TOOLS:
             return
         result = _validation_report(
@@ -481,7 +516,11 @@ class ToolBoundaryRail(AgentRail):
             return
         arguments = _call_args(ctx)
         call_id = _tool_call_id(ctx)
-        if call_id and self._context.tool_receipt_lookup is not None:
+        if (
+            call_id
+            and name not in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
+            and self._context.tool_receipt_lookup is not None
+        ):
             result = self._context.tool_receipt_lookup(name, call_id, arguments)
             if result is not None:
                 ctx.extra["_tool_receipt_replayed"] = True
@@ -499,6 +538,8 @@ class ToolBoundaryRail(AgentRail):
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
+        if not result:
+            return
         if not ctx.extra.get("_tool_receipt_replayed") and not ctx.extra.get("_stable_read_replayed"):
             _remember_stable_read(
                 self._context.stable_read_cache,
@@ -508,6 +549,7 @@ class ToolBoundaryRail(AgentRail):
             )
         if (
             ctx.extra.get("_tool_receipt_replayed")
+            or _tool_name(ctx) in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
             or self._context.tool_receipt_save is None
         ):
             return
@@ -517,6 +559,33 @@ class ToolBoundaryRail(AgentRail):
         if result.get("error"):
             return
         self._context.tool_receipt_save(_tool_name(ctx), call_id, _call_args(ctx), result)
+
+
+class PhaseTransitionRail(AgentRail):
+    """End the current model operation so the next one rebuilds phase-scoped tools."""
+
+    priority = 102
+
+    def __init__(self, context: ToolContext) -> None:
+        self._context = context
+
+    async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
+        if _tool_name(ctx) != "transition_project_state":
+            return
+        result = _result_dict(getattr(ctx.inputs, "tool_result", None))
+        next_phase = str(result.get("phase") or "").strip()
+        if result.get("error") or not next_phase or next_phase == self._context.phase:
+            return
+        previous_phase = self._context.phase
+        self._context.phase = next_phase
+        ctx.request_force_finish({
+            "result_type": "answer",
+            "output": "",
+            "phase_refresh": {
+                "from": previous_phase,
+                "to": next_phase,
+            },
+        })
 
 
 def _stable_read_cache_key(name: str, arguments: dict[str, Any]) -> str:
@@ -593,6 +662,38 @@ class AskRail(BaseInterruptRail):
         del auto_confirm_config
         arguments = _arguments_from_call(tool_call)
         if user_input is None:
+            if self._context and self._context.technical_recoveries:
+                question = str(arguments.get("question") or "")
+                evidence = arguments.get("evidence")
+                if _claims_missing_capability(question) or not _is_business_ambiguity(
+                    question,
+                    evidence if isinstance(evidence, list) else [],
+                ):
+                    recovery = next(iter(self._context.technical_recoveries.values()))
+                    result = _validation_report(
+                        "TECHNICAL_RECOVERY_REQUIRED",
+                        "tool-capability-v1",
+                        [_finding(
+                            "interaction.technical_recovery.required",
+                            "",
+                            "当前问题已有系统可执行的恢复动作，不能转成用户业务问题",
+                            "先完成系统指定的恢复动作；只有资料存在真实字段或口径歧义时才能提问",
+                            actual={"requiredTool": recovery.get("requiredTool")},
+                        )],
+                        instruction=(
+                            "不要声称环境无法处理，也不要询问用户如何解决技术失败；"
+                            f"立即执行恢复动作 {recovery.get('requiredTool')}。"
+                        ),
+                        display="系统正在自动恢复当前修改",
+                        retryable=False,
+                        repair_scope="interaction",
+                    )
+                    result.update({
+                        "issueId": recovery.get("issueId"),
+                        "issueStatus": "repairing",
+                        "suppressTrace": True,
+                    })
+                    return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
             if (
                 self._context
                 and self._context.confirmation_required
@@ -657,6 +758,40 @@ class AskRail(BaseInterruptRail):
                 ensure_ascii=False,
             )
         )
+
+
+def _claims_missing_capability(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    phrases = (
+        "环境无法", "当前环境不能", "平台无法", "无法补写", "人工补写",
+        "等待管理员", "管理员处理", "系统不支持", "没有权限修改",
+    )
+    for phrase in phrases:
+        if phrase in normalized:
+            return True
+    return False
+
+
+def _is_business_ambiguity(question: str, evidence: list[Any]) -> bool:
+    normalized = re.sub(r"\s+", "", str(question or ""))
+    subject_words = (
+        "字段", "主键", "口径", "业务含义", "对应关系", "范围", "优先级",
+    )
+    has_subject = False
+    for word in subject_words:
+        if word in normalized:
+            has_subject = True
+            break
+
+    ambiguity_words = (
+        "歧义", "无法确定", "多个", "二选一", "请选择", "哪一个", "哪种",
+    )
+    has_ambiguity = False
+    for word in ambiguity_words:
+        if word in normalized:
+            has_ambiguity = True
+            break
+    return has_subject and has_ambiguity and any(str(item).strip() for item in evidence)
 
 
 _KNOWLEDGE_CANDIDATE_PATH = re.compile(
@@ -855,9 +990,20 @@ class ConfirmationRail(BaseInterruptRail):
                 if preflight.get("retryable") is True:
                     preflight = self._context.validation_repair.decorate(preflight)
                 return self.reject(tool_result=json.dumps(preflight, ensure_ascii=False))
+            resolved_issue_ids = self._context.validation_repair.resolve_open_issues()
             self._context.validation_repair.scope_candidate_revision(
                 str(preflight.get("candidate_revision") or "")
             )
+            if resolved_issue_ids:
+                if self._context.resolve_issues is not None:
+                    self._context.resolve_issues(resolved_issue_ids)
+                self._context.emit("tool", {
+                    "name": "request_confirmation_preflight",
+                    "phase": "completed",
+                    "summary": "候选校验已通过",
+                    "issueStatus": "resolved",
+                    "resolvedIssueIds": resolved_issue_ids,
+                })
             validation_receipt = preflight.get("validation_receipt")
             receipt_arguments = {
                 "expected_candidate_revision": preflight.get("candidate_revision"),
@@ -1062,6 +1208,15 @@ class ReleaseConfirmationRail(BaseInterruptRail):
                 },
             ))
         answer = user_input if isinstance(user_input, Mapping) else {"approved": False, "feedback": str(user_input)}
+        if answer.get("action") == "settled_release":
+            settled = answer.get("result")
+            result = dict(settled) if isinstance(settled, Mapping) else {
+                "error": "RELEASE_RESULT_MISSING",
+                "reason": "正式发布结果没有恢复",
+                "instruction": "保持当前版本不变，重新发起发布确认。",
+                "display": {"text": "正式发布结果需要重新确认"},
+            }
+            return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
         if answer.get("action") == "interject":
             self._context.interjection_reply_required = True
             return self.reject(tool_result=json.dumps({
@@ -1240,10 +1395,17 @@ class ActivityRail(AgentRail):
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         name = _tool_name(ctx)
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
+        if not result:
+            return
         if result.get("suppressTrace") is True:
             return
         display = result.get("display") if isinstance(result.get("display"), dict) else {}
-        summary = str(display.get("text") or result.get("reason") or "处理完成")
+        summary = str(
+            result.get("customerSummary")
+            or display.get("text")
+            or result.get("reason")
+            or "处理完成"
+        )
         trace_phase = str(result.get("tracePhase") or "")
         if trace_phase:
             phase = trace_phase
@@ -1264,22 +1426,60 @@ class ActivityRail(AgentRail):
             "repairAttempt": result.get("repairAttempt"),
             "repairRoundId": str(result.get("repairRoundId") or ""),
             "findingCount": int(result.get("findingCount") or 0),
+            "issueId": str(result.get("issueId") or ""),
+            "issueStatus": str(result.get("issueStatus") or ""),
+            "problemVisibility": str(result.get("problemVisibility") or ""),
+            "resolvedIssueIds": [
+                str(item) for item in result.get("resolvedIssueIds") or [] if str(item).strip()
+            ],
         }
+        recovery_action = result.get("recoveryAction")
+        if isinstance(recovery_action, Mapping):
+            payload["recoveryAction"] = dict(recovery_action)
+        recovery_actions = result.get("recoveryActions")
+        if isinstance(recovery_actions, list):
+            payload["recoveryActions"] = [
+                dict(item) for item in recovery_actions if isinstance(item, Mapping)
+            ]
         trace_group_id = tool_trace_group_id(name, _call_args(ctx))
         if trace_group_id:
             payload["traceGroupId"] = trace_group_id
         self._emit("tool", payload)
+        plan = result.get("plan")
+        if name in {"create_change_plan", "get_change_plan", "revise_change_plan", "validate_change_set"} \
+                and isinstance(plan, Mapping):
+            self._emit("change_plan", {"plan": dict(plan)})
+        if name in {"stage_change_set", "get_change_set_receipt", "discard_change_set"}:
+            raw_change_set = result.get("change_set")
+            if isinstance(raw_change_set, Mapping):
+                change_set = raw_change_set
+            else:
+                change_set = {}
+                for key in (
+                    "change_set_id", "plan_id", "mutation_id", "status", "working_revision",
+                ):
+                    value = result.get(key)
+                    if value is not None:
+                        change_set[key] = value
+            if change_set:
+                self._emit("change_set", {"changeSet": dict(change_set)})
         self._emit("progress", {
             "activityId": f"after-tool:{_tool_call_id(ctx) or uuid.uuid4().hex[:12]}",
             "text": summary,
             "detail": (
                 "正在核对失败原因和可恢复的下一步"
-                if phase in {"failed", "blocked", "rejected"}
+                if phase in {"failed", "blocked", "rejected", "repairing", "waiting"}
                 else "当前操作已经结束，正在规划下一项可执行工作"
             ),
             "phase": "planning",
             "counters": {},
         })
+        if result.get("problemVisibility") == "recovery":
+            ctx.request_force_finish({
+                "result_type": "answer",
+                "output": "",
+                "recovery_wait": True,
+            })
 
 
 def _messages_size(messages: list[Any]) -> int:

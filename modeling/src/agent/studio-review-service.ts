@@ -12,6 +12,7 @@ import {
 import { StudioWriteError } from './studio-write-service.js';
 
 const MUTATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
+const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
 
 interface WorkspaceRow {
   project_id: string;
@@ -210,7 +211,7 @@ function applyChanges(base: Record<string, string>, changes: ChangeRow[]): Recor
 
 function workingContentRevision(baseRevision: string, files: Record<string, string>): string {
   const hash = createHash('sha256').update('studio-working-v1\0').update(baseRevision);
-  for (const path of Object.keys(files).sort()) {
+  for (const path of Object.keys(files).filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH).sort()) {
     const content = files[path];
     hash.update('\0').update(String(Buffer.byteLength(path))).update(':').update(path);
     hash.update('\0').update(String(Buffer.byteLength(content))).update(':').update(content);
