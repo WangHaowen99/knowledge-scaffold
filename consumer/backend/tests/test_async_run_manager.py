@@ -17,6 +17,7 @@ from agent.runtime.contracts import (
     RuntimeErrorInfo,
     RuntimeInvocationContext,
     RuntimeResult,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import (
     RunConflictError,
@@ -965,6 +966,62 @@ def test_mixed_admission_limits_do_not_bypass_stricter_active_run():
             await asyncio.sleep(0.005)
         runtime.release["run_relaxed"].set()
         await _wait_for_status(manager, "run_relaxed", RunStatus.COMPLETED)
+
+    asyncio.run(run_test())
+
+
+def test_user_workspace_limit_admits_100_runs_and_queues_the_101st():
+    async def run_test():
+        class _CountingBlockingRuntime:
+            def __init__(self):
+                self.started = []
+                self.first_hundred_started = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def execute(self, context, sink):
+                del sink
+                self.started.append(context.run_id)
+                if len(self.started) == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT:
+                    self.first_hundred_started.set()
+                await self.release.wait()
+                return RuntimeResult(
+                    status="completed",
+                    content="synthetic answer",
+                )
+
+            async def cancel(self, run_id, reason):
+                del run_id, reason
+                self.release.set()
+                return True
+
+        runtime = _CountingBlockingRuntime()
+        manager = AsyncRunManager(runtime)
+        total_runs = USER_WORKSPACE_RUN_CONCURRENCY_LIMIT + 1
+        for index in range(total_runs):
+            context = _context("run_limit_{}".format(index)).model_copy(
+                update={
+                    "session_id": "session_limit_{}".format(index),
+                    "concurrency_limit": USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
+                }
+            )
+            await manager.create_run(context, _scope())
+
+        await asyncio.wait_for(runtime.first_hundred_started.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        assert len(runtime.started) == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+        queued = await manager.get_run("run_limit_100", _scope())
+        assert queued is not None
+        assert queued.status == RunStatus.QUEUED
+
+        runtime.release.set()
+        await _wait_for_status(
+            manager,
+            "run_limit_100",
+            RunStatus.COMPLETED,
+            timeout=2.0,
+        )
+        assert len(runtime.started) == total_runs
+        assert runtime.started[-1] == "run_limit_100"
 
     asyncio.run(run_test())
 
