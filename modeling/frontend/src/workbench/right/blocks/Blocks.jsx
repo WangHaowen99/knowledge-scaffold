@@ -113,12 +113,19 @@ function AnsweredInteraction({ interaction }) {
 /* ---------- 计划：渲染 .modeling/plan.md，因此天然有版本和回退 ---------- */
 function PlanBlock({ b }) {
   const [busy, setBusy] = useState('');
+  const recovery = useStore(store, (s) => s.recovery);
   const plan = b.plan || {};
   const items = b.items || [];
+  const staleBlocked = Boolean(recovery && ['stale_run', 'plan_unreadable'].includes(recovery.status));
   const decide = async (approved) => {
-    if (!plan.id || busy) return;
+    if (!plan.id || busy || staleBlocked) return;
     setBusy(approved ? 'approve' : 'reject');
     try { await actions.respondChangePlan(plan.id, approved); } finally { setBusy(''); }
+  };
+  const safeTerminate = async () => {
+    if (!plan.id || busy) return;
+    setBusy('safe-terminate');
+    try { await actions.safeTerminateChangePlan(plan.id); } finally { setBusy(''); }
   };
   return (
     <div className="card">
@@ -136,13 +143,24 @@ function PlanBlock({ b }) {
           ))}
         </ul>
         {plan.approval_status === 'pending' && <div className="wb-plan-approval">
-          <span>批准前不会生成对象、规则、操作、指标或脚本候选。</span>
-          <div className="btn-row">
-            <button type="button" className="btn btn-p btn-sm" disabled={Boolean(busy)}
-              onClick={() => void decide(true)}>{busy === 'approve' ? '批准中…' : '批准并开始'}</button>
-            <button type="button" className="btn btn-sm" disabled={Boolean(busy)}
-              onClick={() => void decide(false)}>{busy === 'reject' ? '拒绝中…' : '拒绝计划'}</button>
-          </div>
+          {staleBlocked && (
+            <div className="wb-plan-stale-block" role="alert">
+              <span>当前运行处于失效占用状态，先安全终止失效计划后才能继续或重新规划。</span>
+              <div className="btn-row">
+                <button type="button" className="btn btn-p btn-sm" disabled={Boolean(busy)}
+                  onClick={() => void safeTerminate()}>{busy === 'safe-terminate' ? '安全终止中…' : '安全终止失效计划'}</button>
+              </div>
+            </div>
+          )}
+          {!staleBlocked && <>
+            <span>批准前不会生成对象、规则、操作、指标或脚本候选。</span>
+            <div className="btn-row">
+              <button type="button" className="btn btn-p btn-sm" disabled={Boolean(busy)}
+                onClick={() => void decide(true)}>{busy === 'approve' ? '批准中…' : '批准并开始'}</button>
+              <button type="button" className="btn btn-sm" disabled={Boolean(busy)}
+                onClick={() => void decide(false)}>{busy === 'reject' ? '拒绝中…' : '拒绝计划'}</button>
+            </div>
+          </>}
         </div>}
       </div>
     </div>
