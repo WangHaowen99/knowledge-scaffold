@@ -77,6 +77,11 @@ import {
   schemaObjectPolicyIssues,
   schemaTables,
 } from '../workflow/schema-object-policy.js';
+import {
+  collectPreviousObjectRelations,
+  suggestObjectRelations as suggestObjectRelationsFromSpec,
+  type PreviousObjectRelation,
+} from '../workflow/object-relation-suggestions.js';
 import { normalizeRelationName, relationNameProblem } from '../workflow/relation-name.js';
 import { tableSourcesFor } from '../workflow/source-references.js';
 import { validateKey, validateSpecKeys } from '../workflow/keys.js';
@@ -170,6 +175,7 @@ const DOMAIN_TOOL_NAMES = new Set([
   'create_object', 'create_rule', 'create_operation', 'create_metric',
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
   'sync_schema_objects',
+  'suggest_object_relations',
   'patch_object_source_binding',
   'preview_domain_delete', 'delete_domain_resource',
 ]);
@@ -646,6 +652,7 @@ export class AgentCoreService {
         '__schema__',
         () => this.syncSchemaObjects(workspace, context, args),
       );
+      case 'suggest_object_relations': return this.suggestObjectRelations(workspace, context, args);
       case 'delete_domain_resource': return this.runPlannedDirectTask(
         context,
         tool,
@@ -1808,6 +1815,10 @@ export class AgentCoreService {
 
     const current = await this.overlay(workspace);
     const physical = expectedSchemaObjects(tables);
+    const previousRelations = collectPreviousObjectRelations(
+      current.spec.objects ?? [],
+      physical.map((item) => item.object),
+    );
     const nextSpec = validateSpecKeys(canonicalizePackageSpec({
       ...current.spec,
       objects: physical.map((item) => item.object),
@@ -1889,6 +1900,7 @@ export class AgentCoreService {
       schema_table_count: tables.length,
       object_count: physical.length,
       removed_derived_object_count: staleObjectPaths.length,
+      previousRelations,
       objects: physical.map(({ table, object }) => ({
         resource_id: `object:${object.key}`,
         key: object.key,
@@ -1904,6 +1916,39 @@ export class AgentCoreService {
     };
     this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
     return response;
+  }
+
+  private async suggestObjectRelations(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const requestedRevision = String(args.working_revision ?? args.workingRevision ?? args.expected_revision ?? '').trim();
+    if (requestedRevision) new StudioReadService(workingPackage).assertRevision(requestedRevision);
+    const current = await this.overlay(workspace);
+    const result = suggestObjectRelationsFromSpec(
+      current.spec,
+      schemaTables(this.tables(context.project.id)),
+      {
+        limit: integer(args.limit, 10, 1, 20),
+        cursor: optionalInputText(args.cursor),
+        includeLowConfidence: args.includeLowConfidence === true || args.include_low_confidence === true,
+        previousRelations: optionalPreviousObjectRelations(args.previousRelations ?? args.previous_relations),
+        rejectedFingerprints: optionalStringArray(args.rejectedFingerprints ?? args.rejected_fingerprints),
+        scope: optionalSuggestionScope(args.scope),
+      },
+    );
+    return {
+      ok: true,
+      deterministic: true,
+      working_revision: workingPackage.workingRevision,
+      ...result,
+      candidate: false,
+      display: {
+        text: `Suggested ${result.returnedCount} object relation candidate(s); ${result.totalCandidateCount} candidate(s) after filters.`,
+      },
+    };
   }
 
   private async previewDomainDelete(context: AgentToolContext, args: Record<string, unknown>) {
@@ -8024,6 +8069,55 @@ function requiredObjectArray(value: unknown, field: string): Array<Record<string
     throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是对象数组`, [], 400);
   }
   return value as Array<Record<string, any>>;
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'optional string array must contain strings only', [], 400);
+  }
+  const result = value.map((item) => item.trim()).filter(Boolean);
+  return result.length ? [...new Set(result)] : undefined;
+}
+
+function optionalPreviousObjectRelations(value: unknown): PreviousObjectRelation[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'previousRelations must be an object array', [], 400);
+  }
+  const result = (value as Array<Record<string, unknown>>).flatMap((item) => {
+    const sourceObject = String(item.sourceObject ?? item.source_object ?? '').trim();
+    const targetObject = String(item.targetObject ?? item.target_object ?? '').trim();
+    const relation = String(item.relation ?? '').trim();
+    if (!sourceObject || !targetObject || !relation) return [];
+    const statusValue = String(item.status ?? 'previous').trim();
+    const status = ['previous', 'discarded', 'needs_review'].includes(statusValue)
+      ? statusValue as PreviousObjectRelation['status']
+      : 'needs_review';
+    const note = optionalInputText(item.note);
+    const evidence = optionalStringArray(item.evidence);
+    return [{
+      sourceObject,
+      targetObject,
+      relation,
+      ...(note ? { note } : {}),
+      ...(evidence ? { evidence } : {}),
+      status,
+    } satisfies PreviousObjectRelation];
+  });
+  return result.length ? result : undefined;
+}
+
+function optionalSuggestionScope(value: unknown): { affectedObjects?: string[]; affectedOperations?: string[] } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const input = object(value);
+  const affectedObjects = optionalStringArray(input.affectedObjects ?? input.affected_objects);
+  const affectedOperations = optionalStringArray(input.affectedOperations ?? input.affected_operations);
+  if (!affectedObjects && !affectedOperations) return undefined;
+  return {
+    ...(affectedObjects ? { affectedObjects } : {}),
+    ...(affectedOperations ? { affectedOperations } : {}),
+  };
 }
 
 function requiredStringArray(value: unknown, field: string, allowEmpty = false): string[] {

@@ -318,6 +318,19 @@ test('对象关系名称拒绝纯基数和重复端点名称并保留模型生�
   )));
   assert.throws(() => validateSpecIntegrity(invalid), /relations\[0\]\.relation.*关系基数/);
 
+  const selfRelation = baseSpec();
+  selfRelation.objects[0].relations = [{ relation: '属于', target: selfRelation.objects[0].key }];
+  assert.ok(validateObjectBatch([], selfRelation.objects).some((issue) => issue.includes('不允许自关联')));
+  assert.throws(() => validateSpecIntegrity(selfRelation), /不允许自关联/);
+
+  const duplicateRelation = baseSpec();
+  duplicateRelation.objects[0].relations = [
+    { relation: '属于', target: 'customer' },
+    { relation: ' 属于 ', target: ' customer ' },
+  ];
+  assert.ok(validateObjectBatch([], duplicateRelation.objects).some((issue) => issue.includes('source-target-relation 重复')));
+  assert.throws(() => validateSpecIntegrity(duplicateRelation), /source-target-relation 重复/);
+
   const redundant = baseSpec();
   redundant.objects[0].title = '申请项';
   redundant.objects.push({

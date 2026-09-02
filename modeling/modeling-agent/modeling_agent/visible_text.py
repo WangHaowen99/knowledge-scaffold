@@ -69,6 +69,7 @@ _TOKEN_LABELS = {
     "patch_operation": "增量修改操作",
     "patch_metric": "增量修改指标",
     "sync_schema_objects": "按数据 Schema 同步对象",
+    "suggest_object_relations": "推荐对象关系",
     "patch_object_source_binding": "更新对象数据绑定",
     "preview_domain_delete": "核对删除影响",
     "delete_domain_resource": "删除领域资源",
