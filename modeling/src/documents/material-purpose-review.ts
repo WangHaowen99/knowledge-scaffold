@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb, nowIso } from '../db/index.js';
@@ -26,7 +27,25 @@ export interface MaterialPurposeReviewProblem {
   documentId: string;
   filename: string;
   sheet?: string;
+  /** 对重复绑定/口径冲突给出稳定的受影响对象集合，避免只依赖展示文案识别问题。 */
+  affectedObjectKeys?: string[];
   message: string;
+}
+
+/**
+ * 资料用途和 Sheet 映射问题跨 revision 的稳定身份。
+ * 文件名、标题和完整提示语都是可变展示内容，不能作为基线比较依据。
+ */
+export function materialPurposeReviewProblemFingerprint(
+  problem: Pick<MaterialPurposeReviewProblem, 'code' | 'documentId' | 'sheet' | 'affectedObjectKeys'>,
+): string {
+  const digest = createHash('sha256').update(JSON.stringify({
+    code: problem.code,
+    documentId: problem.documentId,
+    sheet: problem.sheet ?? '',
+    affectedObjectKeys: [...new Set(problem.affectedObjectKeys ?? [])].sort(),
+  })).digest('hex');
+  return `material:${digest}`;
 }
 
 export interface MaterialPurposeReviewProgress {
@@ -426,6 +445,7 @@ export function findMaterialPurposeReviewProblems(
             documentId: review.documentId,
             filename,
             sheet: decision.sheet,
+            affectedObjectKeys: boundObjects.map((object) => object.key).sort(),
             message: `Sheet「${decision.sheet}」同时绑定了多个对象：${boundObjects.map((object) => object.key).join('、')}`,
           });
         }
@@ -435,6 +455,7 @@ export function findMaterialPurposeReviewProblems(
           documentId: review.documentId,
           filename,
           sheet: decision.sheet,
+          affectedObjectKeys: boundObjects.map((object) => object.key).sort(),
           message: `Sheet「${decision.sheet}」已确认为${decision.importDisposition}，但仍被对象 ${boundObjects.map((object) => object.key).join('、')} 作为实体数据绑定`,
         });
       }

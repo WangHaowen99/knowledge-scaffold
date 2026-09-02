@@ -161,7 +161,7 @@
 .wb-mat .mc { color: var(--c-faint); font-size: var(--t-xs); flex: none; }
 
 /* ---------- 中栏 ---------- */
-.wb-canvas { padding: var(--s-6) var(--s-6) var(--s-8); max-width: 940px; }
+.wb-canvas { padding: var(--s-6) var(--s-6) var(--s-8); max-width: 940px; margin-inline: auto; }
 .wb-focus {
   display: flex; align-items: center; gap: var(--s-3);
   background: var(--c-agent-bg); border: 1px solid var(--c-agent-line); color: var(--c-agent);
@@ -267,7 +267,7 @@
 .wb-file-read-error span { color: var(--c-ink-2); }
 .wb-file-read-error small { color: var(--c-muted); }
 .wb-source { margin: 0; padding: var(--s-4); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; border-radius: var(--r-sm); background: var(--c-surface-2); color: var(--c-ink-2); font-size: var(--t-sm); }
-.wb-markdown { max-width: 760px; margin: 0 auto; }
+.wb-markdown { max-width: 760px; }
 .wb-markdown > :first-child { margin-top: 0; }
 .wb-markdown > :last-child { margin-bottom: 0; }
 .wb-markdown h1, .wb-markdown h2, .wb-markdown h3, .wb-markdown h4 {
@@ -310,7 +310,7 @@
 .wb-evidence-target { margin-inline: calc(var(--s-2) * -1); padding-inline: var(--s-2); background: #fff9e8; }
 .wb-evidence-mark { padding: 1px 2px; background: #f8dd88; color: inherit; box-shadow: 0 0 0 1px #e3c987; }
 
-.wb-structured { max-width: 800px; margin: 0 auto; }
+.wb-structured { max-width: 800px; }
 .wb-structured-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-5); padding-bottom: var(--s-4); border-bottom: 1px solid var(--c-line); }
 .wb-structured-summary span:first-child { flex-basis: 100%; color: var(--c-ink); font-size: var(--t-xl); font-weight: 650; }
 .wb-structured-summary span:not(:first-child) { padding: 2px 7px; border-radius: var(--r-sm); background: var(--c-surface-3); color: var(--c-muted); font-size: var(--t-sm); }
@@ -379,7 +379,7 @@
 .wb-flow-zoom .btn { width: 28px; height: 28px; padding: 0; justify-content: center; }
 .wb-flow-zoom span { width: 42px; text-align: center; }
 .wb-mermaid-viewport { min-height: 360px; max-height: 680px; overflow: auto; padding: var(--s-5); border: 1px solid var(--c-line); border-radius: var(--r-md); background: var(--c-surface); }
-.wb-mermaid-scale { width: max-content; transform-origin: top left; transition: width var(--e-fast), height var(--e-fast), transform var(--e-fast); }
+.wb-mermaid-scale { width: max-content; margin-inline: auto; transform-origin: top left; transition: width var(--e-fast), height var(--e-fast), transform var(--e-fast); }
 .wb-mermaid-svg { width: 100%; height: 100%; }
 .wb-mermaid-svg svg { display: block; width: 100%; max-width: none; min-width: 0; height: 100%; }
 .wb-mermaid-svg g.node { transition: filter var(--e-fast); }
@@ -411,7 +411,7 @@
 
 /* ---------- 右栏：对话流 ---------- */
 .wb-stream { padding: var(--s-5) var(--s-5) var(--s-1); display: flex; flex-direction: column; gap: var(--s-6);
-  min-height: 100%; justify-content: flex-end; }
+  min-height: 100%; justify-content: flex-start; }
 .wb-msg { font-size: var(--t-md); content-visibility: auto; contain-intrinsic-size: auto 90px; }
 .wb-msg-user { display: flex; flex-direction: column; align-items: flex-end; }
 .wb-msg-user .wb-who { justify-content: flex-end; }
@@ -822,6 +822,150 @@
 .wb-release-cases summary { color: var(--c-accent); font-size: var(--t-sm); cursor: pointer; }
 .wb-release-cases ol { margin: var(--s-3) 0 0; padding-left: var(--s-6); color: var(--c-ink-2); font-size: var(--t-sm); }
 .wb-release-cases li + li { margin-top: var(--s-2); }
+/* ---------------- 阶段轨 ----------------
+   步骤是节点，门禁是节点之间的闸。轨是投影不是驱动器：上面没有确认按钮，
+   阻断项只做导航。平时白底克制，只有 execution=waiting 时整条换琥珀底抢一次注意力。 */
+.wb-rail { position: relative; display: flex; flex-direction: column; align-items: stretch;
+  padding: 0 var(--s-5); background: var(--c-surface); border-bottom: 1px solid var(--c-line);
+  font-size: var(--t-sm); flex-shrink: 0; contain: layout paint; }
+.wb-rail-main { display: flex; align-items: center; gap: var(--s-3); min-height: 46px; }
+.wb-rail-line { display: flex; align-items: center; flex: 1; min-width: 0;
+  overflow-x: auto; scrollbar-width: none; }
+.wb-rail-line::-webkit-scrollbar { display: none; }
+
+.wb-rail-step { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: var(--r-full); background: none; cursor: pointer;
+  font: inherit; font-size: var(--t-md); color: var(--c-ink-2); white-space: nowrap; }
+.wb-rail-step:hover { background: var(--c-surface-3); }
+.wb-rail-step .num { width: 21px; height: 21px; flex: none; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center; font-size: var(--t-sm);
+  border: 1.5px solid var(--c-line); background: var(--c-surface); color: var(--c-faint); }
+.wb-rail-step .cnt { font-size: var(--t-sm); color: var(--c-faint); font-variant-numeric: tabular-nums; }
+.wb-rail-step.passed .num { background: var(--c-ok); border-color: var(--c-ok); color: #fff; font-weight: 600; }
+.wb-rail-step.current { position: relative; color: var(--c-ink); font-weight: 600; }
+.wb-rail-step.current .num { background: var(--grad-p); border-color: transparent; color: #fff;
+  box-shadow: var(--c-p-shadow); font-weight: 600; }
+.wb-rail-step.current::after { content: ''; position: absolute; left: 6px; right: 6px; bottom: -1px;
+  height: 2px; background: var(--c-accent); border-radius: 2px 2px 0 0; }
+.wb-rail-step.current.wait .num { background: var(--c-wait); box-shadow: none; }
+.wb-rail-step.current.wait::after { background: var(--c-wait); }
+.wb-rail-step.future { color: var(--c-faint); }
+.wb-rail-step.future .num { border-style: dashed; }
+.wb-rail-step.on { outline: 2px solid var(--c-accent-line); outline-offset: 1px; }
+.wb-rail-run { width: 6px; height: 6px; border-radius: 50%; background: var(--c-agent);
+  animation: wb-rail-pulse 1.4s ease-in-out infinite; }
+@keyframes wb-rail-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+
+/* 闸是边不是节点：一段线，线上坐一个字形。通过的闸不画勾——
+   步骤徽章已经带勾了，重复标记只会稀释，留一段连续实心绿线反而有进度填充感。 */
+.wb-rail-gate { position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 54px; height: 32px; padding: 0; border: 0; background: none; cursor: pointer;
+  color: var(--c-faint); font-size: var(--t-xs); }
+.wb-rail-gate::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+  border-radius: 2px; background: repeating-linear-gradient(90deg, var(--c-line) 0 2px, transparent 2px 5px); }
+.wb-rail-gate.ok::before { background: var(--c-ok); opacity: .4; }
+.wb-rail-gate.ok:hover::before { opacity: .85; }
+.wb-rail-gate.shut::before { background: var(--c-wait-line); }
+.wb-rail-gate i { position: relative; font-style: normal; line-height: 1; padding: 0 5px;
+  background: var(--c-surface); display: inline-flex; align-items: center; gap: 2px; }
+.wb-rail-gate.ok i { padding: 0; }
+.wb-rail-gate.shut i { min-width: 21px; height: 21px; padding: 0 6px; justify-content: center;
+  border-radius: var(--r-full); background: var(--c-wait); color: #fff; font-size: var(--t-sm); }
+.wb-rail-gate.on i { outline: 2px solid var(--c-accent-line); outline-offset: 1px; border-radius: var(--r-full); }
+
+.wb-rail-tail { display: flex; align-items: center; gap: var(--s-2); flex: none; }
+.wb-rail-why { font: inherit; font-size: var(--t-sm); color: var(--c-wait); background: var(--c-wait-bg);
+  border: 1px solid var(--c-wait-line); border-radius: var(--r-full); padding: 2px 9px; cursor: pointer;
+  white-space: nowrap; }
+.wb-rail-pano { font: inherit; font-size: var(--t-sm); color: var(--c-ink-2); background: none;
+  border: 1px solid var(--c-line); border-radius: var(--r-sm); padding: 3px 9px; cursor: pointer; }
+.wb-rail-pano:hover, .wb-rail-pano.on { background: var(--c-surface-3); color: var(--c-ink); }
+
+/* 卡住时才允许它抢戏：这是唯一该打断用户的时刻。不用红色——卡住不是出错，是在等人做决定。 */
+.wb-rail.alarm { background: var(--c-wait-bg); border-bottom-color: var(--c-wait-line); }
+.wb-rail.alarm .wb-rail-gate i { background: var(--c-wait-bg); }
+.wb-rail.alarm .wb-rail-gate.shut i { background: var(--c-wait); }
+.wb-rail.alarm .wb-rail-step .num { background: var(--c-wait-bg); }
+.wb-rail.alarm .wb-rail-step.passed .num { background: var(--c-ok); }
+.wb-rail.alarm .wb-rail-step.current .num { background: var(--c-wait); }
+.wb-rail.alarm .wb-rail-why { background: var(--c-wait); border-color: var(--c-wait); color: #fff; font-weight: 600; padding: 4px 12px; }
+.wb-rail.alarm .wb-rail-pano { border-color: var(--c-wait-line); color: var(--c-wait); }
+
+/* 增量是正式基线上的独立轮次，所以画成垂下来的支线而不是轨上的节点。 */
+.wb-rail.branching { padding-bottom: var(--s-3); }
+.wb-rail-branch { display: flex; align-items: center; gap: var(--s-2); padding-left: 44px;
+  font-size: var(--t-sm); color: var(--c-ink-2); }
+.wb-rail-branch .hook { width: 22px; height: 9px; margin-bottom: 8px; flex: none;
+  border-left: 1px solid var(--c-wait-line); border-bottom: 1px solid var(--c-wait-line);
+  border-bottom-left-radius: 7px; }
+.wb-rail-branch .tag { background: var(--c-wait-bg); border: 1px solid var(--c-wait-line);
+  color: var(--c-wait); border-radius: var(--r-full); padding: 2px 9px; font-weight: 600; }
+
+/* 阶段卡 / 闸卡 */
+.wb-rail-panel { position: absolute; left: var(--s-5); top: calc(100% + 4px); z-index: 30; width: 360px;
+  background: var(--c-surface); border: 1px solid var(--c-line); border-radius: var(--r-lg);
+  box-shadow: var(--sh-3); padding: var(--s-5); color: var(--c-ink-2); }
+.wb-rail-panel header { display: flex; align-items: baseline; gap: var(--s-2); margin-bottom: 3px; }
+.wb-rail-panel header b { font-size: var(--t-lg); color: var(--c-ink); }
+.wb-rail-panel header .st { font-size: var(--t-xs); }
+.wb-rail-panel header .st.passed { color: var(--c-ok); }
+.wb-rail-panel header .st.current { color: var(--c-agent); }
+.wb-rail-panel header .st.future { color: var(--c-faint); }
+.wb-rail-panel .what { margin: 0 0 var(--s-4); line-height: 1.6; color: var(--c-muted); font-size: var(--t-sm); }
+.wb-rail-panel .what .arrow { color: var(--c-faint); }
+.wb-rail-panel h5 { margin: var(--s-5) 0 var(--s-3); font-size: var(--t-xs); font-weight: 600;
+  color: var(--c-muted); letter-spacing: .04em; }
+.wb-rail-panel .note { margin: var(--s-3) 0 0; font-size: var(--t-xs); color: var(--c-faint); line-height: 1.6; }
+
+.wb-rail-gatebox { border: 1px solid var(--c-line); border-radius: var(--r-md); overflow: hidden; }
+.wb-rail-gatebox.ok { border-color: var(--c-ok-line); }
+.wb-rail-gatebox.shut { border-color: var(--c-wait-line); }
+.wb-rail-gatebox .gh { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-3) var(--s-4);
+  font-size: var(--t-xs); background: var(--c-surface-2); border-bottom: 1px solid var(--c-line); }
+.wb-rail-gatebox .gh b { font-size: var(--t-sm); }
+.wb-rail-gatebox.ok .gh { background: var(--c-ok-bg); color: var(--c-ok); border-color: var(--c-ok-line); }
+.wb-rail-gatebox.shut .gh { background: var(--c-wait-bg); color: var(--c-wait); border-color: var(--c-wait-line); }
+.wb-rail-gatebox .pred { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--c-line-soft); font-size: var(--t-sm); line-height: 1.5; }
+.wb-rail-gatebox .pred:last-child { border-bottom: 0; }
+.wb-rail-gatebox .pred .m { width: 12px; flex: none; text-align: center; }
+.wb-rail-gatebox .pred.p .m { color: var(--c-ok); }
+.wb-rail-gatebox .pred.f .m { color: var(--c-stale); }
+.wb-rail-gatebox .pred.w .m { color: var(--c-wait); }
+.wb-rail-gatebox .pred .txt { flex: 1; min-width: 0; }
+.wb-rail-gatebox .pred .go { font: inherit; font-size: var(--t-xs); white-space: nowrap; cursor: pointer;
+  border: 1px solid var(--c-accent-line); background: var(--c-accent-bg); color: var(--c-accent);
+  border-radius: var(--r-sm); padding: 2px 7px; }
+
+/* 进度全景（中栏第三级） */
+.wb-progress-row { display: flex; gap: var(--s-5); }
+.wb-progress-row .gut { width: 16px; flex: none; display: flex; flex-direction: column; align-items: center; }
+.wb-progress-row .bead { width: 11px; height: 11px; flex: none; margin-top: 3px; border-radius: 50%;
+  border: 2px solid var(--c-line); background: var(--c-surface); }
+.wb-progress-row.passed .bead { background: var(--c-ok); border-color: var(--c-ok); }
+.wb-progress-row.current .bead { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-bg); }
+.wb-progress-row .wire { flex: 1; width: 1px; min-height: 14px; margin: 3px 0; background: var(--c-line); }
+.wb-progress-row .wire.ok { background: var(--c-ok-line); }
+.wb-progress-row .wire.shut { background: repeating-linear-gradient(180deg, var(--c-wait-line) 0 3px, transparent 3px 6px); }
+.wb-progress-row .body { flex: 1; min-width: 0; padding-bottom: var(--s-6); }
+.wb-progress-row h4 { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3);
+  font-size: var(--t-lg); }
+.wb-progress-row.future h4 { color: var(--c-faint); font-weight: 500; }
+.wb-progress-row h4 .meta { margin-left: auto; font-size: var(--t-xs); color: var(--c-faint); font-weight: 400; }
+.wb-progress-gate { display: inline-flex; align-items: center; gap: var(--s-2); margin: 0;
+  padding: 3px var(--s-4); border-radius: var(--r-full); font-size: var(--t-xs);
+  background: var(--c-surface); border: 1px solid var(--c-line); color: var(--c-muted); }
+.wb-progress-gate.ok { background: var(--c-ok-bg); border-color: var(--c-ok-line); color: var(--c-ok); }
+.wb-progress-gate.shut { background: var(--c-wait-bg); border-color: var(--c-wait-line); color: var(--c-wait); }
+.wb-progress-foot, .wb-progress-empty { margin-top: var(--s-5); font-size: var(--t-sm);
+  color: var(--c-faint); line-height: 1.65; }
+
+@media (max-width: 720px) {
+  .wb-rail-main { min-height: 38px; }
+  .wb-rail-step.passed, .wb-rail-step.future, .wb-rail-gate { display: none; }
+  .wb-rail-panel { left: var(--s-3); right: var(--s-3); width: auto; }
+}
+
 @media (max-width: 1100px) {
   .wb-pane-l, .wb-grip-l { display: none; }
   .wb-pane-r { width: min(42vw, 420px) !important; min-width: 360px; }

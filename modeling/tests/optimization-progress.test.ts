@@ -54,3 +54,34 @@ test('校验阶段展示可能发生的剩余自动修正次数', () => {
   assert.deepEqual(progress?.nextSteps, ['校验未通过时自动修正（最多剩余 1 次）', '保存待确认的修改']);
   assert.equal(progress?.currentStep, '正在校验修改结果（第 2/3 次）');
 });
+
+test('目标化增量任务按原子变更组展示并使用五分钟总预算', () => {
+  const node = {
+    id: 'nd-targeted', status: 'running', createdAt: '2026-07-16T12:00:00.000Z',
+    output: {
+      taskType: 'optimization_apply', phase: 'revision', attempt: 1, maxAttempts: 2,
+      selectedCount: 5, resourceCount: 25, protocol: 'targeted_incremental',
+      changeSetCount: 1, targetResourceKeys: ['script:calculate', 'operation:calculate'],
+      shardCount: 3,
+      startedAt: '2026-07-16T12:00:00.000Z', phaseStartedAt: '2026-07-16T12:00:00.000Z',
+    },
+  };
+  const progress = optimizationProgress(node, Date.parse('2026-07-16T12:01:00.000Z'));
+  assert.equal(progress?.currentStep, '正在并行生成 3 个目标符号补丁（第 1/2 次）');
+  assert.equal(progress?.estimatedSeconds, 265);
+});
+
+test('依赖敏感目标脚本在前端显示顺序生成', () => {
+  const node = {
+    id: 'nd-targeted-dependency', status: 'running', createdAt: '2026-07-16T12:00:00.000Z',
+    output: {
+      taskType: 'optimization_apply', phase: 'revision', attempt: 1, maxAttempts: 2,
+      selectedCount: 5, resourceCount: 25, protocol: 'targeted_incremental',
+      changeSetCount: 1, targetResourceKeys: ['script:calculate'], shardCount: 3,
+      shardOrdering: 'dependency_serial',
+      startedAt: '2026-07-16T12:00:00.000Z', phaseStartedAt: '2026-07-16T12:00:00.000Z',
+    },
+  };
+  const progress = optimizationProgress(node, Date.parse('2026-07-16T12:01:00.000Z'));
+  assert.equal(progress?.currentStep, '正在按依赖顺序生成 3 个目标符号补丁（第 1/2 次）');
+});

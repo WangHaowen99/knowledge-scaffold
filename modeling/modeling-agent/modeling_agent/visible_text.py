@@ -75,6 +75,8 @@ _TOKEN_LABELS = {
     "delete_domain_resource": "删除领域资源",
     "define_script_contract": "定义脚本契约",
     "get_script_contract": "读取脚本契约",
+    "get_script_edit_context": "读取脚本符号上下文",
+    "stage_script_patch": "应用脚本符号补丁",
     "stage_script_source": "校验脚本源码",
     "write_file": "整理待确认修改",
     "upsert_object": "整理业务对象",

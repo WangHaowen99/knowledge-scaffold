@@ -5,7 +5,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.tool.schema import ToolInfo
 
-from modeling_agent.acceptance_model import _script_source, plan_acceptance_turn
+from modeling_agent.acceptance_model import plan_acceptance_turn
 
 
 TOOL_NAMES = {
@@ -13,7 +13,7 @@ TOOL_NAMES = {
     "list_domain_resources", "get_domain_resource", "create_change_plan", "get_change_plan",
     "stage_change_set", "get_change_set_receipt", "validate_change_set", "request_confirmation",
     "sync_schema_objects", "patch_object_source_binding", "define_script_contract", "get_script_contract",
-    "stage_script_source", "run_script_test", "ask",
+    "get_script_edit_context", "stage_script_patch", "run_script_test", "ask",
     "discard_rejected_candidate_changes",
 }
 TOOLS = [ToolInfo(name=name, description=name, parameters={"type": "object"}) for name in TOOL_NAMES]
@@ -221,10 +221,72 @@ def test_managed_file_redirect_retries_required_schema_tool() -> None:
     assert turn.arguments == arguments
 
 
-def test_generated_script_exposes_structured_function_contract() -> None:
-    namespace: dict[str, object] = {"__name__": "synthetic_contract_test"}
-    exec(compile(_script_source(False), "synthetic_summary.py", "exec"), namespace)
-    main = namespace["main"]
-    assert callable(main)
-    assert main(left=1, right=2) == {"total": 3}
-    assert main(left=0, right=0) == {"total": 0}
+def test_generated_script_uses_hashed_business_function_patch() -> None:
+    messages = [{"role": "user", "content": "为合成汇总操作生成安全 Python 脚本。"}]
+    state_ready(messages)
+    completed(messages, "list_domain_resources", {"kind": "operation", "query": "synthetic_summary"}, {
+        "working_revision": "rev-script-1",
+        "items": [{"resource_id": "operation:synthetic_summary"}],
+    })
+    completed(messages, "get_domain_resource", {"resource_id": "operation:synthetic_summary"}, {
+        "working_revision": "rev-script-1",
+        "resource": {
+            "id": "operation:synthetic_summary",
+            "operation_contract_hash": "sha256:operation",
+        },
+    })
+    completed(messages, "create_change_plan", {}, {"plan": {
+        "id": "cp-script",
+        "mode": "expert_edit",
+        "approval_status": "approved",
+        "expected_revision": "rev-script-1",
+        "tasks": [{
+            "id": "task-script",
+            "resource_kind": "script",
+            "target_key": "synthetic_summary_script",
+        }],
+    }})
+    completed(messages, "define_script_contract", {}, {
+        "script_key": "synthetic_summary_script",
+        "contract_hash": "sha256:contract",
+    })
+    completed(messages, "get_script_edit_context", {"script_key": "synthetic_summary_script"}, {
+        "base_source_hash": "sha256:source",
+        "contract_hash": "sha256:contract",
+        "symbols": [{
+            "kind": "function",
+            "qualified_name": "run_business_logic",
+            "node_hash": "sha256:node",
+        }],
+    })
+
+    read_turn = plan_acceptance_turn(messages, TOOLS, "SCN-SCRIPT")
+    assert read_turn.name == "get_script_edit_context"
+    assert read_turn.arguments == {
+        "script_key": "synthetic_summary_script",
+        "symbols": ["run_business_logic"],
+    }
+
+    completed(messages, read_turn.name, read_turn.arguments or {}, {
+        "base_source_hash": "sha256:source",
+        "contract_hash": "sha256:contract",
+        "symbols": [{
+            "kind": "function",
+            "qualified_name": "run_business_logic",
+            "node_hash": "sha256:node",
+            "source": "def run_business_logic(inputs):\n    raise NotImplementedError('business logic is not implemented')",
+        }],
+    })
+    patch_turn = plan_acceptance_turn(messages, TOOLS, "SCN-SCRIPT")
+
+    assert patch_turn.name == "stage_script_patch"
+    assert patch_turn.arguments is not None
+    assert patch_turn.arguments["base_source_hash"] == "sha256:source"
+    assert patch_turn.arguments["expected_contract_hash"] == "sha256:contract"
+    edit = patch_turn.arguments["edits"][0]
+    assert edit["kind"] == "replace_function"
+    assert edit["symbol"] == "run_business_logic"
+    assert edit["expected_node_hash"] == "sha256:node"
+    assert "def run_business_logic(inputs):" in edit["source"]
+    assert "argparse" not in edit["source"]
+    assert "def main(" not in edit["source"]

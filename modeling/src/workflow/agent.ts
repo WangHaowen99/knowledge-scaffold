@@ -40,6 +40,8 @@ export interface RunAgentCaptureOptions extends RunAgentOptions {
   resetCapture?: () => void | Promise<void>;
   captureDiagnostics?: {
     targetToolName: string;
+    /** Treat compatibility or legacy submission tools as successful captures. */
+    acceptedToolNames?: string[];
     onAttempt: (diagnostics: AgentCaptureAttemptDiagnostics) => void | Promise<void>;
   };
   /** Ask the provider to call this tool during capture-only attempts. */
@@ -505,7 +507,11 @@ export async function runAgentCaptured(
       const attemptPrompt = attempt === 1
         ? prompt
         : captureRetryPrompt(nudge, previousDiagnostics!);
-      let tracker = new AgentCaptureAttemptTracker(attempt, captureDiagnostics.targetToolName);
+      let tracker = new AgentCaptureAttemptTracker(
+        attempt,
+        captureDiagnostics.targetToolName,
+        captureDiagnostics.acceptedToolNames,
+      );
       while (true) {
         const initialMessageCount = Array.isArray(agent?.state?.messages) ? agent.state.messages.length : 0;
         try {
@@ -536,7 +542,11 @@ export async function runAgentCaptured(
               toMode: nextMode,
               modelApi: enrichCaptureDiagnostics(tracker.finish(false), agent).modelApi,
             });
-            tracker = new AgentCaptureAttemptTracker(attempt, captureDiagnostics.targetToolName);
+            tracker = new AgentCaptureAttemptTracker(
+              attempt,
+              captureDiagnostics.targetToolName,
+              captureDiagnostics.acceptedToolNames,
+            );
             continue;
           }
           const diagnostics = {

@@ -51,6 +51,34 @@ function containsDynamicExecution(sourceCode: string): boolean {
   return found;
 }
 
+function containsPlaceholderPass(sourceCode: string): boolean {
+  let found = false;
+  pythonParser.parse(sourceCode).iterate({
+    enter(node) {
+      if (found || node.name !== 'PassStatement') return;
+      const body = node.node.parent;
+      const owner = body?.parent;
+      if (body?.name !== 'Body') {
+        found = true;
+        return;
+      }
+      if (!['FunctionDefinition', 'ClassDefinition'].includes(owner?.name ?? '')) return;
+      const statements: any[] = [];
+      let child = body.firstChild;
+      while (child) {
+        if (![':', 'Comment'].includes(child.name)) statements.push(child);
+        child = child.nextSibling;
+      }
+      const meaningful = statements.filter((statement) => {
+        if (statement.name !== 'ExpressionStatement') return true;
+        return statement.firstChild?.name !== 'String';
+      });
+      found = meaningful.length === 1 && meaningful[0].name === 'PassStatement';
+    },
+  });
+  return found;
+}
+
 export function validateGeneratedScriptSecurity(script: SpecScript): void {
   if (script.sourceCode.length > 100_000) {
     throw new Error(`脚本安全检查失败（${script.key}）：源码超过 100000 字符`);
@@ -82,10 +110,14 @@ export function validateGeneratedScriptSyntax(script: SpecScript): void {
 
 export function validateGeneratedScriptExecutionContract(script: SpecScript): void {
   const source = script.sourceCode;
-  if (/hello[ _-]?world/iu.test(source)
-    || /^\s*pass\s*(?:#.*)?$/mu.test(source)
-    || /\b(?:TODO|FIXME)\b/u.test(source)) {
-    throw new Error(`脚本执行契约检查失败（${script.key}）：包含演示或占位实现`);
+  if (/hello[ _-]?world/iu.test(source)) {
+    throw new Error(`脚本执行契约检查失败（${script.key}）：包含 hello world 演示实现`);
+  }
+  if (containsPlaceholderPass(source)) {
+    throw new Error(`脚本执行契约检查失败（${script.key}）：函数或类仅包含 pass 占位实现`);
+  }
+  if (/\b(?:TODO|FIXME)\b/u.test(source)) {
+    throw new Error(`脚本执行契约检查失败（${script.key}）：包含 TODO/FIXME 未完成标记`);
   }
   if (/\b(?:raise\s+)?NotImplementedError\b/.test(source)) {
     throw new Error(`脚本执行契约检查失败（${script.key}）：包含 NotImplementedError 占位数据接口`);

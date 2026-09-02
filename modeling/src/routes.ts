@@ -144,7 +144,10 @@ import {
   proposeOptimizations,
   validateOptimizationSuggestions,
 } from './evaluation/optimizer.js';
-import { diagnoseEvaluationFailures } from './evaluation/failure-diagnosis.js';
+import {
+  diagnoseEvaluationFailures,
+  isKnowledgePackageRepairScope,
+} from './evaluation/failure-diagnosis.js';
 import * as diagnosisRepo from './evaluation/failure-diagnosis-repo.js';
 import { diagnosisResolutionPlan } from './evaluation/diagnosis-resolution.js';
 import {
@@ -504,6 +507,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         ...(purposeReview ? {
           purposeReviewRequired: purposeReview.status === 'pending',
           sheetCount: completed.document.tables?.length ?? 0,
+        } : {}),
+        ...(currentPackage?.spec.status === 'released' ? {
+          packageRevision: currentPackage.revision.oid,
+          packageVersion: currentPackage.packageVersion,
+          packageStatus: currentPackage.spec.status,
         } : {}),
       });
       void deliverAgentProjectEvents(pending.projectId, authorization).catch((error) => {
@@ -959,6 +967,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const doc = revision.document;
         const authorization = String(req.headers.authorization ?? '');
         if (p.runtime === 'agent') {
+          const currentPackage = await packageArtifacts.current(p.id);
           enqueueMaterialParseProjectEvent(p.id, {
             eventId: `material:${doc.id}:parsing`,
             status: 'parsing',
@@ -971,6 +980,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             autoContinue,
             uploadBatchId: uploadBatchId || doc.id,
             uploadBatchSize,
+            ...(currentPackage?.spec.status === 'released' ? {
+              packageRevision: currentPackage.revision.oid,
+              packageVersion: currentPackage.packageVersion,
+              packageStatus: currentPackage.spec.status,
+            } : {}),
           });
           void deliverAgentProjectEvents(p.id, authorization).catch((error) => {
             req.log.warn({ err: error, projectId: p.id }, '资料解析开始事件等待下次重试投递');
@@ -2673,7 +2687,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (diagnoses.length !== selected.size) {
         return reply.code(404).send({ error: '部分失败原因不存在或不属于该评测轮次' });
       }
-      const notPackageDefects = diagnoses.filter((diagnosis) => diagnosis.repairScope !== 'package');
+      const notPackageDefects = diagnoses.filter(
+        (diagnosis) => !isKnowledgePackageRepairScope(diagnosis.repairScope),
+      );
       if (notPackageDefects.length) {
         return reply.code(409).send({
           error: `有 ${notPackageDefects.length} 项失败原因不属于知识包缺陷，请先处理运行环境、数据或用例问题`,
@@ -2835,7 +2851,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         if (!diagnoses.length) return reply.code(409).send({ error: '请先分析该轮评测的失败原因' });
         const eligibleDiagnoses = diagnoses.filter((item) => item.resolutionStatus === 'confirmed'
           && item.packageOptimizable
-          && !item.blocking);
+          && item.packageRepairEligible);
         const eligibleResultIds = new Set(eligibleDiagnoses.flatMap((item) => item.resultIds));
         const optimizableFailures = failed.filter((item) => eligibleResultIds.has(item.id));
         if (!optimizableFailures.length) {
@@ -2923,7 +2939,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (ids.some((id) => {
         const diagnosis = byId.get(id);
         return !diagnosis || diagnosis.basedRevisionOid !== basedRevisionOid
-          || diagnosis.resolutionStatus !== 'confirmed' || !diagnosis.packageOptimizable || diagnosis.blocking;
+          || diagnosis.resolutionStatus !== 'confirmed' || !diagnosis.packageOptimizable
+          || !diagnosis.packageRepairEligible;
       })) throw new Error('建议只能关联当前版本中已确认且可由知识包修复的失败根因');
     };
     r.patch('/api/projects/:id/optimize/suggestions/:suggestionId', async (req, reply) => {

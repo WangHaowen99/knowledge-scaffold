@@ -12,12 +12,13 @@ import Fastify from 'fastify';
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-agent-proxy-'));
 
 const [
-  { registerAgentProxyRoutes },
+  { documentRuleIncrementRequested, incrementRoundRequested, registerAgentProxyRoutes },
   { createProject },
   outbox,
   { ensureAgentProjectEventKinds },
   { DocumentRevisionRepo },
   { MaterialPurposeReviewStore },
+  { getPackageArtifactStore },
 ] = await Promise.all([
   import('../src/agent/proxy-routes.js'),
   import('../src/projects/repo.js'),
@@ -25,6 +26,7 @@ const [
   import('../src/db/index.js'),
   import('../src/documents/repo.js'),
   import('../src/documents/material-purpose-review.js'),
+  import('../src/artifacts/runtime.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -36,6 +38,131 @@ function appFor(t: test.TestContext, username = 'alice') {
   t.after(() => app.close());
   return app;
 }
+
+test('只有明确执行意图才会触发增量轮次入口', () => {
+  assert.equal(incrementRoundRequested('开始增量建模'), true);
+  assert.equal(incrementRoundRequested('请进入新一轮增量迭代'), true);
+  assert.equal(incrementRoundRequested('为什么没有进入增量建模？'), false);
+  assert.equal(incrementRoundRequested('现在是不是增量建模'), false);
+});
+
+test('发布后点名文档新增规则也会识别为增量请求，普通阅读不会误触发', () => {
+  assert.equal(documentRuleIncrementRequested('请读取《安全管理办法.docx》，根据内容新增一条业务规则'), true);
+  assert.equal(documentRuleIncrementRequested('按安全管理办法.pdf 增加相关规则'), true);
+  assert.equal(documentRuleIncrementRequested('请读取这个文档并补充规则'), true);
+  assert.equal(documentRuleIncrementRequested('请读取《安全管理办法.docx》了解规则内容'), false);
+  assert.equal(documentRuleIncrementRequested('是否可以读取《安全管理办法.docx》并新增规则？'), false);
+});
+
+test('明确增量指令先绑定正式基线再交给统一 Agent', async (t) => {
+  const project = createProject({ owner: 'alice', name: '增量轮次入口', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const draft = await artifacts.initializeDraftPackage(project.id, {
+    id: 'increment-entry',
+    name: '增量轮次入口',
+    description: '验证正式版本上的增量入口',
+  });
+  const released = await artifacts.finalizeCurrentPackageVersion(project.id, {
+    expectedRevision: draft.revision.oid,
+    status: 'released',
+    action: {
+      cause: 'test_release',
+      summary: '发布测试基线',
+      actorKind: 'user',
+      actorName: 'alice',
+    },
+  });
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith('/increment/start')) {
+      return new Response(JSON.stringify({
+        started: true,
+        state: { phase: 'increment', roundMode: 'incremental' },
+      }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ mode: 'new_run', run: { id: 'run-increment' } }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const app = appFor(t);
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/steer`,
+    headers: { authorization: 'Bearer increment-token' },
+    payload: { message: '开始增量建模' },
+  });
+
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, new RegExp(`/v1/projects/${project.id}/increment/start$`));
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    baselineRevision: released.revision.oid,
+    packageVersion: released.packageVersion,
+  });
+  assert.match(calls[1].url, new RegExp(`/v1/projects/${project.id}/steer$`));
+});
+
+test('发布后点名文档新增规则会先绑定基线再启动 Agent', async (t) => {
+  const project = createProject({ owner: 'alice', name: '文档规则增量入口', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const draft = await artifacts.initializeDraftPackage(project.id, {
+    id: 'document-rule-entry',
+    name: '文档规则增量入口',
+    description: '验证发布后点名文档新增规则',
+  });
+  const released = await artifacts.finalizeCurrentPackageVersion(project.id, {
+    expectedRevision: draft.revision.oid,
+    status: 'released',
+    action: {
+      cause: 'test_release',
+      summary: '发布测试基线',
+      actorKind: 'user',
+      actorName: 'alice',
+    },
+  });
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith('/increment/start')) {
+      return new Response(JSON.stringify({
+        started: true,
+        state: { phase: 'increment', roundMode: 'incremental', baselineRevision: released.revision.oid },
+      }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ mode: 'new_run', run: { id: 'run-document-rule' } }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const app = appFor(t);
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/runs`,
+    headers: { authorization: 'Bearer document-rule-token' },
+    payload: { message: '请读取《安全管理办法.docx》，根据内容新增一条业务规则' },
+  });
+
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, new RegExp(`/v1/projects/${project.id}/increment/start$`));
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    baselineRevision: released.revision.oid,
+    packageVersion: released.packageVersion,
+  });
+  assert.match(calls[1].url, new RegExp(`/v1/projects/${project.id}/runs$`));
+  assert.deepEqual(JSON.parse(String(calls[1].init?.body)), {
+    message: '请读取《安全管理办法.docx》，根据内容新增一条业务规则',
+  });
+});
 
 test('Agent 代理校验项目归属并透传登录身份与输入', async (t) => {
   const project = createProject({ owner: 'alice', name: '代理边界' });
@@ -213,6 +340,9 @@ test('刷新 Agent 状态会重投持久化资料事件且成功后不重复', a
     readingMode: 'on_demand',
     autoContinue: false,
     semanticChanged: true,
+    packageRevision: 'sha256:released-material',
+    packageVersion: '1.2.0',
+    packageStatus: 'released',
   });
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -246,6 +376,8 @@ test('刷新 Agent 状态会重投持久化资料事件且成功后不重复', a
   assert.equal((eventCalls[0].init?.headers as Record<string, string>).authorization, 'Bearer refresh-token');
   assert.equal(JSON.parse(String(eventCalls[0].init?.body)).documentId, 'doc-recover');
   assert.equal(JSON.parse(String(eventCalls[0].init?.body)).autoContinue, false);
+  assert.equal(JSON.parse(String(eventCalls[0].init?.body)).packageRevision, 'sha256:released-material');
+  assert.equal(JSON.parse(String(eventCalls[0].init?.body)).packageStatus, 'released');
   assert.equal(outbox.pendingAgentProjectEvents(project.id).length, 0);
 });
 
