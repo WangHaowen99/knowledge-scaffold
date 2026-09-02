@@ -3,12 +3,14 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { config } from '../config.js';
+import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { MaterialPurposeReviewStore } from '../documents/material-purpose-review.js';
 import { canReadProject, canWriteProject } from '../projects/repo.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 import { takeAcceptanceFault } from '../acceptance/faults.js';
 
 export function registerAgentProxyRoutes(app: FastifyInstance): void {
+  const artifacts = getPackageArtifactStore();
   app.get('/api/projects/:id/agent/state', async (request, reply) => {
     const id = projectId(request);
     if (!canReadProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
@@ -27,7 +29,18 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
     const acceptanceFailure = takeAcceptanceMessageFailure(request, reply, id);
     if (acceptanceFailure) return acceptanceFailure;
+    if (shouldStartIncrementRound(String((request.body as any)?.message ?? ''))) {
+      const prepared = await prepareIncrementRound(request, id, artifacts);
+      if (prepared.status >= 400) return reply.code(prepared.status).send(prepared.payload);
+    }
     return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/runs`, 'POST', id);
+  });
+
+  app.post('/api/projects/:id/agent/increment/start', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const prepared = await prepareIncrementRound(request, id, artifacts);
+    return reply.code(prepared.status).send(prepared.payload);
   });
 
   app.post('/api/projects/:id/agent/steer', async (request, reply) => {
@@ -46,6 +59,10 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
           purposeReviewProgress: progress,
         });
       }
+    }
+    if (shouldStartIncrementRound(String((request.body as any)?.message ?? ''))) {
+      const prepared = await prepareIncrementRound(request, id, artifacts);
+      if (prepared.status >= 400) return reply.code(prepared.status).send(prepared.payload);
     }
     return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/steer`, 'POST', id);
   });
@@ -125,6 +142,85 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     });
     bridge.pipe(reply.raw);
   });
+}
+
+export function incrementRoundRequested(message: string): boolean {
+  const text = String(message || '').trim();
+  if (!text || /(?:为什么|为何|怎么|如何|是否|有没有|是什么|吗\s*[？?]?|[？?])/u.test(text)) return false;
+  return /(?:开始|启动|开启|进入|发起|继续)\s*.{0,8}(?:增量(?:建模|修改|迭代)?|新一轮迭代)|(?:增量建模|增量迭代)\s*.{0,8}(?:开始|启动|继续)/u.test(text);
+}
+
+/**
+ * 已发布项目即使没有写出“增量”，点名文档并要求新增规则也必须进入增量轮次。
+ * 同时具备文档引用和规则变更动作，普通阅读或咨询才不会误触发。
+ */
+export function documentRuleIncrementRequested(message: string): boolean {
+  const text = String(message || '').trim();
+  if (!text || /(?:为什么|为何|怎么|如何|是否|有没有|是什么|能否|可否|请问|吗\s*[？?]?|[？?])/u.test(text)) {
+    return false;
+  }
+  const hasDocumentReference = Boolean(
+    /《[^》]{1,200}》/u.test(text)
+    || /(?:[\w\u4e00-\u9fff][\w\u4e00-\u9fff ._-]{0,120}\.(?:docx?|pdf|xlsx?|csv|md|txt))/iu.test(text)
+    || /(?:这个|该|指定的?|上述)\s*(?:文档|文件|资料)/u.test(text)
+    || /(?:读取|查看|参考|根据|按照|依据)\s*.{0,80}(?:文档|文件|资料)/u.test(text),
+  );
+  const hasRuleMutation = Boolean(
+    /(?:新增|添加|补充|增加|制定|写入|修改|更新|完善)\s*(?:一条|一项|新的?|相关的?)?\s*(?:业务)?规则/u.test(text)
+    || /(?:业务)?规则\s*(?:新增|添加|补充|增加|制定|写入|修改|更新|完善)/u.test(text),
+  );
+  return hasDocumentReference && hasRuleMutation;
+}
+
+function shouldStartIncrementRound(message: string): boolean {
+  return incrementRoundRequested(message) || documentRuleIncrementRequested(message);
+}
+
+async function prepareIncrementRound(
+  request: FastifyRequest,
+  projectIdValue: string,
+  artifacts: ReturnType<typeof getPackageArtifactStore>,
+): Promise<{ status: number; payload: Record<string, unknown> }> {
+  let current;
+  try {
+    current = await artifacts.current(projectIdValue);
+  } catch (error) {
+    request.log.error({ err: error, projectId: projectIdValue }, '读取增量基线失败');
+    return { status: 503, payload: { code: 'INCREMENT_BASELINE_UNAVAILABLE', error: '暂时无法读取正式知识包基线' } };
+  }
+  if (!current || current.spec.status !== 'released') {
+    return {
+      status: 409,
+      payload: {
+        code: 'INCREMENT_REQUIRES_RELEASED_PACKAGE',
+        error: '当前项目还没有正式发布的知识包，不能开始增量建模',
+      },
+    };
+  }
+  let upstream: Response;
+  try {
+    upstream = await fetch(
+      `${config.agentBaseUrl}/v1/projects/${encodeURIComponent(projectIdValue)}/increment/start`,
+      {
+        method: 'POST',
+        headers: { ...authorizationHeaders(request), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          baselineRevision: current.revision.oid,
+          packageVersion: current.packageVersion,
+        }),
+      },
+    );
+  } catch (error) {
+    request.log.error({ err: error, projectId: projectIdValue }, '增量轮次入口不可用');
+    return { status: 503, payload: { code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' } };
+  }
+  const payload = await upstream.json().catch(() => ({}));
+  return {
+    status: upstream.status,
+    payload: payload && typeof payload === 'object'
+      ? payload as Record<string, unknown>
+      : { code: 'AGENT_PROTOCOL_INVALID', error: '建模助手返回了不可读取的响应' },
+  };
 }
 
 function takeAcceptanceMessageFailure(

@@ -22,6 +22,8 @@ import {
 import { getDocumentRawContent, listDocuments, updateDocumentDirectives } from '../documents/repo.js';
 import {
   findMaterialPurposeReviewProblems,
+  materialPurposeReviewProblemFingerprint,
+  type MaterialPurposeReviewProblem,
   MaterialPurposeReviewStore,
 } from '../documents/material-purpose-review.js';
 import { parseFullTableDocumentIsolated } from '../documents/parse-service.js';
@@ -96,6 +98,16 @@ import {
   parseRenderedScriptFile,
 } from '../workflow/package-import.js';
 import { buildScriptCliArguments } from '../workflow/script-cli.js';
+import { scriptTestSourceHash, untestedScriptPaths } from '../workflow/script-test-receipts.js';
+import {
+  buildPythonScriptScaffold,
+  isCoreManagedPythonScaffold,
+} from '../workflow/python-script-scaffold.js';
+import {
+  applyPythonSourceEdits,
+  selectPythonSourceSymbols,
+  type PythonSourceEdit,
+} from '../evaluation/python-source-patch.js';
 import {
   isReleaseCandidateVersion,
   nextValidationCandidateVersion,
@@ -185,6 +197,10 @@ const CHANGE_CONTROL_TOOLS = new Set([
 ]);
 const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
 const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
+const MANAGED_SCRIPT_SOURCE_PATH = /^scripts\/[A-Za-z0-9_.-]+\.py$/u;
+type GateResult = { pass: boolean; blockers: string[]; warnings?: string[] };
+type GateResults = Record<string, GateResult>;
+
 const GATE_LABELS: Record<string, string> = {
   materials_ready: '资料准备',
   goal_confirmed: '建模目标确认',
@@ -232,6 +248,12 @@ interface ChangeGroupInput {
   title: string;
   impact?: string[];
   warning?: string;
+}
+
+interface MaterialPurposeReviewValidation {
+  baseline: MaterialPurposeReviewProblem[];
+  candidate: MaterialPurposeReviewProblem[];
+  introduced: MaterialPurposeReviewProblem[];
 }
 
 interface DeterministicCapabilityCandidateView {
@@ -342,6 +364,30 @@ export class AgentCoreService {
       materials,
       confirmPolicy: this.workbenchConfirmPolicy(project.id),
       packageDataSource: getProjectPackageDataSourceSelection(project.id),
+    };
+  }
+
+  /**
+   * 阶段轨的门禁投影：只回答“每道闸过没过、卡在哪”。
+   * 阶段顺序和标签由 modeling-agent 的 PHASE_LABELS 给，这里不复制第二份。
+   * 用项目自己的候选工作区而不是当前用户的——门禁是项目级事实，
+   * 换个人看不该得出不同结论。
+   */
+  async workbenchProgress(project: Project) {
+    await this.artifacts.ensureProject(project.id);
+    const workspace = this.workspace(project.id);
+    if (!workspace) return { available: false, revision: '', gates: [] };
+    const gates = await this.computeGates(workspace);
+    return {
+      available: true,
+      revision: workspace.base_revision_oid,
+      gates: Object.entries(gates).map(([id, gate]) => ({
+        id,
+        label: GATE_LABELS[id] || id,
+        pass: gate.pass,
+        blockers: gate.blockers,
+        warnings: gate.warnings ?? [],
+      })),
     };
   }
 
@@ -630,6 +676,7 @@ export class AgentCoreService {
       case 'get_domain_resource': return this.getDomainResource(context, args);
       case 'preview_domain_delete': return this.previewDomainDelete(context, args);
       case 'get_script_contract': return this.getScriptContract(context, args);
+      case 'get_script_edit_context': return this.getScriptEditContext(context, args);
       case 'list_ontology_objects': return this.listOntologyObjects(context, args);
       case 'get_ontology_object': return this.getOntologyObject(context, args);
       case 'get_ontology_object_review_status': return this.getOntologyObjectReviewStatus(context, args);
@@ -691,10 +738,17 @@ export class AgentCoreService {
         text(args.script_key, 'script_key'),
         () => this.stageScriptSource(workspace, context, args),
       );
+      case 'stage_script_patch': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        text(args.script_key, 'script_key'),
+        () => this.stageScriptPatch(workspace, context, args),
+      );
       case 'submit_ontology_object_review': return this.submitOntologyObjectReview(context, args);
       case 'stage_tabular_dataset': return this.stageTabularDataset(workspace, context, args);
       case 'list_dir': return this.listDir(workspace, args);
-      case 'read_file': return this.readFile(workspace, args);
+      case 'read_file': return this.readFile(workspace, args, context);
       case 'get_validation_summary': return this.validationSummary(context, args);
       case 'get_validation_findings': return this.validationFindings(context, args);
       case 'get_schema_mapping_plan': return this.schemaMappingPlan(workspace);
@@ -2188,10 +2242,13 @@ export class AgentCoreService {
   private async analyzeDeterministicCapabilities(
     workspace: WorkspaceRow,
   ): Promise<DeterministicCapabilityView> {
-    const { spec } = await this.overlay(workspace);
+    // Scope analysis and script authoring must observe the exact same Studio view.
+    // Rendered resources can normalize defaults that are absent from the stored spec.
+    const changes = this.changes(workspace);
+    const workingPackage = await this.overlay(workspace, changes);
     return this.deterministicCapabilityState(
       workspace.project_id,
-      spec,
+      resolveAgentStudioSpec(workingPackage.spec, workingPackage.files, changes),
     );
   }
 
@@ -2366,10 +2423,239 @@ export class AgentCoreService {
     };
   }
 
+  private async scriptEditState(
+    context: AgentToolContext,
+    scriptKey: string,
+    options: { expectedRevision?: string; expectedContractHash?: string } = {},
+  ) {
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const studio = new StudioReadService(workingPackage);
+    if (options.expectedRevision) studio.assertRevision(options.expectedRevision);
+    const row = this.db.prepare(`SELECT operation_hash, contract_hash, contract_json, updated_at
+      FROM agent_script_contract_drafts WHERE project_id = ? AND run_id = ? AND script_key = ?`)
+      .get(context.project.id, context.runId, scriptKey) as
+      | {
+        operation_hash: string;
+        contract_hash: string;
+        contract_json: string;
+        updated_at: string;
+      }
+      | undefined;
+    if (!row) {
+      throw new AgentCoreError(
+        'SCRIPT_CONTRACT_NOT_FOUND',
+        `脚本契约不存在：${scriptKey}`,
+        ['先调用 define_script_contract，确认输入、输出、超时和执行边界'],
+        404,
+      );
+    }
+    if (options.expectedContractHash && options.expectedContractHash !== row.contract_hash) {
+      throw new AgentCoreError(
+        'SCRIPT_CONTRACT_CONFLICT',
+        '脚本契约已经变化，请重新读取脚本编辑上下文',
+        ['调用 get_script_edit_context 获取当前 contract_hash 和源码哈希'],
+        409,
+        { actual_contract_hash: row.contract_hash, retryable: false },
+      );
+    }
+    const contract = JSON.parse(row.contract_json) as Omit<SpecScript, 'sourceCode'>;
+    const operationElement = studio.detail(`operation:${contract.boundOperation}`).element;
+    const operationHash = scriptOperationContractHash(operationElement);
+    if (operationHash !== row.operation_hash) {
+      throw new AgentCoreError(
+        'RESOURCE_HASH_CONFLICT',
+        '绑定操作已经变化，旧脚本契约不能继续使用',
+        ['重新定义脚本契约后再读取脚本编辑上下文'],
+        409,
+        { actual_operation_hash: operationHash, retryable: false },
+      );
+    }
+    const spec = parseWorkingPackageSpec(workingPackage.files);
+    const existing = (spec.scripts ?? []).find((item) => item.key === scriptKey);
+    if (existing && existing.entrypoint !== contract.entrypoint) {
+      throw new AgentCoreError(
+        'SCRIPT_ENTRYPOINT_IMMUTABLE',
+        '已有脚本的 entrypoint 与当前契约不一致',
+        ['保持原 entrypoint；脚本文件重命名需要独立的引用预览和原子迁移'],
+        409,
+        { existing_entrypoint: existing.entrypoint, requested_entrypoint: contract.entrypoint },
+      );
+    }
+    return {
+      workingPackage,
+      contract,
+      contractHash: row.contract_hash,
+      operationHash,
+      spec,
+      existing,
+      scaffold: !existing || isCoreManagedPythonScaffold(existing.sourceCode),
+      sourceCode: existing?.sourceCode ?? buildPythonScriptScaffold(contract),
+    };
+  }
+
+  private async getScriptEditContext(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const key = domainKey(args.script_key, '脚本');
+    const requestedSymbols = [...new Set(stringArray(args.symbols).map((item) => item.trim()).filter(Boolean))];
+    const state = await this.scriptEditState(context, key);
+    let index: ReturnType<typeof selectPythonSourceSymbols>;
+    try {
+      index = selectPythonSourceSymbols(state.sourceCode, requestedSymbols);
+    } catch (error) {
+      throw new AgentCoreError(
+        'INVALID_SCRIPT_SOURCE',
+        error instanceof Error ? error.message : '无法解析 Python 脚本符号',
+        ['修复当前脚本语法，或从最新符号索引重新选择目标'],
+        409,
+        { retryable: false },
+      );
+    }
+    const operation = state.spec.operations.find((item) => item.key === state.contract.boundOperation);
+    return {
+      working_revision: state.workingPackage.workingRevision,
+      script_key: key,
+      contract_hash: state.contractHash,
+      operation_contract_hash: state.operationHash,
+      base_source_hash: index.baseSourceHash,
+      canonical_source_hash: index.canonicalSourceHash,
+      imports: index.imports,
+      scaffold: state.scaffold,
+      contract: scriptContractView(state.contract),
+      operation: operation ? {
+        key: operation.key,
+        title: operation.title,
+        description: operation.description,
+        inputs: operation.inputs,
+        outputs: operation.outputs,
+        flow: operation.flow,
+        related_objects: operation.relatedObjects,
+      } : undefined,
+      symbols: index.symbols.map((symbol) => ({
+        kind: symbol.kind,
+        qualified_name: symbol.qualifiedName,
+        node_hash: symbol.nodeHash,
+        dependencies: symbol.dependencies,
+        ...(requestedSymbols.length ? { source: symbol.source } : {}),
+      })),
+      editable_kinds: ['replace_function', 'replace_assignment', 'insert_before_function'],
+      next: requestedSymbols.length
+        ? ['只提交目标符号所需的最小补丁，并携带当前源码与节点哈希']
+        : ['指定需要修改的 symbols 再读取源码；新增脚本优先选择 run_business_logic'],
+      display: {
+        text: requestedSymbols.length
+          ? `已返回脚本《${state.contract.title}》的 ${index.symbols.length} 个目标符号`
+          : `已返回脚本《${state.contract.title}》的符号索引`,
+      },
+    };
+  }
+
+  private async stageScriptPatch(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const tool = 'stage_script_patch';
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+    const key = domainKey(args.script_key, '脚本');
+    const expectedRevision = text(args.expected_revision, 'expected_revision');
+    const expectedContractHash = text(args.expected_contract_hash, 'expected_contract_hash');
+    const baseSourceHash = text(args.base_source_hash, 'base_source_hash');
+    const state = await this.scriptEditState(context, key, {
+      expectedRevision,
+      expectedContractHash,
+    });
+    const rawEdits = requiredObjectArray(args.edits, 'edits');
+    if (!rawEdits.length || rawEdits.length > 20) {
+      throw new AgentCoreError('INVALID_SCRIPT_PATCH', 'edits 必须包含 1 到 20 个符号补丁', [], 400);
+    }
+    const edits: PythonSourceEdit[] = rawEdits.map((raw, index) => {
+      const kind = text(raw.kind, `edits[${index}].kind`);
+      if (!['replace_function', 'replace_assignment', 'insert_before_function'].includes(kind)) {
+        throw new AgentCoreError(
+          'INVALID_SCRIPT_PATCH',
+          `edits[${index}].kind 不属于允许的脚本补丁类型`,
+          [],
+          400,
+        );
+      }
+      const symbol = text(raw.symbol, `edits[${index}].symbol`);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(symbol)) {
+        throw new AgentCoreError('INVALID_SCRIPT_PATCH', `非法 Python 顶层符号：${symbol}`, [], 400);
+      }
+      if (state.scaffold && kind === 'replace_function' && symbol !== 'run_business_logic') {
+        throw new AgentCoreError(
+          'SCAFFOLD_NODE_IMMUTABLE',
+          `新增脚本不能修改 Core 脚手架函数 ${symbol}`,
+          ['只替换 run_business_logic；辅助函数使用 insert_before_function 新增'],
+          409,
+          { retryable: false },
+        );
+      }
+      if (state.scaffold && kind === 'replace_assignment') {
+        throw new AgentCoreError(
+          'SCAFFOLD_NODE_IMMUTABLE',
+          `新增脚本不能修改 Core 脚手架常量 ${symbol}`,
+          ['把领域常量放入业务函数或新增辅助函数，不要修改输出契约常量'],
+          409,
+          { retryable: false },
+        );
+      }
+      return {
+        kind: kind as PythonSourceEdit['kind'],
+        symbol,
+        source: text(raw.source, `edits[${index}].source`, true),
+        expectedNodeHash: text(raw.expected_node_hash, `edits[${index}].expected_node_hash`),
+      } as PythonSourceEdit;
+    });
+    let sourceCode: string;
+    try {
+      sourceCode = applyPythonSourceEdits(state.sourceCode, edits, {
+        expectedBaseSourceHash: baseSourceHash,
+        requireNodeHashes: true,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Python 符号补丁无法应用';
+      const conflict = /基线源码已变化|目标节点已变化/u.test(message);
+      throw new AgentCoreError(
+        conflict ? 'SCRIPT_PATCH_CONFLICT' : 'INVALID_SCRIPT_PATCH',
+        message,
+        conflict
+          ? ['重新调用 get_script_edit_context 获取当前源码与节点哈希后再生成补丁']
+          : ['按当前符号索引修正补丁源码、目标或补丁类型'],
+        conflict ? 409 : 400,
+        { retryable: false },
+      );
+    }
+    const staged = await this.stageScriptSource(workspace, context, {
+      script_key: key,
+      plan_task_id: args.plan_task_id,
+      expected_revision: expectedRevision,
+      expected_contract_hash: expectedContractHash,
+      mutation_id: `patch-compile-${requestHash.replace(/^sha256:/u, '').slice(0, 32)}`,
+      reason: text(args.reason, 'reason'),
+      source_code: sourceCode,
+    }, 'stage_script_patch');
+    const response = {
+      ...staged,
+      base_source_hash: baseSourceHash,
+      scaffold: state.scaffold,
+      applied_edits: edits.map((edit) => ({ kind: edit.kind, symbol: edit.symbol })),
+      display: { text: `脚本《${state.contract.title}》的 ${edits.length} 个符号补丁已形成待确认修改` },
+    };
+    this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
+    return response;
+  }
+
   private async stageScriptSource(
     workspace: WorkspaceRow,
     context: AgentToolContext,
     args: Record<string, unknown>,
+    plannedTool = 'stage_script_source',
   ) {
     const tool = 'stage_script_source';
     const mutationId = text(args.mutation_id, 'mutation_id');
@@ -2472,6 +2758,12 @@ export class AgentCoreService {
       `script-${sourceHash.slice('sha256:'.length, 'sha256:'.length + 20)}`,
       contract.evidence ?? [],
       `脚本 ${key} 的契约、源码和操作绑定`,
+      {
+        runId: context.runId,
+        taskId: String(args.plan_task_id ?? '').trim(),
+        tool: plannedTool,
+        targetKey: key,
+      },
     );
     const response = {
       working_revision: (await this.workbenchStudioFiles(context.project, context.username)).workingRevision,
@@ -3829,8 +4121,29 @@ export class AgentCoreService {
     };
   }
 
-  private async readFile(workspace: WorkspaceRow, args: Record<string, unknown>) {
+  private async readFile(
+    workspace: WorkspaceRow,
+    args: Record<string, unknown>,
+    context?: AgentToolContext,
+  ) {
     const path = packagePath(text(args.path, 'path'));
+    if (context && MANAGED_SCRIPT_SOURCE_PATH.test(path) && this.usesScriptContract(context)) {
+      throw new AgentCoreError(
+        'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
+        `${path} 是脚本契约受管源码，不能通过通用文件读取进入模型上下文`,
+        ['使用 get_script_edit_context 读取符号索引，再只请求目标符号及直接依赖'],
+        409,
+        {
+          managedPath: path,
+          requiredAction: 'redirect_tool',
+          requiredTool: 'get_script_edit_context',
+          targetKind: 'script_source',
+          issueId: stableAgentIssueId('managed-script-read', path),
+          contractVersion: 'script-contract-v1',
+          retryable: false,
+        },
+      );
+    }
     const { files } = await this.overlay(workspace);
     if (!(path in files)) {
       throw new AgentCoreError('FILE_NOT_FOUND', `知识包文件不存在：${path}`, ['调用 list_dir 核对路径'], 404);
@@ -4536,6 +4849,12 @@ export class AgentCoreService {
     changeGroup: string,
     evidence: string[],
     reason: string,
+    scriptGateContext?: {
+      runId: string;
+      taskId: string;
+      tool: string;
+      targetKey: string;
+    },
   ) {
     assertMaterialEvidenceReferences(workspace.project_id, evidence);
     const declaredDetailPath = renderedPaths.find((path) => !path.endsWith('/index.md')
@@ -4559,7 +4878,7 @@ export class AgentCoreService {
       && path !== 'mappings/object-data-mappings.json'
       && rendered[path] !== current.files[path]
     )) ?? declaredDetailPath;
-    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath);
+    if (detailPath) await this.assertCandidateStageGate(workspace, detailPath, scriptGateContext);
     const currentFiles = current.files;
     await this.discardFrozenCandidate(workspace, context, '领域结构继续修改，旧确认请求已失效');
     this.db.exec('SAVEPOINT agent_domain_compile');
@@ -4701,12 +5020,12 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'MANAGED_FILE_REQUIRES_DOMAIN_TOOL',
         `${path} 是脚本契约受管文件，不能直接写入`,
-        ['使用 get_script_contract 核对契约，再通过 stage_script_source 提交源码'],
+        ['使用 get_script_edit_context 读取当前符号与哈希，再通过 stage_script_patch 提交最小补丁'],
         409,
         {
           managedPath: path,
           requiredAction: 'redirect_tool',
-          requiredTool: 'stage_script_source',
+          requiredTool: 'stage_script_patch',
           targetKind: 'script_source',
           issueId: stableAgentIssueId('managed-script', path),
           contractVersion: 'script-contract-v1',
@@ -4862,7 +5181,7 @@ export class AgentCoreService {
         {
           managedPath: path,
           requiredAction: 'redirect_tool',
-          requiredTool: 'stage_script_source',
+          requiredTool: 'stage_script_patch',
           targetKind: 'script_source',
           issueId: stableAgentIssueId('managed-script-delete', path),
           contractVersion: 'script-contract-v1',
@@ -5002,7 +5321,16 @@ export class AgentCoreService {
     };
   }
 
-  private async assertCandidateStageGate(workspace: WorkspaceRow, path: string) {
+  private async assertCandidateStageGate(
+    workspace: WorkspaceRow,
+    path: string,
+    scriptGateContext?: {
+      runId: string;
+      taskId: string;
+      tool: string;
+      targetKey: string;
+    },
+  ) {
     if (path.startsWith('.modeling/')) return;
     const registered = path.startsWith('diagrams/') || path.startsWith('scripts/')
       || /^(objects|operations|rules|metrics|mappings)\//u.test(path)
@@ -5054,11 +5382,32 @@ export class AgentCoreService {
         /^(objects|operations|rules|metrics)\/.+\.md$/u.test(candidate)
         && !candidate.endsWith('/index.md')
       ));
-      const knowledgePending = changes.some((change) => (
+      const pendingKnowledgeChanges = changes.filter((change) => (
         !isHiddenCandidateGroup(change.group_id)
         && /^(objects|operations|rules|metrics)\//u.test(change.path)
       ));
-      const knowledgeConfirmed = !knowledgePending && (trustedProcessBaseline
+      const plannedAuthorization = scriptGateContext?.taskId
+        ? this.changeControl.scriptCandidateDependencyAuthorization({
+          projectId: workspace.project_id,
+          runId: scriptGateContext.runId,
+          taskId: scriptGateContext.taskId,
+          tool: scriptGateContext.tool,
+          targetKey: scriptGateContext.targetKey,
+        })
+        : null;
+      // Published baselines can stage a script together with knowledge edits, but only when every
+      // visible knowledge candidate is proven to come from the script task's staged dependencies.
+      const plannedKnowledgeDependencies = Boolean(
+        trustedProcessBaseline
+        && plannedAuthorization
+        && pendingKnowledgeChanges.length > 0
+        && pendingKnowledgeChanges.every((change) => (
+          plannedAuthorization.allowedGroupIds.includes(change.group_id)
+          && plannedAuthorization.allowedPaths.includes(change.path)
+        )),
+      );
+      const knowledgeConfirmed = (!pendingKnowledgeChanges.length || plannedKnowledgeDependencies)
+        && (trustedProcessBaseline
         || (processConfirmed && knowledgePaths.length > 0
           && knowledgePaths.every((candidate) => confirmed.has(candidate))));
       if (knowledgeConfirmed) return;
@@ -5680,7 +6029,7 @@ export class AgentCoreService {
         content: change.kind === 'write' ? change.content : null,
       }));
       this.assertScriptCandidatesTested(workspace, candidateChanges);
-      await this.assertFrozenCandidateValid(workspace, candidate);
+      const materialReview = await this.assertFrozenCandidateValid(workspace, candidate);
       const validationReceipt = this.recordCandidateValidationReceipt(candidate);
       return {
         candidate_revision: candidate.id,
@@ -5688,6 +6037,7 @@ export class AgentCoreService {
         change_groups: groups.map((group) => ({ ...group, autoApproved: false })),
         auto_approved: false,
         atomic_selection: candidate.groups.some((group) => group.id === COMPILED_RESOURCES_GROUP),
+        ...materialPurposeReviewPayload(materialReview),
         ...(focusPath ? { focus: { kind: 'diff', target: publicPath(focusPath) } } : {}),
         display: { text: '多来源融合会整体替换当前知识包，需要确认后才会生效' },
       };
@@ -5723,8 +6073,9 @@ export class AgentCoreService {
     }
     for (const group of requested) this.assertTier(group, changes.filter((item) => item.group_id === group.id));
     this.assertScriptCandidatesTested(workspace, changes);
+    let materialReview: MaterialPurposeReviewValidation | undefined;
     if (changes.some((item) => !item.path.startsWith('.modeling/'))) {
-      await this.assertCandidateFormatValid(workspace, changes);
+      materialReview = await this.assertCandidateFormatValid(workspace, changes);
     }
 
     let candidate: PackageCandidateRevision;
@@ -5800,36 +6151,57 @@ export class AgentCoreService {
       change_groups: publicGroups.map((group) => ({ ...group, autoApproved: !askGroups.some((item) => item.id === group.id) })),
       auto_approved: askGroups.length === 0,
       atomic_selection: atomicSelection,
+      ...materialPurposeReviewPayload(materialReview),
       ...(focusPath ? { focus: { kind: 'diff', target: focusPath } } : {}),
       display: { text: askGroups.length ? `有 ${askGroups.length} 组变更需要确认` : '候选变更符合项目自动确认策略' },
     };
   }
 
-  private async assertCandidateFormatValid(workspace: WorkspaceRow, changes: ChangeRow[]) {
+  private async assertCandidateFormatValid(
+    workspace: WorkspaceRow,
+    changes: ChangeRow[],
+  ): Promise<MaterialPurposeReviewValidation> {
     const candidate = await this.overlay(workspace, changes);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
-    this.assertMaterialPurposeReviews(workspace.project_id, candidate.spec, {
-      requireObjectMappings: candidateRequiresObjectMappings(changes.map((change) => change.path)),
-    });
+    const materialReview = this.assertMaterialPurposeReviews(
+      workspace.project_id,
+      base.spec,
+      candidate.spec,
+      {
+        requireObjectMappings: candidateRequiresObjectMappings(changes.map((change) => change.path)),
+        changedPaths: changes.map((change) => change.path),
+      },
+    );
     this.assertObjectSourcePolicy(workspace, candidate, changes.map((change) => change.path));
     this.assertPackageFilesValid(base, candidate);
+    return materialReview;
   }
 
-  private async assertFrozenCandidateValid(workspace: WorkspaceRow, candidate: PackageCandidateRevision) {
+  private async assertFrozenCandidateValid(
+    workspace: WorkspaceRow,
+    candidate: PackageCandidateRevision,
+  ): Promise<MaterialPurposeReviewValidation> {
     const preview = await this.artifacts.previewCandidateRevision(workspace.project_id, candidate.id);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, candidate.baseRevision);
     const candidatePaths = candidate.groups.flatMap((group) => (
       group.changes.map((change) => publicPath(change.path))
     ));
-    this.assertMaterialPurposeReviews(workspace.project_id, preview.spec, {
-      requireObjectMappings: candidateRequiresObjectMappings(candidatePaths),
-    });
+    const materialReview = this.assertMaterialPurposeReviews(
+      workspace.project_id,
+      base.spec,
+      preview.spec,
+      {
+        requireObjectMappings: candidateRequiresObjectMappings(candidatePaths),
+        changedPaths: candidatePaths,
+      },
+    );
     this.assertObjectSourcePolicy(
       workspace,
       preview,
       candidatePaths,
     );
     this.assertPackageFilesValid(base, preview);
+    return materialReview;
   }
 
   private assertObjectSourcePolicy(
@@ -5839,8 +6211,7 @@ export class AgentCoreService {
   ): void {
     const plan = this.changeControl.activePlan(workspace.project_id, workspace.run_id);
     const touchesObjects = changedPaths.some((path) => (
-      path === INTERNAL_SPEC_CHANGE_PATH
-      || path === OBJECT_DATA_MAPPING_PATH
+      path === OBJECT_DATA_MAPPING_PATH
       || /^objects\//u.test(path)
     ));
     const physicalTables = schemaTables(this.tables(workspace.project_id));
@@ -5870,43 +6241,64 @@ export class AgentCoreService {
 
   private assertMaterialPurposeReviews(
     projectId: string,
-    spec: PackageSpec,
-    options: { requireObjectMappings: boolean },
-  ): void {
-    const allProblems = findMaterialPurposeReviewProblems(this.db, projectId, spec);
-    const problems = options.requireObjectMappings
-      ? allProblems
-      : allProblems.filter((problem) => problem.code === 'MATERIAL_PURPOSE_REVIEW_REQUIRED');
-    if (!problems.length) return;
-    const pending = problems.filter((problem) => problem.code === 'MATERIAL_PURPOSE_REVIEW_REQUIRED');
-    const affectedSheetCount = new Set(problems.flatMap((problem) => (
-      problem.sheet ? [`${problem.documentId}\u0000${problem.sheet}`] : []
-    ))).size;
-    throw new AgentCoreError(
-      pending.length ? 'MATERIAL_PURPOSE_REVIEW_REQUIRED' : 'SCHEMA_SHEET_MAPPING_INCOMPLETE',
-      pending.length
-        ? `建模资料用途尚未确认：${pending.map((problem) => problem.filename).join('、')}`
-        : `数据 Schema 与对象映射不一致：还有 ${affectedSheetCount} 张 Sheet 的结构化对象来源尚未闭环`,
-      pending.length
-        ? ['等待用户在资料页确认文件用途和每张 Sheet 的处置后，再重新发起候选确认']
-        : ['调用 get_schema_mapping_plan 对照完整台账，补齐全部对象来源后再重新发起确认；不要重复提交相同候选'],
-      409,
-      {
-        problems,
-        requiresUserConfirmation: pending.length > 0,
-        retryable: false,
-        validatorVersion: 'material-source-mapping-v2',
-        findingCount: problems.length,
-        findings: problems.map((problem) => ({
-          ruleId: problem.code,
-          path: 'mappings/object-data-mappings.json',
-          message: problem.message,
-          suggestion: pending.length
-            ? '等待用户完成资料用途确认'
-            : '通过对象领域工具补齐该 Sheet 的结构化来源绑定',
-        })),
-      },
+    baselineSpec: PackageSpec,
+    candidateSpec: PackageSpec,
+    options: { requireObjectMappings: boolean; changedPaths: string[] },
+  ): MaterialPurposeReviewValidation {
+    const baseline = findMaterialPurposeReviewProblems(this.db, projectId, baselineSpec);
+    const candidate = findMaterialPurposeReviewProblems(this.db, projectId, candidateSpec);
+    const baselineFingerprints = new Set(
+      baseline.map((problem) => materialPurposeReviewProblemFingerprint(problem)),
     );
+    const mappingScopeChanged = options.changedPaths.some((path) => (
+      path === OBJECT_DATA_MAPPING_PATH
+      || /^objects\//u.test(path)
+    ));
+    const pending = candidate.filter((problem) => (
+      problem.code === 'MATERIAL_PURPOSE_REVIEW_REQUIRED'
+    ));
+    const introducedMapping = options.requireObjectMappings
+      ? candidate.filter((problem) => (
+        isMaterialMappingProblem(problem)
+        && (!baselineFingerprints.has(materialPurposeReviewProblemFingerprint(problem)) || mappingScopeChanged)
+      ))
+      : [];
+    const introduced = [...pending, ...introducedMapping.filter((problem) => !pending.includes(problem))];
+    if (introduced.length) {
+      const mappingProblems = introduced.filter(isMaterialMappingProblem);
+      const affectedSheetCount = new Set(mappingProblems.flatMap((problem) => (
+        problem.sheet ? [`${problem.documentId}\u0000${problem.sheet}`] : []
+      ))).size;
+      throw new AgentCoreError(
+        pending.length ? 'MATERIAL_PURPOSE_REVIEW_REQUIRED' : 'SCHEMA_SHEET_MAPPING_INCOMPLETE',
+        pending.length
+          ? `建模资料用途尚未确认：${pending.map((problem) => problem.filename).join('、')}`
+          : `数据 Schema 与对象映射不一致：还有 ${affectedSheetCount} 张 Sheet 的结构化对象来源尚未闭环`,
+        pending.length
+          ? ['等待用户在资料页确认文件用途和每张 Sheet 的处置后，再重新发起候选确认']
+          : ['调用 get_schema_mapping_plan 对照完整台账，补齐本次涉及的对象来源后再重新发起确认；不要重复提交相同候选'],
+        409,
+        {
+          problems: introduced,
+          baselineProblems: baseline,
+          baselineFindingCount: baseline.length,
+          introducedFindingCount: introduced.length,
+          requiresUserConfirmation: pending.length > 0,
+          retryable: false,
+          validatorVersion: 'material-source-mapping-v3',
+          findingCount: introduced.length,
+          findings: introduced.map((problem) => ({
+            ruleId: problem.code,
+            path: 'mappings/object-data-mappings.json',
+            message: problem.message,
+            suggestion: problem.code === 'MATERIAL_PURPOSE_REVIEW_REQUIRED'
+              ? '等待用户完成资料用途确认'
+              : '通过对象领域工具补齐本次涉及 Sheet 的结构化来源绑定',
+          })),
+        },
+      );
+    }
+    return { baseline, candidate, introduced };
   }
 
   private assertPackageFilesValid(
@@ -6344,13 +6736,26 @@ export class AgentCoreService {
 
   private async gateStatus(workspace: WorkspaceRow, args: Record<string, unknown>) {
     const gate = text(args.gate, 'gate');
+    const gates = await this.computeGates(workspace);
+    const result = gates[gate];
+    if (!result) {
+      throw new AgentCoreError('GATE_NOT_FOUND', `未知门禁：${gate}`, [`可用门禁：${Object.keys(gates).join('、')}`], 400);
+    }
+    const gateLabel = GATE_LABELS[gate] || '当前条件';
+    return { gate, ...result, display: { text: result.pass ? `“${gateLabel}”已通过` : `“${gateLabel}”还有 ${result.blockers.length} 项未完成` } };
+  }
+
+  /** 一次算出全部门禁。谓词之间共享同一份候选叠加和确认记录，分开算既慢又可能互相矛盾。 */
+  private async computeGates(workspace: WorkspaceRow): Promise<GateResults> {
     const documents = listDocuments(workspace.project_id);
     const parsed = documents.filter((item) => item.parseStatus === 'parsed').length;
     const failed = documents.filter((item) => item.parseStatus === 'failed');
     const confirmedPaths = this.confirmedPaths(workspace.project_id);
-    const { files, spec: workingSpec } = await this.overlay(workspace);
+    const workspaceChanges = this.changes(workspace);
+    const { files, spec: storedWorkingSpec } = await this.overlay(workspace, workspaceChanges);
+    const workingSpec = resolveAgentStudioSpec(storedWorkingSpec, files, workspaceChanges);
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
-    const pendingPaths = new Set(this.changes(workspace).map((change) => change.path));
+    const pendingPaths = new Set(workspaceChanges.map((change) => change.path));
     const diagramPaths = Object.keys(files).filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd'));
     const knowledgePaths = Object.keys(files).filter((path) => /^(objects|operations|rules|metrics)\/.+\.md$/.test(path)
       && !path.endsWith('/index.md'));
@@ -6369,7 +6774,7 @@ export class AgentCoreService {
     const knowledgeConfirmed = ![...pendingPaths].some((path) => /^(objects|operations|rules|metrics)\//u.test(path))
       && (trustedProcessBaseline || (processConfirmed && knowledgePaths.length > 0
         && knowledgePaths.every((path) => confirmedPaths.has(path))));
-    const pendingBusiness = this.changes(workspace).filter((item) => (
+    const pendingBusiness = workspaceChanges.filter((item) => (
       item.group_id !== RUNTIME_GROUP && item.group_id !== LEGACY_RUNTIME_GROUP
     )).length;
     const pendingCandidates = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM artifact_candidate_revisions
@@ -6395,11 +6800,12 @@ export class AgentCoreService {
           && result?.groundTruth === testcase.groundTruth
           && result?.verdict === 'pass';
       });
-    const releasedContent = gate === 'releasable'
-      ? await this.equivalentReleasedRevision(workspace.project_id, workspace.base_revision_oid)
-      : null;
+    const releasedContent = await this.equivalentReleasedRevision(
+      workspace.project_id,
+      workspace.base_revision_oid,
+    );
 
-    const gates: Record<string, { pass: boolean; blockers: string[]; warnings?: string[] }> = {
+    const gates: GateResults = {
       materials_ready: {
         // 单份扫描件或损坏文件应即时告警，但不能让其他可读资料的建模永久停摆。
         pass: parsed > 0 || importedPackageBaseline,
@@ -6480,12 +6886,7 @@ export class AgentCoreService {
         ? []
         : ['由项目负责人确认真实用例覆盖和稳定版本号，并完成正式发布'],
     };
-    const result = gates[gate];
-    if (!result) {
-      throw new AgentCoreError('GATE_NOT_FOUND', `未知门禁：${gate}`, [`可用门禁：${Object.keys(gates).join('、')}`], 400);
-    }
-    const gateLabel = GATE_LABELS[gate] || '当前条件';
-    return { gate, ...result, display: { text: result.pass ? `“${gateLabel}”已通过` : `“${gateLabel}”还有 ${result.blockers.length} 项未完成` } };
+    return gates;
   }
 
   private confirmedPaths(projectId: string): Set<string> {
@@ -7039,20 +7440,13 @@ export class AgentCoreService {
     workspace: WorkspaceRow,
     changes: Array<{ path: string; kind: 'write' | 'delete'; content: string | Uint8Array | null }>,
   ) {
-    const scriptWrites = changes.filter((change) => (
-      change.kind === 'write' && publicPath(change.path).startsWith('scripts/')
-    ));
-    if (!scriptWrites.length) return;
-    const executableWrites = scriptWrites.filter((change) => publicPath(change.path).endsWith('.py'));
-    const missing = executableWrites.filter((change) => {
-      const path = publicPath(change.path);
-      const sourceHash = scriptSourceHash(change.content ?? '');
-      return !this.db.prepare(`SELECT 1 FROM agent_script_test_receipts
-        WHERE project_id = ? AND run_id = ? AND script_path = ? AND source_hash = ?`)
-        .get(workspace.project_id, workspace.run_id, path, sourceHash);
-    }).map((change) => publicPath(change.path));
-    if (!executableWrites.length || missing.length) {
-      const blockers = missing.length ? missing : scriptWrites.map((change) => publicPath(change.path));
+    const blockers = untestedScriptPaths(
+      workspace.project_id,
+      workspace.run_id,
+      changes,
+      this.db,
+    );
+    if (blockers.length) {
       throw new AgentCoreError(
         'SCRIPT_TEST_REQUIRED',
         '脚本候选尚未在隔离环境通过当前版本测试',
@@ -7401,6 +7795,17 @@ function parseWorkingPackageSpec(files: Record<string, string>): PackageSpec {
   return internal ? JSON.parse(internal) as PackageSpec : parseRenderedPackageFiles(files);
 }
 
+function resolveAgentStudioSpec(
+  storedSpec: PackageSpec,
+  files: Record<string, string>,
+  changes: ChangeRow[],
+): PackageSpec {
+  const internalSpecChange = changes.find((change) => change.path === INTERNAL_SPEC_CHANGE_PATH);
+  return internalSpecChange?.kind === 'write'
+    ? storedSpec
+    : resolveStudioWorkingSpec(storedSpec, files);
+}
+
 function workspacePackageDataSourceType(
   projectId: string,
   currentSpec: PackageSpec,
@@ -7605,11 +8010,13 @@ function scriptOperationContractHash(element: StudioElement): string {
   return hashStructuredValue('script-operation-contract-v1', {
     key: element.key,
     values,
-    relations: element.relations.map((relation) => ({
-      kind: relation.kind,
-      targetId: relation.targetId,
-      label: relation.label,
-    })),
+    relations: element.relations
+      .filter((relation) => !relation.targetId.startsWith('script:'))
+      .map((relation) => ({
+        kind: relation.kind,
+        targetId: relation.targetId,
+        label: relation.label,
+      })),
   });
 }
 
@@ -8374,8 +8781,41 @@ function publicPath(path: string): string {
 
 function candidateRequiresObjectMappings(paths: Iterable<string>): boolean {
   return [...paths].some((path) => (
-    /^(?:objects|operations|rules|metrics|mappings)\//u.test(path)
+    path === OBJECT_DATA_MAPPING_PATH
+      || /^objects\//u.test(path)
   ));
+}
+
+function isMaterialMappingProblem(problem: MaterialPurposeReviewProblem): boolean {
+  return problem.code !== 'MATERIAL_PURPOSE_REVIEW_REQUIRED';
+}
+
+function materialPurposeReviewPayload(
+  validation: MaterialPurposeReviewValidation | undefined,
+) {
+  if (!validation || !validation.baseline.length) return {};
+  const baselineWarnings = validation.baseline.filter((problem) => (
+    !validation.introduced.some((item) => (
+      materialPurposeReviewProblemFingerprint(item)
+        === materialPurposeReviewProblemFingerprint(problem)
+    ))
+  ));
+  return {
+    validation_summary: {
+      validator_version: 'material-source-mapping-v3',
+      baseline_finding_count: validation.baseline.length,
+      baseline_warning_count: baselineWarnings.length,
+      introduced_finding_count: validation.introduced.length,
+      baseline_warnings: baselineWarnings.map((problem) => ({
+        ruleId: problem.code,
+        documentId: problem.documentId,
+        filename: problem.filename,
+        ...(problem.sheet ? { sheet: problem.sheet } : {}),
+        ...(problem.affectedObjectKeys?.length ? { affectedObjectKeys: problem.affectedObjectKeys } : {}),
+        message: problem.message,
+      })),
+    },
+  };
 }
 
 function knowledgePackageFiles(files: Record<string, string>): Record<string, string> {
@@ -8745,7 +9185,5 @@ function workingContentRevision(baseRevision: string, files: Record<string, stri
 }
 
 export function scriptSourceHash(source: string | Uint8Array): string {
-  const text = typeof source === 'string' ? source : Buffer.from(source).toString('utf8');
-  const canonical = `${text.replace(/\r\n?/gu, '\n').replace(/\n+$/u, '')}\n`;
-  return `sha256:${createHash('sha256').update('agent-script-test-v1\0').update(canonical).digest('hex')}`;
+  return scriptTestSourceHash(source);
 }

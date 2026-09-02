@@ -22,6 +22,7 @@ export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent
   method: 'PUT', body: JSON.stringify({ dataSourceType }),
 });
 export const getAgentState = (id) => api(`${P(id)}/agent/state`);
+export const getProgress = (id) => api(`${P(id)}/agent/progress`);
 export const getPackageFile = (id, path) => api(
   `${P(id)}/agent/file?path=${encodeURIComponent(path)}`,
 );
@@ -120,6 +121,9 @@ export const locateEvidence = (id, reference) => api(
 );
 export const startAgent = (id, message, baselineRevision = '') => api(`${P(id)}/agent/runs`, {
   method: 'POST', body: JSON.stringify({ message, baselineRevision }),
+});
+export const startAgentIncrementRound = (id) => api(`${P(id)}/agent/increment/start`, {
+  method: 'POST', body: '{}',
 });
 export const steerAgent = (id, message, options = {}) => api(`${P(id)}/agent/steer`, {
   method: 'POST', body: JSON.stringify({

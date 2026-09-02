@@ -55,6 +55,7 @@ test('脚本契约只通过 JiuwenBox 创建、执行并释放一次性沙箱', 
   assert.equal(calls[1].body.command.includes('/bin/sh'), false);
   const runner = String(calls[1].body.command[3]);
   assert.doesNotMatch(runner, /runpy|case\.get\("function"\)/u);
+  assert.match(runner, /expected_error = expected\.get\("error"\)/u);
   assert.deepEqual(
     JSON.parse(Buffer.from(calls[1].body.command[5], 'base64').toString('utf8')),
     [{ argv: ['--left', '1', '--right', '2'], expected: 3 }],

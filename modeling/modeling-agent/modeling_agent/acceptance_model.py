@@ -325,7 +325,7 @@ def _script_turn(prompt: str, calls: list[CompletedCall], available: set[str]) -
                 "title": "生成合成汇总脚本",
                 "resource_kind": "script",
                 "target_key": "synthetic_summary_script",
-                "allowed_tools": ["stage_script_source"],
+                "allowed_tools": ["stage_script_patch"],
                 "depends_on": [],
                 "acceptance": "源码通过安全检查及 1+2、0+0 两个契约用例",
                 "required": True,
@@ -352,22 +352,46 @@ def _script_turn(prompt: str, calls: list[CompletedCall], available: set[str]) -
             "boundaries": ["left 和 right 必须是非负整数"],
             "evidence": ["合成浏览器脚本验收"],
         }, available)
-    if not _has_call(calls, "get_script_contract"):
-        return _tool("get_script_contract", {"script_key": "synthetic_summary_script"}, available)
-    contract = _latest_result(calls, "get_script_contract")
-    source_calls = [call for call in calls if call.name == "stage_script_source"]
+    context_calls = [call for call in calls if call.name == "get_script_edit_context"]
+    if not context_calls:
+        return _tool("get_script_edit_context", {"script_key": "synthetic_summary_script"}, available)
+    source_calls = [call for call in calls if call.name == "stage_script_patch"]
     test_calls = [call for call in calls if call.name == "run_script_test"]
     needs_second_source = "测试通过后" in prompt and len(source_calls) == 1 and len(test_calls) >= 1
+    latest_context = context_calls[-1]
+    context_result = latest_context.result
+    context_has_source = any(item.get("source") for item in context_result.get("symbols", []))
+    latest_source_index = source_calls[-1].index if source_calls else -1
+    if not context_has_source or latest_context.index < latest_source_index:
+        return _tool("get_script_edit_context", {
+            "script_key": "synthetic_summary_script",
+            "symbols": ["run_business_logic"],
+        }, available)
     if not source_calls or needs_second_source:
         second = bool(source_calls)
-        return _tool("stage_script_source", {
+        business_source = [
+            "def run_business_logic(inputs):",
+            "    left = int(inputs[\"left\"])",
+            "    right = int(inputs[\"right\"])",
+            "    if left < 0 or right < 0:",
+            "        raise ValueError(\"left and right must be non-negative\")",
+            f"    return {{\"total\": left + right{(' + 0' if second else '')}}}",
+        ]
+        target = next(item for item in context_result.get("symbols", []) if item.get("qualified_name") == "run_business_logic")
+        return _tool("stage_script_patch", {
             "script_key": "synthetic_summary_script",
             "plan_task_id": plan["tasks"][0]["id"],
             "expected_revision": _working_revision(calls),
-            "expected_contract_hash": contract.get("contract_hash", ""),
-            "mutation_id": f"acceptance-script-source-{2 if second else 1}",
-            "reason": "提交当前合成汇总脚本源码",
-            "source_code": _script_source(second),
+            "expected_contract_hash": context_result.get("contract_hash", ""),
+            "base_source_hash": context_result.get("base_source_hash", ""),
+            "mutation_id": f"acceptance-script-patch-{2 if second else 1}",
+            "reason": "提交当前合成汇总脚本业务函数补丁",
+            "edits": [{
+                "kind": "replace_function",
+                "symbol": "run_business_logic",
+                "expected_node_hash": target.get("node_hash", ""),
+                "source": "\n".join(business_source),
+            }],
         }, available)
     if len(test_calls) < len(source_calls):
         return _tool("run_script_test", {
@@ -542,27 +566,6 @@ def _patch_actions(kind: str, prompt: str, resource: dict[str, Any]) -> list[dic
         return [{"op": "add_boundary", "value": _quoted_after(prompt, "边界补充") or "取消的测试订单不计入"}]
     value = _quoted_after(prompt, "复核通过率说明") or _quoted_after(prompt, "说明改成")
     return [{"op": "set_description", "value": value or "复核通过率说明已完成合成浏览器验收更新。"}]
-
-
-def _script_source(second: bool) -> str:
-    variable = "result" if second else "total"
-    return (
-        "import argparse\n"
-        "import json\n\n"
-        "def main(left: int, right: int):\n"
-        "    if left < 0 or right < 0:\n"
-        "        raise ValueError('inputs must be non-negative')\n"
-        f"    {variable} = left + right\n"
-        f"    return {{'total': {variable}}}\n\n"
-        "def cli():\n"
-        "    parser = argparse.ArgumentParser()\n"
-        "    parser.add_argument('--left', type=int, required=True)\n"
-        "    parser.add_argument('--right', type=int, required=True)\n"
-        "    args = parser.parse_args()\n"
-        "    print(json.dumps(main(args.left, args.right), ensure_ascii=False))\n\n"
-        "if __name__ == '__main__':\n"
-        "    cli()\n"
-    )
 
 
 def _decision_turn(prompt: str, available: set[str]) -> PlannedTurn:

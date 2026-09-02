@@ -58,6 +58,9 @@ test('新工作台评测区接入失败诊断和优化建议', () => {
   assert.match(evaluationView, /rejectEvaluationSuggestions/);
   assert.match(evaluationView, /onTaskStarted=\{\(operation, task\)/);
   assert.match(evaluationView, /setFollowupRefresh\(\(value\) => value \+ 1\)/);
+  assert.match(evaluationView, /item\.packageRepairEligible/);
+  assert.match(evaluationView, /resolutionStatus === 'confirmed' && item\.packageOptimizable && item\.packageRepairEligible/);
+  assert.doesNotMatch(evaluationView, /const available = diagnoses\.filter\(\(item\) => item\.repairScope === 'package'/);
   assert.doesNotMatch(evaluationView, /wb-stage-number/);
 });
 

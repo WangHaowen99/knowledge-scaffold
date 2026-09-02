@@ -353,7 +353,7 @@ export const specMetricSchema = () => Type.Object({
   evidence: Type.Optional(EvidenceList()),
 }, { description: '有明确口径、公式和边界的业务指标（计算类口径优先沉淀为 metric）' });
 
-export const specScriptSchema = () => Type.Object({
+const specScriptContractProperties = () => ({
   key: KeyString(),
   title: Type.String(),
   description: Type.String(),
@@ -372,6 +372,12 @@ export const specScriptSchema = () => Type.Object({
   })),
   boundaries: Type.Array(Type.String()),
   evidence: Type.Optional(EvidenceList()),
+});
+
+export const specScriptContractSchema = () => Type.Object(specScriptContractProperties());
+
+export const specScriptSchema = () => Type.Object({
+  ...specScriptContractProperties(),
   sourceCode: Type.String({ description: '完整 Python 源码；不得包含答案常量、网络访问或越权文件访问。' }),
 });
 

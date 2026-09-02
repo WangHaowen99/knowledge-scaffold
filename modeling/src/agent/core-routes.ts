@@ -75,6 +75,18 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
   });
 
+  app.get('/api/projects/:id/agent/progress', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      return await service.workbenchProgress(project);
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
   app.put('/api/projects/:id/agent/confirm-policy', async (request, reply) => {
     const project = getProject(String((request.params as any).id ?? ''));
     if (!project || !canWriteProject(project.id, request.user!.username)) {
