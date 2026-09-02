@@ -67,6 +67,8 @@ def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
     assert events[1] == {
         "type": "intermediate",
         "content": "生成 SQL: SELECT * FROM table_x",
+        "public_summary": "查询语句已生成",
+        "public_summary_allowed": True,
     }
     assert json.loads(events[2]["content"]) == {
         "success": True,

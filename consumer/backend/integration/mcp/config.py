@@ -65,6 +65,10 @@ class MCPRuntimeConfig:
     chat_trace_max_events: int = 30
     chat_trace_max_bytes: int = 32768
     chat_trace_max_text_chars: int = 500
+    chat_progress_max_events: int = 100
+    chat_progress_max_message_bytes: int = 4096
+    chat_progress_queue_size: int = 128
+    chat_progress_heartbeat_seconds: int = 15
 
     def effective_public_base_url(self) -> str:
         if self.public_base_url:
@@ -117,6 +121,22 @@ def load_mcp_runtime_config() -> MCPRuntimeConfig:
         chat_trace_max_text_chars=min(
             4000,
             max(32, _read_int_env("MCP_CHAT_TRACE_MAX_TEXT_CHARS", 500)),
+        ),
+        chat_progress_max_events=min(
+            500,
+            max(1, _read_int_env("MCP_CHAT_PROGRESS_MAX_EVENTS", 100)),
+        ),
+        chat_progress_max_message_bytes=min(
+            16384,
+            max(1024, _read_int_env("MCP_CHAT_PROGRESS_MAX_MESSAGE_BYTES", 4096)),
+        ),
+        chat_progress_queue_size=min(
+            512,
+            max(16, _read_int_env("MCP_CHAT_PROGRESS_QUEUE_SIZE", 128)),
+        ),
+        chat_progress_heartbeat_seconds=min(
+            60,
+            max(5, _read_int_env("MCP_CHAT_PROGRESS_HEARTBEAT_SECONDS", 15)),
         ),
     )
 

@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
+import httpx
 from fastapi.testclient import TestClient
 
 import api.routes as routes_module
 import api.routes.mcp as mcp_routes
 from agent.runtime.contracts import USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
 from api.auth.auth import AuthUser
-from api.protocols.mcp.paths import MCP_INTERNAL_CHAT_PATH
+from api.protocols.mcp.paths import (
+    MCP_INTERNAL_CHAT_PATH,
+    MCP_INTERNAL_CHAT_STREAM_PATH,
+)
 from api.testing import TestApplication
 from integration.mcp.ontology_binding import MCPOntologyBindingError
 from integration.mcp.scope import MCPRequestScope
@@ -42,7 +47,9 @@ class _AuthBackend:
 
 
 def test_internal_chat_path_is_registered():
-    assert MCP_INTERNAL_CHAT_PATH in {route.path for route in mcp_routes.mcp_router.routes}
+    paths = {route.path for route in mcp_routes.mcp_router.routes}
+    assert MCP_INTERNAL_CHAT_PATH in paths
+    assert MCP_INTERNAL_CHAT_STREAM_PATH in paths
 
 
 def test_runtime_status_uses_workspace_scoped_service_urls(monkeypatch):
@@ -111,6 +118,91 @@ def test_internal_chat_revalidates_scope_and_passes_runtime_store(monkeypatch):
     assert captured["scope"] is scope
     assert captured["payload"]["session_id"] == "session_demo"
     assert captured["concurrency_limit"] == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+
+
+def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
+    scope = MCPRequestScope(
+        username="operator_a",
+        workspace_id="workspace_demo",
+        scopes=["mcp:chat"],
+        token="token-placeholder",
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "resolve_mcp_scope_from_token",
+        lambda *_args, **_kwargs: scope,
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "load_mcp_runtime_config",
+        lambda: SimpleNamespace(
+            http_timeout_seconds=30,
+            chat_progress_queue_size=32,
+            chat_progress_heartbeat_seconds=5,
+            chat_progress_max_message_bytes=4096,
+        ),
+    )
+    monkeypatch.setattr(
+        routes_module,
+        "get_user_stores",
+        lambda *_args: (object(), object()),
+    )
+
+    async def execute(**kwargs):
+        await kwargs["progress_sink"](
+            {
+                "schema_version": "1.0",
+                "seq": 1,
+                "event": "run.started",
+                "stage": "request",
+                "status": "running",
+                "summary": "已接收请求，开始处理",
+                "run_id": "run_demo",
+                "tool": "",
+                "tool_call_id": "",
+                "provider": "",
+                "record_count": None,
+                "elapsed_ms": None,
+                "warning_code": "",
+                "truncated": False,
+            }
+        )
+        return {"ok": True, "result": {"content": "synthetic answer"}}, 200
+
+    monkeypatch.setattr(
+        mcp_routes,
+        "execute_mcp_chat_workflow_async",
+        execute,
+    )
+
+    async def request_stream():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://localhost",
+        ) as client:
+            return await client.post(
+                MCP_INTERNAL_CHAT_STREAM_PATH,
+                headers={
+                    "Authorization": "Bearer token-placeholder",
+                    "X-Workspace-Id": "workspace_demo",
+                },
+                json={
+                    "request": "synthetic question",
+                    "session_id": "session_demo",
+                },
+            )
+
+    response = asyncio.run(request_stream())
+    content = response.text
+
+    assert response.status_code == 200
+    assert "event: progress" in content
+    assert '"event":"run.started"' in content
+    assert "event: result" in content
+    assert '"content":"synthetic answer"' in content
 
 
 def test_internal_chat_rejects_workspace_scope_mismatch(monkeypatch):
