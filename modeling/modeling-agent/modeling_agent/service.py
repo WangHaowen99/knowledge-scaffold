@@ -559,11 +559,8 @@ class AgentService:
         except sqlite3.Error:
             diagnostic["healthy"] = False
             diagnostic["reason"] = "runtime.sqlite 无法读取"
-        if (
-            not same_directory
-            or not runtime_db.exists()
-            or (not checkpoint_db.exists() and diagnostic["runCount"] > 0)
-        ):
+        missing_checkpoint_with_runs = not checkpoint_db.exists() and diagnostic["runCount"] > 0
+        if not same_directory or not runtime_db.exists() or missing_checkpoint_with_runs:
             diagnostic["healthy"] = False
             diagnostic["reason"] = "runtime.sqlite 与 checkpoints.sqlite 不在同一持久卷，或存在运行记录但检查点数据库缺失"
         try:
