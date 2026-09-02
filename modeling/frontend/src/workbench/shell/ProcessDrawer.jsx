@@ -158,6 +158,7 @@ function phasePresentation(phase) {
     blocked: { label: '需要处理', tone: 'failed' },
     rejected: { label: '未执行', tone: 'muted' },
     waiting: { label: '等待决定', tone: 'waiting' },
+    cancelled: { label: '已取消', tone: 'muted' },
   })[phase] || { label: '已记录', tone: 'muted' };
 }
 

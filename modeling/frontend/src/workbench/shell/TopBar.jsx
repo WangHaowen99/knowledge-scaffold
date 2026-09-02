@@ -53,6 +53,7 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
   };
   const incr = scene === 'increment';
   const running = !interaction && ['queued', 'running', 'stopping'].includes(run?.status);
+  const showRunningStatus = demo ? Boolean(activity || running) : running;
   const canStartIncrement = packageStatus === 'released'
     && workflow?.phase !== 'increment'
     && !interaction
@@ -151,7 +152,7 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
         </button>
       )}
 
-      {!interaction && (activity || running) && (
+      {!interaction && showRunningStatus && (
         <span className="pill pill-agent wb-priority-status"><i className="dot-pulse" />{run?.status === 'stopping' ? '正在停止' : '助手运行中'}</span>
       )}
 
