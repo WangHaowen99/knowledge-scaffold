@@ -48,6 +48,10 @@ _LOCAL_SPAN_ATTRIBUTE_NAMES = {
 }
 _LOCAL_URL_ATTRIBUTE_NAMES = {"http.url", "url.full"}
 _LOCAL_METRIC_ATTRIBUTE_NAMES = {
+    "cache",
+    "exporter",
+    "phase",
+    "result",
     "agent.workspace_id",
     "agent.status",
     "agent.tool.name",
@@ -55,6 +59,45 @@ _LOCAL_METRIC_ATTRIBUTE_NAMES = {
     "agent.model",
     "agent.model_provider",
     "agent.agent_mode",
+}
+_LOCAL_BOUNDED_METRIC_ATTRIBUTE_VALUES = {
+    "cache": {
+        "model_profile_references",
+        "ontology_view",
+        "system_config",
+        "workspace_catalog",
+    },
+    "exporter": {
+        "custom",
+        "langfuse",
+        "local",
+        "speedscope",
+        "workspace_fanout",
+    },
+    "phase": {
+        "auth",
+        "handler",
+        "model_profile_references",
+        "ontology_view",
+        "request",
+        "system_config",
+        "workspace_catalog",
+    },
+    "result": {
+        "bypass",
+        "closed",
+        "error",
+        "failure",
+        "hit",
+        "miss",
+        "partial_failure",
+        "queue_full",
+        "snapshot",
+        "stale",
+        "success",
+        "timeout",
+        "unknown",
+    },
 }
 _LOCAL_EVENT_LABEL_FIELDS = {
     "status",
@@ -281,13 +324,20 @@ def metric_record(
         "labels": {
             key: item
             for key, item in attributes.items()
-            if key in _LOCAL_METRIC_ATTRIBUTE_NAMES and _is_scalar(item)
+            if _is_local_metric_attribute(key, item)
         },
     }
     workspace_id = attributes.get("agent.workspace_id")
     if workspace_id not in (None, ""):
         record["workspace_id"] = workspace_id
     return record
+
+
+def _is_local_metric_attribute(key: object, value: Any) -> bool:
+    if key not in _LOCAL_METRIC_ATTRIBUTE_NAMES or not _is_scalar(value):
+        return False
+    allowed_values = _LOCAL_BOUNDED_METRIC_ATTRIBUTE_VALUES.get(str(key))
+    return allowed_values is None or str(value) in allowed_values
 
 
 def _decode_payload(value: Any) -> dict[str, Any]:

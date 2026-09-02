@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -29,19 +30,35 @@ def _normalize_scope(value: Any) -> ModelProfileScope:
     return scope  # type: ignore[return-value]
 
 
-def parse_model_profile_ref(value: str | dict[str, Any] | ModelProfileRef | None) -> ModelProfileRef | None:
+def _parsed_model_profile_ref(scope: Any, ref_id: Any) -> ModelProfileRef:
+    if not isinstance(scope, str) or not isinstance(ref_id, str):
+        raise ValueError("model profile reference scope and id must be strings")
+    return ModelProfileRef(
+        scope=_normalize_scope(scope),
+        id=_normalize_ref_id(ref_id),
+    )
+
+
+def parse_model_profile_ref(
+    value: str | Mapping[str, Any] | ModelProfileRef | None,
+) -> ModelProfileRef | None:
     """Parse legacy bare ids and new scoped ids."""
     if value is None:
         return None
     if isinstance(value, ModelProfileRef):
-        return value
-    if isinstance(value, dict):
-        return ModelProfileRef(
-            scope=_normalize_scope(value.get("scope")),
-            id=_normalize_ref_id(value.get("id")),
-        )
+        return _parsed_model_profile_ref(value.scope, value.id)
+    if isinstance(value, Mapping):
+        keys = tuple(value.keys())
+        if any(not isinstance(key, str) for key in keys) or set(keys) != {
+            "scope",
+            "id",
+        }:
+            raise ValueError("model profile reference must contain only scope and id")
+        return _parsed_model_profile_ref(value["scope"], value["id"])
+    if not isinstance(value, str):
+        raise ValueError("model profile reference must be a string or object")
 
-    raw = str(value or "").strip()
+    raw = value.strip()
     if not raw:
         return None
     for scoped_prefix in ("global:", "workspace:"):
@@ -52,7 +69,7 @@ def parse_model_profile_ref(value: str | dict[str, Any] | ModelProfileRef | None
     return ModelProfileRef(scope="global", id=_normalize_ref_id(raw))
 
 
-def encode_model_profile_ref(ref: ModelProfileRef | dict[str, Any] | str) -> str:
+def encode_model_profile_ref(ref: ModelProfileRef | Mapping[str, Any] | str) -> str:
     """Return global:<id> or workspace:<id>."""
     parsed = parse_model_profile_ref(ref)
     if parsed is None:
@@ -60,7 +77,9 @@ def encode_model_profile_ref(ref: ModelProfileRef | dict[str, Any] | str) -> str
     return f"{parsed.scope}:{parsed.id}"
 
 
-def model_profile_ref_to_dict(ref: ModelProfileRef | dict[str, Any] | str | None) -> dict[str, str] | None:
+def model_profile_ref_to_dict(
+    ref: ModelProfileRef | Mapping[str, Any] | str | None,
+) -> dict[str, str] | None:
     parsed = parse_model_profile_ref(ref)
     if parsed is None:
         return None

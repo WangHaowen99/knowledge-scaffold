@@ -97,6 +97,7 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "app_version": "${VERSION}",
   "release_arch": "${RELEASE_ARCH}",
   "backend_image": "onto-agent-backend:${VERSION}",
+  "storage_utility_image": "onto-agent-backend:${VERSION}",
   "frontend_image": "onto-agent-frontend:${VERSION}",
   "auth_server_image": "onto-agent-auth-server:${VERSION}",
   "jiuwenbox_image": "onto-agent-jiuwenbox:${VERSION}",

@@ -5,14 +5,19 @@ import os
 import re
 import shutil
 import threading
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from pydantic import BaseModel, Field
 
-from workspace.workspaces import get_workspace_ontologies_root, get_workspace_project_root
+from workspace.workspaces import (
+    get_workspace_catalog_generation,
+    get_workspace_ontologies_root,
+    get_workspace_project_root,
+)
 
 from utils.atomic_files import staged_bytes
 from utils.read_docs import build_read_document_record
@@ -434,8 +439,10 @@ def get_ontology_version_dir(
     version: Optional[str] = None,
     *,
     create: bool = False,
+    manifest: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
-    manifest = load_ontology_manifest_data(ontology_dir)
+    if manifest is None:
+        manifest = load_ontology_manifest_data(ontology_dir)
     active_version = str(manifest.get("active_version") or manifest.get("version") or "").strip()
     target_version = str(version or active_version).strip()
     if not target_version:
@@ -507,11 +514,23 @@ def set_ontology_active_version(ontology_dir: Path, version: str) -> OntologyMan
 class OntologyRegistry:
     """Registry for discovering and managing ontologies under configured roots."""
 
-    def __init__(self, ontology_dirs: Optional[List[Path]] = None):
+    def __init__(
+        self,
+        ontology_dirs: Optional[List[Path]] = None,
+        *,
+        check_interval_seconds: float = 1.5,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._ontologies: Dict[str, OntologyManifest] = {}
         self._refresh_lock = threading.RLock()
         self.ontology_dirs = ontology_dirs or []
         self._source_signature: Optional[Tuple[Any, ...]] = None
+        self._check_interval_seconds = max(
+            0.0,
+            float(check_interval_seconds),
+        )
+        self._clock = clock
+        self._next_source_check_at = 0.0
 
     @property
     def ontologies(self) -> Dict[str, OntologyManifest]:
@@ -558,6 +577,11 @@ class OntologyRegistry:
             # An unstable final attempt remains stale and will be retried on the
             # next registry lookup instead of pairing old data with a new marker.
             self._source_signature = stable_signature
+            self._next_source_check_at = (
+                self._clock() + self._check_interval_seconds
+                if stable_signature is not None
+                else self._clock()
+            )
 
         logger.info("Ontology discovery complete: %s ontologies loaded", loaded_count)
         return loaded_count
@@ -568,7 +592,17 @@ class OntologyRegistry:
     def is_stale(self) -> bool:
         """Return whether the filesystem backing this registry changed."""
         with self._refresh_lock:
-            return self._source_signature != _build_registry_source_signature(self.ontology_dirs)
+            now = self._clock()
+            if (
+                self._source_signature is not None
+                and now < self._next_source_check_at
+            ):
+                return False
+            current_signature = _build_registry_source_signature(
+                self.ontology_dirs
+            )
+            self._next_source_check_at = now + self._check_interval_seconds
+            return self._source_signature != current_signature
 
     def get_ontology(self, ontology_id: str) -> Optional[OntologyManifest]:
         return self._ontologies.get(ontology_id)
@@ -582,7 +616,7 @@ class OntologyRegistry:
 
 _global_registry: Optional[OntologyRegistry] = None
 _registry_lock = threading.RLock()
-_registries: Dict[Tuple[str, ...], OntologyRegistry] = {}
+_registries: Dict[Tuple[Any, ...], OntologyRegistry] = {}
 
 
 def _file_stat_signature(path: Path) -> Tuple[bool, int, int]:
@@ -644,10 +678,20 @@ def get_ontology_registry(
     else:
         ontology_dirs = [(base_dir / "ontologies").resolve()]
 
-    key = tuple(str(path.resolve()) for path in ontology_dirs)
+    root_key = tuple(str(path.resolve()) for path in ontology_dirs)
+    workspace_generation = (
+        get_workspace_catalog_generation() if base_dir is None else 0
+    )
+    key: Tuple[Any, ...] = (workspace_generation, *root_key)
     with _registry_lock:
         if _global_registry is None and _registries:
             _registries.clear()
+
+        for stale_key in tuple(_registries):
+            if stale_key[1:] == root_key and stale_key != key:
+                stale_registry = _registries.pop(stale_key)
+                if _global_registry is stale_registry:
+                    _global_registry = None
 
         registry = _registries.get(key)
         if registry is not None:
@@ -683,10 +727,14 @@ def invalidate_ontology_registry(
         ontology_dirs = [get_workspace_ontologies_root(workspace_id)]
     else:
         ontology_dirs = [(base_dir / "ontologies").resolve()]
-    key = tuple(str(path.resolve()) for path in ontology_dirs)
+    root_key = tuple(str(path.resolve()) for path in ontology_dirs)
     with _registry_lock:
-        registry = _registries.pop(key, None)
-        if registry is not None and _global_registry is registry:
+        removed = [
+            _registries.pop(key)
+            for key in tuple(_registries)
+            if key[1:] == root_key
+        ]
+        if any(_global_registry is registry for registry in removed):
             _global_registry = next(iter(_registries.values()), None)
 
 
@@ -794,21 +842,39 @@ def build_selected_ontology_preload_context(
         logger.warning("Selected ontology id is disabled for preload: %s", selected_id)
         return None
 
+    return build_selected_ontology_preload_context_from_manifest(ontology)
+
+
+def build_selected_ontology_preload_context_from_manifest(
+    ontology: OntologyManifest,
+    *,
+    root_payload: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Build preload context from an already resolved exact manifest."""
+
+    if not ontology.enabled:
+        return None
+
     lines = [SELECTED_ONTOLOGY_CONTEXT_START]
     try:
         from ontology.ontology_catalog import build_root_payload, format_root_payload_compact
 
-        root_payload = build_root_payload(
-            ontology=ontology,
-            ontology_dir=Path(ontology.ontology_dir).resolve(),
-        )
+        if root_payload is None:
+            root_payload = build_root_payload(
+                ontology=ontology,
+                ontology_dir=Path(ontology.ontology_dir).resolve(),
+            )
         lines.extend([
             *format_root_payload_compact(ontology_id=ontology.id, root_payload=root_payload),
         ])
 
         lines.append(SELECTED_ONTOLOGY_CONTEXT_END)
     except Exception:
-        logger.warning("Failed to build selected ontology root context: %s", selected_id, exc_info=True)
+        logger.warning(
+            "Failed to build selected ontology root context: %s",
+            ontology.id,
+            exc_info=True,
+        )
 
     return "\n".join(lines)
 
@@ -834,6 +900,24 @@ def build_selected_ontology_preload_records(
         return []
     if not ontology.enabled:
         logger.warning("Selected ontology id is disabled for preload records: %s", selected_id)
+        return []
+
+    return build_selected_ontology_preload_records_from_manifest(
+        ontology,
+        turn_id=turn_id,
+        workspace_id=workspace_id,
+    )
+
+
+def build_selected_ontology_preload_records_from_manifest(
+    ontology: OntologyManifest,
+    *,
+    turn_id: int = 0,
+    workspace_id: Optional[str] = None,
+) -> List[Dict[str, object]]:
+    """Build read-ledger records from an already resolved exact manifest."""
+
+    if not ontology.enabled:
         return []
 
     project_root = get_workspace_project_root(workspace_id)

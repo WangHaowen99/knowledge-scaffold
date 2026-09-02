@@ -17,6 +17,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "test": "node --test tests/sessions.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepare": "npm run build",
     "prepack": "npm run build",

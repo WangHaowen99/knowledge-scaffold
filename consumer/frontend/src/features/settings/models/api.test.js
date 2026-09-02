@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   loadGlobalModels,
   loadWorkspaceModels,
   loadWorkspacePrivateModels,
-  loadWorkspaceReferenceInventory,
+  loadModelProfileReferences,
   loadWorkspaceRuntime,
   requestModelJson,
   saveGlobalModels,
@@ -15,9 +18,13 @@ import {
   testWorkspaceModel,
 } from './api.js';
 
-const response = (payload, { ok = true, status = 200 } = {}) => ({
+const currentDir = dirname(fileURLToPath(import.meta.url));
+const modelSettingsSource = readFileSync(join(currentDir, 'ModelSettings.jsx'), 'utf8');
+
+const response = (payload, { ok = true, status = 200, headers = {} } = {}) => ({
   ok,
   status,
+  headers: new Headers(headers),
   json: async () => payload,
 });
 
@@ -32,11 +39,31 @@ test('global API uses llm_profiles section for save and unsaved test', async () 
   const calls = [];
   const request = async (url, options = {}) => {
     calls.push({ url, options });
-    if (url === '/api/system-config' && !options.method) return response({ llm_profiles: { profiles: [{ id: 'fast' }] } });
+    if (url === '/api/system-config' && !options.method) {
+      return response(
+        { llm_profiles: { profiles: [{ id: 'fast' }] } },
+        {
+          headers: {
+            'x-system-config-generation': '17',
+            'x-llm-profiles-fingerprint': 'sha256:config-fast',
+          },
+        },
+      );
+    }
     return response({ success: true });
   };
-  assert.deepEqual(await loadGlobalModels({ request }), { profiles: [{ id: 'fast' }] });
-  await saveGlobalModels({ profiles: [{ id: 'fast' }] }, { request });
+  assert.deepEqual(await loadGlobalModels({ request }), {
+    config: { profiles: [{ id: 'fast' }] },
+    snapshot: { generation: 17, fingerprint: 'sha256:config-fast' },
+  });
+  const precondition = {
+    config_generation: 17,
+    config_fingerprint: 'sha256:config-fast',
+    reference_generation: 'sha256:references-fast',
+    removed_profile_ids: ['legacy'],
+    renames: [{ original_id: 'legacy', new_id: 'fast' }],
+  };
+  await saveGlobalModels({ profiles: [{ id: 'fast' }] }, { request, precondition });
   await testGlobalModel({ profiles: [{ id: 'fast' }], profile_id: 'fast' }, { request });
 
   assert.equal(calls[1].url, '/api/system-config');
@@ -44,11 +71,20 @@ test('global API uses llm_profiles section for save and unsaved test', async () 
   assert.deepEqual(JSON.parse(calls[1].options.body), {
     section: 'llm_profiles',
     data: { profiles: [{ id: 'fast' }] },
+    precondition,
   });
   assert.equal(calls[2].url, '/api/system-config/test');
   assert.equal(calls[2].options.method, 'POST');
   assert.equal(JSON.parse(calls[2].options.body).section, 'llm_profiles');
   assert.equal(JSON.parse(calls[2].options.body).data.profile_id, 'fast');
+});
+
+test('global API keeps missing concurrency headers unknown instead of coercing generation zero', async () => {
+  const result = await loadGlobalModels({
+    request: async () => response({ llm_profiles: { profiles: [] } }),
+  });
+
+  assert.deepEqual(result.snapshot, { generation: null, fingerprint: '' });
 });
 
 test('workspace API loads available, private, and runtime configs from exact routes', async () => {
@@ -117,47 +153,61 @@ test('workspace save, test, and role refs use PATCH/POST contracts without DELET
   });
 });
 
-test('reference inventory can use provided workspaces and fails closed on any runtime error', async () => {
+test('reference inventory uses one aggregate request and normalizes the authoritative generation', async () => {
   const calls = [];
   const request = async (url) => {
     calls.push(url);
-    if (url.includes('/broken/')) return response({ detail: 'Forbidden' }, { ok: false, status: 403 });
-    return response({ llm: {} });
+    return response({
+      complete: true,
+      generation: 'sha256:inventory-a',
+      entries: [{
+        workspace_id: 'alpha',
+        workspace_name: 'Alpha',
+        config_generation: 7,
+        references: [{ field: 'default_main_profile_ref', scope: 'global', profile_id: 'fast' }],
+      }],
+    });
   };
-  const inventory = await loadWorkspaceReferenceInventory({
+  const inventory = await loadModelProfileReferences('global:fast', {
     request,
-    workspaces: [{ id: 'alpha', name: 'Alpha' }, { id: 'broken', name: 'Broken' }],
   });
-  assert.deepEqual(calls, [
-    '/agentic/workspaces/alpha/runtime-config',
-    '/agentic/workspaces/broken/runtime-config',
-  ]);
-  assert.equal(inventory.complete, false);
-  assert.equal(inventory.entries[0].runtimeKnown, true);
-  assert.equal(inventory.entries[1].runtimeKnown, false);
-  assert.match(inventory.entries[1].error, /Forbidden/);
-});
-
-test('reference inventory loads workspaces itself when props do not provide them', async () => {
-  const calls = [];
-  const request = async (url) => {
-    calls.push(url);
-    if (url === '/agentic/workspaces') return response({ workspaces: [{ id: 'alpha', name: 'Alpha' }] });
-    return response({ llm: {} });
-  };
-  const inventory = await loadWorkspaceReferenceInventory({ request });
-  assert.deepEqual(calls, ['/agentic/workspaces', '/agentic/workspaces/alpha/runtime-config']);
+  assert.deepEqual(calls, ['/api/model-profile-references?profile_id=global%3Afast']);
   assert.equal(inventory.complete, true);
+  assert.equal(inventory.generation, 'sha256:inventory-a');
+  assert.equal(inventory.entries[0].runtimeKnown, true);
+  assert.equal(inventory.entries[0].workspaceId, 'alpha');
+  assert.equal(inventory.entries[0].references[0].profile_id, 'fast');
 });
 
-test('an empty workspaces prop is not trusted as a complete deletion inventory', async () => {
-  const calls = [];
-  const request = async (url) => {
-    calls.push(url);
-    if (url === '/agentic/workspaces') return response({ workspaces: [] });
-    throw new Error(`unexpected request ${url}`);
-  };
-  const inventory = await loadWorkspaceReferenceInventory({ request, workspaces: [] });
-  assert.deepEqual(calls, ['/agentic/workspaces']);
-  assert.deepEqual(inventory, { complete: true, entries: [] });
+test('aggregate reference inventory preserves fail-closed diagnostics', async () => {
+  const inventory = await loadModelProfileReferences('global:fast', {
+    request: async () => response({
+      complete: false,
+      generation: 'sha256:inventory-b',
+      entries: [{
+        workspace_id: 'broken',
+        workspace_name: 'Broken',
+        config_generation: null,
+        references: [],
+        diagnostic: { code: 'runtime_config_invalid', message: 'not verified' },
+      }],
+    }),
+  });
+
+  assert.equal(inventory.complete, false);
+  assert.equal(inventory.entries[0].runtimeKnown, false);
+  assert.equal(inventory.entries[0].diagnostic.code, 'runtime_config_invalid');
+});
+
+test('global model first paint skips inventory and destructive ID changes share the aggregate preflight', () => {
+  const loadStart = modelSettingsSource.indexOf('const load = useCallback');
+  const loadEnd = modelSettingsSource.indexOf('useEffect(() => {', loadStart);
+  const initialLoad = modelSettingsSource.slice(loadStart, loadEnd);
+
+  assert.equal(initialLoad.includes('loadModelProfileReferences'), false);
+  assert.equal(modelSettingsSource.includes('loadModelProfileReferences(undefined'), true);
+  assert.equal(modelSettingsSource.includes('skipReferencePreflight'), false);
+  assert.equal(modelSettingsSource.includes('globalProfileMutationDecision'), true);
+  assert.equal(modelSettingsSource.includes('profile.id !== originalId'), true);
+  assert.equal(modelSettingsSource.includes('disabled={isEdit}'), false);
 });

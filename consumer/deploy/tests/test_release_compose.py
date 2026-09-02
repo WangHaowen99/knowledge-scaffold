@@ -2,14 +2,32 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 COMPOSE_PATH = Path(__file__).resolve().parents[1] / "docker-compose.release.yml"
 DEPLOY_ROOT = COMPOSE_PATH.parent
 BACKEND_ROOT = DEPLOY_ROOT.parent / "backend"
 REPOSITORY_ROOT = DEPLOY_ROOT.parents[1]
+SOURCE_COMPOSE_PATH = DEPLOY_ROOT.parent / "docker-compose.yml"
+STORAGE_VOLUME_COMPOSE_PATH = DEPLOY_ROOT / "docker-compose.storage-volume.yml"
+
+
+def _test_bash_executable():
+    if os.name == "nt":
+        git_path = shutil.which("git")
+        if git_path:
+            git_bash = Path(git_path).parent.parent / "bin" / "bash.exe"
+            if git_bash.is_file():
+                return str(git_bash)
+    return "bash"
+
+
+TEST_BASH = _test_bash_executable()
 
 
 def _manifest_template(build_script: Path) -> dict[str, str]:
@@ -132,6 +150,1067 @@ def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
     assert "./.onto-runtime:/app/.onto-runtime" in compose_text
     assert "CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats" in compose_text
     assert "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions" in compose_text
+
+
+def test_bind_mount_storage_remains_the_default_for_source_and_release_compose():
+    source_compose = SOURCE_COMPOSE_PATH.read_text(encoding="utf-8")
+    release_compose = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    for compose_text in (source_compose, release_compose):
+        assert "./.onto-runtime:/app/.onto-runtime" in compose_text
+        assert "./.onto-auth:/data" in compose_text
+        assert "consumer-runtime-data:/app/.onto-runtime" not in compose_text
+        assert "consumer-auth-data:/data" not in compose_text
+
+
+def test_storage_volume_overlay_declares_stable_names_and_mount_permissions():
+    overlay = STORAGE_VOLUME_COMPOSE_PATH.read_text(encoding="utf-8")
+
+    backend = _compose_service_block(overlay, "backend")
+    mcp = _compose_service_block(overlay, "mcp")
+    jiuwenbox = _compose_service_block(overlay, "jiuwenbox")
+    auth_server = _compose_service_block(overlay, "auth-server")
+
+    assert "consumer-runtime-data:/app/.onto-runtime" in backend
+    assert "consumer-runtime-data:/app/.onto-runtime" in mcp
+    assert "consumer-runtime-data:/app/.onto-runtime:ro" in jiuwenbox
+    assert "consumer-auth-data:/data" in auth_server
+    assert "consumer-runtime-data:/app/.onto-runtime:ro" not in backend
+    assert "consumer-runtime-data:/app/.onto-runtime:ro" not in mcp
+    assert "consumer-auth-data:/data:ro" not in auth_server
+    assert "consumer-runtime-data:\n    name: consumer-runtime-data" in overlay
+    assert "consumer-auth-data:\n    name: consumer-auth-data" in overlay
+
+
+def _mount_for_target(compose_config, service_name, target):
+    mounts = [
+        mount
+        for mount in compose_config["services"][service_name].get("volumes", [])
+        if mount.get("target") == target
+    ]
+    assert len(mounts) == 1
+    return mounts[0]
+
+
+def test_storage_volume_overlay_renders_real_compose_mount_contracts():
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker CLI is not available")
+    compose_version = subprocess.run(
+        [docker, "compose", "version"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if compose_version.returncode != 0:
+        pytest.skip("Docker Compose plugin is not available")
+
+    consumer_root = DEPLOY_ROOT.parent
+    for base_compose in (SOURCE_COMPOSE_PATH, COMPOSE_PATH):
+        bind_result = subprocess.run(
+            [
+                docker,
+                "compose",
+                "-f",
+                str(base_compose),
+                "--project-directory",
+                str(consumer_root),
+                "config",
+                "--no-env-resolution",
+                "--no-interpolate",
+                "--format",
+                "json",
+            ],
+            cwd=consumer_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert bind_result.returncode == 0, bind_result.stderr
+        bind_config = json.loads(bind_result.stdout)
+        assert _mount_for_target(
+            bind_config, "backend", "/app/.onto-runtime"
+        )["type"] == "bind"
+
+        volume_result = subprocess.run(
+            [
+                docker,
+                "compose",
+                "-f",
+                str(base_compose),
+                "-f",
+                str(STORAGE_VOLUME_COMPOSE_PATH),
+                "--project-directory",
+                str(consumer_root),
+                "config",
+                "--no-env-resolution",
+                "--no-interpolate",
+                "--format",
+                "json",
+            ],
+            cwd=consumer_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert volume_result.returncode == 0, volume_result.stderr
+        volume_config = json.loads(volume_result.stdout)
+        backend = _mount_for_target(
+            volume_config, "backend", "/app/.onto-runtime"
+        )
+        mcp = _mount_for_target(volume_config, "mcp", "/app/.onto-runtime")
+        jiuwenbox = _mount_for_target(
+            volume_config, "jiuwenbox", "/app/.onto-runtime"
+        )
+        auth = _mount_for_target(volume_config, "auth-server", "/data")
+
+        assert (backend["type"], backend["source"], backend.get("read_only", False)) == (
+            "volume",
+            "consumer-runtime-data",
+            False,
+        )
+        assert (mcp["type"], mcp["source"], mcp.get("read_only", False)) == (
+            "volume",
+            "consumer-runtime-data",
+            False,
+        )
+        assert (
+            jiuwenbox["type"],
+            jiuwenbox["source"],
+            jiuwenbox.get("read_only", False),
+        ) == ("volume", "consumer-runtime-data", True)
+        assert (auth["type"], auth["source"], auth.get("read_only", False)) == (
+            "volume",
+            "consumer-auth-data",
+            False,
+        )
+        assert volume_config["volumes"]["consumer-runtime-data"]["name"] == (
+            "consumer-runtime-data"
+        )
+        assert volume_config["volumes"]["consumer-auth-data"]["name"] == (
+            "consumer-auth-data"
+        )
+
+
+def _prepare_storage_mode_bundle(tmp_path):
+    bundle_root = tmp_path / "consumer"
+    deploy_root = bundle_root / "deploy"
+    backend_root = bundle_root / "backend"
+    fake_bin = tmp_path / "bin"
+    deploy_root.mkdir(parents=True)
+    backend_root.mkdir()
+    fake_bin.mkdir()
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+    shutil.copyfile(COMPOSE_PATH, deploy_root / "docker-compose.release.yml")
+    if STORAGE_VOLUME_COMPOSE_PATH.exists():
+        shutil.copyfile(
+            STORAGE_VOLUME_COMPOSE_PATH,
+            deploy_root / "docker-compose.storage-volume.yml",
+        )
+    (backend_root / ".env").write_text("USER_MAX_COUNT=10\n", encoding="utf-8")
+
+    docker_args = tmp_path / "docker-args.txt"
+    docker_calls = tmp_path / "docker-calls.txt"
+    event_log = tmp_path / "deployment-events.txt"
+    state_io_helper = fake_bin / "state-io"
+    state_io_helper.write_text(
+        """#!/bin/sh
+operation="$1"
+shift
+printf '%s\n' "$operation" >> "$DEPLOY_TEST_EVENT_LOG"
+if [ "${STATE_IO_FAIL_OPERATION:-}" = "$operation" ]; then
+    exit 73
+fi
+case "$operation" in
+    fsync-file) test -f "$1" ;;
+    replace) mv "$1" "$2" ;;
+    fsync-dir) test -d "$1" ;;
+    *) exit 64 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    state_io_helper.chmod(0o755)
+    fake_flock = fake_bin / "flock"
+    fake_flock.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_flock.chmod(0o755)
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+printf 'called\\n' >> "$DOCKER_CALLS_FILE"
+printf 'docker\\n' >> "$DEPLOY_TEST_EVENT_LOG"
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then
+    exit 0
+fi
+printf '%s\\n' "$@" > "$DOCKER_ARGS_FILE"
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    env = os.environ.copy()
+    env.pop("STORAGE_MODE", None)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["DOCKER_ARGS_FILE"] = str(docker_args)
+    env["DOCKER_CALLS_FILE"] = str(docker_calls)
+    env["DEPLOY_TEST_EVENT_LOG"] = str(event_log)
+    env["DEPLOY_STATE_IO_HELPER"] = state_io_helper.as_posix()
+    return bundle_root, deploy_root, env, docker_args, docker_calls
+
+
+def _run_storage_mode_compose(tmp_path, storage_mode=None, *, load_state=False):
+    bundle_root, deploy_root, env, docker_args, docker_calls = (
+        _prepare_storage_mode_bundle(tmp_path)
+    )
+    if storage_mode is not None:
+        env["STORAGE_MODE"] = storage_mode
+    load_command = "load_state; " if load_state else ""
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            f'{load_command}compose_up backend frontend auth sandbox',
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, deploy_root, docker_args, docker_calls, env
+
+
+def _compose_file_names(args):
+    return [
+        args[index + 1].replace("\\", "/").rsplit("/", 1)[-1]
+        for index, value in enumerate(args)
+        if value == "-f"
+    ]
+
+
+def test_release_compose_uses_one_base_file_in_default_bind_mode(tmp_path):
+    result, deploy_root, docker_args, _, _ = _run_storage_mode_compose(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    args = docker_args.read_text(encoding="utf-8").splitlines()
+    assert _compose_file_names(args) == ["docker-compose.release.yml"]
+
+
+def test_release_compose_adds_volume_overlay_only_for_explicit_volume_mode(tmp_path):
+    result, deploy_root, docker_args, _, _ = _run_storage_mode_compose(
+        tmp_path, "volume"
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = docker_args.read_text(encoding="utf-8").splitlines()
+    assert _compose_file_names(args) == [
+        "docker-compose.release.yml",
+        "docker-compose.storage-volume.yml",
+    ]
+
+
+def test_invalid_storage_mode_fails_before_any_docker_invocation(tmp_path):
+    result, _, _, docker_calls, _ = _run_storage_mode_compose(tmp_path, "automatic")
+
+    assert result.returncode != 0
+    assert "STORAGE_MODE must be 'bind' or 'volume'" in result.stderr
+    assert not docker_calls.exists()
+
+
+def test_invalid_persisted_storage_mode_fails_before_any_docker_invocation(tmp_path):
+    bundle_root, deploy_root, env, _, docker_calls = _prepare_storage_mode_bundle(
+        tmp_path
+    )
+    (deploy_root / "state").mkdir()
+    (deploy_root / "state" / "current.env").write_text(
+        "CURRENT_VERSION=v1\nCURRENT_STORAGE_MODE=invalid\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; docker info',
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "STORAGE_MODE must be 'bind' or 'volume'" in result.stderr
+    assert not docker_calls.exists()
+
+
+def test_deployment_lock_has_one_production_flock_backend():
+    common_text = (DEPLOY_ROOT / "common.sh").read_text(encoding="utf-8")
+
+    assert "flock -n" in common_text
+    assert "acquire_directory_deployment_lock" not in common_text
+    assert "release_directory_deployment_lock" not in common_text
+    assert "DEPLOY_LOCK_BACKEND" not in common_text
+    assert ".consumer-deploy.lock.d" not in common_text
+
+
+def test_missing_flock_fails_before_docker_with_clear_error(tmp_path):
+    bundle_root, deploy_root, env, _, docker_calls = _prepare_storage_mode_bundle(
+        tmp_path
+    )
+    (tmp_path / "bin" / "flock").unlink()
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; docker info',
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "util-linux flock is required" in result.stderr
+    assert not docker_calls.exists()
+    assert not (deploy_root / "state").exists()
+    assert not (deploy_root / "backups").exists()
+
+
+@pytest.mark.parametrize("script_name", ["deploy.sh", "restart.sh", "rollback.sh"])
+@pytest.mark.parametrize("failure_mode", ["missing", "contended"])
+def test_lifecycle_lock_failure_has_no_prelock_worktree_writes(
+    tmp_path,
+    script_name,
+    failure_mode,
+):
+    bundle_root = tmp_path / f"{script_name}-{failure_mode}"
+    deploy_root = bundle_root / "deploy"
+    fake_bin = bundle_root / "fake-bin"
+    deploy_root.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+    shutil.copyfile(DEPLOY_ROOT / script_name, deploy_root / script_name)
+    marker = deploy_root / "must-remain-non-executable.sh"
+    marker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    marker.chmod(0o644)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    if failure_mode == "contended":
+        fake_flock = fake_bin / "flock"
+        fake_flock.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        fake_flock.chmod(0o755)
+        command_prefix = ""
+        expected_error = "deployment transaction is already running"
+    else:
+        command_prefix = (
+            "command() { "
+            "if [ \"$1\" = -v ] && [ \"${2:-}\" = flock ]; then return 1; fi; "
+            "builtin command \"$@\"; "
+            "}; "
+        )
+        expected_error = "util-linux flock is required"
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            command_prefix + f'source "{(deploy_root / script_name).as_posix()}"',
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert marker.stat().st_mode & 0o111 == 0
+    assert not (deploy_root / "state").exists()
+    assert not (deploy_root / "backups").exists()
+
+
+@pytest.mark.parametrize("script_name", ["deploy.sh", "restart.sh", "rollback.sh"])
+def test_lifecycle_chmod_runs_only_after_common_lock_acquisition(script_name):
+    script_text = (DEPLOY_ROOT / script_name).read_text(encoding="utf-8")
+
+    assert script_text.index('source "${SCRIPT_DIR}/common.sh"') < script_text.index(
+        'chmod +x "${SCRIPT_DIR}/"*.sh'
+    )
+
+
+def _linux_bash_and_deploy_root():
+    if os.name != "nt":
+        probe = subprocess.run(
+            ["bash", "-lc", "command -v flock && command -v python3"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if probe.returncode != 0:
+            pytest.skip("Linux flock and Python 3 are required")
+        return ["bash"], str(DEPLOY_ROOT)
+
+    wsl = shutil.which("wsl.exe")
+    if wsl is None:
+        pytest.skip("WSL is not available for real Linux flock validation")
+    probe = subprocess.run(
+        [wsl, "-e", "bash", "-lc", "command -v flock && command -v python3"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        pytest.skip("WSL flock and Python 3 are required")
+    converted = subprocess.run(
+        [wsl, "-e", "wslpath", "-a", str(DEPLOY_ROOT)],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    return [wsl, "-e", "bash"], converted
+
+
+def test_real_linux_inherited_lock_rejects_forged_descriptors_before_work():
+    bash_command, source_deploy_root = _linux_bash_and_deploy_root()
+    script = r'''
+set -euo pipefail
+SOURCE_DEPLOY_ROOT=__SOURCE_DEPLOY_ROOT__
+WORK_ROOT="$(mktemp -d)"
+cleanup() {
+    case "${WORK_ROOT}" in
+        /tmp/tmp.*) rm -rf -- "${WORK_ROOT}" ;;
+    esac
+}
+trap cleanup EXIT
+
+wait_for_file() {
+    local path="$1"
+    local attempt=0
+    while [ ! -f "${path}" ] && [ "${attempt}" -lt 200 ]; do
+        sleep 0.05
+        attempt=$((attempt + 1))
+    done
+    [ -f "${path}" ]
+}
+
+prepare_common_root() {
+    local root="$1"
+    mkdir -p "${root}/deploy" "${root}/backend" "${root}/fake-bin"
+    cp "${SOURCE_DEPLOY_ROOT}/common.sh" "${root}/deploy/common.sh"
+    cp "${SOURCE_DEPLOY_ROOT}/docker-compose.release.yml" "${root}/deploy/docker-compose.release.yml"
+    cp "${SOURCE_DEPLOY_ROOT}/docker-compose.storage-volume.yml" "${root}/deploy/docker-compose.storage-volume.yml"
+    printf 'USER_MAX_COUNT=10\n' > "${root}/backend/.env"
+    cat > "${root}/fake-bin/docker" <<'SH'
+#!/bin/sh
+: > "${DOCKER_MARKER}"
+exit 0
+SH
+    chmod +x "${root}/fake-bin/docker"
+}
+
+invoke_common_with_forged_lock() {
+    local root="$1"
+    local mode="$2"
+    (
+        cd "${root}"
+        export PATH="${root}/fake-bin:${PATH}"
+        export DOCKER_MARKER="${root}/docker.called"
+        export DEPLOY_TRANSACTION_LOCK_BACKEND=flock
+        export DEPLOY_TRANSACTION_LOCK_TOKEN=synthetic-forged-token
+        case "${mode}" in
+            stdout)
+                export DEPLOY_TRANSACTION_LOCK_FD=1
+                ;;
+            other-inode)
+                exec 9> "${root}/other.lock"
+                export DEPLOY_TRANSACTION_LOCK_FD=9
+                ;;
+            same-inode)
+                exec 9> "${root}/.consumer-deploy.lock"
+                export DEPLOY_TRANSACTION_LOCK_FD=9
+                ;;
+        esac
+        source deploy/common.sh
+        docker info
+    ) >"${root}/attack.out" 2>"${root}/attack.err"
+}
+
+assert_common_rejected() {
+    local root="$1"
+    local mode="$2"
+    if invoke_common_with_forged_lock "${root}" "${mode}"; then
+        printf 'forged common lock unexpectedly accepted: %s\n' "${mode}" >&2
+        return 1
+    fi
+    [ ! -f "${root}/docker.called" ]
+    [ ! -d "${root}/deploy/state" ]
+    [ ! -d "${root}/deploy/backups" ]
+}
+
+for mode in stdout other-inode; do
+    root="${WORK_ROOT}/common-${mode}"
+    prepare_common_root "${root}"
+    assert_common_rejected "${root}" "${mode}"
+done
+
+COMMON_HELD_ROOT="${WORK_ROOT}/common-same-inode"
+prepare_common_root "${COMMON_HELD_ROOT}"
+(
+    exec 8> "${COMMON_HELD_ROOT}/.consumer-deploy.lock"
+    flock -n 8
+    : > "${COMMON_HELD_ROOT}/holder.ready"
+    while [ ! -f "${COMMON_HELD_ROOT}/holder.release" ]; do sleep 0.05; done
+) &
+COMMON_HOLDER_PID=$!
+wait_for_file "${COMMON_HELD_ROOT}/holder.ready"
+assert_common_rejected "${COMMON_HELD_ROOT}" same-inode
+: > "${COMMON_HELD_ROOT}/holder.release"
+wait "${COMMON_HOLDER_PID}"
+
+COMMON_VALID_ROOT="${WORK_ROOT}/common-valid"
+prepare_common_root "${COMMON_VALID_ROOT}"
+(
+    cd "${COMMON_VALID_ROOT}"
+    source deploy/common.sh
+    bash -c 'source deploy/common.sh; test "${DEPLOY_TRANSACTION_LOCK_HELD}" = true'
+)
+
+prepare_upgrade_root() {
+    local root="$1"
+    local release_root="${root}/release"
+    local install_root="${root}/install"
+    mkdir -p "${release_root}/deploy" "${install_root}/deploy/state" "${install_root}/backend"
+    cp "${SOURCE_DEPLOY_ROOT}/upgrade.sh" "${release_root}/deploy/upgrade.sh"
+    cp "${SOURCE_DEPLOY_ROOT}/common.sh" "${release_root}/deploy/common.sh"
+    cp "${SOURCE_DEPLOY_ROOT}/docker-compose.release.yml" "${release_root}/deploy/docker-compose.release.yml"
+    cp "${SOURCE_DEPLOY_ROOT}/docker-compose.storage-volume.yml" "${release_root}/deploy/docker-compose.storage-volume.yml"
+    printf 'v2\n' > "${release_root}/VERSION"
+    printf 'v1\n' > "${install_root}/VERSION"
+    printf 'CURRENT_VERSION=v1\nCURRENT_STORAGE_MODE=bind\n' > "${install_root}/deploy/state/current.env"
+    printf 'USER_MAX_COUNT=10\n' > "${install_root}/backend/.env"
+    cat > "${release_root}/deploy/deploy.sh" <<'SH'
+#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+: > "${UPGRADE_SUCCESS_MARKER}"
+SH
+    chmod +x "${release_root}/deploy/"*.sh
+}
+
+invoke_upgrade_with_lock() {
+    local root="$1"
+    local mode="$2"
+    local release_root="${root}/release"
+    local install_root="${root}/install"
+    (
+        export UPGRADE_SUCCESS_MARKER="${root}/upgrade.completed"
+        export DEPLOY_TRANSACTION_LOCK_BACKEND=flock
+        export DEPLOY_TRANSACTION_LOCK_TOKEN=synthetic-forged-token
+        export DEPLOY_TRANSACTION_LOCK_HELD=true
+        case "${mode}" in
+            stdout)
+                export DEPLOY_TRANSACTION_LOCK_FD=1
+                ;;
+            other-inode)
+                exec 9> "${root}/other.lock"
+                export DEPLOY_TRANSACTION_LOCK_FD=9
+                ;;
+            same-inode)
+                exec 9> "${install_root}/.consumer-deploy.lock"
+                export DEPLOY_TRANSACTION_LOCK_FD=9
+                ;;
+            valid)
+                exec 8> "${install_root}/.consumer-deploy.lock"
+                flock -n 8
+                export DEPLOY_TRANSACTION_LOCK_FD=8
+                ;;
+        esac
+        "${release_root}/deploy/upgrade.sh" "${install_root}"
+    ) >"${root}/upgrade.out" 2>"${root}/upgrade.err"
+}
+
+assert_upgrade_rejected() {
+    local root="$1"
+    local mode="$2"
+    if invoke_upgrade_with_lock "${root}" "${mode}"; then
+        printf 'forged upgrade lock unexpectedly accepted: %s\n' "${mode}" >&2
+        return 1
+    fi
+    [ ! -f "${root}/upgrade.completed" ]
+    [ ! -d "${root}/install/deploy/backups" ]
+    [ "$(cat "${root}/install/VERSION")" = v1 ]
+}
+
+for mode in stdout other-inode; do
+    root="${WORK_ROOT}/upgrade-${mode}"
+    prepare_upgrade_root "${root}"
+    assert_upgrade_rejected "${root}" "${mode}"
+done
+
+UPGRADE_HELD_ROOT="${WORK_ROOT}/upgrade-same-inode"
+prepare_upgrade_root "${UPGRADE_HELD_ROOT}"
+(
+    exec 7> "${UPGRADE_HELD_ROOT}/install/.consumer-deploy.lock"
+    flock -n 7
+    : > "${UPGRADE_HELD_ROOT}/holder.ready"
+    while [ ! -f "${UPGRADE_HELD_ROOT}/holder.release" ]; do sleep 0.05; done
+) &
+UPGRADE_HOLDER_PID=$!
+wait_for_file "${UPGRADE_HELD_ROOT}/holder.ready"
+assert_upgrade_rejected "${UPGRADE_HELD_ROOT}" same-inode
+: > "${UPGRADE_HELD_ROOT}/holder.release"
+wait "${UPGRADE_HOLDER_PID}"
+
+UPGRADE_VALID_ROOT="${WORK_ROOT}/upgrade-valid"
+prepare_upgrade_root "${UPGRADE_VALID_ROOT}"
+invoke_upgrade_with_lock "${UPGRADE_VALID_ROOT}" valid
+[ -f "${UPGRADE_VALID_ROOT}/upgrade.completed" ]
+
+printf 'real Linux inherited lock validation: ok\n'
+'''
+    script = script.replace(
+        "__SOURCE_DEPLOY_ROOT__", shlex.quote(source_deploy_root)
+    )
+    result = subprocess.run(
+        bash_command,
+        input=script.encode("utf-8"),
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+
+    assert result.returncode == 0, stdout + stderr
+    assert "real Linux inherited lock validation: ok" in stdout
+
+
+def test_real_linux_flock_serializes_lifecycle_and_upgrade_overlay():
+    bash_command, source_deploy_root = _linux_bash_and_deploy_root()
+    script = r'''
+set -euo pipefail
+SOURCE_DEPLOY_ROOT=__SOURCE_DEPLOY_ROOT__
+WORK_ROOT="$(mktemp -d)"
+cleanup() {
+    case "${WORK_ROOT}" in
+        /tmp/tmp.*) rm -rf -- "${WORK_ROOT}" ;;
+    esac
+}
+trap cleanup EXIT
+
+wait_for_file() {
+    local path="$1"
+    local attempt=0
+    while [ ! -f "${path}" ] && [ "${attempt}" -lt 200 ]; do
+        sleep 0.05
+        attempt=$((attempt + 1))
+    done
+    [ -f "${path}" ]
+}
+
+prepare_bundle() {
+    local root="$1"
+    mkdir -p "${root}/deploy" "${root}/backend" "${root}/fake-bin"
+    cp "${SOURCE_DEPLOY_ROOT}/common.sh" "${root}/deploy/common.sh"
+    cp "${SOURCE_DEPLOY_ROOT}/docker-compose.release.yml" "${root}/deploy/docker-compose.release.yml"
+    cp "${SOURCE_DEPLOY_ROOT}/docker-compose.storage-volume.yml" "${root}/deploy/docker-compose.storage-volume.yml"
+    printf 'USER_MAX_COUNT=10\n' > "${root}/backend/.env"
+    cat > "${root}/fake-bin/docker" <<'SH'
+#!/bin/sh
+printf '%s:%s\n' "${STORAGE_MODE:-bind}" "$*" >> "${DOCKER_LOG}"
+exit 0
+SH
+    chmod +x "${root}/fake-bin/docker"
+}
+
+LIFECYCLE_ROOT="${WORK_ROOT}/lifecycle"
+prepare_bundle "${LIFECYCLE_ROOT}"
+export PATH="${LIFECYCLE_ROOT}/fake-bin:${PATH}"
+export DOCKER_LOG="${LIFECYCLE_ROOT}/docker.log"
+FIRST_READY="${LIFECYCLE_ROOT}/first.ready"
+FIRST_RELEASE="${LIFECYCLE_ROOT}/first.release"
+
+(
+    cd "${LIFECYCLE_ROOT}"
+    export STORAGE_MODE=volume
+    source deploy/common.sh
+    bash -c 'source deploy/common.sh; test "${DEPLOY_TRANSACTION_LOCK_HELD}" = true'
+    : > "${FIRST_READY}"
+    while [ ! -f "${FIRST_RELEASE}" ]; do sleep 0.05; done
+    compose_up backend frontend auth sandbox
+    write_state v2 '' '' backend frontend '' '' auth '' sandbox ''
+) >"${LIFECYCLE_ROOT}/first.out" 2>"${LIFECYCLE_ROOT}/first.err" &
+FIRST_PID=$!
+wait_for_file "${FIRST_READY}"
+LOCK_INODE_BEFORE="$(stat -c %i "${LIFECYCLE_ROOT}/.consumer-deploy.lock")"
+
+# Replacing deploy files must not replace the stable bundle-root lock inode.
+cp "${SOURCE_DEPLOY_ROOT}/common.sh" "${LIFECYCLE_ROOT}/deploy/common.sh"
+set +e
+(
+    cd "${LIFECYCLE_ROOT}"
+    export STORAGE_MODE=bind
+    source deploy/common.sh
+    docker info
+) >"${LIFECYCLE_ROOT}/second.out" 2>"${LIFECYCLE_ROOT}/second.err"
+SECOND_STATUS=$?
+set -e
+[ "${SECOND_STATUS}" -ne 0 ]
+grep -q 'deployment transaction is already running' "${LIFECYCLE_ROOT}/second.err"
+[ ! -f "${DOCKER_LOG}" ]
+[ "$(stat -c %i "${LIFECYCLE_ROOT}/.consumer-deploy.lock")" = "${LOCK_INODE_BEFORE}" ]
+
+: > "${FIRST_RELEASE}"
+wait "${FIRST_PID}"
+grep -q '^volume:' "${DOCKER_LOG}"
+! grep -q '^bind:' "${DOCKER_LOG}"
+
+# Normal process exit releases the kernel lock while retaining the stable inode.
+(
+    cd "${LIFECYCLE_ROOT}"
+    unset STORAGE_MODE
+    source deploy/common.sh
+    test "${DEPLOY_TRANSACTION_LOCK_HELD}" = true
+)
+[ "$(stat -c %i "${LIFECYCLE_ROOT}/.consumer-deploy.lock")" = "${LOCK_INODE_BEFORE}" ]
+
+# SIGKILL leaves no stale ownership because flock is released by the kernel.
+CRASH_ROOT="${WORK_ROOT}/crash"
+prepare_bundle "${CRASH_ROOT}"
+mkfifo "${CRASH_ROOT}/hold.fifo"
+(
+    cd "${CRASH_ROOT}"
+    source deploy/common.sh
+    : > "${CRASH_ROOT}/ready"
+    read -r _ < "${CRASH_ROOT}/hold.fifo"
+) &
+CRASH_PID=$!
+wait_for_file "${CRASH_ROOT}/ready"
+kill -9 "${CRASH_PID}"
+set +e
+wait "${CRASH_PID}" 2>/dev/null
+set -e
+(
+    cd "${CRASH_ROOT}"
+    source deploy/common.sh
+    test "${DEPLOY_TRANSACTION_LOCK_HELD}" = true
+)
+
+# Hold the same root lock through a completed upgrade overlay.
+RELEASE_ROOT="${WORK_ROOT}/release"
+INSTALL_ROOT="${WORK_ROOT}/install"
+mkdir -p "${RELEASE_ROOT}/deploy" "${INSTALL_ROOT}/deploy/state" "${WORK_ROOT}/upgrade-bin"
+cp "${SOURCE_DEPLOY_ROOT}/common.sh" "${RELEASE_ROOT}/deploy/common.sh"
+cp "${SOURCE_DEPLOY_ROOT}/upgrade.sh" "${RELEASE_ROOT}/deploy/upgrade.sh"
+cp "${SOURCE_DEPLOY_ROOT}/common.sh" "${INSTALL_ROOT}/deploy/common.sh"
+printf 'v2\n' > "${RELEASE_ROOT}/VERSION"
+printf 'v1\n' > "${INSTALL_ROOT}/VERSION"
+printf 'CURRENT_VERSION=v1\nCURRENT_STORAGE_MODE=bind\n' > "${INSTALL_ROOT}/deploy/state/current.env"
+printf 'release-lock-must-not-overlay\n' > "${RELEASE_ROOT}/.consumer-deploy.lock"
+cat > "${RELEASE_ROOT}/deploy/deploy.sh" <<'SH'
+#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+test "${DEPLOY_TRANSACTION_LOCK_HELD}" = true
+: > "${UPGRADE_CHILD_REENTRY}"
+SH
+chmod +x "${RELEASE_ROOT}/deploy/"*.sh
+
+REAL_TAR="$(command -v tar)"
+cat > "${WORK_ROOT}/upgrade-bin/tar" <<'SH'
+#!/bin/sh
+is_install_extract=false
+previous=""
+for argument in "$@"; do
+    if [ "${previous}" = "-C" ] && [ "${argument}" = "${UPGRADE_INSTALL_ROOT}" ]; then
+        is_install_extract=true
+    fi
+    previous="${argument}"
+done
+if [ "${is_install_extract}" = true ]; then
+    "${REAL_TAR}" "$@"
+    : > "${UPGRADE_OVERLAY_READY}"
+    while [ ! -f "${UPGRADE_OVERLAY_RELEASE}" ]; do sleep 0.05; done
+    exit 0
+fi
+exec "${REAL_TAR}" "$@"
+SH
+chmod +x "${WORK_ROOT}/upgrade-bin/tar"
+export REAL_TAR UPGRADE_INSTALL_ROOT="${INSTALL_ROOT}"
+export UPGRADE_OVERLAY_READY="${WORK_ROOT}/upgrade-overlay.ready"
+export UPGRADE_OVERLAY_RELEASE="${WORK_ROOT}/upgrade-overlay.release"
+export UPGRADE_CHILD_REENTRY="${WORK_ROOT}/upgrade-child-reentry"
+export PATH="${WORK_ROOT}/upgrade-bin:${LIFECYCLE_ROOT}/fake-bin:${PATH}"
+export DOCKER_LOG="${WORK_ROOT}/upgrade-docker.log"
+
+"${RELEASE_ROOT}/deploy/upgrade.sh" "${INSTALL_ROOT}" \
+    >"${WORK_ROOT}/upgrade.out" 2>"${WORK_ROOT}/upgrade.err" &
+UPGRADE_PID=$!
+wait_for_file "${UPGRADE_OVERLAY_READY}"
+UPGRADE_LOCK_INODE="$(stat -c %i "${INSTALL_ROOT}/.consumer-deploy.lock")"
+set +e
+(
+    cd "${INSTALL_ROOT}"
+    source deploy/common.sh
+    docker info
+) >"${WORK_ROOT}/upgrade-competitor.out" 2>"${WORK_ROOT}/upgrade-competitor.err"
+UPGRADE_COMPETITOR_STATUS=$?
+set -e
+[ "${UPGRADE_COMPETITOR_STATUS}" -ne 0 ]
+grep -q 'deployment transaction is already running' "${WORK_ROOT}/upgrade-competitor.err"
+[ ! -f "${DOCKER_LOG}" ]
+[ "$(stat -c %i "${INSTALL_ROOT}/.consumer-deploy.lock")" = "${UPGRADE_LOCK_INODE}" ]
+: > "${UPGRADE_OVERLAY_RELEASE}"
+wait "${UPGRADE_PID}"
+[ -f "${UPGRADE_CHILD_REENTRY}" ]
+[ "$(stat -c %i "${INSTALL_ROOT}/.consumer-deploy.lock")" = "${UPGRADE_LOCK_INODE}" ]
+(
+    cd "${INSTALL_ROOT}"
+    source deploy/common.sh
+    test "${DEPLOY_TRANSACTION_LOCK_HELD}" = true
+)
+
+printf 'real Linux flock lifecycle and upgrade overlay: ok\n'
+'''
+    script = script.replace(
+        "__SOURCE_DEPLOY_ROOT__", shlex.quote(source_deploy_root)
+    )
+    result = subprocess.run(
+        bash_command,
+        input=script.encode("utf-8"),
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+
+    assert result.returncode == 0, stdout + stderr
+    assert "real Linux flock lifecycle and upgrade overlay: ok" in stdout
+
+
+def test_pending_storage_mode_is_fsynced_and_directory_synced_before_docker(tmp_path):
+    result, _, _, docker_calls, env = _run_storage_mode_compose(
+        tmp_path, "volume"
+    )
+
+    assert result.returncode == 0, result.stderr
+    events = Path(env["DEPLOY_TEST_EVENT_LOG"]).read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert events[:4] == ["fsync-file", "replace", "fsync-dir", "docker"]
+    assert docker_calls.exists()
+
+
+@pytest.mark.parametrize(
+    ("failure_operation", "expected_events"),
+    [
+        ("fsync-file", ["fsync-file"]),
+        ("replace", ["fsync-file", "replace"]),
+        ("fsync-dir", ["fsync-file", "replace", "fsync-dir"]),
+    ],
+)
+def test_storage_state_durability_failure_prevents_docker(
+    tmp_path, failure_operation, expected_events
+):
+    bundle_root, deploy_root, env, _, docker_calls = _prepare_storage_mode_bundle(
+        tmp_path
+    )
+    env["STORAGE_MODE"] = "volume"
+    env["STATE_IO_FAIL_OPERATION"] = failure_operation
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "compose_up backend frontend auth sandbox",
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "durably persist" in result.stderr
+    assert not docker_calls.exists()
+    assert Path(env["DEPLOY_TEST_EVENT_LOG"]).read_text(
+        encoding="utf-8"
+    ).splitlines() == expected_events
+    assert list((deploy_root / "state").glob("*.tmp.*")) == []
+
+
+def test_legacy_install_state_is_bind_and_cannot_silently_switch_to_volume(tmp_path):
+    bundle_root, deploy_root, env, _, docker_calls = _prepare_storage_mode_bundle(
+        tmp_path
+    )
+    (deploy_root / "state").mkdir()
+    (deploy_root / "state" / "current.env").write_text(
+        "CURRENT_VERSION=v1\n",
+        encoding="utf-8",
+    )
+    env["STORAGE_MODE"] = "volume"
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "load_state; compose_up backend frontend auth sandbox",
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "does not match installed storage mode 'bind'" in result.stderr
+    assert not docker_calls.exists()
+
+
+def test_pending_volume_mode_survives_failed_deploy_retry_without_environment(
+    tmp_path,
+):
+    bundle_root, deploy_root, env, docker_args, _ = _prepare_storage_mode_bundle(
+        tmp_path
+    )
+    first_env = env.copy()
+    first_env["STORAGE_MODE"] = "volume"
+
+    first_start = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "compose_up backend frontend auth sandbox",
+        ],
+        cwd=bundle_root,
+        env=first_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert first_start.returncode == 0, first_start.stderr
+    assert _compose_file_names(
+        docker_args.read_text(encoding="utf-8").splitlines()
+    ) == ["docker-compose.release.yml", "docker-compose.storage-volume.yml"]
+    assert not (deploy_root / "state" / "current.env").exists()
+    storage_mode_state = deploy_root / "state" / "storage-mode.env"
+    assert storage_mode_state.read_text(encoding="utf-8") == (
+        "STORAGE_MODE_STATUS=pending\nSTORAGE_MODE=volume\n"
+    )
+
+    docker_args.unlink()
+    retry = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "compose_up backend frontend auth sandbox",
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert retry.returncode == 0, retry.stderr
+    assert _compose_file_names(
+        docker_args.read_text(encoding="utf-8").splitlines()
+    ) == ["docker-compose.release.yml", "docker-compose.storage-volume.yml"]
+
+
+def test_storage_mode_is_persisted_and_prevents_silent_mode_switch(tmp_path):
+    bundle_root, deploy_root, env, docker_args, docker_calls = (
+        _prepare_storage_mode_bundle(tmp_path)
+    )
+    persist = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "STORAGE_MODE=volume; export STORAGE_MODE; "
+            "compose_up backend frontend auth sandbox; "
+            "write_state v2 v1 '' backend frontend old-backend old-frontend "
+            "auth old-auth sandbox old-sandbox",
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert persist.returncode == 0, persist.stderr
+    state_text = (deploy_root / "state" / "current.env").read_text(encoding="utf-8")
+    assert "CURRENT_STORAGE_MODE=volume\n" in state_text
+    assert (deploy_root / "state" / "storage-mode.env").read_text(
+        encoding="utf-8"
+    ) == "STORAGE_MODE_STATUS=installed\nSTORAGE_MODE=volume\n"
+
+    use_persisted = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "load_state; compose_up backend frontend auth sandbox",
+        ],
+        cwd=bundle_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert use_persisted.returncode == 0, use_persisted.stderr
+    args = docker_args.read_text(encoding="utf-8").splitlines()
+    assert _compose_file_names(args)[-1] == "docker-compose.storage-volume.yml"
+
+    docker_calls.unlink()
+    switched_env = env.copy()
+    switched_env["STORAGE_MODE"] = "bind"
+    reject_switch = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "load_state; compose_up backend frontend auth sandbox",
+        ],
+        cwd=bundle_root,
+        env=switched_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert reject_switch.returncode != 0
+    assert "does not match installed storage mode 'volume'" in reject_switch.stderr
+    assert not docker_calls.exists()
+
+
+def test_upgrade_acquires_stable_root_lock_before_state_read_and_overlay():
+    upgrade_text = (DEPLOY_ROOT / "upgrade.sh").read_text(encoding="utf-8")
+
+    lock_index = upgrade_text.index("\nacquire_upgrade_transaction_lock\n")
+    state_read_index = upgrade_text.index('source "${STATE_FILE}"')
+    overlay_index = upgrade_text.index('log "Overlaying new release files"')
+    assert lock_index < state_read_index < overlay_index
+    assert 'UPGRADE_LOCK_FILE="${INSTALL_DIR}/.consumer-deploy.lock"' in upgrade_text
+    assert "flock -n" in upgrade_text
+    assert "export DEPLOY_TRANSACTION_LOCK_FD" in upgrade_text
+    assert "--exclude='./.consumer-deploy.lock'" in upgrade_text
 
 
 def test_release_compose_shares_deterministic_artifact_staging_with_jiuwenbox():
@@ -627,7 +1706,8 @@ def test_deploy_runs_shared_migration_runner_before_strict_preflight():
     assert "python -m migrations.runner" in migrate_text
     assert "ontology_data_sources_direct_v2" not in migrate_text
     assert '--env-file "${BUNDLE_ROOT}/backend/.env"' in migrate_text
-    assert '${BUNDLE_ROOT}/.onto-runtime:/app/.onto-runtime' in migrate_text
+    assert '"${RUNTIME_STORAGE_SOURCE}:/release/.onto-runtime:${DATA_ACCESS}"' in migrate_text
+    assert '"${AUTH_STORAGE_SOURCE}:/release/.onto-auth:${DATA_ACCESS}"' in migrate_text
 
 
 def test_backup_captures_legacy_backend_container_storage_before_container_removal():
@@ -683,7 +1763,9 @@ def test_rollback_is_code_only_and_does_not_restore_runtime_snapshots():
     assert 'compose_stop "${FAILED_BACKEND_IMAGE}"' in rollback_text
     assert 'compose_down "${FAILED_BACKEND_IMAGE}"' in rollback_text
     stop_index = rollback_text.index('compose_stop "${FAILED_BACKEND_IMAGE}"')
-    backup_index = rollback_text.index('backup.sh" "rollback-${PREVIOUS_VERSION}"')
+    backup_index = rollback_text.index(
+        'backup.sh" --confirm-writes-stopped "rollback-${PREVIOUS_VERSION}"'
+    )
     down_index = rollback_text.index('compose_down "${FAILED_BACKEND_IMAGE}"')
     assert stop_index < backup_index < down_index
     assert 'restore_archive_if_present "${LAST_BACKUP_DIR}/onto-runtime.tar.gz"' not in rollback_text

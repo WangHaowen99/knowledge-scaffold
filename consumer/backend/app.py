@@ -58,6 +58,80 @@ _solver_recovery_worker_lock = threading.RLock()
 _runtime_refresh_lock = threading.RLock()
 
 
+async def _run_session_recovery_batches(
+    manager: UserStoreManager,
+    stop_event: threading.Event,
+) -> dict[str, int | bool]:
+    """Drain bounded recovery batches without delaying application readiness."""
+
+    outcome: dict[str, int | bool] = {
+        "processed": 0,
+        "recovered": 0,
+        "failures": 0,
+        "remaining": 0,
+        "complete": True,
+    }
+    total_failures = 0
+    try:
+        while not stop_event.is_set():
+            outcome = await asyncio.to_thread(
+                manager.recover_pending_sessions_batch,
+                max_items=25,
+                max_seconds=0.25,
+                stop_event=stop_event,
+            )
+            failures = int(outcome.get("failures") or 0)
+            total_failures += failures
+            if outcome.get("complete"):
+                break
+            await asyncio.sleep(0)
+        if total_failures:
+            raise RuntimeError(
+                "session recovery completed with {} failure(s)".format(
+                    total_failures
+                )
+            )
+    finally:
+        close_discovery = getattr(manager, "close_recovery_discovery", None)
+        if callable(close_discovery):
+            drained = await asyncio.to_thread(close_discovery, wait_seconds=0.25)
+            if drained is False:
+                raise RuntimeError("session recovery workers did not drain")
+    return outcome
+
+
+async def _stop_session_recovery(
+    task: asyncio.Task | None,
+    stop_event: threading.Event,
+    *,
+    timeout: float,
+) -> bool:
+    stop_event.set()
+    if task is None:
+        return True
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=max(0.01, timeout),
+        )
+        return True
+    except asyncio.TimeoutError:
+        task.add_done_callback(_consume_session_recovery_result)
+        return False
+    except asyncio.CancelledError:
+        return True
+    except Exception:
+        logger.exception("Session recovery task failed")
+        return False
+
+
+def _consume_session_recovery_result(task: asyncio.Future[Any]) -> None:
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 def _install_solver_recovery_worker(app: FastAPI, solver_service):
     """Replace the process-local solver recovery worker owned by the app."""
 
@@ -271,8 +345,8 @@ def refresh_platform_connector() -> None:
 
 def _safe_sync_step(name: str, callback: Callable[..., Any], *args, **kwargs) -> bool:
     try:
-        callback(*args, **kwargs)
-        return True
+        result = callback(*args, **kwargs)
+        return result is not False
     except Exception:
         logger.exception("Lifecycle step failed: %s", name)
         return False
@@ -289,6 +363,8 @@ def create_app() -> FastAPI:
         platform_started = False
         skill_worker_started = False
         warmup_started = False
+        session_recovery_task: asyncio.Task | None = None
+        session_recovery_stop = threading.Event()
         services_installed = False
         started = False
         try:
@@ -320,6 +396,20 @@ def create_app() -> FastAPI:
             app.state.runtime_container = runtime_container
             app.state.agent_execution_runtime = runtime_container
             set_agent_execution_runtime(runtime_container)
+            recovery_method = getattr(
+                services["user_store_manager"],
+                "recover_pending_sessions_batch",
+                None,
+            )
+            if callable(recovery_method):
+                session_recovery_task = asyncio.create_task(
+                    _run_session_recovery_batches(
+                        services["user_store_manager"],
+                        session_recovery_stop,
+                    ),
+                    name="session-summary-recovery",
+                )
+                app.state.session_recovery_task = session_recovery_task
             warmup_started = _safe_sync_step(
                 "runtime-warmup-start",
                 start_runtime_warmup,
@@ -347,6 +437,32 @@ def create_app() -> FastAPI:
                 if runtime_container is not None
                 else 30.0
             )
+            if not await _stop_session_recovery(
+                session_recovery_task,
+                session_recovery_stop,
+                timeout=min(2.0, max(0.01, deadline - loop.time())),
+            ):
+                failed.append("session-recovery")
+            app.state.session_recovery_task = None
+            close_summary_rebuilds = getattr(
+                services.get("user_store_manager") if services_installed else None,
+                "close_summary_rebuilds",
+                None,
+            )
+            if callable(close_summary_rebuilds):
+                try:
+                    rebuilds_closed = await asyncio.to_thread(
+                        close_summary_rebuilds,
+                        wait_seconds=min(
+                            2.0,
+                            max(0.0, deadline - loop.time()),
+                        ),
+                    )
+                    if rebuilds_closed is False:
+                        failed.append("session-summary-rebuild")
+                except Exception:
+                    logger.exception("Session summary rebuild shutdown failed")
+                    failed.append("session-summary-rebuild")
             try:
                 await asyncio.to_thread(
                     _stop_solver_recovery_worker,
@@ -428,6 +544,7 @@ def create_app() -> FastAPI:
     app.state.services = {}
     app.state.runtime_container = None
     app.state.solver_recovery_worker = None
+    app.state.session_recovery_task = None
     install_http_middleware(app)
     app.add_exception_handler(APIError, api_error_handler)
     app.include_router(auth_router)

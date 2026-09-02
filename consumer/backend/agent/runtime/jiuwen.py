@@ -33,6 +33,7 @@ from .contracts import (
 from .events import RuntimeEvent
 from .jiuwen_events import JiuwenRuntimeEventBridge
 from .lifecycle import JiuwenRuntimeLifecycleError, get_jiuwen_runner_lifecycle
+from .preflight_cache import materialize_preflight_product
 
 
 _STATE_SNAPSHOT_CALLBACK: ContextVar[Any] = ContextVar(
@@ -50,6 +51,83 @@ def solver_state_snapshot_callback_context(callback: Any):
         yield
     finally:
         _STATE_SNAPSHOT_CALLBACK.reset(token)
+
+
+def _accepted_preflight_model_profile(
+    context: RuntimeInvocationContext,
+) -> Mapping[str, Any] | None:
+    snapshot = context.preflight_snapshot
+    if (
+        snapshot is None
+        or snapshot.workspace_id != context.workspace_id
+        or not isinstance(snapshot.model_profile, Mapping)
+    ):
+        return None
+
+    from config.model_profile_refs import model_profile_ref_to_dict
+
+    try:
+        expected = model_profile_ref_to_dict(
+            context.model_profile_ref or context.model_profile_id
+        )
+        actual = model_profile_ref_to_dict(
+            snapshot.model_profile.get("model_profile_ref")
+            or snapshot.model_profile.get("id")
+        )
+    except (TypeError, ValueError):
+        return None
+    if expected is None or actual != expected:
+        return None
+    return snapshot.model_profile
+
+
+def _accepted_preflight_ontology_snapshot(
+    context: RuntimeInvocationContext,
+) -> Any:
+    snapshot = _matching_preflight_ontology_products(context)
+    return (
+        snapshot
+        if snapshot is not None
+        and isinstance(snapshot.ontology_manifest, Mapping)
+        else None
+    )
+
+
+def _matching_preflight_ontology_products(
+    context: RuntimeInvocationContext,
+) -> Any:
+    """Match frozen root/preload products while tolerating legacy snapshots."""
+
+    snapshot = context.preflight_snapshot
+    arguments = dict(context.arguments or {})
+    selected_ontology_id = str(
+        arguments.get("selected_ontology_id") or ""
+    ).strip()
+    selected_ontology_version = str(
+        arguments.get("selected_ontology_version")
+        or arguments.get("selected_version")
+        or ""
+    ).strip()
+    if (
+        snapshot is None
+        or snapshot.workspace_id != context.workspace_id
+        or not selected_ontology_id
+        or not selected_ontology_version
+        or snapshot.ontology_id != selected_ontology_id
+        or snapshot.ontology_version != selected_ontology_version
+    ):
+        return None
+    manifest = snapshot.ontology_manifest
+    if manifest is None:
+        return snapshot
+    if (
+        not isinstance(manifest, Mapping)
+        or str(manifest.get("id") or "").strip() != selected_ontology_id
+        or str(manifest.get("version") or "").strip()
+        != selected_ontology_version
+    ):
+        return None
+    return snapshot
 
 
 @dataclass
@@ -225,32 +303,46 @@ class JiuwenAsyncAgentRuntime:
                     direct_arguments = engine_state.get(
                         "_solver_direct_arguments"
                     )
-                    if solver_requirement is not None and isinstance(
-                        direct_arguments,
-                        Mapping,
+                    from agent.core.shared.tool_context import (
+                        ontology_preflight_tool_context,
+                    )
+
+                    with ontology_preflight_tool_context(
+                        _accepted_preflight_ontology_snapshot(context)
                     ):
-                        final_state = await self._execute_direct_solver(
-                            engine_state,
-                            context=context,
-                            requirement=solver_requirement,
-                            arguments=direct_arguments,
-                            observer=bridge,
-                            protocol_event_observer=observe_protocol_event,
-                        )
-                    else:
-                        engine = self._create_engine(context)
-                        final_state = await engine.arun(
-                            engine_state,
-                            caller="main",
-                            event_writer=bridge.engine_event,
-                            snapshot_callback=_STATE_SNAPSHOT_CALLBACK.get(),
-                            observer=bridge,
-                            token_callback=bridge.token_callback,
-                            tool_event_emitter=None,
-                            protocol_event_observer=observe_protocol_event,
-                            event_source_node="jiuwen_react",
-                            subagent_manager=subagent_manager,
-                        )
+                        if solver_requirement is not None and isinstance(
+                            direct_arguments,
+                            Mapping,
+                        ):
+                            final_state = await self._execute_direct_solver(
+                                engine_state,
+                                context=context,
+                                requirement=solver_requirement,
+                                arguments=direct_arguments,
+                                observer=bridge,
+                                protocol_event_observer=observe_protocol_event,
+                            )
+                        else:
+                            engine = self._create_engine(context)
+                            from agent.core.jiuwen_engine import (
+                                jiuwen_preflight_llm_config_context,
+                            )
+
+                            with jiuwen_preflight_llm_config_context(
+                                _accepted_preflight_model_profile(context)
+                            ):
+                                final_state = await engine.arun(
+                                    engine_state,
+                                    caller="main",
+                                    event_writer=bridge.engine_event,
+                                    snapshot_callback=_STATE_SNAPSHOT_CALLBACK.get(),
+                                    observer=bridge,
+                                    token_callback=bridge.token_callback,
+                                    tool_event_emitter=None,
+                                    protocol_event_observer=observe_protocol_event,
+                                    event_source_node="jiuwen_react",
+                                    subagent_manager=subagent_manager,
+                                )
                     pending_interaction = final_state.get("pending_user_interaction")
                     if solver_guard is not None:
                         solver_guard.ensure_terminal(
@@ -455,6 +547,10 @@ class JiuwenAsyncAgentRuntime:
             if self._memory_manager_provider is not None
             else self.memory_manager
         )
+        from agent.core.shared.tool_context import (
+            current_ontology_preflight_tool_fields,
+        )
+
         tool_context = ToolContext(
             memory_manager=memory_manager,
             messages=messages,
@@ -475,6 +571,7 @@ class JiuwenAsyncAgentRuntime:
             supports_user_interaction=context.supports_user_interaction,
             traceparent=context.traceparent or None,
             protocol_event_observer=protocol_event_observer,
+            **current_ontology_preflight_tool_fields(),
         )
         batch_result = await aexecute_tool_batch(
             [
@@ -602,13 +699,21 @@ class JiuwenAsyncAgentRuntime:
                 should_suppress_solver_tools,
             )
 
-            solver_requirement = resolve_solver_route_requirement(
-                user_request=context.query,
-                arguments=arguments,
-                selected_ontology_id=selected_ontology_id,
-                selected_ontology_version=selected_ontology_version,
-                workspace_id=context.workspace_id,
-            )
+            solver_kwargs = {
+                "user_request": context.query,
+                "arguments": arguments,
+                "selected_ontology_id": selected_ontology_id,
+                "selected_ontology_version": selected_ontology_version,
+                "workspace_id": context.workspace_id,
+            }
+            preflight = _matching_preflight_ontology_products(context)
+            if preflight is not None:
+                solver_kwargs["root_payload"] = (
+                    preflight.root_payload
+                    if isinstance(preflight.root_payload, Mapping)
+                    else {}
+                )
+            solver_requirement = resolve_solver_route_requirement(**solver_kwargs)
             user_context = bind_solver_route_requirement(
                 user_context,
                 solver_requirement,
@@ -664,6 +769,20 @@ class JiuwenAsyncAgentRuntime:
             "final_output": None,
             "debug": False,
         }
+        preflight = _matching_preflight_ontology_products(context)
+        if preflight is not None:
+            state["_selected_ontology_context_cache_key"] = (
+                context.workspace_id,
+                selected_ontology_id,
+                selected_ontology_version,
+            )
+            state["_selected_ontology_context_cache"] = (
+                preflight.selected_ontology_context
+            )
+            if preflight.preload_records:
+                state["_preflight_selected_ontology_preload_records"] = (
+                    materialize_preflight_product(preflight.preload_records)
+                )
         if solver_requirement is not None and solver_requirement.direct_arguments is not None:
             state["_solver_direct_arguments"] = copy.deepcopy(
                 solver_requirement.direct_arguments

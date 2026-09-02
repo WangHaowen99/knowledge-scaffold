@@ -117,6 +117,9 @@ def test_apply_staged_rejects_when_operation_changed_after_stage(monkeypatch, tm
     )
     _write_staged(op_path, original_content=original, staged_content="# OP_A\n\nstaged 内容")
     op_path.write_text("# OP_A\n\n人工修改", encoding="utf-8")
+    from ontology.view_cache import get_ontology_mutation_revision
+
+    view_revision = get_ontology_mutation_revision("demo", "example")
 
     response = client.post(
         "/agentic/operations/example/OP_A/staged/apply",
@@ -126,6 +129,7 @@ def test_apply_staged_rejects_when_operation_changed_after_stage(monkeypatch, tm
     assert response.status_code == 409
     assert "changed since staged" in response.json()["error"]
     assert op_path.read_text(encoding="utf-8") == "# OP_A\n\n人工修改"
+    assert get_ontology_mutation_revision("demo", "example") == view_revision
 
 
 def test_apply_staged_rejects_operation_over_char_limit(monkeypatch, tmp_path):
@@ -172,6 +176,9 @@ def test_apply_staged_emits_mutation_and_revokes_evidence_pointer(monkeypatch, t
         staged_content=staged,
         ontology_id="aviation",
     )
+    from ontology.view_cache import get_ontology_mutation_revision
+
+    view_revision = get_ontology_mutation_revision("demo", "aviation")
 
     response = client.post(
         "/agentic/operations/aviation/OP_A/staged/apply",
@@ -184,6 +191,7 @@ def test_apply_staged_emits_mutation_and_revokes_evidence_pointer(monkeypatch, t
     assert response.status_code == 200
     assert response.json()["mutation_revision"] == 1
     assert op_path.read_text(encoding="utf-8") == staged
+    assert get_ontology_mutation_revision("demo", "aviation") > view_revision
 
     from ontology.mutations import OntologyMutationCoordinator
 

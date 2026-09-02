@@ -270,6 +270,7 @@ class DeterministicExecutionService:
         artifact_writer: Optional[ArtifactWriter] = None,
         observer: Any = None,
         cancel_event: Any = None,
+        ontology_manifest: Any = None,
     ) -> DeterministicOutcome:
         ontology_id = str(
             request.runtime_context.selected_ontology_id
@@ -284,12 +285,30 @@ class DeterministicExecutionService:
             or request.context.get("selected_version")
             or ""
         ).strip()
-        manifest_kwargs: dict[str, Any] = {
-            "workspace_id": request.runtime_context.workspace_id,
-        }
-        if ontology_version:
-            manifest_kwargs["version"] = ontology_version
-        ontology, ontology_error = get_ontology_manifest(ontology_id, **manifest_kwargs)
+        ontology = ontology_manifest
+        ontology_error = None
+        if ontology is None:
+            manifest_kwargs: dict[str, Any] = {
+                "workspace_id": request.runtime_context.workspace_id,
+            }
+            if ontology_version:
+                manifest_kwargs["version"] = ontology_version
+            ontology, ontology_error = get_ontology_manifest(
+                ontology_id,
+                **manifest_kwargs,
+            )
+        else:
+            manifest_id = str(getattr(ontology, "id", "") or "").strip()
+            manifest_version = str(
+                getattr(ontology, "version", "") or ""
+            ).strip()
+            if manifest_id != ontology_id or (
+                ontology_version and manifest_version != ontology_version
+            ):
+                return Failed(
+                    "ontology_revision_changed",
+                    "The admitted ontology package does not match the request.",
+                )
         if ontology is None:
             if request.context.get("requested_operation_key") or request.checkpoint:
                 return Failed(
@@ -1013,7 +1032,12 @@ class DeterministicExecutionService:
             handler_execution_count=handler_execution_count,
         )
 
-    def is_potentially_applicable(self, request: DeterministicRequest) -> bool:
+    def is_potentially_applicable(
+        self,
+        request: DeterministicRequest,
+        *,
+        ontology_manifest: Any = None,
+    ) -> bool:
         """Perform a read-only preflight used to defer LLM configuration.
 
         The authoritative validation still happens in :meth:`execute`.  A
@@ -1027,18 +1051,29 @@ class DeterministicExecutionService:
         ).strip()
         if not ontology_id:
             return False
-        manifest_kwargs: dict[str, Any] = {
-            "workspace_id": request.runtime_context.workspace_id,
-        }
         ontology_version = str(
             request.runtime_context.selected_ontology_version
             or request.context.get("selected_ontology_version")
             or request.context.get("selected_version")
             or ""
         ).strip()
-        if ontology_version:
-            manifest_kwargs["version"] = ontology_version
-        ontology, _error = get_ontology_manifest(ontology_id, **manifest_kwargs)
+        ontology = ontology_manifest
+        if ontology is None:
+            manifest_kwargs: dict[str, Any] = {
+                "workspace_id": request.runtime_context.workspace_id,
+            }
+            if ontology_version:
+                manifest_kwargs["version"] = ontology_version
+            ontology, _error = get_ontology_manifest(ontology_id, **manifest_kwargs)
+        else:
+            manifest_id = str(getattr(ontology, "id", "") or "").strip()
+            manifest_version = str(
+                getattr(ontology, "version", "") or ""
+            ).strip()
+            if manifest_id != ontology_id or (
+                ontology_version and manifest_version != ontology_version
+            ):
+                raise ValueError("ontology_manifest does not match the request")
         if ontology is None:
             return False
         ontology_dir = Path(ontology.ontology_dir).resolve()
