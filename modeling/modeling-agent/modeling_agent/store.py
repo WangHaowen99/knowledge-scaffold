@@ -13,6 +13,10 @@ from .schemas import (
     ACTIVE_RUN_STATUSES,
     InteractionRecord,
     ProjectAgentState,
+    RECOVERY_NONE,
+    RECOVERY_STALE_RUN,
+    RUN_CANCELLED,
+    RUN_QUEUED,
     RUN_RUNNING,
     RUN_STOPPING,
     RUN_SUSPENDED,
@@ -122,6 +126,7 @@ CREATE TABLE IF NOT EXISTS project_agent_state (
   summary TEXT NOT NULL DEFAULT '',
   open_questions_json TEXT NOT NULL DEFAULT '[]',
   error TEXT NOT NULL DEFAULT '',
+  recovery_status TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
 
@@ -219,6 +224,14 @@ class RuntimeStore:
             # 数据库中已有的运行可能仍持有旧工具调用 checkpoint，不能强制切换 schema。
             self._db.execute(
                 "ALTER TABLE agent_runs ADD COLUMN tool_profile TEXT NOT NULL DEFAULT 'legacy-v1'"
+            )
+        state_columns = {
+            str(row["name"])
+            for row in self._db.execute("PRAGMA table_info(project_agent_state)").fetchall()
+        }
+        if "recovery_status" not in state_columns:
+            self._db.execute(
+                "ALTER TABLE project_agent_state ADD COLUMN recovery_status TEXT NOT NULL DEFAULT ''"
             )
         timestamp = now_iso()
         terminal = tuple(sorted(TERMINAL_RUN_STATUSES))
@@ -339,8 +352,8 @@ class RuntimeStore:
         self._db.execute(
             """INSERT INTO project_agent_state (
             project_id, state, revision, run_id, interaction_id, checkpoint_id,
-            summary, open_questions_json, error, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            summary, open_questions_json, error, recovery_status, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             _project_state_values(state),
         )
         return state
@@ -358,6 +371,7 @@ class RuntimeStore:
         summary: str | None = None,
         open_questions: list[str] | None = None,
         error: str | None = None,
+        recovery_status: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ProjectAgentState:
         _validate_state(next_state)
@@ -371,12 +385,15 @@ class RuntimeStore:
             summary=current.summary if summary is None else summary[:8_000],
             open_questions=current.open_questions if open_questions is None else open_questions[:30],
             error=current.error if error is None else error[:8_000],
+            recovery_status=(
+                current.recovery_status if recovery_status is None else recovery_status
+            ),
             updated_at=now_iso(),
         )
         changed = self._db.execute(
             """UPDATE project_agent_state SET
             state = ?, revision = ?, run_id = ?, interaction_id = ?, checkpoint_id = ?,
-            summary = ?, open_questions_json = ?, error = ?, updated_at = ?
+            summary = ?, open_questions_json = ?, error = ?, recovery_status = ?, updated_at = ?
             WHERE project_id = ? AND revision = ?""",
             (
                 updated.state,
@@ -387,6 +404,7 @@ class RuntimeStore:
                 updated.summary,
                 _json(updated.open_questions),
                 updated.error,
+                updated.recovery_status,
                 updated.updated_at,
                 current.project_id,
                 current.revision,
@@ -423,6 +441,24 @@ class RuntimeStore:
             state = self._ensure_project_state_locked(run.project_id)
             phase, _separator, execution = state.state.partition(":")
             if execution in ACTIVE_RUN_STATUSES:
+                existing = self.get_run(state.run_id) if state.run_id else None
+                if existing is None:
+                    # 运行记录已经丢失但状态仍被占用：进入可恢复异常态，
+                    # 不再同时拒绝旧计划与新计划，也不允许静默创建新运行。
+                    raise AgentRuntimeError(
+                        "RUN_STALE_OCCUPIED",
+                        "当前运行状态引用的运行记录已丢失，请先安全终止失效占用后重新规划",
+                        status=409,
+                        details={
+                            "runId": state.run_id,
+                            "state": state.state,
+                            "recovery": {
+                                "status": state.recovery_status or RECOVERY_STALE_RUN,
+                                "missing": ["run"],
+                            },
+                            "nextSteps": ["安全终止失效计划后重新规划"],
+                        },
+                    )
                 raise AgentRuntimeError(
                     "RUN_ACTIVE",
                     "该项目已有正在运行或等待处理的 Agent",
@@ -720,8 +756,13 @@ class RuntimeStore:
                 self._ensure_project_state_locked(str(project["project_id"]))
             state_rows = self._db.execute(
                 """SELECT * FROM project_agent_state
-                WHERE state LIKE ? OR state LIKE ? OR state LIKE ?""",
-                (f"%:{RUN_RUNNING}", f"%:{RUN_STOPPING}", f"%:{RUN_SUSPENDED}"),
+                WHERE state LIKE ? OR state LIKE ? OR state LIKE ? OR state LIKE ?""",
+                (
+                    f"%:{RUN_RUNNING}",
+                    f"%:{RUN_STOPPING}",
+                    f"%:{RUN_SUSPENDED}",
+                    f"%:{RUN_QUEUED}",
+                ),
             ).fetchall()
             recovered: list[RunRecord] = []
             for state_row in state_rows:
@@ -729,6 +770,19 @@ class RuntimeStore:
                 row = self._db.execute(
                     "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                 ).fetchone()
+                if row is None and state.run_id:
+                    # 幽灵占用：状态引用的运行记录已经丢失，不能自动恢复，
+                    # 保持可诊断标记，避免旧计划不可执行、新计划不可创建的流程死锁。
+                    self._transition_project_state_locked(
+                        state,
+                        next_state=state.state,
+                        cause="recovery_stale_run",
+                        actor_run_id=state.run_id,
+                        recovery_status=RECOVERY_STALE_RUN,
+                        error="运行记录已丢失，占用已标记为失效，请安全终止后重新规划",
+                        metadata={"missing": ["run"]},
+                    )
+                    continue
                 if row and not state.interaction_id:
                     self._db.execute(
                         """UPDATE agent_runs SET status = ?, error = ?, updated_at = ?
@@ -744,7 +798,7 @@ class RuntimeStore:
                         "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                     ).fetchone()))
                 phase, _separator, execution = state.state.partition(":")
-                if execution in {RUN_RUNNING, RUN_STOPPING}:
+                if execution in {RUN_RUNNING, RUN_STOPPING, RUN_QUEUED}:
                     self._transition_project_state_locked(
                         state,
                         next_state=f"{phase}:{RUN_SUSPENDED}",
@@ -753,6 +807,59 @@ class RuntimeStore:
                         error="Agent 服务重启，已停在最近检查点",
                     )
         return recovered
+
+    def terminate_stale_occupancy(
+        self,
+        project_id: str,
+        *,
+        reason: str = "用户安全终止失效运行",
+    ) -> ProjectAgentState:
+        """终止仅剩状态占用的失效运行，保留回执、候选与审计后可重新规划。"""
+        with self._lock, self._db:
+            state = self._ensure_project_state_locked(project_id)
+            phase, _separator, execution = state.state.partition(":")
+            if execution not in ACTIVE_RUN_STATUSES:
+                raise AgentRuntimeError("RUN_NOT_ACTIVE", "当前没有需要终止的运行占用", status=409)
+            if state.run_id and self.get_run(state.run_id) is not None:
+                raise AgentRuntimeError(
+                    "RUN_ACTIVE",
+                    "该运行仍然存在，请使用正常取消入口",
+                    status=409,
+                    details={"runId": state.run_id},
+                )
+            return self._transition_project_state_locked(
+                state,
+                next_state=f"{phase}:{RUN_CANCELLED}",
+                cause="stale_occupancy_terminated",
+                actor_run_id=state.run_id,
+                run_id="",
+                interaction_id="",
+                checkpoint_id="",
+                error="",
+                recovery_status=RECOVERY_NONE,
+                metadata={"reason": reason, "terminatedRunId": state.run_id},
+            )
+
+    def mark_recovery_status(
+        self,
+        project_id: str,
+        status: str,
+        *,
+        error: str = "",
+        cause: str = "recovery_diagnostic",
+    ) -> ProjectAgentState:
+        """在锁内将当前状态迁移为新的恢复诊断（状态文本不变，仅更新诊断）。"""
+        with self._lock, self._db:
+            state = self._ensure_project_state_locked(project_id)
+            phase, _separator, execution = state.state.partition(":")
+            return self._transition_project_state_locked(
+                state,
+                next_state=f"{phase}:{execution}",
+                cause=cause,
+                actor_run_id=state.run_id,
+                recovery_status=status,
+                error=error or state.error,
+            )
 
     def tool_receipt(
         self,
@@ -1237,6 +1344,7 @@ def _project_state_values(state: ProjectAgentState) -> tuple[Any, ...]:
         state.summary,
         _json(state.open_questions),
         state.error,
+        state.recovery_status,
         state.updated_at,
     )
 
@@ -1246,6 +1354,7 @@ def _project_state_from_row(row: sqlite3.Row) -> ProjectAgentState:
         questions = json.loads(row["open_questions_json"])
     except (TypeError, json.JSONDecodeError):
         questions = []
+    recovery_status = str(row["recovery_status"]) if "recovery_status" in row.keys() else ""
     return ProjectAgentState(
         project_id=row["project_id"],
         state=row["state"],
@@ -1256,5 +1365,6 @@ def _project_state_from_row(row: sqlite3.Row) -> ProjectAgentState:
         summary=row["summary"],
         open_questions=[str(item) for item in questions] if isinstance(questions, list) else [],
         error=row["error"],
+        recovery_status=recovery_status,
         updated_at=row["updated_at"],
     )

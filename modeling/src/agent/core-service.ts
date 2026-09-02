@@ -408,6 +408,24 @@ export class AgentCoreService {
     }
   }
 
+  safeTerminateChangePlan(project: Project, username: string, planId: string) {
+    try {
+      const terminated = this.changeControl.safeTerminatePlan({
+        projectId: project.id,
+        planId,
+        actor: username,
+      });
+      return {
+        ...terminated,
+        display: {
+          text: '已安全终止失效建模计划，候选内容与审计记录保留，可以重新规划',
+        },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
   workbenchPackageSources(project: Project) {
     return {
       sources: listPackageMergeSources(this.db, project.id).map(packageSourceSummary),
@@ -3144,6 +3162,11 @@ export class AgentCoreService {
       const packageDataSourceType = workspacePackageDataSourceType(context.project.id, current.spec);
       this.db.exec('BEGIN IMMEDIATE');
       try {
+        if (existing && existing.run_id !== context.runId) {
+          // 新 run 接管工作区时把仍在进行中的受控计划一并转移，
+          // 避免计划仍挂在旧 run 上导致执行端找不到（CHANGE_PLAN_NOT_FOUND）。
+          this.changeControl.transferActiveRun(context.project.id, existing.run_id, context.runId);
+        }
         this.db.prepare('DELETE FROM agent_candidate_changes WHERE project_id = ?').run(context.project.id);
         this.db.prepare(`INSERT INTO agent_candidate_workspaces (
           project_id, run_id, owner, base_revision_oid, package_data_source_type, candidate_id,
@@ -3191,8 +3214,14 @@ export class AgentCoreService {
   ): WorkspaceRow {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + WORKSPACE_LEASE_MS).toISOString();
+    const previous = this.workspace(context.project.id);
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      if (previous && previous.run_id !== context.runId) {
+        // 知识包修订变化触发重建工作区时同样接续旧计划，
+        // 避免计划悬挂在旧 run 上形成“幽灵计划”。
+        this.changeControl.transferActiveRun(context.project.id, previous.run_id, context.runId);
+      }
       this.db.prepare('DELETE FROM agent_candidate_changes WHERE project_id = ?').run(context.project.id);
       this.db.prepare(`UPDATE agent_candidate_workspaces SET
         run_id = ?, owner = ?, base_revision_oid = ?, package_data_source_type = ?, candidate_id = NULL,
