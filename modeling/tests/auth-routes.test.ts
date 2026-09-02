@@ -996,6 +996,21 @@ test('知识包工作区：导入 ZIP 后建立 Agent 增量基线和原始文�
   assert.equal(snapshot.json().project.runtime, 'agent');
   assert.equal(snapshot.json().revision, imported.json().revision);
 
+  const session = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/session`,
+    headers: { authorization },
+  });
+  assert.equal(session.statusCode, 200, session.body);
+  assert.equal(session.json().aiConstruction, null);
+  const legacyGraph = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/ai-construction`,
+    headers: { authorization },
+  });
+  assert.equal(legacyGraph.statusCode, 200, legacyGraph.body);
+  assert.equal(legacyGraph.json().aiConstruction, null);
+
   const [legacyChat, legacyIncrement] = await Promise.all([
     app.inject({
       method: 'POST', url: `/api/projects/${projectId}/package/chat`, headers: { authorization },
@@ -1008,8 +1023,11 @@ test('知识包工作区：导入 ZIP 后建立 Agent 增量基线和原始文�
   ]);
   assert.equal(legacyChat.statusCode, 410, legacyChat.body);
   assert.equal(legacyChat.json().code, 'UNIFIED_AGENT_RUNTIME_REQUIRED');
-  assert.equal(legacyIncrement.statusCode, 410, legacyIncrement.body);
-  assert.equal(legacyIncrement.json().code, 'UNIFIED_AGENT_RUNTIME_REQUIRED');
+  assert.equal(legacyIncrement.statusCode, 307, legacyIncrement.body);
+  assert.equal(
+    legacyIncrement.headers.location,
+    `/api/projects/${projectId}/agent/increment/start`,
+  );
   const graphAfterLegacyRequests = getDb().prepare(`SELECT COUNT(*) AS count
     FROM ai_construction_graphs WHERE project_id = ?`).get(projectId) as { count: number };
   assert.equal(graphAfterLegacyRequests.count, 0);
@@ -2951,9 +2969,16 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
       repairScope: 'data', packageOptimizable: false, resultIds: [],
       relatedQuestions: [], suggestedAction: '补齐数据源字段',
     },
+    {
+      category: 'runtime_error', title: '确定性脚本执行失败', summary: '脚本参数接口不兼容',
+      evidence: ['execute_script 返回参数错误'], confidence: 'high', blocking: false,
+      repairScope: 'script', packageOptimizable: true, resultIds: [],
+      relatedQuestions: ['如何校验生产计划'], suggestedAction: '修复脚本参数接口',
+    },
   ] as any);
   const packageDefect = stored.find((item) => item.repairScope === 'package')!;
   const dataDefect = stored.find((item) => item.repairScope === 'data')!;
+  const scriptDefect = stored.find((item) => item.repairScope === 'script')!;
 
   // 混入非知识包缺陷要被拒：改知识包解决不了运行环境和数据问题
   const rejected = await app.inject({
@@ -2971,7 +2996,7 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
 
   const planned = await app.inject({
     method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
-    payload: { roundId: round.id, diagnosisIds: [packageDefect.id] },
+    payload: { roundId: round.id, diagnosisIds: [packageDefect.id, scriptDefect.id] },
   });
   assert.equal(planned.statusCode, 200, planned.body);
   assert.equal(planned.json().canProposeOptimizations, true);
@@ -2979,6 +3004,12 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
     .find((item: any) => item.id === packageDefect.id);
   assert.equal(plannedDiagnosis.resolutionStatus, 'confirmed');
   assert.equal(plannedDiagnosis.resolutionAction, 'plan_repair');
+  const plannedScriptDiagnosis = planned.json().diagnoses
+    .find((item: any) => item.id === scriptDefect.id);
+  assert.equal(plannedScriptDiagnosis.resolutionStatus, 'confirmed');
+  assert.equal(plannedScriptDiagnosis.resolutionAction, 'plan_repair');
+  assert.equal(plannedScriptDiagnosis.repairScope, 'script');
+  assert.equal(plannedScriptDiagnosis.packageRepairEligible, true);
   const repair = planned.json().aiConstruction.tasks
     .find((item: any) => item.kind === 'evaluation_repair');
   assert.ok(repair, '应规划出评测缺陷修缮任务');

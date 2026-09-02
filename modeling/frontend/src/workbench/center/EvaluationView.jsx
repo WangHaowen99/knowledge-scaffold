@@ -213,8 +213,8 @@ export function evaluationFailureSummary(round, results = []) {
 function DiagnosisPanel({ projectId, round, diagnoses, runningTask, onTaskStarted, onTaskSettled, onChanged, onGoRuns, onAdvance }) {
   const [selected, setSelected] = useState(new Set()); const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [localTask, setLocalTask] = useState(null);
   const failedCount = (round?.results || []).filter((item) => item.verdict !== 'pass').length;
-  const available = diagnoses.filter((item) => item.repairScope === 'package' && !item.blocking && !['resolved', 'irrelevant'].includes(item.resolutionStatus));
-  const confirmed = diagnoses.filter((item) => item.resolutionStatus === 'confirmed' && item.packageOptimizable && !item.blocking);
+  const available = diagnoses.filter((item) => item.packageRepairEligible && !['resolved', 'irrelevant'].includes(item.resolutionStatus));
+  const confirmed = diagnoses.filter((item) => item.resolutionStatus === 'confirmed' && item.packageOptimizable && item.packageRepairEligible);
   const diagnosisTask = runningTask || localTask;
   const diagnosing = busy === 'diagnose' || diagnosisTask?.operation === 'diagnose';
   useEffect(() => { setSelected(new Set(available.filter((item) => item.resolutionStatus !== 'confirmed').map((item) => item.id))); }, [diagnoses]);
@@ -241,11 +241,11 @@ function DiagnosisPanel({ projectId, round, diagnoses, runningTask, onTaskStarte
 }
 
 function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOperation, runningTask, onTaskStarted, onTaskSettled, onChanged, onGoDiagnose }) {
-  const [selected, setSelected] = useState(new Set()); const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [manual, setManual] = useState(false); const [reviewTask, setReviewTask] = useState(null); const [reviewNote, setReviewNote] = useState(''); const [localTask, setLocalTask] = useState(null);
+  const [selected, setSelected] = useState(new Set()); const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [manual, setManual] = useState(false); const [reviewTask, setReviewTask] = useState(null); const [reviewNote, setReviewNote] = useState(''); const [localTask, setLocalTask] = useState(null); const [persistedTask, setPersistedTask] = useState(null);
   const knownPendingRef = useRef(new Set()); const selectionScopeRef = useRef('');
-  const eligible = diagnoses.filter((item) => item.resolutionStatus === 'confirmed' && item.packageOptimizable && !item.blocking); const pending = suggestions.filter((item) => item.status === 'pending');
+  const eligible = diagnoses.filter((item) => item.resolutionStatus === 'confirmed' && item.packageOptimizable && item.packageRepairEligible); const pending = suggestions.filter((item) => item.status === 'pending');
   const pendingIds = new Set(pending.map((item) => item.id)); const selectedPending = new Set([...selected].filter((id) => pendingIds.has(id)));
-  useEffect(() => { setReviewTask(null); setReviewNote(''); setError(''); setNotice(''); }, [projectId, round?.round?.id]);
+  useEffect(() => { setReviewTask(null); setReviewNote(''); setError(''); setNotice(''); setPersistedTask(null); }, [projectId, round?.round?.id]);
   useEffect(() => {
     const scope = `${projectId}:${round?.round?.id || ''}`;
     const pendingIds = suggestions.filter((item) => item.status === 'pending').map((item) => item.id);
@@ -265,6 +265,8 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
     const suggestionIds = new Set(suggestions.map((item) => item.id));
     const relevant = taskSuggestionIds.some((id) => suggestionIds.has(id));
     if (!relevant) return;
+    setPersistedTask(data.task || null);
+    if (data.task?.node?.status === 'running') setError('');
     if (data.task?.node?.status === 'waiting_user' && data.task.node.output?.phase === 'expert_review') setReviewTask(data.task);
     else if (data.task?.node?.status === 'failed') setError(data.task.node.reason || data.task.node.output?.error || '优化候选生成失败');
     else if (data.task?.node?.status === 'done' && data.task.node.output?.candidateId) { setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); void actions.refreshSnapshot(); }
@@ -278,7 +280,7 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
   const review = async (action) => { if (!reviewTask?.node?.id) return; setBusy('review'); setError(''); let retrying = false; try { const decision = await reviewEvaluationOptimization(projectId, reviewTask.node.id, action, reviewNote); setReviewNote(''); if (action === 'retry') { retrying = true; beginTask('apply'); await applyIds(decision.suggestionIds); } else { setReviewTask(null); setNotice('已跳过本次未通过校验的建议，正式知识包未发生变化。'); await reload(); } } catch (cause) { setError(cause.message); } finally { setBusy(''); if (retrying) settleTask(); } };
   const reject = async (item) => { if (!window.confirm(`确认忽略“${item.title}”吗？该建议不会进入知识包候选。`)) return; setBusy('reject'); setError(''); try { await rejectEvaluationSuggestions(projectId, [item.id]); setSelected((old) => { const next = new Set(old); next.delete(item.id); return next; }); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
   const activeOperation = runningOperation || localTask?.operation || '';
-  const operationTask = runningTask || localTask;
+  const operationTask = persistedTask || runningTask || localTask;
   if (!round) return <div className="wb-eval-empty">请先完成失败诊断</div>;
   return <section className="wb-eval-section wide"><StageHeader icon={Sparkles} title="知识包优化建议" detail="Agent 只依据已确认根因生成建议；专家可选择、编辑或手工补充，再交给 Agent 修改知识包候选。" action={<button className="btn btn-p" disabled={Boolean(busy) || Boolean(activeOperation) || !eligible.length} onClick={() => void propose()}>{activeOperation === 'propose' ? <LoaderCircle className="wb-spin" size={14} /> : <Sparkles size={14} />}{pending.length ? '补充生成建议' : '生成建议'}</button>} />
     {activeOperation && operationTask && <OptimizationProgress operation={activeOperation} task={operationTask} />}
@@ -303,11 +305,12 @@ function SuggestionForm({ title, initial = {}, diagnoses, onCancel, onSave }) {
 }
 function TimedOperationProgress({ task, title, detail }) {
   const [now, setNow] = useState(Date.now());
+  const state = task?.node?.output || task?.output || task || {};
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [task?.startedAt]);
-  const startedAt = Date.parse(task?.startedAt || '');
+  }, [state.startedAt]);
+  const startedAt = Date.parse(state.startedAt || task?.startedAt || '');
   const elapsedSeconds = Number.isFinite(startedAt) ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
   const elapsed = elapsedSeconds < 60
     ? `${elapsedSeconds} 秒`
@@ -315,7 +318,7 @@ function TimedOperationProgress({ task, title, detail }) {
   return <div className="wb-eval-operation" role="status" aria-live="polite"><LoaderCircle className="wb-spin" size={18} /><div><b>{title}</b><span>{detail} · 已运行 {elapsed}，完成后自动显示结果</span></div></div>;
 }
 export function DiagnosisProgress({ task }) { return <TimedOperationProgress task={task} title="正在分析失败原因" detail="正在读取失败结果、执行轨迹和独立证据" />; }
-export function OptimizationProgress({ operation, task }) { const copy = operation === 'apply' ? ['正在生成知识包候选', '正在落实所选建议并执行确定性校验'] : ['正在生成优化建议', '正在依据已确认根因生成并校验结构化建议']; return <TimedOperationProgress task={task} title={copy[0]} detail={copy[1]} />; }
+export function OptimizationProgress({ operation, task }) { const state = task?.node?.output || task?.output || task || {}; const grouped = state.protocol === 'targeted_incremental' && state.changeSetCount ? `已将 ${state.selectedCount} 条建议合并为 ${state.changeSetCount} 个变更组，涉及 ${state.targetResourceKeys?.length || 0} 个资源${state.shardCount ? `；${state.shardOrdering === 'dependency_serial' ? '按依赖顺序生成' : '并行生成'} ${state.shardCount} 个符号补丁` : ''}` : ''; const copy = operation === 'apply' ? ['正在生成知识包候选', grouped || '正在落实所选建议并执行确定性校验'] : ['正在生成优化建议', '正在依据已确认根因生成并校验结构化建议']; return <TimedOperationProgress task={task} title={copy[0]} detail={copy[1]} />; }
 export function mergeOptimizationSuggestions(current, incoming) { const merged = new Map((current || []).map((item) => [item.id, item])); for (const item of incoming || []) merged.set(item.id, item); return [...merged.values()]; }
 export function reconcileOptimizationSelection(previous, known, pendingIds) { return { selected: new Set(pendingIds.filter((id) => previous.has(id) || !known.has(id))), known: new Set(pendingIds) }; }
 function StageHeader({ icon: Icon, title, detail, action }) { return <div className="wb-stage-head"><div className="wb-eval-icon"><Icon size={17} /></div><div><h3>{title}</h3><p>{detail}</p></div><span className="spacer" />{action}</div>; }

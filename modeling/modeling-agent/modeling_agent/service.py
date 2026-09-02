@@ -61,7 +61,8 @@ PHASE_EDGES = {
     "goal": ("process",),
     "process": ("goal", "knowledge"),
     "knowledge": ("goal", "process", "validation"),
-    "increment": ("goal", "process", "knowledge", "validation", "evaluation"),
+    # 增量轮次在同一阶段内完成影响分析和受控修改，不能重新退回全量建模链路。
+    "increment": ("validation", "evaluation"),
     "validation": ("goal", "process", "knowledge", "evaluation"),
     "evaluation": ("goal", "process", "knowledge", "validation", "release"),
     "release": ("goal", "process", "knowledge"),
@@ -74,6 +75,24 @@ PHASE_GATES = {
     "evaluation": "ready_for_eval",
     "release": "releasable",
 }
+
+
+def _phase_projection() -> list[dict[str, Any]]:
+    """阶段顺序、标签和入口门禁的只读投影。
+
+    前端的阶段轨照这份数据渲染，不再自己抄一份阶段表——否则 PHASE_LABELS
+    一改就得改两处。increment 是正式基线上的独立轮次，标出来让前端画成支线。
+    """
+    return [
+        {
+            "phase": phase,
+            "label": label,
+            "gate": PHASE_GATES.get(phase),
+            "linear": phase != "increment",
+        }
+        for phase, label in PHASE_LABELS.items()
+    ]
+
 
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
@@ -115,6 +134,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "confirm_deterministic_scope",
     "define_script_contract",
     "stage_script_source",
+    "stage_script_patch",
     "bind_object_sources",
     "discard_rejected_candidate_changes",
     "regroup_changes",
@@ -174,6 +194,9 @@ def _missing_required_tools(live: LiveRun) -> set[str]:
     terminal_attempts = live.required_tools & FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL
     successful_results = live.required_tools - terminal_attempts
     missing = (terminal_attempts - live.attempted_tools) | (successful_results - live.observed_tools)
+    # 服务端确认的全文阅读强于单页读取，不要让模型被迫重复读取同一份资料。
+    if "read_document" in missing and "read_documents_fully" in live.observed_tools:
+        missing.remove("read_document")
     if live.required_material_directives - live.observed_material_directives:
         missing.add("set_material_directive")
     return missing
@@ -419,6 +442,7 @@ class AgentService:
         public_state["phaseLabel"] = PHASE_LABELS.get(public_state["phase"], public_state["phase"])
         return {
             "state": public_state,
+            "phases": _phase_projection(),
             "run": self._run_public(run, state) if run else None,
             "interaction": interaction.public() if interaction else None,
             "activity": {
@@ -515,12 +539,32 @@ class AgentService:
             technical_recoveries=self.store.technical_recoveries(run_id),
         )
         self._live[run_id] = live
-        state_snapshot = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
+        state_payload = self.project_state(project_id)["state"]
+        state_snapshot = json.dumps(state_payload, ensure_ascii=False)[:12_000]
+        increment_constraint = ""
+        if state_payload.get("roundMode") == "incremental":
+            increment_constraint = (
+                "\n# 当前增量轮次约束（服务端已绑定正式基线）\n"
+                "留在 increment 阶段完成影响分析和受控修改，不得回到 goal、process 或 knowledge "
+                "重跑全量建模。先核对新增或变化的资料，只处理直接受影响的已有资源；"
+                "create_change_plan 必须使用 expert_edit，未受影响的正式内容保持不变。"
+            )
+            if _document_rule_change_requested(prompt):
+                increment_constraint += (
+                    "\n本轮是发布后指定文档新增规则：先读取用户点名的文档，再核对现有规则及其引用；"
+                    "如果平台已有该文档的修订影响记录，再调用资料影响分析，"
+                    "如果只是读取已存在文档且没有修订记录，则直接用文档证据界定范围，"
+                    "只建立 rules/ 下新增规则的受控修改计划。不得修改或重写 objects/、operations/、"
+                    "metrics/、scripts/，不得改动已有规则或正式基线；索引等平台派生文件由核心服务维护。"
+                    "资料影响结果会由服务端自动定位到中栏，不要调用 focus 携带完整 data；"
+                    "如确需定位，只传 kind 和 target，不要复制带引号的原始清单。"
+                )
         runtime_prompt = (
             f"{prompt}\n\n"
             "# 项目唯一 Agent 状态快照（服务端在本轮启动时注入）\n"
             f"{state_snapshot}\n"
             "执行前仍应调用 get_project_state 获取最新版本；状态转换只能调用 transition_project_state。"
+            f"{increment_constraint}"
         )
         live.task = asyncio.create_task(self._execute(live, runtime_prompt))
         return self._run_public(run, self.store.project_state(project_id))
@@ -571,6 +615,11 @@ class AgentService:
             "externalEventId": aggregate_id,
             "blocks": [self._material_batch_block(terminal_events)],
         })
+        await self._start_increment_for_material_events(
+            project_id=project_id,
+            token=token,
+            events=terminal_events,
+        )
         self._rewind_for_material_events(project_id, terminal_events)
         if aggregate.get("autoContinue") is False:
             self.store.mark_material_batch_continued(project_id, batch_id)
@@ -646,6 +695,7 @@ class AgentService:
                 ),
             }],
         })
+        round_id = f"increment_{uuid.uuid4().hex}"
         state = self.store.transition_project_state(
             project_id,
             expected_revision=state.revision,
@@ -655,8 +705,12 @@ class AgentService:
                 f"已导入知识包“{package_name}” {package_version} 作为增量基线；"
                 "尚未运行本项目的真实业务评测。"
             ),
+            round_mode="incremental",
+            round_id=round_id,
+            baseline_revision=baseline_revision,
             metadata={
                 "eventId": event_id,
+                "roundId": round_id,
                 "baselineRevision": baseline_revision,
                 "packageName": package_name,
                 "packageVersion": package_version,
@@ -675,6 +729,37 @@ class AgentService:
             "preserved": False,
             "state": state.public(),
         }
+
+    async def start_increment_round(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        baseline_revision: str,
+        package_version: str = "",
+    ) -> dict[str, Any]:
+        _require_project_and_token(project_id, token)
+        state, started = self.store.start_increment_round(
+            project_id,
+            baseline_revision=baseline_revision,
+            package_version=package_version,
+        )
+        public = state.public()
+        public["phaseLabel"] = PHASE_LABELS["increment"]
+        if started:
+            self.events.publish(project_id, state.run_id, "state", public)
+            version = package_version.strip()
+            self.events.publish(project_id, state.run_id, "message", {
+                "role": "assistant",
+                "blocks": [{
+                    "type": "text",
+                    "text": (
+                        f"已基于知识包 {version} 开始增量建模。"
+                        if version else "已基于当前正式知识包开始增量建模。"
+                    ) + "本轮只核对新增或变化的资料，未受影响的已确认内容保持不变。",
+                }],
+            })
+        return {"started": started, "state": public}
 
     async def handle_evaluation_event(
         self,
@@ -903,6 +988,10 @@ class AgentService:
         target = "goal" if any(item.get("purpose") == "goal" for item in changed) else "knowledge"
         current = self.store.project_state(project_id)
         phase, _separator, execution = current.state.partition(":")
+        # 带正式基线的新事件已在上一步进入 increment；这里只阻止增量轮次退回全量阶段。
+        # 部署前已经入队、缺少基线字段的存量事件仍沿用原来的定向回退，确保能够被消费。
+        if phase == "increment":
+            return
         if phase not in PHASE_ORDER or PHASE_ORDER.index(phase) <= PHASE_ORDER.index(target):
             return
         updated = self.store.transition_project_state(
@@ -921,6 +1010,35 @@ class AgentService:
         public = updated.public()
         public["phaseLabel"] = PHASE_LABELS[target]
         self.events.publish(project_id, current.run_id, "state", public)
+
+    async def _start_increment_for_material_events(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        events: list[dict[str, Any]],
+    ) -> None:
+        baseline_event = None
+        for item in events:
+            is_parsed_change = (
+                item.get("status") == "parsed"
+                and item.get("semanticChanged") is True
+            )
+            if not is_parsed_change:
+                continue
+            is_released_package = str(item.get("packageStatus") or "") == "released"
+            has_package_revision = bool(str(item.get("packageRevision") or "").strip())
+            if is_released_package and has_package_revision:
+                baseline_event = item
+                break
+        if baseline_event is None:
+            return
+        await self.start_increment_round(
+            project_id=project_id,
+            token=token,
+            baseline_revision=str(baseline_event.get("packageRevision") or ""),
+            package_version=str(baseline_event.get("packageVersion") or ""),
+        )
 
     @staticmethod
     def _material_event_block(event: dict[str, Any]) -> dict[str, Any]:
@@ -1364,6 +1482,8 @@ class AgentService:
                 token,
                 {interaction.tool_call_id: answer},
                 restore_interaction=interaction,
+                required_tools=_required_tools_for_user_intent(message),
+                autonomous_seed=True,
             )
             return {"mode": "interjection", "run": resumed}
 
@@ -1785,7 +1905,10 @@ class AgentService:
                 live.observed_material_directives.add(filename)
             if result.get("requiresUserConfirmation") is True:
                 return
-        if name not in {"set_material_directive", "read_documents_fully"}:
+        # 读取资料是只读动作，不能改变已发布事实或业务阶段。
+        if name == "read_documents_fully":
+            return
+        if name != "set_material_directive":
             return
         purposes: list[str] = []
         filenames: list[str] = []
@@ -1797,13 +1920,11 @@ class AgentService:
             # 只改变阅读方式时，等全文读取成功后再回退阶段。
             if purpose == "auto":
                 return
-        else:
-            documents = result.get("documents") if isinstance(result.get("documents"), list) else []
-            purposes.extend(str(item.get("purpose") or "auto") for item in documents if isinstance(item, dict))
-            filenames.extend(str(item.get("filename") or "") for item in documents if isinstance(item, dict))
         target = "goal" if "goal" in purposes else "knowledge"
         current = self.store.project_state(live.project_id)
         phase, _separator, execution = current.state.partition(":")
+        if phase in {"release", "increment"}:
+            return
         if phase not in PHASE_ORDER or PHASE_ORDER.index(phase) <= PHASE_ORDER.index(target):
             return
         if current.run_id != live.run_id or execution != RUN_RUNNING:
@@ -1816,7 +1937,7 @@ class AgentService:
             live.project_id,
             expected_revision=current.revision,
             next_state=f"{target}:{execution}",
-            cause="material_directive_applied" if name == "set_material_directive" else "material_full_read_completed",
+            cause="material_directive_applied",
             actor_run_id=live.run_id,
             metadata={
                 "filenames": [item for item in filenames if item][:50],
@@ -3278,6 +3399,20 @@ _FULL_READ_INTENT = re.compile(
     r"全文.{0,6}(?:精读|阅读|通读)|(?:精读|通读).{0,12}(?:文档|文件|资料|材料)",
 )
 
+_DOCUMENT_REFERENCE_INTENT = re.compile(
+    r"《[^》]{1,200}》|"
+    r"[\w\u4e00-\u9fff][\w\u4e00-\u9fff ._-]{0,120}\.(?:docx?|pdf|xlsx?|csv|md|txt)|"
+    r"(?:这个|该|指定的?|上述)\s*(?:文档|文件|资料)|"
+    r"(?:读取|查看|参考|根据|按照|依据).{0,80}(?:文档|文件|资料)",
+    re.IGNORECASE,
+)
+
+_RULE_MUTATION_INTENT = re.compile(
+    r"(?:新增|添加|补充|增加|制定|写入|修改|更新|完善)\s*(?:一条|一项|新的?|相关的?)?\s*(?:业务)?规则|"
+    r"(?:业务)?规则\s*(?:新增|添加|补充|增加|制定|写入|修改|更新|完善)",
+    re.IGNORECASE,
+)
+
 _MATERIAL_DIRECTIVE_INTENT = re.compile(
     r"(?:作为|用作|设为).{0,12}(?:建模目标|目标依据|数据\s*Schema|数据模式|业务依据)|"
     r"(?:建模目标|目标依据|数据\s*Schema|数据模式|业务依据).{0,12}(?:资料|材料|文档|文件)",
@@ -3309,6 +3444,13 @@ def _release_reentry_requested(text: str) -> bool:
     return bool(_RELEASE_REENTRY_INTENT.search(str(text or "")))
 
 
+def _document_rule_change_requested(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or re.search(r"(?:为什么|为何|怎么|如何|是否|有没有|是什么|能否|可否|请问|吗\s*[？?]?|[？?])", value):
+        return False
+    return bool(_DOCUMENT_REFERENCE_INTENT.search(value) and _RULE_MUTATION_INTENT.search(value))
+
+
 def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
 
@@ -3330,6 +3472,10 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
         required.update({"set_material_directive", "read_documents_fully"})
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
         required.add("set_material_directive")
+    if _document_rule_change_requested(value):
+        # 点名文档后必须先取证并建计划；已有文档不一定有“修订影响”记录，
+        # 因此不能把直接读取强制送入只适用于上传修订的工具。
+        required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
     return required

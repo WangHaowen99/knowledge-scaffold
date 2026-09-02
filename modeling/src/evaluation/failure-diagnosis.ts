@@ -23,6 +23,17 @@ export type FailureCategory =
 
 export type RepairScope = 'testcase' | 'runtime' | 'data' | 'package' | 'script' | 'judge';
 
+export function isKnowledgePackageRepairScope(scope: string): boolean {
+  return scope === 'package' || scope === 'script';
+}
+
+// packageOptimizable 表示已经确认可优化；这里判断专家能否把该诊断纳入修缮范围。
+export function isPackageRepairEligible(
+  diagnosis: Pick<FailureDiagnosis, 'repairScope' | 'blocking'>,
+): boolean {
+  return isKnowledgePackageRepairScope(diagnosis.repairScope) && !diagnosis.blocking;
+}
+
 export interface FailureDiagnosis {
   category: FailureCategory;
   title: string;
@@ -56,7 +67,7 @@ export interface DiagnoseEvaluationInput {
 }
 
 export function hasOptimizableDiagnoses(diagnoses: FailureDiagnosis[]): boolean {
-  return diagnoses.some((item) => item.packageOptimizable && !item.blocking);
+  return diagnoses.some((item) => item.packageOptimizable && isPackageRepairEligible(item));
 }
 
 const EVALUATION_ORACLE_EVIDENCE = /(?:标准答案|参考答案|ground\s*truth|(?:智能体|模型)(?:回答|答案|输出原文)|评测(?:答案|结果|得分|通过率)|(?:用例|案例).{0,24}(?:标准|判定|通过|失败|回答|结果)|(?:全部|所有|\d+\s*个)(?:用例|案例)|\ber_[A-Za-z0-9_-]+\b)/iu;

@@ -31,7 +31,38 @@ function buildModel(
   };
 }
 
-function buildConfiguredLlm(llm: LlmSettings, maxTokensCap?: number, task = false): LlmDeps {
+function isAliyunOpenAiEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLocaleLowerCase('en-US').endsWith('.aliyuncs.com');
+  } catch {
+    return false;
+  }
+}
+
+function withoutAliyunThinking(streamFn: LlmDeps['streamFn']): LlmDeps['streamFn'] {
+  return (model: unknown, context: unknown, options: Record<string, any> | undefined) => {
+    const previousPayloadHook = options?.onPayload;
+    return streamFn(model, context, {
+      ...(options ?? {}),
+      onPayload: async (payload: unknown, activeModel: unknown) => {
+        const transformed = typeof previousPayloadHook === 'function'
+          ? await previousPayloadHook(payload, activeModel)
+          : undefined;
+        const effective = transformed === undefined ? payload : transformed;
+        return effective && typeof effective === 'object' && !Array.isArray(effective)
+          ? { ...effective, enable_thinking: false }
+          : effective;
+      },
+    });
+  };
+}
+
+function buildConfiguredLlm(
+  llm: LlmSettings,
+  maxTokensCap?: number,
+  task = false,
+  disableThinking = false,
+): LlmDeps {
   const cap = (deps: LlmDeps): LlmDeps => maxTokensCap
     ? { ...deps, model: { ...deps.model, maxTokens: Math.min(deps.model.maxTokens, maxTokensCap) } }
     : deps;
@@ -50,7 +81,9 @@ function buildConfiguredLlm(llm: LlmSettings, maxTokensCap?: number, task = fals
   const maxTokens = maxTokensCap ? Math.min(llm.maxTokens, maxTokensCap) : llm.maxTokens;
   return {
     model: buildModel(llm.baseUrl, llm.model, maxTokens, llm.contextWindow),
-    streamFn: streamSimple,
+    streamFn: disableThinking && isAliyunOpenAiEndpoint(llm.baseUrl)
+      ? withoutAliyunThinking(streamSimple)
+      : streamSimple,
     getApiKey: () => llm.apiKey || undefined,
   };
 }
@@ -62,6 +95,7 @@ export function buildLlm(): LlmDeps {
 
 export interface TaskLlmOptions {
   maxTokensCap?: number;
+  disableThinking?: boolean;
 }
 
 /**
@@ -70,7 +104,7 @@ export interface TaskLlmOptions {
  * 部分配置直接报错，避免后台任务静默跑到错误端点。
  */
 export function buildTaskLlm(options: TaskLlmOptions = {}): LlmDeps {
-  return buildConfiguredLlm(getTaskLlmSettings(), options.maxTokensCap, true);
+  return buildConfiguredLlm(getTaskLlmSettings(), options.maxTokensCap, true, options.disableThinking);
 }
 
 // ---- faux 演示模式：脚本化"假建模者"，无需真实 key 即可端到端走完建模流程 ----

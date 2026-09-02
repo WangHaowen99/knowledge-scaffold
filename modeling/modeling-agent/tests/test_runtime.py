@@ -65,9 +65,11 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert "patch_rule" not in validation
     assert {
         "analyze_deterministic_capabilities", "confirm_deterministic_scope",
-        "run_script_test", "run_evaluation", "get_evaluation_results", "cancel_evaluation",
+        "get_script_edit_context", "stage_script_patch", "run_script_test",
+        "run_evaluation", "get_evaluation_results", "cancel_evaluation",
     } <= validation
     assert not {"analyze_deterministic_capabilities", "confirm_deterministic_scope"} & knowledge
+    assert "stage_script_source" not in validation
     assert {
         "stage_change_set", "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
         "analyze_material_impact", "compile_package_fusion_plan",
@@ -79,6 +81,10 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert {"write_file", "patch_object", "create_metric", "upsert_object", "bind_object_source"} <= legacy
     assert "update_plan" in legacy
     intake_recovery: set[str] = set()
+    legacy_validation = {
+        spec.name for spec in core_tool_specs_for_phase("validation", tool_profile="legacy-v1")
+    }
+    assert "stage_script_source" in legacy_validation
     required_tools = frozenset({"run_evaluation", "compile_package_fusion_plan"})
     for spec in core_tool_specs_for_phase("intake", required_tools):
         intake_recovery.add(spec.name)
@@ -91,6 +97,12 @@ async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypa
     assert parameter_schema["properties"]["action"]["enum"] == ["store_true", "store_false"]
 
     case_schema = specs["run_script_test"].properties["cases"]["items"]
+    patch_schema = specs["stage_script_patch"].properties
+    assert "source_code" not in patch_schema
+    assert patch_schema["edits"]["items"]["required"] == [
+        "kind", "symbol", "expected_node_hash", "source",
+    ]
+
     assert case_schema["required"] == ["input", "expected"]
     assert case_schema["additionalProperties"] is False
     assert "argv" not in case_schema["properties"]
@@ -165,6 +177,20 @@ async def test_evaluation_cancel_requires_explicit_user_intent() -> None:
     )).invoke({"round_id": "round_demo"}))
     assert allowed["cancelled"] is True
     assert [call["tool"] for call in allowed_gateway.calls] == ["cancel_evaluation"]
+
+
+async def test_named_document_rule_request_requires_read_impact_and_plan() -> None:
+    required = _required_tools_for_user_intent(
+        "请读取《安全管理办法.docx》，根据内容新增一条业务规则",
+    )
+    assert {"read_document", "create_change_plan"} <= required
+    assert "analyze_material_impact" not in required
+    assert _required_tools_for_user_intent("请新增一条业务规则") == set()
+    assert _required_tools_for_user_intent(
+        "是否可以读取《安全管理办法.docx》并新增规则？",
+    ) == set()
+
+
 async def test_upsert_object_relation_name_is_model_generated_chinese_text() -> None:
     spec = next(item for item in CORE_TOOL_SPECS if item.name == "upsert_object")
     relation = spec.input_schema["properties"]["relations"]["items"]["properties"]["relation"]
@@ -3525,7 +3551,9 @@ async def test_full_read_intent_requires_directive_and_verified_full_read_tools(
         assert completed["status"] == "completed", completed["error"]
         assert [call["tool"] for call in gateway.calls].count("set_material_directive") == 1
         assert [call["tool"] for call in gateway.calls].count("read_documents_fully") == 1
-        assert runtime.project_state("project_full_read")["state"]["phase"] == "knowledge"
+        # Reading a document in a released project is read-only; it must not
+        # rewind the published phase into full knowledge modeling.
+        assert runtime.project_state("project_full_read")["state"]["phase"] == "release"
         visible = "".join(
             event.payload.get("delta", "")
             for event in runtime.store.events_after("project_full_read", 0)
