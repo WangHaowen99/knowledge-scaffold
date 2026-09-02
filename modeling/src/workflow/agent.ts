@@ -316,8 +316,12 @@ export function makeAgent(
   messages: unknown[] = [],
   options: MakeAgentOptions = {},
 ): Agent {
+  // Some providers keep a session-level tool registry and warn when the same
+  // tool id appears more than once. Preserve the last definition so retries
+  // can refresh a tool intentionally without registering duplicate ids.
+  const uniqueTools = [...new Map(tools.map((tool) => [tool.name, tool])).values()];
   const requiredToolName = options.requiredToolName;
-  if (requiredToolName !== undefined && !tools.some((tool) => tool.name === requiredToolName)) {
+  if (requiredToolName !== undefined && !uniqueTools.some((tool) => tool.name === requiredToolName)) {
     throw new Error(`强制调用的工具未注册：${requiredToolName || '<empty>'}`);
   }
   const toolChoiceMode = options.toolChoiceMode ?? 'named';
@@ -340,7 +344,7 @@ export function makeAgent(
     initialState: {
       model: llm.model,
       systemPrompt,
-      tools: tools as any,
+      tools: uniqueTools as any,
       messages: messages as any,
     },
     ...(options.transformContext ? {

@@ -23,6 +23,21 @@ import {
 const TARGET_TOOL = 'submit_synthetic_analysis';
 const RAW_ARGUMENT_MARKER = 'SYNTHETIC_RAW_ARGUMENT_MARKER';
 
+test('makeAgent 按工具名称去重并保留最后一个定义', () => {
+  const core = createFauxCore({ provider: 'deduplicate-tools', models: [{ id: 'deduplicate-tools' }] });
+  const first = { ...syntheticSubmitTool(), label: '旧定义' };
+  const latest = { ...syntheticSubmitTool(), label: '最新定义' };
+
+  const agent = makeAgent(
+    { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' },
+    '仅处理完全合成的测试输入。',
+    [first, latest],
+  );
+
+  assert.equal(agent.state.tools.length, 1);
+  assert.equal(agent.state.tools[0]?.label, '最新定义');
+});
+
 function turnEnd(stopReason: string, input = 0, output = 0) {
   return {
     type: 'turn_end',
