@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -141,17 +142,18 @@ def _default_package_loader(
                 + hashlib.sha256(resolved_script_path.read_bytes()).hexdigest()
             )
             script_bindings.setdefault(operation_key, binding)
+        admitted_script_catalog = []
+        for entry in public_script_catalog:
+            if not isinstance(entry, Mapping):
+                continue
+            operation_key = str(entry.get("operation_key") or "").strip()
+            if operation_key in script_bindings:
+                admitted_script_catalog.append(entry)
         execute_script_tool_schema = build_execute_script_tool_schema_from_catalog(
             ontology_ids=(
                 str(getattr(ontology_manifest, "id", "") or "").strip(),
             ),
-            script_catalog=tuple(
-                entry
-                for entry in public_script_catalog
-                if isinstance(entry, Mapping)
-                and str(entry.get("operation_key") or "").strip()
-                in script_bindings
-            ),
+            script_catalog=tuple(admitted_script_catalog),
         )
         selected_context = build_selected_ontology_preload_context_from_manifest(
             ontology_manifest,
@@ -275,15 +277,17 @@ def ontology_preflight_revision_matches(snapshot: Any) -> bool:
     manifest = getattr(snapshot, "ontology_manifest", None)
     source_signature = getattr(snapshot, "ontology_source_signature", None)
     content_revision = getattr(snapshot, "ontology_content_revision", None)
-    if (
-        not workspace_id
-        or not isinstance(mutation_revision, int)
-        or isinstance(mutation_revision, bool)
-        or mutation_revision < 0
-        or not isinstance(manifest, Mapping)
-        or not isinstance(source_signature, tuple)
-        or _manifest_ontology_dir(manifest) is None
-    ):
+    if not workspace_id:
+        return False
+    if not isinstance(mutation_revision, int) or isinstance(mutation_revision, bool):
+        return False
+    if mutation_revision < 0:
+        return False
+    if not isinstance(manifest, Mapping):
+        return False
+    if not isinstance(source_signature, tuple):
+        return False
+    if _manifest_ontology_dir(manifest) is None:
         return False
     try:
         from ontology.view_cache import get_ontology_mutation_revision
@@ -310,6 +314,22 @@ def _generations(
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError("preflight generations must be non-negative integers")
     return resolved  # type: ignore[return-value]
+
+
+def _load_package_cache_product(
+    *,
+    package_loader: PackageLoader,
+    ontology_manifest: Any,
+    workspace_id: str,
+    manifest_payload: Any,
+) -> Mapping[str, Any]:
+    loaded = package_loader(ontology_manifest, workspace_id)
+    if not isinstance(loaded, Mapping):
+        raise TypeError("package_loader must return a mapping")
+    return {
+        _CACHED_MANIFEST_KEY: manifest_payload,
+        _CACHED_PACKAGE_KEY: loaded,
+    }
 
 
 def build_run_preflight_snapshot(
@@ -361,16 +381,15 @@ def build_run_preflight_snapshot(
         current_ontology_id, current_ontology_version = _manifest_identity(
             current_manifest
         )
-        if (
-            expected_ontology_id
-            and (
-                not current_ontology_id
-                or (expected_ontology_version and not current_ontology_version)
-            )
-        ):
-            raise RuntimeError(
-                "ontology manifest became unavailable during preflight"
-            )
+        if expected_ontology_id:
+            if not current_ontology_id:
+                raise RuntimeError(
+                    "ontology manifest became unavailable during preflight"
+                )
+            if expected_ontology_version and not current_ontology_version:
+                raise RuntimeError(
+                    "ontology manifest became unavailable during preflight"
+                )
         if (
             expected_ontology_id
             and current_ontology_id
@@ -395,18 +414,15 @@ def build_run_preflight_snapshot(
             _manifest_payload(current_manifest)
         )
 
-        def load_cached_product() -> Mapping[str, Any]:
-            loaded = load_package(current_manifest, normalized_workspace)
-            if not isinstance(loaded, Mapping):
-                raise TypeError("package_loader must return a mapping")
-            return {
-                _CACHED_MANIFEST_KEY: current_manifest_payload,
-                _CACHED_PACKAGE_KEY: loaded,
-            }
-
         cached_product = selected_cache.get_or_load(
             key,
-            load_cached_product,
+            partial(
+                _load_package_cache_product,
+                package_loader=load_package,
+                ontology_manifest=current_manifest,
+                workspace_id=normalized_workspace,
+                manifest_payload=current_manifest_payload,
+            ),
         )
         if not isinstance(cached_product, Mapping):
             raise TypeError("preflight cache returned an invalid product")

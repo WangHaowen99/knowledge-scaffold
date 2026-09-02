@@ -595,7 +595,8 @@ class UserStoreManager:
             except FutureTimeout:
                 complete = False
             except Exception:
-                pass
+                complete = False
+                logger.warning("Workspace recovery future failed", exc_info=True)
         for executor in executors:
             if executor is not None:
                 executor.shutdown(cancel_futures=True)
@@ -664,12 +665,14 @@ class UserStoreManager:
                 processed += 1
                 recovered += int(outcome.recovered)
                 failures += int(outcome.failed)
-            if (
-                not self._recovery_scan_complete
-                and self._recovery_pending is None
-                and (stop_event is None or not stop_event.is_set())
-                and time.monotonic() < deadline
-            ):
+            should_poll_discovery = not self._recovery_scan_complete
+            if self._recovery_pending is not None:
+                should_poll_discovery = False
+            if stop_event is not None and stop_event.is_set():
+                should_poll_discovery = False
+            if time.monotonic() >= deadline:
+                should_poll_discovery = False
+            if should_poll_discovery:
                 discovered = self._poll_recovery_discovery(
                     deadline=deadline,
                     stop_event=stop_event,

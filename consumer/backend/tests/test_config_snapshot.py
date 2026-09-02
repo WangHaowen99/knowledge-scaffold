@@ -817,7 +817,7 @@ def test_config_directory_fsync_uses_directory_descriptor_on_posix(
     monkeypatch.setattr(
         system_config_module.os,
         "open",
-        lambda path, flags: opened.append((Path(path), flags)) or 73,
+        lambda path, flags, mode: opened.append((Path(path), flags, mode)) or 73,
     )
     monkeypatch.setattr(system_config_module.os, "fsync", fsynced.append)
     monkeypatch.setattr(system_config_module.os, "close", closed.append)
@@ -825,7 +825,7 @@ def test_config_directory_fsync_uses_directory_descriptor_on_posix(
     system_config_module._fsync_directory(tmp_path)
 
     assert opened == [
-        (tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        (tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), 0o700)
     ]
     assert fsynced == [73]
     assert closed == [73]

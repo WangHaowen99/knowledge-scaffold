@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 import hashlib
+import logging
 import os
 from pathlib import Path
 import stat
@@ -24,6 +25,7 @@ _DEFAULT_MAX_ENTRIES = 128
 _MAX_TREE_BUILD_ATTEMPTS = 3
 _CONTENT_READ_CHUNK_BYTES = 1024 * 1024
 _INCLUDED_HIDDEN_CONTROL_FILES = frozenset({".deterministic-lock.json"})
+logger = logging.getLogger(__name__)
 
 
 class OntologyPackageRevisionError(RuntimeError):
@@ -35,6 +37,22 @@ class _TreeEntry:
     value: list[dict[str, Any]]
     source_signature: object | None
     next_signature_check_at: float
+
+
+def _tree_entry_matches_signature(
+    entry: _TreeEntry | None,
+    *,
+    signature_available: bool,
+    signature_loader: Callable[[], object] | None,
+    source_signature: object | None,
+) -> bool:
+    if entry is None:
+        return False
+    if not signature_available:
+        return False
+    if signature_loader is None:
+        return False
+    return entry.source_signature == source_signature
 
 
 @dataclass
@@ -238,13 +256,11 @@ class OntologyViewCache:
                     signature_available = False
             with self._lock:
                 current_entry = self._trees.get(key)
-            if (
-                current_entry is not None
-                and signature_available
-                and (
-                    signature_loader is not None
-                    and current_entry.source_signature == source_signature
-                )
+            if _tree_entry_matches_signature(
+                current_entry,
+                signature_available=signature_available,
+                signature_loader=signature_loader,
+                source_signature=source_signature,
             ):
                 cached_value = current_entry.value
                 source_signature = current_entry.source_signature
@@ -378,12 +394,13 @@ def build_package_tree_source_signature(root: Path) -> tuple[object, ...]:
 
     def visit(path: Path, *, is_root: bool = False) -> None:
         stat_result = path.lstat()
-        if not is_root and (
-            path.name.startswith(".")
-            or path.name.lower() in EXCLUDED_DIRECTORY_NAMES
-            or stat.S_ISLNK(stat_result.st_mode)
-        ):
-            return
+        if not is_root:
+            if path.name.startswith("."):
+                return
+            if path.name.lower() in EXCLUDED_DIRECTORY_NAMES:
+                return
+            if stat.S_ISLNK(stat_result.st_mode):
+                return
         if not stat.S_ISDIR(stat_result.st_mode):
             if not is_root and stat.S_ISREG(stat_result.st_mode):
                 rows.append(
@@ -536,7 +553,7 @@ def build_package_content_revision(root: Path) -> str:
             flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
             try:
-                descriptor = os.open(child, flags)
+                descriptor = os.open(child, flags, 0o600)
             except OSError as exc:
                 raise OntologyPackageRevisionError(
                     "ontology package file cannot be opened safely"
@@ -622,7 +639,7 @@ def _copy_visible_package(source_root: Path, staged_root: Path) -> None:
             read_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
             read_flags |= getattr(os, "O_NOFOLLOW", 0)
             try:
-                source_descriptor = os.open(child, read_flags)
+                source_descriptor = os.open(child, read_flags, 0o600)
             except OSError as exc:
                 raise OntologyPackageRevisionError(
                     "ontology package file cannot be opened safely"
@@ -721,12 +738,13 @@ def resolve_package_staging_boundary(
     try:
         workspaces_stat = root.parent.lstat()
         runtime_stat = runtime_root.lstat()
-        if (
-            stat.S_ISLNK(workspaces_stat.st_mode)
-            or not stat.S_ISDIR(workspaces_stat.st_mode)
-            or stat.S_ISLNK(runtime_stat.st_mode)
-            or not stat.S_ISDIR(runtime_stat.st_mode)
-        ):
+        if stat.S_ISLNK(workspaces_stat.st_mode):
+            raise OntologyPackageRevisionError("runtime staging root is unsafe")
+        if not stat.S_ISDIR(workspaces_stat.st_mode):
+            raise OntologyPackageRevisionError("runtime staging root is unsafe")
+        if stat.S_ISLNK(runtime_stat.st_mode):
+            raise OntologyPackageRevisionError("runtime staging root is unsafe")
+        if not stat.S_ISDIR(runtime_stat.st_mode):
             raise OntologyPackageRevisionError("runtime staging root is unsafe")
         runtime_root = runtime_root.resolve(strict=True)
         root.relative_to(runtime_root)
@@ -887,7 +905,7 @@ def _record_ontology_view_access(
             workspace_id=workspace_id,
         )
     except Exception:
-        return
+        logger.debug("Ontology view cache metric recording failed", exc_info=True)
 
 
 _view_cache = OntologyViewCache(max_entries=_configured_max_entries())

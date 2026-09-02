@@ -206,24 +206,26 @@ def _matching_preflight_ontology_products(
         or arguments.get("selected_version")
         or ""
     ).strip()
-    if (
-        snapshot is None
-        or snapshot.workspace_id != context.workspace_id
-        or not selected_ontology_id
-        or not selected_ontology_version
-        or snapshot.ontology_id != selected_ontology_id
-        or snapshot.ontology_version != selected_ontology_version
-    ):
+    if snapshot is None:
+        return None
+    if snapshot.workspace_id != context.workspace_id:
+        return None
+    if not selected_ontology_id:
+        return None
+    if not selected_ontology_version:
+        return None
+    if snapshot.ontology_id != selected_ontology_id:
+        return None
+    if snapshot.ontology_version != selected_ontology_version:
         return None
     manifest = snapshot.ontology_manifest
     if manifest is None:
         return snapshot
-    if (
-        not isinstance(manifest, Mapping)
-        or str(manifest.get("id") or "").strip() != selected_ontology_id
-        or str(manifest.get("version") or "").strip()
-        != selected_ontology_version
-    ):
+    if not isinstance(manifest, Mapping):
+        return None
+    if str(manifest.get("id") or "").strip() != selected_ontology_id:
+        return None
+    if str(manifest.get("version") or "").strip() != selected_ontology_version:
         return None
     return snapshot
 

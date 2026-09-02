@@ -661,7 +661,7 @@ def test_directory_fsync_uses_and_closes_directory_descriptor_on_posix(
     monkeypatch.setattr(
         workspaces.os,
         "open",
-        lambda path, flags: calls.append(("open", path, flags)) or 73,
+        lambda path, flags, mode: calls.append(("open", path, flags, mode)) or 73,
     )
     monkeypatch.setattr(
         workspaces.os,
@@ -677,7 +677,7 @@ def test_directory_fsync_uses_and_closes_directory_descriptor_on_posix(
     workspaces._fsync_directory(tmp_path)
 
     assert calls == [
-        ("open", tmp_path, expected_flags),
+        ("open", tmp_path, expected_flags, 0o700),
         ("fsync", 73),
         ("close", 73),
     ]

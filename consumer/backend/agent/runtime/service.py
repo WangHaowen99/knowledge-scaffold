@@ -1915,16 +1915,16 @@ class OrchestratorSessionAdapter:
                 )
             selected_profile = None
             if hasattr(orchestrator, "agent_config") and not deterministic_candidate:
-                if (
-                    preflight_matches
-                    and preflight is not None
-                    and preflight.model_profile is not None
-                    and _preflight_profile_matches(
+                use_preflight_profile = preflight_matches and preflight is not None
+                if use_preflight_profile:
+                    use_preflight_profile = preflight.model_profile is not None
+                if use_preflight_profile:
+                    use_preflight_profile = _preflight_profile_matches(
                         profile_ref,
                         preflight.model_profile,
                         model_profile_ref_to_dict,
                     )
-                ):
+                if use_preflight_profile:
                     selected_profile = preflight.model_profile
                 else:
                     selected_profile = resolve_effective_llm_profile_config(
@@ -2467,15 +2467,20 @@ class OrchestratorSessionAdapter:
 
             if preflight is not None and selected_ontology_id:
                 manifest = preflight.ontology_manifest
-                if (
-                    preflight.workspace_id != context.workspace_id
-                    or preflight.ontology_id != selected_ontology_id
-                    or preflight.ontology_version != selected_ontology_version
-                    or not isinstance(manifest, Mapping)
-                    or not str(manifest.get("ontology_dir") or "").strip()
-                    or not preflight.ontology_content_revision
-                    or project_root is None
-                ):
+                revision_changed = preflight.workspace_id != context.workspace_id
+                if preflight.ontology_id != selected_ontology_id:
+                    revision_changed = True
+                if preflight.ontology_version != selected_ontology_version:
+                    revision_changed = True
+                if not isinstance(manifest, Mapping):
+                    revision_changed = True
+                elif not str(manifest.get("ontology_dir") or "").strip():
+                    revision_changed = True
+                if not preflight.ontology_content_revision:
+                    revision_changed = True
+                if project_root is None:
+                    revision_changed = True
+                if revision_changed:
                     outcome = Failed(
                         "ontology_revision_changed",
                         "The ontology package changed after run admission.",

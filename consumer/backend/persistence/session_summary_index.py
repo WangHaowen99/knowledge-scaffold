@@ -48,6 +48,15 @@ class InvalidSessionCursor(ValueError):
     """The pagination cursor is malformed or no longer matches the index."""
 
 
+def _validate_optional_non_negative_integer(value: Any, field_name: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
@@ -474,18 +483,11 @@ class SessionSummaryIndex:
             raise TypeError("active_run_id must be a string or null")
         if pending_interaction is not None and not isinstance(pending_interaction, Mapping):
             raise TypeError("pending_interaction must be an object or null")
-        if last_event_sequence is not None and (
-            not isinstance(last_event_sequence, int)
-            or isinstance(last_event_sequence, bool)
-            or last_event_sequence < 0
-        ):
-            raise ValueError("last_event_sequence must be a non-negative integer")
-        if turn_count is not None and (
-            not isinstance(turn_count, int)
-            or isinstance(turn_count, bool)
-            or turn_count < 0
-        ):
-            raise ValueError("turn_count must be a non-negative integer")
+        _validate_optional_non_negative_integer(
+            last_event_sequence,
+            "last_event_sequence",
+        )
+        _validate_optional_non_negative_integer(turn_count, "turn_count")
 
         with self._lock:
             self._ensure_loaded_locked(
@@ -735,10 +737,7 @@ class SessionSummaryIndex:
         )
 
     def _read_document_locked(self) -> dict[str, Any]:
-        try:
-            metadata = self._path.lstat()
-        except FileNotFoundError:
-            raise
+        metadata = self._path.lstat()
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise ValueError("session summary index must be a regular file")
         with self._path.open("r", encoding="utf-8") as source:
@@ -792,21 +791,29 @@ class SessionSummaryIndex:
             raise SessionSummaryIndexCorruptionError(
                 "session summary projection marker is corrupt"
             ) from exc
-        if (
-            not isinstance(document, Mapping)
-            or set(document) != {"tokens"}
-            or not isinstance(document.get("tokens"), list)
-            or not document["tokens"]
-            or any(
-                not isinstance(token, str) or not token
-                for token in document["tokens"]
-            )
-            or len(set(document["tokens"])) != len(document["tokens"])
-        ):
+        if not isinstance(document, Mapping):
             raise SessionSummaryIndexCorruptionError(
                 "session summary projection marker is invalid"
             )
-        return tuple(document["tokens"])
+        if set(document) != {"tokens"}:
+            raise SessionSummaryIndexCorruptionError(
+                "session summary projection marker is invalid"
+            )
+        tokens = document.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            raise SessionSummaryIndexCorruptionError(
+                "session summary projection marker is invalid"
+            )
+        for token in tokens:
+            if not isinstance(token, str) or not token:
+                raise SessionSummaryIndexCorruptionError(
+                    "session summary projection marker is invalid"
+                )
+        if len(set(tokens)) != len(tokens):
+            raise SessionSummaryIndexCorruptionError(
+                "session summary projection marker is invalid"
+            )
+        return tuple(tokens)
 
     def _dirty_marker_present_locked(self) -> bool:
         try:
@@ -1048,7 +1055,11 @@ def _encode_cursor(revision: int, sort_key: tuple[int, str, str]) -> str:
 
 
 def _decode_cursor(cursor: str) -> tuple[int, tuple[int, str, str]]:
-    if not isinstance(cursor, str) or not cursor or len(cursor) > _MAX_CURSOR_LENGTH:
+    if not isinstance(cursor, str):
+        raise InvalidSessionCursor("session cursor is invalid")
+    if not cursor:
+        raise InvalidSessionCursor("session cursor is invalid")
+    if len(cursor) > _MAX_CURSOR_LENGTH:
         raise InvalidSessionCursor("session cursor is invalid")
     try:
         padding = "=" * (-len(cursor) % 4)
@@ -1058,26 +1069,34 @@ def _decode_cursor(cursor: str) -> tuple[int, tuple[int, str, str]]:
             validate=True,
         )
         payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+    except (UnicodeError, ValueError) as exc:
         raise InvalidSessionCursor("session cursor is invalid") from exc
-    if not isinstance(payload, Mapping) or set(payload) != {"v", "r", "s"}:
+    if not isinstance(payload, Mapping):
         raise InvalidSessionCursor("session cursor is invalid")
-    revision = payload["r"]
-    sort_key = payload["s"]
-    if (
-        not isinstance(payload["v"], int)
-        or isinstance(payload["v"], bool)
-        or payload["v"] != _CURSOR_VERSION
-        or not isinstance(revision, int)
-        or isinstance(revision, bool)
-        or revision < 0
-        or not isinstance(sort_key, list)
-        or len(sort_key) != 3
-        or not isinstance(sort_key[0], int)
-        or isinstance(sort_key[0], bool)
-        or sort_key[0] not in {0, 1}
-        or not isinstance(sort_key[1], str)
-        or not isinstance(sort_key[2], str)
-    ):
+    if set(payload) != {"v", "r", "s"}:
         raise InvalidSessionCursor("session cursor is invalid")
-    return revision, (sort_key[0], sort_key[1], sort_key[2])
+    version = payload.get("v")
+    revision = payload.get("r")
+    sort_key = payload.get("s")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise InvalidSessionCursor("session cursor is invalid")
+    if version != _CURSOR_VERSION:
+        raise InvalidSessionCursor("session cursor is invalid")
+    if not isinstance(revision, int) or isinstance(revision, bool):
+        raise InvalidSessionCursor("session cursor is invalid")
+    if revision < 0:
+        raise InvalidSessionCursor("session cursor is invalid")
+    if not isinstance(sort_key, list):
+        raise InvalidSessionCursor("session cursor is invalid")
+    if len(sort_key) != 3:
+        raise InvalidSessionCursor("session cursor is invalid")
+    pinned = sort_key[0]
+    if not isinstance(pinned, int) or isinstance(pinned, bool):
+        raise InvalidSessionCursor("session cursor is invalid")
+    if pinned not in {0, 1}:
+        raise InvalidSessionCursor("session cursor is invalid")
+    if not isinstance(sort_key[1], str):
+        raise InvalidSessionCursor("session cursor is invalid")
+    if not isinstance(sort_key[2], str):
+        raise InvalidSessionCursor("session cursor is invalid")
+    return revision, (pinned, sort_key[1], sort_key[2])

@@ -802,11 +802,12 @@ class _AppendOnlyChatStore:
                     != str(expected_updated_at)
                 ):
                     return False
-                if require_unprotected and snapshot is not None and (
-                    getattr(snapshot, "active_run_id", None)
-                    or dict(getattr(snapshot, "metadata", {}) or {}).get("pinned") is True
-                ):
-                    return False
+                if require_unprotected and snapshot is not None:
+                    if getattr(snapshot, "active_run_id", None):
+                        return False
+                    metadata = dict(getattr(snapshot, "metadata", {}) or {})
+                    if metadata.get("pinned") is True:
+                        return False
             session_dir = self._session_dir(session_id)
             if os.path.isdir(session_dir):
                 shutil.rmtree(session_dir)
@@ -1636,12 +1637,13 @@ class ChatStore:
                 self._summary_index.complete_source_projection(projection_token)
             return True
         except Exception:
-            logger.warning("Session summary chat projection failed for %s", session.id)
+            logger.warning(
+                "Session summary chat projection failed for %s",
+                session.id,
+                exc_info=True,
+            )
             self._abandon_summary_projection(projection_token)
-            try:
-                self._summary_index.mark_degraded("chat_projection_failed")
-            except Exception:
-                pass
+            self._mark_summary_degraded("chat_projection_failed")
             return False
 
     def _delete_summary(
@@ -1661,13 +1663,30 @@ class ChatStore:
                 self._summary_index.complete_source_projection(projection_token)
             return True
         except Exception:
-            logger.warning("Session summary delete projection failed for %s", session_id)
+            logger.warning(
+                "Session summary delete projection failed for %s",
+                session_id,
+                exc_info=True,
+            )
             self._abandon_summary_projection(projection_token)
-            try:
-                self._summary_index.mark_degraded("chat_projection_failed")
-            except Exception:
-                pass
+            self._mark_summary_degraded("chat_projection_failed")
             return False
+
+    def _mark_summary_degraded(self, reason: str) -> None:
+        if self._summary_index is None:
+            return
+        try:
+            self._summary_index.mark_degraded(reason)
+        except Exception:
+            logger.warning("Session summary degradation marker failed", exc_info=True)
+
+    def _request_summary_rebuild(self) -> None:
+        if self._summary_index is None:
+            return
+        try:
+            self._summary_index.request_rebuild()
+        except Exception:
+            logger.warning("Session summary rebuild request failed", exc_info=True)
 
     def _begin_summary_projection(self) -> str | None:
         if self._summary_index is None:
@@ -1678,11 +1697,11 @@ class ChatStore:
         try:
             return begin()
         except Exception:
-            logger.warning("Session summary source marker could not be published")
-            try:
-                self._summary_index.mark_degraded("chat_projection_marker_failed")
-            except Exception:
-                pass
+            logger.warning(
+                "Session summary source marker could not be published",
+                exc_info=True,
+            )
+            self._mark_summary_degraded("chat_projection_marker_failed")
             return None
 
     def _discard_summary_projection(self, projection_token: str | None) -> None:
@@ -1691,10 +1710,8 @@ class ChatStore:
         try:
             self._summary_index.complete_source_projection(projection_token)
         except Exception:
-            try:
-                self._summary_index.mark_degraded("chat_projection_marker_failed")
-            except Exception:
-                pass
+            logger.warning("Session summary source marker discard failed", exc_info=True)
+            self._mark_summary_degraded("chat_projection_marker_failed")
 
     def _abandon_summary_projection(self, projection_token: str | None) -> None:
         if self._summary_index is None or projection_token is None:
@@ -1705,10 +1722,8 @@ class ChatStore:
         try:
             abandon(projection_token)
         except Exception:
-            try:
-                self._summary_index.mark_degraded("chat_projection_marker_failed")
-            except Exception:
-                pass
+            logger.warning("Session summary source marker abandon failed", exc_info=True)
+            self._mark_summary_degraded("chat_projection_marker_failed")
 
     def _run_summary_source_mutation(self, operation, *args, **kwargs):
         projection_token = self._begin_summary_projection()
@@ -1771,12 +1786,10 @@ class ChatStore:
                     summary = self._summary_index.get_summary(session_id)
                     if summary is not None:
                         return summary.to_dict()["metadata"]
-                self._summary_index.request_rebuild()
+                self._request_summary_rebuild()
             except Exception:
-                try:
-                    self._summary_index.request_rebuild()
-                except Exception:
-                    pass
+                logger.warning("Session summary metadata read failed", exc_info=True)
+                self._request_summary_rebuild()
         return self._store.get_session_metadata(session_id)
 
     def add_message(

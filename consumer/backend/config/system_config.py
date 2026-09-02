@@ -9,6 +9,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import logging
 import os
 import stat
 import tempfile
@@ -16,6 +17,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -35,6 +37,7 @@ from utils.security.secrets import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
+logger = logging.getLogger(__name__)
 
 
 def _resolve_default_runtime_root(backend_root: Path | None = None) -> Path:
@@ -1318,7 +1321,7 @@ def _record_system_config_bypass(result: str, started: float) -> None:
             max(0.0, (time.perf_counter() - started) * 1000),
         )
     except Exception:
-        return
+        logger.debug("System config cache metric recording failed", exc_info=True)
 
 
 def _load_system_config_unlocked(
@@ -1568,6 +1571,7 @@ def _fsync_directory(path: Path) -> None:
     descriptor = os.open(
         path,
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        0o700,
     )
     try:
         os.fsync(descriptor)
@@ -1924,17 +1928,20 @@ def _assert_model_profile_inventory_allows_removal(
         )
 
 
+@dataclass(frozen=True)
+class _LlmProfilesUpdateState:
+    document: dict[str, Any]
+    raw_config: dict[str, Any]
+    effective: dict[str, dict[str, Any]]
+    candidate: dict[str, Any]
+    removed_ids: list[str]
+    normalized_precondition: dict[str, Any] | None
+
+
 def _read_llm_profiles_update_state(
     data: dict[str, Any],
     precondition: dict[str, Any] | None,
-) -> tuple[
-    dict[str, Any],
-    dict[str, Any],
-    dict[str, dict[str, Any]],
-    dict[str, Any],
-    list[str],
-    dict[str, Any] | None,
-]:
+) -> _LlmProfilesUpdateState:
     document = _read_config_document_unlocked()
     raw_config = {
         section_key: dict(document.get(section_key) or {})
@@ -1956,13 +1963,13 @@ def _read_llm_profiles_update_state(
         effective=effective,
         precondition=precondition,
     )
-    return (
-        document,
-        raw_config,
-        effective,
-        candidate,
-        removed_ids,
-        normalized_precondition,
+    return _LlmProfilesUpdateState(
+        document=document,
+        raw_config=raw_config,
+        effective=effective,
+        candidate=candidate,
+        removed_ids=removed_ids,
+        normalized_precondition=normalized_precondition,
     )
 
 
@@ -1978,9 +1985,10 @@ def _update_llm_profiles_section(
     with model_profile_reference_guard():
         with _CONFIG_PUBLICATION_LOCK:
             with _CONFIG_LOCK:
-                _, _, effective, _, removed_ids, normalized_precondition = (
-                    _read_llm_profiles_update_state(data, precondition)
-                )
+                initial_state = _read_llm_profiles_update_state(data, precondition)
+                effective = initial_state.effective
+                removed_ids = initial_state.removed_ids
+                normalized_precondition = initial_state.normalized_precondition
                 if removed_ids:
                     _assert_model_profile_config_precondition(
                         normalized_precondition,
@@ -1996,14 +2004,13 @@ def _update_llm_profiles_section(
             )
 
         with _config_write_publication():
-            (
-                document,
-                raw_config,
-                effective,
-                candidate,
-                final_removed_ids,
-                final_precondition,
-            ) = _read_llm_profiles_update_state(data, precondition)
+            final_state = _read_llm_profiles_update_state(data, precondition)
+            document = final_state.document
+            raw_config = final_state.raw_config
+            effective = final_state.effective
+            candidate = final_state.candidate
+            final_removed_ids = final_state.removed_ids
+            final_precondition = final_state.normalized_precondition
             if final_removed_ids:
                 _assert_model_profile_config_precondition(final_precondition, effective)
                 if final_removed_ids != removed_ids:
@@ -2108,7 +2115,10 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
                         raw_config[section],
                     )
             if removed_profile_ids:
-                assert inventory is not None
+                if inventory is None:
+                    raise RuntimeError(
+                        "model profile inventory is required for destructive imports"
+                    )
                 _assert_model_profile_inventory_allows_removal(
                     removed_profile_ids,
                     inventory,

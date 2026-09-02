@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -11,6 +12,9 @@ from pathlib import Path
 from threading import RLock
 from types import MappingProxyType
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 def _freeze_value(value: Any) -> Any:
@@ -236,4 +240,4 @@ def _record_system_config_access(result: str, started: float) -> None:
             max(0.0, (time.perf_counter() - started) * 1000),
         )
     except Exception:
-        return
+        logger.debug("System config cache metric recording failed", exc_info=True)
