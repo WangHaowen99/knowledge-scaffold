@@ -12,6 +12,7 @@ Storage structure:
 """
 
 import copy
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from agent.state import (
     SessionExecutionHistory,
     TurnExecutionRecord,
 )
+from persistence.session_summary_index import SessionSummaryIndex
 from utils.identifiers import resolve_session_storage_dir, validate_session_id
 from utils.read_docs import normalize_read_documents_registry
 
@@ -66,6 +68,31 @@ class TurnOwnershipError(RuntimeError):
 
 class SolverCheckpointError(ValueError):
     """Raised when a durable Solver continuation checkpoint conflicts."""
+
+
+class _ProtocolIdCoordinator:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.reservations: Dict[tuple[str, str], str] = {}
+        # These process-wide reservations coordinate the asynchronous admission
+        # path with synchronous derived-work pruning.  The storage directory is
+        # the coordinator key, so separate user/workspace stores share state.
+        self.session_admissions: Dict[str, str] = {}
+        self.session_prunes: set[str] = set()
+
+
+_PROTOCOL_ID_COORDINATORS_LOCK = threading.Lock()
+_PROTOCOL_ID_COORDINATORS: Dict[str, _ProtocolIdCoordinator] = {}
+
+
+def _protocol_id_coordinator(storage_dir: Path) -> _ProtocolIdCoordinator:
+    storage_key = os.path.normcase(str(storage_dir.resolve()))
+    with _PROTOCOL_ID_COORDINATORS_LOCK:
+        coordinator = _PROTOCOL_ID_COORDINATORS.get(storage_key)
+        if coordinator is None:
+            coordinator = _ProtocolIdCoordinator()
+            _PROTOCOL_ID_COORDINATORS[storage_key] = coordinator
+        return coordinator
 
 
 _SOLVER_CHECKPOINT_STATE_FIELDS = frozenset(
@@ -485,7 +512,12 @@ class ExecutionStore:
     Thread-safe for concurrent access within a single process.
     """
 
-    def __init__(self, storage_dir: str):
+    def __init__(
+        self,
+        storage_dir: str,
+        *,
+        summary_index: Optional[SessionSummaryIndex] = None,
+    ):
         """
         Initialize the ExecutionStore.
 
@@ -498,6 +530,7 @@ class ExecutionStore:
         # Thread safety — per-session locks for concurrent access
         self._lock = threading.Lock()
         self._session_locks: Dict[str, threading.RLock] = {}
+        self._protocol_id_coordinator = _protocol_id_coordinator(self.storage_dir)
 
         # In-memory cache for active sessions (session_id -> SessionExecutionHistory)
         self._cache: Dict[str, SessionExecutionHistory] = {}
@@ -505,6 +538,251 @@ class ExecutionStore:
         # Track current turn for each session (session_id -> turn_id)
         self._current_turns: Dict[str, int] = {}
         self._corrupt_sessions: Dict[str, str] = {}
+        self._summary_index = summary_index
+
+    @property
+    def session_summary_index(self) -> Optional[SessionSummaryIndex]:
+        return self._summary_index
+
+    @staticmethod
+    def _runtime_fields(history: SessionExecutionHistory) -> Dict[str, Any]:
+        turns = list(history.get("turns") or [])
+        latest = turns[-1] if turns else None
+        if not isinstance(latest, dict):
+            return {
+                "active_run_id": None,
+                "last_run_status": "idle",
+                "pending_interaction": None,
+                "turn_count": len(turns),
+            }
+
+        raw_status = str(latest.get("status") or "idle")
+        status = "completed" if raw_status == "success" else raw_status
+        if raw_status == "failed" and str(latest.get("error_code") or "") == "SERVICE_RESTARTED":
+            status = "interrupted"
+        interaction = None
+        if raw_status == "awaiting_input" and not latest.get("interaction_consumed_at"):
+            interaction = _turn_interaction(latest)
+        active_run_id = None
+        if raw_status == "running" or interaction is not None:
+            active_run_id = str(latest.get("run_id") or "").strip() or None
+        return {
+            "active_run_id": active_run_id,
+            "last_run_status": status or "idle",
+            "pending_interaction": copy.deepcopy(interaction),
+            "turn_count": len(turns),
+        }
+
+    def _project_runtime(
+        self,
+        session_id: str,
+        history: SessionExecutionHistory,
+        *,
+        projection_token: str | None = None,
+    ) -> bool:
+        if self._summary_index is None:
+            return True
+        try:
+            projected = self._summary_index.update_runtime(
+                session_id,
+                **self._runtime_fields(history),
+                projection_token=projection_token,
+            )
+            if not projected:
+                raise RuntimeError("chat summary is unavailable for runtime projection")
+            if projection_token is not None:
+                self._summary_index.complete_source_projection(projection_token)
+            return True
+        except Exception:
+            logger.warning("Session summary execution projection failed for %s", session_id)
+            self._abandon_runtime_projection(projection_token)
+            try:
+                self._summary_index.mark_degraded("execution_projection_failed")
+            except Exception:
+                pass
+            return False
+
+    def _begin_runtime_projection(self) -> str | None:
+        if self._summary_index is None:
+            return None
+        begin = getattr(self._summary_index, "begin_source_projection", None)
+        if not callable(begin):
+            return None
+        try:
+            return begin()
+        except Exception:
+            logger.warning("Session summary execution marker could not be published")
+            try:
+                self._summary_index.mark_degraded("execution_projection_marker_failed")
+            except Exception:
+                pass
+            return None
+
+    def _abandon_runtime_projection(self, projection_token: str | None) -> None:
+        if self._summary_index is None or projection_token is None:
+            return
+        abandon = getattr(self._summary_index, "abandon_source_projection", None)
+        if not callable(abandon):
+            return
+        try:
+            abandon(projection_token)
+        except Exception:
+            try:
+                self._summary_index.mark_degraded(
+                    "execution_projection_marker_failed"
+                )
+            except Exception:
+                pass
+
+    def get_session_summary_runtime(self, session_id: str) -> Dict[str, Any]:
+        """Return execution-owned fields for an explicit index rebuild."""
+
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if history is None:
+                return self._runtime_fields({"turns": []})
+            return self._runtime_fields(history)
+
+    def try_get_session_summary_runtime(
+        self,
+        session_id: str,
+    ) -> Dict[str, Any] | None:
+        """Read runtime fields only when doing so cannot wait on admission."""
+
+        session_lock = self._lock_for_session(session_id)
+        if not session_lock.acquire(blocking=False):
+            return None
+        try:
+            if session_id in self._corrupt_sessions:
+                raise ExecutionStoreCorruptionError(
+                    "execution history is isolated as corrupt"
+                )
+            history = self._cache.get(session_id)
+            if history is None:
+                session_path = (
+                    resolve_session_storage_dir(self.storage_dir, session_id)
+                    / "execution.json"
+                )
+                try:
+                    with session_path.open("r", encoding="utf-8") as source:
+                        document = json.load(source)
+                except FileNotFoundError:
+                    document = None
+                if document is not None:
+                    if not isinstance(document, dict):
+                        raise ExecutionStoreCorruptionError(
+                            "execution history root must be an object"
+                        )
+                    history = _normalize_loaded_history(document)
+            if history is None:
+                return self._runtime_fields({"turns": []})
+            return self._runtime_fields(history)
+        finally:
+            session_lock.release()
+
+    def reserve_session_admission(self, session_id: str) -> Optional[str]:
+        """Reserve a session before request-local run preflight begins.
+
+        The reservation is intentionally process-local, matching the current
+        single-worker runtime contract.  It closes the otherwise unprotected
+        interval between metadata/preflight reads and durable turn creation.
+        """
+
+        normalized = validate_session_id(session_id)
+        coordinator = self._protocol_id_coordinator
+        with coordinator.lock:
+            if (
+                normalized in coordinator.session_admissions
+                or normalized in coordinator.session_prunes
+            ):
+                return None
+            token = uuid4().hex
+            coordinator.session_admissions[normalized] = token
+            return token
+
+    def release_session_admission(
+        self,
+        session_id: str,
+        reservation_id: str,
+    ) -> bool:
+        """Release one matching request-local session admission reservation."""
+
+        normalized = validate_session_id(session_id)
+        token = str(reservation_id or "").strip()
+        coordinator = self._protocol_id_coordinator
+        with coordinator.lock:
+            if coordinator.session_admissions.get(normalized) != token:
+                return False
+            coordinator.session_admissions.pop(normalized, None)
+            return True
+
+    @contextmanager
+    def _consume_session_admission(
+        self,
+        session_id: str,
+        reservation_id: str | None,
+    ):
+        """Validate and consume a lease around the durable turn commit."""
+
+        token = str(reservation_id or "").strip()
+        if not token:
+            yield
+            return
+        normalized = validate_session_id(session_id)
+        coordinator = self._protocol_id_coordinator
+        with coordinator.lock:
+            if coordinator.session_admissions.get(normalized) != token:
+                raise RuntimeError("session admission reservation is unavailable")
+            try:
+                yield
+            finally:
+                if coordinator.session_admissions.get(normalized) == token:
+                    coordinator.session_admissions.pop(normalized, None)
+
+    @contextmanager
+    def session_prune_guard(self, session_id: str):
+        """Coordinate one prune candidate with request admission.
+
+        The yielded value is ``False`` when a request already owns the session
+        admission lease.  Callers must skip all work in that case.  Once the
+        prune marker is installed, a new admission cannot acquire a lease
+        until the candidate transaction has released its per-session lock.
+        """
+
+        normalized = validate_session_id(session_id)
+        coordinator = self._protocol_id_coordinator
+        with coordinator.lock:
+            if (
+                normalized in coordinator.session_admissions
+                or normalized in coordinator.session_prunes
+            ):
+                yield False
+                return
+            coordinator.session_prunes.add(normalized)
+        session_lock = self._lock_for_session(normalized)
+        session_lock.acquire()
+        try:
+            yield True
+        finally:
+            session_lock.release()
+            with coordinator.lock:
+                coordinator.session_prunes.discard(normalized)
+
+    def is_session_runtime_protected(self, session_id: str) -> bool:
+        with self._lock_for_session(session_id):
+            fields = self.get_session_summary_runtime(session_id)
+            status = str(fields.get("last_run_status") or "idle")
+            return bool(
+                fields.get("active_run_id")
+                or fields.get("pending_interaction")
+                or status not in {
+                    "idle",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                }
+            )
 
     @property
     def corruption_count(self) -> int:
@@ -552,7 +830,11 @@ class ExecutionStore:
                     )
                 normalized = _normalize_loaded_history(data)
                 if _mark_interrupted_turns(normalized):
-                    return self._save_session(session_id, normalized)
+                    return self._save_session(
+                        session_id,
+                        normalized,
+                        project_runtime=True,
+                    )
                 self._cache[session_id] = normalized
                 return normalized
             except (json.JSONDecodeError, OSError, ExecutionStoreCorruptionError) as exc:
@@ -603,6 +885,8 @@ class ExecutionStore:
         self,
         session_id: str,
         history: Optional[SessionExecutionHistory] = None,
+        *,
+        project_runtime: bool = False,
     ) -> SessionExecutionHistory:
         """Atomically commit one session and publish the cache only after fsync."""
 
@@ -614,13 +898,21 @@ class ExecutionStore:
         source = history if history is not None else self._cache.get(session_id)
         if source is None:
             raise KeyError(session_id)
-        committed = copy.deepcopy(source)
-        committed["updated_at"] = datetime.now().isoformat()
-        session_path = self._get_session_path(session_id)
-        temp_path = session_path.with_name(
-            ".execution.json.{}.tmp".format(uuid4().hex)
-        )
         try:
+            projection_token = (
+                self._begin_runtime_projection() if project_runtime else None
+            )
+        except Exception:
+            self._cache.pop(session_id, None)
+            raise
+        temp_path: Path | None = None
+        try:
+            committed = copy.deepcopy(source)
+            committed["updated_at"] = datetime.now().isoformat()
+            session_path = self._get_session_path(session_id)
+            temp_path = session_path.with_name(
+                ".execution.json.{}.tmp".format(uuid4().hex)
+            )
             with open(temp_path, "x", encoding="utf-8") as f:
                 json.dump(
                     committed,
@@ -634,11 +926,19 @@ class ExecutionStore:
             os.replace(temp_path, session_path)
             _fsync_directory(session_path.parent)
         except BaseException:
+            self._abandon_runtime_projection(projection_token)
             self._cache.pop(session_id, None)
             raise
         finally:
-            temp_path.unlink(missing_ok=True)
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
         self._cache[session_id] = committed
+        if project_runtime:
+            self._project_runtime(
+                session_id,
+                committed,
+                projection_token=projection_token,
+            )
         return committed
 
     # =========================================================================
@@ -752,12 +1052,16 @@ class ExecutionStore:
         run_id: Optional[str] = None,
         idempotency_key_hash: Optional[str] = None,
         request_fingerprint: Optional[str] = None,
+        admission_reservation_id: Optional[str] = None,
         ontology_version: Optional[str] = None,
         protocol_metadata: Optional[Dict[str, Any]] = None,
     ) -> tuple[TurnExecutionRecord, bool]:
         """Atomically admit one ordinary request and allocate its Turn and Run."""
 
-        with self._lock_for_session(session_id):
+        with self._consume_session_admission(
+            session_id,
+            admission_reservation_id,
+        ), self._lock_for_session(session_id):
             history = copy.deepcopy(self._load_session(session_id))
             existing = _turn_for_idempotency_key(history, idempotency_key_hash)
             if existing is not None:
@@ -812,9 +1116,100 @@ class ExecutionStore:
                     "turn_id": turn_id,
                 }
             )
-            committed = self._save_session(session_id, history)
+            committed = self._save_session(
+                session_id,
+                history,
+                project_runtime=True,
+            )
             self._current_turns[session_id] = turn_id
             return copy.deepcopy(committed["turns"][-1]), True
+
+    @staticmethod
+    def _protocol_run_key(
+        protocol: str,
+        external_run_id: str,
+    ) -> tuple[str, str]:
+        normalized_protocol = str(protocol or "").strip().lower()
+        normalized_external_id = str(external_run_id or "").strip()
+        if not normalized_protocol:
+            raise ValueError("protocol must not be empty")
+        if not normalized_external_id:
+            raise ValueError("external_run_id must not be empty")
+        return normalized_protocol, normalized_external_id
+
+    def reserve_protocol_run_id(
+        self,
+        protocol: str,
+        external_run_id: str,
+    ) -> Optional[str]:
+        """Reserve one protocol identifier before request-scoped preflight."""
+
+        key = self._protocol_run_key(protocol, external_run_id)
+        coordinator = self._protocol_id_coordinator
+        with coordinator.lock:
+            _session_id, existing = self._find_durable_turn_by_protocol_id(*key)
+            if existing is not None or key in coordinator.reservations:
+                return None
+            reservation_id = uuid4().hex
+            coordinator.reservations[key] = reservation_id
+            return reservation_id
+
+    def release_protocol_run_id(
+        self,
+        protocol: str,
+        external_run_id: str,
+        reservation_id: str,
+    ) -> bool:
+        """Release a matching in-memory reservation without durable mutation."""
+
+        key = self._protocol_run_key(protocol, external_run_id)
+        normalized_reservation = str(reservation_id or "").strip()
+        coordinator = self._protocol_id_coordinator
+        with coordinator.lock:
+            if coordinator.reservations.get(key) != normalized_reservation:
+                return False
+            coordinator.reservations.pop(key, None)
+            return True
+
+    def create_turn_for_reserved_protocol_run(
+        self,
+        *,
+        protocol: str,
+        external_run_id: str,
+        reservation_id: str,
+        session_id: str,
+        user_request: str,
+        run_id: Optional[str] = None,
+        ontology_version: Optional[str] = None,
+        protocol_metadata: Optional[Dict[str, Any]] = None,
+    ) -> tuple[TurnExecutionRecord, bool]:
+        """Atomically consume a reservation and persist one protocol Turn."""
+
+        key = self._protocol_run_key(protocol, external_run_id)
+        normalized_reservation = str(reservation_id or "").strip()
+        coordinator = self._protocol_id_coordinator
+        with coordinator.lock:
+            if coordinator.reservations.get(key) != normalized_reservation:
+                raise RuntimeError("protocol run reservation is unavailable")
+            try:
+                _existing_session_id, existing = (
+                    self._find_durable_turn_by_protocol_id(*key)
+                )
+                if existing is not None:
+                    return existing, False
+                metadata = dict(protocol_metadata or {})
+                metadata["protocol"] = key[0]
+                metadata["external_run_id"] = key[1]
+                return self.create_turn_for_run(
+                    session_id=session_id,
+                    user_request=user_request,
+                    run_id=run_id,
+                    ontology_version=ontology_version,
+                    protocol_metadata=metadata,
+                )
+            finally:
+                if coordinator.reservations.get(key) == normalized_reservation:
+                    coordinator.reservations.pop(key, None)
 
     def consume_interaction_and_create_turn(
         self,
@@ -825,6 +1220,7 @@ class ExecutionStore:
         interaction_response: Dict[str, Any],
         idempotency_key_hash: Optional[str] = None,
         request_fingerprint: Optional[str] = None,
+        admission_reservation_id: Optional[str] = None,
         ontology_version: Optional[str] = None,
         protocol_metadata: Optional[Dict[str, Any]] = None,
     ) -> tuple[TurnExecutionRecord, bool]:
@@ -836,7 +1232,10 @@ class ExecutionStore:
                 "interaction_id is required",
                 code="INTERACTION_CONFLICT",
             )
-        with self._lock_for_session(session_id):
+        with self._consume_session_admission(
+            session_id,
+            admission_reservation_id,
+        ), self._lock_for_session(session_id):
             history = copy.deepcopy(self._load_session(session_id))
             existing_by_key = _turn_for_idempotency_key(
                 history,
@@ -936,7 +1335,11 @@ class ExecutionStore:
                     "turn_id": turn_id,
                 }
             )
-            committed = self._save_session(session_id, history)
+            committed = self._save_session(
+                session_id,
+                history,
+                project_runtime=True,
+            )
             self._current_turns[session_id] = turn_id
             return copy.deepcopy(committed["turns"][-1]), True
 
@@ -1044,7 +1447,11 @@ class ExecutionStore:
             "ontology_version": ontology_version,
         }
         history["turns"].append(turn)
-        committed = self._save_session(session_id, history)
+        committed = self._save_session(
+            session_id,
+            history,
+            project_runtime=True,
+        )
         self._current_turns[session_id] = turn_id
         return copy.deepcopy(committed["turns"][-1]), canonical_response
 
@@ -1407,7 +1814,7 @@ class ExecutionStore:
             updated_history.pop("pending_deterministic_terminal", None)
             self._cache[session_id] = updated_history
             try:
-                self._save_session(session_id)
+                self._save_session(session_id, project_runtime=True)
             except Exception:
                 self._cache[session_id] = history
                 raise
@@ -1501,7 +1908,7 @@ class ExecutionStore:
             source_turn["interaction_consumed_at"] = cancelled_at
             source_turn["interaction_cancelled_at"] = cancelled_at
             source_turn.pop("interaction_consumed_by_turn_id", None)
-            self._save_session(session_id, history)
+            self._save_session(session_id, history, project_runtime=True)
             return cancellation
 
     def complete_turn(
@@ -1534,7 +1941,7 @@ class ExecutionStore:
                 turn["final_output"] = final_output
                 turn["summary"] = summary
 
-            self._save_session(session_id, history)
+            self._save_session(session_id, history, project_runtime=True)
 
     def fail_turn(
         self,
@@ -1575,7 +1982,7 @@ class ExecutionStore:
                 turn["error_code"] = str(error_code or "RUNTIME_FAILED")
                 turn["final_output"] = output
 
-            self._save_session(session_id, history)
+            self._save_session(session_id, history, project_runtime=True)
 
     def cancel_turn(
         self,
@@ -1610,7 +2017,7 @@ class ExecutionStore:
                 if summary is not None:
                     turn["summary"] = summary
 
-            self._save_session(session_id, history)
+            self._save_session(session_id, history, project_runtime=True)
 
     def reconcile_canonical_terminal(
         self,
@@ -1674,7 +2081,7 @@ class ExecutionStore:
             if status != "success":
                 turn["summary"] = None
 
-            self._save_session(session_id, history)
+            self._save_session(session_id, history, project_runtime=True)
             return True
 
     def await_turn(
@@ -1724,7 +2131,7 @@ class ExecutionStore:
                 if summary is not None:
                     turn["summary"] = summary
 
-            self._save_session(session_id, history)
+            self._save_session(session_id, history, project_runtime=True)
 
     @staticmethod
     def _turn_for_update(
@@ -1937,6 +2344,59 @@ class ExecutionStore:
                     return session_id, copy.deepcopy(turn)
         return None, None
 
+    def _find_durable_turn_by_protocol_id(
+        self,
+        normalized_protocol: str,
+        normalized_external_id: str,
+    ) -> tuple[Optional[str], Optional[TurnExecutionRecord]]:
+        if not self.storage_dir.exists():
+            return None, None
+        session_dirs = sorted(
+            (path for path in self.storage_dir.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+        )
+        for session_dir in session_dirs:
+            try:
+                session_id = validate_session_id(session_dir.name)
+                session_path = (
+                    resolve_session_storage_dir(self.storage_dir, session_id)
+                    / "execution.json"
+                )
+            except ValueError:
+                continue
+            if not session_path.is_file():
+                continue
+            try:
+                with open(session_path, "r", encoding="utf-8") as stream:
+                    history = json.load(stream)
+            except (json.JSONDecodeError, OSError) as exc:
+                raise ExecutionStoreCorruptionError(
+                    "execution history is corrupt during protocol lookup"
+                ) from exc
+            if not isinstance(history, dict) or not isinstance(
+                history.get("turns"),
+                list,
+            ):
+                raise ExecutionStoreCorruptionError(
+                    "execution history is invalid during protocol lookup"
+                )
+            for turn in reversed(history["turns"]):
+                if not isinstance(turn, dict):
+                    continue
+                metadata = turn.get("protocol_metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                if str(metadata.get("protocol") or "").strip().lower() != normalized_protocol:
+                    continue
+                candidate = str(
+                    metadata.get("external_run_id")
+                    or metadata.get("external_id")
+                    or ""
+                ).strip()
+                if candidate == normalized_external_id:
+                    return session_id, copy.deepcopy(turn)
+        return None, None
+
     def list_turns_by_protocol(
         self,
         protocol: str,
@@ -2013,7 +2473,7 @@ class ExecutionStore:
                     "error": "Execution task could not be started",
                     "error_code": "TASK_START_FAILED",
                 }
-                self._save_session(session_id, history)
+                self._save_session(session_id, history, project_runtime=True)
                 return
             raise KeyError(turn_id)
 
@@ -2024,7 +2484,7 @@ class ExecutionStore:
             history = copy.deepcopy(self._load_session(session_id))
             interrupted = _mark_interrupted_turns(history)
             if interrupted:
-                self._save_session(session_id, history)
+                self._save_session(session_id, history, project_runtime=True)
             return interrupted
 
     def get_session_history(
@@ -2281,6 +2741,7 @@ class ExecutionStore:
         Returns:
             True if deleted, False if not found
         """
+        deleted = False
         with self._lock_for_session(session_id):
             # Remove from cache
             if session_id in self._cache:
@@ -2293,9 +2754,21 @@ class ExecutionStore:
             if session_dir.exists():
                 import shutil
                 shutil.rmtree(session_dir)
-                return True
+                deleted = True
 
-            return False
+        if deleted and self._summary_index is not None:
+            try:
+                self._summary_index.delete(session_id)
+            except Exception:
+                logger.warning(
+                    "Session summary execution delete projection failed for %s",
+                    session_id,
+                )
+                try:
+                    self._summary_index.mark_degraded("execution_projection_failed")
+                except Exception:
+                    pass
+        return deleted
 
     # =========================================================================
     # Turn Count
@@ -2303,6 +2776,16 @@ class ExecutionStore:
 
     def get_turn_count(self, session_id: str) -> int:
         """Return the number of turns recorded for a session."""
+        if self._summary_index is not None:
+            try:
+                if self._summary_index.load_persisted_for_read():
+                    summary = self._summary_index.get_summary(session_id)
+                    if summary is not None:
+                        return summary.turn_count
+                    return 0
+            except Exception:
+                # The index is derived state; authoritative history remains the fallback.
+                pass
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             return len(history.get("turns", []))

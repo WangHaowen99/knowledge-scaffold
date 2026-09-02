@@ -1,5 +1,8 @@
 """Chat session endpoints: CRUD, messages, title generation."""
 
+import asyncio
+import threading
+
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -21,6 +24,7 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     InteractionCheckpointError,
 )
+from persistence.session_summary_index import InvalidSessionCursor, SessionSummary
 from persistence.deterministic_terminal import (
     recover_pending_deterministic_artifacts,
     recover_pending_deterministic_terminal,
@@ -28,6 +32,66 @@ from persistence.deterministic_terminal import (
 from workspace.workspaces import workspace_scope
 
 logger = get_logger("routes.sessions")
+_PRUNE_CONVERGENCE_LOCK = threading.Lock()
+_ACTIVE_PRUNE_CONVERGENCES: set[tuple[str, str]] = set()
+
+
+async def _converge_session_prune_batches(
+    runtime,
+    prune_batch,
+    *,
+    batch_size: int = 25,
+    convergence_key: tuple[str, str] | None = None,
+    deadline_seconds: float = 5.0,
+    max_no_progress: int = 6,
+    initial_backoff_seconds: float = 0.05,
+    max_backoff_seconds: float = 0.8,
+) -> int:
+    """Continue bounded prune batches as runtime-owned derived work."""
+
+    claimed = False
+    if convergence_key is not None:
+        with _PRUNE_CONVERGENCE_LOCK:
+            if convergence_key in _ACTIVE_PRUNE_CONVERGENCES:
+                return 0
+            _ACTIVE_PRUNE_CONVERGENCES.add(convergence_key)
+            claimed = True
+    deleted_total = 0
+    no_progress_count = 0
+    backoff = max(0.0, float(initial_backoff_seconds))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.01, float(deadline_seconds))
+    try:
+        while loop.time() < deadline:
+            outcome = await runtime.short_io.run(prune_batch, batch_size)
+            deleted = tuple(outcome.deleted_session_ids)
+            deleted_total += len(deleted)
+            if not outcome.has_more:
+                return deleted_total
+            if outcome.no_progress:
+                no_progress_count += 1
+                if no_progress_count >= max(1, int(max_no_progress)):
+                    return deleted_total
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return deleted_total
+                delay = min(backoff, max(0.0, remaining))
+                if delay:
+                    await asyncio.sleep(delay)
+                backoff = min(
+                    max(0.0, float(max_backoff_seconds)),
+                    backoff * 2 if backoff else 0,
+                )
+            else:
+                no_progress_count = 0
+                backoff = max(0.0, float(initial_backoff_seconds))
+                await asyncio.sleep(0)
+        return deleted_total
+    finally:
+        if claimed:
+            with _PRUNE_CONVERGENCE_LOCK:
+                _ACTIVE_PRUNE_CONVERGENCES.discard(convergence_key)
+
 
 def _validate_session_path_parameter(
     session_id: str | None = None,
@@ -247,9 +311,8 @@ async def _runtime_payloads_for_sessions(
         if current is None or snapshot.turn_id > current.turn_id:
             live_by_session[snapshot.session_id] = snapshot
 
-    _chat_store, execution_store = _get_user_stores()
-
     def histories_by_session():
+        _chat_store, execution_store = _get_user_stores()
         return {
             session.id: execution_store.get_session_history(session.id)
             for session in sessions
@@ -266,15 +329,189 @@ async def _runtime_payloads_for_sessions(
     }
 
 
+def _summary_payload(summary: SessionSummary) -> dict:
+    payload = summary.to_dict()
+    payload.pop("pinned", None)
+    payload.pop("last_run_status", None)
+    payload.pop("last_event_sequence", None)
+    pending_interaction = payload.pop("pending_interaction", None)
+    payload["active_run_status"] = summary.last_run_status
+    payload["last_seq"] = summary.last_event_sequence
+    if pending_interaction is not None:
+        payload["pending_interaction"] = pending_interaction
+    return payload
+
+
+async def _indexed_session_payloads(
+    summaries,
+    *,
+    runtime,
+    current_user: AuthUser,
+    workspace_id: str,
+    chat_store,
+    execution_store,
+) -> list[dict]:
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:read",),
+    )
+    snapshots = (
+        await runtime.manager.list_runs(scope)
+        if runtime.manager is not None
+        else []
+    )
+    active_run_ids = _collect_active_run_ids(snapshots)
+    live_by_session = {}
+    for snapshot in snapshots:
+        current = live_by_session.get(snapshot.session_id)
+        if current is None or snapshot.turn_id > current.turn_id:
+            live_by_session[snapshot.session_id] = snapshot
+
+    recovery_candidates = [
+        summary
+        for summary in summaries
+        if summary.active_run_id or summary.pending_interaction is not None
+    ]
+
+    def recover_page_candidates():
+        recovered = {}
+        for summary in recovery_candidates:
+            session = _get_session_after_terminal_recovery(
+                chat_store,
+                execution_store,
+                summary.session_id,
+                active_run_ids,
+            )
+            if session is None:
+                continue
+            history = execution_store.get_session_history(summary.session_id)
+            if history is not None:
+                recovered[summary.session_id] = _session_runtime_payload(
+                    session,
+                    history=history,
+                )
+        return recovered
+
+    recovered_payloads = (
+        await runtime.short_io.run(recover_page_candidates)
+        if recovery_candidates
+        else {}
+    )
+    payloads = []
+    for summary in summaries:
+        payload = _summary_payload(summary)
+        payload.update(recovered_payloads.get(summary.session_id, {}))
+        live_snapshot = live_by_session.get(summary.session_id)
+        if live_snapshot is not None:
+            payload.update(
+                {
+                    "active_run_id": live_snapshot.run_id,
+                    "active_run_status": live_snapshot.status.value,
+                    "last_seq": max(
+                        int(live_snapshot.last_seq),
+                        int(payload.get("last_seq") or 0),
+                    ),
+                }
+            )
+            payload.pop("pending_interaction", None)
+        payloads.append(payload)
+    return payloads
+
+
 @sessions_router.get("/sessions")
 async def list_sessions(
     request: Request,
     current_user: AuthUser = Depends(require_authenticated_user),
     workspace_id: str = Depends(require_workspace_id),
+    limit: int | None = Query(default=None, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=2048),
 ):
     """List all chat sessions."""
+    if cursor and limit is None:
+        return JSONResponse(
+            {"error": "limit is required when cursor is provided"},
+            status_code=400,
+        )
     runtime = get_runtime_container(request)
-    chat_store, _execution_store = _get_user_stores()
+    chat_store, execution_store = await runtime.short_io.run(_get_user_stores)
+    summary_index = getattr(chat_store, "session_summary_index", None)
+    if summary_index is not None:
+        def read_index_page():
+            load_persisted = getattr(
+                summary_index,
+                "load_persisted_for_read",
+                None,
+            )
+            if callable(load_persisted):
+                if not load_persisted():
+                    request_rebuild = getattr(
+                        summary_index,
+                        "request_rebuild",
+                        None,
+                    )
+                    if callable(request_rebuild):
+                        request_rebuild()
+                    raise RuntimeError("session summary index is rebuilding")
+            elif summary_index.state != "ready":
+                request_rebuild = getattr(summary_index, "request_rebuild", None)
+                if callable(request_rebuild):
+                    request_rebuild()
+                raise RuntimeError("session summary index is rebuilding")
+            if limit is None:
+                return summary_index.list_all(), None
+            current_page = summary_index.list_page(limit=limit, cursor=cursor)
+            return current_page.items, current_page
+
+        try:
+            summaries, page = await runtime.short_io.run(read_index_page)
+        except InvalidSessionCursor as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception:
+            # A newly created user/workspace has no authoritative sessions yet.
+            # Publish an empty derived index immediately; non-empty cold stores
+            # still fail closed and continue rebuilding off the request path.
+            has_sessions = getattr(chat_store, "has_sessions", None)
+            rebuild = getattr(summary_index, "rebuild", None)
+            if callable(has_sessions) and callable(rebuild):
+                try:
+                    if not await runtime.short_io.run(has_sessions):
+                        await runtime.short_io.run(rebuild)
+                        summaries, page = await runtime.short_io.run(read_index_page)
+                    else:
+                        raise RuntimeError("session summary index is rebuilding")
+                except Exception:
+                    logger.exception("Session summary index unavailable")
+                    return JSONResponse(
+                        {"error": "session summary index unavailable"},
+                        status_code=503,
+                    )
+            else:
+                logger.exception("Session summary index unavailable")
+                return JSONResponse(
+                    {"error": "session summary index unavailable"},
+                    status_code=503,
+                )
+        else:
+            sessions_payload = await _indexed_session_payloads(
+                summaries,
+                runtime=runtime,
+                current_user=current_user,
+                workspace_id=workspace_id,
+                chat_store=chat_store,
+                execution_store=execution_store,
+            )
+            response = {"sessions": sessions_payload}
+            if page is not None:
+                response.update(
+                    {
+                        "next_cursor": page.next_cursor,
+                        "has_more": page.has_more,
+                        "index_revision": page.index_revision,
+                    }
+                )
+            return response
+
     sessions = await runtime.short_io.run(chat_store.list_sessions)
     scope = RunScope(
         username=current_user.username,
@@ -321,6 +558,7 @@ async def list_sessions(
 @sessions_router.post("/sessions")
 async def create_session(
     request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
     workspace_id: str = Depends(require_workspace_id),
 ):
     """
@@ -373,19 +611,41 @@ async def create_session(
         metadata["selected_ontology_version"] = selected_ontology_version
         metadata["selected_ontology_name"] = selected_ontology_name
 
+    prune_batch_size = 25
+
+    def prune_batch(batch_size):
+        from api.routes import prune_request_sessions_batch
+
+        return prune_request_sessions_batch(
+            max_sessions=LimitsConfig.from_env().session_max_per_user_workspace,
+            batch_size=batch_size,
+        )
+
     def create_and_prune():
-        chat_store, execution_store = _get_user_stores()
-        session = chat_store.create_session(
+        chat_store, _execution_store = _get_user_stores()
+        return chat_store.create_session(
             title=title,
             metadata=metadata,
         )
-        for deleted_session_id in chat_store.prune_old_sessions(
-            LimitsConfig.from_env().session_max_per_user_workspace
-        ):
-            execution_store.delete_session(deleted_session_id)
-        return session
 
     session = await runtime.short_io.run(create_and_prune)
+    supervisor = getattr(runtime, "supervisor", None)
+    start_derived = getattr(supervisor, "start_derived", None)
+    if callable(start_derived):
+        operation = _converge_session_prune_batches(
+            runtime,
+            prune_batch,
+            batch_size=prune_batch_size,
+            convergence_key=(workspace_id, current_user.username),
+        )
+        try:
+            start_derived(
+                operation,
+                name="session-prune-convergence-{}".format(session.id),
+            )
+        except Exception:
+            operation.close()
+            logger.warning("Could not schedule session prune convergence", exc_info=True)
 
     return JSONResponse(session.to_dict(), status_code=201)
 
@@ -399,7 +659,7 @@ async def get_session(
 ):
     """Get a chat session with message history."""
     runtime = get_runtime_container(request)
-    chat_store, execution_store = _get_user_stores()
+    chat_store, execution_store = await runtime.short_io.run(_get_user_stores)
     scope = RunScope(
         username=current_user.username,
         workspace_id=workspace_id,
@@ -615,7 +875,7 @@ async def cancel_session_interaction(
             status_code=400,
         )
     runtime = get_runtime_container(request)
-    chat_store, execution_store = _get_user_stores()
+    chat_store, execution_store = await runtime.short_io.run(_get_user_stores)
     if not await runtime.short_io.run(chat_store.get_session, session_id):
         return JSONResponse({"error": "Session not found"}, status_code=404)
 

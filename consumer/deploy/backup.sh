@@ -8,8 +8,29 @@ source "${SCRIPT_DIR}/common.sh"
 
 load_state
 
-TARGET_VERSION="${1:-$(manifest_get app_version)}"
-FROM_VERSION="${2:-${CURRENT_VERSION:-none}}"
+WRITES_STOPPED=false
+POSITIONAL=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --confirm-writes-stopped)
+            WRITES_STOPPED=true
+            ;;
+        --*)
+            die "Unknown backup option: $1"
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            ;;
+    esac
+    shift
+done
+[ "${#POSITIONAL[@]}" -le 2 ] \
+    || die "Usage: backup.sh --confirm-writes-stopped [target-version] [from-version]"
+[ "${WRITES_STOPPED}" = true ] \
+    || die "Backup requires --confirm-writes-stopped before reading runtime/auth facts"
+
+TARGET_VERSION="${POSITIONAL[0]:-$(manifest_get app_version)}"
+FROM_VERSION="${POSITIONAL[1]:-${CURRENT_VERSION:-none}}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="${BACKUP_ROOT}/${TIMESTAMP}_${FROM_VERSION}_to_${TARGET_VERSION}"
 
@@ -70,11 +91,63 @@ backup_legacy_container_storage_if_present() {
     rm -rf "${staging_root}"
 }
 
+backup_canonical_storage() {
+    local integrity_tool="${SCRIPT_DIR}/storage_integrity.py"
+    local archive="${BACKUP_DIR}/storage-data.tar.gz"
+    local manifest="${BACKUP_DIR}/storage-manifest.json"
+
+    require_file "${integrity_tool}"
+    case "${RESOLVED_STORAGE_MODE}" in
+        bind)
+            require_dir "${BUNDLE_ROOT}/.onto-runtime"
+            require_dir "${BUNDLE_ROOT}/.onto-auth"
+            python3 "${integrity_tool}" create-archive \
+                --runtime "${BUNDLE_ROOT}/.onto-runtime" \
+                --auth "${BUNDLE_ROOT}/.onto-auth" \
+                --archive "${archive}" \
+                --manifest "${manifest}" \
+                --storage-mode bind >/dev/null
+            python3 "${integrity_tool}" verify-backup \
+                --backup-dir "${BACKUP_DIR}" >/dev/null
+            ;;
+        volume)
+            # Validate the project release image pin before touching source storage.
+            resolve_storage_utility_image
+            docker volume inspect "${ACTIVE_RUNTIME_VOLUME}" >/dev/null 2>&1 \
+                || die "Runtime volume does not exist: ${ACTIVE_RUNTIME_VOLUME}"
+            docker volume inspect "${ACTIVE_AUTH_VOLUME}" >/dev/null 2>&1 \
+                || die "Auth volume does not exist: ${ACTIVE_AUTH_VOLUME}"
+            run_storage_utility \
+                -v "${ACTIVE_RUNTIME_VOLUME}:/source/runtime:ro" \
+                -v "${ACTIVE_AUTH_VOLUME}:/source/auth:ro" \
+                -v "${BACKUP_DIR}:/backup:rw" \
+                -v "${SCRIPT_DIR}:/tool:ro" \
+                -- \
+                python /tool/storage_integrity.py create-archive \
+                --runtime /source/runtime \
+                --auth /source/auth \
+                --archive /backup/storage-data.tar.gz \
+                --manifest /backup/storage-manifest.json \
+                --storage-mode volume >/dev/null
+            run_storage_utility \
+                -v "${BACKUP_DIR}:/backup:ro" \
+                -v "${SCRIPT_DIR}:/tool:ro" \
+                -- \
+                python /tool/storage_integrity.py verify-backup \
+                --backup-dir /backup >/dev/null
+            ;;
+    esac
+}
+
 backup_path_if_present "${BUNDLE_ROOT}/backend/.env" "backend-env.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/backend/logs" "backend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/frontend/logs" "frontend-logs.tar.gz"
-backup_path_if_present "${BUNDLE_ROOT}/.onto-runtime" "onto-runtime.tar.gz"
-backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
+if [ "${RESOLVED_STORAGE_MODE}" = "bind" ]; then
+    # Keep the legacy per-directory archives for backward-compatible manual recovery.
+    backup_path_if_present "${BUNDLE_ROOT}/.onto-runtime" "onto-runtime.tar.gz"
+    backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
+fi
+backup_canonical_storage
 backup_legacy_container_storage_if_present
 
 {
@@ -117,6 +190,10 @@ fi
     printf 'CURRENT_FRONTEND_IMAGE=%q\n' "${CURRENT_FRONTEND_IMAGE:-}"
     printf 'CURRENT_AUTH_IMAGE=%q\n' "${CURRENT_AUTH_IMAGE:-}"
     printf 'CURRENT_JIUWENBOX_IMAGE=%q\n' "${CURRENT_JIUWENBOX_IMAGE:-}"
+    printf 'STORAGE_MODE=%q\n' "${RESOLVED_STORAGE_MODE}"
+    printf 'RUNTIME_VOLUME_NAME=%q\n' "${ACTIVE_RUNTIME_VOLUME}"
+    printf 'AUTH_VOLUME_NAME=%q\n' "${ACTIVE_AUTH_VOLUME}"
+    printf 'STORAGE_UTILITY_IMAGE=%q\n' "${RESOLVED_STORAGE_UTILITY_IMAGE:-}"
 } > "${BACKUP_DIR}/metadata.env"
 
 if command -v sha256sum >/dev/null 2>&1; then

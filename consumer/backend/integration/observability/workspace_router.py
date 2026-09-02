@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
+import time
 import uuid
 from typing import Any, Iterable, Sequence
 
 from utils.logging import get_logger
 from workspace.workspaces import get_current_workspace_id, validate_workspace_id
-from integration.observability.bus import ObservabilityBus
+from integration.observability.bus import BatchExportOutcome, ObservabilityBus
 from integration.observability.events import RuntimeEvent, RuntimeEventType
 from integration.observability.identity import clear_runtime_trace_identity, record_runtime_event
 from integration.observability.otel import (
     force_flush_open_telemetry,
     force_flush_runtime_metrics,
+    record_observability_batch_metric,
     shutdown_runtime_metrics,
 )
 from integration.observability.otel_data import (
@@ -40,24 +43,81 @@ _RUN_CONSUMER_LOCK = threading.RLock()
 _RUN_RUNTIME_EVENT_CONSUMERS: dict[str, list[Any]] = {}
 _DEFAULT_MAX_PENDING_SPANS_PER_RUN = 1000
 _DEFAULT_MAX_PENDING_SPANS_TOTAL = 10000
+_CLOSE_PHASE_FORCE_FLUSH = 0
+_CLOSE_PHASE_DRAIN_RUNS = 1
+_CLOSE_PHASE_CLOSE_BUSES = 2
+_CLOSE_PHASE_SHUTDOWN_METRICS = 3
+_CLOSE_PHASE_COMPLETE = 4
 
 
 class _WorkspaceExporterFanout:
     """Keep one queue per workspace while isolating exporter failures."""
 
+    metric_name = "workspace_fanout"
+
     def __init__(self, exporters: Iterable[Any]) -> None:
         self._exporters = [exporter for exporter in exporters if exporter is not None]
+        self._closed_exporter_indexes: set[int] = set()
+        self._close_lock = threading.Lock()
 
     @property
     def available(self) -> bool:
         return bool(self._exporters)
 
-    def export(self, event: RuntimeEvent) -> None:
+    def export(self, event: RuntimeEvent) -> BatchExportOutcome:
+        outcome = BatchExportOutcome()
         for exporter in self._exporters:
             try:
                 exporter.export(event)
             except Exception:
+                outcome = outcome.combine(BatchExportOutcome(failed_deliveries=1))
                 logger.warning("Workspace observability exporter failed", exc_info=True)
+            else:
+                outcome = outcome.combine(BatchExportOutcome(succeeded_deliveries=1))
+        return outcome
+
+    def export_batch(self, events: Iterable[RuntimeEvent]) -> BatchExportOutcome:
+        batch = tuple(events)
+        if not batch:
+            return BatchExportOutcome()
+        outcome = BatchExportOutcome()
+        for exporter in self._exporters:
+            try:
+                export_batch = (
+                    getattr(exporter, "export_batch", None)
+                    if inspect.getattr_static(exporter, "export_batch", None) is not None
+                    else None
+                )
+                if callable(export_batch):
+                    result = export_batch(batch)
+                    outcome = outcome.combine(
+                        result
+                        if isinstance(result, BatchExportOutcome)
+                        else BatchExportOutcome(succeeded_deliveries=1)
+                    )
+                    continue
+                for event in batch:
+                    try:
+                        exporter.export(event)
+                    except Exception:
+                        outcome = outcome.combine(
+                            BatchExportOutcome(failed_deliveries=1)
+                        )
+                        logger.warning(
+                            "Workspace observability exporter failed in batch fallback",
+                            exc_info=True,
+                        )
+                    else:
+                        outcome = outcome.combine(
+                            BatchExportOutcome(succeeded_deliveries=1)
+                        )
+            except Exception:
+                outcome = outcome.combine(BatchExportOutcome(failed_deliveries=1))
+                logger.warning(
+                    "Workspace observability exporter batch failed",
+                    exc_info=True,
+                )
+        return outcome
 
     def record_drop(self, event: RuntimeEvent) -> None:
         for exporter in self._exporters:
@@ -79,15 +139,31 @@ class _WorkspaceExporterFanout:
             except Exception:
                 logger.warning("Workspace observability exporter flush failed", exc_info=True)
 
-    def close(self) -> None:
-        for exporter in self._exporters:
-            close = getattr(exporter, "close", None)
-            if not callable(close):
-                continue
-            try:
-                close()
-            except Exception:
-                logger.warning("Workspace observability exporter close failed", exc_info=True)
+    def close(self) -> bool:
+        all_closed = True
+        with self._close_lock:
+            for index, exporter in enumerate(self._exporters):
+                if index in self._closed_exporter_indexes:
+                    continue
+                close = getattr(exporter, "close", None)
+                if not callable(close):
+                    self._closed_exporter_indexes.add(index)
+                    continue
+                try:
+                    result = close()
+                except Exception:
+                    all_closed = False
+                    logger.warning(
+                        "Workspace observability exporter close failed",
+                        exc_info=True,
+                    )
+                    continue
+                if result is False:
+                    all_closed = False
+                    logger.warning("Workspace observability exporter close reported failure")
+                    continue
+                self._closed_exporter_indexes.add(index)
+        return all_closed
 
 
 class WorkspaceObservabilityRouter:
@@ -101,15 +177,24 @@ class WorkspaceObservabilityRouter:
     ) -> None:
         self.router_id = uuid.uuid4().hex
         self._lock = threading.RLock()
+        self._close_lock = threading.Lock()
+        self._run_flush_lock = threading.RLock()
         self._observers_by_workspace: dict[str, ObservabilityBus | None] = {}
         self._run_workspaces: dict[str, str] = {}
         self._pending_spans_by_run: dict[str, list[OTelSpanSnapshot]] = {}
         self._pending_span_count = 0
         self._pending_span_drop_count = 0
+        self._pending_span_peak_count = 0
         self._max_pending_spans_per_run = max(1, int(max_pending_spans_per_run))
         self._max_pending_spans_total = max(1, int(max_pending_spans_total))
         self._retiring = False
         self._closed = False
+        self._draining_otel = False
+        self._close_complete = False
+        self._close_worker: threading.Thread | None = None
+        self._close_phase = _CLOSE_PHASE_FORCE_FLUSH
+        self._close_active_run_ids: tuple[str, ...] = ()
+        self._close_was_retiring = False
         _register_router(self)
 
     @property
@@ -119,6 +204,24 @@ class WorkspaceObservabilityRouter:
     @property
     def available(self) -> bool:
         return True
+
+    @property
+    def accepts_new_metric_recorders(self) -> bool:
+        with self._lock:
+            return not self._closed
+
+    def stats_snapshot(self) -> dict[str, int]:
+        """Return bounded pending-span buffer health without run identities."""
+
+        with self._lock:
+            return {
+                "pending_spans": self._pending_span_count,
+                "pending_runs": len(self._pending_spans_by_run),
+                "pending_span_dropped": self._pending_span_drop_count,
+                "pending_span_peak": self._pending_span_peak_count,
+                "max_pending_spans_per_run": self._max_pending_spans_per_run,
+                "max_pending_spans_total": self._max_pending_spans_total,
+            }
 
     def emit(self, event: RuntimeEvent) -> bool:
         if self._is_closed():
@@ -194,93 +297,286 @@ class WorkspaceObservabilityRouter:
     def export(self, event: RuntimeEvent) -> None:
         self.emit(event)
 
-    def retire(self, timeout: float = 1.0) -> None:
-        del timeout
+    def retire(self, timeout: float = 1.0) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout))
         with self._lock:
             self._retiring = True
             should_close = not self._run_workspaces
-        if not force_flush_open_telemetry():
+        if not force_flush_open_telemetry(
+            timeout_millis=_remaining_timeout_millis(deadline)
+        ):
             logger.warning(
                 "OpenTelemetry flush failed while retiring workspace router: router_id=%s",
                 self.router_id,
             )
-        if not force_flush_runtime_metrics(self.router_id):
+        if not force_flush_runtime_metrics(
+            self.router_id,
+            timeout_millis=_remaining_timeout_millis(deadline),
+        ):
             logger.warning(
                 "OpenTelemetry metric flush failed while retiring workspace router: router_id=%s",
                 self.router_id,
             )
         if should_close:
-            self.close()
+            return self.close(timeout=_remaining_timeout_seconds(deadline))
+        return False
 
-    def close(self, timeout: float = 1.0) -> None:
+    def close(self, timeout: float = 1.0) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        started_worker = False
+        while True:
+            remaining = _remaining_timeout_seconds(deadline)
+            acquired = (
+                self._close_lock.acquire(timeout=remaining)
+                if remaining > 0
+                else self._close_lock.acquire(blocking=False)
+            )
+            if not acquired:
+                return False
+            worker: threading.Thread | None = None
+            try:
+                with self._lock:
+                    if self._close_complete:
+                        return True
+                    if not self._closed:
+                        self._closed = True
+                        self._draining_otel = True
+                        self._close_active_run_ids = tuple(self._run_workspaces)
+                        self._close_was_retiring = self._retiring
+
+                    no_local_resources = (
+                        self._close_phase == _CLOSE_PHASE_FORCE_FLUSH
+                        and (
+                            self._close_worker is None
+                            or not self._close_worker.is_alive()
+                        )
+                        and not self._run_workspaces
+                        and not self._pending_spans_by_run
+                        and not self._observers_by_workspace
+                    )
+                if remaining <= 0 and no_local_resources:
+                    if shutdown_runtime_metrics(self.router_id, timeout_millis=0):
+                        self._finish_close()
+                        return True
+                    return False
+
+                worker = self._close_worker
+                if worker is None or not worker.is_alive():
+                    if started_worker:
+                        return False
+                    worker = threading.Thread(
+                        target=self._run_close_worker,
+                        args=(deadline,),
+                        name=f"observability-close-{self.router_id[:8]}",
+                        daemon=True,
+                    )
+                    self._close_worker = worker
+                    worker.start()
+                    started_worker = True
+            finally:
+                self._close_lock.release()
+
+            if worker is None or worker is threading.current_thread():
+                return False
+            remaining = _remaining_timeout_seconds(deadline)
+            worker.join(timeout=remaining)
+            if worker.is_alive():
+                return False
+            with self._lock:
+                if self._close_complete:
+                    return True
+            if _remaining_timeout_seconds(deadline) <= 0:
+                return False
+
+    def _run_close_worker(self, deadline: float) -> None:
+        try:
+            self._continue_close(deadline)
+        except Exception:
+            logger.warning(
+                "Workspace observability close worker failed: router_id=%s",
+                self.router_id,
+                exc_info=True,
+            )
+
+    def _continue_close(self, deadline: float) -> None:
         with self._lock:
-            if self._closed:
+            phase = self._close_phase
+        if phase == _CLOSE_PHASE_FORCE_FLUSH:
+            if not self._force_flush_for_close(deadline):
                 return
-            active_run_ids = list(self._run_workspaces)
-            retiring = self._retiring
+            with self._lock:
+                phase = self._close_phase
+        if phase == _CLOSE_PHASE_DRAIN_RUNS:
+            if not self._drain_runs_for_close(deadline):
+                return
+            with self._lock:
+                phase = self._close_phase
+        if phase == _CLOSE_PHASE_CLOSE_BUSES:
+            if not self._close_buses_for_close(deadline):
+                return
+            with self._lock:
+                phase = self._close_phase
+        if phase == _CLOSE_PHASE_SHUTDOWN_METRICS:
+            if not shutdown_runtime_metrics(
+                self.router_id,
+                timeout_millis=_remaining_timeout_millis(deadline),
+            ):
+                return
+            self._finish_close()
 
+    def _force_flush_for_close(self, deadline: float) -> bool:
+        with self._lock:
+            self._ensure_close_observers_locked()
+            active_run_ids = self._close_active_run_ids
         for run_id in active_run_ids:
             clear_runtime_trace_identity(run_id)
-        if not retiring and not force_flush_open_telemetry():
+        flush_succeeded = True
+        try:
+            trace_flush_succeeded = force_flush_open_telemetry(
+                timeout_millis=_remaining_timeout_millis(deadline)
+            )
+        except Exception:
+            flush_succeeded = False
             logger.warning(
                 "OpenTelemetry flush failed before closing workspace router: router_id=%s",
                 self.router_id,
+                exc_info=True,
             )
-        if not retiring and not force_flush_runtime_metrics(self.router_id):
+        else:
+            if not trace_flush_succeeded:
+                flush_succeeded = False
+                logger.warning(
+                    "OpenTelemetry flush failed before closing workspace router: router_id=%s",
+                    self.router_id,
+                )
+        try:
+            metric_flush_succeeded = force_flush_runtime_metrics(
+                self.router_id,
+                timeout_millis=_remaining_timeout_millis(deadline),
+            )
+        except Exception:
+            flush_succeeded = False
             logger.warning(
                 "OpenTelemetry metric flush failed before closing workspace router: router_id=%s",
                 self.router_id,
+                exc_info=True,
             )
-        shutdown_runtime_metrics(self.router_id)
-
+        else:
+            if not metric_flush_succeeded:
+                flush_succeeded = False
+                logger.warning(
+                    "OpenTelemetry metric flush failed before closing workspace router: router_id=%s",
+                    self.router_id,
+                )
+        if not flush_succeeded:
+            return False
         with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            pending_run_ids = list(self._pending_spans_by_run)
+            self._ensure_close_observers_locked()
+            self._draining_otel = False
+            self._close_phase = _CLOSE_PHASE_DRAIN_RUNS
+        return True
 
-        for run_id in pending_run_ids:
-            self._flush_run(run_id)
+    def _ensure_close_observers_locked(self) -> None:
+        workspace_ids = {
+            workspace_id
+            for workspace_id in self._run_workspaces.values()
+            if workspace_id
+        }
+        workspace_ids.update(
+            span.workspace_id
+            for spans in self._pending_spans_by_run.values()
+            for span in spans
+            if span.workspace_id
+        )
+        for workspace_id in sorted(workspace_ids):
+            if workspace_id not in self._observers_by_workspace:
+                self._create_observer_locked(workspace_id)
 
+    def _drain_runs_for_close(self, deadline: float) -> bool:
+        while True:
+            with self._run_flush_lock:
+                with self._lock:
+                    pending_run_id = next(iter(self._pending_spans_by_run), "")
+                    if not pending_run_id:
+                        self._close_phase = _CLOSE_PHASE_CLOSE_BUSES
+                        return True
+                if _remaining_timeout_seconds(deadline) <= 0:
+                    return False
+                self._flush_run(pending_run_id)
+
+    def _close_buses_for_close(self, deadline: float) -> bool:
+        with self._run_flush_lock:
+            with self._lock:
+                observers = [
+                    observer
+                    for observer in self._observers_by_workspace.values()
+                    if observer is not None
+                ]
+            if observers and _remaining_timeout_seconds(deadline) <= 0:
+                return False
+            buses_quiescent = True
+            for observer in observers:
+                try:
+                    result = observer.close(
+                        timeout=_remaining_timeout_seconds(deadline)
+                    )
+                    buses_quiescent = result is not False and buses_quiescent
+                except Exception:
+                    buses_quiescent = False
+                    logger.warning(
+                        "Workspace observability observer close failed",
+                        exc_info=True,
+                    )
+            if not buses_quiescent:
+                return False
+            with self._lock:
+                self._close_phase = _CLOSE_PHASE_SHUTDOWN_METRICS
+            return True
+
+    def _finish_close(self) -> None:
+        _unregister_router(self)
         with self._lock:
-            observers = [
-                observer
-                for observer in self._observers_by_workspace.values()
-                if observer is not None
-            ]
             self._observers_by_workspace.clear()
             self._run_workspaces.clear()
-
-        for observer in observers:
-            try:
-                observer.close(timeout=timeout)
-            except Exception:
-                logger.warning("Workspace observability observer close failed", exc_info=True)
-        _unregister_router(self)
+            self._pending_spans_by_run.clear()
+            self._pending_span_count = 0
+            self._draining_otel = False
+            self._close_phase = _CLOSE_PHASE_COMPLETE
+            self._close_complete = True
 
     def export_otel_span(self, span: OTelSpanSnapshot) -> None:
-        if self._is_closed():
-            return
         if span.run_id:
             self._buffer_pending_span(span)
             return
-        workspace_id = span.workspace_id
+        workspace_id = _validate_workspace_id(span.workspace_id)
         if not workspace_id:
             return
-        observer = self._get_observer(workspace_id)
-        if observer is not None:
-            observer.emit(_span_export_event(span, workspace_id=workspace_id))
+        with self._lock:
+            if self._closed and not self._draining_otel:
+                return
+            observer = self._get_observer(workspace_id, allow_closed=True)
+            if observer is not None:
+                observer.emit(_span_export_event(span, workspace_id=workspace_id))
 
     def export_otel_metric(
         self,
         record: dict[str, Any],
         *,
         attributes: dict[str, Any],
+        workspace_id: str = "",
     ) -> None:
-        workspace_id = str(attributes.get("agent.workspace_id") or record.get("workspace_id") or "").strip()
-        if not workspace_id:
+        with self._lock:
+            if self._closed and not self._draining_otel:
+                return
+        resolved_workspace_id = str(
+            workspace_id
+            or attributes.get("agent.workspace_id")
+            or record.get("workspace_id")
+            or ""
+        ).strip()
+        if not resolved_workspace_id:
             return
-        observer = self._get_observer(workspace_id)
+        observer = self._get_observer(resolved_workspace_id, allow_closed=True)
         if observer is None:
             return
         event = RuntimeEvent.from_otel(
@@ -290,7 +586,7 @@ class WorkspaceObservabilityRouter:
             trace_id=None,
             span_id=None,
             parent_span_id=None,
-            payload={"workspace_id": workspace_id, "otel_record": record},
+            payload={"workspace_id": resolved_workspace_id, "otel_record": record},
             timestamp_ms=int(record.get("ts_ms") or 0),
         )
         emit_metric = getattr(observer, "emit_metric", None)
@@ -300,6 +596,10 @@ class WorkspaceObservabilityRouter:
             observer.emit(event)
 
     def _flush_run(self, run_id: str) -> None:
+        with self._run_flush_lock:
+            self._flush_run_serialized(run_id)
+
+    def _flush_run_serialized(self, run_id: str) -> None:
         if not run_id:
             return
         with self._lock:
@@ -320,26 +620,51 @@ class WorkspaceObservabilityRouter:
         if not workspace_id:
             workspace_id = next((span.workspace_id for span in spans if span.workspace_id), "")
         if not workspace_id:
-            self._release_pending_span_capacity(len(spans))
+            self._release_pending_span_capacity(
+                len(spans),
+                workspace_id=workspace_id,
+            )
             return
         observer = self._get_observer(workspace_id, allow_closed=True)
         if observer is None:
-            self._release_pending_span_capacity(len(spans))
+            self._release_pending_span_capacity(
+                len(spans),
+                workspace_id=workspace_id,
+            )
             return
         try:
             accepted = observer.emit_batch(
                 lambda: _run_export_events(spans, workspace_id=workspace_id),
-                on_complete=lambda: self._release_pending_span_capacity(len(spans)),
+                on_complete=lambda: self._release_pending_span_capacity(
+                    len(spans),
+                    workspace_id=workspace_id,
+                ),
             )
         except Exception:
-            self._release_pending_span_capacity(len(spans))
+            self._release_pending_span_capacity(
+                len(spans),
+                workspace_id=workspace_id,
+            )
             raise
         if not accepted:
-            self._release_pending_span_capacity(len(spans))
+            self._release_pending_span_capacity(
+                len(spans),
+                workspace_id=workspace_id,
+            )
 
-    def _release_pending_span_capacity(self, count: int) -> None:
+    def _release_pending_span_capacity(
+        self,
+        count: int,
+        *,
+        workspace_id: str = "",
+    ) -> None:
         with self._lock:
             self._pending_span_count = max(0, self._pending_span_count - max(0, int(count)))
+            current_depth = self._pending_span_count
+        self._record_pending_span_metrics(
+            workspace_id=workspace_id,
+            current_depth=current_depth,
+        )
 
     def _is_closed(self) -> bool:
         with self._lock:
@@ -378,21 +703,32 @@ class WorkspaceObservabilityRouter:
                 return None
             if workspace_id in self._observers_by_workspace:
                 return self._observers_by_workspace[workspace_id]
-            exporter = self._build_exporter(workspace_id)
-            observer = (
-                ObservabilityBus(
-                    exporter,
-                    batch_queue_size=self._max_pending_spans_total,
-                )
-                if exporter is not None
-                else None
+            if self._closed and not self._draining_otel:
+                return None
+            return self._create_observer_locked(workspace_id)
+
+    def _create_observer_locked(self, workspace_id: str) -> ObservabilityBus | None:
+        exporter = self._build_exporter(workspace_id)
+        observer = (
+            ObservabilityBus(
+                exporter,
+                batch_queue_size=self._max_pending_spans_total,
+                router_id=self.router_id,
+                workspace_id=workspace_id,
             )
-            self._observers_by_workspace[workspace_id] = observer
-            return observer
+            if exporter is not None
+            else None
+        )
+        self._observers_by_workspace[workspace_id] = observer
+        return observer
 
     def _buffer_pending_span(self, span: OTelSpanSnapshot) -> None:
         dropped = False
+        dropped_delta = 0
+        peak_changed = False
         with self._lock:
+            if self._closed and not self._draining_otel:
+                return
             spans = self._pending_spans_by_run.get(span.run_id)
             current_count = len(spans) if spans is not None else 0
             per_run_limit = self._max_pending_spans_per_run
@@ -404,10 +740,12 @@ class WorkspaceObservabilityRouter:
                 and self._discard_pending_detail_span(preferred_run_id=span.run_id)
             ):
                 self._pending_span_drop_count += 1
+                dropped_delta += 1
                 spans = self._pending_spans_by_run.get(span.run_id)
                 current_count = len(spans) if spans is not None else 0
             if current_count >= per_run_limit or self._pending_span_count >= self._max_pending_spans_total:
                 self._pending_span_drop_count += 1
+                dropped_delta += 1
                 drop_count = self._pending_span_drop_count
                 dropped = True
             else:
@@ -416,7 +754,21 @@ class WorkspaceObservabilityRouter:
                     self._pending_spans_by_run[span.run_id] = spans
                 spans.append(span)
                 self._pending_span_count += 1
+                if self._pending_span_count > self._pending_span_peak_count:
+                    self._pending_span_peak_count = self._pending_span_count
+                    peak_changed = True
                 drop_count = self._pending_span_drop_count
+            current_depth = self._pending_span_count
+            peak_depth = self._pending_span_peak_count
+            workspace_id = str(
+                span.workspace_id or self._run_workspaces.get(span.run_id, "")
+            ).strip()
+        self._record_pending_span_metrics(
+            workspace_id=workspace_id,
+            current_depth=current_depth,
+            dropped=dropped_delta,
+            peak_depth=peak_depth if peak_changed else None,
+        )
         if dropped and (drop_count == 1 or drop_count & (drop_count - 1) == 0):
             logger.warning(
                 "Dropping buffered OpenTelemetry span because the pending span limit was reached: "
@@ -425,6 +777,47 @@ class WorkspaceObservabilityRouter:
                 span.run_id,
                 drop_count,
             )
+
+    def _record_pending_span_metrics(
+        self,
+        *,
+        workspace_id: str,
+        current_depth: int,
+        dropped: int = 0,
+        peak_depth: int | None = None,
+    ) -> None:
+        resolved_workspace_id = _validate_workspace_id(workspace_id)
+        if not resolved_workspace_id:
+            return
+        try:
+            if dropped:
+                record_observability_batch_metric(
+                    "dropped",
+                    dropped,
+                    exporter="otel_pending_spans",
+                    result="queue_full",
+                    router_id=self.router_id,
+                    workspace_id=resolved_workspace_id,
+                )
+            record_observability_batch_metric(
+                "current_depth",
+                current_depth,
+                exporter="otel_pending_spans",
+                result="snapshot",
+                router_id=self.router_id,
+                workspace_id=resolved_workspace_id,
+            )
+            if peak_depth is not None:
+                record_observability_batch_metric(
+                    "peak_depth",
+                    peak_depth,
+                    exporter="otel_pending_spans",
+                    result="snapshot",
+                    router_id=self.router_id,
+                    workspace_id=resolved_workspace_id,
+                )
+        except Exception:
+            logger.warning("Pending OpenTelemetry span metric recording failed", exc_info=True)
 
     def _discard_pending_detail_span(self, *, preferred_run_id: str) -> bool:
         ordered_run_ids = [preferred_run_id] + [
@@ -512,6 +905,14 @@ class WorkspaceObservabilityRouter:
 
 def create_workspace_observability_router() -> WorkspaceObservabilityRouter:
     return WorkspaceObservabilityRouter()
+
+
+def _remaining_timeout_seconds(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+def _remaining_timeout_millis(deadline: float) -> int:
+    return max(0, int(_remaining_timeout_seconds(deadline) * 1000))
 
 
 def _order_spans_parent_first(spans: Iterable[OTelSpanSnapshot]) -> list[OTelSpanSnapshot]:

@@ -69,6 +69,13 @@ class PersistentStorageMigrationTests(unittest.TestCase):
         self.assertTrue((self.root / ".onto-runtime" / "data" / "chats").is_dir())
         self.assertTrue((self.root / ".onto-runtime" / "data" / "executions").is_dir())
 
+    def test_report_records_the_active_storage_mode(self) -> None:
+        self.env_path.write_text("KEEP=value\n", encoding="utf-8")
+
+        report = migrate(self.root, dry_run=True, storage_mode="volume")
+
+        self.assertEqual(report["storage_mode"], "volume")
+
     def test_preserves_existing_safe_absolute_system_config_storage_paths(self) -> None:
         system_config_path = self.root / ".onto-runtime" / "config" / "system_config.json"
         _write_json(system_config_path, {
