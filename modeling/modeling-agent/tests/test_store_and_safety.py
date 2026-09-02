@@ -24,6 +24,7 @@ from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     CandidateValidationRepairState,
     CoreTool,
+    EVALUATION_PENDING_MESSAGE,
     ToolContext,
 )
 from conftest import FakeGateway, ScriptedModel, service
@@ -70,6 +71,43 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
         ]
     finally:
         store.close()
+
+
+def test_external_event_continuation_claim_is_atomic_and_recovers_after_restart(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    event = {
+        "eventId": "evaluation:round_claim:terminal",
+        "roundId": "round_claim",
+        "status": "done",
+    }
+    try:
+        assert store.record_external_event(
+            event["eventId"], "project_claim", "evaluation_terminal", event,
+        ) is True
+        assert store.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "claimed"
+        assert store.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "continuing"
+    finally:
+        store.close()
+
+    recovered = RuntimeStore(path)
+    try:
+        assert recovered.external_event_pending(event["eventId"], "project_claim") is True
+        assert recovered.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "claimed"
+        recovered.mark_external_event_continued(event["eventId"], "project_claim")
+        assert recovered.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "continued"
+    finally:
+        recovered.close()
 
 
 def test_increment_round_persists_baseline_and_is_idempotent_until_terminal(tmp_path: Path) -> None:
@@ -812,6 +850,54 @@ async def test_tool_boundary_reuses_completed_evaluation_read_until_new_round() 
     after_new_round = _tool_call_context("get_evaluation_results", {}, "call-results-3")
     await rail.before_tool_call(after_new_round)  # type: ignore[arg-type]
     assert after_new_round.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+async def test_tool_boundary_finishes_agent_round_after_background_evaluation_starts() -> None:
+    events: list[tuple[str, dict]] = []
+    context = ToolContext(
+        project_id="project_evaluation_pending",
+        run_id="run_evaluation_pending",
+        token="",
+        gateway=FakeGateway(),
+        emit=lambda kind, payload: events.append((kind, payload)),
+    )
+    rail = ToolBoundaryRail(context)
+
+    class Callback:
+        def __init__(self) -> None:
+            self.inputs = SimpleNamespace(
+                tool_name="run_evaluation",
+                tool_args={},
+                tool_call=SimpleNamespace(id="call-evaluation-pending"),
+                tool_result=json.dumps({
+                    "roundId": "round-pending",
+                    "status": "running",
+                    "pending": True,
+                    "terminal": False,
+                }),
+            )
+            self.extra: dict = {}
+            self.finish: dict | None = None
+
+        def request_force_finish(self, result: dict) -> None:
+            self.finish = result
+
+    callback = Callback()
+    await rail.after_tool_call(callback)  # type: ignore[arg-type]
+
+    assert context.pending_evaluation == {"roundId": "round-pending"}
+    assert events == [("focus", {"target": {
+        "kind": "evaluation",
+        "target": "正式评测",
+        "view": "runs",
+        "roundId": "round-pending",
+    }})]
+    assert callback.finish == {
+        "result_type": "answer",
+        "output": EVALUATION_PENDING_MESSAGE,
+        "pending_evaluation": True,
+    }
 
 
 @pytest.mark.asyncio

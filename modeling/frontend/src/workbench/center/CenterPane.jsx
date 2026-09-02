@@ -152,7 +152,7 @@ function Body({ kind, focus, demo }) {
     case 'conflict': return <ConflictView data={demo ? undefined : focus.data} />;
     case 'gates': return <GateView data={demo ? undefined : focus.data} />;
     case 'progress': return <ProgressView />;
-    case 'evaluation': return <EvaluationView />;
+    case 'evaluation': return <EvaluationView focus={focus} />;
     case 'studio':
       return (
         <Suspense fallback={<PaneSkeleton />}>

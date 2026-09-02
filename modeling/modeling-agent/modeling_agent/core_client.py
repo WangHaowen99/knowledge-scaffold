@@ -133,7 +133,7 @@ class HttpCoreGateway:
                 f"{self._base_url}/internal/agent/tools/{tool}",
                 json={"arguments": arguments},
                 headers=headers,
-                timeout=1800.0 if tool in {"run_evaluation", "read_documents_fully"} else self._client.timeout,
+                timeout=1800.0 if tool == "read_documents_fully" else self._client.timeout,
             )
         except httpx.LocalProtocolError as error:
             logger.warning(

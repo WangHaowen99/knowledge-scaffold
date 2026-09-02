@@ -284,6 +284,12 @@ class RuntimeStore:
                 AND interaction.status = 'pending' AND run.status = 'waiting'
             )""",
         )
+        # A continuation claim is process-local work. After a restart the Core
+        # outbox must be able to redeliver and claim any interrupted event.
+        self._db.execute(
+            """UPDATE external_project_events SET continuation_status = 'pending'
+            WHERE continuation_status = 'continuing'""",
+        )
         self._db.commit()
 
     def close(self) -> None:
@@ -1209,6 +1215,31 @@ class RuntimeStore:
             ).fetchone()
         return bool(row and row["continuation_status"] == "pending")
 
+    def claim_external_event_continuation(self, event_id: str, project_id: str) -> str:
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE external_project_events
+                SET continuation_status = 'continuing'
+                WHERE id = ? AND project_id = ? AND continuation_status = 'pending'""",
+                (event_id, project_id),
+            )
+            if cursor.rowcount == 1:
+                return "claimed"
+            row = self._db.execute(
+                """SELECT continuation_status FROM external_project_events
+                WHERE id = ? AND project_id = ?""",
+                (event_id, project_id),
+            ).fetchone()
+        return str(row["continuation_status"]) if row else "missing"
+
+    def release_external_event_continuation(self, event_id: str, project_id: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                """UPDATE external_project_events SET continuation_status = 'pending'
+                WHERE id = ? AND project_id = ? AND continuation_status = 'continuing'""",
+                (event_id, project_id),
+            )
+
     def latest_presented_evaluation(
         self,
         project_id: str,
@@ -1237,7 +1268,8 @@ class RuntimeStore:
             self._db.execute(
                 """UPDATE external_project_events
                 SET continuation_status = 'continued', continued_at = ?
-                WHERE id = ? AND project_id = ? AND continuation_status = 'pending'""",
+                WHERE id = ? AND project_id = ?
+                  AND continuation_status IN ('pending', 'continuing')""",
                 (now_iso(), event_id, project_id),
             )
 

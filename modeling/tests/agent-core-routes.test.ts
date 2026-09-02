@@ -3687,6 +3687,101 @@ test('Agent 评测忽略转发的旧 Access Token，只接受 Core 托管的可�
   assert.match(response.json().reason, /可续期的登录凭据/u);
 });
 
+test('Agent 评测创建后台轮次后立即返回，不等待 Consumer 执行结束', async (t) => {
+  const [{ backgroundAuthSessions }, { saveProjectDataSource }, m3, settings] = await Promise.all([
+    import('../src/auth/background-session.js'),
+    import('../src/evaluation/data-source-repo.js'),
+    import('../src/workflow/m3-repo.js'),
+    import('../src/settings/repo.js'),
+  ]);
+  const project = createProject({
+    owner: 'alice', name: 'Agent 异步评测回执', kind: 'package', runtime: 'agent',
+  });
+  const store = getPackageArtifactStore();
+  const initial = await store.initializeDraftPackage(project.id, {
+    id: 'async-evaluation-package',
+    name: 'Agent 异步评测回执',
+    description: '验证评测创建回执不等待后台执行',
+  });
+  await store.saveFiles(project.id, {
+    files: {
+      'package/objects/evaluation-check.md': '# 评测检查\n\n用于异步评测回执测试。\n',
+    },
+    expectedRevision: initial.revision.oid,
+    action: {
+      cause: 'test_setup', summary: '建立合成知识基线', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  m3.addTestcase(project.id, '当前回答是否符合预期？', '回答应符合预期', 'manual');
+  saveProjectDataSource({
+    projectId: project.id,
+    mode: 'none',
+    workspaceId: `evaluation-${project.id.replace(/[^a-zA-Z0-9-]/g, '-')}`.slice(0, 60),
+  });
+
+  let released = false;
+  let markConsumerRequestStarted = () => {};
+  const consumerRequestStarted = new Promise<void>((resolve) => {
+    markConsumerRequestStarted = resolve;
+  });
+  const pendingResponses = new Set<any>();
+  const evaluationServer = createServer((_request, serverResponse) => {
+    markConsumerRequestStarted();
+    if (released) {
+      serverResponse.writeHead(503, { 'content-type': 'application/json' });
+      serverResponse.end(JSON.stringify({ error: 'synthetic unavailable response' }));
+      return;
+    }
+    pendingResponses.add(serverResponse);
+  });
+  await new Promise<void>((resolve) => evaluationServer.listen(0, '127.0.0.1', resolve));
+  const address = evaluationServer.address();
+  assert.ok(address && typeof address === 'object');
+  const previousConsumerUrl = settings.getSetting('consumer_api_url');
+  settings.setSetting('consumer_api_url', `http://127.0.0.1:${address.port}`);
+  backgroundAuthSessions.remember('alice', 'synthetic-access-token', 'synthetic-refresh-token');
+  const releaseEvaluation = () => {
+    released = true;
+    for (const serverResponse of pendingResponses) {
+      serverResponse.writeHead(503, { 'content-type': 'application/json' });
+      serverResponse.end(JSON.stringify({ error: 'synthetic unavailable response' }));
+    }
+    pendingResponses.clear();
+  };
+  t.after(async () => {
+    releaseEvaluation();
+    backgroundAuthSessions.forget('alice');
+    if (previousConsumerUrl === null) settings.deleteSetting('consumer_api_url');
+    else settings.setSetting('consumer_api_url', previousConsumerUrl);
+    await new Promise<void>((resolve) => evaluationServer.close(() => resolve()));
+  });
+
+  const app = appFor(t);
+  const response = await Promise.race([
+    tool(app, project.id, 'run_evaluation', {}, `run-${project.id}`),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('评测启动接口仍在等待后台执行')), 3000);
+    }),
+  ]);
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json(), {
+    roundId: response.json().roundId,
+    status: 'running',
+    pending: true,
+    terminal: false,
+    scope: { kind: 'current', all: true },
+    display: { text: '正式评测任务已创建，可在评测界面查看实时进度' },
+  });
+  assert.ok(response.json().roundId);
+  await consumerRequestStarted;
+  assert.equal(m3.getRound(response.json().roundId)?.status, 'running');
+
+  releaseEvaluation();
+  const { waitForEvaluation } = await import('../src/evaluation/engine.js');
+  await waitForEvaluation(project.id, response.json().roundId);
+});
+
 test('Agent 可读取最近一轮真实评测的运行错误和轨迹', async (t) => {
   const project = createProject({ owner: 'alice', name: '评测错误归因' });
   const app = appFor(t);

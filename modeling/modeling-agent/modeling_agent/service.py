@@ -41,7 +41,7 @@ from .project_transfer import (
     export_project_transfer,
     import_project_transfer,
 )
-from .tools import CandidateValidationRepairState, ToolContext
+from .tools import CandidateValidationRepairState, EVALUATION_PENDING_MESSAGE, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 from .workflows import (
     build_execution_brief_workflow,
@@ -129,6 +129,7 @@ MAX_TOOL_SUMMARIES = 60
 MAX_MODEL_RECOVERY_ATTEMPTS = 1
 MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS = 3.5
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "create_change_plan",
     "revise_change_plan",
@@ -167,7 +168,6 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "compile_package_fusion_plan",
     "transition_project_state",
     "run_script_test",
-    "run_evaluation",
     "cancel_evaluation",
 })
 
@@ -223,6 +223,7 @@ class LiveRun:
     plan_approval_required: bool = False
     technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     deferred_purpose_continuation: tuple[int, str, str] | None = None
+    evaluation_launch_active: bool = False
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -1008,15 +1009,55 @@ class AgentService:
             raise AgentRuntimeError("INVALID_EVALUATION_EVENT", "评测终态事件不完整", status=400)
 
         inserted = self.store.record_external_event(event_id, project_id, "evaluation_terminal", event)
-        if not self.store.external_event_pending(event_id, project_id):
+        claim = self.store.claim_external_event_continuation(event_id, project_id)
+        if claim == "continued":
             return {"accepted": True, "duplicate": True, "reconciled": False}
+        if claim == "continuing":
+            raise AgentRuntimeError(
+                "EVALUATION_EVENT_IN_PROGRESS",
+                "评测终态正在处理，请稍后重试",
+                status=409,
+            )
+        if claim != "claimed":
+            raise AgentRuntimeError(
+                "EVALUATION_EVENT_CONFLICT",
+                "评测终态事件与项目不匹配",
+                status=409,
+            )
+
+        try:
+            result = await self._handle_claimed_evaluation_event(
+                project_id=project_id,
+                token=token,
+                event=event,
+                event_id=event_id,
+                round_id=round_id,
+                status=status,
+                inserted=inserted,
+            )
+            self.store.mark_external_event_continued(event_id, project_id)
+            return result
+        except BaseException:
+            self.store.release_external_event_continuation(event_id, project_id)
+            raise
+
+    async def _handle_claimed_evaluation_event(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        event: dict[str, Any],
+        event_id: str,
+        round_id: str,
+        status: str,
+        inserted: bool,
+    ) -> dict[str, Any]:
 
         latest = self.store.latest_presented_evaluation(
             project_id,
             exclude_event_id=event_id,
         )
         if latest is not None and _evaluation_event_is_stale(event, latest):
-            self.store.mark_external_event_continued(event_id, project_id)
             return {
                 "accepted": True,
                 "duplicate": not inserted,
@@ -1042,7 +1083,11 @@ class AgentService:
         current = self.store.project_state(project_id)
         phase, _separator, _execution = current.state.partition(":")
         reconciled = False
-        if phase == "evaluation":
+        needs_reconciliation = (
+            current.summary != summary
+            or any(_claims_active_evaluation(item) for item in current.open_questions)
+        )
+        if phase == "evaluation" and needs_reconciliation:
             updated = self.store.transition_project_state(
                 project_id,
                 expected_revision=current.revision,
@@ -1069,14 +1114,58 @@ class AgentService:
             self.events.publish(project_id, run_id, "state", public)
             reconciled = True
 
-        self.store.mark_external_event_continued(event_id, project_id)
+        continuation = _evaluation_terminal_continuation(event)
+        if continuation is None:
+            return {
+                "accepted": True,
+                "duplicate": not inserted,
+                "reconciled": reconciled,
+                "continued": False,
+                "status": status,
+                "roundId": round_id,
+            }
+
+        await self._wait_for_evaluation_launch_boundary(project_id)
+        prompt, required_tools = continuation
+        await self._continue_for_external_event(
+            project_id=project_id,
+            token=token,
+            prompt=prompt,
+            required_tools=required_tools,
+            event=event,
+        )
         return {
             "accepted": True,
             "duplicate": not inserted,
             "reconciled": reconciled,
+            "continued": True,
             "status": status,
             "roundId": round_id,
         }
+
+    async def _wait_for_evaluation_launch_boundary(self, project_id: str) -> None:
+        active = self.store.active_run(project_id)
+        live = self._live.get(active.id) if active is not None else None
+        task = live.task if live is not None else None
+        if live is None or not live.evaluation_launch_active or task is None or task.done():
+            return
+        if task is asyncio.current_task():
+            raise AgentRuntimeError(
+                "EVALUATION_LAUNCH_SETTLING",
+                "评测终态已保存，启动回合仍在结束",
+                status=409,
+            )
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as error:
+            raise AgentRuntimeError(
+                "EVALUATION_LAUNCH_SETTLING",
+                "评测终态已保存，启动回合仍在结束",
+                status=409,
+            ) from error
 
     async def handle_studio_review_event(
         self,
@@ -2688,6 +2777,8 @@ class AgentService:
                     if kind == "tool":
                         phase = str(payload.get("phase") or "")
                         name = str(payload.get("name") or "")
+                        if name == "run_evaluation" and phase == "started":
+                            live.evaluation_launch_active = True
                         if phase in {"completed", "failed", "repairing", "blocked", "rejected"}:
                             live.attempted_tools.add(name)
                             summary = sanitize_visible_text(str(payload.get("summary") or "")).strip()
@@ -2773,6 +2864,17 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                if context.pending_evaluation is not None:
+                    result = await self._ensure_visible_result(live, run, {
+                        "result_type": "success",
+                        "output": EVALUATION_PENDING_MESSAGE,
+                        "streamed": (
+                            result.get("streamed") is True
+                            and str(result.get("output") or "").strip() == EVALUATION_PENDING_MESSAGE
+                        ),
+                    })
+                    self._settle(live, run, result)
+                    return
                 if context.recovery_waiting or result.get("recovery_wait") is True:
                     self.store.update_run(
                         run.id,
@@ -3953,6 +4055,35 @@ def _evaluation_terminal_summary(evaluation: dict[str, Any]) -> str:
     if status == "cancelled":
         return f"正式评测已停止：已执行 {done}/{total} 条，通过 {passed} 条。"
     return f"正式评测已结束，运行失败：已执行 {done}/{total} 条，通过 {passed} 条。"
+
+
+def _evaluation_terminal_continuation(
+    evaluation: dict[str, Any],
+) -> tuple[str, set[str]] | None:
+    status = str(evaluation.get("status") or "failed")
+    if status == "cancelled":
+        return None
+    round_id = str(evaluation.get("roundId") or "").strip()
+    done = max(0, int(evaluation.get("done") or 0))
+    total = max(0, int(evaluation.get("total") or 0))
+    passed = max(0, int(evaluation.get("passed") or 0))
+    if status == "done" and total > 0 and done >= total and passed >= total:
+        return (
+            "服务端已收到正式评测全量通过的终态事件。"
+            "这不是用户对话消息，不得伪造用户发言，也不得重新运行或轮询评测。"
+            "立即发起正式发布确认，让用户决定是否发布；确认前不得自行发布。"
+            "不要向用户复述工具名、参数、轮次编号或其他内部标识。",
+            {"request_release"},
+        )
+    return (
+        "服务端已收到正式评测未全量通过或运行失败的终态事件。"
+        "这不是用户对话消息，不得伪造用户发言，也不得重新运行或轮询评测。"
+        "只读取一次事件指定轮次的真实评测结果并据此归因；如果全部用例都是运行错误，"
+        "只能报告环境阻断，不得修改知识包、映射、用例或参考答案。"
+        "不要向用户复述工具名、参数、轮次编号或其他内部标识。\n"
+        f"指定轮次：{round_id}",
+        {"get_evaluation_results"},
+    )
 
 
 def _evaluation_event_is_stale(

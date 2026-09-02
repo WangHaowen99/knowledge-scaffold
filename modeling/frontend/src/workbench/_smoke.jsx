@@ -8,7 +8,7 @@ import LeftPane from './left/LeftPane.jsx';
 import { initialUploadOptions } from './pages/CreatePage.jsx';
 import { documentParagraphs, evidenceHighlight, evidenceLocationOffset } from './center/DocView.jsx';
 import EvidenceLinks from './center/EvidenceLinks.jsx';
-import { DiagnosisProgress, EvaluationSetupPanel, evaluationScopeLabel, OptimizationProgress, RunsPanel } from './center/EvaluationView.jsx';
+import { DiagnosisProgress, EvaluationSetupPanel, evaluationFocusRequest, evaluationScopeLabel, OptimizationProgress, RunsPanel } from './center/EvaluationView.jsx';
 import {
   defaultExpandedEvaluationIds,
   EvaluationResultsList,
@@ -661,6 +661,17 @@ try {
   }
   console.log('✓ 评测准备页挂载共享数据源全链路');
 } catch (e) { console.log('✗ 评测数据源配置:', e.message); bad++; }
+
+try {
+  const request = evaluationFocusRequest({
+    kind: 'evaluation', target: '正式评测', view: 'runs', roundId: 'round-demo',
+  });
+  if (request?.view !== 'runs' || request.roundId !== 'round-demo'
+    || evaluationFocusRequest({ kind: 'evaluation', target: '正式评测' }) !== null) {
+    throw new Error('评测焦点没有准确指向运行结果和指定轮次');
+  }
+  console.log('✓ 评测焦点可打开指定轮次的运行进度');
+} catch (e) { console.log('✗ 评测运行焦点:', e.message); bad++; }
 
 try {
   const html = renderToString(<DiagnosisProgress task={{
