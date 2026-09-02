@@ -153,17 +153,28 @@ function scriptRuntimeFailures(trace: EvaluationExecutionTrace | undefined) {
   return (trace?.toolFailures ?? []).filter((failure) => failure.toolName === 'execute_script');
 }
 
+function scriptExecutionCounts(trace: EvaluationExecutionTrace | undefined) {
+  const calls = (trace?.toolCalls ?? []).filter((toolName) => toolName === 'execute_script').length;
+  const failures = scriptRuntimeFailures(trace).length;
+  return { calls, failures, successes: Math.max(0, calls - failures) };
+}
+
 function scriptRuntimeFailureDiagnoses(
   results: EvalResult[],
   traces: Record<string, EvaluationExecutionTrace>,
 ): FailureDiagnosis[] {
   return results.flatMap((result) => {
-    const failures = scriptRuntimeFailures(traces[result.id]);
+    const trace = traces[result.id];
+    const failures = scriptRuntimeFailures(trace);
     if (!failures.length) return [];
+    const execution = scriptExecutionCounts(trace);
+    const recovered = trace?.status === 'complete' && execution.successes > 0;
     return [{
       category: 'runtime_error' as const,
-      title: '确定性脚本执行失败',
-      summary: '评测已路由到知识包脚本，但脚本运行失败；应修复脚本接口、参数或实现，而不是回退到手工计算。',
+      title: recovered ? '确定性脚本调用发生可恢复失败' : '确定性脚本执行失败',
+      summary: recovered
+        ? `评测中的脚本调用曾失败，但后续至少 ${execution.successes} 次调用成功且 Trace 完整；这不是任务中断，仍需继续诊断最终计算结果。`
+        : '评测已路由到知识包脚本，但没有证据表明脚本在本次 Trace 中成功执行；应修复脚本接口、参数或实现，而不是回退到手工计算。',
       evidence: failures.slice(0, 3).map((failure) => `execute_script：${failure.error}`),
       confidence: 'high' as const,
       blocking: false,
@@ -171,7 +182,9 @@ function scriptRuntimeFailureDiagnoses(
       packageOptimizable: true,
       resultIds: [result.id],
       relatedQuestions: [result.question],
-      suggestedAction: '根据工具错误修复确定性脚本，并用独立变体数据验证脚本接口、输入口径和计算结果。',
+      suggestedAction: recovered
+        ? '修复脚本调用契约以消除无效重试，并独立核对脚本的输入粒度、公式和最终计算结果。'
+        : '根据工具错误修复确定性脚本，并用独立变体数据验证脚本接口、输入口径和计算结果。',
     }];
   });
 }
@@ -368,7 +381,7 @@ async function semanticDiagnoses(
 ): Promise<FailureDiagnosis[]> {
   const excluded = new Set(existing
     .filter((diagnosis) => diagnosis.category === 'testcase_conflict'
-      || diagnosis.category === 'runtime_error'
+      || (diagnosis.category === 'runtime_error' && diagnosis.repairScope === 'runtime')
       || diagnosis.category === 'judge_issue')
     .flatMap((diagnosis) => diagnosis.resultIds));
   const candidates = input.results.filter((result) => (

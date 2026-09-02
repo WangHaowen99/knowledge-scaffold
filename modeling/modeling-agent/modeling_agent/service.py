@@ -1146,8 +1146,10 @@ class AgentService:
     async def _wait_for_evaluation_launch_boundary(self, project_id: str) -> None:
         active = self.store.active_run(project_id)
         live = self._live.get(active.id) if active is not None else None
-        task = live.task if live is not None else None
-        if live is None or not live.evaluation_launch_active or task is None or task.done():
+        if live is None or not live.evaluation_launch_active:
+            return
+        task = live.task
+        if task is None or task.done():
             return
         if task is asyncio.current_task():
             raise AgentRuntimeError(
@@ -4067,7 +4069,9 @@ def _evaluation_terminal_continuation(
     done = max(0, int(evaluation.get("done") or 0))
     total = max(0, int(evaluation.get("total") or 0))
     passed = max(0, int(evaluation.get("passed") or 0))
-    if status == "done" and total > 0 and done >= total and passed >= total:
+    evaluation_completed = status == "done" and total > 0
+    all_cases_passed = done >= total and passed >= total
+    if evaluation_completed and all_cases_passed:
         return (
             "服务端已收到正式评测全量通过的终态事件。"
             "这不是用户对话消息，不得伪造用户发言，也不得重新运行或轮询评测。"

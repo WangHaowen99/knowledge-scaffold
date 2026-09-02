@@ -17,7 +17,11 @@ from agent.runtime import (
 from agent.runtime.mock import ListRuntimeEventSink
 from agent.runtime.async_utils import run_sync_compat
 from agent.runtime.jiuwen import _build_resumable_llm_context
-from agent.exceptions import ModelInvocationError, ModelOutputTruncatedError
+from agent.exceptions import (
+    ModelInvocationError,
+    ModelOutputTruncatedError,
+    TerminalToolExecutionError,
+)
 from agent.runtime.lifecycle import JiuwenRuntimeLifecycleError
 
 
@@ -377,6 +381,22 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(private_error.error_code, "SDK_RUNTIME_ERROR")
         self.assertEqual(private_error.message, "Agent Runtime 执行失败")
         self.assertNotIn("private-provider-detail", private_error.message)
+
+    def test_runtime_error_preserves_terminal_tool_error_from_exception_group(self):
+        terminal_error = TerminalToolExecutionError(
+            error_code="EXECUTE_SCRIPT_FAILED",
+            public_message="The deterministic operation failed.",
+            tool_name="execute_script",
+        )
+
+        error = JiuwenAsyncAgentRuntime._runtime_error(
+            ExceptionGroup("agent task failed", [terminal_error])
+        )
+
+        self.assertEqual(error.error_code, "EXECUTE_SCRIPT_FAILED")
+        self.assertEqual(error.message, "The deterministic operation failed.")
+        self.assertEqual(error.source, "tool")
+        self.assertFalse(error.retriable)
 
     def test_runtime_passes_history_to_engine_and_keeps_current_query_separate(self):
         context = RuntimeInvocationContext(
@@ -874,6 +894,39 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(draft)
         assert draft is not None
         self.assertNotIn("runtime-secret", str(draft.payload))
+
+    async def test_runtime_preserves_grouped_terminal_tool_failure(self):
+        class FailingEngine:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def arun(self, state, **kwargs):
+                del state, kwargs
+                terminal_error = TerminalToolExecutionError(
+                    error_code="EXECUTE_SCRIPT_FAILED",
+                    public_message="The deterministic operation failed.",
+                    tool_name="execute_script",
+                )
+                raise ExceptionGroup("agent task failed", [terminal_error])
+
+        runtime = JiuwenAsyncAgentRuntime(
+            agent_config=SimpleNamespace(),
+            engine_factory=FailingEngine,
+        )
+        sink = ListRuntimeEventSink()
+
+        result = await runtime.arun(_context("run-grouped-tool-failure"), sink)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error.error_code, "EXECUTE_SCRIPT_FAILED")
+        self.assertEqual(result.error.message, "The deterministic operation failed.")
+        self.assertEqual(result.error.source, "tool")
+        terminal = sink.events[-1]
+        self.assertEqual(terminal.status, "failed")
+        self.assertEqual(
+            terminal.payload["error"]["error_code"],
+            "EXECUTE_SCRIPT_FAILED",
+        )
 
     async def test_parallel_tool_completion_uses_arrival_order_and_call_ids(self):
         class ParallelToolsEngine:

@@ -78,6 +78,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert "create_package_fusion_plan" not in knowledge
     assert "patch_rule" not in validation
     assert {
+        "list_domain_resources", "get_domain_resource", "define_script_contract",
         "analyze_deterministic_capabilities", "confirm_deterministic_scope",
         "get_script_edit_context", "stage_script_patch", "run_script_test",
         "run_evaluation", "get_evaluation_results", "cancel_evaluation",

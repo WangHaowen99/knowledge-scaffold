@@ -3290,6 +3290,15 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
   assert.deepEqual(selected.json().missing_script_bindings, ['calculate_device_load']);
   assert.deepEqual(selected.json().missing_script_tests, []);
 
+  const staleOperationHash = await tool(app, project.id, 'define_script_contract', {
+    ...contractArgs,
+    mutation_id: 'define-device-load-contract-stale-hash',
+    expected_operation_hash: `sha256:${'0'.repeat(64)}`,
+  }, nextRunId);
+  assert.equal(staleOperationHash.statusCode, 409, staleOperationHash.body);
+  assert.equal(staleOperationHash.json().code, 'RESOURCE_HASH_CONFLICT');
+  assert.equal(staleOperationHash.json().retryable, false);
+
   const defined = await tool(app, project.id, 'define_script_contract', contractArgs, nextRunId);
   assert.equal(defined.statusCode, 200, defined.body);
   const stillBlocked = await tool(app, project.id, 'gate_status', {
@@ -3298,29 +3307,42 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
   assert.equal(stillBlocked.json().pass, false);
   assert.ok(stillBlocked.json().blockers.some((item: string) => /完成已确认业务操作/u.test(item)));
 
-  const sourceCode = `import argparse
-import json
+  const scriptIndex = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'calculate_device_load',
+  }, nextRunId);
+  assert.equal(scriptIndex.statusCode, 200, scriptIndex.body);
+  assert.ok(scriptIndex.json().symbols.some(
+    (item: any) => item.qualified_name === 'run_business_logic',
+  ));
+  const editContext = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'calculate_device_load',
+    symbols: ['run_business_logic'],
+  }, nextRunId);
+  assert.equal(editContext.statusCode, 200, editContext.body);
+  const businessNode = editContext.json().symbols.find(
+    (item: any) => item.qualified_name === 'run_business_logic',
+  );
+  assert.ok(businessNode);
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--amount", required=True, type=float)
-    parser.add_argument("--days", required=True, type=float)
-    parser.add_argument("--strict", action="store_true")
-    args = parser.parse_args()
-    if args.days <= 0:
+  const businessSource = `def run_business_logic(inputs):
+    days = inputs["days"]
+    if days <= 0:
         raise ValueError("days must be greater than zero")
-    print(json.dumps({"load_rate": args.amount / args.days}, ensure_ascii=False))
-
-if __name__ == "__main__":
-    main()
+    return {"load_rate": inputs["amount"] / days}
 `;
-  const staged = await tool(app, project.id, 'stage_script_source', {
+  const staged = await tool(app, project.id, 'stage_script_patch', {
     script_key: 'calculate_device_load',
     expected_revision: defined.json().working_revision,
     expected_contract_hash: defined.json().contract_hash,
-    mutation_id: 'stage-device-load-script',
+    base_source_hash: editContext.json().base_source_hash,
+    mutation_id: 'stage-device-load-script-patch',
     reason: '按专家确认的契约实现装置负荷率计算',
-    source_code: sourceCode,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: businessSource,
+    }],
   }, nextRunId);
   assert.equal(staged.statusCode, 200, staged.body);
   const beforeTest = await tool(app, project.id, 'gate_status', {
