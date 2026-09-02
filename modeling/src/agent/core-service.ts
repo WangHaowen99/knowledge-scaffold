@@ -42,7 +42,6 @@ import {
   isEvaluationActive,
   startCurrentEvaluation,
   startEvaluation,
-  waitForEvaluation,
 } from '../evaluation/engine.js';
 import { projectEvaluationDatabaseName } from '../evaluation/project-evaluation-database.js';
 import { advanceStage, getProject } from '../projects/repo.js';
@@ -7068,28 +7067,11 @@ export class AgentCoreService {
         })
         : await startCurrentEvaluation(evaluationInput);
       if (!source) advanceStage(context.project.id, 'evaluate');
-      const round = await waitForEvaluation(context.project.id, result.roundId);
-      if (round.status !== 'done') {
-        const authenticationFailed = /评测(?:访问凭据|登录续期)|Consumer 认证/u.test(round.log);
-        throw new AgentCoreError(
-          authenticationFailed ? 'AUTH_REQUIRED' : 'EVALUATION_RUN_FAILED',
-          authenticationFailed
-            ? '评测登录凭据无法续期，本轮已停止'
-            : '评测运行失败，本轮已停止',
-          authenticationFailed
-            ? ['在建模工作台重新登录后明确发起新一轮评测']
-            : ['查看评测轮次日志，修复运行环境后再明确发起新一轮评测'],
-          authenticationFailed ? 401 : 409,
-          { roundId: round.id },
-        );
-      }
-      const results = listResults(round.id);
       return {
         roundId: result.roundId,
-        status: round.status,
-        passed: round.passCount,
-        total: round.progressTotal,
-        failed: results.filter((item) => item.verdict !== 'pass').length,
+        status: 'running',
+        pending: true,
+        terminal: false,
         scope: {
           ...(source ? {
             kind: 'fusion_source', sourceId: source.id, sourceName: source.name,
@@ -7097,9 +7079,7 @@ export class AgentCoreService {
           ...(caseIds.length ? { caseIds } : { all: true }),
         },
         display: {
-          text: round.status === 'done'
-            ? `评测完成：${round.passCount}/${round.progressTotal} 通过`
-            : '评测运行失败，请先查看运行结果和失败原因',
+          text: '正式评测任务已创建，可在评测界面查看实时进度',
         },
       };
     } catch (error) {
