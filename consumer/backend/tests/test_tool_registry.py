@@ -1590,6 +1590,69 @@ def test_execute_script_tool_blocks_cross_item_values_before_running_script(monk
     assert "Do not provide computed results or claim success" in outcome.content
 
 
+def test_execute_script_allows_ordered_items_in_one_request_segment(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "ok",
+    )
+    context = _make_context(messages=[{
+        "role": "user",
+        "content": (
+            'Process this input:\n{"records":['
+            '{"name":"item_a","quantity":12,"category":"red"},'
+            '{"name":"item_b","quantity":34,"category":"blue"}]}'
+        ),
+    }])
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {"records": [
+                {"name": "item_a", "quantity": 12, "category": "red"},
+                {"name": "item_b", "quantity": 34, "category": "blue"},
+            ]},
+        },
+        context=context,
+        tool_call_id="call-same-segment-order",
+    )
+
+    assert outcome.content == "ok"
+    assert len(called) == 1
+
+
+def test_execute_script_rejects_reordered_items_across_request_segments(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "ok",
+    )
+    context = _make_context(messages=[{
+        "role": "user",
+        "content": (
+            "Record 1: item_a, quantity 12, category red;\n"
+            "Record 2: item_b, quantity 34, category blue."
+        ),
+    }])
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {"records": [
+                {"name": "item_b", "quantity": 34, "category": "blue"},
+                {"name": "item_a", "quantity": 12, "category": "red"},
+            ]},
+        },
+        context=context,
+        tool_call_id="call-reordered-segments",
+    )
+
+    assert called == []
+    assert "item order conflicts with the current request" in outcome.content
+
+
 def test_execute_script_allows_structured_rows_from_current_business_query(monkeypatch):
     called = []
     monkeypatch.setattr(

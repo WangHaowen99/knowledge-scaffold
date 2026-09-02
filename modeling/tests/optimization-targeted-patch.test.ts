@@ -8,6 +8,8 @@ import {
   fileDataLoaderFunctions,
   groupTargetedOptimizationSuggestions,
   hardCodedRuntimeIdentifierCollections,
+  hasReachableActualPeriodAggregation,
+  hasReachableDerivedFlowAggregation,
   hasReachableDynamicTankInventory,
   loaderOutputDisconnects,
   planTargetedOptimizationRepairSymbols,
@@ -175,6 +177,229 @@ test('复合脚本建议按目标资源聚合并通过函数级补丁生成候�
   });
   assert.equal(revised.operations.find((item) => item.key === 'calculate_operation')?.competencyQuestion, '如何计算？');
   assert.equal(revised.operations.find((item) => item.key === 'unrelated_operation')?.description, 'UNRELATED_SECRET_FLOW');
+});
+
+test('脚本契约补丁与绑定 operation 的输入输出原子同步', async () => {
+  const { spec, project, suggestions } = fixture();
+  const sourceIndex = inspectPythonSource(source);
+  const calculateNode = sourceIndex.symbols.find((item) => item.qualifiedName === 'calculate')!;
+  const core = createFauxCore({ provider: 'targeted-contract', models: [{ id: 'targeted-contract' }] });
+  core.setResponses([
+    fauxAssistantMessage([fauxToolCall('submit_targeted_script_shard', {
+      scriptKey: 'calculate_script',
+      baseSourceHash: sourceIndex.baseSourceHash,
+      edits: [{
+        kind: 'replace_function',
+        symbol: 'calculate',
+        expectedNodeHash: calculateNode.nodeHash,
+        source: [
+          'def calculate(value):',
+          '    number = float(value)',
+          '    if number < 0:',
+          '        raise ValueError("value must be non-negative")',
+          '    return number',
+        ].join('\n'),
+      }],
+      contractPatch: {
+        description: '根据结构化输入返回确定性结果。',
+        parameters: [{
+          name: 'value', flag: '--value', type: 'number', required: true,
+          description: '待计算的合成数值。',
+        }],
+        outputs: [{ key: 'result', type: 'number', description: '确定性计算结果。' }],
+        boundaries: ['输入必须可转换为非负数值。'],
+      },
+    })]),
+    fauxAssistantMessage([fauxToolCall('submit_targeted_operation_patch', {
+      operationKey: 'calculate_operation',
+      patch: { description: '只通过绑定脚本执行确定性计算。' },
+    })]),
+  ]);
+  const llm: LlmDeps = {
+    model: core.getModel(), getApiKey: () => 'faux',
+    streamFn: core.streamSimple as LlmDeps['streamFn'],
+  };
+
+  const revised = await applyOptimizations(project, spec, suggestions, llm);
+  const script = revised.scripts.find((item) => item.key === 'calculate_script')!;
+  const operation = revised.operations.find((item) => item.key === 'calculate_operation')!;
+
+  assert.equal(script.runtime, 'python');
+  assert.equal(script.boundOperation, 'calculate_operation');
+  assert.equal(script.entrypoint, 'calculate.py');
+  assert.equal(script.parameters[0].description, '待计算的合成数值。');
+  assert.equal(script.outputs[0].description, '确定性计算结果。');
+  assert.deepEqual(operation.inputs, [{
+    param: 'value', type: 'number', required: true, note: '待计算的合成数值。',
+  }]);
+  assert.deepEqual(operation.outputs, [{
+    field: 'result', type: 'number', note: '确定性计算结果。',
+  }]);
+});
+
+test('计算语义门禁拒绝错误候选并驱动第二轮定点修正', async () => {
+  const { spec, project, suggestions } = fixture();
+  const buildPlanningSource = (mode: 'baseline' | 'invalid' | 'valid') => {
+    const fixedDays = mode === 'baseline' ? 17 : 19;
+    const processBatch = mode === 'valid' ? [
+      'def process_batch(batch):',
+      '    process_amount = float(batch["process_amount"])',
+      '    split_ratio = float(batch["split_ratio"])',
+      '    downstream_amount = process_amount * split_ratio',
+      '    return {"downstream_amount": downstream_amount}',
+    ] : [
+      'def process_batch(batch):',
+      '    return {"downstream_amount": float(batch["process_amount"])}',
+    ];
+    const aggregateMonth = mode === 'valid' ? [
+      'def aggregate_month(batches, results, daily_capacity):',
+      '    total_period_days = sum(float(batch["period_days"]) for batch in batches)',
+      '    monthly_capacity = float(daily_capacity) * total_period_days',
+      '    downstream_total = sum(result["downstream_amount"] for result in results)',
+      '    downstream_load = downstream_total / monthly_capacity',
+      '    return {"load": downstream_load}',
+    ] : [
+      'def aggregate_month(batches, results, daily_capacity):',
+      `    monthly_capacity = float(daily_capacity) * ${fixedDays}`,
+      '    downstream_total = sum(float(batch["process_amount"]) for batch in batches)',
+      '    return {"load": downstream_total / monthly_capacity}',
+    ];
+    const checkTanks = mode === 'valid' ? [
+      'def check_tanks(tank, batches, connections):',
+      '    inventory = float(tank["initial_capacity"])',
+      '    for batch in batches:',
+      '        inflow = sum(float(flow["amount"]) for flow in connections if flow["batch"] == batch["id"] and flow["direction"] == "in")',
+      '        outflow = sum(float(flow["amount"]) for flow in connections if flow["batch"] == batch["id"] and flow["direction"] == "out")',
+      '        inventory = inventory + inflow - outflow',
+      '    return inventory',
+    ] : [
+      'def check_tanks(tank, batches, connections):',
+      '    inventory = float(tank["initial_capacity"])',
+      '    for batch in batches:',
+      '        inventory = float(tank["initial_capacity"])',
+      '        inflow = sum(float(flow["amount"]) for flow in connections if flow["direction"] == "in")',
+      '        outflow = sum(float(flow["amount"]) for flow in connections if flow["direction"] == "out")',
+      '        inventory = inventory + inflow - outflow',
+      '    return inventory',
+    ];
+    return [
+      'import argparse',
+      'import json',
+      '',
+      ...processBatch,
+      '',
+      ...aggregateMonth,
+      '',
+      ...checkTanks,
+      '',
+      'def calculate(payload):',
+      '    batches = payload["batches"]',
+      '    results = [process_batch(batch) for batch in batches]',
+      '    summary = aggregate_month(batches, results, payload["daily_capacity"])',
+      '    summary["ending_inventory"] = check_tanks(payload["tank"], batches, payload["connections"])',
+      '    return summary',
+      '',
+      'def main(argv=None):',
+      '    parser = argparse.ArgumentParser()',
+      '    parser.add_argument("--payload", required=True)',
+      '    args = parser.parse_args(argv)',
+      '    print(json.dumps(calculate(json.loads(args.payload))))',
+      '',
+      'if __name__ == "__main__":',
+      '    main()',
+    ].join('\n');
+  };
+  const planningScript = {
+    ...spec.scripts![0],
+    description: '根据通用结构化计划计算汇总结果。',
+    parameters: [{ name: 'payload', flag: '--payload', type: 'json', required: true }],
+    outputs: [
+      { key: 'load', type: 'number' },
+      { key: 'ending_inventory', type: 'number' },
+    ],
+    sourceCode: buildPlanningSource('baseline'),
+  };
+  const planningSpec: PackageSpec = {
+    ...spec,
+    operations: spec.operations.map((operation) => operation.key === 'calculate_operation'
+      ? {
+          ...operation,
+          inputs: [{ param: 'payload', type: 'json', required: true }],
+          outputs: [
+            { field: 'load', type: 'number' },
+            { field: 'ending_inventory', type: 'number' },
+          ],
+        }
+      : operation),
+    scripts: [planningScript, spec.scripts![1]],
+  };
+  const adopted = [{
+    ...suggestions[0],
+    id: 's-planning-semantics',
+    title: '修正汇总计算口径',
+    detail: [
+      'aggregate_month 必须汇总每批 period_days 形成月度能力分母。',
+      'process_batch 必须由加工量乘 split_ratio 形成下游派生产量，aggregate_month 只能累计派生产量，不能直接累计原始加工量。',
+      'check_tanks 必须从 initial_capacity 初始化，并逐批以上一期 inventory 按 inflow 和 outflow 更新。',
+    ].join(''),
+  }];
+  const plan = planTargetedOptimizationSymbols(adopted, planningSpec)!;
+  let workingSource = planningScript.sourceCode;
+  let scriptAttempts = 0;
+  const core = createFauxCore({ provider: 'semantic-retry', models: [{ id: 'semantic-retry' }] });
+  const respond = (context: unknown) => {
+    const serialized = JSON.stringify(context);
+    const shard = plan.scriptShards.find((item) => serialized.includes(item.id));
+    assert.ok(shard);
+    const mode = scriptAttempts < plan.scriptShards.length ? 'invalid' : 'valid';
+    const currentIndex = inspectPythonSource(workingSource);
+    const desiredIndex = inspectPythonSource(buildPlanningSource(mode));
+    const edits = shard.symbols.map((symbol) => {
+      const current = currentIndex.symbols.find((item) => item.qualifiedName === symbol)!;
+      const desired = desiredIndex.symbols.find((item) => item.qualifiedName === symbol)!;
+      return {
+        kind: 'replace_function' as const,
+        symbol,
+        expectedNodeHash: current.nodeHash,
+        source: desired.source,
+      };
+    });
+    workingSource = applyPythonSourceEdits(workingSource, edits, {
+      expectedBaseSourceHash: currentIndex.baseSourceHash,
+      requireNodeHashes: true,
+    });
+    scriptAttempts += 1;
+    return fauxAssistantMessage([fauxToolCall('submit_targeted_script_shard', {
+      scriptKey: 'calculate_script',
+      baseSourceHash: currentIndex.baseSourceHash,
+      edits,
+    })]);
+  };
+  core.setResponses(Array.from({ length: plan.scriptShards.length * 2 }, () => respond));
+  const progress: any[] = [];
+  const llm: LlmDeps = {
+    model: core.getModel(), getApiKey: () => 'faux',
+    streamFn: core.streamSimple as LlmDeps['streamFn'],
+  };
+
+  const revised = await applyOptimizations(
+    project,
+    planningSpec,
+    adopted,
+    llm,
+    (event) => { progress.push(event); },
+  );
+
+  assert.equal(core.state.callCount, plan.scriptShards.length * 2);
+  assert.equal(scriptAttempts, plan.scriptShards.length * 2);
+  const firstFailure = progress.find((event) => event.phase === 'validation_failed' && event.attempt === 1);
+  assert.match(firstFailure?.error ?? '', /实际批次周期/u);
+  assert.match(firstFailure?.error ?? '', /派生负荷/u);
+  assert.match(firstFailure?.error ?? '', /跨批动态罐存/u);
+  const revisedSource = revised.scripts.find((item) => item.key === 'calculate_script')?.sourceCode ?? '';
+  assert.equal(hasReachableActualPeriodAggregation(revisedSource), true);
+  assert.equal(hasReachableDerivedFlowAggregation(revisedSource), true);
+  assert.equal(hasReachableDynamicTankInventory(revisedSource), true);
 });
 
 test('依赖敏感脚本按顺序生成并应用同一脚本的链式分片', async () => {
@@ -1563,5 +1788,85 @@ test('候选结构门禁识别未接入 helper、装载键断链和残留文件�
     '    outflow = sum(item["amount"] for item in connections if item["direction"] == "out")',
     '    return _opt_check_tanks_update(initial_capacity, inflow, outflow)',
   ].join('\n');
-  assert.equal(hasReachableDynamicTankInventory(dynamicTankSource), true);
+  assert.equal(hasReachableDynamicTankInventory(dynamicTankSource), false);
+});
+
+test('计算语义门禁区分固定周期、原始加工量和跨批状态', () => {
+  const fixedPeriodSource = [
+    'def aggregate_month(batches, results, daily_capacity):',
+    '    total_amount = sum(item["process_amount"] for item in batches)',
+    '    monthly_capacity = daily_capacity * 17',
+    '    return total_amount / monthly_capacity',
+  ].join('\n');
+  const actualPeriodSource = [
+    'def aggregate_month(batches, results, daily_capacity):',
+    '    total_amount = sum(item["process_amount"] for item in batches)',
+    '    total_period_days = sum(float(item["period_days"]) for item in batches)',
+    '    monthly_capacity = daily_capacity * total_period_days',
+    '    return total_amount / monthly_capacity',
+  ].join('\n');
+  const disconnectedPeriodSource = [
+    'def aggregate_month(batches, results, daily_capacity):',
+    '    total_period_days = sum(float(item["period_days"]) for item in batches)',
+    '    monthly_capacity = daily_capacity * total_period_days',
+    '    return sum(item["process_amount"] for item in batches) / (daily_capacity * 17)',
+  ].join('\n');
+  const unreachablePeriodSource = `${actualPeriodSource}\n\ndef main():\n    return 0`;
+  assert.equal(hasReachableActualPeriodAggregation(fixedPeriodSource), false);
+  assert.equal(hasReachableActualPeriodAggregation(actualPeriodSource), true);
+  assert.equal(hasReachableActualPeriodAggregation(disconnectedPeriodSource), false);
+  assert.equal(hasReachableActualPeriodAggregation(unreachablePeriodSource), false);
+
+  const rawFlowSource = [
+    'def process_batch(batch):',
+    '    return {"downstream_amount": batch["process_amount"]}',
+    '',
+    'def aggregate_month(batches, results):',
+    '    return sum(item["process_amount"] for item in batches)',
+  ].join('\n');
+  const derivedFlowSource = [
+    'def process_batch(batch):',
+    '    downstream_amount = batch["process_amount"] * batch["split_ratio"]',
+    '    return {"downstream_amount": downstream_amount}',
+    '',
+    'def aggregate_month(batches, results):',
+    '    downstream_total = sum(item["downstream_amount"] for item in results)',
+    '    return downstream_total',
+  ].join('\n');
+  const disconnectedDerivedFlowSource = [
+    'def process_batch(batch):',
+    '    downstream_amount = batch["process_amount"] * batch["split_ratio"]',
+    '    return {"downstream_amount": batch["process_amount"]}',
+    '',
+    'def aggregate_month(batches, results):',
+    '    return sum(item["downstream_amount"] for item in results)',
+  ].join('\n');
+  assert.equal(hasReachableDerivedFlowAggregation(rawFlowSource), false);
+  assert.equal(hasReachableDerivedFlowAggregation(derivedFlowSource), true);
+  assert.equal(hasReachableDerivedFlowAggregation(disconnectedDerivedFlowSource), false);
+
+  const statefulTankSource = [
+    'def check_tanks(tanks, batches, connections):',
+    '    inventory = float(tanks["initial_capacity"])',
+    '    history = []',
+    '    for batch in batches:',
+    '        inflow = sum(flow["amount"] for flow in connections if flow["batch"] == batch["id"] and flow["direction"] == "in")',
+    '        outflow = sum(flow["amount"] for flow in connections if flow["batch"] == batch["id"] and flow["direction"] == "out")',
+    '        inventory = inventory + inflow - outflow',
+    '        history.append(inventory)',
+    '    return history',
+  ].join('\n');
+  assert.equal(hasReachableDynamicTankInventory(statefulTankSource), true);
+
+  const resetEachBatchSource = [
+    'def check_tanks(tanks, batches, connections):',
+    '    inventory = float(tanks["initial_capacity"])',
+    '    for batch in batches:',
+    '        inventory = float(tanks["initial_capacity"])',
+    '        inflow = sum(flow["amount"] for flow in connections if flow["direction"] == "in")',
+    '        outflow = sum(flow["amount"] for flow in connections if flow["direction"] == "out")',
+    '        inventory = inventory + inflow - outflow',
+    '    return inventory',
+  ].join('\n');
+  assert.equal(hasReachableDynamicTankInventory(resetEachBatchSource), false);
 });
