@@ -482,12 +482,8 @@ test('优化器可以新增规则并保留既有指标', async () => {
     key: 'priority_customer', title: '重点客户', content: '资产规模超过阈值时标记为重点客户。', appliesToObjects: ['customer'],
   }];
 
-  const revised = await applyOptimizations(project, spec, [suggestion], faux('submit_revised_spec', {
-    objects: spec.objects,
-    operations: spec.operations,
-    rules,
-    metrics: spec.metrics,
-    scripts: spec.scripts ?? [],
+  const revised = await applyOptimizations(project, spec, [suggestion], faux('submit_optimization_patch', {
+    rules: [rules[1]],
   }));
 
   assert.equal(revised.rules.length, 2);
@@ -560,7 +556,7 @@ test('优化候选先输出分析正文时会强制改用结构化补丁提交',
 
   assert.equal(core.state.callCount, 2);
   assert.deepEqual(patchToolPropertyNames, ['rules']);
-  assert.match(requestContexts[1], /上一次未调用目标提交工具/);
+  assert.match(requestContexts[1], /本批上次失败原因/);
   assert.match(requestContexts[1], /submit_optimization_patch/);
   assert.match(revised.rules.find((rule) => rule.key === 'product_match')?.content ?? '', /输入为空/);
 });
@@ -593,12 +589,8 @@ test('优化器可以一次落实同一资源上的多条兼容修改建议', as
     content: '使用月度总量除以月度产能计算；输入为零时返回零，达到阈值时按边界规则判定。',
   } : rule);
 
-  const revised = await applyOptimizations(project, spec, suggestions, faux('submit_revised_spec', {
-    objects: spec.objects,
-    operations: spec.operations,
+  const revised = await applyOptimizations(project, spec, suggestions, faux('submit_optimization_patch', {
     rules,
-    metrics: spec.metrics,
-    scripts: spec.scripts ?? [],
   }));
 
   assert.match(revised.rules.find((rule) => rule.key === 'product_match')?.content ?? '', /月度总量/);
@@ -641,17 +633,14 @@ test('优化候选生成不向修订模型传递评测证据原文', async () =>
   const rules = spec.rules!.map((rule) => rule.key === 'product_match'
     ? { ...rule, content: '满足准入条件时推荐，临界值按输入字段状态判定。' }
     : rule);
-  const submitted = {
-    objects: spec.objects, operations: spec.operations, rules,
-    metrics: spec.metrics, scripts: spec.scripts ?? [],
-  };
+  const submitted = { rules };
   const core = createFauxCore({ provider: 'sanitized-evidence', models: [{ id: 'sanitized-evidence' }] });
   let requestContext = '';
   const llm: LlmDeps = {
     model: core.getModel(), getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
       requestContext = JSON.stringify(context);
-      core.setResponses([fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted)])]);
+      core.setResponses([fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted)])]);
       return core.streamSimple(model as any, context, options as any);
     }) as LlmDeps['streamFn'],
   };
@@ -685,9 +674,8 @@ test('优化候选逐次拒绝评测裁判表述和真实问题片段后才接�
   const revisedRules = (content: string) => spec.rules!.map((rule) => rule.key === 'product_match'
     ? { ...rule, content }
     : rule);
-  const response = (content: string) => fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
-    objects: spec.objects, operations: spec.operations, rules: revisedRules(content),
-    metrics: spec.metrics, scripts: spec.scripts ?? [],
+  const response = (content: string) => fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
+    rules: revisedRules(content),
   })]);
   const core = createFauxCore({ provider: 'candidate-evaluation-leak', models: [{ id: 'candidate-evaluation-leak' }] });
   core.setResponses([
@@ -706,7 +694,8 @@ test('优化候选逐次拒绝评测裁判表述和真实问题片段后才接�
   const revised = await applyOptimizations(project, spec, [suggestion], llm, undefined, [failed]);
 
   assert.equal(core.state.callCount, 2);
-  assert.doesNotMatch(requestContexts[1], /上次未通过校验的候选补丁/);
+  assert.match(requestContexts[1], /当前安全重试基线/);
+  assert.doesNotMatch(requestContexts[1], /根据标准答案修正准入规则/);
   assert.match(revised.rules.find((rule) => rule.key === 'product_match')?.content ?? '', /运行时阈值/);
   assert.doesNotMatch(JSON.stringify(revised), /标准答案|评测结果|示例问题/);
 });
@@ -752,8 +741,7 @@ test('优化候选修改资源时会清理继承的真实评测样例数值', as
   const script = (sourceCode: string) => ({
     ...spec.scripts![0], description: '按任意数量的结构化批次输入计算。', sourceCode,
   });
-  const response = (sourceCode: string) => fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
+  const response = (sourceCode: string) => fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
     scripts: [script(sourceCode)],
   })]);
   const core = createFauxCore({ provider: 'clean-inherited-example', models: [{ id: 'clean-inherited-example' }] });
@@ -843,9 +831,8 @@ test('优化候选也会拒绝仅出现在标准答案或模型答案中的真�
   const revisedRules = (content: string) => spec.rules!.map((rule) => rule.key === 'product_match'
     ? { ...rule, content }
     : rule);
-  const response = (content: string) => fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
-    objects: spec.objects, operations: spec.operations, rules: revisedRules(content),
-    metrics: spec.metrics, scripts: spec.scripts ?? [],
+  const response = (content: string) => fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
+    rules: revisedRules(content),
   })]);
   const core = createFauxCore({ provider: 'answer-only-number', models: [{ id: 'answer-only-number' }] });
   core.setResponses([
@@ -934,13 +921,12 @@ test('DataProvider 脚本候选必须跳过空键并显式归一数值类型', a
     '    return first_non_empty(row, semantic_key, source_column)',
   ].join('\n');
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], description: '按数据行契约读取并计算。', sourceCode }],
   });
   const core = createFauxCore({ provider: 'provider-row-contract', models: [{ id: 'provider-row-contract' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(unsafeSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(unsafeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -956,8 +942,8 @@ test('DataProvider 脚本候选必须跳过空键并显式归一数值类型', a
   assert.equal(core.state.callCount, 2);
   assert.doesNotMatch(requestContexts[0], /从命名键改为位置索引/);
   assert.match(requestContexts[0], /本体语义字段优先/);
-  assert.match(requestContexts[1], /上次未通过校验的候选补丁/);
-  assert.match(requestContexts[1], /定点修复上下文/);
+  assert.match(requestContexts[1], /当前安全重试基线/);
+  assert.match(requestContexts[1], /整包上次校验错误/);
   assert.doesNotMatch(requestContexts[1], /【当前规格】/);
   assert.match(requestContexts[1], /get_field/);
   assert.match(revised.scripts[0].sourceCode, /first_non_empty/);
@@ -1015,14 +1001,11 @@ test('结构化输入的数值字段必须在比较前逐项归一', async () =>
       'valid = amount > threshold',
       'normalized = {"amount": amount}\nvalid = normalized["amount"] > threshold',
     );
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
+  const submitted = (sourceCode: string) => ({ scripts: [{ ...spec.scripts![0], sourceCode }] });
   const core = createFauxCore({ provider: 'structured-numeric-normalization', models: [{ id: 'structured-numeric-normalization' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(unsafeSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(unsafeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -1087,14 +1070,11 @@ test('enumerate 解包出的结构化记录数值也必须逐项归一', async (
     .replace('amount = batch.get("amount", 0)', 'amount = float(batch.get("amount", 0))')
     .replace('days = batch.get("days", 0)', 'days = float(batch.get("days", 0))')
     .replace('projected = batch["amount"] * batch["days"]', 'projected = amount * days');
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
+  const submitted = (sourceCode: string) => ({ scripts: [{ ...spec.scripts![0], sourceCode }] });
   const core = createFauxCore({ provider: 'enumerated-structured-numeric', models: [{ id: 'enumerated-structured-numeric' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(unsafeSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(unsafeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -1165,14 +1145,11 @@ test('可选数值字段必须先判空再转换', async () => {
     'print(json.dumps({"scores": []}))',
     `${helper}\nscores = []\nfor record in records:\n    raw_score = record.get("optionalScore", record.get("optional_score"))\n    if raw_score not in (None, ""):\n        scores.append(normalize_number(raw_score, "optionalScore"))\nprint(json.dumps({"scores": scores}))`,
   );
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
+  const submitted = (sourceCode: string) => ({ scripts: [{ ...spec.scripts![0], sourceCode }] });
   const core = createFauxCore({ provider: 'optional-numeric', models: [{ id: 'optional-numeric' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(unsafeSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(unsafeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1280,13 +1257,12 @@ test('互斥分配脚本候选必须先按稳定业务键去重', async () => {
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], description: '按稳定业务键去重并互斥分配。', sourceCode }],
   });
   const core = createFauxCore({ provider: 'deduplicate-routing', models: [{ id: 'deduplicate-routing' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(misleadingSetSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(misleadingSetSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1368,14 +1344,11 @@ test('特殊类别成员资格不能只由任意关联字段非空推断', async
       'print(json.dumps({"special": sorted(special_ids)}))',
     ].join('\n'),
   );
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
+  const submitted = (sourceCode: string) => ({ scripts: [{ ...spec.scripts![0], sourceCode }] });
   const core = createFauxCore({ provider: 'explicit-classification', models: [{ id: 'explicit-classification' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(hardCodedSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(explicitSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(hardCodedSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(explicitSource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1443,14 +1416,11 @@ test('特殊类别不能用目标对象名称的子串猜测', async () => {
       'print(json.dumps({"special": special_ids}))',
     ].join('\n'),
   );
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
+  const submitted = (sourceCode: string) => ({ scripts: [{ ...spec.scripts![0], sourceCode }] });
   const core = createFauxCore({ provider: 'substring-classification', models: [{ id: 'substring-classification' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(substringSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(explicitSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(substringSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(explicitSource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1506,11 +1476,10 @@ test('特殊类别可以使用显式来源名称字段的受控匹配', async ()
     candidateFeedback: '分类必须来自明确的运行时来源记录字段，不能从无关目标对象名称推断。',
   };
   const submitted = {
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts[0], sourceCode }],
   };
   const core = createFauxCore({ provider: 'source-name-classification', models: [{ id: 'source-name-classification' }] });
-  core.setResponses([fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted)])]);
+  core.setResponses([fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted)])]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
   const revised = await applyOptimizations(project, spec, [suggestion, companionSuggestion], llm);
@@ -1565,13 +1534,12 @@ test('命令行结构化示例必须使用占位值', async () => {
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], sourceCode }],
   });
   const core = createFauxCore({ provider: 'cli-placeholder', models: [{ id: 'cli-placeholder' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(concreteSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(placeholderSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(concreteSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(placeholderSource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1601,7 +1569,7 @@ test('规则不得保留未决的模糊或精确匹配二选一', async () => {
     createdAt: '2026-07-25T00:00:00.000Z',
   };
   const submitted = (rule: NonNullable<PackageSpec['rules']>[number]) => ({
-    objects: spec.objects, operations: spec.operations, rules: [rule], metrics: spec.metrics, scripts: spec.scripts ?? [],
+    rules: [rule],
   });
   const ambiguousRule = {
     ...spec.rules[0],
@@ -1615,8 +1583,8 @@ test('规则不得保留未决的模糊或精确匹配二选一', async () => {
   };
   const core = createFauxCore({ provider: 'match-strategy', models: [{ id: 'match-strategy' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(ambiguousRule))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(exactRule))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(ambiguousRule))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(exactRule))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1678,14 +1646,14 @@ test('比例和百分数混合输入必须先统一量纲再比较', async () =>
       'print(json.dumps({"exceeded": rate_percent > threshold_percent}))',
     ].join('\n'),
   );
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: [revisedRule], metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
   const core = createFauxCore({ provider: 'percentage-scale', models: [{ id: 'percentage-scale' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(rawComparison))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(normalizedComparison))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
+      rules: [revisedRule], scripts: [{ ...spec.scripts![0], sourceCode: rawComparison }],
+    })]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
+      scripts: [{ ...spec.scripts![0], sourceCode: normalizedComparison }],
+    })]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1735,12 +1703,11 @@ test('比例和百分数也可以统一归一为小数比例', async () => {
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], sourceCode }],
   });
   const core = createFauxCore({ provider: 'ratio-scale', models: [{ id: 'ratio-scale' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(normalizedComparison))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(normalizedComparison))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1804,13 +1771,12 @@ test('脚本参数声明枚举路由时必须拒绝未知值', async () => {
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], sourceCode }],
   });
   const core = createFauxCore({ provider: 'enumerated-route-contract', models: [{ id: 'enumerated-route-contract' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(implicitElseSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(guardedSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(implicitElseSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(guardedSource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -1869,13 +1835,12 @@ test('结构化输入数值不能被无关的数值转换掩盖', async () => {
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], sourceCode }],
   });
   const core = createFauxCore({ provider: 'structured-number-normalization', models: [{ id: 'structured-number-normalization' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(unsafeSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(unsafeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -1961,14 +1926,11 @@ test('优化候选一次返回全部确定性校验问题供下一轮统一修�
     '    raise RuntimeError("allocation conservation failed")',
     'print(json.dumps({"total": allocated_total}))',
   ].join('\n');
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
+  const submitted = (sourceCode: string) => ({ scripts: [{ ...spec.scripts![0], sourceCode }] });
   const core = createFauxCore({ provider: 'all-validation-errors', models: [{ id: 'all-validation-errors' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(unsafeSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(unsafeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -2088,14 +2050,11 @@ test('优化续修在第二次尝试中带回首次确定性错误', async () =>
     'print(json.dumps({"valid": True}))',
     'amount = float(payload.get("amount"))\nvalid = amount > 0\nprint(json.dumps({"valid": valid}))',
   );
-  const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
-    scripts: [{ ...spec.scripts![0], sourceCode }],
-  });
+  const submitted = (sourceCode: string) => ({ scripts: [{ ...spec.scripts![0], sourceCode }] });
   const core = createFauxCore({ provider: 'accumulated-validation-errors', models: [{ id: 'accumulated-validation-errors' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(bothRawSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(bothRawSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -2148,13 +2107,11 @@ test('修改既有脚本时必须保留运行时绑定和入口文件名', async
   const renamed = { ...spec.scripts[0], entrypoint: 'payload_validator.py', sourceCode: revisedSource };
   const emptied = { ...spec.scripts[0], sourceCode: '' };
   const preserved = { ...spec.scripts[0], sourceCode: revisedSource };
-  const submitted = (script: NonNullable<PackageSpec['scripts']>[number]) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics, scripts: [script],
-  });
+  const submitted = (script: NonNullable<PackageSpec['scripts']>[number]) => ({ scripts: [script] });
   const core = createFauxCore({ provider: 'script-runtime-identity', models: [{ id: 'script-runtime-identity' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted({ ...renamed, sourceCode: '' }))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(preserved))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted({ ...renamed, sourceCode: '' }))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(preserved))]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -2168,8 +2125,8 @@ test('修改既有脚本时必须保留运行时绑定和入口文件名', async
   const revised = await applyOptimizations(project, spec, [suggestion], llm);
 
   assert.equal(core.state.callCount, 2);
-  assert.match(requestContexts[1], /入口文件名/);
-  assert.match(requestContexts[1], /源码不能为空/);
+  assert.match(requestContexts[1], /sourceCode/);
+  assert.match(requestContexts[1], /非空/);
   assert.equal(revised.scripts[0].entrypoint, 'validate_payload.py');
   assert.equal(revised.scripts[0].boundOperation, 'recommend');
   assert.equal(revised.scripts[0].runtime, 'python');
@@ -2222,13 +2179,12 @@ test('人工反馈要求记录身份时不能用目标分类键覆盖不同记�
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], sourceCode }],
   });
   const core = createFauxCore({ provider: 'record-identity-deduplication', models: [{ id: 'record-identity-deduplication' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(targetKeySource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(recordIdentitySource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(targetKeySource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(recordIdentitySource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -2289,13 +2245,12 @@ test('多条来源记录要求求和时不能用目标对象键覆盖前一条�
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], sourceCode }],
   });
   const core = createFauxCore({ provider: 'multiple-record-aggregation', models: [{ id: 'multiple-record-aggregation' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(targetKeyOverwriteSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(recordIdentitySource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(targetKeyOverwriteSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(recordIdentitySource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -2377,13 +2332,12 @@ test('互补关联的多条记录不能先按单一可选关联预过滤', async
     ].join('\n'),
   );
   const submitted = (sourceCode: string) => ({
-    objects: spec.objects, operations: spec.operations, rules: spec.rules, metrics: spec.metrics,
     scripts: [{ ...spec.scripts![0], sourceCode }],
   });
   const core = createFauxCore({ provider: 'complementary-links', models: [{ id: 'complementary-links' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(unsafeSource))]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted(safeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(unsafeSource))]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted(safeSource))]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -2496,18 +2450,12 @@ test('优化器全量修订遗漏未涉及资源时由服务端保留原资源',
     title: '新增输入完整性规则', detail: '新增通用输入校验', kind: 'add_rule', target: 'input_completeness',
     status: 'pending', createdAt: '2026-07-14T00:00:00.000Z',
   };
-  const submitted = {
-    objects: [],
-    operations: spec.operations,
-    rules: [...(spec.rules ?? []), {
-      key: 'input_completeness', title: '输入完整性', content: '必填输入缺失时停止计算。', appliesToObjects: ['customer'],
-    }],
-    metrics: spec.metrics,
-    scripts: [],
+  const addedRule = {
+    key: 'input_completeness', title: '输入完整性', content: '必填输入缺失时停止计算。', appliesToObjects: ['customer'],
   };
   const core = createFauxCore({ provider: 'preserve-untouched', models: [{ id: 'preserve-untouched' }] });
   core.setResponses(Array.from({ length: 3 }, () => fauxAssistantMessage([
-    fauxToolCall('submit_revised_spec', submitted),
+    fauxToolCall('submit_optimization_patch', { rules: [addedRule] }),
   ])));
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -2530,9 +2478,6 @@ test('优化器可以新增受控脚本并绑定目标 operation', async () => {
     target: 'calculate_wallet_share', relatedQuestion: '应该推荐什么产品？',
     status: 'pending', createdAt: '2026-07-14T00:00:00.000Z',
   };
-  const operations = spec.operations.map((operation) => operation.key === 'recommend'
-    ? { ...operation, script: { key: 'calculate_wallet_share', required: true } }
-    : operation);
   const scripts = [{
     key: 'calculate_wallet_share', title: '钱包份额计算脚本', description: '稳定计算钱包份额。',
     boundOperation: 'recommend', runtime: 'python' as const, entrypoint: 'calculate_wallet_share.py', timeoutSeconds: 30,
@@ -2546,9 +2491,7 @@ test('优化器可以新增受控脚本并绑定目标 operation', async () => {
     ].join('\n'),
   }];
 
-  const revised = await applyOptimizations(project, spec, [suggestion], faux('submit_revised_spec', {
-    objects: spec.objects, operations, rules: spec.rules, metrics: spec.metrics, scripts,
-  }));
+  const revised = await applyOptimizations(project, spec, [suggestion], faux('submit_optimization_patch', { scripts }));
 
   assert.equal(revised.scripts.length, 1);
   assert.equal(revised.operations[0].script?.key, 'calculate_wallet_share');
@@ -2592,9 +2535,9 @@ test('修改既有脚本时忽略未授权的 operation 人工计算兜底', asy
     ...script,
     description: '按当前 SDK 契约查询并计算钱包份额。',
   }));
-  const submitted = { objects: spec.objects, operations, rules: spec.rules, metrics: spec.metrics, scripts };
+  const submitted = { scripts };
   const core = createFauxCore({ provider: 'reject-script-fallback', models: [{ id: 'reject-script-fallback' }] });
-  core.setResponses([fauxAssistantMessage([fauxToolCall('submit_revised_spec', submitted)])]);
+  core.setResponses([fauxAssistantMessage([fauxToolCall('submit_optimization_patch', submitted)])]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
   const revised = await applyOptimizations(project, spec, [suggestion], llm);
@@ -2659,8 +2602,8 @@ test('修改既有脚本时误增同名 operation 会反馈后清理重试基线
   const revised = await applyOptimizations(project, spec, [suggestion], llm);
 
   assert.equal(core.state.callCount, 2);
-  assert.match(requestContexts[1], /operation 新增数量与建议不一致/);
-  assert.match(requestContexts[1], /权威执行路径/);
+  assert.match(requestContexts[1], /本批上次失败原因/);
+  assert.match(requestContexts[1], /不得提交未列出的资源/);
   assert.deepEqual(revised.operations.map((operation) => operation.key), ['recommend']);
   assert.equal(revised.scripts[0].description, changedScript.description);
 });
@@ -2702,7 +2645,10 @@ test('服务端补齐脚本绑定后产生的 operation 校验错误会把完整
   const core = createFauxCore({ provider: 'auto-binding-repair-context', models: [{ id: 'auto-binding-repair-context' }] });
   core.setResponses([
     fauxAssistantMessage([fauxToolCall('submit_optimization_patch', { scripts: [changedScript] })]),
-    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', { operations: [cleanedOperation] })]),
+    fauxAssistantMessage([fauxToolCall('submit_targeted_operation_patch', {
+      operationKey: cleanedOperation.key,
+      patch: { description: cleanedOperation.description },
+    })]),
   ]);
   const requestContexts: string[] = [];
   const llm: LlmDeps = {
@@ -2777,12 +2723,8 @@ test('计划新增 operation 用错 key 且带人工兜底时一次反馈两类�
     fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
       scripts: [changedScript], operations: [unauthorizedOperation],
     })]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
-      objects: spec.objects,
-      operations: [...spec.operations, approvedOperation],
-      rules: spec.rules,
-      metrics: spec.metrics,
-      scripts: [changedScript],
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
+      scripts: [changedScript], operations: [approvedOperation],
     })]),
   ]);
   const requestContexts: string[] = [];
@@ -2797,8 +2739,8 @@ test('计划新增 operation 用错 key 且带人工兜底时一次反馈两类�
   const revised = await applyOptimizations(project, spec, [suggestion, addOperationSuggestion], llm);
 
   assert.equal(core.state.callCount, 2);
-  assert.match(requestContexts[1], /未新增 operation:approved_operation/);
-  assert.match(requestContexts[1], /权威执行路径/);
+  assert.match(requestContexts[1], /本批上次失败原因/);
+  assert.match(requestContexts[1], /提交工具参数校验失败/);
   assert.equal(revised.operations.some((item) => item.key === unauthorizedOperation.key), false);
   assert.equal(revised.operations.some((item) => item.key === approvedOperation.key), true);
   assert.equal(revised.scripts[0].description, changedScript.description);
@@ -2835,13 +2777,9 @@ test('新增脚本已唯一声明绑定操作时由服务端补齐操作侧引�
       'payload = json.loads(args.input_json)', 'print(json.dumps({"result": payload}))',
     ].join('\n'),
   };
-  const submitted = {
-    objects: spec.objects, operations: [...spec.operations, operation], rules: spec.rules,
-    metrics: spec.metrics, scripts: [script],
-  };
   const core = createFauxCore({ provider: 'bind-script', models: [{ id: 'bind-script' }] });
   core.setResponses(Array.from({ length: 3 }, () => fauxAssistantMessage([
-    fauxToolCall('submit_revised_spec', submitted),
+    fauxToolCall('submit_optimization_patch', { operations: [operation], scripts: [script] }),
   ])));
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
 
@@ -2870,14 +2808,8 @@ test('优化器新增 operation 用错 key 时携带校验错误自动重交', a
   });
   const core = createFauxCore({ provider: 'repair-operation', models: [{ id: 'repair-operation' }] });
   core.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
-      objects: spec.objects, operations: [...spec.operations, operation('WrongOperationKey')],
-      rules: spec.rules, metrics: spec.metrics, scripts: [],
-    })]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
-      objects: spec.objects, operations: [...spec.operations, operation('MonthlyProductionPlanAnalysis')],
-      rules: spec.rules, metrics: spec.metrics, scripts: [],
-    })]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', { operations: [operation('WrongOperationKey')] })]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', { operations: [operation('MonthlyProductionPlanAnalysis')] })]),
   ]);
   const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
   const progress: { phase: string; attempt: number }[] = [];
@@ -2888,10 +2820,10 @@ test('优化器新增 operation 用错 key 时携带校验错误自动重交', a
   assert.ok(revised.operations.some((item) => item.key === 'MonthlyProductionPlanAnalysis'));
   assert.equal(revised.operations.some((item) => item.key === 'WrongOperationKey'), false);
   assert.deepEqual(progress, [
+    { phase: 'scope_prepared', attempt: 0 },
     { phase: 'revision_started', attempt: 1 },
-    { phase: 'validation_failed', attempt: 1 },
-    { phase: 'revision_started', attempt: 2 },
-    { phase: 'validation_passed', attempt: 2 },
+    { phase: 'target_plan_ready', attempt: 1 },
+    { phase: 'validation_passed', attempt: 1 },
   ]);
 });
 
@@ -2911,8 +2843,9 @@ test('历史建议把 key:title 当 target 时仍能落实到真实操作 key', 
     description: '根据客户特征并按权威规则路由推荐产品。',
   };
 
-  const revised = await applyOptimizations(project, spec, [suggestion], faux('submit_optimization_patch', {
-    operations: [changedOperation],
+  const revised = await applyOptimizations(project, spec, [suggestion], faux('submit_targeted_operation_patch', {
+    operationKey: changedOperation.key,
+    patch: { description: changedOperation.description },
   }));
 
   assert.equal(revised.operations.find((item) => item.key === 'recommend')?.description, changedOperation.description);
@@ -2972,14 +2905,18 @@ test('优化器拒绝用新 key 偷换未涉及的既有指标', async () => {
   };
   const metricCore = createFauxCore({ provider: 'unplanned-metric', models: [{ id: 'unplanned-metric' }] });
   metricCore.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', metricReplacement)]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', metricReplacement)]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
+      rules: [metricReplacement.rules[1]], metrics: metricReplacement.metrics,
+    })]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', {
+      rules: [metricReplacement.rules[1]], metrics: metricReplacement.metrics,
+    })]),
   ]);
   await assert.rejects(applyOptimizations(project, spec, [suggestion], {
     model: metricCore.getModel(), streamFn: metricCore.streamSimple, getApiKey: () => 'faux',
   }), (error: unknown) => {
     assert.ok(error instanceof OptimizationExpertReviewRequiredError);
-    assert.match(error.validationErrors.join('\n'), /metric 新增数量与建议不一致/);
+    assert.match(error.validationErrors.join('\n'), /提交工具参数校验失败/);
     return true;
   });
 
@@ -2996,14 +2933,14 @@ test('优化器拒绝用新 key 偷换未涉及的既有指标', async () => {
   };
   const ruleCore = createFauxCore({ provider: 'unplanned-rule', models: [{ id: 'unplanned-rule' }] });
   ruleCore.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', extraRule)]),
-    fauxAssistantMessage([fauxToolCall('submit_revised_spec', extraRule)]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', { rules: extraRule.rules.slice(1) })]),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', { rules: extraRule.rules.slice(1) })]),
   ]);
   await assert.rejects(applyOptimizations(project, spec, [suggestion], {
     model: ruleCore.getModel(), streamFn: ruleCore.streamSimple, getApiKey: () => 'faux',
   }), (error: unknown) => {
     assert.ok(error instanceof OptimizationExpertReviewRequiredError);
-    assert.match(error.validationErrors.join('\n'), /rule 新增数量与建议不一致/);
+    assert.match(error.validationErrors.join('\n'), /提交工具参数校验失败/);
     return true;
   });
 });

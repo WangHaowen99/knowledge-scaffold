@@ -63,13 +63,14 @@ export const OPTIMIZATION_TARGETED_OPERATION_MAX_OUTPUT_TOKENS = 4_096;
 export const OPTIMIZATION_PROPOSAL_TIMEOUT_MS = 3 * 60_000;
 export const OPTIMIZATION_APPLY_TIMEOUT_MS = 10 * 60_000;
 export const OPTIMIZATION_TARGETED_APPLY_TIMEOUT_MS = 5 * 60_000;
-const OPTIMIZATION_TARGETED_SHARD_CONCURRENCY = 4;
+const OPTIMIZATION_TARGETED_SHARD_CONCURRENCY = 2;
 const OPTIMIZATION_TARGETED_MAX_SHARDS = 8;
 const OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD = 7_500;
 // Existing business functions may legitimately be larger than a helper or
 // assignment. Keep a hard cap, but do not force the model to perform an
 // unsafe semantic refactor solely to stay below the helper budget.
 const OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS = 16_000;
+const OPTIMIZATION_TARGETED_MAX_WHOLE_SCRIPT_CHARS = 24_000;
 const OPTIMIZATION_TARGETED_SHARD_MAX_CAPTURE_ATTEMPTS = 2;
 const OPTIMIZATION_TARGETED_REPAIR_MAX_DRAFT_CHARS = 20_000;
 
@@ -2152,8 +2153,10 @@ function validateOptimizationRuleConsistency(spec: PackageSpec, revised: Revised
 }
 
 type TargetedOptimizationGroup = {
-  kind: 'script' | 'operation';
+  kind: ResourceKind;
   target: string;
+  targetSpecified: boolean;
+  mode: 'add' | 'modify';
   suggestions: OptSuggestion[];
 };
 
@@ -2189,6 +2192,15 @@ type TargetedScriptPatchSubmission = {
 };
 
 type OperationSpec = PackageSpec['operations'][number];
+type TargetedStandaloneResourceKind = ResourceKind;
+type TargetedStandaloneResourceSubmission = {
+  kind: TargetedStandaloneResourceKind;
+  resource: PackageSpec['objects'][number]
+    | NonNullable<PackageSpec['rules']>[number]
+    | NonNullable<PackageSpec['metrics']>[number]
+    | NonNullable<PackageSpec['scripts']>[number]
+    | PackageSpec['operations'][number];
+};
 type TargetedOperationPatch = Partial<Omit<OperationSpec, 'key' | 'script' | 'evidence'>>;
 type TargetedOperationPatchSubmission = {
   operationKey: string;
@@ -2196,7 +2208,11 @@ type TargetedOperationPatchSubmission = {
 };
 
 type TargetedPatchSubmission = {
+  objects: PackageSpec['objects'];
   operations: PackageSpec['operations'];
+  rules: NonNullable<PackageSpec['rules']>;
+  metrics: NonNullable<PackageSpec['metrics']>;
+  scripts: NonNullable<PackageSpec['scripts']>;
   scriptPatches: TargetedScriptPatchSubmission[];
 };
 
@@ -2265,6 +2281,65 @@ function mergeTargetedOperationPatch(
   };
 }
 
+function targetedStandaloneResourceSchema(kinds: ReadonlySet<TargetedStandaloneResourceKind>) {
+  const properties: Record<string, any> = {};
+  if (kinds.has('object')) properties.objects = Type.Optional(Type.Array(specObjectSchema(), { minItems: 1, maxItems: 8 }));
+  if (kinds.has('operation')) properties.operations = Type.Optional(Type.Array(specOperationSchema(), { minItems: 1, maxItems: 8 }));
+  if (kinds.has('rule')) properties.rules = Type.Optional(Type.Array(specRuleSchema(), { minItems: 1, maxItems: 8 }));
+  if (kinds.has('metric')) properties.metrics = Type.Optional(Type.Array(specMetricSchema(), { minItems: 1, maxItems: 8 }));
+  if (kinds.has('script')) properties.scripts = Type.Optional(Type.Array(specScriptSchema(), { minItems: 1, maxItems: 4 }));
+  return Type.Object(properties, { additionalProperties: false, minProperties: 1 });
+}
+
+function mergeTargetedStandaloneResource(
+  kind: TargetedStandaloneResourceKind,
+  current: any,
+  submitted: any,
+): any {
+  if (submitted?.key !== current.key) {
+    throw new Error(`当前任务只能修改 ${kind}:${current.key}`);
+  }
+  let merged = { ...submitted, key: current.key };
+  if (kind === 'object') {
+    const evidenceByRelation = new Map((current.relations ?? []).map((relation: any) => [
+      JSON.stringify({ relation: relation.relation, target: relation.target, note: relation.note ?? '' }),
+      relation.evidence,
+    ]));
+    merged = {
+      ...merged,
+      ...(current.candidateId ? { candidateId: current.candidateId } : {}),
+      ...(submitted.relations ? {
+        relations: submitted.relations.map((relation: any) => {
+          const evidence = evidenceByRelation.get(JSON.stringify({
+            relation: relation.relation,
+            target: relation.target,
+            note: relation.note ?? '',
+          }));
+          return evidence ? { ...relation, evidence } : relation;
+        }),
+      } : {}),
+    };
+  } else if (kind === 'script') {
+    merged = {
+      ...merged,
+      key: current.key,
+      runtime: current.runtime,
+      boundOperation: current.boundOperation,
+      entrypoint: current.entrypoint,
+      ...(current.evidence ? { evidence: current.evidence } : {}),
+    };
+    if (!String(merged.sourceCode ?? '').trim()) {
+      throw new Error(`script:${current.key} 的目标资源补丁缺少非空 sourceCode`);
+    }
+  } else if (current.evidence) {
+    merged = { ...merged, evidence: current.evidence };
+  }
+  if (JSON.stringify(merged) === JSON.stringify(current)) {
+    throw new Error(`${kind}:${current.key} 的目标资源补丁没有产生实际变化`);
+  }
+  return merged;
+}
+
 export function groupTargetedOptimizationSuggestions(
   adopted: OptSuggestion[],
   spec: PackageSpec,
@@ -2273,24 +2348,36 @@ export function groupTargetedOptimizationSuggestions(
   const scriptKeys = new Set<string>();
   const operationKeys = new Set<string>();
   for (const suggestion of adopted) {
-    const kind = kindFromSuggestion(suggestion.kind);
-    const target = suggestion.target?.trim();
-    if (!target || suggestion.kind.startsWith('add_') || (kind !== 'script' && kind !== 'operation')) {
+    let kind = kindFromSuggestion(suggestion.kind);
+    const requestedTarget = suggestion.target?.trim();
+    let target = requestedTarget;
+    if (suggestion.kind === 'clarify_description' && target) {
+      kind = (['object', 'operation', 'rule', 'metric', 'script'] as ResourceKind[])
+        .find((candidate) => resourceItems(spec, candidate).some((item) => item.key === target));
+    }
+    const mode = suggestion.kind.startsWith('add_') ? 'add' : 'modify';
+    if (!kind || (!target && mode === 'modify')) {
       return undefined;
     }
-    if (!resourceItems(spec, kind).some((item) => item.key === target)) return undefined;
+    target ||= `@new:${suggestion.id}`;
+    const targetExists = resourceItems(spec, kind).some((item) => item.key === target);
+    if (mode === 'modify' && !targetExists) return undefined;
     const key = `${kind}:${target}`;
-    const group = groups.get(key) ?? { kind, target, suggestions: [] };
+    const group = groups.get(key) ?? {
+      kind, target, targetSpecified: Boolean(requestedTarget), mode, suggestions: [],
+    };
+    if (group.mode !== mode) return undefined;
     group.suggestions.push(suggestion);
     groups.set(key, group);
-    if (kind === 'script') scriptKeys.add(target);
-    else operationKeys.add(target);
+    if (group.targetSpecified && kind === 'script') scriptKeys.add(target);
+    else if (group.targetSpecified && kind === 'operation') operationKeys.add(target);
   }
-  // 首轮穿刺只接管“多条建议收敛为更少 script + operation 目标”的复合修复；
-  // 单资源和新增资源继续走稳定的通用协议，避免一次上线改变全部历史候选行为。
-  if (groups.size < 2 || !scriptKeys.size || adopted.length <= groups.size
-    || scriptKeys.size > 2 || groups.size > 4) return undefined;
+  // 目标明确的增改资源统一走局部协议。具体批次由生成阶段按输出预算拆分，
+  // 不能因目标数量较多而退回要求模型复述完整知识包的 legacy 协议。
+  if (!groups.size) return undefined;
   for (const scriptKey of scriptKeys) {
+    const scriptGroup = groups.get(`script:${scriptKey}`);
+    if (scriptGroup?.mode === 'add') continue;
     const script = (spec.scripts ?? []).find((item) => item.key === scriptKey);
     if (script?.boundOperation) operationKeys.add(script.boundOperation);
   }
@@ -2613,7 +2700,7 @@ export function planTargetedOptimizationSymbols(
 ): TargetedSymbolPlan | undefined {
   const normalized = normalizeOptimizationSuggestionTargets(adopted, spec) as OptSuggestion[];
   const scope = groupTargetedOptimizationSuggestions(normalized, spec);
-  if (!scope) return undefined;
+  if (!scope?.scriptKeys.size) return undefined;
   return deterministicTargetedSymbolPlan({
     objects: spec.objects,
     operations: spec.operations,
@@ -2630,7 +2717,7 @@ export function planTargetedOptimizationRepairSymbols(
 ): TargetedSymbolPlan | undefined {
   const normalized = normalizeOptimizationSuggestionTargets(adopted, spec) as OptSuggestion[];
   const scope = groupTargetedOptimizationSuggestions(normalized, spec);
-  if (!scope) return undefined;
+  if (!scope?.scriptKeys.size) return undefined;
   const base: RevisedSpec = {
     objects: spec.objects,
     operations: spec.operations,
@@ -2884,6 +2971,11 @@ export async function applyOptimizations(
 }> {
   adopted = normalizeOptimizationSuggestionTargets(adopted, spec) as OptSuggestion[];
   const targetedScope = groupTargetedOptimizationSuggestions(adopted, spec);
+  if (!targetedScope && adopted.some((suggestion) => suggestion.kind.startsWith('add_'))) {
+    throw new OptimizationExpertReviewRequiredError([
+      '新增资源建议之间存在冲突或缺少可安全生成的资源类型，已停止整包回退并转为人工确认',
+    ]);
+  }
   validateScriptOptimizationDecisions(adopted, diagnoses, spec);
   const cap: { revised?: RevisedSpec } = {};
   const originalPatchBase: RevisedSpec = {
@@ -2999,16 +3091,58 @@ export async function applyOptimizations(
   ]);
   const applyTargetedSubmission = (submission: TargetedPatchSubmission) => {
     if (!targetedScope) throw new Error('目标资源增量补丁缺少目标范围');
+    const objects = submission.objects ?? [];
     const operations = submission.operations ?? [];
+    const rules = submission.rules ?? [];
+    const metrics = submission.metrics ?? [];
+    const submittedScripts = submission.scripts ?? [];
     const scriptPatches = submission.scriptPatches ?? [];
-    if (!operations.length && !scriptPatches.length) throw new Error('目标资源增量补丁为空');
-    if (operations.some((operation) => !targetedScope.operationKeys.has(operation.key))) {
+    if (!objects.length && !operations.length && !rules.length && !metrics.length
+      && !submittedScripts.length && !scriptPatches.length) {
+      throw new Error('目标资源增量补丁为空');
+    }
+    const allowedKeys = (kind: ResourceKind) => new Set(targetedScope.groups
+      .filter((group) => group.kind === kind && group.targetSpecified).map((group) => group.target));
+    const untargetedAddBudget = (kind: ResourceKind) => targetedScope.groups
+      .filter((group) => group.kind === kind && group.mode === 'add' && !group.targetSpecified).length;
+    const isAuthorized = (kind: ResourceKind, key: string, resources: Array<{ key: string }>) => {
+      if (allowedKeys(kind).has(key)) return true;
+      if (kind === 'operation' && targetedScope.operationKeys.has(key)) return true;
+      if (resourceItems(spec, kind).some((item) => item.key === key)) return false;
+      const untargeted = resources.filter((resource) => !allowedKeys(kind).has(resource.key));
+      return untargeted.length <= untargetedAddBudget(kind);
+    };
+    for (const [kind, resources] of [
+      ['object', objects], ['rule', rules], ['metric', metrics],
+    ] as const) {
+      const allowed = allowedKeys(kind);
+      const unauthorized = resources.find((resource) => !allowed.has(resource.key)
+        && !isAuthorized(kind, resource.key, resources));
+      if (unauthorized) throw new Error(`目标资源增量补丁包含未授权的 ${kind}:${unauthorized.key}`);
+      const duplicate = resources.find((resource, index) =>
+        resources.findIndex((candidate) => candidate.key === resource.key) !== index);
+      if (duplicate) throw new Error(`目标资源增量补丁重复提交 ${kind}:${duplicate.key}`);
+    }
+    if (operations.some((operation) => !isAuthorized('operation', operation.key, operations))) {
       throw new Error('目标资源增量补丁包含未授权的 operation');
     }
     const duplicateOperations = operations.filter((operation, index) =>
       operations.findIndex((candidate) => candidate.key === operation.key) !== index);
     if (duplicateOperations.length) throw new Error(`目标资源增量补丁重复提交 operation:${duplicateOperations[0].key}`);
-    let scripts = patchBase.scripts;
+    const unauthorizedScript = submittedScripts.find((script) =>
+      !isAuthorized('script', script.key, submittedScripts));
+    if (unauthorizedScript) {
+      throw new Error(`目标资源增量补丁包含未授权的 script:${unauthorizedScript.key}`);
+    }
+    const duplicateScript = submittedScripts.find((script, index) =>
+      submittedScripts.findIndex((candidate) => candidate.key === script.key) !== index);
+    if (duplicateScript) throw new Error(`目标资源增量补丁重复提交 script:${duplicateScript.key}`);
+    const patchedScriptKeys = new Set(scriptPatches.map((patch) => patch.scriptKey));
+    const overlappingScript = submittedScripts.find((script) => patchedScriptKeys.has(script.key));
+    if (overlappingScript) {
+      throw new Error(`目标资源增量补丁不能同时完整提交和分片修改 script:${overlappingScript.key}`);
+    }
+    let scripts = mergeResourcePatch(patchBase.scripts, submittedScripts);
     for (const patch of scriptPatches) {
       if (!targetedScope.scriptKeys.has(patch.scriptKey)) {
         throw new Error(`目标资源增量补丁包含未授权的 script:${patch.scriptKey}`);
@@ -3033,10 +3167,10 @@ export async function applyOptimizations(
       scripts = mergeResourcePatch(scripts, [changed]);
     }
     cap.revised = {
-      objects: patchBase.objects,
+      objects: mergeResourcePatch(patchBase.objects, objects),
       operations: mergeResourcePatch(patchBase.operations, operations),
-      rules: patchBase.rules,
-      metrics: patchBase.metrics,
+      rules: mergeResourcePatch(patchBase.rules, rules),
+      metrics: mergeResourcePatch(patchBase.metrics, metrics),
       scripts,
     };
   };
@@ -3260,8 +3394,31 @@ export async function applyOptimizations(
     if (!targetedScope || !targetedScriptShardLlm || !targetedOperationLlm || !budget) {
       throw new Error('目标增量生成缺少运行上下文');
     }
-    const completePlan = deterministicTargetedSymbolPlan(base, targetedScope);
-    const plan = validationError
+    const fallbackScriptGroups: Array<TargetedOptimizationGroup & { kind: 'script' }> = [];
+    const completePlan: TargetedSymbolPlan = { scriptShards: [] };
+    for (const group of targetedScope.groups.filter(
+      (item): item is TargetedOptimizationGroup & { kind: 'script' } => item.kind === 'script' && item.mode === 'modify',
+    )) {
+      try {
+        const groupPlan = deterministicTargetedSymbolPlan(base, {
+          ...targetedScope,
+          groups: [group],
+          scriptKeys: new Set([group.target]),
+        });
+        completePlan.scriptShards.push(...groupPlan.scriptShards);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes('无法确定 Python 修改符号')) throw error;
+        const script = base.scripts.find((item) => item.key === group.target);
+        if ((script?.sourceCode.length ?? 0) > OPTIMIZATION_TARGETED_MAX_WHOLE_SCRIPT_CHARS) {
+          throw new OptimizationExpertReviewRequiredError([
+            `script:${group.target} 无法安全定位修改符号，且源码超过 ${OPTIMIZATION_TARGETED_MAX_WHOLE_SCRIPT_CHARS} 字符；为避免完整脚本输出再次截断，已转为人工修订`,
+          ]);
+        }
+        fallbackScriptGroups.push(group);
+      }
+    }
+    const plan = validationError && completePlan.scriptShards.length
       ? selectTargetedValidationRepairShards(completePlan, base, validationError)
       : completePlan;
     const dependencyOrdered = requiresDependencyOrderedScriptGeneration(targetedScope, new Set(
@@ -3271,7 +3428,7 @@ export async function applyOptimizations(
       phase: 'target_plan_ready',
       attempt,
       maxAttempts: OPTIMIZATION_MAX_ATTEMPTS,
-      shardCount: plan.scriptShards.length + targetedScope.groups.filter((group) => group.kind === 'operation').length,
+      shardCount: plan.scriptShards.length + targetedScope.groups.filter((group) => group.kind !== 'script').length,
       shardOrdering: dependencyOrdered ? 'dependency_serial' : 'parallel',
     });
 
@@ -3588,7 +3745,7 @@ export async function applyOptimizations(
             targetedSharedRules,
             '你是局部补丁修正器。只修复 rejectedDraft 的 validationError，保留草稿中已经满足要求的业务逻辑；禁止重新设计、扩展范围或修改其他分片。',
           ].join('\n'), [submitScriptShard] as any)
-            : agent;
+            : makeAgent(targetedScriptShardLlm, targetedSharedRules, [submitScriptShard] as any);
         const retryPrompt = functionRepairTool
           ? [
             `【当前符号分片 ${shard.id} 的单函数修正】`,
@@ -3651,7 +3808,27 @@ export async function applyOptimizations(
       return captured;
     };
 
-    const allOperationGroups = targetedScope.groups.filter((group) => group.kind === 'operation');
+    const explicitOperationGroups = targetedScope.groups.filter(
+      (group) => group.kind === 'operation' && group.mode === 'modify',
+    );
+    const explicitOperationKeys = new Set(explicitOperationGroups.map((group) => group.target));
+    const inferredOperationGroups = validationError
+      ? [...targetedScope.operationKeys]
+        .filter((operationKey) => !explicitOperationKeys.has(operationKey))
+        .filter((operationKey) => symbolMentioned(validationError, operationKey)
+          || /(?:operation|操作流程|权威执行路径|脚本失败)/iu.test(validationError))
+        .map((operationKey): TargetedOptimizationGroup => ({
+          kind: 'operation',
+          target: operationKey,
+          targetSpecified: true,
+          mode: 'modify',
+          suggestions: targetedScope.groups
+            .filter((group) => group.kind === 'script')
+            .filter((group) => base.scripts.find((script) => script.key === group.target)?.boundOperation === operationKey)
+            .flatMap((group) => group.suggestions),
+        }))
+      : [];
+    const allOperationGroups = [...explicitOperationGroups, ...inferredOperationGroups];
     const localizedScriptRepair = Boolean(validationError)
       && plan.scriptShards.length < completePlan.scriptShards.length;
     const operationGroups = localizedScriptRepair
@@ -3715,6 +3892,186 @@ export async function applyOptimizations(
       return mergeTargetedOperationPatch(operation, captured);
     };
 
+    const fallbackScriptNeedsRepair = !validationError
+      || inferredOperationGroups.length === 0
+      || /(?:Python|sourceCode|源码|结构化输入变量|DataProvider|数值|比例|百分|缺省|默认|硬编码|脚本实现|脚本参数|脚本输出)/iu
+        .test(validationError);
+    const standaloneCandidates: Array<TargetedOptimizationGroup & {
+      kind: TargetedStandaloneResourceKind;
+    }> = [
+      ...targetedScope.groups.filter((group): group is TargetedOptimizationGroup & {
+        kind: TargetedStandaloneResourceKind;
+      } => group.kind === 'object' || group.kind === 'rule' || group.kind === 'metric'
+        || group.mode === 'add'),
+      ...(fallbackScriptNeedsRepair ? fallbackScriptGroups : []),
+    ];
+    const standaloneGroups = !validationError || standaloneCandidates.length === 1
+      ? standaloneCandidates
+      : standaloneCandidates.filter((group) => symbolMentioned(validationError, group.target)
+        || (group.kind === 'object' && /(?:object|对象)/iu.test(validationError))
+        || (group.kind === 'rule' && /(?:rule|规则)/iu.test(validationError))
+        || (group.kind === 'metric' && /(?:metric|指标)/iu.test(validationError))
+        || (group.kind === 'script' && /(?:script|脚本|Python|sourceCode)/iu.test(validationError)));
+    const runStandaloneResources = async (): Promise<TargetedStandaloneResourceSubmission[]> => {
+      if (!standaloneGroups.length) return [];
+      const sanitized = sanitizeOptimizationPromptSpec({ ...spec, ...base }, failedResults);
+      const directory = {
+        objects: base.objects.map((item) => ({ key: item.key, title: item.title })),
+        operations: base.operations.map((item) => ({ key: item.key, title: item.title })),
+        rules: base.rules.map((item) => ({ key: item.key, title: item.title })),
+        metrics: base.metrics.map((item) => ({ key: item.key, title: item.title })),
+        scripts: base.scripts.map((item) => ({ key: item.key, title: item.title, boundOperation: item.boundOperation })),
+      };
+
+      const runBatch = async (
+        groups: typeof standaloneGroups,
+        retryReason = '',
+        allowRetry = true,
+      ): Promise<TargetedStandaloneResourceSubmission[]> => {
+        let captured: TargetedStandaloneResourceSubmission[] | undefined;
+        const editable = groups.map((group) => ({
+          kind: group.kind,
+          mode: group.mode,
+          ...(group.targetSpecified ? { targetKey: group.target } : {}),
+          ...(group.mode === 'modify' ? {
+            resource: resourceItems(sanitized, group.kind).find((item) => item.key === group.target),
+          } : {}),
+          requirements: group.suggestions.map((item) => ({
+            id: item.id,
+            title: safeOptimizationSuggestionValue(item.title),
+            detail: safeOptimizationSuggestionValue(item.detail),
+            diagnosisIds: item.diagnosisIds ?? [],
+            generalizationPlan: safeOptimizationSuggestionValue(item.generalizationPlan ?? ''),
+            validationPlan: safeOptimizationSuggestionValue(item.validationPlan ?? ''),
+            candidateFeedback: safeOptimizationSuggestionValue(item.candidateFeedback ?? ''),
+          })),
+        }));
+        const standaloneKinds = new Set(groups.map((group) => group.kind));
+        const submitResources = {
+          name: 'submit_optimization_patch',
+          label: '提交目标知识资源补丁',
+          description: '提交 editable 中每个目标资源的完整定义；不得提交其他资源',
+          parameters: targetedStandaloneResourceSchema(standaloneKinds),
+          async execute(_id: string, params: {
+            objects?: PackageSpec['objects'];
+            operations?: PackageSpec['operations'];
+            rules?: NonNullable<PackageSpec['rules']>;
+            metrics?: NonNullable<PackageSpec['metrics']>;
+            scripts?: NonNullable<PackageSpec['scripts']>;
+          }) {
+            const submissions: TargetedStandaloneResourceSubmission[] = [
+              ...(params.objects ?? []).map((resource) => ({ kind: 'object' as const, resource })),
+              ...(params.operations ?? []).map((resource) => ({ kind: 'operation' as const, resource })),
+              ...(params.rules ?? []).map((resource) => ({ kind: 'rule' as const, resource })),
+              ...(params.metrics ?? []).map((resource) => ({ kind: 'metric' as const, resource })),
+              ...(params.scripts ?? []).map((resource) => ({ kind: 'script' as const, resource })),
+            ];
+            const expectedByIdentity = new Map(groups
+              .filter((group) => group.targetSpecified)
+              .map((group) => [`${group.kind}:${group.target}`, group]));
+            const untargeted = groups.filter((group) => !group.targetSpecified);
+            const matchedGroups = new Map<string, TargetedOptimizationGroup>();
+            const actual = submissions.map((item) => `${item.kind}:${item.resource?.key ?? ''}`);
+            const duplicate = actual.find((identity, index) => actual.indexOf(identity) !== index);
+            if (duplicate) throw new Error(`目标资源补丁重复提交 ${duplicate}`);
+            const remainingUntargeted = [...untargeted];
+            for (const submission of submissions) {
+              const identity = `${submission.kind}:${submission.resource.key}`;
+              const exact = expectedByIdentity.get(identity);
+              if (exact) {
+                matchedGroups.set(identity, exact);
+                continue;
+              }
+              const index = remainingUntargeted.findIndex((group) => group.kind === submission.kind
+                && !resourceItems(base, submission.kind).some((item) => item.key === submission.resource.key));
+              if (index < 0) throw new Error(`目标资源补丁包含未授权资源 ${identity}`);
+              matchedGroups.set(identity, remainingUntargeted[index]);
+              remainingUntargeted.splice(index, 1);
+            }
+            const missing = [...expectedByIdentity.keys()].filter((identity) => !actual.includes(identity));
+            if (remainingUntargeted.length) {
+              missing.push(...remainingUntargeted.map((group) => `${group.kind}:<new>`));
+            }
+            if (missing.length) throw new Error(`目标资源补丁缺少 ${missing.join('、')}`);
+            captured = submissions.map((submission) => {
+              const identity = `${submission.kind}:${submission.resource.key}`;
+              const group = matchedGroups.get(identity)!;
+              const current = resourceItems(base, submission.kind)
+                .find((item) => item.key === submission.resource.key);
+              if (group.mode === 'add') {
+                if (current) throw new Error(`新增目标已存在：${identity}`);
+                return submission;
+              }
+              if (!current) throw new Error(`目标资源不存在：${identity}`);
+              if (submission.kind === 'operation') {
+                throw new Error(`已有 operation 必须使用字段级补丁：${identity}`);
+              }
+              return {
+                ...submission,
+                resource: mergeTargetedStandaloneResource(submission.kind, current, submission.resource),
+              };
+            });
+            return {
+              content: [{ type: 'text' as const, text: `已提交 ${captured.length} 个目标知识资源。` }],
+              details: { resources: actual },
+              terminate: true,
+            };
+          },
+        };
+        const systemPrompt = [
+          '你是知识包目标资源编辑器。只处理 editable 中列出的目标资源。',
+          'mode=modify 时返回修改后的完整目标资源且不得修改 key；mode=add 时优先使用 targetKey，未提供 targetKey 时创建一个语义清晰且不与目录冲突的新 key。',
+          '不得提交未列出的资源。未列出的知识资源由服务端原样保留。',
+          'Script 必须提供完整非空 sourceCode，并正确声明 runtime、boundOperation 和 entrypoint。',
+          '必须调用 submit_optimization_patch，不要输出分析正文。',
+          '不得写入标准答案、评测问题原文、判分理由或用例专用数值。',
+          `项目背景：${project.background || project.domain || project.name}`,
+        ].join('\n');
+        const prompt = [
+          '【可编辑目标资源】', JSON.stringify(editable),
+          '【只读资源目录】', JSON.stringify(directory),
+          ...(validationError ? ['【当前安全重试基线】', '【整包上次校验错误】', validationError] : []),
+          ...(retryReason ? ['【本批上次失败原因】', retryReason] : []),
+          '立即调用 submit_optimization_patch 提交本批全部目标资源。',
+        ].join('\n');
+        const standaloneLlm = groups.some((group) => group.kind === 'script') ? llm : targetedOperationLlm;
+        try {
+          await runAgentCaptured(
+            makeAgent(standaloneLlm, systemPrompt, [submitResources] as any),
+            prompt,
+            () => Boolean(captured),
+            '不要继续分析，立即调用 submit_optimization_patch。',
+            undefined,
+            {
+              timeoutMs: budget.remainingMs(), signal: budget.signal, maxCaptureAttempts: 1,
+              requireCapture: true, requiredToolName: 'submit_optimization_patch',
+              toolChoiceState: { mode: 'named' },
+              resetCapture: () => { captured = undefined; },
+              captureDiagnostics: {
+                targetToolName: 'submit_optimization_patch',
+                acceptedToolNames: ['submit_optimization_patch'],
+                onAttempt: () => undefined,
+              },
+            },
+          );
+          return captured ?? [];
+        } catch (error) {
+          if (!(error instanceof AgentCaptureError)) throw error;
+          if (error.diagnostics.outcome === 'output_truncated' && groups.length > 1) {
+            const midpoint = Math.ceil(groups.length / 2);
+            const left = await runBatch(groups.slice(0, midpoint));
+            const right = await runBatch(groups.slice(midpoint));
+            return [...left, ...right];
+          }
+          if (allowRetry) return runBatch(groups, error.message, false);
+          const exhausted = new AgentCaptureError(error.diagnostics, 2);
+          throw new OptimizationExpertReviewRequiredError([exhausted.message]);
+        }
+      };
+
+      return runBatch(standaloneGroups);
+    };
+
     const runUnit = async (
       unit: { kind: 'script'; shard: TargetedScriptShardPlan } | { kind: 'operation'; group: TargetedOptimizationGroup },
       workingBase: RevisedSpec = base,
@@ -3765,8 +4122,17 @@ export async function applyOptimizations(
       OPTIMIZATION_TARGETED_SHARD_CONCURRENCY,
       async (unit) => runUnit(unit),
     );
-    const operationOutputs = await operationOutputsPromise;
-    const operations = operationOutputs.map((item) => item.value as PackageSpec['operations'][number]);
+    const standaloneOutputsPromise = runStandaloneResources();
+    const [operationOutputs, standaloneOutputs] = await Promise.all([
+      operationOutputsPromise,
+      standaloneOutputsPromise,
+    ]);
+    const operations = [
+      ...operationOutputs.map((item) => item.value as PackageSpec['operations'][number]),
+      ...standaloneOutputs
+        .filter((item) => item.kind === 'operation')
+        .map((item) => item.resource as PackageSpec['operations'][number]),
+    ];
     const scriptPatches = [...new Set(scriptParts.map((item) => item.scriptKey))].flatMap((scriptKey) => {
       const parts = scriptParts.filter((item) => item.scriptKey === scriptKey);
       const baseSourceHashes = new Set(parts.map((item) => item.baseSourceHash));
@@ -3779,7 +4145,14 @@ export async function applyOptimizations(
       // 由 applyTargetedSubmission 按顺序校验并应用，避免把后续 helper 脱离上下文。
       return parts;
     });
-    return { operations, scriptPatches };
+    return {
+      objects: standaloneOutputs.filter((item) => item.kind === 'object').map((item) => item.resource) as PackageSpec['objects'],
+      operations,
+      rules: standaloneOutputs.filter((item) => item.kind === 'rule').map((item) => item.resource) as NonNullable<PackageSpec['rules']>,
+      metrics: standaloneOutputs.filter((item) => item.kind === 'metric').map((item) => item.resource) as NonNullable<PackageSpec['metrics']>,
+      scripts: standaloneOutputs.filter((item) => item.kind === 'script').map((item) => item.resource) as NonNullable<PackageSpec['scripts']>,
+      scriptPatches,
+    };
   };
   try {
     for (let attempt = 1; attempt <= OPTIMIZATION_MAX_ATTEMPTS; attempt += 1) {
