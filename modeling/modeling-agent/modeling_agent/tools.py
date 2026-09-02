@@ -28,6 +28,7 @@ ResolveIssues = Callable[[list[str]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 # Keep the outer tool deadline beyond the core client's 1800-second deadline.
 FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
+EVALUATION_PENDING_MESSAGE = "正式评测任务已创建，可在评测界面查看实时进度。"
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
 LEADER_TABLE_SAMPLE_ROWS = 5
 TABLE_FIELD_SAMPLE_VALUES = 3
@@ -150,6 +151,7 @@ class ToolContext:
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     recovery_waiting: bool = False
+    pending_evaluation: dict[str, Any] | None = None
     evaluation_cancel_authorized: bool = False
     allowed_tools: frozenset[str] | None = None
     confirmation_required: bool = False
@@ -1965,7 +1967,8 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "run_evaluation",
-        "运行现有评测管道。省略 case_ids 表示全量；仅在验证融合前来源回归时传 source_id。",
+        "创建一个后台评测任务并立即返回。省略 case_ids 表示全量；仅在验证融合前来源回归时传 source_id。"
+        "任务创建后立即结束当前 Agent 回合，真实进度和终态由评测界面及终态事件提供。",
         {"case_ids": {"type": "array", "items": STRING}, "source_id": STRING},
         display="正在运行评测",
     ),
@@ -2493,7 +2496,8 @@ class FocusTool(Tool):
                         "target": STRING,
                         "node": STRING,
                         "anchor": STRING,
-                        "view": {"type": "string", "enum": ["graph", "table", "entry"]},
+                        "view": {"type": "string", "enum": ["graph", "table", "entry", "runs"]},
+                        "roundId": STRING,
                         "elementId": {
                             "type": "string",
                             "description": "Studio 稳定元素 ID，例如 rule:safety-stock。",
@@ -2518,7 +2522,7 @@ class FocusTool(Tool):
         target = input_dict(inputs)
         target = {
             key: target[key]
-            for key in ("kind", "target", "node", "anchor", "view", "elementId", "data")
+            for key in ("kind", "target", "node", "anchor", "view", "roundId", "elementId", "data")
             if target.get(key)
         }
         if target.get("kind") == "studio":

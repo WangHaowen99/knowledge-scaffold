@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +30,7 @@ from modeling_agent.tools import (
     ProjectStateTool,
     RequestConfirmationTool,
     CandidateValidationRepairState,
+    EVALUATION_PENDING_MESSAGE,
     ToolContext,
     core_tool_specs_for_phase,
 )
@@ -2839,15 +2841,16 @@ async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(sett
     class BlockingEvaluationGateway(FakeGateway):
         def __init__(self) -> None:
             super().__init__()
-            self.evaluation_started = asyncio.Event()
-            self.evaluation_cancelled = asyncio.Event()
+            self.evaluation_started = threading.Event()
+            self.evaluation_cancelled = threading.Event()
 
         async def call(self, **kwargs):
             tool = kwargs["tool"]
             if tool == "run_evaluation":
                 self.calls.append(kwargs)
                 self.evaluation_started.set()
-                await self.evaluation_cancelled.wait()
+                if not await asyncio.to_thread(self.evaluation_cancelled.wait, 5):
+                    raise TimeoutError("evaluation cancellation was not forwarded")
                 return {
                     "error": "EVALUATION_RUN_FAILED",
                     "reason": "评测运行失败，本轮已停止",
@@ -2871,7 +2874,11 @@ async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(sett
             token="token_1",
             message="运行评测",
         )
-        await asyncio.wait_for(gateway.evaluation_started.wait(), timeout=5)
+        deadline = asyncio.get_running_loop().time() + 5
+        while not gateway.evaluation_started.is_set():
+            if asyncio.get_running_loop().time() >= deadline:
+                pytest.fail("evaluation did not start before cancellation")
+            await asyncio.sleep(0.01)
 
         cancelled = await runtime.cancel(project_id="project_cancel_evaluation")
         await asyncio.sleep(0.05)
@@ -3009,6 +3016,56 @@ async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settin
         await runtime.shutdown()
 
 
+async def test_pending_evaluation_stops_agent_without_autonomous_polling(settings) -> None:
+    model = ScriptedModel(
+        [
+            [ToolTurn("run_evaluation", {})],
+            [ToolTurn("get_project_state", {})],
+        ],
+        final="不应继续轮询评测。",
+    )
+    gateway = FakeGateway({
+        "run_evaluation": {
+            "roundId": "round-pending",
+            "status": "running",
+            "pending": True,
+            "terminal": False,
+            "display": {"text": "正式评测任务已创建，可在评测界面查看实时进度"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_evaluation_pending",
+            token="token_1",
+            message="请立即运行评测",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        assert completed["result"] == EVALUATION_PENDING_MESSAGE
+        assert model.calls == 1
+        core_calls = [call for call in gateway.calls if call["tool"] != "claim_candidate_workspace"]
+        assert [call["tool"] for call in core_calls] == ["run_evaluation"]
+        events = runtime.store.events_after("project_evaluation_pending", 0)
+        focus_events = [event.payload for event in events if event.kind == "focus"]
+        assert focus_events == [{"target": {
+            "kind": "evaluation",
+            "target": "正式评测",
+            "view": "runs",
+            "roundId": "round-pending",
+        }}]
+        visible_text = "".join(
+            str(event.payload.get("delta") or "")
+            for event in events
+            if event.kind == "message_delta"
+        )
+        assert visible_text == EVALUATION_PENDING_MESSAGE
+    finally:
+        await runtime.shutdown()
+
+
 async def test_agent_reads_and_transitions_single_project_state(settings) -> None:
     model = ScriptedModel([
         [ToolTurn("get_project_state")],
@@ -3095,7 +3152,20 @@ async def test_project_state_uses_authoritative_terminal_evaluation_and_rejects_
 
 
 async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_cache(settings) -> None:
-    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    model = ScriptedModel([
+        [ToolTurn("get_evaluation_results", {"round_id": "round_event"})],
+        [],
+        [],
+    ], final="已读取本轮失败结果。")
+    gateway = FakeGateway({
+        "get_evaluation_results": {
+            "round": {"id": "round_event", "status": "done"},
+            "counts": {"pass": 3, "fail": 1},
+            "results": [{"testcaseId": "case-failed", "verdict": "fail"}],
+            "display": {"text": "已读取 4 条真实评测结果"},
+        },
+    })
+    runtime = service(settings, model, gateway)
     await runtime.startup()
     try:
         initial = runtime.store.project_state("project_evaluation_event")
@@ -3127,14 +3197,20 @@ async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_c
         first = await runtime.handle_evaluation_event(
             project_id="project_evaluation_event", token="token_1", event=event,
         )
+        continuation_run_id = runtime.store.project_state("project_evaluation_event").run_id
         second = await runtime.handle_evaluation_event(
             project_id="project_evaluation_event", token="token_1", event=event,
         )
+        completed = await wait_for_status(
+            runtime, continuation_run_id, {"completed", "failed"},
+        )
 
         assert first["reconciled"] is True
+        assert first["continued"] is True
         assert second == {
             "accepted": True, "duplicate": True, "reconciled": False,
         }
+        assert completed["status"] == "completed", completed["error"]
         state = runtime.store.project_state("project_evaluation_event")
         assert "已完成" in state.summary
         assert "运行中" not in state.summary
@@ -3145,8 +3221,206 @@ async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_c
             if item.kind == "message" and item.payload.get("externalEventId") == event["eventId"]
         ]
         assert len(messages) == 1
+        result_calls = [
+            call for call in gateway.calls if call["tool"] == "get_evaluation_results"
+        ]
+        assert len(result_calls) == 1
+        assert result_calls[0]["arguments"] == {"round_id": "round_event"}
     finally:
         runtime._live.pop("run_evaluation_event", None)
+        await runtime.shutdown()
+
+
+async def test_concurrent_evaluation_terminal_event_starts_one_continuation(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("get_evaluation_results", {"round_id": "round_concurrent"})],
+        [],
+        [],
+    ], final="已读取本轮失败结果。")
+    gateway = FakeGateway({
+        "get_evaluation_results": {
+            "round": {"id": "round_concurrent", "status": "done"},
+            "counts": {"pass": 2, "fail": 1},
+            "results": [{"testcaseId": "case-failed", "verdict": "fail"}],
+            "display": {"text": "已读取 3 条合成评测结果"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    release_continuation = asyncio.Event()
+    continuation_started = asyncio.Event()
+    continuation_calls = 0
+    original_continue = runtime._continue_for_external_event
+
+    async def blocked_continue(**kwargs) -> None:
+        nonlocal continuation_calls
+        continuation_calls += 1
+        continuation_started.set()
+        await release_continuation.wait()
+        await original_continue(**kwargs)
+
+    runtime._continue_for_external_event = blocked_continue  # type: ignore[method-assign]
+    first_task: asyncio.Task | None = None
+    try:
+        initial = runtime.store.project_state("project_evaluation_concurrent")
+        runtime.store.transition_project_state(
+            "project_evaluation_concurrent",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        event = {
+            "eventId": "evaluation:round_concurrent:terminal",
+            "roundId": "round_concurrent",
+            "status": "done",
+            "done": 3,
+            "total": 3,
+            "passed": 2,
+            "finishedAt": "2026-08-31T11:00:00.000Z",
+        }
+
+        first_task = asyncio.create_task(runtime.handle_evaluation_event(
+            project_id="project_evaluation_concurrent", token="token_1", event=event,
+        ))
+        await asyncio.wait_for(continuation_started.wait(), timeout=5)
+
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime.handle_evaluation_event(
+                project_id="project_evaluation_concurrent", token="token_1", event=event,
+            )
+        assert raised.value.code == "EVALUATION_EVENT_IN_PROGRESS"
+        assert raised.value.status == 409
+
+        release_continuation.set()
+        first = await first_task
+        continuation_run_id = runtime.store.project_state(
+            "project_evaluation_concurrent",
+        ).run_id
+        completed = await wait_for_status(
+            runtime, continuation_run_id, {"completed", "failed"},
+        )
+        duplicate = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_concurrent", token="token_1", event=event,
+        )
+
+        assert first["continued"] is True
+        assert completed["status"] == "completed", completed["error"]
+        assert duplicate == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        assert continuation_calls == 1
+        result_calls = [
+            call for call in gateway.calls if call["tool"] == "get_evaluation_results"
+        ]
+        assert len(result_calls) == 1
+        assert result_calls[0]["arguments"] == {"round_id": "round_concurrent"}
+    finally:
+        release_continuation.set()
+        if first_task is not None and not first_task.done():
+            await asyncio.gather(first_task, return_exceptions=True)
+        await runtime.shutdown()
+
+
+async def test_passed_evaluation_terminal_event_opens_release_confirmation_once(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("request_release", {"summary": "确认真实用例覆盖并发布"})],
+    ])
+    gateway = FakeGateway({
+        "release_preflight": {
+            "ready": True,
+            "version": "1.0.0",
+            "testcase_count": 4,
+            "questions": ["合成评测问题"],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_passed")
+        runtime.store.transition_project_state(
+            "project_evaluation_passed",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        event = {
+            "eventId": "evaluation:round_passed:terminal",
+            "roundId": "round_passed",
+            "status": "done",
+            "done": 4,
+            "total": 4,
+            "passed": 4,
+            "finishedAt": "2026-08-31T10:00:00.000Z",
+        }
+
+        first = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_passed", token="token_1", event=event,
+        )
+        continuation_run_id = runtime.store.project_state("project_evaluation_passed").run_id
+        second = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_passed", token="token_1", event=event,
+        )
+        waiting = await wait_for_status(
+            runtime, continuation_run_id, {"waiting", "failed"},
+        )
+
+        assert first["continued"] is True
+        assert second == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_evaluation_passed")
+        assert interaction is not None and interaction.kind == "release_confirmation"
+        assert [call["tool"] for call in gateway.calls].count("release_preflight") == 1
+        assert not [call for call in gateway.calls if call["tool"] == "get_evaluation_results"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_cancelled_evaluation_terminal_event_does_not_continue_agent(settings) -> None:
+    model = ScriptedModel([[]])
+    gateway = FakeGateway()
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_cancelled")
+        runtime.store.transition_project_state(
+            "project_evaluation_cancelled",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        event = {
+            "eventId": "evaluation:round_cancelled:terminal",
+            "roundId": "round_cancelled",
+            "status": "cancelled",
+            "done": 1,
+            "total": 4,
+            "passed": 1,
+            "finishedAt": "2026-08-31T10:00:00.000Z",
+        }
+
+        first = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_cancelled", token="token_1", event=event,
+        )
+        second = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_cancelled", token="token_1", event=event,
+        )
+
+        assert first["continued"] is False
+        assert second == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        assert runtime.store.active_run("project_evaluation_cancelled") is None
+        assert model.calls == 0
+        assert gateway.calls == []
+    finally:
         await runtime.shutdown()
 
 

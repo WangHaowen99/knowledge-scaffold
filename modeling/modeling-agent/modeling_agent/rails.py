@@ -15,6 +15,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail,
 from .tools import (
     AskTool,
     CandidateValidationRepairState,
+    EVALUATION_PENDING_MESSAGE,
     EventSink,
     RequestConfirmationTool,
     RequestReleaseTool,
@@ -541,16 +542,32 @@ class ToolBoundaryRail(AgentRail):
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
         if not result:
             return
+        name = _tool_name(ctx)
         if not ctx.extra.get("_tool_receipt_replayed") and not ctx.extra.get("_stable_read_replayed"):
             _remember_stable_read(
                 self._context.stable_read_cache,
-                _tool_name(ctx),
+                name,
                 _call_args(ctx),
                 result,
             )
+        if name == "run_evaluation" and result.get("pending") is True and not result.get("error"):
+            round_id = str(result.get("roundId") or "").strip()
+            if round_id:
+                self._context.pending_evaluation = {"roundId": round_id}
+                self._context.emit("focus", {"target": {
+                    "kind": "evaluation",
+                    "target": "正式评测",
+                    "view": "runs",
+                    "roundId": round_id,
+                }})
+                ctx.request_force_finish({
+                    "result_type": "answer",
+                    "output": EVALUATION_PENDING_MESSAGE,
+                    "pending_evaluation": True,
+                })
         if (
             ctx.extra.get("_tool_receipt_replayed")
-            or _tool_name(ctx) in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
+            or name in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
             or self._context.tool_receipt_save is None
         ):
             return
@@ -559,7 +576,7 @@ class ToolBoundaryRail(AgentRail):
             return
         if result.get("error"):
             return
-        self._context.tool_receipt_save(_tool_name(ctx), call_id, _call_args(ctx), result)
+        self._context.tool_receipt_save(name, call_id, _call_args(ctx), result)
 
 
 class PhaseTransitionRail(AgentRail):

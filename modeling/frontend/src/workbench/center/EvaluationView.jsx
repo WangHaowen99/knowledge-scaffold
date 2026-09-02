@@ -26,12 +26,22 @@ const KINDS = [
   ['add_script', '新增脚本'], ['clarify_description', '澄清描述'],
 ];
 
-export default function EvaluationView() {
+export function evaluationFocusRequest(focus) {
+  if (focus?.kind !== 'evaluation' || focus.view !== 'runs') return null;
+  return {
+    view: 'runs',
+    roundId: typeof focus.roundId === 'string' ? focus.roundId.trim() : '',
+  };
+}
+
+export default function EvaluationView({ focus }) {
   const projectId = useStore(store, (state) => state.projectId);
   const candidateRevisionRefreshKey = useStore(store, (state) => state.candidateRevisionRefreshKey);
-  const [tab, setTab] = useState('setup');
+  const requestedFocus = evaluationFocusRequest(focus);
+  const [tab, setTab] = useState(requestedFocus?.view || 'setup');
   const [facts, setFacts] = useState({ source: undefined, cases: undefined, rounds: undefined });
   const [round, setRound] = useState(null);
+  const handledFocus = useRef('');
   const [followup, setFollowup] = useState({
     roundId: '', diagnoses: [], suggestions: [], runningOperation: '', runningTask: null,
     loading: false, error: '',
@@ -53,6 +63,15 @@ export default function EvaluationView() {
     } catch (cause) { setError(cause.message || '评测结果读取失败'); }
   }, [projectId]);
   useEffect(() => { void loadFacts(); }, [loadFacts]);
+  useEffect(() => {
+    if (!requestedFocus) return;
+    const focusKey = `${projectId || ''}:${requestedFocus.view}:${requestedFocus.roundId}`;
+    if (handledFocus.current === focusKey) return;
+    handledFocus.current = focusKey;
+    setTab('runs');
+    void loadFacts();
+    if (requestedFocus.roundId) void openRound(requestedFocus.roundId);
+  }, [loadFacts, openRound, projectId, requestedFocus?.roundId, requestedFocus?.view]);
   useEffect(() => { if (!round && facts.rounds?.[0]) void openRound(facts.rounds[0].id); }, [facts.rounds, openRound, round]);
   useEffect(() => {
     const timer = window.setInterval(() => { void loadFacts(); if (round?.round?.status === 'running') void openRound(round.round.id); }, 3000);
