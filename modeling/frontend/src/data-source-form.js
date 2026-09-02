@@ -4,9 +4,31 @@ export const PROVIDER_OPTIONS = [
   { value: 'neo4j', label: 'Neo4j' },
 ];
 
+const PROVIDER_OPTIONS_BY_PACKAGE_SOURCE = {
+  neo4j: ['neo4j'],
+  nl2sql: ['nl2sql_template', 'nl2sql_http'],
+};
+
 const CONSUMER_WORKSPACE_ID = /^[a-z][a-z0-9_-]*$/;
 const CONSUMER_WORKSPACE_ID_MAX_LENGTH = 64;
 const NL2SQL_SCENE = /^[a-zA-Z0-9_]{1,60}$/;
+
+export function providerOptionsForPackageDataSource(packageDataSourceType) {
+  const allowed = PROVIDER_OPTIONS_BY_PACKAGE_SOURCE[packageDataSourceType];
+  if (!allowed) return PROVIDER_OPTIONS;
+  return PROVIDER_OPTIONS.filter((option) => allowed.includes(option.value));
+}
+
+export function defaultProviderForPackageDataSource(packageDataSourceType) {
+  return providerOptionsForPackageDataSource(packageDataSourceType)[0]?.value || 'nl2sql_template';
+}
+
+export function normalizeProviderForPackageDataSource(provider, packageDataSourceType) {
+  const options = providerOptionsForPackageDataSource(packageDataSourceType);
+  return options.some((option) => option.value === provider)
+    ? provider
+    : defaultProviderForPackageDataSource(packageDataSourceType);
+}
 
 export function applyCreatedProjectDatabaseScene(form, database) {
   return { ...form, scene: database };
@@ -30,10 +52,14 @@ export function evaluationDatabaseUrlSelectionError(mode, customUrl, defaultConf
   return '';
 }
 
-export function emptyDataSourceForm(defaults = {}) {
+export function emptyDataSourceForm(defaults = {}, packageDataSourceType = '') {
+  const provider = normalizeProviderForPackageDataSource(
+    defaults.provider || defaultProviderForPackageDataSource(packageDataSourceType),
+    packageDataSourceType,
+  );
   return {
     mode: 'connection',
-    provider: defaults.provider || 'nl2sql_template',
+    provider,
     url: defaults.url || '',
     token: defaults.token || '',
     scene: defaults.scene || '',
@@ -51,16 +77,17 @@ export function emptyDataSourceForm(defaults = {}) {
   };
 }
 
-export function dataSourceToForm(dataSource, defaults = {}) {
-  const form = emptyDataSourceForm(defaults);
+export function dataSourceToForm(dataSource, defaults = {}, packageDataSourceType = '') {
+  const form = emptyDataSourceForm(defaults, packageDataSourceType);
   if (!dataSource) return form;
   const config = dataSource.config || {};
+  const provider = normalizeProviderForPackageDataSource(dataSource.provider || form.provider, packageDataSourceType);
   const common = {
     ...form,
     mode: dataSource.mode || 'connection',
-    provider: dataSource.provider || form.provider,
+    provider,
   };
-  if (dataSource.provider === 'neo4j') {
+  if (provider === 'neo4j') {
     return {
       ...common,
       uri: config.uri || '',

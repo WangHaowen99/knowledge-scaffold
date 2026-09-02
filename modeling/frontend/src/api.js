@@ -180,6 +180,7 @@ const P = (id) => `/api/projects/${encodeURIComponent(id)}`;
 export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent/package-data-source`, {
   method: 'PUT', body: JSON.stringify({ dataSourceType }),
 });
+export const getPackageDataSource = (id) => api(`${P(id)}/agent/package-data-source`);
 export const getPackage = (id) => api(`${P(id)}/package`);
 export const getPackageFile = (id, path, options = {}) => api(
   `${P(id)}/package/file?path=${encodeURIComponent(path)}`,

@@ -14,6 +14,7 @@ export default function DataSourceConnectionFields({
   creatingDatabase,
   onCreateProjectDatabase,
   onSyncOntologyId,
+  providerOptions = PROVIDER_OPTIONS,
 }) {
   const providerId = useId();
   return (
@@ -21,7 +22,7 @@ export default function DataSourceConnectionFields({
       <div className="field" data-tour={DATA_SOURCE_TOUR_TARGETS.provider}>
         <label htmlFor={providerId}>Provider</label>
         <select id={providerId} aria-label="Provider" value={form.provider} onChange={onProviderChange}>
-          {PROVIDER_OPTIONS.map((option) => (
+          {providerOptions.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>

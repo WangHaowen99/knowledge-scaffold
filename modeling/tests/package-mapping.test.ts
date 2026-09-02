@@ -482,7 +482,7 @@ test('package mapping format：术语 binding 引用和 provider 必须合法', 
   assert.ok(messages.some((message) => /provider_alias.*不一致/.test(message)));
 });
 
-test('semantic binding：知识结构抽取出对象字段后先推荐 binding，再推荐字段关联', () => {
+test('semantic binding：普通 lookup 表不再自动推荐 binding', () => {
   const spec: PackageSpec = {
     id: 'item-demo', name: 'item demo', description: 'item demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
@@ -521,26 +521,7 @@ test('semantic binding：知识结构抽取出对象字段后先推荐 binding�
     ]),
   ];
 
-  const suggestions = suggestSemanticBindings(spec, tables);
-  const item = suggestions.find((candidate) => candidate.resource === 'item_lookup' && candidate.valueField === 'ITEM_CODE');
-
-  assert.ok(item);
-  assert.equal(item.semanticField, 'ITEM_NAME');
-  assert.deepEqual(item.aliasFields, []);
-  assert.deepEqual(item.candidateFieldRefs, []);
-
-  const withBinding = applySemanticBindingSelection(spec, tables, {
-    bindingKeys: [item.key],
-    fieldRefs: [],
-  }).spec;
-  const fieldRefs = suggestSemanticFieldRefs(withBinding, tables);
-  const expectedFieldRefs = ['item.ITEM_CODE', 'transaction.BACKUP_ITEM_CODE', 'transaction.PRIMARY_ITEM_CODE']
-    .map((ref) => `${ref}->${item.key}`)
-    .sort();
-  assert.deepEqual(
-    fieldRefs.map((ref) => `${ref.objectKey}.${ref.fieldKey}->${ref.bindingKey}`).sort(),
-    expectedFieldRefs,
-  );
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
 });
 
 test('semantic binding：知识结构尚未抽取对象字段时不推荐 binding', () => {
@@ -571,8 +552,8 @@ test('semantic binding：知识结构尚未抽取对象字段时不推荐 bindin
       fields: [{ key: 'ITEM_CODE', sourceColumn: 'ITEM_CODE' }],
     }],
   }, tables);
-  assert.equal(modeledPreview.bindingCount, 1);
-  assert.equal(modeledPreview.suggestions[0]?.resource, 'item_lookup');
+  assert.equal(modeledPreview.bindingCount, 0);
+  assert.deepEqual(modeledPreview.suggestions, []);
 });
 
 test('semantic binding：上传术语表后按固定列顺序生成 binding 并保留 alias 字段', () => {
@@ -648,7 +629,7 @@ test('semantic binding：Neo4j 数据源下术语表字段名必须符合属性�
   assert.doesNotThrow(() => validateTermTables([termTable], { dataSourceType: 'nl2sql' }));
 });
 
-test('semantic binding：同一资源表多组 code/name 按通用字段词干配对', () => {
+test('semantic binding：未标记为术语表的 code/name 资源表不自动推荐 binding', () => {
   const spec: PackageSpec = {
     id: 'entity-demo', name: 'entity demo', description: 'entity demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
@@ -672,22 +653,7 @@ test('semantic binding：同一资源表多组 code/name 按通用字段词干�
     ]),
   ];
 
-  const suggestions = suggestSemanticBindings(spec, tables);
-  const pairs = suggestions.map((item) => `${item.valueField}->${item.semanticField}`).sort();
-
-  assert.deepEqual(pairs, ['MARKET_CODE->MARKET_NAME', 'REGION_CODE->REGION_NAME']);
-  assert.deepEqual(suggestions.flatMap((item) => item.candidateFieldRefs), []);
-
-  const withBindings = applySemanticBindingSelection(spec, tables, {
-    bindingKeys: suggestions.map((item) => item.key),
-    fieldRefs: [],
-  }).spec;
-  const fieldRefs = suggestSemanticFieldRefs(withBindings, tables);
-
-  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'record' && ref.fieldKey === 'REGION_CODE'
-    && ref.bindingKey === suggestions.find((item) => item.valueField === 'REGION_CODE')?.key));
-  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'record' && ref.fieldKey === 'MARKET_CODE'
-    && ref.bindingKey === suggestions.find((item) => item.valueField === 'MARKET_CODE')?.key));
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
 });
 
 test('semantic binding：业务对象表不作为术语绑定资源表', () => {
@@ -734,6 +700,31 @@ test('semantic binding：普通业务表仅字段命中术语特征时不推荐 
     dataTable('business_record', ['CUSTOMER_ID', 'CUSTOMER_NAME', 'PROJECT_CODE', 'PROJECT_NAME'], [
       { CUSTOMER_ID: 'C001', CUSTOMER_NAME: '客户一', PROJECT_CODE: 'P001', PROJECT_NAME: '项目一' },
       { CUSTOMER_ID: 'C002', CUSTOMER_NAME: '客户二', PROJECT_CODE: 'P002', PROJECT_NAME: '项目二' },
+    ]),
+  ];
+
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
+});
+
+test('semantic binding：英文术语特征必须按完整 token 命中', () => {
+  const spec: PackageSpec = {
+    id: 'equipment-demo', name: 'equipment demo', description: 'equipment demo',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
+    objects: [{
+      key: 'gas_drive_end_comp', title: '驱动端组件', description: '驱动端组件',
+      sourceTable: 'gas_drive_end_comp',
+      fields: [
+        { key: 'end_id', sourceColumn: 'end_id' },
+        { key: 'end_name', sourceColumn: 'end_name' },
+        { key: 'system_id', sourceColumn: 'system_id' },
+      ],
+    }],
+    operations: [],
+  };
+  const tables = [
+    dataTable('gas_drive_end_comp', ['end_id', 'end_name', 'system_id'], [
+      { end_id: 'E01', end_name: '驱动端', system_id: 'S01' },
+      { end_id: 'E02', end_name: '非驱动端', system_id: 'S01' },
     ]),
   ];
 
