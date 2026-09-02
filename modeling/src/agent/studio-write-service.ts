@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { PackageArtifactStore } from '../artifacts/package-store.js';
+import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { getDb, nowIso } from '../db/index.js';
 import { listDocuments } from '../documents/repo.js';
@@ -142,8 +143,6 @@ export class StudioWriteError extends Error {
 }
 
 export class StudioWriteService {
-  private readonly queues = new Map<string, Promise<void>>();
-
   constructor(
     private readonly db: DatabaseSync = getDb(),
     private readonly artifacts: PackageArtifactStore = getPackageArtifactStore(),
@@ -355,15 +354,7 @@ export class StudioWriteService {
   }
 
   private enqueue<T>(projectId: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.queues.get(projectId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
-    const queued = previous.then(() => current);
-    this.queues.set(projectId, queued);
-    return previous.then(task).finally(() => {
-      release();
-      if (this.queues.get(projectId) === queued) this.queues.delete(projectId);
-    });
+    return runProjectWriteExclusive(projectId, task);
   }
 
   private async mutate(

@@ -34,7 +34,6 @@ const JSONRPC_INTERNAL_ERROR = -32603;
 const JSONRPC_HEADER_MISMATCH = -32020;
 const JSONRPC_AUTH_ERROR = -32001;
 const SSE_SESSION_NOT_FOUND = 'Session not found';
-const MAX_SSE_SESSIONS = 10_000;
 const SSE_HEARTBEAT_MS = 15_000;
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
 const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
@@ -44,8 +43,13 @@ interface SseSessionRecord {
   endpointId: string;
   toolset: ModelingMcpToolset;
   tokenId: string;
+  projectId: string;
   username: string;
+  clientIp: string;
+  createdAt: number;
+  lastActivityAt: number;
   send: (event: 'endpoint' | 'message', data: string) => void;
+  close: () => void;
 }
 
 export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
@@ -133,9 +137,13 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
         endpointId: String((request.params as any).mcpEndpointId ?? ''),
         minimumAccess: toolset === 'change' ? 'write' : 'read',
       });
-      (request as FastifyRequest & { mcpPrincipal?: { tokenId: string; username: string } }).mcpPrincipal = {
+      (request as FastifyRequest & { mcpPrincipal?: {
+        tokenId: string; projectId: string; username: string; clientIp: string;
+      } }).mcpPrincipal = {
         tokenId: verified.tokenId,
+        projectId: verified.projectId,
         username: verified.username,
+        clientIp: request.ip,
       };
     } catch (error) {
       if (error instanceof ModelingMcpError) {
@@ -178,10 +186,10 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
 
     try {
       const principal = (request as FastifyRequest & {
-        mcpPrincipal?: { tokenId: string; username: string };
+        mcpPrincipal?: { tokenId: string; projectId: string; username: string; clientIp: string };
       }).mcpPrincipal;
       if (!principal) throw new ModelingMcpError('MCP_AUTH_REQUIRED', '缺少 MCP 会话身份', 401);
-      sessionId = sseSessions.create(endpointId, toolset, principal, send).sessionId;
+      sessionId = sseSessions.create(endpointId, toolset, principal, send, release).sessionId;
     } catch (error) {
       raw.statusCode = error instanceof ModelingMcpError ? error.statusCode : 500;
       raw.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -633,22 +641,55 @@ class RpcProtocolError extends Error {
   }
 }
 
-class SseSessionRegistry {
+export interface SseSessionPolicy {
+  maxSessions: number;
+  maxSessionsPerToken: number;
+  maxSessionsPerProject: number;
+  maxSessionsPerUser: number;
+  maxSessionsPerIp: number;
+  maxLifetimeMs: number;
+  idleTimeoutMs: number;
+}
+
+export class SseSessionRegistry {
   private readonly sessions = new Map<string, SseSessionRecord>();
+
+  constructor(
+    private readonly policy: SseSessionPolicy,
+    private readonly now: () => number = Date.now,
+    startCleanupTimer = true,
+  ) {
+    if (startCleanupTimer) setInterval(() => this.releaseExpired(), SSE_HEARTBEAT_MS).unref();
+  }
 
   create(
     endpointId: string,
     toolset: ModelingMcpToolset,
-    principal: { tokenId: string; username: string },
+    principal: { tokenId: string; projectId: string; username: string; clientIp: string },
     send: SseSessionRecord['send'],
+    close: SseSessionRecord['close'],
   ): SseSessionRecord {
-    if (this.sessions.size >= MAX_SSE_SESSIONS) {
+    if (this.sessions.size >= this.policy.maxSessions) {
       throw new ModelingMcpError('MCP_SESSION_CAPACITY_REACHED', 'SSE 会话容量已满', 503);
+    }
+    const existing = [...this.sessions.values()];
+    if (existing.filter((item) => item.tokenId === principal.tokenId).length >= this.policy.maxSessionsPerToken) {
+      throw new ModelingMcpError('MCP_SESSION_TOKEN_LIMIT_REACHED', '当前 Token 的 SSE 会话数已达上限', 429);
+    }
+    if (existing.filter((item) => item.projectId === principal.projectId).length >= this.policy.maxSessionsPerProject) {
+      throw new ModelingMcpError('MCP_SESSION_PROJECT_LIMIT_REACHED', '当前项目的 SSE 会话数已达上限', 429);
+    }
+    if (existing.filter((item) => item.username === principal.username).length >= this.policy.maxSessionsPerUser) {
+      throw new ModelingMcpError('MCP_SESSION_USER_LIMIT_REACHED', '当前用户的 SSE 会话数已达上限', 429);
+    }
+    if (existing.filter((item) => item.clientIp === principal.clientIp).length >= this.policy.maxSessionsPerIp) {
+      throw new ModelingMcpError('MCP_SESSION_IP_LIMIT_REACHED', '当前来源地址的 SSE 会话数已达上限', 429);
     }
     while (true) {
       const sessionId = randomBytes(16).toString('hex');
       if (this.sessions.has(sessionId)) continue;
-      const session = { sessionId, endpointId, toolset, ...principal, send };
+      const now = this.now();
+      const session = { sessionId, endpointId, toolset, ...principal, send, close, createdAt: now, lastActivityAt: now };
       this.sessions.set(sessionId, session);
       return session;
     }
@@ -660,6 +701,7 @@ class SseSessionRegistry {
     const session = this.sessions.get(normalized);
     if (!session) return null;
     if (session.endpointId !== endpointId || session.toolset !== toolset) return null;
+    session.lastActivityAt = this.now();
     return session;
   }
 
@@ -668,6 +710,24 @@ class SseSessionRegistry {
     if (!normalized) return;
     this.sessions.delete(normalized);
   }
+
+  releaseExpired(): void {
+    const now = this.now();
+    for (const session of [...this.sessions.values()]) {
+      if (now - session.createdAt < this.policy.maxLifetimeMs
+        && now - session.lastActivityAt < this.policy.idleTimeoutMs) continue;
+      session.close();
+      this.sessions.delete(session.sessionId);
+    }
+  }
 }
 
-const sseSessions = new SseSessionRegistry();
+const sseSessions = new SseSessionRegistry({
+  maxSessions: config.mcp.maxSseSessions,
+  maxSessionsPerToken: config.mcp.maxSseSessionsPerToken,
+  maxSessionsPerProject: config.mcp.maxSseSessionsPerProject,
+  maxSessionsPerUser: config.mcp.maxSseSessionsPerUser,
+  maxSessionsPerIp: config.mcp.maxSseSessionsPerIp,
+  maxLifetimeMs: config.mcp.sseMaxLifetimeSeconds * 1_000,
+  idleTimeoutMs: config.mcp.sseIdleTimeoutSeconds * 1_000,
+});

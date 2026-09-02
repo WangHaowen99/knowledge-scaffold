@@ -205,3 +205,12 @@ test('Studio schema 每次刷新都重新验证动态租约', () => {
 
   assert.match(source, /getStudioSchema = \(projectId\) => api\(`\$\{P\(projectId\)\}\/schema`, \{ cache: 'no-cache' \}\)/);
 });
+
+test('StudioView 在窗口聚焦和页面重新可见时补偿核对 revision', () => {
+  const source = readFileSync(new URL('../frontend/src/workbench/studio/StudioView.jsx', import.meta.url), 'utf8');
+  assert.match(source, /window\.addEventListener\('focus', refresh\)/u);
+  assert.match(source, /document\.addEventListener\('visibilitychange', refreshOnVisible\)/u);
+  assert.match(source, /document\.visibilityState === 'visible'/u);
+  assert.match(source, /window\.removeEventListener\('focus', refresh\)/u);
+  assert.match(source, /document\.removeEventListener\('visibilitychange', refreshOnVisible\)/u);
+});

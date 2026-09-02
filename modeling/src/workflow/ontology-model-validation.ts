@@ -15,6 +15,7 @@ export interface NormalizedOntologyRelation {
   targetKey: string;
   label?: string;
   description?: string;
+  evidence?: string[];
 }
 
 export interface OntologyValidationIssue {
@@ -27,6 +28,7 @@ export interface OntologyValidationIssue {
 
 export interface NormalizeStudioRelationsOptions {
   maxListItems?: number;
+  preserveEvidence?: boolean;
 }
 
 export interface NormalizeStudioRelationsResult {
@@ -210,7 +212,7 @@ export function normalizeStudioRelations(
       issues.push(issue('RELATION_DESCRIPTION_INVALID', `${itemPath}.description`, '必须是文本'));
     }
     for (const key of Object.keys(item)) {
-      if (!['kind', 'targetId', 'label', 'description'].includes(key)) {
+      if (!['kind', 'targetId', 'label', 'description', ...(options.preserveEvidence ? ['evidence'] : [])].includes(key)) {
         issues.push(issue('RELATION_UNKNOWN_FIELD', `${itemPath}.${key}`, '未知字段'));
       }
     }
@@ -222,6 +224,9 @@ export function normalizeStudioRelations(
         ...(typeof item.label === 'string' && item.label.trim() ? { label: item.label.trim() } : {}),
         ...(typeof item.description === 'string' && item.description.trim()
           ? { description: item.description.trim() }
+          : {}),
+        ...(options.preserveEvidence && Array.isArray(item.evidence)
+          ? { evidence: item.evidence.map(String) }
           : {}),
       });
     }
@@ -293,6 +298,7 @@ export function toSpecObjectRelations(relations: readonly NormalizedOntologyRela
     relation: relation.label || '关联',
     target: relation.targetKey,
     ...(relation.description ? { note: relation.description } : {}),
+    ...(relation.evidence?.length ? { evidence: [...relation.evidence] } : {}),
   }));
 }
 
