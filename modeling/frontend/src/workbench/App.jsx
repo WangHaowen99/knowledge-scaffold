@@ -32,6 +32,7 @@ function Workbench() {
   const drawer = useStore(store, selDrawer);
   const demo = useStore(store, selDemo);
   const interaction = useStore(store, (state) => state.interaction);
+  const candidateRevisionRefreshKey = useStore(store, (state) => state.candidateRevisionRefreshKey);
   const leftRef = useRef(null);
   const rightRef = useRef(null);
   const [globalDrag, setGlobalDrag] = useState(false);
@@ -45,6 +46,10 @@ function Workbench() {
   useEffect(() => {
     if (interaction) setMobilePane('assistant');
   }, [interaction?.id]);
+
+  useEffect(() => {
+    if (candidateRevisionRefreshKey > 0) setMobilePane('assistant');
+  }, [candidateRevisionRefreshKey]);
 
   const openMcpSettings = async () => {
     setSettingsLoading(true);

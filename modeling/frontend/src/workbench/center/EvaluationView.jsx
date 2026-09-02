@@ -28,6 +28,7 @@ const KINDS = [
 
 export default function EvaluationView() {
   const projectId = useStore(store, (state) => state.projectId);
+  const candidateRevisionRefreshKey = useStore(store, (state) => state.candidateRevisionRefreshKey);
   const [tab, setTab] = useState('setup');
   const [facts, setFacts] = useState({ source: undefined, cases: undefined, rounds: undefined });
   const [round, setRound] = useState(null);
@@ -103,7 +104,7 @@ export default function EvaluationView() {
       }
     })();
     return () => { active = false; };
-  }, [followupRefresh, projectId, round?.round?.id, round?.round?.status, tab]);
+  }, [candidateRevisionRefreshKey, followupRefresh, projectId, round?.round?.id, round?.round?.status, tab]);
   const official = useMemo(() => (facts.cases || []).filter((item) => item.source === 'manual'), [facts.cases]);
   const currentFollowup = followup.roundId === round?.round?.id ? followup : {
     diagnoses: [], suggestions: [], runningOperation: '', runningTask: null, loading: false, error: '',
@@ -242,10 +243,10 @@ function DiagnosisPanel({ projectId, round, diagnoses, runningTask, onTaskStarte
 
 function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOperation, runningTask, onTaskStarted, onTaskSettled, onChanged, onGoDiagnose }) {
   const [selected, setSelected] = useState(new Set()); const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [manual, setManual] = useState(false); const [reviewTask, setReviewTask] = useState(null); const [reviewNote, setReviewNote] = useState(''); const [localTask, setLocalTask] = useState(null); const [persistedTask, setPersistedTask] = useState(null);
-  const knownPendingRef = useRef(new Set()); const selectionScopeRef = useRef('');
+  const knownPendingRef = useRef(new Set()); const selectionScopeRef = useRef(''); const announcedCandidateIdRef = useRef('');
   const eligible = diagnoses.filter((item) => item.resolutionStatus === 'confirmed' && item.packageOptimizable && item.packageRepairEligible); const pending = suggestions.filter((item) => item.status === 'pending');
   const pendingIds = new Set(pending.map((item) => item.id)); const selectedPending = new Set([...selected].filter((id) => pendingIds.has(id)));
-  useEffect(() => { setReviewTask(null); setReviewNote(''); setError(''); setNotice(''); setPersistedTask(null); }, [projectId, round?.round?.id]);
+  useEffect(() => { setReviewTask(null); setReviewNote(''); setError(''); setNotice(''); setPersistedTask(null); announcedCandidateIdRef.current = ''; }, [projectId, round?.round?.id]);
   useEffect(() => {
     const scope = `${projectId}:${round?.round?.id || ''}`;
     const pendingIds = suggestions.filter((item) => item.status === 'pending').map((item) => item.id);
@@ -260,6 +261,11 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
       return reconciled.selected;
     });
   }, [projectId, round?.round?.id, suggestions]);
+  const announceCandidate = useCallback((candidateId) => {
+    if (!candidateId || announcedCandidateIdRef.current === candidateId) return;
+    announcedCandidateIdRef.current = candidateId;
+    actions.refreshCandidateRevisions();
+  }, []);
   useEffect(() => { getEvaluationOptimizationStatus(projectId).then((data) => {
     const taskSuggestionIds = data.task?.node?.output?.suggestionIds || [];
     const suggestionIds = new Set(suggestions.map((item) => item.id));
@@ -269,13 +275,14 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
     if (data.task?.node?.status === 'running') setError('');
     if (data.task?.node?.status === 'waiting_user' && data.task.node.output?.phase === 'expert_review') setReviewTask(data.task);
     else if (data.task?.node?.status === 'failed') setError(data.task.node.reason || data.task.node.output?.error || '优化候选生成失败');
-    else if (data.task?.node?.status === 'done' && data.task.node.output?.candidateId) { setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); void actions.refreshSnapshot(); }
-  }).catch((cause) => setError(cause.message || '优化任务状态读取失败')); }, [projectId, runningOperation, suggestions]);
+    else if (optimizationCandidateNeedsReview(data.task, suggestions)) { setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); announceCandidate(data.task.node.output.candidateId); void actions.refreshSnapshot(); }
+    else if (data.task?.node?.status === 'done') setNotice('');
+  }).catch((cause) => setError(cause.message || '优化任务状态读取失败')); }, [announceCandidate, projectId, runningOperation, suggestions]);
   const reload = async () => { const data = await listEvaluationSuggestions(projectId, round.round.id); onChanged(data.suggestions || []); };
   const beginTask = (operation) => { const task = { operation, startedAt: new Date().toISOString() }; setLocalTask(task); onTaskStarted?.(operation, task); return task; };
   const settleTask = () => { setLocalTask(null); onTaskSettled?.(); };
   const propose = async () => { setBusy('propose'); setError(''); beginTask('propose'); try { const data = await proposeEvaluationOptimizations(projectId, round.round.id); onChanged(mergeOptimizationSuggestions(suggestions, data.suggestions || [])); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
-  const applyIds = async (ids) => { const data = await applyEvaluationSuggestions(projectId, ids); if (data.status === 'waiting_expert') { const status = await getEvaluationOptimizationStatus(projectId); setReviewTask(status.task); setNotice('Agent 修改未通过确定性校验，请补充约束后让 Agent 重试。'); } else { setReviewTask(null); setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); await actions.refreshSnapshot(); } await reload(); };
+  const applyIds = async (ids) => { const data = await applyEvaluationSuggestions(projectId, ids); if (data.status === 'waiting_expert') { const status = await getEvaluationOptimizationStatus(projectId); setReviewTask(status.task); setNotice('Agent 修改未通过确定性校验，请补充约束后让 Agent 重试。'); } else { setReviewTask(null); setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); announceCandidate(data.candidateId); await actions.refreshSnapshot(); } await reload(); };
   const apply = async () => { setBusy('apply'); setError(''); setNotice(''); beginTask('apply'); try { await applyIds([...selectedPending]); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
   const review = async (action) => { if (!reviewTask?.node?.id) return; setBusy('review'); setError(''); let retrying = false; try { const decision = await reviewEvaluationOptimization(projectId, reviewTask.node.id, action, reviewNote); setReviewNote(''); if (action === 'retry') { retrying = true; beginTask('apply'); await applyIds(decision.suggestionIds); } else { setReviewTask(null); setNotice('已跳过本次未通过校验的建议，正式知识包未发生变化。'); await reload(); } } catch (cause) { setError(cause.message); } finally { setBusy(''); if (retrying) settleTask(); } };
   const reject = async (item) => { if (!window.confirm(`确认忽略“${item.title}”吗？该建议不会进入知识包候选。`)) return; setBusy('reject'); setError(''); try { await rejectEvaluationSuggestions(projectId, [item.id]); setSelected((old) => { const next = new Set(old); next.delete(item.id); return next; }); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
@@ -321,6 +328,7 @@ export function DiagnosisProgress({ task }) { return <TimedOperationProgress tas
 export function OptimizationProgress({ operation, task }) { const state = task?.node?.output || task?.output || task || {}; const grouped = state.protocol === 'targeted_incremental' && state.changeSetCount ? `已将 ${state.selectedCount} 条建议合并为 ${state.changeSetCount} 个变更组，涉及 ${state.targetResourceKeys?.length || 0} 个资源${state.shardCount ? `；${state.shardOrdering === 'dependency_serial' ? '按依赖顺序生成' : '并行生成'} ${state.shardCount} 个符号补丁` : ''}` : ''; const copy = operation === 'apply' ? ['正在生成知识包候选', grouped || '正在落实所选建议并执行确定性校验'] : ['正在生成优化建议', '正在依据已确认根因生成并校验结构化建议']; return <TimedOperationProgress task={task} title={copy[0]} detail={copy[1]} />; }
 export function mergeOptimizationSuggestions(current, incoming) { const merged = new Map((current || []).map((item) => [item.id, item])); for (const item of incoming || []) merged.set(item.id, item); return [...merged.values()]; }
 export function reconcileOptimizationSelection(previous, known, pendingIds) { return { selected: new Set(pendingIds.filter((id) => previous.has(id) || !known.has(id))), known: new Set(pendingIds) }; }
+export function optimizationCandidateNeedsReview(task, suggestions = []) { const candidateIds = new Set(suggestions.filter((item) => item.status === 'candidate').map((item) => item.id)); return task?.node?.status === 'done' && Boolean(task.node.output?.candidateId) && (task.node.output?.suggestionIds || []).some((id) => candidateIds.has(id)); }
 function StageHeader({ icon: Icon, title, detail, action }) { return <div className="wb-stage-head"><div className="wb-eval-icon"><Icon size={17} /></div><div><h3>{title}</h3><p>{detail}</p></div><span className="spacer" />{action}</div>; }
 function toggleSet(old, id) { const next = new Set(old); next.has(id) ? next.delete(id) : next.add(id); return next; }
 function formatTime(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '未知时间' : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }

@@ -161,7 +161,13 @@ function DiffSource({ file, materials, className = '' }) {
   );
 }
 
-function diffLines(file) {
+export function diffLines(file) {
+  if (Array.isArray(file.hunks)) {
+    return file.hunks.flatMap((hunk) => (hunk.lines || []).map((line) => [
+      line.type === 'remove' ? 'del' : line.type === 'add' ? 'add' : 'ctx',
+      line.content || '',
+    ]));
+  }
   const beforeText = String(file.before || '');
   const afterText = String(file.after || '');
   const before = beforeText ? beforeText.split('\n') : [];

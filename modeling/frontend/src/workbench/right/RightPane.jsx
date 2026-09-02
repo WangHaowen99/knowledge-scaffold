@@ -13,6 +13,7 @@ import Composer from './Composer.jsx';
 import Icon from '../ui/Icon.jsx';
 import { userFacingText } from '../lib/userFacingText.js';
 import SemanticBindingPanel from '../../SemanticBindingPanel.jsx';
+import CandidateRevisionPanel from '../../CandidateRevisionPanel.jsx';
 import { ASSISTANT_SCROLL_ACTION, assistantScrollAction } from './scrollPolicy.js';
 
 const selUser = (s) => s.userMessages;
@@ -29,6 +30,7 @@ const selPackageVersion = (s) => s.packageVersion;
 const selStatusText = (s) => s.statusText;
 const selReplayUntilSeq = (s) => s.replayUntilSeq;
 const selMaterials = (s) => s.materials;
+const selCandidateRevisionRefreshKey = (s) => s.candidateRevisionRefreshKey;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
     const interaction = s.messages[index]?.blocks?.find((block) => block.interaction)?.interaction;
@@ -55,7 +57,9 @@ export default function RightPane() {
   const statusText = useStore(store, selStatusText);
   const replayUntilSeq = useStore(store, selReplayUntilSeq);
   const materials = useStore(store, selMaterials);
+  const candidateRevisionRefreshKey = useStore(store, selCandidateRevisionRefreshKey);
   const interactionId = useStore(store, selPendingInteractionMessageId);
+  const [candidateAttentionKey, setCandidateAttentionKey] = useState('');
   const scroller = useRef(null);
   const stream = useRef(null);
   const followingTail = useRef(true);
@@ -149,6 +153,12 @@ export default function RightPane() {
     return () => observer.disconnect();
   }, []);
 
+  useTailLayoutEffect(() => {
+    if (!candidateAttentionKey) return;
+    followingTail.current = true;
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
+  }, [candidateAttentionKey]);
+
   useEffect(() => {
     const focusPending = (event) => {
       followingTail.current = true;
@@ -207,8 +217,20 @@ export default function RightPane() {
           {user.map((m) => <Message key={m.id} m={m} />)}
           {!demo && restoredInteractionMessage && <Message m={restoredInteractionMessage} />}
           {!demo && <MaterialPurposeBatchCard materials={materials} />}
+          {!demo && projectId && <CandidateRevisionPanel
+            projectId={projectId}
+            refreshKey={candidateRevisionRefreshKey}
+            onVisibilityChange={setCandidateAttentionKey}
+            onPreview={actions.openCandidateRevisionPreview}
+            onChanged={async () => {
+              actions.refreshCandidateRevisions();
+              await actions.refreshSnapshot();
+            }}
+            title="需要你确认的修改"
+          />}
           {!demo && !base.length && !restoredInteractionMessage
             && pendingMaterialPurposeReviews(materials).length === 0
+            && !candidateAttentionKey
             && <div className="empty">{loading ? '正在加载项目…' : '助手接手后，进度、问题和变更都会出现在这里'}</div>}
           {error && (
             <div className="card card-stale" role="alert">
