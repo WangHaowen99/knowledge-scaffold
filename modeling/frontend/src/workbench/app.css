@@ -209,6 +209,15 @@
 .wb-diff-preview .wb-flow-toolbar { margin-bottom: var(--s-3); }
 .wb-diff-preview .wb-mermaid-viewport { max-height: 620px; background: var(--c-surface-2); }
 .wb-diff-preview .wb-flow-source { min-height: 320px; border: 0; border-radius: 0; }
+.wb-diff-markdown { width: 100%; min-width: 0; }
+.wb-diff-markdown .wb-diff-preview { min-width: 0; overflow: hidden; background: var(--c-surface-2); }
+.wb-diff-markdown .wb-markdown { width: 100%; max-width: none; }
+.wb-diff-markdown .wb-flow-source {
+  width: 100%; max-width: 100%; min-width: 0; overflow-x: hidden; background: var(--c-surface-2);
+}
+.wb-diff-markdown .wb-flow-source .l {
+  width: 100%; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+}
 
 /* 影响分析：两栏对照 —— 「保持有效」占主视觉是这一屏的核心 */
 .wb-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-5); margin-bottom: var(--s-6); }
@@ -303,6 +312,13 @@
 .wb-evidence-link span { min-width: 0; overflow-wrap: anywhere; }
 .wb-evidence-link small { color: var(--c-stale); text-decoration: none; }
 .wb-evidence-note { color: var(--c-muted); }
+.wb-markdown .wb-evidence-link {
+  display: inline; padding: 0; line-height: inherit; vertical-align: baseline;
+}
+.wb-markdown .wb-evidence-link svg {
+  display: inline-block; margin-right: 5px; vertical-align: -0.125em;
+}
+.wb-markdown .wb-evidence-link span { display: inline; }
 .wb-evidence-location {
   display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-4); padding: var(--s-2) var(--s-3);
   border-left: 3px solid var(--c-accent); background: var(--c-accent-bg); color: var(--c-ink-2); font-size: var(--t-sm);

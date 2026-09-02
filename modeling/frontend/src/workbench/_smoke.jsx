@@ -43,6 +43,7 @@ import ProcessDrawer, {
 import { userFacingText } from './lib/userFacingText.js';
 import {
   evidenceLabel,
+  evidenceHref,
   evidenceReferenceFromHref,
   linkEvidenceReferences,
   readableEvidenceAnchor,
@@ -121,6 +122,8 @@ import {
 import {
   operationFlowMode,
   operationFlowScrollCanvas,
+  operationFlowWheelZoom,
+  operationFlowZoom,
   operationStepsDiagram,
   projectOperationFlowDiagram,
 } from './studio/operation-flow/operationFlowModel.js';
@@ -248,6 +251,7 @@ try {
     ...projected,
     nodes: projected.nodes.map((node, index) => ({ ...node, position: { x: -20, y: index * 680 - 40 } })),
   }, 56, { width: 1600, height: 900 });
+  const flowPanelSource = readFileSync('src/workbench/studio/operation-flow/OperationFlowPanel.jsx', 'utf8');
   if (operationFlowMode({ defaultView: 'business-flow', diagrams: [{}], steps: ['步骤一'] }) !== 'business-flow'
     || operationFlowMode({ diagrams: [], steps: ['步骤一'] }) !== 'operation-steps'
     || steps.nodes.length !== 4
@@ -258,6 +262,14 @@ try {
     || scrollCanvas.width !== 1600
     || Math.min(...scrollCanvas.nodes.map((node) => node.position.x)) < 600
     || scrollCanvas.nodes.some((node) => node.position.x < 0 || node.position.y < 0)
+    || operationFlowZoom(0.1) !== 0.5
+    || operationFlowZoom(2.4) !== 2
+    || operationFlowWheelZoom(1, -100) !== 1.25
+    || operationFlowWheelZoom(1, 100) !== 0.75
+    || !flowPanelSource.includes("addEventListener('wheel', handleFullscreenWheel, { passive: false })")
+    || !flowPanelSource.includes("removeEventListener('wheel', handleFullscreenWheel)")
+    || flowPanelSource.includes('onWheel={(event) =>')
+    || projected.edges.some((edge) => edge.type !== 'step')
     || projected.edges[0]?.source !== 'start') {
     throw new Error('操作步骤、默认视图或业务流程高亮投影不一致');
   }
@@ -782,10 +794,19 @@ try {
   const materials = [{ id: 'doc-evidence', filename: '作业手册.docx' }];
   const linked = linkEvidenceReferences(`> 依据：${evidence}`, materials);
   const href = linked.match(/\((#evidence:[^)]+)\)/u)?.[1];
+  const contextual = linkEvidenceReferences(
+    '资料：material:doc-evidence#前言（合成资料说明，提供业务背景）',
+    materials,
+  );
+  const strictHref = evidenceHref('material:doc-evidence#章节(补充)');
   const paragraphs = documentParagraphs('概述\n\n§3.2 安全库存应扣除已占用数量。\n\n附录');
   const highlight = evidenceHighlight(paragraphs[1], { anchor: '§3.2', offset: 4 });
   if (!linked.includes('《作业手册.docx》 · §3.2') || evidenceReferenceFromHref(href) !== evidence
-    || evidenceLabel(evidence, materials).includes('doc-evidence') || highlight?.start !== 0 || highlight?.end !== 4) {
+    || evidenceLabel(evidence, materials).includes('doc-evidence') || highlight?.start !== 0 || highlight?.end !== 4
+    || !contextual.includes('《作业手册.docx》 · 前言')
+    || !contextual.endsWith('（合成资料说明，提供业务背景）')
+    || contextual.includes('· 前言（') || strictHref.includes('(') || strictHref.includes(')')
+    || evidenceReferenceFromHref(strictHref) !== 'material:doc-evidence#章节(补充)') {
     throw new Error('证据引用没有转换成可读链接或正文锚点');
   }
   if (readableEvidenceAnchor('offset=12500') !== '正文第 12,500 字附近'
@@ -1569,21 +1590,50 @@ try {
 store.set({
   demo: false,
   loading: false,
-  project: { name: '真实项目' },
+  files: [],
+  messages: [],
+  interaction: null,
+  project: { name: '合成项目' },
   focus: { kind: 'diff', target: '.modeling/goal.md' },
-  materials: [{ id: 'doc-real', filename: '真实资料#1.docx' }],
+  materials: [{ id: 'doc-synthetic', filename: '合成资料说明.docx' }],
   candidateDiff: [{
-    path: '.modeling/goal.md', before: '', after: '# 目标\n\n来源：material:doc-real#第一章', additions: 3, deletions: 0,
+    path: '.modeling/goal.md', before: '',
+    after: '# 目标\n\n资料：material:doc-synthetic#前言（合成资料说明，提供业务背景）',
+    additions: 3, deletions: 0,
   }],
 });
 try {
   const html = renderToString(<App />);
-  if (!html.includes('goal.md') || html.includes('rules/安全库存判断.md')
-    || !html.includes('【真实资料#1.docx】#第一章') || html.includes('material:doc-real')) {
-    throw new Error('真实候选标题仍使用演示 diff 路径');
+  if (!html.includes('goal.md') || !html.includes('<h1>目标</h1>')
+    || !html.includes('《合成资料说明.docx》 · 前言') || !html.includes('（合成资料说明，提供业务背景）')
+    || html.includes('material:doc-synthetic') || html.includes('#evidence:')
+    || html.includes('[《') || html.includes('# 目标')) {
+    throw new Error('合成 goal.md 候选没有使用渲染后的 Markdown 内容');
   }
-  console.log('✓ 真实候选标题来自 Agent 焦点');
-} catch (e) { console.log('✗ 真实候选标题:', e.message); bad++; }
+  console.log('✓ 合成 goal.md 候选默认展示渲染后的 Markdown');
+} catch (e) { console.log('✗ 合成候选标题:', e.message); bad++; }
+
+try {
+  const appCss = readFileSync('src/workbench/app.css', 'utf8');
+  const renderedRule = appCss.match(/\.wb-diff-markdown \.wb-markdown\s*\{([^}]*)\}/u)?.[1] || '';
+  const sourceRule = appCss.match(/\.wb-diff-markdown \.wb-flow-source \.l\s*\{([^}]*)\}/u)?.[1] || '';
+  const sourceShellRule = appCss.match(/\.wb-diff-markdown \.wb-flow-source\s*\{([^}]*)\}/u)?.[1] || '';
+  const inlineEvidenceRule = appCss.match(/\.wb-markdown \.wb-evidence-link\s*\{([^}]*)\}/u)?.[1] || '';
+  const inlineEvidenceIconRule = appCss.match(/\.wb-markdown \.wb-evidence-link svg\s*\{([^}]*)\}/u)?.[1] || '';
+  if (!/width:\s*100%/u.test(renderedRule) || !/max-width:\s*none/u.test(renderedRule)
+    || !/white-space:\s*pre-wrap/u.test(sourceRule)
+    || !/overflow-wrap:\s*anywhere/u.test(sourceRule)
+    || !/word-break:\s*break-word/u.test(sourceRule)
+    || !/overflow-x:\s*hidden/u.test(sourceShellRule)
+    || !/background:\s*var\(--c-surface-2\)/u.test(sourceShellRule)
+    || !/display:\s*inline/u.test(inlineEvidenceRule)
+    || !/line-height:\s*inherit/u.test(inlineEvidenceRule)
+    || !/vertical-align:\s*baseline/u.test(inlineEvidenceRule)
+    || !/vertical-align:\s*-0\.125em/u.test(inlineEvidenceIconRule)) {
+    throw new Error('Markdown 候选宽度、源码布局或证据文字基线不正确');
+  }
+  console.log('✓ Markdown 候选使用完整宽度，源码自动换行，证据与说明文字基线对齐');
+} catch (e) { console.log('✗ Markdown 候选源码布局:', e.message); bad++; }
 
 store.set({
   demo: false,

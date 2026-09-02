@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { diff } from '../lib/mock/fixtures.js';
 import { actions, store } from '../lib/appStore.js';
-import { displayEvidenceReferences } from '../lib/evidence.js';
+import {
+  displayEvidenceReferences,
+  evidenceReferenceFromHref,
+  linkEvidenceReferences,
+} from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
 import { MermaidPreview } from './FlowView.jsx';
+import { EvidenceLink } from './EvidenceLinks.jsx';
 
 const TABS = ['Diff', '渲染对照', '它会影响谁'];
 
@@ -93,6 +100,8 @@ function openCandidate(candidate, index) {
 function CandidateFileDiff({ file, materials }) {
   const sourceDiff = <DiffSource file={file} materials={materials} className="wb-flow-source" />;
   const graphical = file.path.toLowerCase().endsWith('.mmd') && String(file.after || '').trim();
+  const markdown = isMarkdownPath(file.path) && String(file.after || '').trim();
+  if (markdown) return <MarkdownCandidatePreview file={file} materials={materials} sourceDiff={sourceDiff} />;
   return (
     <div className={`wb-diff${graphical ? ' wb-diff-mermaid' : ''}`}>
       <div className="fh">
@@ -105,6 +114,39 @@ function CandidateFileDiff({ file, materials }) {
             sourceView={sourceDiff} note="当前展示待确认版本；接受后才会写入正式修订" />
         </div>
       ) : sourceDiff}
+    </div>
+  );
+}
+
+function MarkdownCandidatePreview({ file, materials, sourceDiff }) {
+  const [mode, setMode] = useState('rendered');
+  const content = linkEvidenceReferences(stripFrontmatter(file.after), materials);
+  return (
+    <div className="wb-diff wb-diff-markdown">
+      <div className="fh">
+        <span className="path">{file.path}</span><span className="spacer" />
+        <span className="t-sm muted">+{file.additions} / -{file.deletions}</span>
+      </div>
+      <div className="wb-diff-preview">
+        <div className="wb-flow-toolbar">
+          <div className="seg" role="tablist" aria-label="Markdown 候选查看方式">
+            <button role="tab" aria-selected={mode === 'rendered'} className={mode === 'rendered' ? 'on' : ''}
+              onClick={() => setMode('rendered')}>渲染</button>
+            <button role="tab" aria-selected={mode === 'source'} className={mode === 'source' ? 'on' : ''}
+              onClick={() => setMode('source')}>源码差异</button>
+          </div>
+        </div>
+        {mode === 'rendered'
+          ? <article className="wb-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
+              a: ({ node: _node, href, children, ...props }) => {
+                const reference = evidenceReferenceFromHref(href);
+                return reference
+                  ? <EvidenceLink reference={reference} materials={materials}>{children}</EvidenceLink>
+                  : <a href={href} {...props}>{children}</a>;
+              },
+            }}>{content}</Markdown></article>
+          : sourceDiff}
+      </div>
     </div>
   );
 }
@@ -135,6 +177,14 @@ function diffLines(file) {
     ...after.slice(prefix, after.length - suffix).map((line) => ['add', line]),
     ...after.slice(after.length - suffix, Math.min(after.length, after.length - suffix + 2)).map((line) => ['ctx', line]),
   ];
+}
+
+function isMarkdownPath(path) {
+  return /\.(?:md|markdown)$/iu.test(String(path || ''));
+}
+
+function stripFrontmatter(markdown) {
+  return String(markdown || '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
 }
 
 function Impact() {

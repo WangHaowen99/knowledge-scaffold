@@ -26,6 +26,8 @@ import { getStudioOperationFlow, studioError } from '../studio-api.js';
 import {
   operationFlowMode,
   operationFlowScrollCanvas,
+  operationFlowWheelZoom,
+  operationFlowZoom,
   operationStepsDiagram,
   projectOperationFlowDiagram,
 } from './operationFlowModel.js';
@@ -199,6 +201,17 @@ function OperationFlowCanvas({ diagram, focusedNodeIds }) {
   }, [fullscreen]);
 
   useEffect(() => {
+    if (!fullscreen || !canvasRef.current) return undefined;
+    const canvas = canvasRef.current;
+    const handleFullscreenWheel = (event) => {
+      event.preventDefault();
+      setZoom((current) => operationFlowWheelZoom(current, event.deltaY));
+    };
+    canvas.addEventListener('wheel', handleFullscreenWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleFullscreenWheel);
+  }, [fullscreen]);
+
+  useEffect(() => {
     if (!fullscreen || !canvasRef.current || !displayedGraph.width || !displayedGraph.height) return undefined;
     let innerFrame = 0;
     const frame = window.requestAnimationFrame(() => {
@@ -260,7 +273,7 @@ function OperationFlowCanvas({ diagram, focusedNodeIds }) {
     }
   };
 
-  const changeZoom = (value) => setZoom(Math.min(2, Math.max(0.5, Math.round(value * 4) / 4)));
+  const changeZoom = (value) => setZoom(operationFlowZoom(value));
   const edges = useMemo(() => displayedGraph.edges.map((edge) => {
     const exception = edge.data.kind === 'exception';
     const dataFlow = edge.data.kind === 'data';
@@ -289,12 +302,7 @@ function OperationFlowCanvas({ diagram, focusedNodeIds }) {
   } : undefined;
   return (
     <div ref={canvasRef} className={`studio-operation-flow-canvas${fullscreen ? ' is-scrollable is-fullscreen' : ''}`}
-      aria-label={`${diagram.title || '操作'}流程图`}
-      onWheel={(event) => {
-        if (!fullscreen) return;
-        event.preventDefault();
-        changeZoom(zoom + (event.deltaY < 0 ? 0.25 : -0.25));
-      }}>
+      aria-label={`${diagram.title || '操作'}流程图`}>
       <button type="button" className="studio-operation-flow-fullscreen"
         title={fullscreen ? '退出全屏' : '全屏查看流程图'}
         aria-label={fullscreen ? '退出流程图全屏' : '全屏查看流程图'}
