@@ -23,6 +23,8 @@ import {
   uploadPackageSource,
   savePackageDataSource,
   respondChangePlan as respondChangePlanRequest,
+  safeTerminateChangePlan as safeTerminateChangePlanRequest,
+  terminateStaleRun as terminateStaleRunRequest,
 } from './api.js';
 import { prefetchStudioBootstrap } from '../studio/studio-api.js';
 
@@ -70,6 +72,7 @@ const initial = {
   reviewedChangeGroups: [],
   studioPendingCount: 0,
   run: null,
+  recovery: null,
   statusText: '',
   loading: Boolean(initialProjectId),
   error: '',
@@ -261,6 +264,7 @@ export const actions = {
         packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
         selectedMaterial: snapshot.materials[0]?.id || '',
         run: agent.run,
+        recovery: agent.state?.recovery || null,
         interaction: agent.interaction,
         reviewedChangeGroups: [],
         activity,
@@ -401,7 +405,14 @@ export const actions = {
       actions.agentFocus(event.target);
       if (event.target.kind === 'diff') void actions.refreshSnapshot();
     }
-    if (eventType === 'state' && !replaying) store.set({ workflow: event });
+    if (eventType === 'state' && !replaying) {
+      store.set((state) => ({
+        workflow: event,
+        recovery: event.recovery
+          ? { ...(state.recovery || {}), ...event.recovery }
+          : state.recovery,
+      }));
+    }
     if (eventType === 'change_plan' && event.plan) {
       store.set({ changePlan: event.plan });
       actions.appendMessage({
@@ -704,11 +715,90 @@ export const actions = {
         : '我已在页面拒绝当前建模计划。请读取计划的最终状态并停止这份计划，不要产生任何候选修改。');
       return result;
     } catch (error) {
+      const data = error?.data && typeof error.data === 'object' ? error.data : {};
+      const staleRun = data.code === 'CHANGE_PLAN_STALE_RUN';
+      store.set({
+        error: {
+          scope: 'change_plan',
+          message: error instanceof Error ? error.message : '计划决定提交失败',
+          recovery: staleRun
+            ? '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。'
+            : '计划仍保持原状态，请在当前计划卡重试。',
+          ...(staleRun ? { staleRun: true } : {}),
+        },
+        ...(staleRun ? {
+          recovery: {
+            status: 'stale_run',
+            missing: ['run'],
+            nextSteps: Array.isArray(data.next) ? data.next : ['安全终止失效计划后重新规划'],
+          },
+        } : {}),
+      });
+      return null;
+    }
+  },
+  async safeTerminateChangePlan(planId) {
+    const { projectId } = store.get();
+    if (!projectId || !planId) return null;
+    try {
+      const result = await safeTerminateChangePlanRequest(projectId, planId);
+      store.set((state) => ({
+        changePlan: null,
+        error: '',
+        recovery: null,
+        messages: state.messages.map((message) => ({
+          ...message,
+          blocks: (message.blocks || []).filter((block) => !(block.type === 'plan' && block.plan?.id === planId)),
+        })),
+      }));
+      await actions.refreshAgentState();
+      return result;
+    } catch (error) {
       store.set({ error: {
         scope: 'change_plan',
-        message: error instanceof Error ? error.message : '计划决定提交失败',
-        recovery: '计划仍保持原状态，请在当前计划卡重试。',
+        message: error instanceof Error ? error.message : '安全终止失效计划失败，请重试',
+        recovery: '候选内容与审计记录不会被删除，可以再次尝试。',
       } });
+      return null;
+    }
+  },
+  async terminateStaleRun() {
+    const { projectId } = store.get();
+    if (!projectId) return null;
+    try {
+      const result = await terminateStaleRunRequest(projectId);
+      store.set({
+        run: null,
+        changePlan: null,
+        error: '',
+        recovery: null,
+        statusText: '已安全终止失效运行，候选内容与审计记录保留，可以重新规划',
+      });
+      await actions.refreshAgentState();
+      return result;
+    } catch (error) {
+      store.set({ error: {
+        scope: 'change_plan',
+        message: error instanceof Error ? error.message : '安全终止失效运行失败，请重试',
+        recovery: '候选内容与审计记录不会被删除，可以再次尝试。',
+      } });
+      return null;
+    }
+  },
+  async refreshAgentState() {
+    const { projectId } = store.get();
+    if (!projectId) return null;
+    try {
+      const agent = await getAgentState(projectId);
+      store.set({
+        run: agent.run,
+        interaction: agent.interaction,
+        workflow: agent.state || null,
+        recovery: agent.state?.recovery || null,
+        lastSeq: Number(agent.lastSeq) || 0,
+      });
+      return agent;
+    } catch (error) {
       return null;
     }
   },

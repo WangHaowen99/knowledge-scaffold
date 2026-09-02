@@ -226,15 +226,20 @@ def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
     """
     kind = str(interaction.kind or "")
     payload = interaction.payload or {}
-    text = json.dumps(payload, ensure_ascii=False)
     if kind == "scope_confirmation":
         return True
     if kind in {"confirmation", "release_confirmation"}:
         return False
+    question = str(payload.get("question") or "")
+    contract_summary = str(payload.get("contractSummary") or "")
+    summary = str(payload.get("summary") or "")
     return (
-        "脚本契约" in text
-        or "script contract" in text.lower()
-        or bool(str(payload.get("contractSummary") or payload.get("summary") or "").strip())
+        "脚本契约" in question
+        or "script contract" in question.lower()
+        or "脚本契约" in contract_summary
+        or "script contract" in contract_summary.lower()
+        or "脚本契约" in summary
+        or "script contract" in summary.lower()
     )
 
 
@@ -2323,20 +2328,26 @@ class AgentService:
         只能基于这些最新事实生成，避免恢复摘要回退到最初 run.prompt 或旧计划。
         """
         payload = interaction.payload or {}
+        question = str(payload.get("question") or "")[:4_000]
+        contract_summary = str(
+            payload.get("contractSummary")
+            or payload.get("summary")
+            or payload.get("question")
+            or ""
+        )[:4_000]
+        answer_snapshot = {
+            key: (value[:4_000] if isinstance(value, str) else value)
+            for key, value in dict(answer).items()
+        }
         snapshot = {
             "interactionId": interaction.id,
             "kind": interaction.kind,
-            "question": str(payload.get("question") or ""),
-            "answer": dict(answer),
-            "actionKey": action_key or str(answer.get("action") or ""),
-            "continuation": str(continuation or ""),
-            "contractSummary": str(
-                payload.get("contractSummary")
-                or payload.get("summary")
-                or payload.get("question")
-                or ""
-            ),
-            "operation": str(payload.get("operation") or ""),
+            "question": question,
+            "answer": answer_snapshot,
+            "actionKey": (action_key or str(answer.get("action") or ""))[:200],
+            "continuation": str(continuation or "")[:2_000],
+            "contractSummary": contract_summary,
+            "operation": str(payload.get("operation") or "")[:500],
             "requiresArtifact": (
                 _interaction_requires_artifact(interaction)
                 if requires_artifact is None

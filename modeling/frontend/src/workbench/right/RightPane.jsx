@@ -20,6 +20,7 @@ const selScene = (s) => s.scene;
 const selDemo = (s) => s.demo;
 const selMessages = (s) => s.messages;
 const selError = (s) => s.error;
+const selRecovery = (s) => s.recovery;
 const selLoading = (s) => s.loading;
 const selActivity = (s) => s.activity;
 const selInteraction = (s) => s.interaction;
@@ -46,6 +47,7 @@ export default function RightPane() {
   const demo = useStore(store, selDemo);
   const messages = useStore(store, selMessages);
   const error = useStore(store, selError);
+  const recovery = useStore(store, selRecovery);
   const loading = useStore(store, selLoading);
   const activity = useStore(store, selActivity);
   const interaction = useStore(store, selInteraction);
@@ -56,6 +58,7 @@ export default function RightPane() {
   const replayUntilSeq = useStore(store, selReplayUntilSeq);
   const materials = useStore(store, selMaterials);
   const interactionId = useStore(store, selPendingInteractionMessageId);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
   const scroller = useRef(null);
   const stream = useRef(null);
   const followingTail = useRef(true);
@@ -88,6 +91,15 @@ export default function RightPane() {
   const interactionGroupCount = interaction?.kind === 'confirmation'
     ? (interaction.payload?.changeGroups || []).length
     : 0;
+  const runRecovery = async () => {
+    if (recoveryBusy) return;
+    setRecoveryBusy(true);
+    try {
+      await actions.terminateStaleRun();
+    } finally {
+      setRecoveryBusy(false);
+    }
+  };
   const focusPendingInteraction = (behavior = 'smooth') => {
     const element = scroller.current;
     const target = [...(stream.current?.querySelectorAll('[data-interaction-id]') || [])]
@@ -221,6 +233,36 @@ export default function RightPane() {
               <div className="card-b t-sm">
                 <div>{userFacingText(errorMessage(error))}</div>
                 {typeof error === 'object' && error?.recovery && <small className="wb-error-recovery">{userFacingText(error.recovery)}</small>}
+                {typeof error === 'object' && error?.staleRun && (
+                  <div className="btn-row" style={{ marginTop: 'var(--s-2)' }}>
+                    <button type="button" className="btn btn-p btn-sm" disabled={recoveryBusy}
+                      onClick={() => void runRecovery()}>安全终止失效计划后重新规划</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {recovery && (
+            <div className="card card-stale" role="alert">
+              <div className="card-h">
+                <b>建模运行需要恢复</b>
+                <span className="spacer" />
+                <button className="btn btn-ghost" aria-label="刷新恢复状态" title="刷新"
+                  onClick={() => void actions.refreshAgentState()}><Icon name="history" size={13} /></button>
+              </div>
+              <div className="card-b t-sm">
+                <div>{recoveryStatusText(recovery.status)}</div>
+                {Array.isArray(recovery.nextSteps) && recovery.nextSteps.length > 0 && (
+                  <ul style={{ margin: 'var(--s-2) 0 0', paddingLeft: 'var(--s-3)' }}>
+                    {recovery.nextSteps.map((step) => <li key={step}>{userFacingText(step)}</li>)}
+                  </ul>
+                )}
+                {(recovery.status === 'stale_run' || recovery.status === 'plan_unreadable') && (
+                  <div className="btn-row" style={{ marginTop: 'var(--s-2)' }}>
+                    <button type="button" className="btn btn-p btn-sm" disabled={recoveryBusy}
+                      onClick={() => void runRecovery()}>安全终止失效计划后重新规划</button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -349,6 +391,16 @@ function Message({ m }) {
 
 function errorMessage(error) {
   return typeof error === 'object' && error ? error.message : error;
+}
+
+function recoveryStatusText(status) {
+  return ({
+    stale_run: '当前运行占用了建模计划，但运行记录已丢失，旧计划不可执行，也无法直接新建计划。',
+    plan_unreadable: '存在活动计划但当前运行无法读取，需要先安全终止失效计划。',
+    checkpoint_missing: '检查点记录缺失，恢复不完整。',
+    volume_mismatch: '运行与检查点数据库不在同一持久卷，恢复不完整。',
+    resume_failed: '自动恢复失败，已安全停在最近进展，可取消当前运行后重新规划。',
+  })[status] || '建模运行需要人工恢复。';
 }
 
 function errorTitle(error) {

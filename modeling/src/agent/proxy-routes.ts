@@ -67,6 +67,12 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     proxyJson(request, reply, `/v1/projects/${projectId(request)}/cancel`, 'POST')
   ));
 
+  app.post('/api/projects/:id/agent/recovery/terminate-stale', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/recovery/terminate-stale`, 'POST', id);
+  });
+
   app.post('/api/projects/:id/agent/interactions/:interactionId/answer', async (request, reply) => {
     const id = projectId(request);
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
