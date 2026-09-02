@@ -27,12 +27,18 @@ def _test_bash_executable() -> str:
 TEST_BASH = _test_bash_executable()
 
 
-def _run_integrity(*args: object) -> subprocess.CompletedProcess[str]:
+def _run_integrity(
+    *args: object,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    process_env = os.environ.copy()
+    process_env.update(env or {})
     return subprocess.run(
         [sys.executable, str(INTEGRITY_TOOL), *(str(value) for value in args)],
         text=True,
         capture_output=True,
         check=False,
+        env=process_env,
     )
 
 
@@ -424,6 +430,47 @@ def test_integrity_archive_has_canonical_manifest_and_verifies(tmp_path):
 
     verify = _run_integrity("verify-backup", "--backup-dir", backup)
     assert verify.returncode == 0, verify.stderr
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "environment_value"),
+    (
+        ("CONSUMER_STORAGE_ARCHIVE_MAX_TOTAL_BYTES", "1"),
+        ("CONSUMER_STORAGE_ARCHIVE_MAX_MEMBERS", "1"),
+    ),
+)
+def test_integrity_rejects_archives_over_resource_limits(
+    tmp_path,
+    environment_name,
+    environment_value,
+):
+    runtime, auth = _write_synthetic_tree(tmp_path / "source")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    created = _run_integrity(
+        "create-archive",
+        "--runtime",
+        runtime,
+        "--auth",
+        auth,
+        "--archive",
+        backup / "storage-data.tar.gz",
+        "--manifest",
+        backup / "storage-manifest.json",
+        "--storage-mode",
+        "bind",
+    )
+    assert created.returncode == 0, created.stderr
+
+    verified = _run_integrity(
+        "verify-backup",
+        "--backup-dir",
+        backup,
+        env={environment_name: environment_value},
+    )
+
+    assert verified.returncode == 2
+    assert "archive resource limit exceeded" in verified.stderr.lower()
 
 
 def test_integrity_rejects_corrupt_archive(tmp_path):

@@ -6,6 +6,7 @@ import argparse
 import asyncio
 from contextlib import contextmanager
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -19,7 +20,18 @@ from unittest.mock import patch
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
+    sys.path.append(str(BACKEND_ROOT))
+
+result_logger = logging.getLogger(f"{__name__}.result")
+
+
+def _configure_result_logging() -> None:
+    result_logger.handlers.clear()
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    result_logger.addHandler(handler)
+    result_logger.setLevel(logging.INFO)
+    result_logger.propagate = False
 
 
 def percentile(values: list[float], percentile_value: float) -> float:
@@ -564,6 +576,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_result_logging()
     args = _parser().parse_args(argv)
     report = run_benchmark(
         samples=args.samples,
@@ -573,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
         first_page_p95_ms=args.first_page_p95_ms,
         create_run_preflight_p95_ms=args.create_run_preflight_p95_ms,
     )
-    print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+    result_logger.info("%s", json.dumps(report, ensure_ascii=True, sort_keys=True))
     return 0 if report["passed"] else 1
 
 

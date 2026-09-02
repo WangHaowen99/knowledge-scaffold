@@ -408,6 +408,7 @@ def _fsync_directory(path: Path) -> None:
     descriptor = os.open(
         path,
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        0o700,
     )
     try:
         os.fsync(descriptor)
@@ -1349,7 +1350,10 @@ def _workspace_catalog_bypass(
                 workspace_id=workspace_id,
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).debug(
+                "Workspace catalog bypass metric recording failed",
+                exc_info=True,
+            )
 
 
 def create_workspace(

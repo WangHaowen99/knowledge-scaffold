@@ -594,13 +594,22 @@ class ExecutionStore:
                 self._summary_index.complete_source_projection(projection_token)
             return True
         except Exception:
-            logger.warning("Session summary execution projection failed for %s", session_id)
+            logger.warning(
+                "Session summary execution projection failed for %s",
+                session_id,
+                exc_info=True,
+            )
             self._abandon_runtime_projection(projection_token)
-            try:
-                self._summary_index.mark_degraded("execution_projection_failed")
-            except Exception:
-                pass
+            self._mark_summary_degraded("execution_projection_failed")
             return False
+
+    def _mark_summary_degraded(self, reason: str) -> None:
+        if self._summary_index is None:
+            return
+        try:
+            self._summary_index.mark_degraded(reason)
+        except Exception:
+            logger.warning("Session summary degradation marker failed", exc_info=True)
 
     def _begin_runtime_projection(self) -> str | None:
         if self._summary_index is None:
@@ -611,11 +620,11 @@ class ExecutionStore:
         try:
             return begin()
         except Exception:
-            logger.warning("Session summary execution marker could not be published")
-            try:
-                self._summary_index.mark_degraded("execution_projection_marker_failed")
-            except Exception:
-                pass
+            logger.warning(
+                "Session summary execution marker could not be published",
+                exc_info=True,
+            )
+            self._mark_summary_degraded("execution_projection_marker_failed")
             return None
 
     def _abandon_runtime_projection(self, projection_token: str | None) -> None:
@@ -627,12 +636,11 @@ class ExecutionStore:
         try:
             abandon(projection_token)
         except Exception:
-            try:
-                self._summary_index.mark_degraded(
-                    "execution_projection_marker_failed"
-                )
-            except Exception:
-                pass
+            logger.warning(
+                "Session summary execution marker abandon failed",
+                exc_info=True,
+            )
+            self._mark_summary_degraded("execution_projection_marker_failed")
 
     def get_session_summary_runtime(self, session_id: str) -> Dict[str, Any]:
         """Return execution-owned fields for an explicit index rebuild."""
@@ -2763,11 +2771,9 @@ class ExecutionStore:
                 logger.warning(
                     "Session summary execution delete projection failed for %s",
                     session_id,
+                    exc_info=True,
                 )
-                try:
-                    self._summary_index.mark_degraded("execution_projection_failed")
-                except Exception:
-                    pass
+                self._mark_summary_degraded("execution_projection_failed")
         return deleted
 
     # =========================================================================

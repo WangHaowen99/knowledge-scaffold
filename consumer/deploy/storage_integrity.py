@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shutil
 import stat
@@ -20,6 +21,69 @@ ARCHIVE_NAME = "storage-data.tar.gz"
 MANIFEST_NAME = "storage-manifest.json"
 CHECKSUMS_NAME = "storage-checksums.sha256"
 DATASET_NAMES = ("runtime", "auth")
+DEFAULT_MAX_ARCHIVE_MEMBERS = 1_000_000
+DEFAULT_MAX_ARCHIVE_TOTAL_BYTES = 1024 * 1024 * 1024 * 1024
+DEFAULT_MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024 * 1024
+
+logger = logging.getLogger(__name__)
+result_logger = logging.getLogger(f"{__name__}.result")
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
+    if result_logger.handlers:
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    result_logger.addHandler(handler)
+    result_logger.setLevel(logging.INFO)
+    result_logger.propagate = False
+
+
+def _positive_environment_limit(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _archive_resource_limits() -> tuple[int, int, int]:
+    return (
+        _positive_environment_limit(
+            "CONSUMER_STORAGE_ARCHIVE_MAX_MEMBERS",
+            DEFAULT_MAX_ARCHIVE_MEMBERS,
+        ),
+        _positive_environment_limit(
+            "CONSUMER_STORAGE_ARCHIVE_MAX_TOTAL_BYTES",
+            DEFAULT_MAX_ARCHIVE_TOTAL_BYTES,
+        ),
+        _positive_environment_limit(
+            "CONSUMER_STORAGE_ARCHIVE_MAX_MEMBER_BYTES",
+            DEFAULT_MAX_ARCHIVE_MEMBER_BYTES,
+        ),
+    )
+
+
+def _enforce_archive_resource_budget(
+    member: tarfile.TarInfo,
+    *,
+    member_count: int,
+    total_bytes: int,
+    limits: tuple[int, int, int],
+) -> None:
+    max_members, max_total_bytes, max_member_bytes = limits
+    if member_count > max_members:
+        raise ValueError("archive resource limit exceeded: too many members")
+    if member.size < 0 or member.size > max_member_bytes:
+        raise ValueError("archive resource limit exceeded: member size")
+    if total_bytes > max_total_bytes:
+        raise ValueError("archive resource limit exceeded: total bytes")
 
 
 def _sha256(path: Path) -> str:
@@ -117,16 +181,20 @@ def create_manifest(runtime: Path, auth: Path, storage_mode: str) -> dict[str, A
 
 def _atomic_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(raw_temp)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{path.name}.",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
         os.replace(temp_path, path)
     finally:
-        temp_path.unlink(missing_ok=True)
+        if temp_path.exists():
+            os.unlink(temp_path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -144,13 +212,15 @@ def _tar_info_for_directory(path: Path, archive_name: str) -> tarfile.TarInfo:
 
 def _create_tar(archive: Path, roots: dict[str, Path]) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, raw_temp = tempfile.mkstemp(
-        prefix=f".{archive.name}.", suffix=".tmp", dir=archive.parent
-    )
-    os.close(descriptor)
-    temp_path = Path(raw_temp)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{archive.name}.",
+        suffix=".tmp",
+        dir=archive.parent,
+        delete=False,
+    ) as temporary:
+        temp_path = Path(temporary.name)
     try:
-        with tarfile.open(temp_path, "w:gz") as handle:
+        with tarfile.TarFile.gzopen(temp_path, "w") as handle:
             for dataset_name in DATASET_NAMES:
                 root = roots[dataset_name].resolve()
                 handle.addfile(_tar_info_for_directory(root, dataset_name))
@@ -171,7 +241,8 @@ def _create_tar(archive: Path, roots: dict[str, Path]) -> None:
             os.fsync(handle.fileno())
         os.replace(temp_path, archive)
     finally:
-        temp_path.unlink(missing_ok=True)
+        if temp_path.exists():
+            os.unlink(temp_path)
 
 
 def _write_storage_checksums(backup_dir: Path) -> None:
@@ -306,15 +377,27 @@ def _safe_member_parts(member: tarfile.TarInfo) -> tuple[str, ...]:
 
 def _extract_tar(archive: Path, runtime: Path, auth: Path) -> None:
     roots = {"runtime": runtime, "auth": auth}
+    limits = _archive_resource_limits()
     for root in roots.values():
         root.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, "r:gz") as handle:
+    with tarfile.TarFile.gzopen(archive, "r") as handle:
         members = handle.getmembers()
-        for member in members:
+        total_bytes = 0
+        for member_count, member in enumerate(members, start=1):
             _safe_member_parts(member)
+            total_bytes += member.size
+            _enforce_archive_resource_budget(
+                member,
+                member_count=member_count,
+                total_bytes=total_bytes,
+                limits=limits,
+            )
         for member in members:
             parts = _safe_member_parts(member)
-            root = roots[parts[0]].resolve()
+            root = roots.get(parts[0])
+            if root is None:
+                raise ValueError(f"unsafe archive member: {member.name!r}")
+            root = root.resolve()
             relative_parts = parts[1:]
             target = root.joinpath(*relative_parts)
             target.resolve().relative_to(root)
@@ -327,19 +410,22 @@ def _extract_tar(archive: Path, runtime: Path, auth: Path) -> None:
             source = handle.extractfile(member)
             if source is None:
                 raise ValueError(f"cannot read archive member: {member.name}")
-            descriptor, raw_temp = tempfile.mkstemp(
-                prefix=f".{target.name}.restore-", dir=target.parent
-            )
-            temp_path = Path(raw_temp)
-            try:
-                with source, os.fdopen(descriptor, "wb") as destination:
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{target.name}.restore-",
+                dir=target.parent,
+                delete=False,
+            ) as destination:
+                temp_path = Path(destination.name)
+                with source:
                     shutil.copyfileobj(source, destination, length=1024 * 1024)
                     destination.flush()
                     os.fsync(destination.fileno())
+            try:
                 temp_path.chmod(member.mode & 0o777)
                 os.replace(temp_path, target)
             finally:
-                temp_path.unlink(missing_ok=True)
+                if temp_path.exists():
+                    os.unlink(temp_path)
 
 
 def _assert_archive_matches_manifest(archive: Path, manifest: dict[str, Any]) -> None:
@@ -349,9 +435,18 @@ def _assert_archive_matches_manifest(archive: Path, manifest: dict[str, Any]) ->
     }
     seen_roots: set[str] = set()
     seen_entries: set[tuple[str, str]] = set()
-    with tarfile.open(archive, "r:gz") as handle:
-        for member in handle:
+    limits = _archive_resource_limits()
+    total_bytes = 0
+    with tarfile.TarFile.gzopen(archive, "r") as handle:
+        for member_count, member in enumerate(handle, start=1):
             parts = _safe_member_parts(member)
+            total_bytes += member.size
+            _enforce_archive_resource_budget(
+                member,
+                member_count=member_count,
+                total_bytes=total_bytes,
+                limits=limits,
+            )
             dataset_name = parts[0]
             if len(parts) == 1:
                 if not member.isdir() or dataset_name in seen_roots:
@@ -534,6 +629,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_logging()
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "create-archive":
@@ -556,12 +652,12 @@ def main(argv: list[str] | None = None) -> int:
             _assert_tree_matches(args.runtime, args.auth, result)
         else:
             export_preflight_view(args.runtime, args.auth, args.output)
-            print("ok")
+            result_logger.info("ok")
             return 0
-        print(result["tree_sha256"])
+        result_logger.info(result.get("tree_sha256", ""))
         return 0
-    except (OSError, ValueError, json.JSONDecodeError, tarfile.TarError) as exc:
-        print(f"[storage-integrity][error] {exc}", file=sys.stderr)
+    except (OSError, ValueError, tarfile.TarError) as exc:
+        logger.error("[storage-integrity][error] %s", exc)
         return 2
 
 

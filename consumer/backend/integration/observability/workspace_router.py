@@ -477,17 +477,14 @@ class WorkspaceObservabilityRouter:
         return True
 
     def _ensure_close_observers_locked(self) -> None:
-        workspace_ids = {
-            workspace_id
-            for workspace_id in self._run_workspaces.values()
-            if workspace_id
-        }
-        workspace_ids.update(
-            span.workspace_id
-            for spans in self._pending_spans_by_run.values()
-            for span in spans
-            if span.workspace_id
-        )
+        workspace_ids = set()
+        for workspace_id in self._run_workspaces.values():
+            if workspace_id:
+                workspace_ids.add(workspace_id)
+        for spans in self._pending_spans_by_run.values():
+            for span in spans:
+                if span.workspace_id:
+                    workspace_ids.add(span.workspace_id)
         for workspace_id in sorted(workspace_ids):
             if workspace_id not in self._observers_by_workspace:
                 self._create_observer_locked(workspace_id)

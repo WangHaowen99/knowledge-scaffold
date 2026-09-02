@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import stat
 import time
 from collections.abc import Callable, Mapping
@@ -11,6 +12,9 @@ from pathlib import Path
 from threading import RLock
 from types import MappingProxyType
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -370,4 +374,4 @@ def _record_workspace_catalog_access(
             workspace_id=workspace_id,
         )
     except Exception:
-        return
+        logger.debug("Workspace catalog metric recording failed", exc_info=True)
