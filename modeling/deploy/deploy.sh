@@ -265,7 +265,7 @@ deploy_release() {
         -p mw-modeling \
         -f "${compose_file}" \
         --project-directory "${bundle_root}" \
-        up -d
+        up -d --remove-orphans
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
@@ -298,7 +298,7 @@ deploy_source() {
         -p mw-modeling \
         -f "${compose_file}" \
         --project-directory "${repo_root}/deploy" \
-        up -d --build
+        up -d --build --remove-orphans
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"

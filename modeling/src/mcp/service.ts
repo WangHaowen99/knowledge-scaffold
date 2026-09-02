@@ -216,6 +216,19 @@ export async function issueProjectMcpToken(input: {
   const expiresAt = new Date(Date.parse(createdAt) + ttlSeconds * 1_000).toISOString();
   const tokenId = `mcp_${randomUUID().replaceAll('-', '')}`;
 
+  const token = await new SignJWT({
+    project_id: project.id,
+    scopes,
+  })
+    .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+    .setIssuer(config.mcp.tokenIssuer)
+    .setAudience(config.mcp.tokenAudience)
+    .setSubject(input.subjectUsername)
+    .setJti(tokenId)
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(Date.parse(expiresAt) / 1_000))
+    .sign(signingSecret());
+
   getDb().prepare(`INSERT INTO project_mcp_tokens (
     id, project_id, token_name, subject_username, issued_by, scopes_json,
     expires_at, created_at, last_used_at, revoked_at, revoked_by
@@ -230,19 +243,6 @@ export async function issueProjectMcpToken(input: {
       expiresAt,
       createdAt,
     );
-
-  const token = await new SignJWT({
-    project_id: project.id,
-    scopes,
-  })
-    .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
-    .setIssuer(config.mcp.tokenIssuer)
-    .setAudience(config.mcp.tokenAudience)
-    .setSubject(input.subjectUsername)
-    .setJti(tokenId)
-    .setIssuedAt()
-    .setExpirationTime(Math.floor(Date.parse(expiresAt) / 1_000))
-    .sign(signingSecret());
 
   return {
     endpoint,
