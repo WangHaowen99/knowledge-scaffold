@@ -3059,6 +3059,56 @@ async def test_cancel_run_publishes_pending_interaction_closure(settings) -> Non
         await runtime.shutdown()
 
 
+async def test_cancel_run_settles_unfinished_tool_activity(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    run = runtime.store.create_run(RunRecord(
+        id="run_cancel_change_set",
+        project_id="project_cancel_change_set",
+        session_id="session_cancel_change_set",
+        status=RUN_RUNNING,
+        prompt="继续知识建模",
+        token_fingerprint="000000000000",
+    ))
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    runtime._live[run.id] = LiveRun(  # noqa: SLF001 - cancellation reconciliation invariant
+        run_id=run.id,
+        project_id=run.project_id,
+        token="token_cancel_change_set",
+    )
+    runtime.events.publish(run.project_id, run.id, "progress", {
+        "text": "正在原子生成待确认修改",
+        "detail": "正在处理当前批次",
+        "counters": {},
+    })
+    runtime.events.publish(run.project_id, run.id, "tool", {
+        "name": "stage_change_set",
+        "phase": "started",
+        "summary": "正在原子生成待确认修改",
+        "toolCallId": "call_cancel_change_set",
+    })
+    try:
+        cancelled = await runtime.cancel(project_id=run.project_id)
+
+        events = runtime.store.events_after(run.project_id, 0)
+        tool_events = [
+            event for event in events
+            if event.kind == "tool"
+            and event.payload.get("toolCallId") == "call_cancel_change_set"
+        ]
+        assert cancelled["status"] == "cancelled"
+        assert [event.payload.get("phase") for event in tool_events] == ["started", "cancelled"]
+        assert tool_events[-1].payload["summary"] == "运行已停止，当前操作已取消"
+        assert runtime.store.unfinished_tool_events(run.id) == []
+        assert runtime.project_state(run.project_id)["activity"] is None
+        cancelled_status = next(
+            event for event in events
+            if event.kind == "status" and event.payload.get("status") == "cancelled"
+        )
+        assert tool_events[-1].seq < cancelled_status.seq
+    finally:
+        await runtime.shutdown()
+
+
 async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("run_evaluation", {})], []],

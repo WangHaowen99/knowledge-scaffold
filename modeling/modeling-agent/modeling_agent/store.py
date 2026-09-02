@@ -1315,6 +1315,31 @@ class RuntimeStore:
             created_at=row["created_at"],
         )
 
+    def unfinished_tool_events(self, run_id: str) -> list[RuntimeEvent]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM agent_events
+                WHERE run_id = ? AND kind = 'tool' ORDER BY seq""",
+                (run_id,),
+            ).fetchall()
+        active: dict[str, RuntimeEvent] = {}
+        for row in rows:
+            event = RuntimeEvent(
+                seq=int(row["seq"]),
+                project_id=row["project_id"],
+                run_id=row["run_id"],
+                kind=row["kind"],
+                payload=_object(row["payload_json"]),
+                created_at=row["created_at"],
+            )
+            phase = str(event.payload.get("phase") or "")
+            identity = _tool_event_identity(event)
+            if phase in {"started", "repairing"}:
+                active[identity] = event
+            elif phase in {"completed", "failed", "blocked", "rejected", "waiting", "cancelled"}:
+                active.pop(identity, None)
+        return sorted(active.values(), key=lambda event: event.seq)
+
     def latest_event_seq(self, project_id: str) -> int:
         with self._lock:
             row = self._db.execute(
@@ -1404,6 +1429,18 @@ def _arguments_hash(arguments: dict[str, Any]) -> str:
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _tool_event_identity(event: RuntimeEvent) -> str:
+    payload = event.payload
+    tool_call_id = str(payload.get("toolCallId") or "").strip()
+    if tool_call_id:
+        return f"call:{tool_call_id}"
+    trace_group_id = str(payload.get("traceGroupId") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if trace_group_id:
+        return f"group:{trace_group_id}"
+    return f"name:{name}"
 
 
 def _retry_entry_from_row(row: sqlite3.Row) -> dict[str, Any]:
