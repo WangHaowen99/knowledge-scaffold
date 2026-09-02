@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   baseline_revision TEXT NOT NULL DEFAULT '',
   candidate_revision TEXT NOT NULL DEFAULT '',
   interaction_id TEXT NOT NULL DEFAULT '',
+  latest_interaction_json TEXT NOT NULL DEFAULT '{}',
   result TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -224,6 +225,10 @@ class RuntimeStore:
             # 数据库中已有的运行可能仍持有旧工具调用 checkpoint，不能强制切换 schema。
             self._db.execute(
                 "ALTER TABLE agent_runs ADD COLUMN tool_profile TEXT NOT NULL DEFAULT 'legacy-v1'"
+            )
+        if "latest_interaction_json" not in columns:
+            self._db.execute(
+                "ALTER TABLE agent_runs ADD COLUMN latest_interaction_json TEXT NOT NULL DEFAULT '{}'"
             )
         state_columns = {
             str(row["name"])
@@ -469,8 +474,8 @@ class RuntimeStore:
                 """INSERT INTO agent_runs
                 (id, project_id, session_id, status, prompt, token_fingerprint,
                  tool_profile, run_credential, baseline_revision, candidate_revision, interaction_id,
-                 result, error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 latest_interaction_json, result, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _run_values(run),
             )
             self._transition_project_state_locked(
@@ -511,10 +516,15 @@ class RuntimeStore:
             "baseline_revision",
             "candidate_revision",
             "interaction_id",
+            "latest_interaction",
             "result",
             "error",
         }
         clean = {key: value for key, value in changes.items() if key in allowed}
+        if "latest_interaction" in clean and isinstance(clean["latest_interaction"], dict):
+            clean["latest_interaction"] = _json(clean["latest_interaction"])
+        if "latest_interaction" in clean:
+            clean["latest_interaction_json"] = clean.pop("latest_interaction")
         if not clean:
             return self.require_run(run_id)
         clean["updated_at"] = now_iso()
@@ -1252,6 +1262,7 @@ def _run_values(run: RunRecord) -> tuple[Any, ...]:
         run.baseline_revision,
         run.candidate_revision,
         run.interaction_id,
+        _json(run.latest_interaction),
         run.result,
         run.error,
         run.created_at,
@@ -1272,6 +1283,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         baseline_revision=row["baseline_revision"],
         candidate_revision=row["candidate_revision"],
         interaction_id=row["interaction_id"],
+        latest_interaction=_object(row["latest_interaction_json"]),
         result=row["result"],
         error=row["error"],
         created_at=row["created_at"],

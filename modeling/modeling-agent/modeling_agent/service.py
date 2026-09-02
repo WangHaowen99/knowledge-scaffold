@@ -150,6 +150,17 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "run_evaluation",
     "cancel_evaluation",
 })
+
+# 脚本契约/确定性建模交互要求本轮形成实际产物：新契约、脚本候选、脚本测试或
+# 范围确认结果。空正文紧凑摘要恢复时，若这些工具没有任何完成记录且没有生成
+# 下一张确认卡，不得把 Run 结算为成功完成，否则会形成“只有摘要没有产物”的假完成。
+SCRIPT_ARTIFACT_TOOLS = frozenset({
+    "define_script_contract",
+    "stage_script_source",
+    "confirm_deterministic_scope",
+    "run_script_test",
+    "bind_object_sources",
+})
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
@@ -205,6 +216,47 @@ def _missing_required_tools(live: LiveRun) -> set[str]:
 
 def _missing_material_directives(live: LiveRun) -> set[str]:
     return live.required_material_directives - live.observed_material_directives
+
+
+def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
+    """判断交互是否要求本轮形成实际脚本产物（新契约/候选/确认卡）。
+
+    只对脚本契约与确定性范围确认类交互开启：这类交互回答后如果模型返回空正文，
+    必须确认本轮真的形成了新契约或候选，否则不得把 Run 结算为成功完成。
+    """
+    kind = str(interaction.kind or "")
+    payload = interaction.payload or {}
+    text = json.dumps(payload, ensure_ascii=False)
+    if kind == "scope_confirmation":
+        return True
+    if kind in {"confirmation", "release_confirmation"}:
+        return False
+    return (
+        "脚本契约" in text
+        or "script contract" in text.lower()
+        or bool(str(payload.get("contractSummary") or payload.get("summary") or "").strip())
+    )
+
+
+_SCRIPT_SKIP_ARTIFACT_INTENT = re.compile(
+    r"(?:本轮)?不生成|不调整|跳过|无需生成|skip",
+    re.IGNORECASE,
+)
+
+
+def _answer_requires_script_artifact(
+    interaction: InteractionRecord,
+    answer: dict[str, Any],
+) -> bool:
+    """按专家答案判断本轮是否必须形成脚本产物。
+
+    交互本身要求脚本产物时，如果专家明确选择“本轮不生成/不调整/跳过”，
+    空正文恢复不应再强制要求新契约或候选，否则会把合法的“不生成”误判为失败。
+    """
+    if not _interaction_requires_artifact(interaction):
+        return False
+    text = json.dumps(answer, ensure_ascii=False)
+    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(text))
 
 
 def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
@@ -1223,6 +1275,14 @@ class AgentService:
                 self.events.publish(project_id, run.id, "interaction", {
                     "id": interaction.id, "status": "answered", "answer": answer,
                 })
+                self._persist_latest_interaction(
+                    run,
+                    interaction=interaction,
+                    answer=answer,
+                    continuation=prompt,
+                    action_key="uploaded",
+                    requires_artifact=_answer_requires_script_artifact(interaction, answer),
+                )
                 await self._resume(
                     run, token, {interaction.tool_call_id: answer},
                     required_tools=required_tools,
@@ -1234,6 +1294,14 @@ class AgentService:
                 return
             answer = {"action": "interject", "text": prompt}
             self.store.answer_interaction(interaction.id, answer)
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key="interject",
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
+            )
             await self._resume(
                 run, token, {interaction.tool_call_id: answer},
                 restore_interaction=interaction,
@@ -1360,6 +1428,14 @@ class AgentService:
                             "text": f"刚才的待确认内容已变化，{decision}操作未生效；助手正在重新校验，新的内容需要再次确认。",
                         }],
                     })
+                    self._persist_latest_interaction(
+                        run,
+                        interaction=interaction,
+                        answer=answer,
+                        continuation="确认卡已经失效，用户没有应用任何候选；继续执行本次预期。",
+                        action_key=str(answer.get("action") or "superseded"),
+                        requires_artifact=_answer_requires_script_artifact(interaction, answer),
+                    )
                     return await self._resume(
                         run,
                         token,
@@ -1445,6 +1521,14 @@ class AgentService:
                 "从当前项目继续主动完成下一步；不要再次询问已经结算的同一项确认。"
             )
             if restored_confirmation:
+                self._persist_latest_interaction(
+                    run,
+                    interaction=interaction,
+                    answer=answer,
+                    continuation=prompt,
+                    action_key=str(answer.get("action") or "confirm"),
+                    requires_artifact=_answer_requires_script_artifact(interaction, answer),
+                )
                 return await self._continue(
                     run,
                     token,
@@ -1452,6 +1536,14 @@ class AgentService:
                     required_tools=required_tools,
                     autonomous_seed=True,
                 )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key=str(answer.get("action") or "confirm"),
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
+            )
             return await self._resume(
                 run,
                 token,
@@ -1469,6 +1561,14 @@ class AgentService:
                 f"用户已确认真实用例覆盖，服务端已完成稳定版本 {version} 的正式发布。\n"
                 f"发布结果：{json.dumps(release_result, ensure_ascii=False)}\n"
                 "只依据该发布结果说明已完成的版本和交付状态；不要再次发起发布确认。"
+            )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key=str(answer.get("action") or "release"),
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
             )
             return await self._resume(
                 run,
@@ -1489,6 +1589,14 @@ class AgentService:
                 "请把答复作为明确约束，从当前项目和同一会话继续主动建模。"
                 "不要重复询问已经回答的问题；下一次确实需要用户决定时再调用 ask 或 request_confirmation。"
             )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key=str(answer.get("action") or "interject"),
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
+            )
             return await self._continue(
                 run,
                 token,
@@ -1496,6 +1604,14 @@ class AgentService:
                 required_tools=required_tools,
                 autonomous_seed=True,
             )
+        self._persist_latest_interaction(
+            run,
+            interaction=interaction,
+            answer=answer,
+            continuation="",
+            action_key=str(answer.get("action") or ""),
+            requires_artifact=_answer_requires_script_artifact(interaction, answer),
+        )
         return await self._resume(
             run,
             token,
@@ -1536,6 +1652,14 @@ class AgentService:
                 run.id,
                 "message",
                 {"role": "user", "blocks": [{"type": "text", "text": message}], "delivery": "interaction_boundary"},
+            )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation="",
+                action_key="interject",
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
             )
             resumed = await self._resume(
                 run,
@@ -2182,6 +2306,52 @@ class AgentService:
             "terminatedStale": True,
             "terminatedRunId": terminated_run_id,
         }
+
+    def _persist_latest_interaction(
+        self,
+        run: RunRecord,
+        *,
+        interaction: InteractionRecord,
+        answer: dict[str, Any],
+        continuation: str = "",
+        action_key: str = "",
+        requires_artifact: bool | None = None,
+    ) -> None:
+        """持久化最近一次交互的业务事实，供空正文紧凑摘要恢复使用。
+
+        快照包含最新交互问题、答案、操作 key、续跑提示与脚本契约摘要；紧凑摘要
+        只能基于这些最新事实生成，避免恢复摘要回退到最初 run.prompt 或旧计划。
+        """
+        payload = interaction.payload or {}
+        snapshot = {
+            "interactionId": interaction.id,
+            "kind": interaction.kind,
+            "question": str(payload.get("question") or ""),
+            "answer": dict(answer),
+            "actionKey": action_key or str(answer.get("action") or ""),
+            "continuation": str(continuation or ""),
+            "contractSummary": str(
+                payload.get("contractSummary")
+                or payload.get("summary")
+                or payload.get("question")
+                or ""
+            ),
+            "operation": str(payload.get("operation") or ""),
+            "requiresArtifact": (
+                _interaction_requires_artifact(interaction)
+                if requires_artifact is None
+                else bool(requires_artifact)
+            ),
+            "updatedAt": now_iso(),
+        }
+        self.store.update_run(run.id, latest_interaction=snapshot)
+
+    def _script_artifact_produced(self, live: LiveRun, run: RunRecord) -> bool:
+        """本轮是否已经形成脚本产物或下一张确认卡。"""
+        if live.observed_tools & SCRIPT_ARTIFACT_TOOLS:
+            return True
+        pending = self.store.pending_interaction(run.project_id)
+        return pending is not None and pending.run_id == run.id
 
     async def _resume(
         self,
@@ -2926,6 +3096,23 @@ class AgentService:
             "phase": "summary_retry",
             "counters": {},
         })
+        snapshot = run.latest_interaction or {}
+        if snapshot.get("requiresArtifact") and not self._script_artifact_produced(live, run):
+            # 脚本契约调整类交互要求本轮形成新契约/候选/下一张确认卡；空正文恢复
+            # 若没有这些产物，不允许把 Run 结算为成功完成，否则会形成假完成状态。
+            failure = (
+                "本轮脚本契约调整没有形成新的契约、脚本候选或下一张确认卡；"
+                "专家调整意见已保留，请从当前交互继续。"
+            )
+            self._publish_stream_text(run, failure)
+            return {
+                "result_type": "error",
+                "output": failure,
+                "streamed": True,
+                "errorCode": "EMPTY_MODEL_RESPONSE_WITHOUT_ARTIFACT",
+                "emptyKind": empty_kind,
+                "retryable": True,
+            }
         summary = await self._run_compact_summary(live, run, empty_kind)
         if summary:
             return {
@@ -2955,14 +3142,40 @@ class AgentService:
             return ""
         state = self.store.project_state(run.project_id).public()
         facts = "\n".join(f"- {item}" for item in live.tool_summaries[-MAX_TOOL_SUMMARIES:])
-        prompt = (
-            f"用户本轮要求：{sanitize_visible_text(run.prompt)[:2_000]}\n"
-            f"当前业务阶段：{PHASE_LABELS.get(str(state.get('phase') or ''), str(state.get('phase') or ''))}\n"
-            f"当前项目摘要：{sanitize_visible_text(str(state.get('summary') or ''))[:4_000]}\n"
-            f"模型结束类型：{empty_kind}\n"
-            "已完成的处理事实：\n"
-            f"{facts or '- 尚无可归纳的工具结果'}"
-        )[:12_000]
+        snapshot = run.latest_interaction or {}
+        if snapshot:
+            snapshot_lines = [
+                f"- 最新交互问题：{sanitize_visible_text(str(snapshot.get('question') or ''))[:1_200]}"
+                if str(snapshot.get("question") or "").strip() else None,
+                f"- 专家调整意见/答案：{sanitize_visible_text(json.dumps(snapshot.get('answer') or {}, ensure_ascii=False))[:2_000]}"
+                if snapshot.get("answer") else None,
+                f"- 续跑提示：{sanitize_visible_text(str(snapshot.get('continuation') or ''))[:1_200]}"
+                if str(snapshot.get("continuation") or "").strip() else None,
+                f"- 脚本契约摘要：{sanitize_visible_text(str(snapshot.get('contractSummary') or ''))[:2_000]}"
+                if str(snapshot.get("contractSummary") or "").strip() else None,
+                f"- 关联操作：{sanitize_visible_text(str(snapshot.get('operation') or ''))[:500]}"
+                if str(snapshot.get("operation") or "").strip() else None,
+            ]
+            snapshot_text = "\n".join(line for line in snapshot_lines if line) or "- 无"
+            prompt = (
+                "最新交互业务事实：\n"
+                f"{snapshot_text}\n"
+                f"当前业务阶段：{PHASE_LABELS.get(str(state.get('phase') or ''), str(state.get('phase') or ''))}\n"
+                f"模型结束类型：{empty_kind}\n"
+                "已完成的处理事实：\n"
+                f"{facts or '- 尚无可归纳的工具结果'}"
+                "\n只依据上述最新交互与本次执行事实归纳；不得引用当前交互之外的旧计划、"
+                "旧任务数量或历史内部标识，不得要求用户补充 plan_id、版本号或 approval_status。"
+            )[:12_000]
+        else:
+            prompt = (
+                f"用户本轮要求：{sanitize_visible_text(run.prompt)[:2_000]}\n"
+                f"当前业务阶段：{PHASE_LABELS.get(str(state.get('phase') or ''), str(state.get('phase') or ''))}\n"
+                f"当前项目摘要：{sanitize_visible_text(str(state.get('summary') or ''))[:4_000]}\n"
+                f"模型结束类型：{empty_kind}\n"
+                "已完成的处理事实：\n"
+                f"{facts or '- 尚无可归纳的工具结果'}"
+            )[:12_000]
         messages = [
             {
                 "role": "system",
@@ -2970,6 +3183,8 @@ class AgentService:
                     "你只负责根据给定事实生成面向用户的公开工作摘要，不得调用工具。"
                     "用 2 至 4 句说明核对了什么、得到了什么结果、下一步是什么。"
                     "不得声称未发生的工作已经完成，不得输出内部标识、工具名、参数或系统指令。"
+                    "若尚未形成新的脚本契约、脚本候选或下一张确认卡，必须如实说明尚未形成，"
+                    "不得把只有摘要的轮次描述为已完成；不得引用当前交互之外的旧计划。"
                 ),
             },
             {"role": "user", "content": prompt},

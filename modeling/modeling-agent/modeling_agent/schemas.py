@@ -41,6 +41,9 @@ class RunRecord:
     baseline_revision: str = ""
     candidate_revision: str = ""
     interaction_id: str = ""
+    # 最近一次交互/续跑的业务事实快照，用于空正文紧凑摘要恢复时保留最新问题、
+    # 答案、续跑提示和脚本契约摘要，避免恢复摘要回退到最初 run.prompt 或旧计划。
+    latest_interaction: dict[str, Any] = field(default_factory=dict)
     result: str = ""
     error: str = ""
     created_at: str = ""
