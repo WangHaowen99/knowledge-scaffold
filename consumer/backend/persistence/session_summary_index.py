@@ -1069,7 +1069,7 @@ def _decode_cursor(cursor: str) -> tuple[int, tuple[int, str, str]]:
             validate=True,
         )
         payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError) as exc:
+    except ValueError as exc:
         raise InvalidSessionCursor("session cursor is invalid") from exc
     if not isinstance(payload, Mapping):
         raise InvalidSessionCursor("session cursor is invalid")

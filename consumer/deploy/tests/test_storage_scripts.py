@@ -388,6 +388,12 @@ def test_storage_safety_entrypoints_exist():
     assert expected <= {path.name for path in DEPLOY_ROOT.iterdir()}
 
 
+def test_storage_integrity_cli_does_not_configure_the_root_logger():
+    source = INTEGRITY_TOOL.read_text(encoding="utf-8")
+
+    assert "logging.basicConfig" not in source
+
+
 def test_integrity_archive_has_canonical_manifest_and_verifies(tmp_path):
     runtime, auth = _write_synthetic_tree(tmp_path / "source")
     backup = tmp_path / "backup"
