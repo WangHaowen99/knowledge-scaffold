@@ -27,10 +27,7 @@ export type DataSourceConsumerSync = (
 
 function consumerProviderConfig(source: ConnectionDataSourceInput): Record<string, unknown> {
   const config = { ...source.config };
-  if (source.provider === 'neo4j') {
-    delete config.workspace_value;
-    delete config.ontology_value;
-  } else {
+  if (source.provider !== 'neo4j') {
     delete config.evaluation_workspace_id;
   }
   return config;

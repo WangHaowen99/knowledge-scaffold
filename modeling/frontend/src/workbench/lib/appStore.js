@@ -244,6 +244,7 @@ export const actions = {
         agentFocus: restoredAgentFocus,
         initialPath,
         routeFocus: studioFocusFromLocation(),
+        workflowPhase: agent.state?.phase,
       });
       store.set({
         project: snapshot.project,
@@ -1191,23 +1192,26 @@ export const actions = {
   /** 助手移动焦点。follow=false 时不抢用户的浏览位置，只攒起来提示。 */
   agentFocus(focus) {
     const current = store.get();
-    if (!availableFocusTarget(focus, current)) return;
-    const agentTarget = { ...focus, source: 'agent' };
-    const material = focus?.kind === 'doc'
-      ? current.materials.find((item) => item.id === focus.target || item.filename === focus.target)
+    const visibleFocus = resolveProjectFocusForPhase(focus, current.workflow?.phase);
+    if (!visibleFocus || !availableFocusTarget(visibleFocus, current)) return;
+    const agentTarget = { ...visibleFocus, source: 'agent' };
+    const material = visibleFocus.kind === 'doc'
+      ? current.materials.find((item) => item.id === visibleFocus.target || item.filename === visibleFocus.target)
       : null;
     store.set((s) => (s.follow
       ? { focus: agentTarget, pendingFocus: null, ...(material ? { selectedMaterial: material.id } : {}) }
       : { pendingFocus: agentTarget }));
-    if (focus?.target && ['flow', 'file'].includes(focus.kind)) void actions.loadFile(focus.target);
+    if (visibleFocus.target && ['flow', 'file'].includes(visibleFocus.kind)) void actions.loadFile(visibleFocus.target);
     if (material) void actions.loadMaterial(material.id);
   },
 
   /** 用户点消息上的定位入口：跳过去并重新开始跟随。 */
   focusFrom(focus) {
-    if (!availableFocusTarget(focus, store.get())) return;
-    store.set({ focus: { ...focus, source: 'agent' }, follow: true, pendingFocus: null });
-    if (focus?.target && ['flow', 'file'].includes(focus.kind)) void actions.loadFile(focus.target);
+    const current = store.get();
+    const visibleFocus = resolveProjectFocusForPhase(focus, current.workflow?.phase);
+    if (!visibleFocus || !availableFocusTarget(visibleFocus, current)) return;
+    store.set({ focus: { ...visibleFocus, source: 'agent' }, follow: true, pendingFocus: null });
+    if (visibleFocus.target && ['flow', 'file'].includes(visibleFocus.kind)) void actions.loadFile(visibleFocus.target);
   },
   selectPath(path) {
     store.set({ selectedPath: path, follow: false, pendingFocus: null, focus: focusForPath(path) });
@@ -1416,13 +1420,32 @@ function availableFocusTarget(focus, state) {
   return state.files.includes(focus.target);
 }
 
-export function resolveBootstrapFocus({ current, candidateFiles = [], interaction, agentFocus, initialPath = '', routeFocus }) {
-  if (current?.kind && current.kind !== 'empty') return current;
-  if (routeFocus?.kind) return routeFocus;
+export function resolveProjectFocusForPhase(focus, workflowPhase = '') {
+  if (focus?.kind !== 'gates') return focus || null;
+  // 正式门禁视图暂不开放；只有评测阶段才回退到可操作的评测界面。
+  if (workflowPhase !== 'evaluation') return null;
+  return { kind: 'evaluation', target: '正式评测' };
+}
+
+export function resolveBootstrapFocus({
+  current,
+  candidateFiles = [],
+  interaction,
+  agentFocus,
+  initialPath = '',
+  routeFocus,
+  workflowPhase = '',
+}) {
+  const currentFocus = resolveProjectFocusForPhase(current, workflowPhase);
+  if (currentFocus?.kind && currentFocus.kind !== 'empty') return currentFocus;
+  const routedFocus = resolveProjectFocusForPhase(routeFocus, workflowPhase);
+  if (routedFocus?.kind) return routedFocus;
   if (interaction?.kind === 'confirmation' && candidateFiles[0]?.path) {
     return { kind: 'diff', target: candidateFiles[0].path };
   }
-  if (agentFocus?.kind) return agentFocus;
+  const restoredFocus = resolveProjectFocusForPhase(agentFocus, workflowPhase);
+  if (restoredFocus?.kind) return restoredFocus;
+  if (workflowPhase === 'evaluation') return { kind: 'evaluation', target: '正式评测' };
   return initialPath ? focusForPath(initialPath) : { kind: 'empty', target: '' };
 }
 
