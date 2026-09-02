@@ -7,6 +7,10 @@ import {
   decryptLlmDefaultApiKey,
   encryptLlmDefaultApiKey,
 } from './llm-secret-codec.js';
+import {
+  normalizeLlmAdvancedSettings,
+  type LlmAdvancedSettings,
+} from './llm-extra-params.js';
 
 export type LlmDefaultAssignmentReason = 'registration' | 'sync';
 
@@ -18,12 +22,15 @@ interface UserLlmDefaultSnapshotRow {
   api_key_ciphertext: string | null;
   max_tokens: number;
   context_window: number;
+  thinking_mode: LlmAdvancedSettings['thinkingMode'];
+  reasoning_effort: LlmAdvancedSettings['reasoningEffort'];
+  extra_body_json: string;
   default_revision: number;
   assigned_via: LlmDefaultAssignmentReason;
   assigned_at: string;
 }
 
-export interface UserLlmDefaultSnapshot {
+export interface UserLlmDefaultSnapshot extends LlmAdvancedSettings {
   purpose: LlmPurpose;
   baseUrl: string;
   model: string;
@@ -47,7 +54,8 @@ function cipherContext(username: string, purpose: LlmPurpose): string {
 
 function snapshotRow(username: string, purpose: LlmPurpose): UserLlmDefaultSnapshotRow | undefined {
   return getDb().prepare(`SELECT username, purpose, base_url, model, api_key_ciphertext,
-      max_tokens, context_window, default_revision, assigned_via, assigned_at
+      max_tokens, context_window, thinking_mode, reasoning_effort, extra_body_json,
+      default_revision, assigned_via, assigned_at
     FROM user_llm_default_snapshots WHERE username = ? AND purpose = ?`)
     .get(normalizedUsername(username), purpose) as UserLlmDefaultSnapshotRow | undefined;
 }
@@ -58,6 +66,11 @@ export function getUserLlmDefaultSnapshot(
 ): UserLlmDefaultSnapshot | undefined {
   const row = snapshotRow(username, purpose);
   if (!row) return undefined;
+  const advanced = normalizeLlmAdvancedSettings({
+    thinkingMode: row.thinking_mode,
+    reasoningEffort: row.reasoning_effort,
+    extraBodyJson: row.extra_body_json,
+  });
   return {
     purpose: row.purpose,
     baseUrl: row.base_url,
@@ -65,6 +78,7 @@ export function getUserLlmDefaultSnapshot(
     apiKey: decryptLlmDefaultApiKey(row.api_key_ciphertext, cipherContext(row.username, row.purpose)),
     maxTokens: row.max_tokens,
     contextWindow: row.context_window,
+    ...advanced,
     defaultRevision: row.default_revision,
     assignedVia: row.assigned_via,
     assignedAt: row.assigned_at,
@@ -107,6 +121,9 @@ interface PreparedSnapshot {
   apiKeyCiphertext: string | null;
   maxTokens: number;
   contextWindow: number;
+  thinkingMode: LlmAdvancedSettings['thinkingMode'];
+  reasoningEffort: LlmAdvancedSettings['reasoningEffort'];
+  extraBodyJson: string;
   defaultRevision: number;
 }
 
@@ -122,6 +139,9 @@ function prepareSnapshot(
     apiKeyCiphertext: encryptLlmDefaultApiKey(settings.apiKey, cipherContext(username, purpose)),
     maxTokens: settings.maxTokens,
     contextWindow: settings.contextWindow,
+    thinkingMode: settings.thinkingMode,
+    reasoningEffort: settings.reasoningEffort,
+    extraBodyJson: settings.extraBodyJson,
     defaultRevision: settings.revision,
   };
 }
@@ -147,6 +167,9 @@ function insertPreparedSnapshot(
     snapshot.apiKeyCiphertext,
     snapshot.maxTokens,
     snapshot.contextWindow,
+    snapshot.thinkingMode,
+    snapshot.reasoningEffort,
+    snapshot.extraBodyJson,
     snapshot.defaultRevision,
     assignedVia,
     assignedAt,
@@ -169,8 +192,9 @@ function saveUserLlmDefaultSnapshots(
     db.prepare('DELETE FROM user_llm_default_snapshots WHERE username = ?').run(normalized);
     const insert = db.prepare(`INSERT INTO user_llm_default_snapshots (
       username, purpose, base_url, model, api_key_ciphertext, max_tokens,
-        context_window, default_revision, assigned_via, assigned_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        context_window, thinking_mode, reasoning_effort, extra_body_json,
+        default_revision, assigned_via, assigned_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const snapshot of prepared) {
       insertPreparedSnapshot(insert, normalized, snapshot, assignedVia, assignedAt);
     }
@@ -229,8 +253,9 @@ export function replaceUserLlmPurposeWithDefaultSnapshot(
       .run(normalized, purpose);
     const insert = db.prepare(`INSERT INTO user_llm_default_snapshots (
       username, purpose, base_url, model, api_key_ciphertext, max_tokens,
-        context_window, default_revision, assigned_via, assigned_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        context_window, thinking_mode, reasoning_effort, extra_body_json,
+        default_revision, assigned_via, assigned_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     insertPreparedSnapshot(insert, normalized, snapshot, 'sync', assignedAt);
     db.exec('COMMIT');
   } catch (error) {

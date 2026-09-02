@@ -13,10 +13,12 @@ import {
 } from './api.js';
 import AdminLlmDefaults from './AdminLlmDefaults.jsx';
 import LlmPurposeTabs from './LlmPurposeTabs.jsx';
+import { prettyJsonText, previewJsonText } from './llmAdvancedConfig.js';
 
 const SYNC_DEFAULT_HELP = '清除当前用途的个人覆盖，改用 admin 统一配置的平台默认。';
 const LLM_FIELD_SUFFIXES = [
   'BaseUrl', 'Model', 'ApiKey', 'ApiKeyClear', 'ProviderClear', 'MaxTokens', 'ContextWindow',
+  'ThinkingMode', 'ReasoningEffort', 'ExtraBodyJson',
 ];
 const DEFAULT_MCP_SCOPE_OPTIONS = [
   { scope: 'ontology.read', label: 'ontology.read', description: '读取对象列表与对象详情。' },
@@ -59,10 +61,16 @@ export default function SettingsModal({ onClose, user, projectId, tab: tabProp =
     setForm({
       llmBaseUrl: d.llm.baseUrl, llmModel: d.llm.model, llmMaxTokens: String(d.llm.maxTokens),
       llmContextWindow: String(d.llm.contextWindow ?? ''), llmApiKey: '',
+      llmThinkingMode: d.llm.thinkingMode ?? 'default',
+      llmReasoningEffort: d.llm.reasoningEffort ?? '',
+      llmExtraBodyJson: prettyJsonText(d.llm.extraBodyJson ?? '{}'),
       llmApiKeyClear: false, llmProviderClear: false,
       taskLlmBaseUrl: d.taskLlm.baseUrl, taskLlmModel: d.taskLlm.model,
       taskLlmMaxTokens: String(d.taskLlm.maxTokens),
       taskLlmContextWindow: String(d.taskLlm.contextWindow ?? ''), taskLlmApiKey: '',
+      taskLlmThinkingMode: d.taskLlm.thinkingMode ?? 'default',
+      taskLlmReasoningEffort: d.taskLlm.reasoningEffort ?? '',
+      taskLlmExtraBodyJson: prettyJsonText(d.taskLlm.extraBodyJson ?? '{}'),
       taskLlmApiKeyClear: false, taskLlmProviderClear: false,
       consumerApiUrl: d.consumerApiUrl,
       evalDbUrl: d.evalDbUrl,
@@ -106,6 +114,8 @@ export default function SettingsModal({ onClose, user, projectId, tab: tabProp =
         }
         const providerChanged = ['BaseUrl', 'Model', 'ApiKey', 'ApiKeyClear', 'ProviderClear']
           .some((suffix) => dirty[llmFormKey(purpose, suffix)]);
+        const advancedChanged = ['ThinkingMode', 'ReasoningEffort', 'ExtraBodyJson']
+          .some((suffix) => dirty[llmFormKey(purpose, suffix)]);
         // 每个用途的个人 provider 都是完整作用域；修改其中任一项时同时提交当前端点与模型。
         if (form[llmFormKey(purpose, 'ProviderClear')]) {
           delete patch.llmBaseUrl;
@@ -115,6 +125,11 @@ export default function SettingsModal({ onClose, user, projectId, tab: tabProp =
         } else if (providerChanged) {
           patch.llmBaseUrl = form[llmFormKey(purpose, 'BaseUrl')];
           patch.llmModel = form[llmFormKey(purpose, 'Model')];
+        }
+        if (advancedChanged) {
+          patch.llmThinkingMode = form[llmFormKey(purpose, 'ThinkingMode')];
+          patch.llmReasoningEffort = form[llmFormKey(purpose, 'ReasoningEffort')];
+          patch.llmExtraBodyJson = form[llmFormKey(purpose, 'ExtraBodyJson')];
         }
         patches.push(patch);
       }
@@ -202,6 +217,9 @@ function LlmTab({
         baseUrl: field('BaseUrl'),
         apiKey: field('ApiKey') || undefined,
         model: field('Model'),
+        thinkingMode: field('ThinkingMode'),
+        reasoningEffort: field('ReasoningEffort'),
+        extraBodyJson: field('ExtraBodyJson'),
       }));
     } catch (e) { setResult({ ok: false, error: e.message }); }
     finally { setTesting(false); }
@@ -270,6 +288,41 @@ function LlmTab({
         <label>上下文窗口（输入 + 输出总 token）</label>
         <input inputMode="numeric" value={field('ContextWindow') ?? ''} onChange={setField('ContextWindow')} placeholder="按模型 API 实际上限填写，例如 1000000" style={{ width: 300 }} />
       </div>
+      <div className="cfg-advanced-grid">
+        <div className="field">
+          <label>思考模式</label>
+          <select value={field('ThinkingMode') ?? 'default'} onChange={setField('ThinkingMode')}>
+            <option value="default">默认</option>
+            <option value="enabled">开启</option>
+            <option value="disabled">关闭</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>思考强度</label>
+          <select value={field('ReasoningEffort') ?? ''} disabled={field('ThinkingMode') !== 'enabled'} onChange={setField('ReasoningEffort')}>
+            <option value="">默认</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="max">max</option>
+          </select>
+        </div>
+      </div>
+      <div className="field">
+        <label>自定义请求参数 JSON</label>
+        <textarea className="cfg-json-input" value={field('ExtraBodyJson') ?? '{}'}
+          onChange={setField('ExtraBodyJson')} spellCheck={false} rows={5}
+          placeholder={'{"custom_param": true}'} />
+      </div>
+      <div className="field">
+        <label>请求报文预览</label>
+        <pre className="cfg-request-preview">{previewJsonText({
+          model: field('Model'),
+          thinkingMode: field('ThinkingMode'),
+          reasoningEffort: field('ReasoningEffort'),
+          extraBodyJson: field('ExtraBodyJson'),
+        })}</pre>
+      </div>
       <div className="cfg-llm-actions">
         <button className="btn" disabled={testing || syncing} onClick={test}>{testing ? '测试中…' : '测试有效性'}</button>
         <span className="cfg-sync-default-group">
@@ -292,6 +345,9 @@ function LlmTab({
               setFieldValue('ApiKeyClear', true);
               setFieldValue('MaxTokens', '');
               setFieldValue('ContextWindow', '');
+              setFieldValue('ThinkingMode', 'default');
+              setFieldValue('ReasoningEffort', '');
+              setFieldValue('ExtraBodyJson', '{}');
             }}>
             <RotateCcw size={14} aria-hidden="true" />
             {field('ProviderClear')

@@ -191,6 +191,26 @@ async def test_model_uses_stream_specific_timeouts(settings) -> None:
     assert context.enable_reload is False
 
 
+async def test_model_passes_thinking_request_config(settings) -> None:
+    runtime_settings = settings.with_runtime_llm({
+        "baseUrl": "https://agent.example.com/v1",
+        "model": "reasoning-model",
+        "apiKey": "synthetic-agent-key",
+        "maxTokens": 4096,
+        "thinkingMode": "enabled",
+        "reasoningEffort": "high",
+        "extraBodyJson": '{"parallel_tool_calls": false}',
+    })
+    model = build_model(runtime_settings)
+
+    assert model.model_config.model_name == "reasoning-model"
+    assert model.model_config.model_extra["reasoning_effort"] == "high"
+    assert model.model_config.model_extra["extra_body"] == {
+        "parallel_tool_calls": False,
+        "thinking": {"type": "enabled"},
+    }
+
+
 async def test_model_timeout_uses_one_persisted_recovery_and_new_execution_brief(settings) -> None:
     class TimeoutThenSuccessModel(ScriptedModel):
         def __init__(self) -> None:

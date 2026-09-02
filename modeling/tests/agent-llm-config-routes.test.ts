@@ -60,6 +60,9 @@ test('受信 Agent 读取 admin 统一配置且个人覆盖优先', async () => 
     apiKey: 'platform-secret',
     maxTokens: 24000,
     contextWindow: 128000,
+    thinkingMode: 'default',
+    reasoningEffort: '',
+    extraBodyJson: '{}',
     source: 'platform_default',
   });
 
@@ -67,6 +70,9 @@ test('受信 Agent 读取 admin 统一配置且个人覆盖优先', async () => 
     baseUrl: 'https://custom.example/v1',
     model: 'custom-model',
     apiKey: 'custom-secret',
+    thinkingMode: 'enabled',
+    reasoningEffort: 'high',
+    extraBodyJson: '{"parallel_tool_calls":false}',
   });
   const personal = await app.inject({
     method: 'GET',
@@ -79,5 +85,8 @@ test('受信 Agent 读取 admin 统一配置且个人覆盖优先', async () => 
   assert.equal(personal.statusCode, 200);
   assert.equal(personal.json().llm.model, 'custom-model');
   assert.equal(personal.json().llm.apiKey, 'custom-secret');
+  assert.equal(personal.json().llm.thinkingMode, 'enabled');
+  assert.equal(personal.json().llm.reasoningEffort, 'high');
+  assert.equal(personal.json().llm.extraBodyJson, '{"parallel_tool_calls":false}');
   assert.equal(personal.json().llm.source, 'user');
 });

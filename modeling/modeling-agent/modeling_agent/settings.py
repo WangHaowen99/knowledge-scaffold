@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 
 def _integer(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -31,6 +33,9 @@ class Settings:
     host: str
     port: int
     skills_dir: Path
+    llm_thinking_mode: str = "default"
+    llm_reasoning_effort: str = ""
+    llm_extra_body_json: str = "{}"
     llm_first_chunk_timeout_seconds: float = 120.0
     llm_idle_timeout_seconds: float = 60.0
     context_max_messages: int = 64
@@ -61,6 +66,9 @@ class Settings:
             host=os.getenv("MODELING_AGENT_HOST", "0.0.0.0"),
             port=_integer("MODELING_AGENT_PORT", 5110, 1, 65535),
             skills_dir=Path(os.getenv("MODELING_AGENT_SKILLS_DIR", str(package_root / "skills"))).resolve(),
+            llm_thinking_mode=os.getenv("MODELING_LLM_THINKING_MODE", "default").strip().lower() or "default",
+            llm_reasoning_effort=os.getenv("MODELING_LLM_REASONING_EFFORT", "").strip().lower(),
+            llm_extra_body_json=os.getenv("MODELING_LLM_EXTRA_BODY_JSON", "{}").strip() or "{}",
             llm_first_chunk_timeout_seconds=_number(
                 "MODELING_LLM_FIRST_CHUNK_TIMEOUT_SECONDS", 120.0, 10.0, 600.0,
             ),
@@ -80,7 +88,22 @@ class Settings:
             llm_api_key=str(config.get("apiKey") or ""),
             llm_model=str(config.get("model") or ""),
             llm_max_tokens=min(self.llm_max_tokens, max_tokens),
+            llm_thinking_mode=str(config.get("thinkingMode") or "default").strip().lower() or "default",
+            llm_reasoning_effort=str(config.get("reasoningEffort") or "").strip().lower(),
+            llm_extra_body_json=str(config.get("extraBodyJson") or "{}").strip() or "{}",
         )
+
+    def llm_request_extra_body(self) -> dict[str, Any]:
+        try:
+            extra = json.loads(self.llm_extra_body_json or "{}")
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"Invalid LLM extra body JSON: {error}") from error
+        if not isinstance(extra, dict):
+            raise RuntimeError("Invalid LLM extra body JSON: expected object")
+        mode = self.llm_thinking_mode.strip().lower()
+        if mode in {"enabled", "disabled"}:
+            extra = {**extra, "thinking": {"type": mode}}
+        return extra
 
     def public_config(self) -> dict[str, object]:
         return {

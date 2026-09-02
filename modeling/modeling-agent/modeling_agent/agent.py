@@ -96,6 +96,17 @@ class AgentBundle:
 def build_model(settings: Settings) -> Any:
     if not settings.llm_base_url or not settings.llm_model:
         raise RuntimeError("未配置建模模型，请设置 MODELING_LLM_BASE_URL 和 MODELING_LLM_MODEL")
+    request_config: dict[str, Any] = {
+        "model": settings.llm_model,
+        "temperature": 0.2,
+        "top_p": 0.1,
+        "max_tokens": settings.llm_max_tokens,
+    }
+    extra_body = settings.llm_request_extra_body()
+    if extra_body:
+        request_config["extra_body"] = extra_body
+    if settings.llm_thinking_mode == "enabled" and settings.llm_reasoning_effort:
+        request_config["reasoning_effort"] = settings.llm_reasoning_effort
     return Model(
         model_client_config=ModelClientConfig(
             client_provider="OpenAI",
@@ -109,12 +120,7 @@ def build_model(settings: Settings) -> Any:
             stream_first_chunk_timeout=settings.llm_first_chunk_timeout_seconds,
             stream_idle_timeout=settings.llm_idle_timeout_seconds,
         ),
-        model_config=ModelRequestConfig(
-            model=settings.llm_model,
-            temperature=0.2,
-            top_p=0.1,
-            max_tokens=settings.llm_max_tokens,
-        ),
+        model_config=ModelRequestConfig(**request_config),
     )
 
 
