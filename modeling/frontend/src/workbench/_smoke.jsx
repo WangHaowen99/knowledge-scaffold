@@ -1403,6 +1403,49 @@ try {
   console.log('✓ 取消运行同步关闭待处理决定卡');
 } catch (e) { console.log('✗ 取消运行关闭决定卡:', e.message); bad++; }
 
+store.set({
+  demo: false,
+  run: { id: 'cancel-tool-run', status: 'running' },
+  interaction: null,
+  activity: { text: '正在原子生成待确认修改', progress: {}, observedAt: Date.now() },
+  trace: [{
+    id: 'tool:cancel-tool-run:call-stage-change-set', seq: 1,
+    runId: 'cancel-tool-run', toolCallId: 'call-stage-change-set',
+    name: 'stage_change_set', phase: 'started', summary: '正在原子生成待确认修改',
+    createdAt: new Date().toISOString(),
+  }],
+  lastSeq: 0,
+  replayUntilSeq: 0,
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'cancel-tool-run',
+  toolCallId: 'call-stage-change-set', name: 'stage_change_set',
+  phase: 'cancelled', summary: '运行已停止，当前操作已取消',
+});
+actions.handleEvent({
+  eventType: 'status', seq: 3, runId: 'cancel-tool-run', status: 'cancelled',
+  text: '已停止，已完成的候选内容保留',
+});
+actions.handleEvent({
+  eventType: 'progress', seq: 4, runId: 'cancel-tool-run',
+  text: '正在原子生成待确认修改', detail: '迟到的旧进度', counters: {},
+});
+actions.handleEvent({
+  eventType: 'status', seq: 5, runId: 'cancel-tool-run', status: 'running',
+  text: '迟到的运行状态',
+});
+try {
+  const html = renderToString(<App />);
+  const drawer = renderToString(<ProcessDrawer onClose={() => {}} />);
+  if (store.get().run?.status !== 'cancelled' || store.get().activity
+    || store.get().trace[0]?.phase !== 'cancelled'
+    || html.includes('助手运行中') || !drawer.includes('已取消')
+    || !drawer.includes('运行已停止，当前操作已取消')) {
+    throw new Error('取消后工具活动、顶栏或迟到事件没有收敛到同一终态');
+  }
+  console.log('✓ 取消运行同步结算工具活动并拒绝迟到运行事件');
+} catch (e) { console.log('✗ 取消运行工具终态:', e.message); bad++; }
+
 try {
   const html = renderToString(<Block block={{
     type: 'release',

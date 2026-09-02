@@ -617,6 +617,36 @@ def test_begin_run_cancellation_atomically_closes_pending_interaction(tmp_path: 
         store.close()
 
 
+def test_unfinished_tool_events_track_each_tool_call_terminal_state(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        current = store.create_run(run("run_tool_activity"))
+        for payload in (
+            {"name": "stage_change_set", "phase": "started", "toolCallId": "call_done"},
+            {"name": "stage_change_set", "phase": "completed", "toolCallId": "call_done"},
+            {"name": "stage_change_set", "phase": "started", "toolCallId": "call_repairing"},
+            {"name": "stage_change_set", "phase": "repairing", "toolCallId": "call_repairing"},
+            {"name": "validate_change_set", "phase": "started", "toolCallId": "call_active"},
+        ):
+            store.append_event(current.project_id, current.id, "tool", payload)
+
+        unfinished = store.unfinished_tool_events(current.id)
+
+        assert [event.payload["toolCallId"] for event in unfinished] == [
+            "call_repairing", "call_active",
+        ]
+        store.append_event(current.project_id, current.id, "tool", {
+            "name": "stage_change_set",
+            "phase": "cancelled",
+            "toolCallId": "call_repairing",
+        })
+        assert [
+            event.payload["toolCallId"] for event in store.unfinished_tool_events(current.id)
+        ] == ["call_active"]
+    finally:
+        store.close()
+
+
 def test_store_startup_closes_legacy_pending_interaction_from_terminal_run(tmp_path: Path) -> None:
     path = tmp_path / "runtime.sqlite"
     store = RuntimeStore(path)
