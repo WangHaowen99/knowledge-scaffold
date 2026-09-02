@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 
 import pytest
 
+from persistence import session_summary_index as session_summary_index_module
 from persistence.session_summary_index import (
     SCHEMA_VERSION,
     InvalidSessionCursor,
@@ -84,6 +86,13 @@ def test_cursor_is_opaque_strict_and_rejected_after_index_revision_changes(tmp_p
     index.upsert(_summary("three", updated_at="2026-08-31T03:00:00+00:00"))
     with pytest.raises(InvalidSessionCursor, match="stale"):
         index.list_page(limit=1, cursor=cursor)
+
+
+def test_cursor_decoder_catches_the_value_error_family_once():
+    source = inspect.getsource(session_summary_index_module._decode_cursor)
+
+    assert "except ValueError as exc:" in source
+    assert "except (UnicodeError, ValueError)" not in source
 
 
 def test_turn_count_round_trips_and_get_summary_reads_one_record(tmp_path):

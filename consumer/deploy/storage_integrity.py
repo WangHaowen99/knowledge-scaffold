@@ -29,15 +29,23 @@ logger = logging.getLogger(__name__)
 result_logger = logging.getLogger(f"{__name__}.result")
 
 
-def _configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
-    if result_logger.handlers:
-        return
-    handler = logging.StreamHandler(sys.stdout)
+def _configure_stream_logger(
+    target: logging.Logger,
+    *,
+    stream: Any,
+    level: int,
+) -> None:
+    target.handlers.clear()
+    handler = logging.StreamHandler(stream)
     handler.setFormatter(logging.Formatter("%(message)s"))
-    result_logger.addHandler(handler)
-    result_logger.setLevel(logging.INFO)
-    result_logger.propagate = False
+    target.addHandler(handler)
+    target.setLevel(level)
+    target.propagate = False
+
+
+def _configure_logging() -> None:
+    _configure_stream_logger(logger, stream=sys.stderr, level=logging.ERROR)
+    _configure_stream_logger(result_logger, stream=sys.stdout, level=logging.INFO)
 
 
 def _positive_environment_limit(name: str, default: int) -> int:
