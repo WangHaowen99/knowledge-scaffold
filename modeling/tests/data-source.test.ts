@@ -402,7 +402,8 @@ test('consumer sync：导入当前知识包并写入本体级数据源', async (
     provider: 'neo4j',
     config: {
       uri: 'bolt://neo4j:7687', username: 'neo4j', password: 'secret', database: 'neo4j',
-      workspace_property: 'd2o_workspace_id', ontology_property: 'd2o_ontology_id',
+      workspace_property: 'd2o_workspace_id', workspace_value: workspaceId,
+      ontology_property: 'd2o_ontology_id', ontology_value: ontologyId,
     },
   });
 });
