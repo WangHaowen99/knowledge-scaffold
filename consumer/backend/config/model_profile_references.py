@@ -33,6 +33,16 @@ class InvalidModelProfileFilterError(ValueError):
     """The optional profile filter does not match the profile-id contract."""
 
 
+def _is_valid_windows_handle(raw_handle: object, invalid_handle: object) -> bool:
+    if isinstance(raw_handle, bool):
+        return False
+    if not isinstance(raw_handle, int):
+        return False
+    if raw_handle <= 0:
+        return False
+    return raw_handle != invalid_handle
+
+
 @contextmanager
 def model_profile_reference_guard() -> Iterator[None]:
     """Serialize supported global-profile and workspace-reference mutations."""
@@ -94,12 +104,7 @@ def _open_windows_runtime_config_descriptor(path: os.PathLike[str]) -> int:
     )
     raw_handle = getattr(handle, "value", handle)
     invalid_handle = ctypes.c_void_p(-1).value
-    if (
-        isinstance(raw_handle, bool)
-        or not isinstance(raw_handle, int)
-        or raw_handle <= 0
-        or raw_handle == invalid_handle
-    ):
+    if not _is_valid_windows_handle(raw_handle, invalid_handle):
         raise OSError(ctypes.get_last_error(), "secure runtime config open failed")
 
     owns_handle = True
@@ -139,6 +144,7 @@ def _open_runtime_config_descriptor(path: os.PathLike[str]) -> int:
             | getattr(os, "O_BINARY", 0)
             | nonblocking
             | nofollow,
+            0o600,
         )
     if _IS_WINDOWS:
         return _open_windows_runtime_config_descriptor(path)
@@ -240,12 +246,12 @@ def _get_model_profile_references_locked(
     if profile_filter is not None:
         visible_entries = []
         for entry in entries:
-            matching = [
-                reference
-                for reference in entry["references"]
-                if reference["scope"] == profile_filter.scope
-                and reference["profile_id"] == profile_filter.id
-            ]
+            matching = []
+            for reference in entry["references"]:
+                if reference["scope"] != profile_filter.scope:
+                    continue
+                if reference["profile_id"] == profile_filter.id:
+                    matching.append(reference)
             if not matching and "diagnostic" not in entry:
                 continue
             visible_entry = dict(entry)
@@ -307,21 +313,22 @@ def _parse_profile_filter(profile_id: str | None) -> ModelProfileRef | None:
     if profile_id is None:
         return None
     raw_profile_id = str(profile_id).strip()
-    if (
-        not raw_profile_id
-        or len(raw_profile_id) > 90
-        or any(character.isspace() for character in raw_profile_id)
-    ):
+    if not raw_profile_id:
+        raise InvalidModelProfileFilterError("profile_id is invalid")
+    if len(raw_profile_id) > 90:
+        raise InvalidModelProfileFilterError("profile_id is invalid")
+    if any(character.isspace() for character in raw_profile_id):
         raise InvalidModelProfileFilterError("profile_id is invalid")
     try:
         parsed = parse_model_profile_ref(raw_profile_id)
     except (TypeError, ValueError) as exc:
         raise InvalidModelProfileFilterError("profile_id is invalid") from exc
-    if (
-        parsed is None
-        or len(parsed.id) > 80
-        or any(character.isspace() for character in parsed.id)
-        or (parsed.scope == "workspace" and ":" in parsed.id)
-    ):
+    if parsed is None:
+        raise InvalidModelProfileFilterError("profile_id is invalid")
+    if len(parsed.id) > 80:
+        raise InvalidModelProfileFilterError("profile_id is invalid")
+    if any(character.isspace() for character in parsed.id):
+        raise InvalidModelProfileFilterError("profile_id is invalid")
+    if parsed.scope == "workspace" and ":" in parsed.id:
         raise InvalidModelProfileFilterError("profile_id is invalid")
     return parsed

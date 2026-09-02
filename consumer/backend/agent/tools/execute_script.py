@@ -274,14 +274,16 @@ def build_execute_script_tool_schema_from_catalog(
     """Build a specialized schema from one already-admitted catalog."""
 
     schema = deepcopy(EXECUTE_SCRIPT_TOOL_SCHEMA)
-    catalog = [
-        entry
-        for entry in script_catalog
-        if isinstance(entry, Mapping)
-        and bool(entry.get("_is_bound_operation", True))
-        and not entry.get("_is_deterministic_handler")
-        and str(entry.get("operation_key") or "").strip()
-    ]
+    catalog = []
+    for entry in script_catalog:
+        if not isinstance(entry, Mapping):
+            continue
+        if not bool(entry.get("_is_bound_operation", True)):
+            continue
+        if entry.get("_is_deterministic_handler"):
+            continue
+        if str(entry.get("operation_key") or "").strip():
+            catalog.append(entry)
     if not catalog:
         return schema
 
@@ -2076,60 +2078,64 @@ def handle_execute_script(
 ) -> str:
     pinned_digest: Optional[str] = None
     preflight_supplied = any(
-        value is not None
-        for value in (
-            preflight_ontology_manifest,
-            preflight_ontology_source_signature,
-            preflight_ontology_content_revision,
-            preflight_ontology_script_entry,
-            preflight_ontology_mutation_revision,
+        (
+            preflight_ontology_manifest is not None,
+            preflight_ontology_source_signature is not None,
+            preflight_ontology_content_revision is not None,
+            preflight_ontology_script_entry is not None,
+            preflight_ontology_mutation_revision is not None,
         )
     )
     resolved_package_supplied = any(
-        value is not None
-        for value in (
-            _resolved_ontology_dir,
-            _resolved_ontology_id,
-            _resolved_script_entry,
+        (
+            _resolved_ontology_dir is not None,
+            _resolved_ontology_id is not None,
+            _resolved_script_entry is not None,
         )
     )
     if resolved_package_supplied:
-        if (
-            _resolved_ontology_dir is None
-            or not str(_resolved_ontology_id or "").strip()
-            or not isinstance(_resolved_script_entry, Mapping)
-        ):
+        if _resolved_ontology_dir is None:
+            return _SCRIPT_EXECUTION_INTERNAL_ERROR
+        if not str(_resolved_ontology_id or "").strip():
+            return _SCRIPT_EXECUTION_INTERNAL_ERROR
+        if not isinstance(_resolved_script_entry, Mapping):
             return _SCRIPT_EXECUTION_INTERNAL_ERROR
         ontology_dir = Path(_resolved_ontology_dir).resolve()
         resolved_ontology_id = str(_resolved_ontology_id).strip()
         script_entry = _resolved_script_entry
     elif preflight_supplied:
-        if (
-            not isinstance(preflight_ontology_manifest, Mapping)
-            or not isinstance(preflight_ontology_source_signature, tuple)
-            or preflight_ontology_content_revision is None
-            or not isinstance(preflight_ontology_script_entry, Mapping)
-            or not isinstance(preflight_ontology_mutation_revision, int)
-            or isinstance(preflight_ontology_mutation_revision, bool)
-            or preflight_ontology_mutation_revision < 0
-            or not workspace_id
-        ):
+        if not isinstance(preflight_ontology_manifest, Mapping):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not isinstance(preflight_ontology_source_signature, tuple):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if preflight_ontology_content_revision is None:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not isinstance(preflight_ontology_script_entry, Mapping):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not isinstance(preflight_ontology_mutation_revision, int):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if isinstance(preflight_ontology_mutation_revision, bool):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if preflight_ontology_mutation_revision < 0:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not workspace_id:
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
         normalized_ontology_id = str(ontology_id or "").strip()
         normalized_ontology_version = str(ontology_version or "").strip()
-        if (
-            str(preflight_ontology_manifest.get("id") or "").strip()
-            != normalized_ontology_id
-            or str(preflight_ontology_manifest.get("version") or "").strip()
-            != normalized_ontology_version
-            or str(
-                preflight_ontology_script_entry.get("operation_key") or ""
-            ).strip()
-            != str(operation_key or "").strip()
-            or not bool(
-                preflight_ontology_script_entry.get("_is_bound_operation")
-            )
-        ):
+        manifest_id = str(preflight_ontology_manifest.get("id") or "").strip()
+        if manifest_id != normalized_ontology_id:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        manifest_version = str(
+            preflight_ontology_manifest.get("version") or ""
+        ).strip()
+        if manifest_version != normalized_ontology_version:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        entry_operation_key = str(
+            preflight_ontology_script_entry.get("operation_key") or ""
+        ).strip()
+        if entry_operation_key != str(operation_key or "").strip():
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not bool(preflight_ontology_script_entry.get("_is_bound_operation")):
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
         raw_ontology_dir = str(
             preflight_ontology_manifest.get("ontology_dir") or ""
@@ -2152,13 +2158,15 @@ def handle_execute_script(
             source_ontology_dir,
             raw_script_path,
         )
-        if (
-            not raw_script_path
-            or source_script_path is None
-            or not pinned_path
-            or Path(pinned_path).resolve() != source_script_path
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", pinned_digest)
-        ):
+        if not raw_script_path:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if source_script_path is None:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not pinned_path:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if Path(pinned_path).resolve() != source_script_path:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", pinned_digest):
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
         if expected_script_path is not None and (
             source_script_path != Path(expected_script_path).resolve()
@@ -2838,14 +2846,17 @@ class ExecuteScriptTool:
         if context.selected_ontology_id and context.selected_ontology_id == str(call_args.get("ontology_id") or "").strip():
             call_args["ontology_version"] = selected_ontology_version
             manifest = getattr(context, "preflight_ontology_manifest", None)
-            if (
-                selected_ontology_version
-                and isinstance(manifest, Mapping)
-                and str(manifest.get("id") or "").strip()
-                == context.selected_ontology_id
-                and str(manifest.get("version") or "").strip()
-                == selected_ontology_version
+            manifest_matches_selection = bool(selected_ontology_version)
+            if not isinstance(manifest, Mapping):
+                manifest_matches_selection = False
+            elif str(manifest.get("id") or "").strip() != context.selected_ontology_id:
+                manifest_matches_selection = False
+            elif (
+                str(manifest.get("version") or "").strip()
+                != selected_ontology_version
             ):
+                manifest_matches_selection = False
+            if manifest_matches_selection:
                 bindings = getattr(
                     context,
                     "preflight_ontology_script_bindings",
