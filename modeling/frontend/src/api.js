@@ -130,8 +130,9 @@ export const getProjectTransferJob = (jobId) => api(
 export const downloadProjectTransfer = async (jobId) => requireOkResponse(await authFetch(
   `/api/project-transfers/jobs/${encodeURIComponent(jobId)}/download`,
 ));
-export const importPackageWorkspace = (file) => {
+export const importPackageWorkspace = (file, packageName = '') => {
   const form = new FormData();
+  if (String(packageName || '').trim()) form.append('package_name', String(packageName).trim());
   form.append('file', file);
   return api('/api/package-workspaces/import', { method: 'POST', body: form });
 };

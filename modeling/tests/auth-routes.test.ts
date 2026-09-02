@@ -188,8 +188,18 @@ function multipartFile(filename: string, buffer: Buffer, contentType = 'text/pla
   };
 }
 
-function multipartZip(filename: string, buffer: Buffer) {
-  return multipartFile(filename, buffer, 'application/zip');
+function multipartZip(filename: string, buffer: Buffer, packageName = '') {
+  if (!packageName) return multipartFile(filename, buffer, 'application/zip');
+  const boundary = `----modeling-package-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return {
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    payload: Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="package_name"\r\n\r\n${packageName}\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/zip\r\n\r\n`),
+      buffer,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]),
+  };
 }
 
 function multipartEvaluationDatabaseExcel(
@@ -968,6 +978,51 @@ test('知识包工作区：导入 ZIP 后建立 Agent 增量基线和原始文�
   assert.equal(imported.json().version, '1.0.0');
   assert.ok(imported.json().revision);
   assert.equal(imported.json().aiConstruction, undefined);
+
+  const duplicateSpec: PackageSpec = {
+    ...spec,
+    id: 'route-import-duplicate',
+  };
+  const duplicateUpload = multipartZip(
+    'duplicate.zip',
+    Buffer.from(zipPackage(renderPackage(duplicateSpec), duplicateSpec.id)),
+  );
+  const duplicate = await app.inject({
+    method: 'POST', url: '/api/package-workspaces/import',
+    headers: { authorization, ...duplicateUpload.headers }, payload: duplicateUpload.payload,
+  });
+  assert.equal(duplicate.statusCode, 409, duplicate.body);
+  assert.deepEqual(duplicate.json(), {
+    error: (
+      '知识包名称「路由导入演示」已存在，不可重复导入。'
+      + '请选择候选名称或输入新名称后继续导入。'
+    ),
+    code: 'PACKAGE_NAME_CONFLICT',
+    conflict: {
+      originalName: '路由导入演示',
+      attemptedName: '路由导入演示',
+      candidates: ['路由导入演示（2）', '路由导入演示（3）', '路由导入演示（4）'],
+    },
+  });
+
+  const renamedUpload = multipartZip(
+    'duplicate.zip',
+    Buffer.from(zipPackage(renderPackage(duplicateSpec), duplicateSpec.id)),
+    '路由导入演示（2）',
+  );
+  const renamed = await app.inject({
+    method: 'POST', url: '/api/package-workspaces/import',
+    headers: { authorization, ...renamedUpload.headers }, payload: renamedUpload.payload,
+  });
+  assert.equal(renamed.statusCode, 201, renamed.body);
+  assert.equal(renamed.json().project.name, '路由导入演示（2）');
+  const renamedManifest = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${renamed.json().project.id}/package/file?path=${encodeURIComponent('manifest.yaml')}`,
+    headers: { authorization },
+  });
+  assert.equal(renamedManifest.statusCode, 200, renamedManifest.body);
+  assert.match(renamedManifest.json().content, /^name: 路由导入演示（2）$/mu);
 
   const projectId = imported.json().project.id;
   const { getDb } = await import('../src/db/index.js');
