@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -16,7 +17,13 @@ from .core_client import CoreGateway, HttpCoreGateway
 from .errors import AgentRuntimeError
 from .events import EventHub
 from .schemas import (
+    ACTIVE_RUN_STATUSES,
     InteractionRecord,
+    RECOVERY_CHECKPOINT_MISSING,
+    RECOVERY_NONE,
+    RECOVERY_RESUME_FAILED,
+    RECOVERY_STALE_RUN,
+    RECOVERY_VOLUME_MISMATCH,
     RUN_CANCELLED,
     RUN_COMPLETED,
     RUN_FAILED,
@@ -45,6 +52,23 @@ from .workflows import (
 
 logger = logging.getLogger("modeling_agent")
 INTERJECTION_CONTINUATION_PREFIX = "interjection-continuation:"
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _object(raw: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
 
 PHASE_LABELS = {
     "intake": "资料与目标准备",
@@ -303,6 +327,8 @@ class AgentService:
         self._live: dict[str, LiveRun] = {}
         self._started = False
         self._shutting_down = False
+        self._storage_diag: dict[str, Any] = {}
+        self._recovery_summary: dict[str, Any] = {}
 
     async def startup(self) -> None:
         if self._started:
@@ -332,8 +358,18 @@ class AgentService:
         )
         await Runner.start()
         self._started = True
+        self._storage_diag = self._storage_diagnostic()
         recovered_runs = self.store.recover_interrupted()
         if recovered_runs:
+            if not self._storage_diag.get("healthy", True):
+                # 数据卷自检失败时不允许自动续跑，避免半恢复继续污染状态。
+                for recovered in recovered_runs:
+                    self._mark_resume_failed(
+                        recovered,
+                        RECOVERY_VOLUME_MISMATCH,
+                        "建模服务持久化自检未通过，已暂停自动恢复，请核对数据卷",
+                    )
+                return
             await asyncio.gather(*(
                 self._auto_resume_recovered(recovered) for recovered in recovered_runs
             ))
@@ -346,6 +382,13 @@ class AgentService:
                 run.id,
                 "status",
                 {"status": RUN_SUSPENDED, "text": "已保留最近进展，重新打开项目后会继续"},
+            )
+            return
+        if not self._checkpoint_available():
+            self._mark_resume_failed(
+                run,
+                RECOVERY_CHECKPOINT_MISSING,
+                "检查点数据库缺失或不可读，已暂停自动恢复，请核对数据卷",
             )
             return
         restore = getattr(self._gateway, "restore_run_credential", None)
@@ -371,29 +414,129 @@ class AgentService:
                 transient = error.code == "CORE_UNAVAILABLE"
                 if not transient or attempt >= len(RECOVERY_RETRY_DELAYS):
                     logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                    self.events.publish(
-                        run.project_id,
-                        run.id,
-                        "status",
-                        {"status": RUN_SUSPENDED, "text": "已安全停在最近进展，重新打开项目后会继续"},
-                    )
+                    self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
                     return
                 await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
             except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
                 logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                self.events.publish(
-                    run.project_id,
-                    run.id,
-                    "status",
-                    {"status": RUN_SUSPENDED, "text": "已安全停在最近进展，重新打开项目后会继续"},
-                )
+                self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
                 return
+        self.store.mark_recovery_status(
+            run.project_id,
+            RECOVERY_NONE,
+            error="",
+            cause="recovery_resumed",
+        )
         self.events.publish(
             run.project_id,
             run.id,
             "status",
             {"status": RUN_QUEUED, "text": "服务恢复完成，助手正在从原进度继续"},
         )
+
+    def _mark_resume_failed(self, run: RunRecord, status: str, message: str) -> None:
+        self.store.mark_recovery_status(
+            run.project_id,
+            status,
+            error=message,
+            cause="recovery_failed",
+        )
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(
+            run.project_id,
+            run.id,
+            "status",
+            {"status": RUN_SUSPENDED, "text": message},
+        )
+
+    def _checkpoint_available(self) -> bool:
+        checkpoint_db = self.settings.checkpoint_db
+        if not checkpoint_db.exists():
+            return False
+        try:
+            database = sqlite3.connect(f"file:{checkpoint_db}?mode=ro", uri=True)
+            database.close()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def _storage_diagnostic(self) -> dict[str, Any]:
+        runtime_db = self.settings.runtime_db
+        checkpoint_db = self.settings.checkpoint_db
+        same_directory = runtime_db.parent.resolve() == checkpoint_db.parent.resolve()
+        diagnostic: dict[str, Any] = {
+            "healthy": True,
+            "sameDirectory": same_directory,
+            "runtimeDbExists": runtime_db.exists(),
+            "checkpointDbExists": checkpoint_db.exists(),
+            "volumeChanged": False,
+            "runCount": 0,
+            "checkpointCount": 0,
+            "checkedAt": now_iso(),
+        }
+        identity_path = self.settings.data_dir / ".modeling_agent_identity"
+        volume_id = ""
+        try:
+            if identity_path.exists():
+                identity = _object(identity_path.read_text(encoding="utf-8"))
+                volume_id = str(identity.get("volumeId") or "")
+            if not volume_id:
+                volume_id = f"vol_{uuid.uuid4().hex}"
+                identity_path.write_text(
+                    _json({"volumeId": volume_id, "createdAt": now_iso()}),
+                    encoding="utf-8",
+                )
+                diagnostic["volumeChanged"] = not runtime_db.exists() or not checkpoint_db.exists()
+        except OSError:
+            diagnostic["volumeChanged"] = True
+        diagnostic["volumeId"] = volume_id
+        try:
+            if runtime_db.exists():
+                database = sqlite3.connect(f"file:{runtime_db}?mode=ro", uri=True)
+                try:
+                    diagnostic["runCount"] = int(database.execute(
+                        "SELECT COUNT(*) FROM agent_runs"
+                    ).fetchone()[0])
+                finally:
+                    database.close()
+        except sqlite3.Error:
+            diagnostic["healthy"] = False
+            diagnostic["reason"] = "runtime.sqlite 无法读取"
+        if (
+            not same_directory
+            or not runtime_db.exists()
+            or (not checkpoint_db.exists() and diagnostic["runCount"] > 0)
+        ):
+            diagnostic["healthy"] = False
+            diagnostic["reason"] = "runtime.sqlite 与 checkpoints.sqlite 不在同一持久卷，或存在运行记录但检查点数据库缺失"
+        try:
+            if checkpoint_db.exists():
+                database = sqlite3.connect(f"file:{checkpoint_db}?mode=ro", uri=True)
+                try:
+                    total = 0
+                    for table in database.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall():
+                        try:
+                            total += int(database.execute(
+                                f"SELECT COUNT(*) FROM {table[0]}"
+                            ).fetchone()[0])
+                        except sqlite3.Error:
+                            continue
+                    diagnostic["checkpointCount"] = total
+                finally:
+                    database.close()
+        except sqlite3.Error:
+            diagnostic["healthy"] = False
+            diagnostic["reason"] = "checkpoints.sqlite 无法读取"
+        self._recovery_summary = {
+            "status": "healthy" if diagnostic["healthy"] else "storage_unhealthy",
+            "volumeId": volume_id,
+            "runCount": diagnostic["runCount"],
+            "checkpointCount": diagnostic["checkpointCount"],
+            "checkedAt": diagnostic["checkedAt"],
+        }
+        return diagnostic
 
     async def shutdown(self) -> None:
         self._shutting_down = True
@@ -419,6 +562,8 @@ class AgentService:
             "runtime": "openJiuwen",
             "config": self.settings.public_config(),
             "skills": list_skills(self.settings.skills_dir),
+            "storage": self._storage_diag,
+            "recovery": self._recovery_summary,
         }
 
     def project_state(self, project_id: str) -> dict[str, Any]:
@@ -440,6 +585,9 @@ class AgentService:
             latest_evaluation = self.store.latest_presented_evaluation(project_id)
             if latest_evaluation is not None:
                 public_state["summary"] = _evaluation_terminal_summary(latest_evaluation)
+        recovery = self._recovery_diagnostic(project_id, state)
+        if recovery:
+            public_state["recovery"] = recovery
         public_state["phaseLabel"] = PHASE_LABELS.get(public_state["phase"], public_state["phase"])
         return {
             "state": public_state,
@@ -453,6 +601,36 @@ class AgentService:
             "focus": restored_focus if isinstance(restored_focus, dict) else None,
             "lastSeq": self.store.latest_event_seq(project_id),
         }
+
+    def _recovery_diagnostic(
+        self,
+        project_id: str,
+        state: Any,
+    ) -> dict[str, Any] | None:
+        missing: list[str] = []
+        if state.run_id and self.store.get_run(state.run_id) is None:
+            missing.append("run")
+        storage = self._storage_diag or {}
+        if not storage.get("healthy", True) and not storage.get("checkpointDbExists", False):
+            missing.append("checkpoint")
+        status = state.recovery_status or ""
+        if not status and missing:
+            status = RECOVERY_STALE_RUN if "run" in missing else RECOVERY_VOLUME_MISMATCH
+        if not status:
+            return None
+        next_steps: list[str] = []
+        if "run" in missing:
+            next_steps.append("安全终止失效计划后重新规划")
+        if "checkpoint" in missing:
+            next_steps.append("核对建模服务数据卷与 checkpoints.sqlite 后重启")
+        if status == RECOVERY_RESUME_FAILED:
+            next_steps.append("从最近检查点手动恢复，或取消当前运行后重新规划")
+        diagnostic: dict[str, Any] = {"status": status}
+        if missing:
+            diagnostic["missing"] = missing
+        if next_steps:
+            diagnostic["nextSteps"] = next_steps
+        return diagnostic
 
     def export_project_transfer(self, project_id: str) -> dict[str, Any]:
         return export_project_transfer(self.store, self.settings.checkpoint_db, project_id)
@@ -2151,6 +2329,14 @@ class AgentService:
     async def cancel(self, *, project_id: str) -> dict[str, Any]:
         run = self.store.active_run(project_id)
         if run is None:
+            state = self.store.project_state(project_id)
+            _phase, _separator, execution = state.state.partition(":")
+            if (
+                execution in ACTIVE_RUN_STATUSES
+                and state.run_id
+                and self.store.get_run(state.run_id) is None
+            ):
+                return await self.safe_terminate_stale(project_id=project_id)
             raise AgentRuntimeError("RUN_NOT_ACTIVE", "当前没有运行中的 Agent", status=409)
         live = self._live.get(run.id)
         if live:
@@ -2205,6 +2391,24 @@ class AgentService:
             if trace_group_id:
                 payload["traceGroupId"] = trace_group_id
             self.events.publish(project_id, run_id, "tool", payload)
+
+    async def safe_terminate_stale(self, *, project_id: str) -> dict[str, Any]:
+        state = self.store.project_state(project_id)
+        terminated_run_id = state.run_id
+        terminated = self.store.terminate_stale_occupancy(project_id)
+        self._publish_state(project_id, terminated_run_id)
+        self.events.publish(
+            project_id,
+            terminated_run_id,
+            "status",
+            {"status": RUN_CANCELLED, "text": "已安全终止失效运行，候选内容与审计记录保留，可以重新规划"},
+        )
+        return {
+            "run": None,
+            "state": terminated.public(),
+            "terminatedStale": True,
+            "terminatedRunId": terminated_run_id,
+        }
 
     async def _resume(
         self,
