@@ -56,7 +56,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
 
     assert {
         "list_domain_resources", "stage_change_set", "sync_schema_objects",
-        "patch_object_source_binding",
+        "suggest_object_relations", "patch_object_source_binding",
     } <= knowledge
     assert not {"write_file", "delete_file", "patch_object", "create_metric", "upsert_object"} & knowledge
     assert "update_work_notes" in knowledge and "update_plan" not in knowledge
@@ -69,7 +69,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     } <= validation
     assert not {"analyze_deterministic_capabilities", "confirm_deterministic_scope"} & knowledge
     assert {
-        "stage_change_set", "sync_schema_objects", "patch_object_source_binding",
+        "stage_change_set", "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
         "analyze_material_impact", "compile_package_fusion_plan",
     } <= increment
     assert not {"patch_operation", "upsert_operation", "bind_object_source"} & increment
