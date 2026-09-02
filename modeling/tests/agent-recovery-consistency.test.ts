@@ -83,6 +83,8 @@ test('工作区接续时把进行中的计划转移到新 run，旧 run 不再�
   const app = appFor(t);
   const firstRunId = `run-${project.id}`;
   const revision = await currentRevision(app, project.id, firstRunId);
+  const firstClaimed = await tool(app, project.id, 'claim_candidate_workspace', {}, firstRunId);
+  assert.equal(firstClaimed.statusCode, 200, firstClaimed.body);
   const created = await tool(app, project.id, 'create_change_plan', planArgs(revision), firstRunId);
   assert.equal(created.statusCode, 200, created.body);
   const planId = created.json().plan.id;
@@ -112,19 +114,20 @@ test('计划挂在旧 run 时返回可恢复诊断而不是裸 404，安全终�
 
   // 模拟半恢复：计划仍挂在旧 run，但 agent 已在新 run 上接续。
   const nextRunId = `run-${project.id}-next`;
-  getDb().prepare(`UPDATE agent_change_plans SET run_id = ? WHERE id = ?`).run(firstRunId, planId);
+  const staleRunId = `run-${project.id}-stale`;
+  getDb().prepare(`UPDATE agent_change_plans SET run_id = ? WHERE id = ?`).run(staleRunId, planId);
 
   const diagnosed = await tool(app, project.id, 'get_change_plan', { plan_id: planId }, nextRunId);
   assert.equal(diagnosed.statusCode, 409, diagnosed.body);
   assert.equal(diagnosed.json().code, 'CHANGE_PLAN_STALE_RUN');
   assert.equal(diagnosed.json().current_run_id, nextRunId);
-  assert.equal(diagnosed.json().expected_run_id, firstRunId);
+  assert.equal(diagnosed.json().expected_run_id, staleRunId);
 
   const terminated = await safeTerminate(app, project.id, planId);
   assert.equal(terminated.statusCode, 200, terminated.body);
   assert.equal(terminated.json().terminated, true);
 
-  const closed = await tool(app, project.id, 'get_change_plan', { plan_id: planId }, firstRunId);
+  const closed = await tool(app, project.id, 'get_change_plan', { plan_id: planId }, staleRunId);
   assert.equal(closed.statusCode, 200, closed.body);
   assert.equal(closed.json().plan.status, 'cancelled');
 
