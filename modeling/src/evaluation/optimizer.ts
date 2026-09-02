@@ -85,7 +85,10 @@ function targetedEditSourceLimit(edit: PythonSourceEdit): number {
   return targetedSymbolSourceLimit('function');
 }
 
-function rejectTargetedScriptShard(field: 'scriptKey' | 'baseSourceHash' | 'edits', message: string): never {
+function rejectTargetedScriptShard(
+  field: 'scriptKey' | 'baseSourceHash' | 'edits' | 'contractPatch',
+  message: string,
+): never {
   throw new Error([
     'Validation failed for tool "submit_targeted_script_shard":',
     `  - ${field}: ${message.replace(/[\r\n]+/gu, ' ').slice(0, 500)}`,
@@ -1009,9 +1012,15 @@ function preserveUntouchedResources(
     const boundOperation = submitted?.boundOperation
       ? spec.operations.find((operation) => operation.key === submitted.boundOperation)
       : undefined;
+    const original = submitted
+      ? (spec.scripts ?? []).find((script) => script.key === submitted.key)
+      : undefined;
     const bindingNeedsUpdate = Boolean(submitted && boundOperation
       && (suggestion.kind.startsWith('add_') || boundOperation.script?.key !== submitted.key));
-    if (bindingNeedsUpdate && submitted?.boundOperation) {
+    const contractNeedsUpdate = Boolean(submitted && original
+      && (JSON.stringify(submitted.parameters) !== JSON.stringify(original.parameters)
+        || JSON.stringify(submitted.outputs) !== JSON.stringify(original.outputs)));
+    if ((bindingNeedsUpdate || contractNeedsUpdate) && submitted?.boundOperation) {
       touched.operation.add(submitted.boundOperation);
     }
   }
@@ -1112,7 +1121,11 @@ function validateOptimizationChanges(spec: PackageSpec, revised: RevisedSpec, ad
       const boundOperation = afterScript?.boundOperation
         ? spec.operations.find((operation) => operation.key === afterScript.boundOperation)
         : undefined;
-      if (afterScript && boundOperation?.script?.key !== afterScript.key) {
+      const beforeScript = resourceItems(spec, 'script').find((item) => item.key === suggestion.target);
+      const contractChanged = Boolean(beforeScript && afterScript
+        && (JSON.stringify(beforeScript.parameters) !== JSON.stringify(afterScript.parameters)
+          || JSON.stringify(beforeScript.outputs) !== JSON.stringify(afterScript.outputs)));
+      if (afterScript && (boundOperation?.script?.key !== afterScript.key || contractChanged)) {
         touched.operation.add(afterScript.boundOperation);
       }
     }
@@ -1850,6 +1863,72 @@ function requiresDynamicTankInventory(requirements: string): boolean {
   return /(?=[\s\S]*(?:罐容|储罐|tank))(?=[\s\S]*(?:逐批|动态|期初库存|initial_capacity))(?=[\s\S]*(?:库存|inventory|current_capacity).{0,80}(?:更新|入库|出库|inflow|outflow))/iu.test(requirements);
 }
 
+function requiresActualPeriodAggregation(requirements: string): boolean {
+  return /(?=[\s\S]*(?:period_days|actual_days|实际(?:周期|天数)|批次(?:周期|天数)))(?=[\s\S]*(?:月度|aggregate_month|能力|负荷|分母|汇总))/iu.test(requirements);
+}
+
+function requiresDerivedFlowAggregation(requirements: string): boolean {
+  const derivedRelationship = /(?:(?:下游|侧线|派生|产品产量|装置负荷|downstream|side[_\s-]*line|derived).{0,180}(?:收率|分流|比例|yield|split|ratio|share)|(?:收率|分流|比例|yield|split|ratio|share).{0,180}(?:下游|侧线|派生|产品产量|装置负荷|downstream|side[_\s-]*line|derived))/isu.test(requirements);
+  const rejectsRawAggregation = /(?:不得|禁止|不能|而非).{0,100}(?:直接)?(?:累计|累加|汇总|使用).{0,60}(?:原始|整批)?(?:加工量|process_amount|feed_amount)/isu.test(requirements);
+  return (derivedRelationship || rejectsRawAggregation)
+    && /(?:产量|流量|负荷|amount|flow|load|throughput)/iu.test(requirements);
+}
+
+function reachablePythonSources(source: string, roots: string[]) {
+  const index = inspectPythonSource(source);
+  const byName = new Map(index.symbols
+    .filter((symbol) => symbol.kind === 'function')
+    .map((symbol) => [symbol.qualifiedName, symbol]));
+  const executable = new Set<string>();
+  const executablePending = byName.has('main') ? ['main'] : [];
+  while (executablePending.length) {
+    const name = executablePending.pop()!;
+    if (executable.has(name)) continue;
+    executable.add(name);
+    for (const dependency of byName.get(name)?.dependencies ?? []) {
+      if (byName.has(dependency) && !executable.has(dependency)) executablePending.push(dependency);
+    }
+  }
+  const rootSymbols = roots.map((name) => byName.get(name))
+    .filter((symbol) => Boolean(symbol)
+      && (!byName.has('main') || executable.has(symbol!.qualifiedName)));
+  const reachable = new Set(rootSymbols.map((symbol) => symbol!.qualifiedName));
+  const pending = [...reachable];
+  while (pending.length) {
+    const symbol = byName.get(pending.pop()!);
+    for (const dependency of symbol?.dependencies ?? []) {
+      if (!byName.has(dependency) || reachable.has(dependency)) continue;
+      reachable.add(dependency);
+      pending.push(dependency);
+    }
+  }
+  return {
+    roots: rootSymbols.map((symbol) => symbol!.source),
+    implementation: [...reachable].map((name) => byName.get(name)?.source ?? '').join('\n'),
+  };
+}
+
+function pythonLoopSegments(source: string) {
+  const lines = source.split('\n');
+  return lines.flatMap((line, index) => {
+    const loop = line.match(/^(\s*)(?:for|while)\b/u);
+    if (!loop) return [];
+    const indent = loop[1].replaceAll('\t', '    ').length;
+    let end = index + 1;
+    while (end < lines.length) {
+      const candidate = lines[end];
+      if (!candidate.trim()) {
+        end += 1;
+        continue;
+      }
+      const candidateIndent = candidate.match(/^\s*/u)![0].replaceAll('\t', '    ').length;
+      if (candidateIndent <= indent) break;
+      end += 1;
+    }
+    return [{ before: lines.slice(0, index).join('\n'), body: lines.slice(index + 1, end).join('\n') }];
+  });
+}
+
 function requiresDependencyOrderedScriptGeneration(
   scope: TargetedOptimizationScope,
   scriptKeys: ReadonlySet<string>,
@@ -1861,38 +1940,127 @@ function requiresDependencyOrderedScriptGeneration(
       const requirements = suggestionRequirementText(suggestion);
       return requiresAuthoritativeProviderData(requirements)
         || requiresRuntimeSourceMapping(requirements)
-        || requiresDynamicTankInventory(requirements);
+        || requiresDynamicTankInventory(requirements)
+        || requiresActualPeriodAggregation(requirements)
+        || requiresDerivedFlowAggregation(requirements);
     });
 }
 
-export function hasReachableDynamicTankInventory(source: string): boolean {
-  const index = inspectPythonSource(source);
-  const byName = new Map(index.symbols
-    .filter((symbol) => symbol.kind === 'function')
-    .map((symbol) => [symbol.qualifiedName, symbol]));
-  const reachable = new Set(['check_tanks', 'process_batch', 'aggregate_month']
-    .filter((name) => byName.has(name)));
-  const pending = [...reachable];
-  while (pending.length) {
-    const symbol = byName.get(pending.pop()!);
-    for (const dependency of symbol?.dependencies ?? []) {
-      if (!byName.has(dependency) || reachable.has(dependency)) continue;
-      reachable.add(dependency);
-      pending.push(dependency);
+export function hasReachableActualPeriodAggregation(source: string): boolean {
+  const { implementation } = reachablePythonSources(source, ['aggregate_month']);
+  if (!implementation) return false;
+  const periodField = '(?:period_days|duration_days|batch_days|actual_days|days_in_period)';
+  const periodTotals = new Set<string>();
+  for (const pattern of [
+    new RegExp(`^\\s*([A-Za-z_]\\w*)\\s*=\\s*sum\\s*\\([^\\n]*\\b${periodField}\\b`, 'gimu'),
+    new RegExp(`^\\s*([A-Za-z_]\\w*)\\s*\\+=\\s*[^\\n]*\\b${periodField}\\b`, 'gimu'),
+  ]) {
+    for (const match of implementation.matchAll(pattern)) periodTotals.add(match[1]);
+  }
+  const capacityTerm = /(?:capacity|throughput|denominator|available|utilization|load)/iu;
+  const lines = implementation.split('\n').filter((line) => !/^\s*#/u.test(line));
+  const capacityTainted = new Set<string>();
+  const mentions = (line: string, names: ReadonlySet<string>) => [...names].some((name) => (
+    new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\b`, 'u').test(line)
+  ));
+  for (let pass = 0; pass < lines.length; pass += 1) {
+    let changed = false;
+    for (const line of lines) {
+      const assignment = line.match(/^\s*([A-Za-z_]\w*)(?:\s*\[[^\]\n]+\])?\s*=\s*(.+)$/u);
+      if (!assignment) continue;
+      const [, target, expression] = assignment;
+      const periodDerived = mentions(expression, periodTotals);
+      const capacityDerived = mentions(expression, capacityTainted);
+      if (!periodDerived && !capacityDerived) continue;
+      if (!capacityDerived && !capacityTerm.test(line)) continue;
+      if (!capacityTainted.has(target)) {
+        capacityTainted.add(target);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const directReturn = lines.some((line) => /^\s*return\b/u.test(line)
+    && capacityTerm.test(line)
+    && new RegExp(`\\bsum\\s*\\([^\\n]*\\b${periodField}\\b`, 'iu').test(line));
+  return directReturn || lines.some((line) => /^\s*return\b/u.test(line)
+    && mentions(line, capacityTainted));
+}
+
+export function hasReachableDerivedFlowAggregation(source: string): boolean {
+  const process = reachablePythonSources(source, ['process_batch']).implementation;
+  const aggregate = reachablePythonSources(source, ['aggregate_month']).implementation;
+  if (!process || !aggregate) return false;
+  const amountTerm = /\b(?:(?:process|feed|input|batch|source|raw|upstream)\w*_)?(?:amount|quantity|volume)\w*\b/iu;
+  const ratioTerm = /\b(?:yield|split|distribution|allocation|share|fraction|ratio|rate|proportion)\w*\b/iu;
+  const localDerived = new Set<string>();
+  const exportedDerived = new Set<string>();
+  for (const line of process.split('\n')) {
+    const expression = line.includes('=') ? line.slice(line.indexOf('=') + 1) : line;
+    if (!expression.includes('*') || !amountTerm.test(expression) || !ratioTerm.test(expression)) continue;
+    const assignment = line.match(/^\s*([A-Za-z_]\w*)\s*=/u);
+    if (assignment) localDerived.add(assignment[1]);
+    const subscript = line.match(/^\s*[A-Za-z_]\w*\s*\[\s*["']([^"']+)["']\s*\]\s*=/u);
+    if (subscript) exportedDerived.add(subscript[1]);
+    for (const field of line.matchAll(/["']([^"']+)["']\s*:/gu)) exportedDerived.add(field[1]);
+  }
+  for (const variable of localDerived) {
+    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    for (const match of process.matchAll(new RegExp(`["']([^"']+)["']\\s*:\\s*\\b${escaped}\\b`, 'gu'))) {
+      exportedDerived.add(match[1]);
     }
   }
-  const implementation = [...reachable].map((name) => byName.get(name)?.source ?? '').join('\n');
+  const returnsDerivedValues = [...localDerived].some((name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    return new RegExp(`^\\s*return\\s+\\b${escaped}\\b`, 'mu').test(process);
+  });
+  const directlyAggregatesReturnedValues = returnsDerivedValues
+    && /\bsum\s*\(\s*(?:results|batch_results|processed_batches)\b/iu.test(aggregate);
+  if (directlyAggregatesReturnedValues) return true;
+  return [...exportedDerived].some((name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    return new RegExp(`(?:\\bsum\\s*\\([^\\n]*|\\+=\\s*[^\\n]*)(?:\\b${escaped}\\b|["']${escaped}["'])`, 'iu')
+      .test(aggregate);
+  });
+}
+
+export function hasReachableDynamicTankInventory(source: string): boolean {
+  const reachable = reachablePythonSources(source, ['check_tanks', 'process_batch', 'aggregate_month']);
+  const implementation = reachable.implementation;
   const hasInitialInventory = /\b(?:initial_capacity|initial_inventory|opening_(?:stock|inventory)|期初库存)\b/iu.test(implementation);
   const hasRuntimeFlows = /\b(?:connections|material_flows|flows|inflow|outflow)\b/iu.test(implementation);
-  const singleExpressionUpdate = /\b(?:inventory|current_capacity|current|stock)\w*(?:\s*\[[^\]]+\])?\s*=\s*[^\n]*\+[^\n]*-[^\n]*/iu.test(implementation);
-  const additions = new Set([...implementation.matchAll(
-    /\b((?:inventory|current_capacity|current|stock)\w*(?:\s*\[[^\]]+\])?)\s*\+=/giu,
-  )].map((match) => match[1].replace(/\s+/gu, '')));
-  const subtractions = new Set([...implementation.matchAll(
-    /\b((?:inventory|current_capacity|current|stock)\w*(?:\s*\[[^\]]+\])?)\s*-=/giu,
-  )].map((match) => match[1].replace(/\s+/gu, '')));
-  const incrementalUpdate = [...additions].some((name) => subtractions.has(name));
-  return hasInitialInventory && hasRuntimeFlows && (singleExpressionUpdate || incrementalUpdate);
+  if (!hasInitialInventory || !hasRuntimeFlows) return false;
+  const helperCarriesState = /\breturn\s+[^\n]*(?:inventor(?:y|ies)|stock|capacity|current|previous)[^\n]*\+[^\n]*(?:inflow|incoming|input)[^\n]*-[^\n]*(?:outflow|outgoing|output)/iu.test(implementation);
+  return reachable.roots.some((root) => {
+    return pythonLoopSegments(root).some(({ before, body }) => {
+      const stateNames = new Set([...before.matchAll(
+        /^\s*([A-Za-z_]\w*)\s*=\s*[^\n]*\b(?:initial_capacity|initial_inventory|opening_(?:stock|inventory))\b/gimu,
+      )].map((match) => match[1]).filter((name) => /(?:inventor(?:y|ies)|stock|capacity)/iu.test(name)));
+      return [...stateNames].some((name) => {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+        if (new RegExp(
+          `^\\s*${escaped}(?:\\s*\\[[^\\]\\n]+\\])?\\s*=\\s*[^\\n]*\\b(?:initial_capacity|initial_inventory|opening_(?:stock|inventory))\\b`,
+          'imu',
+        ).test(body)) return false;
+        const directUpdate = new RegExp(
+          `^\\s*${escaped}(?:\\s*\\[[^\\]\\n]+\\])?\\s*=\\s*(?=[^\\n]*\\b${escaped}\\b)(?=[^\\n]*\\+)(?=[^\\n]*-)(?=[^\\n]*(?:inflow|incoming|input))(?=[^\\n]*(?:outflow|outgoing|output))[^\\n]*`,
+          'imu',
+        ).test(body);
+        const additions = new Set([...body.matchAll(
+          new RegExp(`\\b(${escaped}(?:\\s*\\[[^\\]\\n]+\\])?)\\s*\\+=`, 'giu'),
+        )].map((match) => match[1].replace(/\s+/gu, '')));
+        const subtractions = new Set([...body.matchAll(
+          new RegExp(`\\b(${escaped}(?:\\s*\\[[^\\]\\n]+\\])?)\\s*-=`, 'giu'),
+        )].map((match) => match[1].replace(/\s+/gu, '')));
+        const incrementalUpdate = [...additions].some((state) => subtractions.has(state));
+        const helperUpdate = helperCarriesState && new RegExp(
+          `^\\s*${escaped}(?:\\s*\\[[^\\]\\n]+\\])?\\s*=\\s*[A-Za-z_]\\w*\\s*\\([^\\n]*\\b${escaped}\\b`,
+          'imu',
+        ).test(body);
+        return directUpdate || incrementalUpdate || helperUpdate;
+      });
+    });
+  });
 }
 
 function requiresAssignmentRemoval(requirements: string, symbol: string): boolean {
@@ -1939,6 +2107,17 @@ function validateOptimizationScriptRequirements(
       if (identityChanges.length) {
         errors.push(`优化候选 script:${script.key} 不得改变既有脚本身份：${identityChanges.join('、')}`);
       }
+      const ioContractChanged = JSON.stringify(script.parameters) !== JSON.stringify(before.parameters)
+        || JSON.stringify(script.outputs) !== JSON.stringify(before.outputs);
+      if (ioContractChanged) {
+        const operation = revised.operations.find((item) => item.key === script.boundOperation);
+        if (operation) {
+          const problems = operationScriptContractProblems(operation, script);
+          if (problems.length) {
+            errors.push(`优化候选 script:${script.key} 与绑定 operation:${operation.key} 的输入输出契约不一致：${problems.join('、')}`);
+          }
+        }
+      }
     }
     if (!script.sourceCode.trim()) {
       errors.push(`优化候选 script:${script.key} 的源码不能为空；修改既有脚本时必须保留可执行实现`);
@@ -1976,8 +2155,14 @@ function validateOptimizationScriptRequirements(
         errors.push(`优化候选 script:${script.key} 要求从运行时源表解析映射，却仍遍历硬编码标识集合 ${hardCodedCollections.join('、')}；必须从 connections、material_flows 或 side_lines 查询结果构造集合`);
       }
     }
+    if (requiresActualPeriodAggregation(requirements) && !hasReachableActualPeriodAggregation(source)) {
+      errors.push(`优化候选 script:${script.key} 未在 aggregate_month 的可达调用链使用实际批次周期：月度能力或负荷分母必须由全部批次的 period_days 汇总，不能继续使用固定月份天数`);
+    }
+    if (requiresDerivedFlowAggregation(requirements) && !hasReachableDerivedFlowAggregation(source)) {
+      errors.push(`优化候选 script:${script.key} 未在 process_batch 到 aggregate_month 的可达调用链落实派生负荷：下游产量必须由加工量乘收率或分流比例得到，并按该派生产量汇总，不能直接累计原始加工量`);
+    }
     if (requiresDynamicTankInventory(requirements) && !hasReachableDynamicTankInventory(source)) {
-      errors.push(`优化候选 script:${script.key} 未在 check_tanks、process_batch 或 aggregate_month 的可达调用链落实动态罐存：必须读取 initial_capacity 和运行时物流路径，并执行库存 + 入库 - 出库更新`);
+      errors.push(`优化候选 script:${script.key} 未在 check_tanks、process_batch 或 aggregate_month 的可达调用链落实跨批动态罐存：必须从 initial_capacity 初始化一次，在批次循环中以上一批期末库存执行库存 + 入库 - 出库并回写状态`);
     }
     if (requiresDefaultFallbackRemoval(requirements)) {
       const beforeScript = (spec.scripts ?? []).find((item) => item.key === suggestion.target) ?? script;
@@ -2189,9 +2374,15 @@ type TargetedScriptPatchSubmission = {
   scriptKey: string;
   baseSourceHash: string;
   edits: PythonSourceEdit[];
+  contractPatch?: TargetedScriptContractPatch;
 };
 
 type OperationSpec = PackageSpec['operations'][number];
+type ScriptSpec = NonNullable<PackageSpec['scripts']>[number];
+type TargetedScriptContractPatch = Partial<Pick<
+  ScriptSpec,
+  'description' | 'parameters' | 'outputs' | 'boundaries'
+>>;
 type TargetedStandaloneResourceKind = ResourceKind;
 type TargetedStandaloneResourceSubmission = {
   kind: TargetedStandaloneResourceKind;
@@ -2227,6 +2418,129 @@ const boundedOperationStringList = (
   maxLength: number,
   description?: string,
 ) => Type.Array(boundedOperationText(maxLength, description), { maxItems });
+
+const targetedScriptContractPatchSchema = () => Type.Object({
+  description: Type.Optional(boundedOperationText(2_000)),
+  parameters: Type.Optional(Type.Array(Type.Object({
+    name: boundedOperationText(100),
+    flag: boundedOperationText(100),
+    type: boundedOperationText(100),
+    required: Type.Boolean(),
+    defaultValue: Type.Optional(Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
+    description: Type.Optional(boundedOperationText(800)),
+    multiple: Type.Optional(Type.Boolean()),
+    action: Type.Optional(Type.Union([Type.Literal('store_true'), Type.Literal('store_false')])),
+  }, { additionalProperties: false }), { maxItems: 64 })),
+  outputs: Type.Optional(Type.Array(Type.Object({
+    key: boundedOperationText(100),
+    type: boundedOperationText(100),
+    description: Type.Optional(boundedOperationText(800)),
+  }, { additionalProperties: false }), { maxItems: 64 })),
+  boundaries: Type.Optional(boundedOperationStringList(64, 1_000)),
+}, {
+  additionalProperties: false,
+  minProperties: 1,
+  description: '只允许修改脚本说明、参数、输出和边界；脚本身份及执行设置由服务端保留',
+});
+
+function mergeTargetedScriptContractPatch(
+  current: ScriptSpec,
+  patch: TargetedScriptContractPatch | undefined,
+): ScriptSpec {
+  if (!patch) return current;
+  const allowed = new Set(['description', 'parameters', 'outputs', 'boundaries']);
+  const entries = Object.entries(patch);
+  if (!entries.length) throw new Error(`script:${current.key} 契约字段补丁为空`);
+  const unsupported = entries.find(([field]) => !allowed.has(field));
+  if (unsupported) throw new Error(`script:${current.key} 契约补丁不得修改 ${unsupported[0]}`);
+  const parameters = patch.parameters ?? current.parameters;
+  const duplicateParameter = parameters.find((parameter, index) => parameters.findIndex((candidate) => (
+    candidate.name.normalize('NFKC').trim().toLocaleLowerCase('en-US')
+      === parameter.name.normalize('NFKC').trim().toLocaleLowerCase('en-US')
+      || candidate.flag.normalize('NFKC').trim() === parameter.flag.normalize('NFKC').trim()
+  )) !== index);
+  if (duplicateParameter) {
+    throw new Error(`script:${current.key} 契约包含重复参数名或 flag：${duplicateParameter.name}`);
+  }
+  const outputs = patch.outputs ?? current.outputs;
+  const duplicateOutput = outputs.find((output, index) => outputs.findIndex((candidate) => (
+    candidate.key.normalize('NFKC').trim().toLocaleLowerCase('en-US')
+      === output.key.normalize('NFKC').trim().toLocaleLowerCase('en-US')
+  )) !== index);
+  if (duplicateOutput) throw new Error(`script:${current.key} 契约包含重复输出：${duplicateOutput.key}`);
+  return { ...current, ...patch };
+}
+
+function synchronizeOperationScriptContract(
+  operation: OperationSpec,
+  script: ScriptSpec,
+  patch: TargetedScriptContractPatch,
+): OperationSpec {
+  const existingInputs = new Map(operation.inputs.map((input) => [
+    input.param.normalize('NFKC').trim().toLocaleLowerCase('en-US'), input,
+  ]));
+  const existingOutputs = new Map(operation.outputs.map((output) => [
+    output.field.normalize('NFKC').trim().toLocaleLowerCase('en-US'), output,
+  ]));
+  return {
+    ...operation,
+    ...(patch.parameters ? {
+      inputs: script.parameters.map((parameter) => {
+        const previous = existingInputs.get(parameter.name.normalize('NFKC').trim().toLocaleLowerCase('en-US'));
+        return {
+          param: parameter.name,
+          ...(previous?.cnName ? { cnName: previous.cnName } : {}),
+          type: parameter.type,
+          required: parameter.required,
+          ...(parameter.description || previous?.note
+            ? { note: parameter.description ?? previous?.note } : {}),
+        };
+      }),
+    } : {}),
+    ...(patch.outputs ? {
+      outputs: script.outputs.map((output) => {
+        const previous = existingOutputs.get(output.key.normalize('NFKC').trim().toLocaleLowerCase('en-US'));
+        return {
+          field: output.key,
+          ...(previous?.cnName ? { cnName: previous.cnName } : {}),
+          type: output.type,
+          ...(output.description || previous?.note
+            ? { note: output.description ?? previous?.note } : {}),
+        };
+      }),
+    } : {}),
+  };
+}
+
+function operationScriptContractProblems(operation: OperationSpec, script: ScriptSpec): string[] {
+  const normalize = (value: string) => value.normalize('NFKC').trim().toLocaleLowerCase('en-US');
+  const operationInputs = new Map(operation.inputs.map((input) => [normalize(input.param), input]));
+  const scriptInputs = new Map(script.parameters.map((parameter) => [normalize(parameter.name), parameter]));
+  const operationOutputs = new Map(operation.outputs.map((output) => [normalize(output.field), output]));
+  const scriptOutputs = new Map(script.outputs.map((output) => [normalize(output.key), output]));
+  const problems: string[] = [];
+  for (const [name, parameter] of scriptInputs) {
+    const input = operationInputs.get(name);
+    if (!input) problems.push(`operation 缺少输入 ${parameter.name}`);
+    else if (normalize(input.type) !== normalize(parameter.type) || input.required !== parameter.required) {
+      problems.push(`输入 ${parameter.name} 的类型或必填性不一致`);
+    }
+  }
+  for (const [name, input] of operationInputs) {
+    if (!scriptInputs.has(name)) problems.push(`script 缺少参数 ${input.param}`);
+  }
+  for (const [name, output] of scriptOutputs) {
+    const field = operationOutputs.get(name);
+    if (!field) problems.push(`operation 缺少输出 ${output.key}`);
+    else if (normalize(field.type) !== normalize(output.type)) {
+      problems.push(`输出 ${output.key} 的类型不一致`);
+    }
+  }
+  for (const [name, output] of operationOutputs) {
+    if (!scriptOutputs.has(name)) problems.push(`script 缺少输出 ${output.field}`);
+  }
+  return problems;
+}
 
 const targetedOperationPatchSchema = () => Type.Object({
   operationKey: boundedOperationText(80, '必须逐字复用当前 operation key'),
@@ -2877,6 +3191,8 @@ function targetedShardContext(
         key: operation.key,
         title: operation.title,
         description: operation.description,
+        inputs: operation.inputs,
+        outputs: operation.outputs,
         relatedObjects: operation.relatedObjects,
         usesRules: operation.usesRules,
         usesMetrics: operation.usesMetrics,
@@ -3143,6 +3459,7 @@ export async function applyOptimizations(
       throw new Error(`目标资源增量补丁不能同时完整提交和分片修改 script:${overlappingScript.key}`);
     }
     let scripts = mergeResourcePatch(patchBase.scripts, submittedScripts);
+    const contractPatches = new Map<string, TargetedScriptContractPatch>();
     for (const patch of scriptPatches) {
       if (!targetedScope.scriptKeys.has(patch.scriptKey)) {
         throw new Error(`目标资源增量补丁包含未授权的 script:${patch.scriptKey}`);
@@ -3157,18 +3474,41 @@ export async function applyOptimizations(
       if (patch.baseSourceHash !== actualHash) {
         throw new Error(`script:${patch.scriptKey} 基础源码哈希已变化，请基于 ${actualHash} 重新生成补丁`);
       }
+      const edits = patch.edits ?? [];
+      const changedContract = mergeTargetedScriptContractPatch(current, patch.contractPatch);
       const changed = {
-        ...current,
-        sourceCode: applyPythonSourceEdits(current.sourceCode, patch.edits, {
-          expectedBaseSourceHash: patch.baseSourceHash,
-          requireNodeHashes: true,
-        }),
+        ...changedContract,
+        sourceCode: edits.length
+          ? applyPythonSourceEdits(current.sourceCode, edits, {
+              expectedBaseSourceHash: patch.baseSourceHash,
+              requireNodeHashes: true,
+            })
+          : current.sourceCode,
       };
+      if (patch.contractPatch) {
+        const previous = contractPatches.get(patch.scriptKey) ?? {};
+        for (const [field, value] of Object.entries(patch.contractPatch)) {
+          const previousValue = previous[field as keyof TargetedScriptContractPatch];
+          if (previousValue !== undefined && JSON.stringify(previousValue) !== JSON.stringify(value)) {
+            throw new Error(`script:${patch.scriptKey} 的并行分片提交了冲突的契约字段 ${field}`);
+          }
+        }
+        contractPatches.set(patch.scriptKey, { ...previous, ...patch.contractPatch });
+      }
       scripts = mergeResourcePatch(scripts, [changed]);
+    }
+    let mergedOperations = mergeResourcePatch(patchBase.operations, operations);
+    for (const [scriptKey, contractPatch] of contractPatches) {
+      const script = scripts.find((item) => item.key === scriptKey);
+      if (!script) throw new Error(`目标资源增量补丁找不到 script:${scriptKey}`);
+      const operation = mergedOperations.find((item) => item.key === script.boundOperation);
+      if (!operation) throw new Error(`script:${scriptKey} 找不到绑定 operation:${script.boundOperation}`);
+      const synchronized = synchronizeOperationScriptContract(operation, script, contractPatch);
+      mergedOperations = mergeResourcePatch(mergedOperations, [synchronized]);
     }
     cap.revised = {
       objects: mergeResourcePatch(patchBase.objects, objects),
-      operations: mergeResourcePatch(patchBase.operations, operations),
+      operations: mergedOperations,
       rules: mergeResourcePatch(patchBase.rules, rules),
       metrics: mergeResourcePatch(patchBase.metrics, metrics),
       scripts,
@@ -3195,6 +3535,9 @@ export async function applyOptimizations(
     '若多条独立来源记录需要求和，必须先按来源记录主键保留每条唯一记录，再聚合其数值；禁止用目标对象、分类或去向作为字典键覆盖前一条来源记录。',
     '特殊类别或特殊流向的成员资格必须来自运行时显式分类字段、来源记录或可验证配置；不得仅凭任意关联字段非空推断，也不得在源码中硬编码标识集合。',
     '动态映射必须以运行时数据源为唯一事实来源；当前数据记录只能作为非权威示例，禁止把静态枚举写成封闭名单并据此排除未来新增记录。',
+    '月度能力和负荷分母必须汇总结构化批次中的实际 period_days；禁止用固定月份天数替代实际批次周期。',
+    '下游装置负荷必须先由加工量乘收率或分流比例得到派生产量，再汇总派生产量；禁止直接把原始加工量累计为所有下游负荷。',
+    '动态库存必须只初始化一次，并在有序批次循环中以上一批期末库存继续执行入库和出库更新；禁止每批重新读取期初库存。',
     '比例与百分比字段在比较或计算前必须统一量纲；当输入可能使用小数比例或百分数两种表示时，必须显式归一后再使用。',
     '可以统一到 0-1 小数比例，也可以统一到 0-100 百分数，但必须先解析数值并校验范围，再按输入量级分支转换：例如大于 1 的百分数除以 100，或不大于 1 的小数比例乘以 100；禁止无条件除以或乘以 100。',
     '修正规则公式或阈值时，description、content、conditions、exceptions 只能保留当前权威口径；禁止把被废弃公式或阈值继续作为“而非/不是”历史对照写入规则。',
@@ -3212,13 +3555,16 @@ export async function applyOptimizations(
     '正式知识契约高于评测派生建议。readOnly.authoritativeDefaults 中列出的缺省值已有正式规则、指标或脚本边界依据，必须保留；不得为了落实“删除全部默认值”的派生措辞而删除或绕过。',
     '禁止回传完整知识包或完整脚本，禁止输出分析正文；必须通过当前任务指定的结构化工具提交。',
     'Python replacement 必须逐字复用 baseSourceHash 和目标 nodeHash，并提交语法完整的顶层定义。',
+    '若源码修改需要新增或调整 CLI 输入、JSON 输出或边界，必须在同一次提交的 contractPatch 中更新 parameters、outputs、description 或 boundaries；服务端会同步绑定 operation。不得修改 key、runtime、boundOperation、entrypoint、timeoutSeconds 或 evidence。',
     '新增 import 请放在被替换函数内部；未列入 editable 的符号和知识资源由服务端原样保留。',
     '不得写入标准答案、评测问题原文、判分理由、当前用例批次/日期/结果数值或样例专用分支。',
     'DataProviderClient 是平台数据唯一读取入口；不得保留文件读取、静默缺省数据或人工手算兜底作为权威计算路径。',
     DATA_PROVIDER_SCRIPT_CONTRACT,
     '所有结构化数值必须先显式转换并校验；数据行按本体语义字段、来源列字段、位置索引的顺序跳过空值读取。',
     '当校验错误列出 load_reference_data 的下游读取键时，必须逐一核对：每个键要么按真实源表契约由同一个 load_reference_data 返回，要么删除不必要的下游读取；禁止使用别名、空壳 None、静默默认值或只在局部变量写入来绕过。',
-    '当建议涉及动态罐容时，check_tanks 的可执行函数体必须直接调用或内联已有查询/辅助逻辑，形成可见调用链；必须读取 initial_capacity 及 connections、material_flows 或 flows，并逐批执行 inventory = previous + inflow - outflow。只新增未调用的 helper 不算落实。',
+    '当建议涉及实际周期时，aggregate_month 的可达调用链必须汇总全部批次的 period_days，并把汇总结果用于月度能力或负荷分母；固定天数不算落实。',
+    '当建议涉及下游负荷时，process_batch 必须以加工量乘收率或分流比例形成派生产量，aggregate_month 必须汇总该派生产量；直接累计原始加工量不算落实。',
+    '当建议涉及动态罐容时，check_tanks 的可执行函数体必须直接调用或内联已有查询/辅助逻辑，形成可见调用链；必须从 initial_capacity 初始化一次，在有序批次循环中以上一批期末 inventory 继续执行 inflow - outflow 并回写状态。只新增未调用的 helper 或每批重置库存不算落实。',
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n') : '';
 
@@ -3539,12 +3885,13 @@ export async function applyOptimizations(
       };
       const submitScriptShard = {
         name: 'submit_targeted_script_shard',
-        label: '提交 Python 符号增量补丁',
-        description: '只提交当前分片允许的 Python 顶层符号编辑',
+        label: '提交 Python 符号与契约增量补丁',
+        description: '只提交当前分片允许的 Python 顶层符号编辑，以及必要的受限脚本契约字段',
         parameters: Type.Object({
           scriptKey: Type.String(),
           baseSourceHash: Type.String(),
           edits: Type.Array(pythonSourceEditSchema, { minItems: 1 }),
+          contractPatch: Type.Optional(targetedScriptContractPatchSchema()),
         }),
         async execute(_id: string, params: TargetedScriptPatchSubmission) {
           let submittedEdits = normalizeSubmittedEdits(params.edits ?? []);
@@ -3558,6 +3905,7 @@ export async function applyOptimizations(
                 scriptKey: params.scriptKey,
                 baseSourceHash: params.baseSourceHash,
                 edits: modelEdits,
+                ...(params.contractPatch ? { contractPatch: params.contractPatch } : {}),
               };
               rejectedReason = message;
               repairTargetFunction = targetFunction;
@@ -3578,6 +3926,16 @@ export async function applyOptimizations(
           }
           if (params.baseSourceHash !== sourceIndex.baseSourceHash) {
             rejectTargetedScriptShard('baseSourceHash', `必须逐字复用 editable.baseSourceHash（script:${shard.scriptKey}）`);
+          }
+          if (params.contractPatch) {
+            try {
+              mergeTargetedScriptContractPatch(script, params.contractPatch);
+            } catch (error) {
+              rejectTargetedScriptShard(
+                'contractPatch',
+                error instanceof Error ? error.message : String(error),
+              );
+            }
           }
           if (removeAllDefaultFallbacks) {
             const missingRewrites = defaultDependentFunctions.filter((symbol) =>
@@ -3606,6 +3964,9 @@ export async function applyOptimizations(
             ...submittedEdits.filter((edit) => !deterministicDeleteSymbols.has(edit.symbol)),
             ...deterministicDeleteEdits,
           ];
+          if (!edits.length && !params.contractPatch) {
+            rejectTargetedScriptShard('edits', '必须至少提交一个源码编辑或一个脚本契约字段补丁');
+          }
           for (const edit of edits) {
             if (!allowedSymbols.has(edit.symbol) && !ownedExistingHelpers.has(edit.symbol)) {
               rejectEdits('只能编辑 editable.symbols 中列出的 Python 符号');
@@ -3629,29 +3990,32 @@ export async function applyOptimizations(
               if (invalidHelper) rejectEdits(`服务端生成的辅助函数仍未落入 ${helperNamePrefix} 命名空间`);
             }
           }
-          try {
-            applyPythonSourceEdits(script.sourceCode, edits, {
-              expectedBaseSourceHash: params.baseSourceHash,
-              requireNodeHashes: true,
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '';
-            const reason = /语法错误/u.test(message)
-              ? '提交的 Python 顶层定义存在语法错误'
-              : /重复新增函数/u.test(message)
-                ? '新增辅助函数与现有函数或同批辅助函数重名'
-                : /哈希|已变化/u.test(message)
-                  ? '必须逐字复用 editable.symbols 中对应的 nodeHash'
-                  : '增量补丁必须使用合法的顶层定义、唯一编辑目标和非重叠修改';
-            rejectEdits(reason);
+          if (edits.length) {
+            try {
+              applyPythonSourceEdits(script.sourceCode, edits, {
+                expectedBaseSourceHash: params.baseSourceHash,
+                requireNodeHashes: true,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : '';
+              const reason = /语法错误/u.test(message)
+                ? '提交的 Python 顶层定义存在语法错误'
+                : /重复新增函数/u.test(message)
+                  ? '新增辅助函数与现有函数或同批辅助函数重名'
+                  : /哈希|已变化/u.test(message)
+                    ? '必须逐字复用 editable.symbols 中对应的 nodeHash'
+                    : '增量补丁必须使用合法的顶层定义、唯一编辑目标和非重叠修改';
+              rejectEdits(reason);
+            }
           }
           captured = { ...params, edits };
           return {
-            content: [{ type: 'text' as const, text: `已提交 ${edits.length} 个 Python 符号编辑。` }],
+            content: [{ type: 'text' as const, text: `已提交 ${edits.length} 个 Python 符号编辑和 ${Object.keys(params.contractPatch ?? {}).length} 个契约字段。` }],
             details: {
               scriptKey: shard.scriptKey,
               symbols: shard.symbols,
               editCount: edits.length,
+              contractFields: Object.keys(params.contractPatch ?? {}),
               deterministicDeleteCount: deterministicDeleteSymbols.size,
             },
             terminate: true,
@@ -3669,7 +4033,7 @@ export async function applyOptimizations(
         },
         approvedDefaults,
       );
-      const submitNudge = `不要继续分析，立即调用 submit_targeted_script_shard 提交当前符号分片。已有函数替换最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符；新增 helper 和常量替换最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符。不要重做其他分片。`;
+      const submitNudge = `不要继续分析，立即调用 submit_targeted_script_shard 提交当前符号分片；源码接口变化时同时提交受限 contractPatch。已有函数替换最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符；新增 helper 和常量替换最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符。不要重做其他分片。`;
       const agent = makeAgent(targetedScriptShardLlm, targetedSharedRules, [submitScriptShard] as any);
       const shardToolChoiceState = { mode: 'named' as const };
       const captureOptions = (targetToolName = 'submit_targeted_script_shard') => ({
@@ -3694,7 +4058,7 @@ export async function applyOptimizations(
               || (/(?:脚本分片|submit_targeted_script_shard)/u.test(validationError)
                 && /(?:提交工具参数校验失败|未调用|未提交增量补丁)/u.test(validationError)))
               ? ['【上次提交错误】', validationError] : []),
-            `只修改 editable.symbols 或 editable.existingHelpers 中列出的现有符号。serverManaged.deleteAssignments/deleteFunctions 由服务端自动删除，不要为它们提交编辑。已有函数替换最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符；新增 helper 和常量替换最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符。复杂逻辑仅在确实需要时拆分 helper，并保持原函数简洁。新增辅助函数请使用唯一临时 Python 名称，服务端会自动映射到 editable.helperNamePrefix（${helperNamePrefix}）命名空间；不要依赖其他分片的 helper。existingHelpers 必须接入当前业务函数调用链，不需要的 helper 必须用 delete_function 删除。`,
+            `源码只修改 editable.symbols 或 editable.existingHelpers 中列出的现有符号；如输入输出接口随源码变化，使用 contractPatch 原子更新 editable.script 的 parameters、outputs、description 或 boundaries，其他脚本字段不可修改。serverManaged.deleteAssignments/deleteFunctions 由服务端自动删除，不要为它们提交编辑。已有函数替换最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符；新增 helper 和常量替换最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符。复杂逻辑仅在确实需要时拆分 helper，并保持原函数简洁。新增辅助函数请使用唯一临时 Python 名称，服务端会自动映射到 editable.helperNamePrefix（${helperNamePrefix}）命名空间；不要依赖其他分片的 helper。existingHelpers 必须接入当前业务函数调用链，不需要的 helper 必须用 delete_function 删除。`,
             '请立即调用 submit_targeted_script_shard。',
           ].join('\n'),
           () => Boolean(captured),
@@ -3732,6 +4096,8 @@ export async function applyOptimizations(
                 expectedNodeHash: targetFunction.nodeHash,
                 source: params.source,
               }],
+              ...(rejectedDraft?.contractPatch
+                ? { contractPatch: rejectedDraft.contractPatch } : {}),
             });
           },
         } : undefined;
@@ -4100,14 +4466,17 @@ export async function applyOptimizations(
           parts.push(patch);
           const current = workingBase.scripts.find((item) => item.key === patch.scriptKey);
           if (!current) throw new Error(`目标脚本不存在：${patch.scriptKey}`);
-          const sourceCode = applyPythonSourceEdits(current.sourceCode, patch.edits, {
-            expectedBaseSourceHash: patch.baseSourceHash,
-            requireNodeHashes: true,
-          });
+          const sourceCode = patch.edits.length
+            ? applyPythonSourceEdits(current.sourceCode, patch.edits, {
+                expectedBaseSourceHash: patch.baseSourceHash,
+                requireNodeHashes: true,
+              })
+            : current.sourceCode;
+          const changed = mergeTargetedScriptContractPatch(current, patch.contractPatch);
           workingBase = {
             ...workingBase,
             scripts: workingBase.scripts.map((item) => item.key === patch.scriptKey
-              ? { ...item, sourceCode } : item),
+              ? { ...changed, sourceCode } : item),
           };
         }
         return parts;
@@ -4133,6 +4502,22 @@ export async function applyOptimizations(
         .filter((item) => item.kind === 'operation')
         .map((item) => item.resource as PackageSpec['operations'][number]),
     ];
+    const mergedContracts = new Map<string, TargetedScriptContractPatch>();
+    for (const part of scriptParts) {
+      if (!part.contractPatch) continue;
+      const merged = mergedContracts.get(part.scriptKey) ?? {};
+      for (const [field, value] of Object.entries(part.contractPatch)) {
+        const previous = merged[field as keyof TargetedScriptContractPatch];
+        if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(value)) {
+          throw new TargetedGenerationRetryError(
+            `script:${part.scriptKey}`,
+            new Error(`多个分片提交了冲突的脚本契约字段 ${field}`),
+          );
+        }
+        (merged as Record<string, unknown>)[field] = value;
+      }
+      mergedContracts.set(part.scriptKey, merged);
+    }
     const scriptPatches = [...new Set(scriptParts.map((item) => item.scriptKey))].flatMap((scriptKey) => {
       const parts = scriptParts.filter((item) => item.scriptKey === scriptKey);
       const baseSourceHashes = new Set(parts.map((item) => item.baseSourceHash));
@@ -4140,6 +4525,8 @@ export async function applyOptimizations(
         scriptKey,
         baseSourceHash: parts[0].baseSourceHash,
         edits: parts.flatMap((item) => item.edits),
+        ...(mergedContracts.get(scriptKey)
+          ? { contractPatch: mergedContracts.get(scriptKey) } : {}),
       }];
       // 依赖顺序生成时，每个分片基于上一个分片的源码；保留链式补丁，
       // 由 applyTargetedSubmission 按顺序校验并应用，避免把后续 helper 脱离上下文。

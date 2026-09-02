@@ -298,6 +298,44 @@ test('知识包脚本运行错误直接生成可优化的脚本诊断', async ()
   assert.equal(report.canProposeOptimizations, true);
 });
 
+test('脚本调用失败后重试成功时仍继续诊断最终计算口径', async () => {
+  const failed = result('script-recovered', '计算一组有序批次的汇总负荷', '返回按周期折算的汇总负荷');
+  const core = createFauxCore({ provider: 'script-recovered', models: [{ id: 'script-recovered' }] });
+  core.setResponses([fauxAssistantMessage([fauxToolCall('submit_failure_diagnoses', { diagnoses: [{
+    category: 'caliber_issue', title: '月度聚合未使用批次周期',
+    summary: '脚本的月度能力采用固定周期，没有从结构化批次汇总实际周期。',
+    evidence: ['script:calculate_load 的能力分母来自固定常量，批次字段 period_days 未进入聚合调用链'],
+    confidence: 'high', blocking: false, repairScope: 'script', packageOptimizable: true,
+    resultIds: ['script-recovered'], relatedQuestions: ['计算一组有序批次的汇总负荷'],
+    suggestedAction: '让月度聚合从全部批次的 period_days 计算能力分母。',
+  }] })])]);
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  const report = await diagnoseEvaluationFailures({
+    projectId: 'project-1', results: [failed], spec: calculationScriptSpec(),
+    traces: {
+      'script-recovered': {
+        status: 'complete',
+        toolCalls: ['execute_script', 'execute_script', 'execute_script'],
+        toolFailures: [{
+          toolName: 'execute_script',
+          error: 'argument consistency check failed before execution',
+        }],
+      },
+    },
+  }, llm);
+
+  assert.equal(core.state.callCount, 1);
+  assert.equal(report.diagnoses.length, 2);
+  const recovered = report.diagnoses.find((item) => item.category === 'runtime_error');
+  assert.ok(recovered);
+  assert.match(recovered.title, /可恢复失败/);
+  assert.match(recovered.summary, /2 次调用成功/);
+  const caliber = report.diagnoses.find((item) => item.category === 'caliber_issue');
+  assert.ok(caliber);
+  assert.equal(caliber.repairScope, 'script');
+});
+
 test('评测等待用户输入时交给语义诊断判断是否为知识包路由问题', async () => {
   const needsInput = result('needs-input', '请按已给定的处理模式计算装置负荷', '输出装置负荷和过载结论');
   needsInput.finalAnswer = '';

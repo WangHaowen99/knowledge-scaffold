@@ -1801,8 +1801,11 @@ def _validate_structured_arguments_against_request(
                     key=lambda entry: entry[0],
                 )
             ]
-            if any(
-                current <= previous
+            positions_are_distinct = len(set(anchored_positions)) == len(
+                anchored_positions
+            )
+            if positions_are_distinct and any(
+                current < previous
                 for previous, current in zip(
                     anchored_positions,
                     anchored_positions[1:],
