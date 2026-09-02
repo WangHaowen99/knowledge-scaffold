@@ -110,6 +110,9 @@ export const store = createStore(initial);
 
 const UPLOAD_POLL_INTERVAL_MS = 800;
 const UPLOAD_POLL_TIMEOUT_MS = 11 * 60_000;
+const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'stopping']);
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_TOOL_PHASES = new Set(['completed', 'failed', 'blocked', 'rejected', 'waiting', 'cancelled']);
 const PURPOSE_REVIEW_CONTINUATION = '我已确认本批全部资料的明确用途和表格 Sheet 处理方式。现在开始按确认结果读取资料、形成建模目标；需要全文精读的资料继续按已保存设置执行。';
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 let optimisticSequence = 0;
@@ -447,12 +450,19 @@ export const actions = {
       void actions.refreshSnapshot();
     }
     if (eventType === 'progress' && !replaying) {
-      store.set({ activity: progressActivity(event, store.get().activity) });
+      store.set((state) => {
+        const runStatus = String(state.run?.status || '');
+        const eventRunId = String(event.runId || '');
+        const currentRunId = String(state.run?.id || '');
+        if ((runStatus && !ACTIVE_RUN_STATUSES.has(runStatus))
+          || (eventRunId && currentRunId && eventRunId !== currentRunId)) return state;
+        return { activity: progressActivity(event, state.activity) };
+      });
     }
     if (eventType === 'tool') {
       const createdAt = event.createdAt || new Date().toISOString();
       const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
-      const terminal = ['completed', 'failed', 'blocked', 'rejected', 'waiting'].includes(event.phase);
+      const terminal = TERMINAL_TOOL_PHASES.has(event.phase);
       store.set((state) => ({
         // 刷新后的历史回放只重建轨迹，不能清空 state 接口恢复的最新活动。
         activity: replaying
@@ -671,17 +681,26 @@ export const actions = {
       }
     }
     if (eventType === 'status' && !replaying) {
-      const inactive = ['waiting', 'suspended', 'completed', 'failed', 'cancelled'].includes(event.status);
       const statusTime = Date.parse(String(event.createdAt || ''));
-      store.set({
-        run: {
-          ...(store.get().run || {}),
-          id: event.runId,
-          status: event.status,
-          updatedAt: Number.isFinite(statusTime) ? event.createdAt : null,
-        },
-        statusText: event.text || '',
-        ...(inactive ? { activity: null } : {}),
+      store.set((state) => {
+        const eventRunId = String(event.runId || state.run?.id || '');
+        const sameRun = Boolean(eventRunId && eventRunId === String(state.run?.id || ''));
+        if (sameRun && TERMINAL_RUN_STATUSES.has(String(state.run?.status || ''))
+          && ACTIVE_RUN_STATUSES.has(String(event.status || ''))) return state;
+        const inactive = ['waiting', 'suspended', 'completed', 'failed', 'cancelled'].includes(event.status);
+        return {
+          run: {
+            ...(state.run || {}),
+            id: eventRunId,
+            status: event.status,
+            updatedAt: Number.isFinite(statusTime) ? event.createdAt : null,
+          },
+          statusText: event.text || '',
+          ...(inactive ? { activity: null } : {}),
+          ...(event.status === 'cancelled'
+            ? { trace: settleCancelledToolTrace(state.trace, eventRunId) }
+            : {}),
+        };
       });
     }
     if (seq) store.set({
@@ -1172,7 +1191,12 @@ export const actions = {
     });
     try {
       const result = await cancelAgent(projectId);
-      store.set({ run: result.run, activity: null, statusText: '已停止，已完成内容保留' });
+      store.set((state) => ({
+        run: result.run,
+        activity: null,
+        statusText: '已停止，已完成内容保留',
+        trace: settleCancelledToolTrace(state.trace, run.id),
+      }));
       return result;
     } catch (error) {
       store.set({
@@ -1380,6 +1404,16 @@ export function mergeToolTrace(trace, event, seq) {
     toolCallIds: nextCallIds,
   };
   return merged.slice(-300);
+}
+
+export function settleCancelledToolTrace(trace, runId) {
+  const targetRunId = String(runId || '');
+  return (Array.isArray(trace) ? trace : []).map((item) => (
+    String(item?.runId || '') === targetRunId
+      && ['started', 'repairing'].includes(String(item?.phase || ''))
+      ? { ...item, phase: 'cancelled', summary: '运行已停止，当前操作已取消' }
+      : item
+  ));
 }
 
 function legacyRejectedTraceIndex(trace, event, seq, createdAt) {
