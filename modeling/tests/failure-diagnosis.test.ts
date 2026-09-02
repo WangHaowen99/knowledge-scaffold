@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
+import {
+  createFauxCore,
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+} from '@earendil-works/pi-ai/providers/faux';
 import { diagnoseEvaluationFailures } from '../src/evaluation/failure-diagnosis.js';
 import {
   hasConfirmedOptimizableDiagnoses,
@@ -45,7 +50,7 @@ test('优化任务限制模型输出和单次等待时间', () => {
   assert.equal(OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS, 12_000);
   assert.equal(OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS, 32_000);
   assert.equal(OPTIMIZATION_PROPOSAL_TIMEOUT_MS, 180_000);
-  assert.equal(OPTIMIZATION_APPLY_TIMEOUT_MS, 300_000);
+  assert.equal(OPTIMIZATION_APPLY_TIMEOUT_MS, 600_000);
 });
 
 test('同一根因和目标的优化建议不因标题改写而重复', () => {
@@ -183,6 +188,39 @@ test('建议模型将未调用的已有脚本误判为新增时会获得精确�
   assert.equal(core.state.callCount, 2);
   assert.equal(suggestions[0].kind, 'modify_operation');
   assert.equal(suggestions[0].target, '加氢装置负荷校验');
+});
+
+test('优化建议模型只输出正文时会被强制恢复为结构化提交', async () => {
+  const failed = result('prose-first', '如何校验加氢装置负荷？', '返回确定性校验结果');
+  const diagnosis = {
+    id: 'dg-prose-first', projectId: 'project-1', roundId: 'round-1', basedVersion: '1.0.0',
+    category: 'caliber_issue' as const, title: '脚本负荷计算口径错误',
+    summary: '现有脚本没有按装置能力聚合结构化输入。', evidence: ['执行轨迹显示脚本负荷聚合口径不完整'],
+    confidence: 'high' as const, blocking: false, repairScope: 'script' as const, packageOptimizable: true,
+    resultIds: [failed.id], relatedQuestions: [failed.question], suggestedAction: '修复现有脚本聚合口径。',
+    createdAt: '2026-09-01T00:00:00.000Z',
+  };
+  const core = createFauxCore({ provider: 'optimization-prose-first', models: [{ id: 'optimization-prose-first' }] });
+  core.setResponses([
+    fauxAssistantMessage([fauxText('我先分析根因和修改范围。')]),
+    fauxAssistantMessage([fauxToolCall('submit_suggestions', { suggestions: [{
+      title: '修复装置负荷聚合脚本', detail: '按结构化批次输入和装置能力统一聚合并输出校验结果。',
+      kind: 'modify_script', target: 'OperationScript_6c818957d1a1', diagnosisIds: [diagnosis.id],
+      evidence: diagnosis.evidence, generalizationPlan: '支持任意批次数量和装置能力输入。',
+      validationPlan: '使用空输入、字段顺序变化和满量程场景验证聚合性质与明确阻断。',
+    }] })]),
+  ]);
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  const suggestions = await proposeOptimizations({
+    id: 'project-1', owner: 'tester', name: '通用流程建模', domain: '生产', background: '', stage: 'optimize',
+    createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z',
+  }, scriptedSpec(), [failed], llm, [], [diagnosis]);
+
+  assert.equal(core.state.callCount, 2);
+  assert.equal(suggestions.length, 1);
+  assert.equal(suggestions[0].kind, 'modify_script');
+  assert.equal(suggestions[0].target, 'OperationScript_6c818957d1a1');
 });
 
 test('相同问题的标准答案冲突时阻止生成知识包优化建议', async () => {
@@ -1124,6 +1162,7 @@ test('失败诊断按评测轮次持久化并可重新读取', () => {
   assert.equal(loaded[0].roundId, round.id);
   assert.equal(loaded[0].basedRevisionOid, 'revision-1');
   assert.equal(loaded[0].category, 'runtime_error');
+  assert.equal(loaded[0].packageRepairEligible, false);
   assert.deepEqual(loaded[0].evidence, ['401 Unauthorized']);
 });
 
@@ -1181,6 +1220,30 @@ test('用户转为建模修缮任务会确认可优化诊断并保留修缮来�
   assert.deepEqual(planned.resolutionPayload, {
     source: 'evaluation_repair', roundId: round.id,
   });
+  assert.equal(hasConfirmedOptimizableDiagnoses([planned]), true);
+});
+
+test('脚本缺陷可以直接确认进入知识包优化链路', () => {
+  const project = createProject({ owner: 'script-repair', name: 'script-repair', domain: 'demo', background: '' });
+  const round = createRound(project.id, '1.0.0', 1);
+  const [diagnosis] = replaceFailureDiagnoses(project.id, round.id, '1.0.0', 'revision-1', [{
+    category: 'runtime_error', title: '确定性脚本执行失败', summary: '脚本参数接口不兼容',
+    evidence: ['execute_script：unrecognized arguments'], confidence: 'high', blocking: false,
+    repairScope: 'script', packageOptimizable: true,
+    resultIds: ['result-1'], relatedQuestions: ['校验生产计划'], suggestedAction: '修复脚本参数接口',
+  }]);
+
+  assert.equal(diagnosis.packageRepairEligible, true);
+  const [planned] = markFailureDiagnosesForRepair({
+    projectId: project.id,
+    diagnosisIds: [diagnosis.id],
+    actor: 'repair-user',
+  });
+
+  assert.equal(planned.resolutionStatus, 'confirmed');
+  assert.equal(planned.resolutionAction, 'plan_repair');
+  assert.equal(planned.repairScope, 'script');
+  assert.equal(planned.packageOptimizable, true);
   assert.equal(hasConfirmedOptimizableDiagnoses([planned]), true);
 });
 

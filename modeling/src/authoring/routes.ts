@@ -392,10 +392,16 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   registerWorkflowExtraRoutes(app);
   const state = options.state ?? getAuthoringState();
   const graph = options.graph ?? new AiConstructionTaskGraph();
-  const ensureProjectGraph = (project: NonNullable<ReturnType<typeof ownedProject>>) => (
-    graph.snapshot(project.id)
-    ?? graph.initialize(project.id, aiConstructionGraphSourceForProjectKind(project.kind))
-  );
+  const ensureProjectGraph = (project: NonNullable<ReturnType<typeof ownedProject>>) => {
+    if (project.runtime === 'agent') {
+      throw new AiConstructionTaskGraphError(
+        'INVALID_TRANSITION',
+        '统一建模助手项目不能创建旧版 AI 辅助构建任务图',
+      );
+    }
+    return graph.snapshot(project.id)
+      ?? graph.initialize(project.id, aiConstructionGraphSourceForProjectKind(project.kind));
+  };
   const editor = new AiConstructionTaskEditor();
   const leases = new ProjectOperationLease();
   const jobs = options.jobs ?? new InFlightOperations();
@@ -613,7 +619,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     );
     const workflowPackage = initialDraft ? null : currentPackage;
 
-    let constructionSnapshot = advance ? ensureProjectGraph(project) : graph.snapshot(project.id);
+    let constructionSnapshot = project.runtime === 'agent'
+      ? null
+      : advance ? ensureProjectGraph(project) : graph.snapshot(project.id);
     // 欢迎语必须先落库：消息按 seq 排序，写在推进之后会让「已就绪」反而排在
     // 「进入建模目标确认」下面，用户看到的是倒着的开场。
     if (advance && constructionSnapshot) messages.ensureWelcome(project.id, constructionSnapshot);
@@ -778,7 +786,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   app.get('/api/projects/:id/ai-construction', async (req, reply) => {
     const project = readableProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
-    return { aiConstruction: graph.snapshot(project.id) };
+    return {
+      aiConstruction: project.runtime === 'agent' ? null : graph.snapshot(project.id),
+    };
   });
 
   app.post('/api/projects/:id/ai-construction/commands', async (req, reply) => {
@@ -1261,10 +1271,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     if (project.runtime === 'agent') {
-      return reply.code(410).send({
-        code: 'UNIFIED_AGENT_RUNTIME_REQUIRED',
-        error: '此项目的增量工作由统一建模助手推进，请直接在工作台补充资料或说明修改要求',
-      });
+      return reply.code(307)
+        .header('location', `/api/projects/${encodeURIComponent(project.id)}/agent/increment/start`)
+        .send();
     }
     try {
       ensureProjectGraph(project);

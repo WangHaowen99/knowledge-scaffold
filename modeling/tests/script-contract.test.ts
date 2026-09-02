@@ -85,6 +85,49 @@ if __name__ == "__main__":
 `)), /占位数据接口|NotImplementedError/);
 });
 
+test('generated scripts allow pass inside a handled exception branch', () => {
+  assert.doesNotThrow(() => validateGeneratedScriptSafety(script(`
+import argparse
+import json
+
+def optional_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    args = parser.parse_args()
+    print(json.dumps({"result": optional_number(args.input_json)}))
+
+if __name__ == "__main__":
+    main()
+`)));
+});
+
+test('generated scripts reject functions whose only implementation is pass', () => {
+  assert.throws(() => validateGeneratedScriptSafety(script(`
+import argparse
+import json
+
+def calculate():
+    """Placeholder calculation."""
+    pass
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    parser.parse_args()
+    print(json.dumps({"result": calculate()}))
+
+if __name__ == "__main__":
+    main()
+`)), /仅包含 pass 占位实现/u);
+});
+
 test('generated scripts require an argparse CLI entrypoint', () => {
   assert.throws(() => validateGeneratedScriptSafety(script(`
 import json

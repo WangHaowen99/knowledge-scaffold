@@ -17,6 +17,7 @@ import {
 import FileView from './center/FileView.jsx';
 import DiffView from './center/DiffView.jsx';
 import { fitMermaidZoom } from './center/FlowView.jsx';
+import { blockingGateIndex, stepCounts } from './shell/PhaseRail.jsx';
 import GateView from './center/GateView.jsx';
 import ImpactView from './center/ImpactView.jsx';
 import { Block } from './right/blocks/Blocks.jsx';
@@ -667,8 +668,14 @@ try {
   const apply = renderToString(<OptimizationProgress operation="apply" task={{
     operation: 'apply', startedAt: new Date(Date.now() - 65_000).toISOString(),
   }} />);
+  const targeted = renderToString(<OptimizationProgress operation="apply" task={{ node: { output: {
+    taskType: 'optimization_apply', protocol: 'targeted_incremental', selectedCount: 5,
+    changeSetCount: 1, targetResourceKeys: ['script:calculate', 'operation:calculate'],
+    startedAt: new Date(Date.now() - 65_000).toISOString(),
+  } } }} />);
   if (!proposal.includes('正在生成优化建议') || !proposal.includes('已运行')
-    || !apply.includes('正在生成知识包候选') || !apply.includes('确定性校验')) {
+    || !apply.includes('正在生成知识包候选') || !apply.includes('确定性校验')
+    || !targeted.includes('5 条建议合并为 1 个变更组') || !targeted.includes('涉及 2 个资源')) {
     throw new Error('优化长任务没有显示可恢复的进度反馈');
   }
   console.log('✓ 优化长任务显示进度反馈');
@@ -716,12 +723,59 @@ try {
 try {
   if (fitMermaidZoom(8_000, 1_040) !== 0.25
     || fitMermaidZoom(1_000, 640) !== 0.64
-    || fitMermaidZoom(480, 960) !== 1
-    || fitMermaidZoom(0, 960) !== 1) {
-    throw new Error('超大图自动适配没有保持最小可读缩放');
+    || fitMermaidZoom(480, 960) !== 1.8
+    || fitMermaidZoom(0, 960) !== 1
+    // 小图按宽度能放到 6 倍，但视口高度只够 1.5 倍，取较紧的一档
+    || fitMermaidZoom(160, 960, 400, 600) !== 1.5
+    // 长图高度装不下也不缩小：视口纵向可滚动，压扁了反而看不清
+    || fitMermaidZoom(160, 960, 900, 600) !== 1
+    // 高度未知时退回只看宽度，行为与改动前一致
+    || fitMermaidZoom(1_000, 640, 0, 0) !== 0.64) {
+    throw new Error('流程图自动适配没有按宽度贴合、按高度限制放大');
   }
-  console.log('✓ Mermaid 自动适配保持最小可读缩放');
+  console.log('✓ Mermaid 按宽度贴合视口，高度只限制放大不造成缩小');
 } catch (e) { console.log('✗ Mermaid 自动适配:', e.message); bad++; }
+
+try {
+  const steps = [
+    { phase: 'intake', label: '资料与目标准备', gate: null },
+    { phase: 'goal', label: '目标确认', gate: 'materials_ready' },
+    { phase: 'process', label: '流程建模', gate: 'goal_confirmed' },
+    { phase: 'knowledge', label: '知识建模', gate: 'process_confirmed' },
+  ];
+  const gateById = new Map([
+    ['materials_ready', { id: 'materials_ready', pass: true, blockers: [] }],
+    ['goal_confirmed', { id: 'goal_confirmed', pass: false, blockers: ['确认当前建模目标'] }],
+    ['process_confirmed', { id: 'process_confirmed', pass: false, blockers: ['形成并确认至少 1 条业务流程'] }],
+  ]);
+  // 当前停在"目标确认"：只有紧接其后的那道闸算挡路，更远的那道不该也亮起来
+  const atGoal = (index) => (index < 1 ? 'passed' : index > 1 ? 'future' : 'current');
+  if (blockingGateIndex(steps, gateById, atGoal) !== 2) {
+    throw new Error('挡路的闸没有取当前步之后的第一道');
+  }
+  // 还站在第一步时，后面那道没通过的闸只是"还没轮到"，不该提前点亮
+  const atIntake = (index) => (index === 0 ? 'current' : 'future');
+  if (blockingGateIndex(steps, gateById, atIntake) !== -1) {
+    throw new Error('尚未走到的闸被提前标成了挡路');
+  }
+  // 门禁还没拉回来时不能凭空点亮任何一道
+  if (blockingGateIndex(steps, new Map(), atGoal) !== -1) {
+    throw new Error('没有门禁数据时仍然标了挡路的闸');
+  }
+  const files = [
+    'diagrams/采购申请.mmd', 'diagrams/入库校验.mmd',
+    'objects/备件.md', 'objects/index.md', 'rules/安全库存判断.md',
+    'scripts/reorder.py',
+  ];
+  if (stepCounts('process', files, []) !== '2 条流程'
+    || stepCounts('knowledge', files, []) !== '2 项知识'
+    || stepCounts('validation', files, []) !== '1 个脚本'
+    || stepCounts('intake', files, [{ id: 'm1' }]) !== '1 份资料'
+    || stepCounts('release', files, []) !== '') {
+    throw new Error('阶段产出计数没有按目录投影，或把 index.md 算成了知识条目');
+  }
+  console.log('✓ 阶段轨只点亮一道闸，产出计数按目录投影');
+} catch (e) { console.log('✗ 阶段轨门禁与计数:', e.message); bad++; }
 
 try {
   const evidence = 'material:doc-evidence#§3.2';
@@ -1651,7 +1705,13 @@ store.set({
   packageVersion: '1.0.0',
   packageStatus: 'released',
   revision: 'deadbeefcafebabedeadbeefcafebabedeadbeef',
-  workflow: { phaseLabel: '发布交付', revision: 108 },
+  workflow: { phase: 'release', phaseLabel: '发布交付', execution: 'completed', revision: 108 },
+  phases: [
+    { phase: 'intake', label: '资料与目标准备', gate: null, linear: true },
+    { phase: 'goal', label: '目标确认', gate: 'materials_ready', linear: true },
+    { phase: 'release', label: '发布交付', gate: 'releasable', linear: true },
+  ],
+  progress: null,
   files: [],
   focus: { kind: 'empty', target: '' },
   messages: [],

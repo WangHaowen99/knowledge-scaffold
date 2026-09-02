@@ -18,7 +18,7 @@ const [
   { getPackageArtifactStore },
   { getDb },
   { getDocument, insertDocumentRevision },
-  { MaterialPurposeReviewStore },
+  { MaterialPurposeReviewStore, findMaterialPurposeReviewProblems },
   { requireAuth },
   { storePackageMergeSource },
   { renderPackage },
@@ -382,6 +382,45 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
   }, runId);
   assert.equal(staleGoalCannotAuthorizeProcess.statusCode, 409, staleGoalCannotAuthorizeProcess.body);
   assert.equal(staleGoalCannotAuthorizeProcess.json().gate, 'goal_confirmed');
+});
+
+test('阶段轨进度端点一次给出全部门禁，且没有工作区时如实说读不到', async (t) => {
+  const project = createProject({ owner: 'alice', name: '阶段轨进度', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+
+  // 助手还没认领工作区时不能编造门禁结论，前端据此把闸位画成中性连接线。
+  const before = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/progress` });
+  assert.equal(before.statusCode, 200, before.body);
+  assert.equal(before.json().available, false);
+  assert.deepEqual(before.json().gates, []);
+
+  await confirmGoal(app, project.id, runId);
+
+  const after = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/progress` });
+  assert.equal(after.statusCode, 200, after.body);
+  const body = after.json();
+  assert.equal(body.available, true);
+  assert.ok(body.revision);
+
+  // 一次请求要拿到全部门禁，前端画一条轨不该发六次请求。
+  const byId = new Map(body.gates.map((gate: any) => [gate.id, gate]));
+  for (const id of ['materials_ready', 'goal_confirmed', 'process_confirmed',
+    'knowledge_confirmed', 'ready_for_eval', 'releasable']) {
+    assert.ok(byId.has(id), `进度端点缺少门禁 ${id}`);
+    assert.equal(typeof byId.get(id).pass, 'boolean');
+    assert.ok(Array.isArray(byId.get(id).blockers));
+    assert.ok(byId.get(id).label, `门禁 ${id} 没有业务标签`);
+  }
+  assert.equal(byId.get('goal_confirmed').pass, true);
+  assert.equal(byId.get('process_confirmed').pass, false);
+  assert.ok(byId.get('process_confirmed').blockers.length > 0);
+
+  // 拆分后单点查询必须和整体计算一致，否则助手和阶段轨会各说各话。
+  const single = await tool(app, project.id, 'gate_status', { gate: 'process_confirmed' }, runId);
+  assert.equal(single.statusCode, 200, single.body);
+  assert.equal(single.json().pass, byId.get('process_confirmed').pass);
+  assert.deepEqual(single.json().blockers, byId.get('process_confirmed').blockers);
 });
 
 test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
@@ -2276,6 +2315,90 @@ test('实体 Sheet 尚未映射时允许确认目标、流程和非知识资源�
   assert.equal(manifestPreflight.statusCode, 200, manifestPreflight.body);
 });
 
+test('增量操作候选不被正式基线已有的 Sheet 映射缺口阻断', async (t) => {
+  const project = createProject({ owner: 'alice', name: '增量基线映射差分', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: 'increment-baseline-mapping-diff',
+    name: '增量基线映射差分',
+    description: '验证无关的历史映射问题不会阻断操作增量。',
+  });
+  const baseline = await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: {
+      ...initial.spec,
+      version: '1.0.0',
+      objects: [{
+        key: 'record',
+        title: '记录',
+        description: '已有的虚拟记录对象。',
+        fields: [{ key: 'id', type: 'string', required: true }],
+      }],
+    },
+    coverage: { covered: [], uncovered: [] },
+    action: {
+      cause: 'test_setup', summary: '建立带历史映射缺口的正式基线',
+      actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const material = insertDocumentRevision({
+    projectId: project.id,
+    filename: 'baseline-schema.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'records',
+      rowCount: 1,
+      fields: [{ name: 'record_id', inferredType: 'string', sampleValues: ['R-1'], distinctRatio: 1 }],
+      rows: [['R-1']],
+    }],
+  }).document;
+  const reviews = new MaterialPurposeReviewStore(getDb());
+  const suggestion = reviews.suggest(material, {
+    purpose: 'schema',
+    sheets: [{ sheet: 'records', semanticRole: 'schema', importDisposition: 'object' }],
+    suggestedBy: 'agent',
+  });
+  reviews.confirm(material, {
+    purpose: 'schema',
+    sheets: suggestion.sheetSuggestions,
+    confirmedBy: 'alice',
+    expectedDirectiveRevision: 0,
+  });
+  assert.equal(findMaterialPurposeReviewProblems(getDb(), project.id, baseline.spec).length, 1);
+
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const group = { id: 'increment-operation', tier: 'structural', title: '补充记录查询操作' };
+  const operation = await tool(app, project.id, 'upsert_operation', {
+    key: 'read_record',
+    title: '读取记录',
+    description: '根据记录编号读取已有记录。',
+    inputs: [{ param: 'id', type: 'string', required: true }],
+    outputs: [{ field: 'id', type: 'string' }],
+    flow: ['根据 id 查询 object:record'],
+    related_objects: ['record'],
+    uses_rules: [],
+    uses_metrics: [],
+    evidence: ['user-decision:increment-operation'],
+    change_group: group.id,
+  }, runId);
+  assert.equal(operation.statusCode, 200, operation.body);
+
+  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(preflight.statusCode, 200, preflight.body);
+  const payload = preflight.json();
+  assert.equal(payload.validation_summary.baseline_finding_count, 1);
+  assert.equal(payload.validation_summary.baseline_warning_count, 1);
+  assert.equal(payload.validation_summary.introduced_finding_count, 0);
+  const changedPaths = getDb().prepare(`SELECT path FROM agent_candidate_changes
+    WHERE project_id = ? AND run_id = ? ORDER BY path`).all(project.id, runId) as Array<{ path: string }>;
+  assert.equal(changedPaths.some((item) => item.path === 'mappings/object-data-mappings.json'), false);
+});
+
 test('没有实体 Sheet 时数据映射台账视为完整', async (t) => {
   const project = createProject({ owner: 'alice', name: '无实体表映射台账', runtime: 'agent' });
   await getPackageArtifactStore().initializeDraftPackage(project.id, {
@@ -3021,6 +3144,19 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
     expectedRevision: initial.revision.oid,
     spec: {
       ...structuredClone(initial.spec),
+      objects: [{
+        key: 'device_plan',
+        title: '装置计划',
+        description: '装置加工计划及其计算输入。',
+        fields: [
+          { key: 'amount', cnName: '加工量', type: 'number', required: true },
+          { key: 'days', cnName: '运行天数', type: 'number', required: true },
+        ],
+        primaryKey: ['id'],
+        aliases: [],
+        queryBoundary: '',
+        relations: [],
+      }],
       operations: [{
         key: 'calculate_device_load',
         title: '计算装置负荷率',
@@ -3031,7 +3167,7 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
         ],
         outputs: [{ field: 'load_rate', type: 'number' }],
         flow: ['汇总加工量', '换算日均负荷', '计算负荷率'],
-        relatedObjects: [],
+        relatedObjects: ['device_plan'],
       }],
     },
     coverage: initial.coverage,

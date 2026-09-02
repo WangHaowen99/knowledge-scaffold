@@ -12,6 +12,7 @@ import Grip from './shell/Grip.jsx';
 import LeftPane from './left/LeftPane.jsx';
 import CenterPane from './center/CenterPane.jsx';
 import RightPane from './right/RightPane.jsx';
+import PhaseRail from './shell/PhaseRail.jsx';
 import ProcessDrawer from './shell/ProcessDrawer.jsx';
 import CreatePage from './pages/CreatePage.jsx';
 
@@ -140,6 +141,7 @@ function Workbench() {
         event.preventDefault(); setGlobalDrag(false); void actions.upload(event.dataTransfer.files);
       }}>
       <TopBar onOpenMcpSettings={() => void openMcpSettings()} settingsLoading={settingsLoading} />
+      <PhaseRail />
       <nav className="wb-mobile-tabs" aria-label="移动端工作区">
         <button type="button" className={mobilePane === 'content' ? 'on' : ''}
           onClick={() => setMobilePane('content')}>知识内容</button>

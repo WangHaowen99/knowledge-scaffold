@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
-import type { FailureDiagnosis } from './failure-diagnosis.js';
+import {
+  isPackageRepairEligible,
+  type FailureDiagnosis,
+} from './failure-diagnosis.js';
 
 export interface StoredFailureDiagnosis extends FailureDiagnosis {
   id: string;
@@ -15,6 +18,7 @@ export interface StoredFailureDiagnosis extends FailureDiagnosis {
   resolutionActor?: string;
   resolutionPayload?: Record<string, unknown>;
   resolvedAt?: string;
+  packageRepairEligible: boolean;
 }
 
 export type DiagnosisResolutionAction =
@@ -51,6 +55,10 @@ function rowToDiagnosis(row: any): StoredFailureDiagnosis {
     resolutionActor: row.resolution_actor ?? undefined,
     resolutionPayload: JSON.parse(row.resolution_payload_json || '{}'),
     resolvedAt: row.resolved_at ?? undefined,
+    packageRepairEligible: isPackageRepairEligible({
+      repairScope: row.repair_scope,
+      blocking: !!row.blocking,
+    }),
   };
 }
 
@@ -110,7 +118,7 @@ export function hasConfirmedOptimizableDiagnoses(
 ): boolean {
   return diagnoses.some((diagnosis) => diagnosis.resolutionStatus === 'confirmed'
     && diagnosis.packageOptimizable
-    && !diagnosis.blocking);
+    && isPackageRepairEligible(diagnosis));
 }
 
 /**
@@ -132,7 +140,7 @@ export function markFailureDiagnosesForRepair(input: {
     WHERE id = ? AND project_id = ?`);
   const update = db.prepare(`UPDATE failure_diagnoses SET
       resolution_status = 'confirmed', resolution_action = ?, resolution_note = ?, resolution_actor = ?,
-      resolution_payload_json = ?, resolved_at = ?, package_optimizable = 1, repair_scope = 'package'
+      resolution_payload_json = ?, resolved_at = ?, package_optimizable = 1
     WHERE id = ? AND project_id = ?`);
   const note = String(input.note ?? '').trim() || '用户选择转为建模修缮任务';
   const payload = JSON.stringify(input.payload ?? {});
@@ -146,7 +154,10 @@ export function markFailureDiagnosesForRepair(input: {
       if (['resolved', 'irrelevant'].includes(String(current.resolution_status))) {
         throw new Error('该失败诊断已关闭，不能再次加入建模修缮');
       }
-      if (current.repair_scope !== 'package' || current.blocking) {
+      if (!isPackageRepairEligible({
+        repairScope: current.repair_scope,
+        blocking: !!current.blocking,
+      })) {
         throw new Error('只有不阻断的知识包缺陷才能进入优化更新');
       }
       update.run(

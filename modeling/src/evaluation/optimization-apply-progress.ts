@@ -21,6 +21,11 @@ export interface OptimizationApplyState {
   suggestionCount?: number;
   error?: string;
   validationErrors?: string[];
+  protocol?: 'targeted_incremental' | 'resource_patch';
+  changeSetCount?: number;
+  targetResourceKeys?: string[];
+  shardCount?: number;
+  shardOrdering?: 'parallel' | 'dependency_serial';
   expertDecision?: 'retry' | 'skip';
   expertNote?: string;
 }
@@ -121,6 +126,45 @@ export function resolveOptimizationExpertReview(
 
 export function recordOptimizationApplyProgress(nodeId: string, event: OptimizationApplyProgressEvent): WorkflowNode {
   const phaseStartedAt = nowIso();
+  if (event.phase === 'scope_prepared') {
+    const node = updateTask(nodeId, {
+      phase: 'prepare',
+      protocol: event.protocol,
+      changeSetCount: event.changeSetCount,
+      targetResourceKeys: event.targetResourceKeys,
+      phaseStartedAt,
+      error: undefined,
+    });
+    trace(node, {
+      phase: 'prepare', kind: 'phase_completed', status: 'done', title: '已形成最小资源变更计划',
+      summary: `合并为 ${event.changeSetCount ?? 0} 个原子变更组，涉及 ${event.targetResourceKeys?.length ?? 0} 个资源`,
+      details: {
+        protocol: event.protocol,
+        changeSetCount: event.changeSetCount,
+        targetResourceKeys: event.targetResourceKeys,
+      },
+    });
+    return node;
+  }
+  if (event.phase === 'target_plan_ready') {
+    const node = updateTask(nodeId, {
+      phase: 'revision',
+      attempt: event.attempt,
+      maxAttempts: event.maxAttempts,
+      shardCount: event.shardCount,
+      shardOrdering: event.shardOrdering,
+      phaseStartedAt,
+      error: undefined,
+    });
+    trace(node, {
+      phase: 'revision', kind: 'phase_started', status: 'running',
+      title: event.shardOrdering === 'dependency_serial'
+        ? `按依赖顺序生成 ${event.shardCount ?? 0} 个目标符号补丁`
+        : `并行生成 ${event.shardCount ?? 0} 个目标符号补丁`,
+      details: { shardCount: event.shardCount, attempt: event.attempt, shardOrdering: event.shardOrdering },
+    });
+    return node;
+  }
   const node = updateTask(nodeId, {
     phase: event.phase === 'revision_started' ? 'revision' : 'validation',
     attempt: event.attempt,

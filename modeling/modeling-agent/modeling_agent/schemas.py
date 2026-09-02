@@ -86,6 +86,9 @@ class ProjectAgentState:
     project_id: str
     state: str = "intake:idle"
     revision: int = 0
+    round_mode: str = "initial"
+    round_id: str = ""
+    baseline_revision: str = ""
     run_id: str = ""
     interaction_id: str = ""
     checkpoint_id: str = ""
@@ -102,6 +105,9 @@ class ProjectAgentState:
             "phase": phase,
             "execution": execution,
             "revision": self.revision,
+            "roundMode": self.round_mode,
+            "roundId": self.round_id or None,
+            "baselineRevision": self.baseline_revision or None,
             "runId": self.run_id or None,
             "interactionId": self.interaction_id or None,
             "checkpointId": self.checkpoint_id or None,

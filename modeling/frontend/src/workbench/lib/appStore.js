@@ -22,7 +22,9 @@ import {
   uploadMaterial,
   uploadPackageSource,
   savePackageDataSource,
+  startAgentIncrementRound,
   respondChangePlan as respondChangePlanRequest,
+  getProgress,
 } from './api.js';
 import { prefetchStudioBootstrap } from '../studio/studio-api.js';
 
@@ -57,6 +59,9 @@ const initial = {
   packageVersion: null,
   packageStatus: null,
   workflow: null,
+  phases: [],
+  progress: null,
+  progressError: '',
   changePlan: null,
   files: [],
   fileContents: {},
@@ -217,6 +222,20 @@ export function resolveWorkbenchBootstrapResults(results) {
 
 /* ---- actions ---- */
 export const actions = {
+  /** 门禁是按需拉的：computeGates 要叠加整个候选工作区，不适合跟着事件流反复算。 */
+  async loadProgress() {
+    const { projectId, demo, progress } = store.get();
+    if (demo || !projectId || progress) return progress;
+    try {
+      const next = await getProgress(projectId);
+      store.set({ progress: next, progressError: '' });
+      return next;
+    } catch (error) {
+      store.set({ progressError: error instanceof Error ? error.message : '门禁结果暂时读不到' });
+      return null;
+    }
+  },
+
   async bootstrap(projectId) {
     store.set({ demo: false, projectId, loading: true, error: '' });
     try {
@@ -252,6 +271,9 @@ export const actions = {
         packageVersion: snapshot.packageVersion || null,
         packageStatus: snapshot.packageStatus || null,
         workflow: agent.state || null,
+        phases: Array.isArray(agent.phases) ? agent.phases : [],
+        progress: null,
+        progressError: '',
         changePlan: null,
         files: snapshot.files,
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
@@ -401,7 +423,7 @@ export const actions = {
       actions.agentFocus(event.target);
       if (event.target.kind === 'diff') void actions.refreshSnapshot();
     }
-    if (eventType === 'state' && !replaying) store.set({ workflow: event });
+    if (eventType === 'state' && !replaying) store.set({ workflow: event, progress: null });
     if (eventType === 'change_plan' && event.plan) {
       store.set({ changePlan: event.plan });
       actions.appendMessage({
@@ -420,7 +442,10 @@ export const actions = {
         }],
       });
     }
-    if (eventType === 'change_set' && !replaying) void actions.refreshSnapshot();
+    if (eventType === 'change_set' && !replaying) {
+      store.set({ progress: null });
+      void actions.refreshSnapshot();
+    }
     if (eventType === 'progress' && !replaying) {
       store.set({ activity: progressActivity(event, store.get().activity) });
     }
@@ -739,6 +764,27 @@ export const actions = {
           recovery: '输入内容仍保留在发送框中，请检查后重试。',
         },
       }));
+      return null;
+    }
+  },
+  async startIncrementRound() {
+    const { projectId } = store.get();
+    if (!projectId) return null;
+    try {
+      const result = await startAgentIncrementRound(projectId);
+      store.set({
+        workflow: result.state || store.get().workflow,
+        error: '',
+      });
+      return result;
+    } catch (error) {
+      store.set({
+        error: {
+          scope: 'increment_round',
+          message: error instanceof Error ? error.message : '增量建模启动失败',
+          recovery: '当前正式版本保持不变，请处理页面提示后重试。',
+        },
+      });
       return null;
     }
   },
