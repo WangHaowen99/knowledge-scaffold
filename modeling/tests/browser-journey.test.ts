@@ -7,7 +7,9 @@ import {
   describeJourneyStep,
   guidedInteractionCanAdvance,
   guidedConstructionIsProcessing,
+  GUIDED_PENDING_INTERACTION_SELECTOR,
   isGuidedInteractionResponse,
+  isGuidedPlanResponse,
   shouldRecoverGuidedRepairConflict,
   nextGuidedIdleIterations,
   matchesJourneyControlText,
@@ -36,7 +38,26 @@ test('提交结构化待办时只等待当前交互的响应请求', () => {
     'GET',
   ), false);
   assert.equal(isGuidedInteractionResponse(
+    'http://example.test/api/projects/p1/agent/interactions/i1/answer',
+    'POST',
+  ), true);
+  assert.equal(isGuidedInteractionResponse(
     'http://example.test/api/projects/p1/session',
+    'POST',
+  ), false);
+});
+
+test('批准建模计划只等待当前计划卡的响应请求', () => {
+  assert.equal(isGuidedPlanResponse(
+    'http://example.test/api/projects/p1/agent/change-plans/plan-1/respond',
+    'POST',
+  ), true);
+  assert.equal(isGuidedPlanResponse(
+    'http://example.test/api/projects/p1/agent/change-plans/plan-1/respond',
+    'GET',
+  ), false);
+  assert.equal(isGuidedPlanResponse(
+    'http://example.test/api/projects/p1/agent/interactions/i1/answer',
     'POST',
   ), false);
 });
@@ -67,6 +88,12 @@ test('结构化选择尚未勾选时先选择选项再等待提交按钮解锁',
   }), false);
 });
 
+test('建模驾驶员同时识别问答表单和候选变更确认卡', () => {
+  assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /section\[aria-label="待确认事项"\]/);
+  assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /\[data-interaction-id\] \.card\.card-accent/);
+  assert.match(GUIDED_PENDING_INTERACTION_SELECTOR, /\[data-interaction-id\] \.card\.card-wait/);
+});
+
 test('可操作待办不会被历史任务卡的进行中快照阻塞', () => {
   assert.equal(guidedConstructionIsProcessing({
     hasSpinner: false,
@@ -85,6 +112,15 @@ test('可操作待办不会被历史任务卡的进行中快照阻塞', () => {
   }), true);
 });
 
+test('流内长操作存在停止入口时保持等待而不累计空闲次数', () => {
+  assert.equal(guidedConstructionIsProcessing({
+    hasSpinner: false,
+    hasRunningTask: false,
+    hasActiveOperation: true,
+    hasPendingInteraction: false,
+  }), true);
+});
+
 test('长任务仍在运行时不会累计建模驾驶员空闲次数', () => {
   assert.equal(nextGuidedIdleIterations(149, { progressed: false, processing: true }), 0);
   assert.equal(nextGuidedIdleIterations(10, { progressed: true, processing: false }), 0);
@@ -97,6 +133,13 @@ test('精确文字操作会忽略按钮中的装饰图标', () => {
 });
 
 test('受控建模驾驶员优先处理结构化待办，其次推进阶段动作', () => {
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    pendingPlanApproval: true,
+    nextActionIds: [],
+    processing: true,
+  }), { kind: 'approve_plan' });
+
   assert.deepEqual(chooseGuidedConstructionAction({
     pendingInteraction: { type: 'question', canSubmit: true },
     nextActionIds: ['confirm_materials'],
@@ -202,20 +245,46 @@ test('浏览器旅程只接受受控前端动作并拒绝直接 API 调用', () 
       { action: 'click', text: '新建项目' },
       { action: 'fill', selector: 'input', value: '通用测试项目' },
       { action: 'assertText', text: 'AI辅助构建' },
+      { action: 'assertNotText', text: '原始内部错误' },
+      { action: 'assertVisible', selector: 'button[aria-label="发送"]' },
+      { action: 'assertLayout' },
+      { action: 'clickAll', selector: '.wb-review-group' },
+      { action: 'reviewAndAccept', timeoutMs: 60_000 },
+      { action: 'reload' },
       { action: 'guidedConstruction', timeoutMs: 60_000 },
+      { action: 'click', text: '进入项目', waitForSelector: '.tabs-fill', maxAttempts: 3 },
     ],
+  }));
+
+  assert.throws(() => validateJourneyPlan({
+    name: 'invalid-click-retry',
+    steps: [{ action: 'click', text: '进入项目', maxAttempts: 3 }],
+  }), /重复点击必须提供 waitForSelector/);
+});
+
+test('浏览器旅程数量断言必须提供确定的选择器和整数', () => {
+  assert.throws(() => validateJourneyPlan({
+    name: 'invalid-count', steps: [{ action: 'assertCount', selector: '.candidate' }],
+  }), /整数 expectedCount/);
+  assert.doesNotThrow(() => validateJourneyPlan({
+    name: 'valid-count', steps: [{ action: 'assertCount', selector: '.candidate', expectedCount: 1 }],
   }));
 });
 
 test('上传步骤必须引用仓库外运行时文件而不是内嵌内容', () => {
   assert.throws(() => validateJourneyPlan({
     name: 'invalid-upload',
-    steps: [{ action: 'upload', selector: 'input[type=file]', content: 'embedded' }],
+    steps: [{ action: 'upload', triggerText: '选择文件', content: 'embedded' }],
   }), /上传步骤必须提供 file 或 fileEnv/);
+
+  assert.throws(() => validateJourneyPlan({
+    name: 'hidden-upload',
+    steps: [{ action: 'upload', selector: 'input[type=file]', file: '/tmp/input.zip' }],
+  }), /可见的 triggerSelector 或 triggerText/);
 });
 
 test('浏览器旅程可以从环境变量一次选择多份建模资料且不回显路径', () => {
-  const step = { action: 'upload', selector: 'input[type=file]', filesEnv: 'E2E_MATERIAL_FILES' } as const;
+  const step = { action: 'upload', triggerText: '选择资料', filesEnv: 'E2E_MATERIAL_FILES' } as const;
   const files = resolveJourneyFiles(step, {
     E2E_MATERIAL_FILES: JSON.stringify(['/tmp/material-a.md', '/tmp/material-b.xlsx']),
   });
@@ -226,11 +295,13 @@ test('浏览器旅程可以从环境变量一次选择多份建模资料且不�
   assert.doesNotThrow(() => validateJourneyPlan({ name: 'multi-upload', steps: [step] }));
 });
 
-test('浏览器旅程上传隐藏文件控件时不要求控件可见', async () => {
+test('浏览器旅程上传时必须点击可见入口并等待原生文件选择器', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => (
     readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
   ));
-  assert.match(source, /targetElement\(page, step, \{ visible: false \}\)/);
+  assert.match(source, /waitForFileChooser/);
+  assert.match(source, /triggerSelector/);
+  assert.doesNotMatch(source, /\.uploadFile\(/);
 });
 
 test('浏览器旅程在操作页面前会关闭首次功能引导遮罩', async () => {
@@ -249,19 +320,24 @@ test('浏览器旅程会为隔离页面上下文安装转译辅助函数', async
   assert.match(source, /globalThis\.__name/);
 });
 
-test('浏览器旅程替换 React 受控输入时使用原生 value setter 并派发 input 事件', async () => {
+test('浏览器旅程替换受控输入时只使用鼠标和键盘', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => (
     readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
   ));
-  assert.match(source, /HTMLInputElement\.prototype/);
-  assert.match(source, /dispatchEvent\(new Event\('input', \{ bubbles: true \}\)\)/);
+  assert.match(source, /keyboard\.down\('Control'\)/);
+  assert.match(source, /keyboard\.up\('Control'\)/);
+  assert.match(source, /press\('Backspace'\)/);
+  assert.doesNotMatch(source, /HTMLInputElement\.prototype/);
+  assert.doesNotMatch(source, /dispatchEvent\(/);
 });
 
-test('浏览器旅程点击前把控件滚入视口并由页面元素触发 React 点击事件', async () => {
+test('浏览器旅程由浏览器鼠标点击控件，不在页面脚本中调用 DOM click', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) => (
     readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
   ));
-  assert.match(source, /node\.scrollIntoView\(\{ block: 'center', inline: 'center' \}\)/);
-  assert.match(source, /node\.click\(\)/);
+  assert.match(source, /ElementHandle<HTMLElement>\)\.click\(\)/);
+  assert.match(source, /ElementHandle<HTMLElement>\)\.hover\(\)/);
+  assert.doesNotMatch(source, /node\.click\(\)/);
+  assert.doesNotMatch(source, /button\?\.click\(\)/);
   assert.match(source, /item\.querySelectorAll\('\*'\)/);
 });

@@ -348,6 +348,7 @@ export default function useKbBrowser({
         setImportFlow((current) => reduceImportFlow(current, {
           type: 'FAILURE',
           error: data.error || data.detail || `请求失败（${res.status}）`,
+          errorCode: data.error_code,
         }));
         return;
       }

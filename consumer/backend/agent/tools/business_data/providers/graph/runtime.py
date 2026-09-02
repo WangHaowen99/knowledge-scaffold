@@ -91,6 +91,8 @@ class GraphSearchRuntime:
         yield {
             "type": "intermediate",
             "content": "调用 {} 执行内部图检索工具".format(agent.__class__.__name__),
+            "public_summary": _graph_plan_public_summary(context.schema_context),
+            "public_summary_allowed": True,
         }
         trace_sink = GraphToolTraceSink(context)
         tool_executor = GraphToolExecutor(
@@ -314,6 +316,19 @@ class GraphSearchRuntime:
 
 def _final(payload: Mapping[str, Any]) -> OntologySearchEvent:
     return {"type": "final", "content": json.dumps(dict(payload), ensure_ascii=False)}
+
+
+def _graph_plan_public_summary(schema_context: Mapping[str, Any]) -> str:
+    mapping_intent = schema_context.get("mapping_intent")
+    if not isinstance(mapping_intent, Mapping):
+        return "正在规划图数据查询"
+    preferred_tool = str(mapping_intent.get("prefer_tool") or "").strip()
+    pattern_required = mapping_intent.get("pattern_search_required") is True
+    if pattern_required or preferred_tool == "pattern_search":
+        return "准备查询实体关联关系"
+    if preferred_tool == "property_filter":
+        return "准备按属性条件查询"
+    return "正在规划图数据查询"
 
 
 def _make_graph_query_agent(provider_config: Mapping[str, Any]):

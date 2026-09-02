@@ -9,6 +9,7 @@ import agent.tools.business_data.providers.graph.hugegraph_provider as hugegraph
 import agent.tools.business_data.providers.graph.neo4j_provider as neo4j_module
 from agent.tools.business_data.providers.graph.models import GraphAgentResult, GraphBackendResult
 from agent.tools.business_data.providers.graph.provider import GraphSearchProvider
+from agent.tools.business_data.providers.graph.runtime import _graph_plan_public_summary
 
 
 def _collect(stream):
@@ -71,7 +72,31 @@ def test_graph_search_provider_yields_standard_events_and_closes_backend():
     assert final["success"] is True
     assert final["provider"] == "graph"
     assert final["records"] == [{"properties": {"target_item_code": "M-001"}}]
+    assert events[2]["public_summary"] == "准备按属性条件查询"
+    assert events[2]["public_summary_allowed"] is True
     assert backend.closed is True
+
+
+def test_graph_plan_public_summary_only_describes_query_method():
+    assert _graph_plan_public_summary({}) == "正在规划图数据查询"
+    assert (
+        _graph_plan_public_summary({
+            "mapping_intent": {
+                "prefer_tool": "property_filter",
+                "private_filter": "synthetic private condition",
+            }
+        })
+        == "准备按属性条件查询"
+    )
+    assert (
+        _graph_plan_public_summary({
+            "mapping_intent": {
+                "prefer_tool": "pattern_search",
+                "private_entity": "SyntheticPrivateEntity",
+            }
+        })
+        == "准备查询实体关联关系"
+    )
 
 
 def test_neo4j_provider_wrapper_binds_scoped_config(monkeypatch):

@@ -38,6 +38,7 @@ export function createImportFlowState() {
     request: null,
     result: null,
     error: '',
+    errorCode: '',
     stoppedWaiting: false,
     reconciliationPending: false,
   };
@@ -142,12 +143,17 @@ export function reduceImportFlow(state, event) {
       };
       return { ...current, phase: IMPORT_PHASE.UPLOADING, request, error: '' };
     }
-    case 'FAILURE':
+    case 'FAILURE': {
+      const errorCode = String(event.errorCode || '');
       return {
         ...current,
         phase: IMPORT_PHASE.ERROR,
         error: String(event.error || '知识包导入失败'),
+        errorCode,
+        request: errorCode === 'ontology_name_conflict' ? null : current.request,
+        conflict: errorCode === 'ontology_name_conflict' ? null : current.conflict,
       };
+    }
     case 'RETRY':
       return current.file && current.request
         ? { ...current, phase: IMPORT_PHASE.UPLOADING, error: '' }

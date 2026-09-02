@@ -63,7 +63,7 @@
 .mwr .ui-modal-body { padding: 12px 20px; overflow: auto; }
 .mwr .ui-modal > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--hair); }
 /* ---- Markdown 视图 ---- */
-.mwr .mdv { font-size: 13.5px; line-height: 1.8; color: #26251f; }
+.mwr .mdv { min-width: 0; max-width: 100%; font-size: 13.5px; line-height: 1.8; color: #26251f; }
 .mwr .mdv h1 { font-size: 19px; font-weight: 750; margin: 4px 0 10px; padding-bottom: 8px; border-bottom: 1px solid #eceae2; }
 .mwr .mdv h2 { font-size: 15.5px; font-weight: 720; margin: 18px 0 8px; padding-bottom: 5px; border-bottom: 1px solid #f1f0e9; }
 .mwr .mdv h3 { font-size: 14px; font-weight: 700; margin: 14px 0 6px; }
@@ -72,8 +72,17 @@
 .mwr .mdv ul, .mwr .mdv ol { padding-left: 22px; margin: 6px 0; }
 .mwr .mdv li { margin: 3px 0; }
 .mwr .mdv table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12.5px; background: #fff; }
-.mwr .mdv th { background: #f6f6f1; border: 1px solid #e7e6dd; padding: 7px 11px; text-align: left; font-weight: 650; color: var(--ink2); white-space: nowrap; }
-.mwr .mdv td { border: 1px solid #eceae2; padding: 7px 11px; vertical-align: top; }
+.mwr .mdv-table-shell { position: relative; max-width: 100%; margin: 10px 0; }
+.mwr .mdv-table-shell::before, .mwr .mdv-table-shell::after { content: ''; position: absolute; z-index: 1; top: 21px; bottom: 0; width: 24px; pointer-events: none; opacity: 0; transition: opacity var(--motion-fast); }
+.mwr .mdv-table-shell::before { left: 0; background: linear-gradient(to right, color-mix(in srgb, var(--ink) 13%, transparent), transparent); }
+.mwr .mdv-table-shell::after { right: 0; background: linear-gradient(to left, color-mix(in srgb, var(--ink) 13%, transparent), transparent); }
+.mwr .mdv-table-shell[data-scroll-left='true']::before, .mwr .mdv-table-shell[data-scroll-right='true']::after { opacity: 1; }
+.mwr .mdv-table-scroll-hint { min-height: 18px; margin: 0 2px 3px; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: right; }
+.mwr .mdv-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.mwr .mdv-table-scroll:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.mwr .mdv-table-scroll table { width: 100%; min-width: 100%; margin: 0; table-layout: auto; }
+.mwr .mdv th { min-width: 7.5rem; background: #f6f6f1; border: 1px solid #e7e6dd; padding: 7px 11px; text-align: left; font-weight: 650; color: var(--ink2); white-space: normal; overflow-wrap: anywhere; }
+.mwr .mdv td { min-width: 7.5rem; border: 1px solid #eceae2; padding: 7px 11px; vertical-align: top; overflow-wrap: anywhere; }
 .mwr .mdv code { background: #f1f0e9; border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
 .mwr .mdv pre { background: #16181d; color: #dfe3ea; border-radius: 10px; padding: 13px 16px; overflow: auto; margin: 10px 0; position: relative; }
 .mwr .mdv pre::after { content: attr(data-lang); position: absolute; top: 8px; right: 12px; font-size: 10px; color: #7d828d; text-transform: uppercase; letter-spacing: 1px; }

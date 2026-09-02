@@ -27,7 +27,12 @@ class NL2SQLHttpSearchAdapter:
         result = self._client.query(query)
         sql_text = str(result.metadata.get("sql") or "").strip()
         if sql_text:
-            yield {"type": "intermediate", "content": "生成 SQL: {}".format(sql_text)}
+            yield {
+                "type": "intermediate",
+                "content": "生成 SQL: {}".format(sql_text),
+                "public_summary": "查询语句已生成",
+                "public_summary_allowed": True,
+            }
         yield {
             "type": "final",
             "content": json.dumps(_format_output(result), ensure_ascii=False),

@@ -741,6 +741,7 @@ test('data source form：脱敏回填并校验 Scene 和 Workspace', async () =>
     dataSourceFormError,
     applyCreatedProjectDatabaseScene,
     evaluationDatabaseUrlSelectionError,
+    providerOptionsForPackageDataSource,
   } =
     await import('../frontend/src/data-source-form.js');
   const form = dataSourceToForm({
@@ -792,6 +793,16 @@ test('data source form：脱敏回填并校验 Scene 和 Workspace', async () =>
     },
   });
   assert.match(dataSourceFormError({ ...nl2sql, evaluation_workspace_id: '' }), /工作空间 ID 不能为空/);
+  assert.deepEqual(
+    providerOptionsForPackageDataSource('neo4j').map((option) => option.value),
+    ['neo4j'],
+  );
+  assert.deepEqual(
+    providerOptionsForPackageDataSource('nl2sql').map((option) => option.value),
+    ['nl2sql_template', 'nl2sql_http'],
+  );
+  assert.equal(dataSourceToForm(null, { provider: 'neo4j' }, 'nl2sql').provider, 'nl2sql_template');
+  assert.equal(dataSourceToForm(null, { provider: 'nl2sql_http' }, 'neo4j').provider, 'neo4j');
 });
 
 test('workflow：数据源配置位于知识包完善与评测用例录入之间', async () => {

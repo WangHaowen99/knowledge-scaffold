@@ -1,6 +1,6 @@
 # OpenJiuwen ContextEngine 最终切换方案
 
-> 更新时间：2026-07-16  
+> 更新时间：2026-07-16
 > 本方案以“ContextEngine 优先、保持现有 ask-user 机制、不采用影子模式”为最终边界。
 > 已吸收 `openjiuwen-context-engine-final-cutover-plan-review.md` 中的代码核对意见。
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from functools import partial
+import time
 import uuid
 from typing import Any, Mapping
 
@@ -21,6 +23,7 @@ from agent.runtime.event_bus import (
     EventSubscriberReservationError,
 )
 from api.final_output import coerce_final_output_to_text
+from api.protocols.mcp.progress import MCPChatProgressProjector
 from api.protocols.mcp.public_trace import MCPPublicTraceCollector
 from api.protocols.mcp.schemas import error_result
 from config.system_config import (
@@ -42,6 +45,7 @@ from utils.logging import get_logger
 
 logger = get_logger("api.protocols.mcp.workflow_bridge")
 _MCP_CLEANUP_TIMEOUT_SECONDS = 5.0
+MCPChatProgressSink = Callable[[dict[str, Any]], Awaitable[None]]
 _SOLVER_RESULT_FIELDS = frozenset(
     {
         "run_id",
@@ -105,6 +109,7 @@ async def execute_mcp_chat_workflow_async(
     queue_wait_seconds: float,
     execution_timeout_seconds: float,
     trace_config: MCPRuntimeConfig | None = None,
+    progress_sink: MCPChatProgressSink | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Admit one MCP request and await its canonical Run on the ASGI loop."""
 
@@ -124,6 +129,10 @@ async def execute_mcp_chat_workflow_async(
     trace_collector = _create_trace_collector(
         trace_config,
         include_trace=include_trace,
+    )
+    progress_projector = _create_progress_projector(
+        trace_config,
+        enabled=progress_sink is not None,
     )
     solver_collector = _AuthoritativeSolverResultCollector()
     query = str(data.get("request") or data.get("query") or "").strip()
@@ -171,8 +180,16 @@ async def execute_mcp_chat_workflow_async(
             status_code=400,
             trace=_trace_snapshot(trace_collector),
         )
+    run_id = "agentic-{}".format(uuid.uuid4().hex)
+    await _emit_mcp_progress(
+        progress_sink,
+        progress_projector.emit_run_started(run_id=run_id)
+        if progress_projector is not None
+        else None,
+    )
     from api.routes import get_orchestrator
 
+    ontology_started_at = time.monotonic()
     try:
         orchestrator = get_orchestrator()
     except RuntimeError:
@@ -238,7 +255,25 @@ async def execute_mcp_chat_workflow_async(
                 )
                 merged_arguments["selected_version"] = selected_ontology_version
                 arguments = merged_arguments
+        await _emit_mcp_progress(
+            progress_sink,
+            progress_projector.emit_ontology_ready(
+                run_id=run_id,
+                elapsed_ms=max(
+                    0,
+                    int((time.monotonic() - ontology_started_at) * 1000),
+                ),
+            )
+            if progress_projector is not None
+            else None,
+        )
     except _MCPOntologySelectionRequired as exc:
+        await _emit_mcp_terminal_progress(
+            progress_sink,
+            progress_projector,
+            run_id=run_id,
+            status="failed",
+        )
         return _workflow_error(
             "MCP_ONTOLOGY_SELECTION_REQUIRED",
             str(exc),
@@ -246,6 +281,12 @@ async def execute_mcp_chat_workflow_async(
             trace=_trace_snapshot(trace_collector),
         )
     except MCPOntologyBindingError as exc:
+        await _emit_mcp_terminal_progress(
+            progress_sink,
+            progress_projector,
+            run_id=run_id,
+            status="failed",
+        )
         return _workflow_error(
             exc.code,
             exc.detail,
@@ -302,6 +343,12 @@ async def execute_mcp_chat_workflow_async(
                     workspace_id=scope.workspace_id,
                 )
     except SystemConfigValidationError as exc:
+        await _emit_mcp_terminal_progress(
+            progress_sink,
+            progress_projector,
+            run_id=run_id,
+            status="failed",
+        )
         return _workflow_error(
             "INVALID_MODEL_PROFILE",
             str(exc),
@@ -314,7 +361,6 @@ async def execute_mcp_chat_workflow_async(
         workspace_id=scope.workspace_id,
         scopes=("agent:run", "agent:read", "agent:cancel"),
     )
-    run_id = "agentic-{}".format(uuid.uuid4().hex)
     reservation_id: str | None = None
     turn_id: int | None = None
     snapshot: RunSnapshot | None = None
@@ -367,6 +413,12 @@ async def execute_mcp_chat_workflow_async(
             run_started = True
         admission_complete = True
     except EventSubscriberLimitExceeded as exc:
+        await _emit_mcp_terminal_progress(
+            progress_sink,
+            progress_projector,
+            run_id=run_id,
+            status="failed",
+        )
         return _workflow_error(
             "RUNTIME_CAPACITY_EXCEEDED",
             str(exc),
@@ -379,7 +431,17 @@ async def execute_mcp_chat_workflow_async(
         raise
     except Exception as exc:
         error_code = str(getattr(exc, "error_code", ""))
-        status_code = 409 if error_code == "SESSION_BUSY" else 500
+        status_code = (
+            409
+            if error_code in {"SESSION_BUSY", "WORKSPACE_UNAVAILABLE"}
+            else 500
+        )
+        await _emit_mcp_terminal_progress(
+            progress_sink,
+            progress_projector,
+            run_id=run_id,
+            status="failed",
+        )
         return _workflow_error(
             error_code or "MCP_CHAT_WORKFLOW_FAILED",
             str(exc) or "MCP chat admission failed",
@@ -426,6 +488,8 @@ async def execute_mcp_chat_workflow_async(
             timeout_seconds=total_timeout,
             trace_collector=trace_collector,
             solver_collector=solver_collector,
+            progress_projector=progress_projector,
+            progress_sink=progress_sink,
         )
     except TimeoutError:
         await _cancel_mcp_run(
@@ -433,6 +497,12 @@ async def execute_mcp_chat_workflow_async(
             run_id=snapshot.run_id,
             scope=run_scope,
             reason="mcp_chat_execution_timeout",
+        )
+        await _emit_mcp_terminal_progress(
+            progress_sink,
+            progress_projector,
+            run_id=snapshot.run_id,
+            status="failed",
         )
         return _workflow_error(
             "MCP_CHAT_EXECUTION_TIMEOUT",
@@ -454,6 +524,12 @@ async def execute_mcp_chat_workflow_async(
     except Exception as exc:
         current = await manager.get_run(snapshot.run_id, run_scope)
         if current is not None and current.status in TERMINAL_RUN_STATUSES:
+            await _emit_mcp_terminal_progress(
+                progress_sink,
+                progress_projector,
+                run_id=current.run_id,
+                status=current.status,
+            )
             return _project_terminal(
                 current,
                 scope=scope,
@@ -471,6 +547,12 @@ async def execute_mcp_chat_workflow_async(
             snapshot.run_id,
             type(exc).__name__,
         )
+        await _emit_mcp_terminal_progress(
+            progress_sink,
+            progress_projector,
+            run_id=snapshot.run_id,
+            status="failed",
+        )
         return _workflow_error(
             "MCP_CHAT_WORKFLOW_FAILED",
             "MCP chat workflow failed",
@@ -486,6 +568,15 @@ async def execute_mcp_chat_workflow_async(
             reservation_id=reservation_id,
             run_id=snapshot.run_id,
         )
+    await _emit_mcp_progress(
+        progress_sink,
+        progress_projector.emit_terminal(
+            run_id=snapshot.run_id,
+            status=snapshot.status,
+        )
+        if progress_projector is not None
+        else None,
+    )
     return _project_terminal(
         snapshot,
         scope=scope,
@@ -670,6 +761,8 @@ async def _wait_for_terminal(
     timeout_seconds: float,
     trace_collector: MCPPublicTraceCollector | None,
     solver_collector: _AuthoritativeSolverResultCollector,
+    progress_projector: MCPChatProgressProjector | None,
+    progress_sink: MCPChatProgressSink | None,
 ) -> RunSnapshot:
     manager = runtime.manager
     current = await manager.get_run(initial.run_id, scope)
@@ -700,6 +793,16 @@ async def _wait_for_terminal(
                             {"type": event.event_type, "payload": event.payload}
                         )
                     solver_collector.consume(event.event_type, event.payload)
+                    if progress_projector is not None:
+                        for progress_event in progress_projector.consume(
+                            event_type=event.event_type,
+                            payload=event.payload,
+                            run_id=initial.run_id,
+                        ):
+                            await _emit_mcp_progress(
+                                progress_sink,
+                                progress_event,
+                            )
             except EventSubscriberReservationError:
                 continue
             except EventReplayUnavailableError:
@@ -909,6 +1012,49 @@ def _locked_session_ontology_context(
         result["selected_ontology_version"] = selected_version
         result["selected_version"] = selected_version
     return result
+
+
+def _create_progress_projector(
+    config: MCPRuntimeConfig | None,
+    *,
+    enabled: bool,
+) -> MCPChatProgressProjector | None:
+    if not enabled:
+        return None
+    return MCPChatProgressProjector(
+        max_events=int(getattr(config, "chat_progress_max_events", 100)),
+    )
+
+
+async def _emit_mcp_progress(
+    sink: MCPChatProgressSink | None,
+    event: dict[str, Any] | None,
+) -> None:
+    if sink is None or event is None:
+        return
+    try:
+        await sink(event)
+    except Exception:
+        logger.warning(
+            "MCP chat progress delivery failed event=%s",
+            str(event.get("event") or "unknown"),
+            exc_info=True,
+        )
+
+
+async def _emit_mcp_terminal_progress(
+    sink: MCPChatProgressSink | None,
+    projector: MCPChatProgressProjector | None,
+    *,
+    run_id: str,
+    status: Any,
+) -> None:
+    await _emit_mcp_progress(
+        sink,
+        projector.emit_terminal(run_id=run_id, status=status)
+        if projector is not None
+        else None,
+    )
 
 
 def _create_trace_collector(

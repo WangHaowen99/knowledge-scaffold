@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { PackageArtifactStore } from '../artifacts/package-store.js';
+import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { getDb, nowIso } from '../db/index.js';
 import { listDocuments } from '../documents/repo.js';
@@ -28,6 +29,7 @@ import {
 } from '../workflow/ontology-model-validation.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
 import { renderPackage } from '../workflow/package-render.js';
+import { OBJECT_DATA_MAPPING_PATH } from '../workflow/schema-object-policy.js';
 import {
   STUDIO_SCHEMA,
   StudioReadService,
@@ -43,6 +45,9 @@ const MAX_VALIDATION_WARNINGS = 20;
 const MUTATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const KINDS = new Set<StudioKind>(['object', 'operation', 'rule', 'metric']);
 const STUDIO_CHANGE_REASON = '由知识包 Studio 形成的待确认修改';
+const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
+const COMPILED_RESOURCES_GROUP = 'compiled_resources';
+const STUDIO_SPEC_SOURCE_PATH = /^(?:manifest\.yaml|mappings\/object-data-mappings\.json|objects\/.*\.md|operations\/.*\.md|rules\/.*\.md|metrics\/.*\.md|scripts\/)/u;
 
 interface WorkspaceRow {
   project_id: string;
@@ -90,6 +95,8 @@ interface MutationPlan {
 
 interface MutationOptions {
   allowObjectFieldWrite?: boolean;
+  allowEvidenceWrite?: boolean;
+  allowMixedDomainBatch?: boolean;
 }
 
 interface PreparedCreate extends CreateAction {
@@ -136,8 +143,6 @@ export class StudioWriteError extends Error {
 }
 
 export class StudioWriteService {
-  private readonly queues = new Map<string, Promise<void>>();
-
   constructor(
     private readonly db: DatabaseSync = getDb(),
     private readonly artifacts: PackageArtifactStore = getPackageArtifactStore(),
@@ -171,6 +176,33 @@ export class StudioWriteService {
       username,
       parseCreatePlan(rawBody),
       requestHash('create', rawBody),
+      { allowObjectFieldWrite: true },
+    ));
+  }
+
+  createObjectModel(project: Project, username: string, rawBody: unknown): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseCreatePlan(rawBody),
+      requestHash('object-model-create', rawBody),
+      { allowObjectFieldWrite: true },
+    ));
+  }
+
+  createDomainModel(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+    idempotencyRequestHash: string,
+    options: MutationOptions = {},
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseCreatePlan(rawBody),
+      idempotencyRequestHash,
+      { ...options, allowEvidenceWrite: true },
     ));
   }
 
@@ -204,12 +236,78 @@ export class StudioWriteService {
     ));
   }
 
+  patchDomainModel(
+    project: Project,
+    username: string,
+    elementId: string,
+    rawBody: unknown,
+    idempotencyRequestHash?: string,
+    options: MutationOptions = {},
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parsePatchPlan(elementId, rawBody),
+      idempotencyRequestHash ?? requestHash(`domain-model-patch:${elementId}`, rawBody),
+      { ...options, allowEvidenceWrite: true },
+    ));
+  }
+
+  deleteDomainModel(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+    idempotencyRequestHash: string,
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseDeletePlan(rawBody),
+      idempotencyRequestHash,
+    ));
+  }
+
+  replayDomainMutation(
+    projectId: string,
+    clientMutationId: string,
+    idempotencyRequestHash: string,
+  ): StudioMutationResponse | null {
+    const receipt = this.db.prepare(`SELECT request_hash, response_json
+      FROM studio_mutation_receipts WHERE project_id = ? AND client_mutation_id = ?`)
+      .get(projectId, clientMutationId) as { request_hash: string; response_json: string } | undefined;
+    if (!receipt) return null;
+    if (receipt.request_hash !== idempotencyRequestHash) {
+      throw new StudioWriteError(
+        'MUTATION_ID_REUSED',
+        '这个操作标识已经用于另一项修改，请生成新的操作标识后重试',
+        409,
+        { clientMutationId },
+      );
+    }
+    return { ...(JSON.parse(receipt.response_json) as StudioMutationResponse), replayed: true };
+  }
+
   batch(project: Project, username: string, rawBody: unknown): Promise<StudioMutationResponse> {
     return this.enqueue(project.id, () => this.mutate(
       project,
       username,
       parseBatchPlan(rawBody),
       requestHash('batch', rawBody),
+    ));
+  }
+
+  batchDomainModel(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+    idempotencyRequestHash: string,
+  ): Promise<StudioMutationResponse> {
+    return this.enqueue(project.id, () => this.mutate(
+      project,
+      username,
+      parseBatchPlan(rawBody),
+      idempotencyRequestHash,
+      { allowObjectFieldWrite: true, allowEvidenceWrite: true, allowMixedDomainBatch: true },
     ));
   }
 
@@ -225,17 +323,22 @@ export class StudioWriteService {
       const spec = parseWorkingSpec(context.files);
       assertDeleteElementsExist(spec, elementIds);
       const references = incomingReferences(spec, new Set(elementIds));
+      const textReferences = incomingTextReferences(spec, new Set(elementIds));
       return {
         workingRevision: context.workingRevision,
         elementIds,
         references,
-        affectedElementIds: [...new Set(references.map((item) => item.sourceId))],
-        previewToken: deletePreviewToken(project.id, context.workingRevision, elementIds, references),
+        textReferences,
+        affectedElementIds: [...new Set([...references, ...textReferences].map((item) => item.sourceId))],
+        previewToken: deletePreviewToken(project.id, context.workingRevision, elementIds, references, textReferences),
         cleanupRequired: references.length > 0,
+        blocked: textReferences.length > 0,
         display: {
-          text: references.length
-            ? `将删除 ${elementIds.length} 个条目，并清理 ${references.length} 处关系引用`
-            : `将删除 ${elementIds.length} 个条目，没有其他条目引用它们`,
+          text: textReferences.length
+            ? `暂不能删除：仍有 ${textReferences.length} 处正文显式引用需要先修改`
+            : references.length
+              ? `将删除 ${elementIds.length} 个条目，并清理 ${references.length} 处关系引用`
+              : `将删除 ${elementIds.length} 个条目，没有其他条目引用它们`,
         },
       };
     });
@@ -251,15 +354,7 @@ export class StudioWriteService {
   }
 
   private enqueue<T>(projectId: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.queues.get(projectId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
-    const queued = previous.then(() => current);
-    this.queues.set(projectId, queued);
-    return previous.then(task).finally(() => {
-      release();
-      if (this.queues.get(projectId) === queued) this.queues.delete(projectId);
-    });
+    return runProjectWriteExclusive(projectId, task);
   }
 
   private async mutate(
@@ -334,6 +429,11 @@ export class StudioWriteService {
 
       const existingChanges = workspace ? this.changes(workspace) : [];
       const workingFiles = applyChanges(baseFiles, existingChanges);
+      if (!existingChanges.some((change) => (
+        change.path === INTERNAL_SPEC_CHANGE_PATH || STUDIO_SPEC_SOURCE_PATH.test(change.path)
+      ))) {
+        workingFiles[INTERNAL_SPEC_CHANGE_PATH] = serializeInternalSpec(current.spec);
+      }
       const actualRevision = existingChanges.length
         ? workingContentRevision(baseRevision, workingFiles)
         : baseRevision;
@@ -375,13 +475,17 @@ export class StudioWriteService {
       const stagedPaths: string[] = [];
       for (const path of changedPaths) {
         const content = mutation.files[path];
-        if (content === baseFiles[path]) {
+        const baseContent = path === INTERNAL_SPEC_CHANGE_PATH
+          ? serializeInternalSpec(current.spec)
+          : baseFiles[path];
+        if (content === baseContent) {
           this.db.prepare(`DELETE FROM agent_candidate_changes
             WHERE project_id = ? AND run_id = ? AND path = ?`)
             .run(project.id, workspace.run_id, path);
           continue;
         }
         const deleted = !(path in mutation.files);
+        const pathGroupId = path === INTERNAL_SPEC_CHANGE_PATH ? COMPILED_RESOURCES_GROUP : groupId;
         this.db.prepare(`INSERT INTO agent_candidate_changes (
           project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
         ) VALUES (?,?,?,?,?,?,'[]',?,?)
@@ -398,7 +502,7 @@ export class StudioWriteService {
             path,
             deleted ? 'delete' : 'write',
             deleted ? null : content,
-            groupId,
+            pathGroupId,
             STUDIO_CHANGE_REASON,
             nowIso(),
           );
@@ -428,27 +532,29 @@ export class StudioWriteService {
       const historicalProblemNote = mutation.historicalProblemCount
         ? `；知识包仍有 ${mutation.historicalProblemCount} 项历史问题，本次未增加历史问题`
         : '';
+      const publicChangedPaths = changedPaths.filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH);
+      const publicStagedPaths = stagedPaths.filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH);
       const response: StudioMutationResponse = {
         workingRevision,
         clientMutationId: plan.envelope.clientMutationId,
         ...(plan.envelope.editSessionId ? { editSessionId: plan.envelope.editSessionId } : {}),
         candidate: true,
-        changeGroup: stagedPaths.length ? {
+        changeGroup: publicStagedPaths.length ? {
           id: groupId,
-          tier: studioGroupTier(stagedPaths),
+          tier: studioGroupTier(publicStagedPaths),
           title: `确认 Studio 的${noun}`,
-          paths: stagedPaths,
+          paths: publicStagedPaths,
         } : null,
-        changedPaths,
+        changedPaths: publicChangedPaths,
         ...(uniqueElements.length === 1 ? { element: uniqueElements[0] } : {}),
         elements: uniqueElements,
         ...(mutation.deletedElementIds.length
           ? { deletedElementIds: mutation.deletedElementIds }
           : {}),
         display: {
-          text: stagedPaths.length
-            ? `已形成${noun}的待确认修改，确认后才会保存为新版本${historicalProblemNote}`
-            : `已撤销对应的待确认修改，当前版本尚未改变${historicalProblemNote}`,
+          text: publicStagedPaths.length
+            ? `已保存${noun}工作草稿，确定性检查通过后才会保存为新版本${historicalProblemNote}`
+            : `已撤销对应的工作草稿，当前版本尚未改变${historicalProblemNote}`,
         },
         warnings: mutation.warnings,
         historicalProblemCount: mutation.historicalProblemCount,
@@ -527,13 +633,19 @@ export interface StudioDeleteReference {
   targetId: string;
 }
 
+export interface StudioDeleteTextReference extends StudioDeleteReference {
+  excerpt: string;
+}
+
 export interface StudioDeletePreview {
   workingRevision: string;
   elementIds: string[];
   references: StudioDeleteReference[];
+  textReferences: StudioDeleteTextReference[];
   affectedElementIds: string[];
   previewToken: string;
   cleanupRequired: boolean;
+  blocked: boolean;
   display: { text: string };
 }
 
@@ -716,7 +828,7 @@ function applyMutation(
 } {
   let spec: PackageSpec;
   try {
-    spec = structuredClone(parseRenderedPackageFiles(workingFiles));
+    spec = parseWorkingSpec(workingFiles);
   } catch (error) {
     throw new StudioWriteError(
       'INVALID_WORKING_PACKAGE',
@@ -724,6 +836,7 @@ function applyMutation(
       409,
     );
   }
+  const previousSpec = structuredClone(spec);
   const previousIntegrityProblems = listSpecIntegrityProblems(spec);
 
   const errors: Record<string, string> = {};
@@ -731,7 +844,14 @@ function applyMutation(
   if (plan.deletes.length) {
     assertDeleteElementsExist(spec, plan.deletes);
     const references = incomingReferences(spec, new Set(plan.deletes));
-    const expectedToken = deletePreviewToken(projectId, plan.envelope.expectedRevision, plan.deletes, references);
+    const textReferences = incomingTextReferences(spec, new Set(plan.deletes));
+    const expectedToken = deletePreviewToken(
+      projectId,
+      plan.envelope.expectedRevision,
+      plan.deletes,
+      references,
+      textReferences,
+    );
     if (plan.deletePreviewToken !== expectedToken) {
       throw new StudioWriteError(
         'DELETE_PREVIEW_STALE',
@@ -741,6 +861,14 @@ function applyMutation(
     }
     if (references.length && !plan.cleanupReferences) {
       throw fieldError({ cleanupReferences: '这些条目仍被引用，请确认同时清理关系' });
+    }
+    if (textReferences.length) {
+      throw new StudioWriteError(
+        'DELETE_TEXT_REFERENCE_BLOCKED',
+        '仍有正文显式引用，必须先修改引用内容再删除',
+        409,
+        { textReferences },
+      );
     }
     const beforeReader = new StudioReadService({
       workingRevision: plan.envelope.expectedRevision,
@@ -819,12 +947,16 @@ function applyMutation(
       action.changes,
       fieldPath(action.path, 'changes'),
       errors,
-      { allowEvidence: false, projectId, allowObjectFieldWrite: options.allowObjectFieldWrite === true },
+      {
+        allowEvidence: options.allowEvidenceWrite === true,
+        projectId,
+        allowObjectFieldWrite: options.allowObjectFieldWrite === true,
+      },
     );
     preparedPatches.push({ ...action, ...parsed, normalizedChanges });
   }
 
-  if (plan.isBatch && preparedPatches.length > 1) {
+  if (plan.isBatch && preparedPatches.length > 1 && !options.allowMixedDomainBatch) {
     if (patchKinds.size > 1) {
       for (const action of preparedPatches) {
         errors[fieldPath(action.path, 'elementId')] = '批量编辑只支持同一种知识类型';
@@ -864,13 +996,28 @@ function applyMutation(
     });
   }
 
+  let previousRendered: Record<string, string>;
   let rendered: Record<string, string>;
   try {
+    previousRendered = renderPackage(previousSpec, { validateScripts: false });
     rendered = renderPackage(spec, { validateScripts: false });
   } catch (error) {
     throw fieldError({ _batch: errorMessage(error) });
   }
-  const nextFiles = { ...workingFiles, ...rendered };
+  const nextFiles = { ...workingFiles };
+  const compilerChangedPaths = [...new Set([
+    ...Object.keys(previousRendered),
+    ...Object.keys(rendered),
+    ...(Object.hasOwn(workingFiles, OBJECT_DATA_MAPPING_PATH) ? [OBJECT_DATA_MAPPING_PATH] : []),
+  ])].filter((path) => (
+    previousRendered[path] !== rendered[path]
+    || (path === OBJECT_DATA_MAPPING_PATH && workingFiles[path] !== rendered[path])
+  ));
+  for (const path of compilerChangedPaths) {
+    if (path in rendered) nextFiles[path] = rendered[path];
+    else delete nextFiles[path];
+  }
+  nextFiles[INTERNAL_SPEC_CHANGE_PATH] = serializeInternalSpec(spec);
   for (const path of deletedPaths) delete nextFiles[path];
   return {
     files: nextFiles,
@@ -1085,7 +1232,13 @@ function minimalSpec(
   const title = typeof values.title === 'string' && values.title ? values.title : key;
   let item: SpecObject | SpecOperation | SpecRule | SpecMetric;
   if (kind === 'object') {
-    item = { key, title, description: title, fields: [] };
+    item = {
+      key,
+      title,
+      description: title,
+      fields: [{ key: 'id', cnName: '标识', type: 'string', required: true, note: 'Studio 新建对象的默认主键字段。' }],
+      primaryKey: ['id'],
+    };
   } else if (kind === 'operation') {
     item = {
       key,
@@ -1093,7 +1246,7 @@ function minimalSpec(
       description: title,
       inputs: [],
       outputs: [],
-      flow: ['待补充流程步骤'],
+      flow: [`完成${title}`],
       relatedObjects: [],
     };
   } else if (kind === 'rule') {
@@ -1171,6 +1324,14 @@ function validateRelations(
     const base = 'normalizedValues' in action
       ? fieldPath(action.path, 'values.relations')
       : fieldPath(action.path, 'changes.relations');
+    const sourceId = 'normalizedValues' in action
+      ? elementId(action.kind, action.key)
+      : action.elementId;
+    relations.forEach((relation, index) => {
+      if (elementId(relation.targetKind, relation.targetKey) === sourceId) {
+        errors[`${base}[${index}].targetId`] = '不能把知识条目关联到自身';
+      }
+    });
     pending.push({ path: base, relations });
   }
   applyValidationIssues(errors, validateOntologyRelationTargets(spec, pending));
@@ -1198,7 +1359,8 @@ function specElementIds(spec: PackageSpec): Set<string> {
 
 function parseWorkingSpec(files: Record<string, string>): PackageSpec {
   try {
-    return structuredClone(parseRenderedPackageFiles(files));
+    const internal = files[INTERNAL_SPEC_CHANGE_PATH];
+    return structuredClone(internal ? JSON.parse(internal) as PackageSpec : parseRenderedPackageFiles(files));
   } catch (error) {
     throw new StudioWriteError(
       'INVALID_WORKING_PACKAGE',
@@ -1206,6 +1368,10 @@ function parseWorkingSpec(files: Record<string, string>): PackageSpec {
       409,
     );
   }
+}
+
+function serializeInternalSpec(spec: PackageSpec): string {
+  return `${JSON.stringify(spec, null, 2)}\n`;
 }
 
 function assertDeleteElementsExist(spec: PackageSpec, elementIds: string[]): void {
@@ -1258,6 +1424,73 @@ function incomingReferences(spec: PackageSpec, deleted: Set<string>): StudioDele
   ));
 }
 
+function incomingTextReferences(spec: PackageSpec, deleted: Set<string>): StudioDeleteTextReference[] {
+  const targets = [...deleted];
+  const references: StudioDeleteTextReference[] = [];
+  const sources: Array<{ kind: StudioKind; item: Record<string, unknown> }> = [
+    ...spec.objects.map((item) => ({ kind: 'object' as const, item: item as unknown as Record<string, unknown> })),
+    ...spec.operations.map((item) => ({ kind: 'operation' as const, item: item as unknown as Record<string, unknown> })),
+    ...(spec.rules ?? []).map((item) => ({ kind: 'rule' as const, item: item as unknown as Record<string, unknown> })),
+    ...(spec.metrics ?? []).map((item) => ({ kind: 'metric' as const, item: item as unknown as Record<string, unknown> })),
+  ];
+  const visit = (sourceKind: StudioKind, source: Record<string, unknown>, value: unknown, path: string) => {
+    if (typeof value === 'string') {
+      for (const targetId of targets) {
+        if (!containsExplicitReference(value, targetId)) continue;
+        references.push({
+          sourceId: elementId(sourceKind, String(source.key ?? '')),
+          sourceTitle: String(source.title ?? source.key ?? ''),
+          field: path,
+          targetId,
+          excerpt: value.length > 160 ? `${value.slice(0, 157)}...` : value,
+        });
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(sourceKind, source, item, `${path}[${index}]`));
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, item] of Object.entries(value)) {
+      if (['key', 'title'].includes(key)) continue;
+      visit(sourceKind, source, item, path ? `${path}.${key}` : key);
+    }
+  };
+  for (const { kind, item } of sources) {
+    if (deleted.has(elementId(kind, String(item.key ?? '')))) continue;
+    visit(kind, item, item, '');
+  }
+  for (const script of spec.scripts ?? []) {
+    const targetId = elementId('operation', script.boundOperation);
+    if (!deleted.has(targetId)) continue;
+    references.push({
+      sourceId: `script:${script.key}`,
+      sourceTitle: script.title || script.key,
+      field: 'boundOperation',
+      targetId,
+      excerpt: `脚本绑定操作 operation:${script.boundOperation}`,
+    });
+  }
+  return [...new Map(references.map((item) => [
+    `${item.sourceId}\0${item.field}\0${item.targetId}`,
+    item,
+  ])).values()].sort((left, right) => (
+    `${left.sourceId}\0${left.field}\0${left.targetId}`
+      .localeCompare(`${right.sourceId}\0${right.field}\0${right.targetId}`)
+  ));
+}
+
+function containsExplicitReference(text: string, targetId: string): boolean {
+  let offset = text.indexOf(targetId);
+  while (offset >= 0) {
+    const next = text[offset + targetId.length] ?? '';
+    if (!next || !/[\p{L}\p{N}_-]/u.test(next)) return true;
+    offset = text.indexOf(targetId, offset + targetId.length);
+  }
+  return false;
+}
+
 function removeIncomingReferences(spec: PackageSpec, deleted: Set<string>): void {
   const kept = (kind: StudioKind, values: string[] | undefined): string[] => (
     (values ?? []).filter((key) => !deleted.has(elementId(kind, key)))
@@ -1284,12 +1517,14 @@ function deletePreviewToken(
   workingRevision: string,
   elementIds: string[],
   references: StudioDeleteReference[],
+  textReferences: StudioDeleteTextReference[],
 ): string {
   return `delete_${createHash('sha256').update(stableJson({
     projectId,
     workingRevision,
     elementIds: [...elementIds].sort(),
     references,
+    textReferences,
   })).digest('hex')}`;
 }
 
@@ -1330,7 +1565,7 @@ function revisionConflict(expectedRevision: string, actualRevision: string): Stu
 
 function workingContentRevision(baseRevision: string, files: Record<string, string>): string {
   const hash = createHash('sha256').update('studio-working-v1\0').update(baseRevision);
-  for (const path of Object.keys(files).sort()) {
+  for (const path of Object.keys(files).filter((path) => path !== INTERNAL_SPEC_CHANGE_PATH).sort()) {
     const content = files[path];
     hash.update('\0').update(String(Buffer.byteLength(path))).update(':').update(path);
     hash.update('\0').update(String(Buffer.byteLength(content))).update(':').update(content);

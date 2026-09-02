@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { strToU8, zipSync } from 'fflate';
 
-import { decodeLegacyZipEntryName, parsePackageArchive } from '../src/workflow/package-import.js';
+import {
+  decodeLegacyZipEntryName,
+  parsePackageArchive,
+  renameImportedPackageArchive,
+} from '../src/workflow/package-import.js';
 import { zipPackage } from '../src/workflow/export.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import type { PackageSpec } from '../src/types.js';
@@ -51,6 +55,11 @@ function demoSpec(): PackageSpec {
       parameters: [
         { name: 'customer_id', flag: '--customer-id', type: 'string', required: true },
         { name: 'mode', flag: '--mode', type: 'string', required: false, defaultValue: 'standard' },
+        {
+          name: 'verbose', flag: '--verbose', type: 'boolean', required: false,
+          action: 'store_true',
+        },
+        { name: 'labels', flag: '--label', type: 'string', required: false, multiple: true },
       ],
       outputs: [{ key: 'name', type: 'string' }], boundaries: ['只读取已授权数据。'],
       sourceCode: [
@@ -59,6 +68,8 @@ function demoSpec(): PackageSpec {
         'parser = argparse.ArgumentParser()',
         'parser.add_argument("--customer-id", required=True)',
         'parser.add_argument("--mode", default="standard")',
+        'parser.add_argument("--verbose", action="store_true")',
+        'parser.add_argument("--label", action="append")',
         'args = parser.parse_args()',
         'print(json.dumps({"name": args.customer_id, "mode": args.mode}))',
       ].join('\n'),
@@ -98,7 +109,16 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   })), [{
     key: 'Customer',
     title: '客户',
-    sourceRefs: [{ kind: 'table', table: 'customer_table' }],
+    sourceRefs: [{
+      kind: 'table',
+      table: 'customer_table',
+      role: 'primary',
+      columns: ['customer_id', 'name'],
+      fieldBindings: [
+        { fieldKey: 'customer_id', sourceColumn: 'customer_id' },
+        { fieldKey: 'name', sourceColumn: 'name' },
+      ],
+    }],
     primaryKey: ['customer_id'],
     fields: [['customer_id', '客户编号', 'string', true], ['name', '客户名称', 'string', false]],
   }]);
@@ -108,6 +128,11 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   })), [{ key: 'active_customer', appliesToOperations: ['find_customer'] }]);
   assert.deepEqual(imported.spec.metrics?.map((metric) => metric.key), ['customer_count']);
   assert.equal(imported.spec.scripts?.[0].parameters[1].defaultValue, 'standard');
+  assert.equal(imported.spec.scripts?.[0].parameters[2].action, 'store_true');
+  assert.equal(imported.spec.scripts?.[0].parameters[2].defaultValue, false);
+  assert.equal(imported.spec.scripts?.[0].parameters[3].multiple, true);
+  assert.match(files['scripts/find_customer_script.md'], /\| 是否多值 \| Action \|/u);
+  assert.match(files['scripts/find_customer_script.md'], /\| store_true \|/u);
   assert.deepEqual(imported.spec.operations.map((operation) => ({
     key: operation.key,
     relatedObjects: operation.relatedObjects,
@@ -127,6 +152,25 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   });
   assert.equal(imported.files['manifest.yaml'], files['manifest.yaml']);
   assert.equal(imported.files['objects/Customer.md'], files['objects/Customer.md']);
+});
+
+test('导入副本改名会同步更新规格、文本 manifest 和原始 manifest 字节', () => {
+  const files = renderPackage(demoSpec());
+  files['manifest.yaml'] = `# 保留来源注释\n${files['manifest.yaml']}`;
+  const imported = parsePackageArchive(zipPackage(files, 'import-demo'));
+
+  const renamed = renameImportedPackageArchive(imported, '导入演示知识包（2）');
+
+  assert.equal(renamed.spec.name, '导入演示知识包（2）');
+  assert.match(renamed.files['manifest.yaml'], /^# 保留来源注释$/mu);
+  assert.match(renamed.files['manifest.yaml'], /^name: 导入演示知识包（2）$/mu);
+  assert.equal(
+    new TextDecoder().decode(renamed.rawFiles['manifest.yaml']),
+    renamed.files['manifest.yaml'],
+  );
+  assert.match(renamed.warnings.at(-1) ?? '', /导入演示知识包（2）/u);
+  assert.equal(imported.spec.name, '导入演示知识包');
+  assert.doesNotMatch(imported.files['manifest.yaml'], /导入演示知识包（2）/u);
 });
 
 test('来源 ZIP 缺少 manifest status 时按 draft 兼容导入，但仍拒绝非法状态', () => {

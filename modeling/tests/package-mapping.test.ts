@@ -53,7 +53,7 @@ function packageSpec(): PackageSpec {
           { key: 'id', cnName: '数据ID', sourceColumn: 'ID', type: 'string', required: true },
           { key: 'name', cnName: '名称', sourceColumn: 'NAME', type: 'string' },
         ],
-        relations: [{ relation: 'references', target: 'ConceptObject' }],
+        relations: [{ relation: '引用', target: 'ConceptObject' }],
       },
       {
         key: 'ConceptObject',
@@ -129,6 +129,10 @@ test('package mapping：新生成规格允许多类来源且仍要求字段中�
   assert.ok(schema.properties.sourceTable);
   assert.ok(schema.properties.sourceRefs);
   assert.ok(fieldSchema.required.includes('cnName'));
+  const relationSchema = schema.properties.relations.items.properties.relation;
+  assert.match(relationSchema.description, /模型根据材料证据生成.*中文谓词/);
+  assert.match(relationSchema.description, /不得包含源对象或目标对象.*连读/);
+  assert.equal(relationSchema.enum, undefined);
 });
 
 test('package mapping：同一来源 Sheet 可以支持多个实体，并写入对象索引', () => {
@@ -148,6 +152,7 @@ test('package mapping：同一来源 Sheet 可以支持多个实体，并写入�
     graphSchema.objects.map((object) => [object.key, object.defaultSheet]),
     [['DataObject', 'DataSheet'], ['ConceptObject', 'DataSheet']],
   );
+  assert.equal(graphSchema.relations[0]?.relationName, '引用');
 });
 
 test('package mapping format：纯渲染产物符合语义 mapping 契约', () => {
@@ -155,13 +160,14 @@ test('package mapping format：纯渲染产物符合语义 mapping 契约', () =
   assert.deepEqual(runFormatChecks(spec, renderPackage(spec)), []);
 });
 
-test('package mapping contract：mapping 是允许空 objects 的必选文件', () => {
+test('package mapping contract：mapping 只在物理 Schema 模式下生成', () => {
   const contract = packageGenerationContract();
 
   assert.equal(contract.validatorVersion, 'package-contract-v6');
-  assert.ok(contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
-  assert.equal(contract.packageFormat.mappings.required, true);
-  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, true);
+  assert.ok(!contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
+  assert.equal(contract.packageFormat.mappings.required, 'when_physical_schema_exists');
+  assert.equal(contract.packageFormat.mappings.forbidden, 'when_physical_schema_absent');
+  assert.equal(contract.packageFormat.mappings.allowEmptyObjects, false);
 });
 
 test('package mapping format：mapping 缺失或为空时阻断知识包', () => {
@@ -183,13 +189,11 @@ test('package mapping format：mapping 缺失或为空时阻断知识包', () =>
   )));
 });
 
-test('package mapping format：无物理对象时允许空 objects 映射', () => {
+test('package mapping format：无物理对象时不生成 mapping', () => {
   const spec = packageSpec();
   spec.objects = [];
   const files = renderPackage(spec);
-  const mappings = JSON.parse(files['mappings/object-data-mappings.json']);
-
-  assert.deepEqual(mappings.objects, {});
+  assert.equal(files['mappings/object-data-mappings.json'], undefined);
   assert.deepEqual(runFormatChecks(spec, files), []);
 });
 
@@ -478,7 +482,7 @@ test('package mapping format：术语 binding 引用和 provider 必须合法', 
   assert.ok(messages.some((message) => /provider_alias.*不一致/.test(message)));
 });
 
-test('semantic binding：知识结构抽取出对象字段后先推荐 binding，再推荐字段关联', () => {
+test('semantic binding：普通 lookup 表不再自动推荐 binding', () => {
   const spec: PackageSpec = {
     id: 'item-demo', name: 'item demo', description: 'item demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
@@ -517,26 +521,7 @@ test('semantic binding：知识结构抽取出对象字段后先推荐 binding�
     ]),
   ];
 
-  const suggestions = suggestSemanticBindings(spec, tables);
-  const item = suggestions.find((candidate) => candidate.resource === 'item_lookup' && candidate.valueField === 'ITEM_CODE');
-
-  assert.ok(item);
-  assert.equal(item.semanticField, 'ITEM_NAME');
-  assert.deepEqual(item.aliasFields, []);
-  assert.deepEqual(item.candidateFieldRefs, []);
-
-  const withBinding = applySemanticBindingSelection(spec, tables, {
-    bindingKeys: [item.key],
-    fieldRefs: [],
-  }).spec;
-  const fieldRefs = suggestSemanticFieldRefs(withBinding, tables);
-  const expectedFieldRefs = ['item.ITEM_CODE', 'transaction.BACKUP_ITEM_CODE', 'transaction.PRIMARY_ITEM_CODE']
-    .map((ref) => `${ref}->${item.key}`)
-    .sort();
-  assert.deepEqual(
-    fieldRefs.map((ref) => `${ref.objectKey}.${ref.fieldKey}->${ref.bindingKey}`).sort(),
-    expectedFieldRefs,
-  );
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
 });
 
 test('semantic binding：知识结构尚未抽取对象字段时不推荐 binding', () => {
@@ -567,8 +552,8 @@ test('semantic binding：知识结构尚未抽取对象字段时不推荐 bindin
       fields: [{ key: 'ITEM_CODE', sourceColumn: 'ITEM_CODE' }],
     }],
   }, tables);
-  assert.equal(modeledPreview.bindingCount, 1);
-  assert.equal(modeledPreview.suggestions[0]?.resource, 'item_lookup');
+  assert.equal(modeledPreview.bindingCount, 0);
+  assert.deepEqual(modeledPreview.suggestions, []);
 });
 
 test('semantic binding：上传术语表后按固定列顺序生成 binding 并保留 alias 字段', () => {
@@ -644,7 +629,7 @@ test('semantic binding：Neo4j 数据源下术语表字段名必须符合属性�
   assert.doesNotThrow(() => validateTermTables([termTable], { dataSourceType: 'nl2sql' }));
 });
 
-test('semantic binding：同一资源表多组 code/name 按通用字段词干配对', () => {
+test('semantic binding：未标记为术语表的 code/name 资源表不自动推荐 binding', () => {
   const spec: PackageSpec = {
     id: 'entity-demo', name: 'entity demo', description: 'entity demo',
     version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
@@ -668,22 +653,7 @@ test('semantic binding：同一资源表多组 code/name 按通用字段词干�
     ]),
   ];
 
-  const suggestions = suggestSemanticBindings(spec, tables);
-  const pairs = suggestions.map((item) => `${item.valueField}->${item.semanticField}`).sort();
-
-  assert.deepEqual(pairs, ['MARKET_CODE->MARKET_NAME', 'REGION_CODE->REGION_NAME']);
-  assert.deepEqual(suggestions.flatMap((item) => item.candidateFieldRefs), []);
-
-  const withBindings = applySemanticBindingSelection(spec, tables, {
-    bindingKeys: suggestions.map((item) => item.key),
-    fieldRefs: [],
-  }).spec;
-  const fieldRefs = suggestSemanticFieldRefs(withBindings, tables);
-
-  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'record' && ref.fieldKey === 'REGION_CODE'
-    && ref.bindingKey === suggestions.find((item) => item.valueField === 'REGION_CODE')?.key));
-  assert.ok(fieldRefs.some((ref) => ref.objectKey === 'record' && ref.fieldKey === 'MARKET_CODE'
-    && ref.bindingKey === suggestions.find((item) => item.valueField === 'MARKET_CODE')?.key));
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
 });
 
 test('semantic binding：业务对象表不作为术语绑定资源表', () => {
@@ -730,6 +700,31 @@ test('semantic binding：普通业务表仅字段命中术语特征时不推荐 
     dataTable('business_record', ['CUSTOMER_ID', 'CUSTOMER_NAME', 'PROJECT_CODE', 'PROJECT_NAME'], [
       { CUSTOMER_ID: 'C001', CUSTOMER_NAME: '客户一', PROJECT_CODE: 'P001', PROJECT_NAME: '项目一' },
       { CUSTOMER_ID: 'C002', CUSTOMER_NAME: '客户二', PROJECT_CODE: 'P002', PROJECT_NAME: '项目二' },
+    ]),
+  ];
+
+  assert.deepEqual(suggestSemanticBindings(spec, tables), []);
+});
+
+test('semantic binding：英文术语特征必须按完整 token 命中', () => {
+  const spec: PackageSpec = {
+    id: 'equipment-demo', name: 'equipment demo', description: 'equipment demo',
+    version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data',
+    objects: [{
+      key: 'gas_drive_end_comp', title: '驱动端组件', description: '驱动端组件',
+      sourceTable: 'gas_drive_end_comp',
+      fields: [
+        { key: 'end_id', sourceColumn: 'end_id' },
+        { key: 'end_name', sourceColumn: 'end_name' },
+        { key: 'system_id', sourceColumn: 'system_id' },
+      ],
+    }],
+    operations: [],
+  };
+  const tables = [
+    dataTable('gas_drive_end_comp', ['end_id', 'end_name', 'system_id'], [
+      { end_id: 'E01', end_name: '驱动端', system_id: 'S01' },
+      { end_id: 'E02', end_name: '非驱动端', system_id: 'S01' },
     ]),
   ];
 

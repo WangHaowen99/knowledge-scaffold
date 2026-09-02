@@ -33,17 +33,20 @@ from api.auth.user_deletion import (
     UserDeletionReconciliationError,
 )
 from api.dependencies import (
+    get_runtime_container,
     require_workspace_id,
     require_workspace_path_access,
     require_workspace_path_owner_or_admin,
     run_in_runtime_pool,
 )
+from agent.runtime.errors import WorkspaceBusyError
 from api.exceptions import APIError
 from api.request_parsing import read_optional_json_object
 from api.workspace_acl_service import (
     WorkspaceIdentityDirectoryUnavailableError,
     WorkspaceIdentityNotFoundError,
     create_workspace_with_validated_owner,
+    ensure_user_personal_workspace,
     replace_workspace_members,
     update_workspace_authorized_with_validated_owner,
     update_workspace_owner_with_validation,
@@ -55,7 +58,6 @@ from workspace.workspaces import (
     get_default_workspace_id,
     get_workspace,
     get_workspace_runtime_config,
-    list_workspaces,
     set_default_workspace,
     update_workspace_authorized,
     update_workspace_runtime_config,
@@ -158,17 +160,29 @@ def _relationship_role(user, workspace: dict):
     return None
 
 
-def _visible_workspaces(user: AuthUser) -> dict:
+def _visible_workspaces(auth_manager, user: AuthUser) -> dict:
+    personal_workspace, available_workspaces = ensure_user_personal_workspace(
+        auth_manager,
+        user,
+    )
+    is_admin = getattr(user, "role", None) == "admin"
     items = []
-    for item in list_workspaces():
+    for item in available_workspaces:
+        role = _relationship_role(user, item)
+        if not is_admin and role is None:
+            continue
         if not user_can_access_workspace(user, item, bool(item.get("is_default"))):
             continue
-        item["role"] = _relationship_role(user, item)
+        item["role"] = role
         items.append(item)
+    default_workspace_id = get_default_workspace_id()
     return {
         "workspaces": items,
         "total": len(items),
-        "default_workspace_id": get_default_workspace_id(),
+        "default_workspace_id": default_workspace_id,
+        "preferred_workspace_id": (
+            default_workspace_id if is_admin else personal_workspace["id"]
+        ),
     }
 
 
@@ -246,12 +260,24 @@ async def list_workspaces_api(
     request: Request,
     user: AuthUser = Depends(require_authenticated_user),
 ):
-    return await run_in_runtime_pool(
-        request,
-        "short_io",
-        _visible_workspaces,
-        user,
-    )
+    try:
+        return await run_in_runtime_pool(
+            request,
+            "short_io",
+            _visible_workspaces,
+            get_auth_manager(request),
+            user,
+        )
+    except _WORKSPACE_IDENTITY_ERRORS as exc:
+        return _workspace_identity_error(exc)
+    except ValueError as exc:
+        return JSONResponse(
+            {
+                "detail": str(exc),
+                "code": "PERSONAL_WORKSPACE_PROVISIONING_FAILED",
+            },
+            status_code=409,
+        )
 
 
 @workspaces_router.post("/workspaces")
@@ -425,13 +451,27 @@ async def delete_workspace_api(
     ),
 ):
     is_admin = getattr(user, "role", None) == "admin"
+    runtime = get_runtime_container(request)
     try:
-        await run_in_runtime_pool(
-            request,
-            "short_io",
-            delete_workspace,
-            workspace_id,
-            allow_default=not is_admin,
+        async with runtime.manager.workspace_deletion_guard(workspace_id):
+            await run_in_runtime_pool(
+                request,
+                "short_io",
+                delete_workspace,
+                workspace_id,
+                allow_default=not is_admin,
+            )
+    except WorkspaceBusyError as exc:
+        return JSONResponse(
+            {
+                "error": "工作空间存在运行中任务，请等待完成或显式停止后再删除",
+                "error_code": "WORKSPACE_RUN_ACTIVE",
+                "workspace_id": workspace_id,
+                "run_id": exc.run_id,
+                "session_id": exc.session_id,
+                "run_status": exc.status,
+            },
+            status_code=409,
         )
     except KeyError as exc:
         return not_found_response(exc)

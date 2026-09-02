@@ -14,6 +14,7 @@ from agent.runtime.contracts import (
     RunSnapshot,
     RunStatus as CanonicalRunStatus,
     RuntimeInvocationContext,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from api.auth.auth import AuthUser
 from api.protocols.acp import server as acp_server
@@ -135,6 +136,10 @@ def test_acp_forwards_explicit_deterministic_operation_and_arguments(
         assert (
             manager.contexts[-1].requested_operation_key
             == "operation_demo"
+        )
+        assert (
+            manager.contexts[-1].concurrency_limit
+            == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
         )
 
     from fastapi.responses import JSONResponse

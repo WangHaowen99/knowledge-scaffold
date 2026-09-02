@@ -21,6 +21,24 @@ class SessionBusyError(RunConflictError):
         super().__init__("session already has an active run")
 
 
+class WorkspaceBusyError(RunConflictError):
+    error_code = "WORKSPACE_BUSY"
+
+    def __init__(self, run_id: str, session_id: str, status: str) -> None:
+        self.run_id = run_id
+        self.session_id = session_id
+        self.status = status
+        super().__init__("workspace already has an active run")
+
+
+class WorkspaceUnavailableError(RunConflictError):
+    error_code = "WORKSPACE_UNAVAILABLE"
+
+    def __init__(self, workspace_id: str) -> None:
+        self.workspace_id = workspace_id
+        super().__init__("workspace is unavailable for run creation")
+
+
 class InteractionPendingError(RunConflictError):
     error_code = "INTERACTION_PENDING"
 

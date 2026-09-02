@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.runtime.errors import SessionBusyError
 from api.testing import TestApplication
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from api.routes.sessions import _converge_session_prune_batches, sessions_router
@@ -70,6 +71,12 @@ class _FakeChatStore:
         self.session.metadata["pinned"] = pinned
         return self.session
 
+    def delete_session(self, session_id):
+        if not self.session or self.session.id != session_id:
+            return False
+        self.session = None
+        return True
+
 
 class _FakeExecutionStore:
     def __init__(self, turns=None):
@@ -78,6 +85,7 @@ class _FakeExecutionStore:
 
     def delete_session(self, session_id):
         self.deleted_sessions.append(session_id)
+        return True
 
     def list_turns_by_status(self, session_id, status=None):
         del session_id
@@ -258,11 +266,17 @@ def test_background_prune_is_single_flight_per_user_workspace():
     assert calls == [True]
 
 
+class _BusyManager(_AvailableManager):
+    async def assert_session_available(self, _scope, _session_id):
+        raise SessionBusyError("run-active")
+
+
 def _build_test_client(
     tmp_path,
     monkeypatch,
     *,
     create_default_workspace=True,
+    manager=None,
 ):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     if create_default_workspace:
@@ -285,7 +299,7 @@ def _build_test_client(
     runtime = SimpleNamespace(
         short_io=_InlinePool(),
         external_io=_InlinePool(),
-        manager=_AvailableManager(),
+        manager=manager or _AvailableManager(),
     )
     app.state.runtime_container = runtime
     app.state.agent_execution_runtime = runtime
@@ -348,6 +362,51 @@ def test_update_session_pinned_state_returns_404_for_missing_session(tmp_path, m
 
     assert response.status_code == 404
     assert response.json()["error"] == "Session not found"
+
+
+def test_delete_session_removes_stores_after_runtime_guard(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    chat_store = _FakeChatStore(_FakeSession("sess-delete"))
+    execution_store = _FakeExecutionStore()
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+
+    response = client.delete(
+        "/agentic/sessions/sess-delete",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert chat_store.session is None
+    assert execution_store.deleted_sessions == ["sess-delete"]
+
+
+def test_delete_session_preserves_stores_when_run_is_active(tmp_path, monkeypatch):
+    client, headers = _build_test_client(
+        tmp_path,
+        monkeypatch,
+        manager=_BusyManager(),
+    )
+    chat_store = _FakeChatStore(_FakeSession("sess-delete"))
+    execution_store = _FakeExecutionStore()
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+
+    response = client.delete(
+        "/agentic/sessions/sess-delete",
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "SESSION_RUN_ACTIVE"
+    assert response.json()["run_id"] == "run-active"
+    assert chat_store.session is not None
+    assert execution_store.deleted_sessions == []
 
 
 def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypatch):

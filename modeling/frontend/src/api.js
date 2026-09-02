@@ -89,6 +89,23 @@ export const login = (username, password) =>
 export const register = (username, email, password) =>
   api('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) });
 export const me = () => api('/api/me');
+export const getAcceptanceEnvironment = () => api('/api/acceptance');
+export const createAcceptanceScenario = (scenarioId) => api(
+  `/api/acceptance/scenarios/${encodeURIComponent(scenarioId)}/create`,
+  { method: 'POST', body: '{}' },
+);
+export const armAcceptanceFault = (faultId) => api(
+  `/api/acceptance/faults/${encodeURIComponent(faultId)}/arm`,
+  { method: 'POST', body: '{}' },
+);
+export const closeAcceptanceFault = (faultId) => api(
+  `/api/acceptance/faults/${encodeURIComponent(faultId)}/close`,
+  { method: 'POST', body: '{}' },
+);
+export const closeAllAcceptanceFaults = () => api(
+  '/api/acceptance/faults/close-all',
+  { method: 'POST', body: '{}' },
+);
 export const listProjects = () => api('/api/projects');
 export const listProjectMembers = (id) => api(`/api/projects/${encodeURIComponent(id)}/members`);
 export const setProjectMember = (id, username, role) => api(`/api/projects/${encodeURIComponent(id)}/members`, {
@@ -98,8 +115,24 @@ export const createProject = (input) => api('/api/projects', { method: 'POST', b
 export const deleteProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`, {
   method: 'DELETE', body: JSON.stringify({ confirmed: true }),
 });
-export const importPackageWorkspace = (file) => {
+export const startProjectTransferExport = (id) => api(
+  `/api/projects/${encodeURIComponent(id)}/transfer-exports`,
+  { method: 'POST', body: '{}' },
+);
+export const startProjectTransferImport = (file) => {
   const form = new FormData();
+  form.append('file', file);
+  return api('/api/project-transfers/imports', { method: 'POST', body: form });
+};
+export const getProjectTransferJob = (jobId) => api(
+  `/api/project-transfers/jobs/${encodeURIComponent(jobId)}`,
+);
+export const downloadProjectTransfer = async (jobId) => requireOkResponse(await authFetch(
+  `/api/project-transfers/jobs/${encodeURIComponent(jobId)}/download`,
+));
+export const importPackageWorkspace = (file, packageName = '') => {
+  const form = new FormData();
+  if (String(packageName || '').trim()) form.append('package_name', String(packageName).trim());
   form.append('file', file);
   return api('/api/package-workspaces/import', { method: 'POST', body: form });
 };
@@ -148,6 +181,7 @@ const P = (id) => `/api/projects/${encodeURIComponent(id)}`;
 export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent/package-data-source`, {
   method: 'PUT', body: JSON.stringify({ dataSourceType }),
 });
+export const getPackageDataSource = (id) => api(`${P(id)}/agent/package-data-source`);
 export const getPackage = (id) => api(`${P(id)}/package`);
 export const getPackageFile = (id, path, options = {}) => api(
   `${P(id)}/package/file?path=${encodeURIComponent(path)}`,

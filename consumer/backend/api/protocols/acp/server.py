@@ -20,8 +20,13 @@ from agent.runtime.contracts import (
     RunStatus as CanonicalRunStatus,
     RuntimeInvocationContext,
     TERMINAL_RUN_STATUSES,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
-from agent.runtime.errors import RunNotFoundError, SessionBusyError
+from agent.runtime.errors import (
+    RunNotFoundError,
+    SessionBusyError,
+    WorkspaceUnavailableError,
+)
 from api.auth.auth import (
     AuthUser,
     authenticate_user,
@@ -343,7 +348,7 @@ async def _admit_run(
             interaction_response=(
                 dict(interaction_response) if interaction_response is not None else None
             ),
-            concurrency_limit=100 if user.role == "admin" else 1,
+            concurrency_limit=USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
             timeout_seconds=float(max(1, get_config().acp.run.timeout)),
         )
         try:
@@ -673,8 +678,12 @@ async def create_run(
             context_values=context_values,
             lang=str(payload.get("lang") or "").strip() or None,
         )
-    except (ValueError, SessionBusyError) as exc:
-        status_code = 409 if isinstance(exc, SessionBusyError) else 400
+    except (ValueError, SessionBusyError, WorkspaceUnavailableError) as exc:
+        status_code = (
+            409
+            if isinstance(exc, (SessionBusyError, WorkspaceUnavailableError))
+            else 400
+        )
         return JSONResponse({"detail": str(exc)}, status_code=status_code)
     return JSONResponse(
         _response_from_snapshot(snapshot, external_run_id=external_run_id).model_dump(mode="json"),
@@ -828,7 +837,7 @@ async def execute_stream(
     payload = await read_optional_json_object(request)
     try:
         created = await _create_from_payload(request, payload, user, workspace_id)
-    except (ValueError, SessionBusyError) as exc:
+    except (ValueError, SessionBusyError, WorkspaceUnavailableError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
     if isinstance(created, JSONResponse):
         return created

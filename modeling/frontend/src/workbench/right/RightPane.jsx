@@ -13,6 +13,7 @@ import Composer from './Composer.jsx';
 import Icon from '../ui/Icon.jsx';
 import { userFacingText } from '../lib/userFacingText.js';
 import SemanticBindingPanel from '../../SemanticBindingPanel.jsx';
+import { ASSISTANT_SCROLL_ACTION, assistantScrollAction } from './scrollPolicy.js';
 
 const selUser = (s) => s.userMessages;
 const selScene = (s) => s.scene;
@@ -25,13 +26,15 @@ const selInteraction = (s) => s.interaction;
 const selProjectId = (s) => s.projectId;
 const selRevision = (s) => s.revision;
 const selPackageVersion = (s) => s.packageVersion;
+const selStatusText = (s) => s.statusText;
+const selReplayUntilSeq = (s) => s.replayUntilSeq;
 const selMaterials = (s) => s.materials;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
     const interaction = s.messages[index]?.blocks?.find((block) => block.interaction)?.interaction;
-    if (interaction && interaction.status !== 'answered') return interaction.id || s.messages[index].id;
+    if (interaction?.status === 'pending') return interaction.id || s.messages[index].id;
   }
-  return s.interaction?.status !== 'answered' ? s.interaction?.id || '' : '';
+  return s.interaction?.status === 'pending' ? s.interaction?.id || '' : '';
 };
 const useTailLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
@@ -49,6 +52,8 @@ export default function RightPane() {
   const projectId = useStore(store, selProjectId);
   const revision = useStore(store, selRevision);
   const packageVersion = useStore(store, selPackageVersion);
+  const statusText = useStore(store, selStatusText);
+  const replayUntilSeq = useStore(store, selReplayUntilSeq);
   const materials = useStore(store, selMaterials);
   const interactionId = useStore(store, selPendingInteractionMessageId);
   const scroller = useRef(null);
@@ -56,6 +61,11 @@ export default function RightPane() {
   const followingTail = useRef(true);
   const draggingScroll = useRef(false);
   const previousInteractionId = useRef('');
+  const previousProjectId = useRef(projectId);
+  const wasReplayingHistory = useRef(false);
+  const replayingHistory = !demo && Number(replayUntilSeq) > 0;
+  const replayingHistoryRef = useRef(replayingHistory);
+  replayingHistoryRef.current = replayingHistory;
   const base = demo ? CONVERSATIONS[scene] || [] : messages;
   const streamTail = messages.map((message) => {
     const blocks = (message.blocks || []).map((block) => (
@@ -75,14 +85,51 @@ export default function RightPane() {
   const restoredInteractionMessage = interaction && !interactionInStream
     ? messageForInteraction(interaction)
     : null;
+  const interactionGroupCount = interaction?.kind === 'confirmation'
+    ? (interaction.payload?.changeGroups || []).length
+    : 0;
+  const focusPendingInteraction = (behavior = 'smooth') => {
+    const element = scroller.current;
+    const target = [...(stream.current?.querySelectorAll('[data-interaction-id]') || [])]
+      .find((item) => item.dataset.interactionId === interactionId);
+    if (!element || !target) return;
+    followingTail.current = false;
+    const top = Math.max(0, target.offsetTop - 12);
+    if (behavior === 'instant') element.scrollTop = top;
+    else element.scrollTo({ top, behavior: 'smooth' });
+    target.querySelector('button, input, textarea')?.focus({ preventScroll: true });
+  };
 
   useTailLayoutEffect(() => {
+    const projectChanged = projectId !== previousProjectId.current;
+    if (projectChanged) {
+      previousProjectId.current = projectId;
+      previousInteractionId.current = '';
+      followingTail.current = true;
+      draggingScroll.current = false;
+      wasReplayingHistory.current = false;
+    }
+    const historyJustFinished = wasReplayingHistory.current && !replayingHistory;
+    wasReplayingHistory.current = replayingHistory;
     const newInteraction = Boolean(interactionId && interactionId !== previousInteractionId.current);
+    const scrollAction = assistantScrollAction({
+      replayingHistory,
+      historyJustFinished,
+      followingTail: followingTail.current,
+      hasNewInteraction: newInteraction,
+    });
+    if (scrollAction === ASSISTANT_SCROLL_ACTION.HOLD) return;
     previousInteractionId.current = interactionId;
-    if (!followingTail.current && !newInteraction) return;
-    if (newInteraction) followingTail.current = true;
+    if (scrollAction === ASSISTANT_SCROLL_ACTION.FOCUS_INSTANT
+      || scrollAction === ASSISTANT_SCROLL_ACTION.FOCUS_SMOOTH) {
+      followingTail.current = false;
+      requestAnimationFrame(() => focusPendingInteraction(
+        scrollAction === ASSISTANT_SCROLL_ACTION.FOCUS_INSTANT ? 'instant' : 'smooth',
+      ));
+      return;
+    }
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
-  }, [user.length, scene, streamTail, activityTail, purposeReviewTail, interactionId]);
+  }, [user.length, scene, streamTail, activityTail, purposeReviewTail, interactionId, projectId, replayingHistory]);
 
   useTailLayoutEffect(() => {
     const element = scroller.current;
@@ -90,7 +137,9 @@ export default function RightPane() {
     if (!element || !content) return undefined;
 
     const scrollToTail = () => {
-      if (followingTail.current) element.scrollTop = element.scrollHeight;
+      if (!replayingHistoryRef.current && followingTail.current) {
+        element.scrollTop = element.scrollHeight;
+      }
     };
     scrollToTail();
 
@@ -100,13 +149,45 @@ export default function RightPane() {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    const focusPending = (event) => {
+      followingTail.current = true;
+      const interactionId = String(event.detail?.interactionId || '');
+      const pending = [...(stream.current?.querySelectorAll('[data-pending-interaction]') || [])]
+        .find((element) => !interactionId || element.dataset.pendingInteraction === interactionId);
+      if (pending) {
+        pending.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        pending.querySelector('button:not([disabled]), textarea:not([disabled]), input:not([disabled])')
+          ?.focus({ preventScroll: true });
+        return;
+      }
+      if (scroller.current) scroller.current.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
+    };
+    window.addEventListener('mw-pending-attention', focusPending);
+    return () => window.removeEventListener('mw-pending-attention', focusPending);
+  }, []);
+
   return (
     <>
       <div className="wb-head">
         <b>建模助手</b>
+        {statusText && <span className="wb-head-status ellip" title={statusText}>{userFacingText(statusText)}</span>}
       </div>
 
-      <div ref={scroller} className="wb-scroll"
+      {interaction && (
+        <button type="button" className="wb-current-task" onClick={() => focusPendingInteraction('smooth')}>
+          <span className="wb-current-task-dot" aria-hidden="true" />
+          <span>
+            <b>当前待处理决定</b>
+            <small>{interactionGroupCount
+              ? `1 个决定 · ${interactionGroupCount} 组变更`
+              : userFacingText(interaction.payload?.question || '需要你确认后才能继续')}</small>
+          </span>
+          <Icon name="arrow" size={12} />
+        </button>
+      )}
+
+      <div ref={scroller} className="wb-scroll" aria-busy={replayingHistory || undefined}
         onWheel={(event) => { if (event.deltaY < 0) followingTail.current = false; }}
         onPointerDown={() => { draggingScroll.current = true; }}
         onPointerUp={() => { draggingScroll.current = false; }}
@@ -132,12 +213,15 @@ export default function RightPane() {
           {error && (
             <div className="card card-stale" role="alert">
               <div className="card-h">
-                <b>有一项内容未能读取</b>
+                <b>{errorTitle(error)}</b>
                 <span className="spacer" />
                 <button className="btn btn-ghost" aria-label="关闭错误提示" title="关闭"
                   onClick={actions.clearError}><Icon name="x" size={13} /></button>
               </div>
-              <div className="card-b t-sm">{userFacingText(error)}</div>
+              <div className="card-b t-sm">
+                <div>{userFacingText(errorMessage(error))}</div>
+                {typeof error === 'object' && error?.recovery && <small className="wb-error-recovery">{userFacingText(error.recovery)}</small>}
+              </div>
             </div>
           )}
           {!demo && projectId && revision && packageVersion && (
@@ -235,7 +319,9 @@ function Message({ m }) {
   const system = m.role === 'system';
   const at = m.at || formatTime(m.createdAt);
   return (
-    <div className={`wb-msg${mine ? ' wb-msg-user' : ''}`}>
+    <div className={`wb-msg${mine ? ' wb-msg-user' : ''}${m.sendFailed ? ' wb-msg-failed' : ''}${m.incomplete ? ' wb-msg-incomplete' : ''}`}
+      data-message-id={m.id}
+      data-interaction-id={m.blocks?.find((block) => block.interaction)?.interaction?.id || undefined}>
       <div className="wb-who">
         <b>{mine ? '你' : system ? '资料' : '助手'}</b>{at ? ` · ${at}` : ''}
         {m.focus && (
@@ -248,15 +334,31 @@ function Message({ m }) {
         )}
       </div>
       {mine ? (
-        <div className="wb-bubble">{messageText(m.blocks?.[0], false)}</div>
+        <><div className="wb-bubble">{messageText(m.blocks?.[0], false)}</div>
+          {m.sendFailed && <div className="wb-send-failed" role="status">未发送，内容已保留在输入框</div>}</>
       ) : (
         <div className="wb-msg-assistant-body">
           {m.blocks.map((b, i) => <Block key={i} block={b} />)}
           {m.streaming && <span className="wb-stream-cursor" aria-label="助手正在输出" />}
+          {m.incomplete && <div className="wb-incomplete-note" role="status">这段回复因中断未完成，不作为修改或确认结论</div>}
         </div>
       )}
     </div>
   );
+}
+
+function errorMessage(error) {
+  return typeof error === 'object' && error ? error.message : error;
+}
+
+function errorTitle(error) {
+  const scope = typeof error === 'object' && error ? error.scope : '';
+  return ({
+    send: '消息没有发送成功',
+    write: '修改没有保存成功',
+    confirmation: '确认没有提交成功',
+    evaluation: '评测操作没有完成',
+  })[scope] || '有一项内容暂时不可用';
 }
 
 export function messageText(block = {}, sanitize = true) {

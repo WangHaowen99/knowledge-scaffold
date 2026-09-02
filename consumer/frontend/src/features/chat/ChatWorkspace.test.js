@@ -68,6 +68,29 @@ test('unknown data source summary does not get treated as unconfigured', () => {
   assert.equal(status.actionLabel, '查看数据源');
 });
 
+test('recoverable failed turns expose one continue action through the current chat flow', () => {
+  assert.equal(
+    chatSource.includes('onRecoveryAction={handleRecoveryAction}'),
+    true,
+  );
+  assert.equal(
+    chatSource.includes('await sendAgentic(message, currentChatId'),
+    true,
+  );
+  assert.equal(
+    conversationViewSource.includes('findVisibleWorkflowRecoveryIndex(messages)'),
+    true,
+  );
+  assert.equal(
+    conversationViewSource.includes("turn.recovery.label"),
+    true,
+  );
+  assert.equal(
+    chatCssSource.includes('.mwr .run-status-recovery'),
+    true,
+  );
+});
+
 test('chat data source action opens the selected ontology data tab', () => {
   assert.equal(chatSource.includes('getChatDataSourceStatus(selectedOntology)'), true);
   assert.equal(chatSource.includes('onConfigureDataSource?.(selectedOntology.id)'), true);
@@ -121,6 +144,19 @@ test('session history requests bounded pages and exposes a deduplicating load-mo
   assert.equal(chatSessionsSource.includes('loadMoreSessions'), true);
   assert.equal(sidebarSource.includes('hasMoreSessions'), true);
   assert.equal(sidebarSource.includes('loadMoreSessions'), true);
+});
+
+test('chat deletion asks the backend before clearing local stream state', () => {
+  const start = chatSessionsSource.indexOf('const deleteChat = useCallback');
+  const end = chatSessionsSource.indexOf('const loadSessions = useCallback', start);
+  const deletionSource = chatSessionsSource.slice(start, end);
+
+  assert.equal(deletionSource.includes('stopStreamForSession'), false);
+  assert.equal(
+    deletionSource.indexOf("scopedFetch(`/agentic/sessions/${id}`, { method: 'DELETE' }")
+      < deletionSource.indexOf('clearCacheForSession(id)'),
+    true,
+  );
 });
 
 test('agent stream ownership remains mounted while the chat surface changes', () => {

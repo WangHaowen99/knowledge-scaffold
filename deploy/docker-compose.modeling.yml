@@ -16,6 +16,7 @@ services:
     restart: unless-stopped
     ports:
       - "${MODELING_PORT:-5100}:5100"
+      - "${MODELING_MCP_PORT:-5188}:5188"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -34,10 +35,21 @@ services:
       # 可选显式主密钥；为空时在 DATA_DIR 自动生成，生产仍建议由 secret manager 注入
       - MODELING_LLM_CONFIG_ENCRYPTION_KEY=${MODELING_LLM_CONFIG_ENCRYPTION_KEY:-}
       - MODELING_SERVICE_TOKEN=${MODELING_SERVICE_TOKEN:-}
+      - MODELING_MCP_HOST=0.0.0.0
+      - MODELING_MCP_PORT=5188
       - MODELING_MCP_PUBLIC_BASE_URL=${MODELING_MCP_PUBLIC_BASE_URL:-http://localhost:5188}
       - MODELING_MCP_TOKEN_SECRET=${MODELING_MCP_TOKEN_SECRET:-}
       - MODELING_MCP_TRANSPORT=${MODELING_MCP_TRANSPORT:-both}
+      - MODELING_MCP_ALLOWED_ORIGINS=${MODELING_MCP_ALLOWED_ORIGINS:-http://localhost:5100,http://127.0.0.1:5100}
       - MODELING_MCP_OPERATION_RULE_ENABLED=${MODELING_MCP_OPERATION_RULE_ENABLED:-false}
+      - MODELING_ACCEPTANCE_MODE=${MODELING_ACCEPTANCE_MODE:-false}
+      - MODELING_MCP_MAX_SSE_SESSIONS=${MODELING_MCP_MAX_SSE_SESSIONS:-10000}
+      - MODELING_MCP_MAX_SSE_SESSIONS_PER_TOKEN=${MODELING_MCP_MAX_SSE_SESSIONS_PER_TOKEN:-20}
+      - MODELING_MCP_MAX_SSE_SESSIONS_PER_PROJECT=${MODELING_MCP_MAX_SSE_SESSIONS_PER_PROJECT:-200}
+      - MODELING_MCP_MAX_SSE_SESSIONS_PER_USER=${MODELING_MCP_MAX_SSE_SESSIONS_PER_USER:-100}
+      - MODELING_MCP_MAX_SSE_SESSIONS_PER_IP=${MODELING_MCP_MAX_SSE_SESSIONS_PER_IP:-100}
+      - MODELING_MCP_SSE_MAX_LIFETIME_SECONDS=${MODELING_MCP_SSE_MAX_LIFETIME_SECONDS:-28800}
+      - MODELING_MCP_SSE_IDLE_TIMEOUT_SECONDS=${MODELING_MCP_SSE_IDLE_TIMEOUT_SECONDS:-1800}
       # 登录/评测都走 consumer；backend 是 consumer compose 里的服务名
       - AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://auth-server:5056}
       - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-http://auth-server:5056}
@@ -61,36 +73,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
-
-  modeling-mcp:
-    build:
-      context: ../modeling
-      dockerfile: Dockerfile
-    image: mw-modeling:${MODELING_TAG:-latest}
-    container_name: mw-modeling-mcp
-    restart: unless-stopped
-    command: ["node", "--experimental-sqlite", "dist/mcp-server.js"]
-    ports:
-      - "${MODELING_MCP_PORT:-5188}:5188"
-    environment:
-      - DATA_DIR=/data
-      - MODELING_MCP_HOST=0.0.0.0
-      - MODELING_MCP_PORT=5188
-      - MODELING_MCP_PUBLIC_BASE_URL=${MODELING_MCP_PUBLIC_BASE_URL:-http://localhost:5188}
-      - MODELING_MCP_TOKEN_SECRET=${MODELING_MCP_TOKEN_SECRET:-}
-      - MODELING_MCP_TRANSPORT=${MODELING_MCP_TRANSPORT:-both}
-      - MODELING_MCP_ALLOWED_ORIGINS=${MODELING_MCP_ALLOWED_ORIGINS:-http://localhost:5100,http://127.0.0.1:5100}
-      - MODELING_MCP_OPERATION_RULE_ENABLED=${MODELING_MCP_OPERATION_RULE_ENABLED:-false}
-    volumes:
-      - modeling-data:/data
-    networks:
-      - consumer-net
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5188/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
       start_period: 10s
 
   modeling-nl2sql:

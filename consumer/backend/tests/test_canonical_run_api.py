@@ -31,6 +31,7 @@ from agent.runtime.contracts import (
     RunStatus,
     RuntimeInvocationContext,
     TERMINAL_RUN_STATUSES,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import SessionBusyError
 from agent.runtime.event_bus import AsyncEventBus
@@ -422,6 +423,10 @@ def test_post_run_allocates_server_ids_and_exact_retry_starts_one_task(
                 harness.manager.started_contexts[0].requested_operation_key
                 == "operation_demo"
             )
+            assert (
+                harness.manager.started_contexts[0].concurrency_limit
+                == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+            )
             assert created["links"] == {
                 "self": "/agentic/runs/{}".format(created["run_id"]),
                 "events": "/agentic/runs/{}/events".format(created["run_id"]),
@@ -572,6 +577,7 @@ def test_sync_run_waits_for_terminal_and_returns_legacy_trace(monkeypatch, tmp_p
         assert context.agent_mode == "thinking"
         assert context.llm_request_mode == "sync"
         assert context.requested_operation_key == "operation_demo"
+        assert context.concurrency_limit == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
         assert context.timeout_seconds is None
         history = harness.execution_store.get_session_history(
             "session_sync_contract"

@@ -463,6 +463,7 @@ export interface SpecScript {
     defaultValue?: string | number | boolean;
     description?: string;
     multiple?: boolean;
+    action?: 'store_true' | 'store_false';
   }[];
   outputs: { key: string; type: string; description?: string }[];
   boundaries: string[];

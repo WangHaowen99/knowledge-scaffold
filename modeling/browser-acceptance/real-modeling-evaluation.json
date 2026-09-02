@@ -1,0 +1,67 @@
+{
+  "name": "参考石油炼化0828新建石油炼化0831并完成建模评测",
+  "viewport": { "width": 1440, "height": 900 },
+  "steps": [
+    { "action": "goto", "path": "/" },
+    { "action": "fill", "selector": "#login-username", "valueEnv": "E2E_USERNAME" },
+    { "action": "fill", "selector": "#login-password", "valueEnv": "E2E_PASSWORD" },
+    { "action": "click", "text": "登 录", "exact": true },
+    { "action": "waitFor", "text": "项目与知识包", "timeoutMs": 30000 },
+
+    { "action": "click", "text": "石油炼化0828", "exact": true, "waitForSelector": ".tabs-fill", "maxAttempts": 3, "timeoutMs": 30000 },
+    { "action": "waitFor", "selector": "textarea[aria-label=\"给建模助手发送消息\"]", "timeoutMs": 60000 },
+    { "action": "waitFor", "selector": ".tabs-fill", "timeoutMs": 120000 },
+    { "action": "assertLayout" },
+    { "action": "screenshot", "name": "reference-0828" },
+    { "action": "click", "text": "项目", "exact": true },
+    { "action": "waitFor", "text": "项目与知识包", "timeoutMs": 30000 },
+
+    { "action": "click", "text": "新建项目", "exact": true },
+    { "action": "waitFor", "text": "新建建模项目", "timeoutMs": 30000 },
+    { "action": "fill", "selector": "#pn", "valueEnv": "E2E_PROJECT_NAME" },
+    { "action": "fill", "selector": "#pg", "value": "参考石油炼化0828项目，对月度排产计划进行安全生产可行性校验与经济效益评估，覆盖装置负荷、物料约束、检修窗口、质量边界和效益指标。" },
+    { "action": "upload", "triggerSelector": "[aria-label=\"选择要上传的建模资料\"]", "filesEnv": "E2E_MATERIAL_FILES", "timeoutMs": 30000 },
+    { "action": "click", "text": "全文精读", "exact": true },
+    { "action": "assertText", "text": "已选 1 份资料" },
+    { "action": "click", "text": "开始建模", "exact": true },
+    { "action": "waitFor", "selector": "textarea[aria-label=\"给建模助手发送消息\"]", "timeoutMs": 120000 },
+    { "action": "guidedConstruction", "timeoutMs": 7200000 },
+    { "action": "waitFor", "selector": ".wb-phase-pill", "timeoutMs": 60000 },
+    { "action": "assertText", "selector": ".wb-phase-pill", "text": "确定性验证" },
+    { "action": "assertNotText", "text": "Traceback" },
+    { "action": "assertLayout" },
+    { "action": "screenshot", "name": "0831-modeling-complete" },
+
+    { "action": "click", "text": "评测", "exact": true },
+    { "action": "waitFor", "text": "评测数据源", "timeoutMs": 60000 },
+    { "action": "click", "text": "使用业务数据源", "exact": true },
+    { "action": "click", "text": "保存并继续", "exact": true },
+    { "action": "waitFor", "text": "真实业务用例", "timeoutMs": 60000 },
+
+    { "action": "fill", "selector": "textarea[placeholder=\"实际会向知识助手提出的问题\"]", "value": "月度排产计划应按什么顺序完成安全生产可行性校验？" },
+    { "action": "fill", "selector": "textarea[placeholder=\"关键结论、步骤或数值\"]", "value": "先核对计划与装置能力，再检查物料和平衡约束，然后检查检修窗口与连续运行要求，最后核验产品质量边界并汇总阻断项。" },
+    { "action": "click", "text": "添加", "exact": true },
+    { "action": "waitFor", "text": "月度排产计划应按什么顺序完成安全生产可行性校验？", "timeoutMs": 30000 },
+
+    { "action": "fill", "selector": "textarea[placeholder=\"实际会向知识助手提出的问题\"]", "value": "排产负荷超过装置设计能力或与检修窗口冲突时应如何处理？" },
+    { "action": "fill", "selector": "textarea[placeholder=\"关键结论、步骤或数值\"]", "value": "该计划不得直接通过，应标记阻断原因，调整加工量、时间窗口或装置分配，重新校验全部受影响约束后再提交。" },
+    { "action": "click", "text": "添加", "exact": true },
+    { "action": "waitFor", "text": "排产负荷超过装置设计能力或与检修窗口冲突时应如何处理？", "timeoutMs": 30000 },
+
+    { "action": "fill", "selector": "textarea[placeholder=\"实际会向知识助手提出的问题\"]", "value": "月度排产计划的预计贡献毛利如何计算？" },
+    { "action": "fill", "selector": "textarea[placeholder=\"关键结论、步骤或数值\"]", "value": "按各产品合格产量乘以单位边际贡献求和，再扣除原料、能源、切换和异常处置等增量成本；缺少成本或价格依据时不得编造结果。" },
+    { "action": "click", "text": "添加", "exact": true },
+    { "action": "waitFor", "text": "月度排产计划的预计贡献毛利如何计算？", "timeoutMs": 30000 },
+    { "action": "assertCount", "selector": ".wb-eval-case", "expectedCount": 3 },
+
+    { "action": "click", "text": "开始正式评测", "exact": true },
+    { "action": "waitFor", "text": "正式评测已创建，只会运行这一轮", "timeoutMs": 60000 },
+    { "action": "assertText", "selector": ".wb-eval-round-detail", "text": "已完成", "timeoutMs": 1800000 },
+    { "action": "assertCount", "selector": ".wb-eval-result", "expectedCount": 3 },
+    { "action": "assertNotText", "text": "本轮评测没有完成" },
+    { "action": "assertNotText", "text": "Traceback" },
+    { "action": "assertNotText", "text": "ECONNREFUSED" },
+    { "action": "assertLayout" },
+    { "action": "screenshot", "name": "0831-evaluation-complete" }
+  ]
+}

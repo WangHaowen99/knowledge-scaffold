@@ -49,7 +49,7 @@ import * as m2 from './workflow/m2.js';
 import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
-import { parsePackageArchive } from './workflow/package-import.js';
+import { parsePackageArchive, renameImportedPackageArchive } from './workflow/package-import.js';
 import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
@@ -139,6 +139,7 @@ import { GraphImportInputError } from './graph-import/errors.js';
 import {
   applyOptimizations,
   normalizeOptimizationSuggestionTargets,
+  optimizationSuggestionDedupeKey,
   OptimizationExpertReviewRequiredError,
   proposeOptimizations,
   validateOptimizationSuggestions,
@@ -161,7 +162,7 @@ import {
   optimizationCandidateApplyResponse,
   retireOptimizationCandidatesForDiagnosisRerun,
 } from './evaluation/optimization-candidate.js';
-import { buildLlm } from './llm/provider.js';
+import { buildTaskLlm } from './llm/provider.js';
 import { runWithLlmRequest } from './llm/user-context.js';
 import { registerAdminLlmRoutes } from './settings/admin-llm-routes.js';
 import { testLlmConnection } from './settings/llm-connection-test.js';
@@ -216,6 +217,9 @@ import {
 } from './workflow/semantic-binding-service.js';
 import { validateTermTables } from './workflow/term-table.js';
 import { getProjectPackageDataSourceSelection } from './workflow/package-data-source-selection.js';
+import { registerAcceptanceRoutes } from './acceptance/routes.js';
+import { takeAcceptanceFault } from './acceptance/faults.js';
+import { registerProjectTransferRoutes } from './projects/project-transfer-routes.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
   `semantic_binding_ignored:${projectId}:${revision}`;
@@ -226,6 +230,39 @@ function isSemanticBindingIgnored(projectId: string, revision: string): boolean 
 
 function ignoreSemanticBinding(projectId: string, revision: string): void {
   setSetting(semanticBindingIgnoreKey(projectId, revision), new Date().toISOString());
+}
+
+function normalizedPackageName(value: unknown): string {
+  return String(value ?? '').trim().normalize('NFKC').toLowerCase();
+}
+
+function packageNameCandidate(baseName: string, sequence: number): string {
+  const suffix = `（${sequence}）`;
+  const availableLength = Math.max(1, 200 - [...suffix].length);
+  const prefix = [...baseName].slice(0, availableLength).join('').trimEnd();
+  return `${prefix}${suffix}`;
+}
+
+function visiblePackageNameConflict(
+  username: string,
+  attemptedName: string,
+  originalName: string,
+): { originalName: string; attemptedName: string; candidates: string[] } | null {
+  const occupied = new Set(
+    listProjects(username)
+      .filter((project) => project.kind === 'package')
+      .map((project) => normalizedPackageName(project.name)),
+  );
+  if (!occupied.has(normalizedPackageName(attemptedName))) return null;
+
+  const original = String(originalName ?? '').trim();
+  const baseName = original.replace(/\s*[（(]\d+[）)]$/u, '').trim() || original;
+  const candidates: string[] = [];
+  for (let sequence = 2; sequence < 10_002 && candidates.length < 3; sequence += 1) {
+    const candidate = packageNameCandidate(baseName, sequence);
+    if (!occupied.has(normalizedPackageName(candidate))) candidates.push(candidate);
+  }
+  return { originalName: original, attemptedName, candidates };
 }
 
 function semanticBindingPreview(projectId: string, revision: string, spec: any, tables: any[]) {
@@ -605,6 +642,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     registerAgentLlmConfigRoutes(r);
     registerProjectMcpManagementRoutes(r);
+    registerAcceptanceRoutes(r);
+    registerProjectTransferRoutes(r);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
 
@@ -818,10 +857,30 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
 
       let imported: ReturnType<typeof parsePackageArchive>;
+      let originalPackageName = '';
       try {
         imported = parsePackageArchive(new Uint8Array(await file.toBuffer()));
+        originalPackageName = imported.spec.name;
+        const requestedName = String((file.fields as any)?.package_name?.value ?? '').trim();
+        if (requestedName) imported = renameImportedPackageArchive(imported, requestedName);
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+
+      const nameConflict = visiblePackageNameConflict(
+        req.user!.username,
+        imported.spec.name,
+        originalPackageName,
+      );
+      if (nameConflict) {
+        return reply.code(409).send({
+          error: (
+            `知识包名称「${imported.spec.name}」已存在，不可重复导入。`
+            + '请选择候选名称或输入新名称后继续导入。'
+          ),
+          code: 'PACKAGE_NAME_CONFLICT',
+          conflict: nameConflict,
+        });
       }
 
       const project = createProject({
@@ -839,7 +898,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           spec: imported.spec,
           coverage: imported.coverage,
           files: imported.rawFiles,
-          note: `导入 ${file.filename}`,
+          note: originalPackageName === imported.spec.name
+            ? `导入 ${file.filename}`
+            : `导入 ${file.filename}，名称从「${originalPackageName}」调整为「${imported.spec.name}」`,
           action: {
             cause: 'package_import',
             summary: `导入知识包 ${imported.spec.name}`,
@@ -2498,13 +2559,47 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         ? backgroundAuthSessions.remember(req.user!.username, token, refreshToken)
         : backgroundAuthSessions.get(req.user!.username);
       try {
+        const acceptanceRunId = `evaluation:${c.p.id}:${Date.now()}`;
+        const holdUntilStopped = takeAcceptanceFault(req.user!.username, 'F13', acceptanceRunId);
+        const environmentFailure = holdUntilStopped
+          ? null
+          : takeAcceptanceFault(req.user!.username, 'F14', acceptanceRunId);
+        const acceptanceDependencies = holdUntilStopped ? {
+          runRound: async ({ roundId, signal }: { roundId: string; signal: AbortSignal }) => {
+            m3repo.roundPhase(roundId, 'cases');
+            m3repo.roundCaseStarted(roundId);
+            m3repo.roundLog(roundId, '浏览器验收：评测保持运行，等待用户从页面点击停止');
+            await new Promise<void>((resolve, reject) => {
+              if (signal.aborted) { reject(signal.reason); return; }
+              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            });
+          },
+        } : environmentFailure ? {
+          runRound: async ({ roundId, projectId }: { roundId: string; projectId: string; signal: AbortSignal }) => {
+            const cases = m3repo.listTestcases(projectId).filter((item) => item.source === 'manual');
+            m3repo.roundPhase(roundId, 'cases');
+            for (const [index, testcase] of cases.entries()) {
+              m3repo.roundCaseStarted(roundId);
+              m3repo.addResult(roundId, {
+                testcaseId: testcase.id,
+                question: testcase.question,
+                groundTruth: testcase.groundTruth,
+                verdict: 'error',
+                reason: '浏览器验收注入的合成运行环境错误；不得据此修改知识包',
+              });
+              m3repo.roundProgress(roundId, index + 1, 0);
+            }
+            m3repo.roundLog(roundId, '全部用例遇到运行环境错误，知识包和用例均保持不变');
+            m3repo.finishRound(roundId, 'failed');
+          },
+        } : undefined;
         const { roundId } = await startCurrentEvaluation({
           projectId: c.p.id,
           owner: req.user!.username,
           token,
           refreshToken,
           authSession,
-        });
+        }, acceptanceDependencies);
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
       } catch (e) {
@@ -2583,7 +2678,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             tables: c.ctx.tables,
             documents: c.ctx.documents,
             roundFailure: round.status === 'failed' ? round.log : undefined,
-          }, buildLlm());
+          }, buildTaskLlm({ maxTokensCap: 12_000 }));
           const diagnoses = diagnosisRepo.replaceFailureDiagnoses(
             c.p.id, round.id, round.packageVersion, version.revisionOid, report.diagnoses,
           );
@@ -2610,6 +2705,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return {
         diagnoses,
         canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
+        runningOperation: inFlight.current(`${c.p.id}:optimize`),
+        runningTask: inFlight.status(`${c.p.id}:optimize`),
       };
     });
     // 评测发现的知识包缺陷回流建模：登记成 evaluation_repair 任务并在助手对话里给出下一步。
@@ -2668,18 +2765,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
       }
       try {
-        const result = aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
-          roundId: round.id,
-          packageVersion: round.packageVersion,
-          packageRevisionOid: latest.revision.oid,
-          defects: diagnoses.map((diagnosis) => ({
-            id: diagnosis.id,
-            title: diagnosis.title,
-            summary: diagnosis.summary,
-            target: diagnosis.relatedQuestions[0],
-            suggestedAction: diagnosis.suggestedAction,
-          })),
-        });
+        // 统一 Agent 运行时不维护 legacy AI construction graph；其修缮流程由优化候选
+        // 和 Agent run 承载。Legacy 项目仍登记 evaluation_repair 任务与助手消息。
+        const result = c.p.runtime === 'legacy'
+          ? aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
+            roundId: round.id,
+            packageVersion: round.packageVersion,
+            packageRevisionOid: latest.revision.oid,
+            defects: diagnoses.map((diagnosis) => ({
+              id: diagnosis.id,
+              title: diagnosis.title,
+              summary: diagnosis.summary,
+              target: diagnosis.relatedQuestions[0],
+              suggestedAction: diagnosis.suggestedAction,
+            })),
+          })
+          : null;
         const optimizableIds = diagnoses
           .filter((diagnosis) => !diagnosis.blocking)
           .map((diagnosis) => diagnosis.id);
@@ -2695,8 +2796,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         }
         const currentDiagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, round.id);
         return {
-          aiConstruction: result.aiConstruction,
-          ...(result.message ? { aiConstructionMessage: result.message } : {}),
+          ...(result ? {
+            aiConstruction: result.aiConstruction,
+            ...(result.message ? { aiConstructionMessage: result.message } : {}),
+          } : {}),
           diagnoses: currentDiagnoses,
           canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(currentDiagnoses),
         };
@@ -2814,9 +2917,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           );
           const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
             .filter((item) => item.status !== 'rejected')
-            .map((item) => `${(item.diagnosisIds ?? []).slice().sort().join(',')}|${item.kind}|${item.target ?? ''}|${item.relatedQuestion ?? item.title}`));
+            .map(optimizationSuggestionDedupeKey));
           const fresh = raw.filter((item) => {
-            const key = `${(item.diagnosisIds ?? []).slice().sort().join(',')}|${item.kind}|${item.target ?? ''}|${item.relatedQuestion ?? item.title}`;
+            const key = optimizationSuggestionDedupeKey(item);
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
@@ -2826,7 +2929,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           );
           return { suggestions };
         } catch (error) {
-          return reply.code(500).send({ error: `优化建议生成失败：${error instanceof Error ? error.message : error}` });
+          const code = (error as any)?.code;
+          return reply.code(code === 'MODEL_REQUEST_TIMEOUT' ? 504 : 500).send({
+            ...(code ? { code } : {}),
+            error: `优化建议生成失败：${error instanceof Error ? error.message : error}`,
+          });
         }
       }, 'propose');
     });
@@ -3027,7 +3134,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
             return reply.code(409).send({ code: error.code, error: error.message });
           }
-          return reply.code(500).send({ error: `优化候选生成失败：${error instanceof Error ? error.message : error}` });
+          const code = (error as any)?.code;
+          return reply.code(code === 'MODEL_REQUEST_TIMEOUT' ? 504 : 500).send({
+            ...(code ? { code } : {}),
+            error: `优化候选生成失败：${error instanceof Error ? error.message : error}`,
+          });
         }
       }, 'apply');
     });

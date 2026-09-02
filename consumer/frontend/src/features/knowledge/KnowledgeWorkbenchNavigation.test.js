@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { JSDOM } from 'jsdom';
 
 const appShellSource = readFileSync(new URL('../../app/AppShell.jsx', import.meta.url), 'utf8');
 const browserSource = readFileSync(new URL('./hooks/useKbBrowser.js', import.meta.url), 'utf8');
@@ -21,6 +22,19 @@ test('the workbench owns package switching and package-list feedback', () => {
   assert.match(workbenchSource, /知识包加载失败/);
   assert.match(workbenchSource, /暂无知识包/);
   assert.match(workbenchSource, /onClick=\{\(\) => retryPackages\(\)\}/);
+});
+
+test('the empty package state is centered in the available workbench canvas', () => {
+  assert.match(workbenchSource, /className="kbx kb-empty-shell"/);
+  const dom = new JSDOM(
+    `<style>${knowledgeCss}</style><div class="mwr"><div class="kbx kb-empty-shell"></div></div>`,
+  );
+  const emptyShell = dom.window.document.querySelector('.kb-empty-shell');
+  const style = dom.window.getComputedStyle(emptyShell);
+
+  assert.equal(style.display, 'grid');
+  assert.equal(style.placeItems, 'center');
+  dom.window.close();
 });
 
 test('package changes clear stale content and directory failures remain recoverable in the workbench', () => {

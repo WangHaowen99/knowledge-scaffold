@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -22,6 +23,10 @@ class StartRunBody(BaseModel):
 class SteerBody(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     purposeReviewCompleted: bool = False
+
+
+class ResumeIssueBody(BaseModel):
+    actionId: str = Field(min_length=1, max_length=100)
 
 
 class AnswerBody(BaseModel):
@@ -75,6 +80,20 @@ class PackageImportEventBody(BaseModel):
     fileCount: int = Field(ge=1, le=100_000)
 
 
+class EvaluationTerminalEventBody(BaseModel):
+    eventId: str = Field(min_length=1, max_length=500)
+    roundId: str = Field(min_length=1, max_length=200)
+    status: str = Field(pattern="^(done|failed|cancelled)$")
+    done: int = Field(ge=0)
+    total: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    finishedAt: str = Field(min_length=1, max_length=100)
+
+
+class ProjectTransferBody(BaseModel):
+    payload: dict[str, Any]
+
+
 def create_app(service: AgentService) -> Starlette:
     async def health(_request: Request) -> JSONResponse:
         return JSONResponse(service.health())
@@ -103,6 +122,16 @@ def create_app(service: AgentService) -> Starlette:
             token=_require_token(request),
             text=body.message,
             purpose_review_completed=body.purposeReviewCompleted,
+        )
+        return JSONResponse(result, status_code=202)
+
+    async def resume_issue(request: Request) -> JSONResponse:
+        body = _validate(ResumeIssueBody, await _body(request))
+        result = await service.resume_issue(
+            project_id=request.path_params["project_id"],
+            token=_require_token(request),
+            issue_id=request.path_params["issue_id"],
+            action_id=body.actionId,
         )
         return JSONResponse(result, status_code=202)
 
@@ -157,6 +186,30 @@ def create_app(service: AgentService) -> Starlette:
         )
         return JSONResponse(result, status_code=202)
 
+    async def evaluation_event(request: Request) -> JSONResponse:
+        body = _validate(EvaluationTerminalEventBody, await _body(request))
+        result = await service.handle_evaluation_event(
+            project_id=request.path_params["project_id"],
+            token=_require_token(request),
+            event=body.model_dump(),
+        )
+        return JSONResponse(result, status_code=202)
+
+    async def export_project(request: Request) -> JSONResponse:
+        _require_internal_access(request, service.settings.service_token)
+        return JSONResponse(service.export_project_transfer(request.path_params["project_id"]))
+
+    async def import_project(request: Request) -> JSONResponse:
+        _require_internal_access(request, service.settings.service_token)
+        body = _validate(ProjectTransferBody, await _body(request))
+        id_map = service.import_project_transfer(request.path_params["project_id"], body.payload)
+        return JSONResponse({"ok": True, "idMap": id_map}, status_code=201)
+
+    async def delete_project(request: Request) -> JSONResponse:
+        _require_internal_access(request, service.settings.service_token)
+        service.delete_project_transfer(request.path_params["project_id"])
+        return JSONResponse({"ok": True})
+
     async def stream(request: Request) -> StreamingResponse:
         _require_token(request)
         project_id = request.path_params["project_id"]
@@ -193,6 +246,7 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/projects/{project_id}/state", state, methods=["GET"]),
         Route("/v1/projects/{project_id}/runs", start, methods=["POST"]),
         Route("/v1/projects/{project_id}/steer", steer, methods=["POST"]),
+        Route("/v1/projects/{project_id}/issues/{issue_id}/resume", resume_issue, methods=["POST"]),
         Route("/v1/projects/{project_id}/cancel", cancel, methods=["POST"]),
         Route("/v1/projects/{project_id}/stream", stream, methods=["GET"]),
         Route("/v1/projects/{project_id}/interactions/{interaction_id}/answer", answer, methods=["POST"]),
@@ -200,6 +254,10 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/internal/projects/{project_id}/studio-events", studio_event, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/fusion-events", fusion_event, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/package-import-events", package_import_event, methods=["POST"]),
+        Route("/v1/internal/projects/{project_id}/evaluation-events", evaluation_event, methods=["POST"]),
+        Route("/v1/internal/projects/{project_id}/transfer", export_project, methods=["GET"]),
+        Route("/v1/internal/projects/{project_id}/transfer", import_project, methods=["POST"]),
+        Route("/v1/internal/projects/{project_id}/transfer", delete_project, methods=["DELETE"]),
     ]
     return Starlette(
         routes=routes,
@@ -236,6 +294,16 @@ def _require_token(request: Request) -> str:
     if not token:
         raise AgentRuntimeError("TOKEN_REQUIRED", "需要登录后才能使用建模助手", status=401)
     return token
+
+
+def _require_internal_access(request: Request, expected_service_token: str) -> None:
+    expected = expected_service_token.strip()
+    supplied = request.headers.get("x-modeling-service-token", "").strip()
+    if expected:
+        if supplied and secrets.compare_digest(supplied, expected):
+            return
+        raise AgentRuntimeError("UNAUTHORIZED", "内部服务认证失败", status=401)
+    _require_token(request)
 
 
 def _after_sequence(request: Request) -> int:

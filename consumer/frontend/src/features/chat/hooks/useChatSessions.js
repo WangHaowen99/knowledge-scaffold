@@ -311,8 +311,6 @@ const useChatSessions = (streamManager) => {
     if (!id) return false;
     const scope = captureScope();
     logger.info(`Deleting chat: ${id}`);
-    const stopped = await streamManagerRef.current?.stopStreamForSession(id, { silent: true });
-    if (stopped === false || !isCurrentScope(scope)) return false;
 
     try {
       const response = await scopedFetch(`/agentic/sessions/${id}`, { method: 'DELETE' }, scope);

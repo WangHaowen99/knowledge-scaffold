@@ -1,0 +1,18 @@
+{
+  "name": "browser-acceptance-register-account",
+  "viewport": { "width": 1440, "height": 900 },
+  "steps": [
+    { "action": "goto", "path": "/" },
+    { "action": "click", "text": "注册新账号", "exact": true },
+    { "action": "fill", "selector": "#register-username", "valueEnv": "E2E_USERNAME" },
+    { "action": "fill", "selector": "#register-email", "valueEnv": "E2E_EMAIL" },
+    { "action": "fill", "selector": "#register-password", "valueEnv": "E2E_PASSWORD" },
+    { "action": "click", "text": "注 册", "exact": true },
+    { "action": "waitFor", "text": "注册成功，请登录", "timeoutMs": 30000 },
+    { "action": "fill", "selector": "#login-password", "valueEnv": "E2E_PASSWORD" },
+    { "action": "click", "text": "登 录", "exact": true },
+    { "action": "waitFor", "text": "项目与知识包", "timeoutMs": 30000 },
+    { "action": "assertText", "text": "验收场景" },
+    { "action": "screenshot", "name": "registered-project-list" }
+  ]
+}

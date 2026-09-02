@@ -6,13 +6,14 @@ from typing import Any
 
 RUN_QUEUED = "queued"
 RUN_RUNNING = "running"
+RUN_STOPPING = "stopping"
 RUN_WAITING = "waiting"
 RUN_SUSPENDED = "suspended"
 RUN_COMPLETED = "completed"
 RUN_FAILED = "failed"
 RUN_CANCELLED = "cancelled"
 
-ACTIVE_RUN_STATUSES = frozenset({RUN_QUEUED, RUN_RUNNING, RUN_WAITING, RUN_SUSPENDED})
+ACTIVE_RUN_STATUSES = frozenset({RUN_QUEUED, RUN_RUNNING, RUN_STOPPING, RUN_WAITING, RUN_SUSPENDED})
 TERMINAL_RUN_STATUSES = frozenset({RUN_COMPLETED, RUN_FAILED, RUN_CANCELLED})
 
 
@@ -24,6 +25,8 @@ class RunRecord:
     status: str
     prompt: str
     token_fingerprint: str
+    # 新运行只暴露收敛后的领域工具；迁移前的 checkpoint 保留旧工具面。
+    tool_profile: str = "domain-v2"
     # Core 签发的短期、run 级凭据，只用于服务重启后接续同一工作区。
     # 它不是业务状态，也绝不能进入 public()。
     run_credential: str = ""

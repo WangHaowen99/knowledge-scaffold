@@ -48,8 +48,8 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         factory=NL2SQLHttpSearchAdapter,
         fields=[
             ProviderField("url", "服务地址", required=True),
-            ProviderField("token", "访问 Token", secret=True),
-            ProviderField("scene", "场景 Scene"),
+            ProviderField("token", "访问 Token", secret=True, required=True),
+            ProviderField("scene", "场景 Scene", required=True),
             ProviderField("timeout_seconds", "超时时间", type="int", default=600),
             ProviderField("max_retries", "最大重试次数", type="int", default=3),
         ],
@@ -61,7 +61,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         factory=NL2SQLTemplateSearchAdapter,
         fields=[
             ProviderField("url", "服务地址", required=True),
-            ProviderField("token", "访问 Token", secret=True),
+            ProviderField("token", "访问 Token", secret=True, required=True),
             ProviderField("scene", "数据源名称", required=True),
             ProviderField("timeout_seconds", "超时时间", type="int", default=600),
             ProviderField("max_retries", "最大重试次数", type="int", default=3),

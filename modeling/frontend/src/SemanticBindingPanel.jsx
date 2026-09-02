@@ -10,6 +10,7 @@ import { safeUiError } from './revision-state.js';
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
 const refId = (ref, bindingKey) => `${ref.objectKey}.${ref.fieldKey}->${bindingKey}`;
+const BATCH_SIZE = 20;
 
 export default function SemanticBindingPanel({ projectId, packageRevision, disabled = false, onApplied }) {
   const [snapshot, setSnapshot] = useState(null);
@@ -18,6 +19,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [visibleCount, setVisibleCount] = useState(BATCH_SIZE);
 
   useEffect(() => {
     let active = true;
@@ -30,8 +32,9 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
         const suggestions = asArray(result.suggestions);
         const fieldSuggestions = asArray(result.fieldSuggestions);
         setSnapshot({ ...result, suggestions, fieldSuggestions, confirmedBindings: asArray(result.confirmedBindings) });
-        setSelectedBindings(new Set(suggestions.map((item) => String(item.key))));
-        setSelectedRefs(new Set(fieldSuggestions.map((ref) => refId(ref, ref.bindingKey))));
+        setVisibleCount(BATCH_SIZE);
+        setSelectedBindings(new Set(suggestions.slice(0, BATCH_SIZE).map((item) => String(item.key))));
+        setSelectedRefs(new Set(fieldSuggestions.slice(0, BATCH_SIZE).map((ref) => refId(ref, ref.bindingKey))));
       })
       .catch((cause) => { if (active) setError(safeUiError(cause, '术语绑定推荐读取失败')); })
       .finally(() => { if (active) setLoading(false); });
@@ -54,8 +57,13 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
   const selectedBindingKeys = [...selectedBindings];
   const bindingStage = suggestions.length > 0;
   const fieldStage = !bindingStage && fieldSuggestions.length > 0;
+  const activeTotal = bindingStage ? suggestions.length : fieldStage ? fieldSuggestions.length : 0;
+  const activeVisibleCount = Math.min(visibleCount, activeTotal);
+  const visibleSuggestions = suggestions.slice(0, activeVisibleCount);
+  const visibleFieldSuggestions = fieldSuggestions.slice(0, activeVisibleCount);
+  const hasMore = activeVisibleCount < activeTotal;
   const stageLabel = bindingStage ? '1/2 step' : '2/2 step';
-  const title = bindingStage ? '术语绑定推荐' : fieldStage ? '业务字段关联术语推荐' : '已确认术语绑定';
+  const title = bindingStage ? '术语绑定推荐' : '业务字段关联术语推荐';
 
   const toggleBinding = (key) => {
     setSelectedBindings((current) => {
@@ -73,6 +81,26 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
       return next;
     });
   };
+  const showMore = () => {
+    if (!snapshot || working) return;
+    const nextVisibleCount = Math.min(visibleCount + BATCH_SIZE, activeTotal);
+    if (bindingStage) {
+      const newlyVisible = suggestions.slice(visibleCount, nextVisibleCount);
+      setSelectedBindings((current) => {
+        const next = new Set(current);
+        for (const item of newlyVisible) next.add(String(item.key));
+        return next;
+      });
+    } else if (fieldStage) {
+      const newlyVisible = fieldSuggestions.slice(visibleCount, nextVisibleCount);
+      setSelectedRefs((current) => {
+        const next = new Set(current);
+        for (const ref of newlyVisible) next.add(refId(ref, ref.bindingKey));
+        return next;
+      });
+    }
+    setVisibleCount(nextVisibleCount);
+  };
   const submit = async () => {
     if (!snapshot || working) return;
     setBusy(true);
@@ -83,6 +111,13 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
         bindingKeys: bindingStage ? selectedBindingKeys : [],
         fieldRefs: bindingStage ? [] : selectedRefPayload,
       });
+      const refreshed = await getSemanticBindingSuggestions(projectId);
+      const suggestions = asArray(refreshed.suggestions);
+      const fieldSuggestions = asArray(refreshed.fieldSuggestions);
+      setSnapshot({ ...refreshed, suggestions, fieldSuggestions, confirmedBindings: asArray(refreshed.confirmedBindings) });
+      setVisibleCount(BATCH_SIZE);
+      setSelectedBindings(new Set(suggestions.slice(0, BATCH_SIZE).map((item) => String(item.key))));
+      setSelectedRefs(new Set(fieldSuggestions.slice(0, BATCH_SIZE).map((ref) => refId(ref, ref.bindingKey))));
       onApplied?.(result);
       window.dispatchEvent(new CustomEvent('mw-package-updated'));
     } catch (cause) {
@@ -102,6 +137,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
       const suggestions = asArray(result.suggestions);
       const fieldSuggestions = asArray(result.fieldSuggestions);
       setSnapshot({ ...result, suggestions, fieldSuggestions, confirmedBindings: asArray(result.confirmedBindings) });
+      setVisibleCount(BATCH_SIZE);
       setSelectedBindings(new Set());
       setSelectedRefs(new Set());
       onApplied?.(result);
@@ -124,8 +160,9 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
       const suggestions = asArray(refreshed.suggestions);
       const fieldSuggestions = asArray(refreshed.fieldSuggestions);
       setSnapshot({ ...refreshed, suggestions, fieldSuggestions, confirmedBindings: asArray(refreshed.confirmedBindings) });
-      setSelectedBindings(new Set(suggestions.map((item) => String(item.key))));
-      setSelectedRefs(new Set(fieldSuggestions.map((ref) => refId(ref, ref.bindingKey))));
+      setVisibleCount(BATCH_SIZE);
+      setSelectedBindings(new Set(suggestions.slice(0, BATCH_SIZE).map((item) => String(item.key))));
+      setSelectedRefs(new Set(fieldSuggestions.slice(0, BATCH_SIZE).map((ref) => refId(ref, ref.bindingKey))));
       onApplied?.(result);
       window.dispatchEvent(new CustomEvent('mw-package-updated'));
     } catch (cause) {
@@ -136,7 +173,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
   };
 
   if (loading && !snapshot) return <section className="semantic-binding-panel"><div className="empty">正在分析术语绑定候选…</div></section>;
-  if (!suggestions.length && !fieldSuggestions.length && !hasConfirmedBindings && !error) return null;
+  if (!suggestions.length && !fieldSuggestions.length && !error) return null;
 
   return (
     <section className="semantic-binding-panel" aria-label="术语绑定批量确认">
@@ -144,10 +181,8 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
         <div>
           <h3>{title}</h3>
           <p>{bindingStage
-            ? `${stageLabel} · 发现 ${suggestions.length} 个候选术语绑定`
-            : fieldStage
-              ? `${stageLabel} · 发现 ${fieldSuggestions.length} 个业务字段关联候选`
-              : `当前已确认 ${confirmedBindings.length} 个术语绑定`}</p>
+            ? `${stageLabel} · 发现 ${suggestions.length} 个候选术语绑定，当前显示 ${activeVisibleCount} 个`
+            : `${stageLabel} · 发现 ${fieldSuggestions.length} 个业务字段关联候选，当前显示 ${activeVisibleCount} 个`}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {hasConfirmedBindings && (
@@ -164,7 +199,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
         </div>
       </header>
       <div className="semantic-binding-list">
-        {bindingStage && suggestions.map((item) => (
+        {bindingStage && visibleSuggestions.map((item) => (
           <article key={item.key} className="semantic-binding-item">
             <label className="semantic-binding-main">
               <input type="checkbox" disabled={working}
@@ -180,7 +215,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
             </div>
           </article>
         ))}
-        {!bindingStage && fieldSuggestions.map((ref) => {
+        {!bindingStage && visibleFieldSuggestions.map((ref) => {
           const id = refId(ref, ref.bindingKey);
           const hasCoverageCount = Number.isFinite(ref.matchedValueCount) && Number.isFinite(ref.sourceValueCount);
           return (
@@ -201,20 +236,14 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
             </article>
           );
         })}
-        {!bindingStage && !fieldStage && confirmedBindings.map((binding) => (
-          <article key={binding.key} className="semantic-binding-item">
-            <div className="semantic-binding-main">
-              <span>
-                <strong>{binding.resource}.{binding.valueField} {'->'} {binding.resource}.{binding.semanticField}</strong>
-                <em>{binding.key}</em>
-              </span>
-            </div>
-            {asArray(binding.aliasFields).length > 0 && (
-              <div className="semantic-binding-meta">别名字段：{binding.aliasFields.join('、')}</div>
-            )}
-          </article>
-        ))}
       </div>
+      {hasMore && (
+        <div className="semantic-binding-more">
+          <button type="button" className="btn" disabled={working} onClick={showMore}>
+            继续显示 {Math.min(BATCH_SIZE, activeTotal - activeVisibleCount)} 个
+          </button>
+        </div>
+      )}
       {error && <div role="alert" className="semantic-binding-error">{error}</div>}
     </section>
   );

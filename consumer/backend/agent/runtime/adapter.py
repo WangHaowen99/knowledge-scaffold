@@ -260,7 +260,14 @@ class PublicEventAdapter:
         if event_type == "turn.finished":
             terminal_status = self._normalize_status(payload.get("status") or event.status)
             normalized = {"status": terminal_status}
-            for key in ("result", "content", "structured_content", "usage", "error"):
+            for key in (
+                "result",
+                "content",
+                "structured_content",
+                "usage",
+                "error",
+                "recovery",
+            ):
                 if key in payload:
                     normalized[key] = payload[key]
             if self.include_trace and "trace" in payload:

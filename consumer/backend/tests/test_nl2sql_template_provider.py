@@ -97,6 +97,8 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
     assert events[0] == {"type": "start", "content": "开始查询本体数据"}
     assert events[1]["type"] == "intermediate"
     assert "模板命中" in events[1]["content"]
+    assert events[1]["public_summary"] == "模板命中，正在执行预定义查询"
+    assert "SELECT" not in events[1]["public_summary"]
     assert events[2]["type"] == "final"
     payload = json.loads(events[2]["content"])
     assert payload["success"] is True
@@ -138,6 +140,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
     # Should call /api/v1/query (NL2SQL)
     assert captured["url"] == "http://nl2sql.test/api/v1/query"
     assert "模板未命中" in events[1]["content"]
+    assert events[1]["public_summary"] == "模板未命中，改用自然语言查询"
 
 
 # ---------------------------------------------------------------------------

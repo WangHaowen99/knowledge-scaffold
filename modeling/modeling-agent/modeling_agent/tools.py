@@ -22,13 +22,20 @@ ConfirmationGuard = Callable[[], bool]
 ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 ValidationRepairSave = Callable[[dict[str, Any]], None]
+RequireTool = Callable[[str, dict[str, Any]], None]
+ReleaseRequiredTool = Callable[[str], None]
+ResolveIssues = Callable[[list[str]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
+# Keep the outer tool deadline beyond the core client's 1800-second deadline.
+FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
 LEADER_TABLE_SAMPLE_ROWS = 5
 TABLE_FIELD_SAMPLE_VALUES = 3
 TABLE_SAMPLE_VALUE_CHARS = 120
 
 VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
+    "stage_change_set",
+    "validate_change_set",
     "write_file",
     "upsert_object",
     "upsert_rule",
@@ -38,8 +45,22 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
+    "create_object",
+    "create_rule",
+    "create_operation",
+    "create_metric",
+    "patch_object",
+    "patch_rule",
+    "patch_operation",
+    "patch_metric",
+    "sync_schema_objects",
+    "patch_object_source_binding",
+    "delete_domain_resource",
+    "stage_script_source",
 })
 VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
+    "stage_change_set",
+    "validate_change_set",
     "write_file",
     "delete_file",
     "upsert_object",
@@ -50,11 +71,27 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "import_zip",
     "stage_package_merge",
     "compile_package_fusion_plan",
+    "create_object",
+    "create_rule",
+    "create_operation",
+    "create_metric",
+    "patch_object",
+    "patch_rule",
+    "patch_operation",
+    "patch_metric",
+    "sync_schema_objects",
+    "patch_object_source_binding",
+    "delete_domain_resource",
+    "stage_script_source",
 })
 VALIDATION_REPAIR_RESET_TOOLS = frozenset({
+    "discard_change_set",
     "discard_rejected_candidate_changes",
     "request_confirmation",
 })
+VALIDATION_REPAIR_RESOLUTION_TOOLS = VALIDATION_REPAIR_RESET_TOOLS | {
+    "validate_change_set",
+}
 
 TOOL_WORK_DETAILS = {
     "list_documents": "先盘点可用资料，再确定需要精读的范围",
@@ -97,12 +134,21 @@ class ToolContext:
     token: str
     gateway: CoreGateway
     emit: EventSink
+    phase: str = ""
+    tool_profile: str = "domain-v2"
+    required_tools: frozenset[str] = frozenset()
+    require_tool: RequireTool | None = None
+    release_required_tool: ReleaseRequiredTool | None = None
+    resolve_issues: ResolveIssues | None = None
+    technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_action: StateAction | None = None
     after_core_tool: AfterCoreTool | None = None
     confirmation_guard: ConfirmationGuard | None = None
     tool_receipt_lookup: ToolReceiptLookup | None = None
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    recovery_waiting: bool = False
+    evaluation_cancel_authorized: bool = False
     allowed_tools: frozenset[str] | None = None
     confirmation_required: bool = False
     interjection_reply_required: bool = False
@@ -144,6 +190,11 @@ class CandidateValidationRepairState:
     current_reports: list[dict[str, Any]] = field(default_factory=list)
     current_round_progress: bool = False
     stop_notice_emitted: bool = False
+    open_issue_ids: list[str] = field(default_factory=list)
+    issue_attempts: dict[str, int] = field(default_factory=dict)
+    stopped_fingerprints: list[str] = field(default_factory=list)
+    blocked_reports: dict[str, dict[str, Any]] = field(default_factory=dict)
+    stop_notice_fingerprints: list[str] = field(default_factory=list)
     max_attempts: int = 3
     stop_on_repeated_fingerprint: bool = True
     on_change: ValidationRepairSave | None = field(default=None, repr=False, compare=False)
@@ -156,13 +207,40 @@ class CandidateValidationRepairState:
         on_change: ValidationRepairSave | None = None,
     ) -> CandidateValidationRepairState:
         raw = snapshot if isinstance(snapshot, Mapping) else {}
+        attempts = _non_negative_int(raw.get("attempts"))
+        last_fingerprint = str(raw.get("lastFingerprint") or "")
+        issue_attempts = {
+            str(key): _non_negative_int(value)
+            for key, value in _mapping_dict(raw.get("issueAttempts")).items()
+            if str(key).strip() and _non_negative_int(value) > 0
+        }
+        if not issue_attempts and last_fingerprint and attempts > 0:
+            issue_attempts[last_fingerprint] = attempts
+        stopped_fingerprints = [
+            str(item) for item in raw.get("stoppedFingerprints", []) if str(item).strip()
+        ]
+        if not stopped_fingerprints and bool(raw.get("stopped")) and last_fingerprint:
+            stopped_fingerprints = [last_fingerprint]
+        blocked_reports = {
+            str(key): dict(value)
+            for key, value in _mapping_dict(raw.get("blockedReports")).items()
+            if str(key).strip() and isinstance(value, Mapping)
+        }
+        last_report = _mapping_dict(raw.get("lastReport"))
+        if stopped_fingerprints and last_report and not blocked_reports:
+            blocked_reports[stopped_fingerprints[0]] = dict(last_report)
+        stop_notice_fingerprints = [
+            str(item) for item in raw.get("stopNoticeFingerprints", []) if str(item).strip()
+        ]
+        if not stop_notice_fingerprints and bool(raw.get("stopNoticeEmitted")):
+            stop_notice_fingerprints = list(stopped_fingerprints[:1])
         state = cls(
             candidate_revision=str(raw.get("candidateRevision") or ""),
-            attempts=_non_negative_int(raw.get("attempts")),
-            last_fingerprint=str(raw.get("lastFingerprint") or ""),
+            attempts=attempts,
+            last_fingerprint=last_fingerprint,
             repeated_findings=bool(raw.get("repeatedFindings")),
-            stopped=bool(raw.get("stopped")),
-            last_report=_mapping_dict(raw.get("lastReport")),
+            stopped=bool(stopped_fingerprints),
+            last_report=last_report,
             current_round_id=str(raw.get("currentRoundId") or ""),
             current_reports=[
                 dict(item) for item in raw.get("currentReports", [])
@@ -170,6 +248,13 @@ class CandidateValidationRepairState:
             ],
             current_round_progress=bool(raw.get("currentRoundProgress")),
             stop_notice_emitted=bool(raw.get("stopNoticeEmitted")),
+            open_issue_ids=[
+                str(item) for item in raw.get("openIssueIds", []) if str(item).strip()
+            ],
+            issue_attempts=issue_attempts,
+            stopped_fingerprints=list(dict.fromkeys(stopped_fingerprints)),
+            blocked_reports=blocked_reports,
+            stop_notice_fingerprints=list(dict.fromkeys(stop_notice_fingerprints)),
             max_attempts=max(1, _positive_int(raw.get("maxAttempts"), 3)),
             stop_on_repeated_fingerprint=bool(
                 raw.get("stopOnRepeatedFindingFingerprint", True)
@@ -190,6 +275,11 @@ class CandidateValidationRepairState:
             "currentReports": self.current_reports,
             "currentRoundProgress": self.current_round_progress,
             "stopNoticeEmitted": self.stop_notice_emitted,
+            "openIssueIds": self.open_issue_ids,
+            "issueAttempts": self.issue_attempts,
+            "stoppedFingerprints": self.stopped_fingerprints,
+            "blockedReports": self.blocked_reports,
+            "stopNoticeFingerprints": self.stop_notice_fingerprints,
             "maxAttempts": self.max_attempts,
             "stopOnRepeatedFindingFingerprint": self.stop_on_repeated_fingerprint,
         }
@@ -218,30 +308,67 @@ class CandidateValidationRepairState:
     def _finalize_round(self) -> None:
         if self.current_reports:
             report = _aggregate_validation_reports(self.current_reports)
-            fingerprint = _validation_report_fingerprint(report)
-            self.attempts += 1
-            self.repeated_findings = bool(
-                self.last_fingerprint and fingerprint == self.last_fingerprint
+            round_states: list[tuple[str, int, bool, bool, dict[str, Any]]] = []
+            seen: set[str] = set()
+            for current_report in self.current_reports:
+                fingerprint = _validation_report_fingerprint(current_report)
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+                previous_attempts = self.issue_attempts.get(fingerprint, 0)
+                attempt = previous_attempts + 1
+                repeated = previous_attempts > 0
+                stopped = (
+                    self.stop_on_repeated_fingerprint and repeated
+                ) or attempt >= self.max_attempts
+                self.issue_attempts[fingerprint] = attempt
+                if stopped and fingerprint not in self.stopped_fingerprints:
+                    self.stopped_fingerprints.append(fingerprint)
+                round_states.append((
+                    fingerprint, attempt, repeated, stopped, current_report,
+                ))
+
+            aggregate_fingerprint = _validation_report_fingerprint(report)
+            representative = next(
+                (item for item in round_states if item[3]),
+                round_states[0],
             )
-            self.last_fingerprint = fingerprint
-            self.stopped = (
-                self.stop_on_repeated_fingerprint and self.repeated_findings
-            ) or self.attempts >= self.max_attempts
+            (
+                fingerprint,
+                self.attempts,
+                _repeated,
+                _stopped,
+                representative_report,
+            ) = representative
+            self.repeated_findings = any(item[2] for item in round_states)
+            self.stopped = bool(self.stopped_fingerprints)
+            self.last_fingerprint = fingerprint if self.stopped else aggregate_fingerprint
+            self.stop_notice_emitted = (
+                fingerprint in self.stop_notice_fingerprints if self.stopped else False
+            )
+            issue_id = _validation_issue_id(self.candidate_revision, fingerprint)
             self.last_report = {
                 **report,
-                "retryable": not self.stopped,
+                "retryable": not _stopped,
+                "issueId": issue_id,
+                "issueStatus": "blocked" if _stopped else "repairing",
                 "repairAttempt": self.attempts,
                 "repairRoundId": self.current_round_id,
-                "findingFingerprint": fingerprint,
+                "findingFingerprint": self.last_fingerprint,
                 "repeatedFinding": self.repeated_findings,
-                "repairStopped": self.stopped,
+                "repairStopped": _stopped,
             }
-            if self.stopped:
+            if _stopped:
                 self.last_report["instruction"] = (
                     "自动修正已停止：相同 findings 再次出现，或已达到契约规定的 "
                     f"{self.max_attempts} 轮上限。"
                     "保留完整 findings，并等待用户决定是调整范围还是撤销候选。"
                 )
+                self.blocked_reports[fingerprint] = {
+                    **dict(representative_report),
+                    **self.last_report,
+                    "findingFingerprint": fingerprint,
+                }
         self.current_reports = []
         self.current_round_progress = False
         self._notify_change()
@@ -249,9 +376,26 @@ class CandidateValidationRepairState:
     def record(self, report: Mapping[str, Any]) -> dict[str, Any]:
         if not self.current_round_id:
             self.begin_round("unscoped")
-        if self.stopped:
-            blocked = self.blocked_result()
+        fingerprint = _validation_report_fingerprint(report)
+        if fingerprint in self.stopped_fingerprints:
+            self.last_fingerprint = fingerprint
+            self.attempts = self.issue_attempts.get(fingerprint, self.max_attempts)
+            self.repeated_findings = self.attempts > 1
+            self.stopped = True
+            self.last_report = {
+                **dict(report),
+                "issueId": _validation_issue_id(self.candidate_revision, fingerprint),
+                "findingFingerprint": fingerprint,
+                "repairAttempt": self.attempts,
+                "repairRoundId": self.current_round_id,
+                "repeatedFinding": self.repeated_findings,
+                "repairStopped": True,
+            }
+            self.blocked_reports[fingerprint] = dict(self.last_report)
+            blocked = self.blocked_result(fingerprint)
             return {
+                "issueId": blocked["issueId"],
+                "issueStatus": "blocked",
                 "repairAttempt": blocked["repairAttempt"],
                 "repairRoundId": blocked["repairRoundId"],
                 "findingFingerprint": blocked["findingFingerprint"],
@@ -260,10 +404,14 @@ class CandidateValidationRepairState:
             }
         normalized = dict(report)
         self.current_reports.append(normalized)
-        fingerprint = _validation_report_fingerprint(normalized)
+        issue_id = _validation_issue_id(self.candidate_revision, fingerprint)
+        if issue_id not in self.open_issue_ids:
+            self.open_issue_ids.append(issue_id)
         self._notify_change()
         return {
-            "repairAttempt": self.attempts + 1,
+            "issueId": issue_id,
+            "issueStatus": "repairing",
+            "repairAttempt": self.issue_attempts.get(fingerprint, 0) + 1,
             "repairRoundId": self.current_round_id,
             "findingFingerprint": fingerprint,
             "repeatedFinding": False,
@@ -284,47 +432,93 @@ class CandidateValidationRepairState:
         self.current_reports = []
         self.current_round_progress = False
         self.stop_notice_emitted = False
+        self.open_issue_ids = []
+        self.issue_attempts = {}
+        self.stopped_fingerprints = []
+        self.blocked_reports = {}
+        self.stop_notice_fingerprints = []
         if not preserve_round:
             self.candidate_revision = ""
         self._notify_change()
 
-    def record_success(self, tool_name: str) -> None:
-        if tool_name in VALIDATION_REPAIR_RESET_TOOLS:
-            self._reset_episode(preserve_round=True)
-        elif tool_name in VALIDATION_REPAIR_PROGRESS_TOOLS:
+    def record_success(self, tool_name: str) -> list[str]:
+        if tool_name in VALIDATION_REPAIR_RESOLUTION_TOOLS:
+            return self.resolve_open_issues()
+        if tool_name in VALIDATION_REPAIR_PROGRESS_TOOLS:
             self.current_round_progress = True
             self._notify_change()
+        return []
 
-    def blocked_result(self) -> dict[str, Any]:
-        report = dict(self.last_report)
+    def resolve_open_issues(self) -> list[str]:
+        resolved = list(dict.fromkeys(self.open_issue_ids))
+        self._reset_episode(preserve_round=True)
+        return resolved
+
+    def blocked_result(self, fingerprint: str = "") -> dict[str, Any]:
+        selected = str(fingerprint or "").strip()
+        if selected not in self.stopped_fingerprints:
+            selected = next(iter(self.stopped_fingerprints), self.last_fingerprint)
+        report = dict(self.blocked_reports.get(selected) or self.last_report)
+        issue_id = str(report.get("issueId") or _validation_issue_id(
+            self.candidate_revision, selected,
+        ))
+        attempts = self.issue_attempts.get(selected, self.attempts)
         return {
             **report,
             "error": "CANDIDATE_REPAIR_STOPPED",
             "retryable": False,
-            "repairAttempt": self.attempts,
+            "issueId": issue_id,
+            "issueStatus": "awaiting_user",
+            "repairAttempt": attempts,
             "repairRoundId": str(report.get("repairRoundId") or self.current_round_id),
-            "findingFingerprint": self.last_fingerprint,
-            "repeatedFinding": self.repeated_findings,
+            "findingFingerprint": selected,
+            "repeatedFinding": attempts > 1,
             "repairStopped": True,
-            "tracePhase": "blocked",
+            "tracePhase": "waiting",
+            "problemVisibility": "recovery",
+            "customerSummary": "自动修正仍有未完成项，请选择如何处理当前成果。",
             "instruction": (
-                "自动修正已停止。完整校验报告仍由 core 保留；可以读取、删除或撤销候选，"
-                "但不要继续生成新的候选文件，直到用户决定下一步。"
+                "自动修正已达到上限。完整校验报告仍由 core 保留；停止继续尝试，"
+                "等待用户选择重新检查未完成项，或保留当前成果并结束本轮。"
             ),
-            "display": {"text": "候选自动修正已停止，需要检查校验明细"},
+            "display": {"text": "自动修正仍有未完成项，等待选择后续处理"},
+            "recoveryAction": {
+                "id": "review_validation_findings",
+                "label": "重新检查并继续",
+                "message": "请读取当前问题的校验明细，只处理仍未解决的 finding，再从已保存进展继续。",
+            },
+            "recoveryActions": [
+                {
+                    "id": "review_validation_findings",
+                    "label": "重新检查并继续",
+                    "description": "从已保存进展继续，只处理仍未解决的内容。",
+                },
+                {
+                    "id": "keep_current_progress",
+                    "label": "保留当前成果，结束本轮",
+                    "description": "保留已经完成的候选修改，暂不继续自动修正。",
+                },
+            ],
         }
 
     def claim_stop_notice(self) -> bool:
-        if self.stop_notice_emitted:
+        fingerprint = (
+            self.last_fingerprint
+            if self.last_fingerprint in self.stopped_fingerprints
+            else next(iter(self.stopped_fingerprints), self.last_fingerprint)
+        )
+        if fingerprint in self.stop_notice_fingerprints:
             return False
+        if fingerprint:
+            self.stop_notice_fingerprints.append(fingerprint)
         self.stop_notice_emitted = True
         self._notify_change()
         return True
 
     def decorate(self, report: Mapping[str, Any]) -> dict[str, Any]:
-        if self.stopped:
-            return self.blocked_result()
         repair = self.record(report)
+        if repair.get("repairStopped") is True:
+            return self.blocked_result()
         decorated = {**report, **repair}
         existing_instruction = str(report.get("instruction") or "").strip()
         repair_instruction = (
@@ -356,6 +550,11 @@ def _validation_report_fingerprint(report: Mapping[str, Any]) -> str:
     }
     encoded = json.dumps(fingerprint_source, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _validation_issue_id(candidate_revision: str, fingerprint: str) -> str:
+    encoded = f"{candidate_revision or 'working'}\0{fingerprint or 'unknown'}"
+    return f"candidate-issue-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:20]}"
 
 
 def _fingerprint_values(values: list[str]) -> str:
@@ -450,6 +649,15 @@ def _aggregate_validation_reports(reports: list[Mapping[str, Any]]) -> dict[str,
 
 
 STRING = {"type": "string"}
+RELATION_NAME = {
+    "type": "string",
+    "description": (
+        "由模型根据材料证据生成，不从固定枚举中选择；只填写简洁、有方向的中文谓词"
+        "（如“属于”“包含”“生成”“引用”“依赖”“适用于”），不得包含源对象或目标对象的 key、"
+        "标题、别名，也不得只填写 1:1、1:N 等关系基数。提交前将“源对象 -> 关系名称 -> 目标对象”"
+        "连读为自然、符合证据的业务陈述；有更具体证据时避免只写“关联”“对应”。基数可写入 note。"
+    ),
+}
 PATH = {"type": "string", "description": "知识包内相对路径"}
 CHANGE_GROUP = {
     "type": "string",
@@ -457,6 +665,282 @@ CHANGE_GROUP = {
     "maxLength": 64,
     "description": "同一批相关修改使用相同的简短英文标识，例如 goal 或 process_main",
 }
+RESOURCE_ID = {
+    "type": "string",
+    "pattern": "^(object|rule|operation|metric):[^/\\\\:]+$",
+    "description": "list_domain_resources 或 get_domain_resource 返回的稳定资源标识",
+}
+WORKING_REVISION = {"type": "string", "minLength": 1, "maxLength": 200}
+RESOURCE_HASH = {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+MUTATION_ID = {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    "description": "同一业务修改重试时保持不变的幂等标识",
+}
+DOMAIN_FIELD = {
+    "type": "object",
+    "properties": {
+        "key": STRING, "cn_name": STRING, "type": STRING,
+        "required": {"type": "boolean"}, "note": STRING, "alias": STRING,
+    },
+    "required": ["key", "type", "required"],
+    "additionalProperties": False,
+}
+DOMAIN_RELATION = {
+    "type": "object",
+    "properties": {
+        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING, "description": STRING,
+    },
+    "required": ["target_id"],
+    "additionalProperties": False,
+}
+PREVIOUS_OBJECT_RELATION = {
+    "type": "object",
+    "properties": {
+        "sourceObject": STRING,
+        "source_object": STRING,
+        "targetObject": STRING,
+        "target_object": STRING,
+        "relation": STRING,
+        "note": STRING,
+        "evidence": {"type": "array", "items": STRING, "maxItems": 20},
+        "status": {"type": "string", "enum": ["previous", "discarded", "needs_review"]},
+    },
+    "required": ["relation"],
+    "additionalProperties": False,
+}
+OBJECT_RELATION_SUGGESTION_SCOPE = {
+    "type": "object",
+    "properties": {
+        "affectedObjects": {"type": "array", "items": STRING, "maxItems": 100},
+        "affected_objects": {"type": "array", "items": STRING, "maxItems": 100},
+        "affectedOperations": {"type": "array", "items": STRING, "maxItems": 100},
+        "affected_operations": {"type": "array", "items": STRING, "maxItems": 100},
+    },
+    "additionalProperties": False,
+}
+DOMAIN_ACTION_CHANGES = {
+    "type": "object",
+    "properties": {
+        "key": STRING, "cn_name": STRING, "type": STRING,
+        "required": {"type": "boolean"}, "note": STRING, "alias": STRING,
+        "condition": STRING, "conclusion": STRING,
+        "param": STRING, "field": STRING, "handling": STRING,
+        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING,
+        "description": STRING,
+    },
+    "additionalProperties": False,
+}
+
+
+def domain_action_schema(operations: list[str]) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": operations},
+                "value": {
+                    "oneOf": [STRING, {"type": "array", "items": STRING, "maxItems": 500}],
+                },
+                "token": STRING,
+                "item_id": STRING,
+                "after_id": STRING,
+                "field_key": STRING,
+                "expected_field_hash": RESOURCE_HASH,
+                "relation_id": STRING,
+                "target_id": RESOURCE_ID,
+                "input_key": STRING,
+                "output_key": STRING,
+                "field": {"oneOf": [DOMAIN_FIELD, STRING]},
+                "relation": DOMAIN_RELATION,
+                "condition": {
+                    "type": "object",
+                    "properties": {"condition": STRING, "conclusion": STRING},
+                    "required": ["condition", "conclusion"],
+                    "additionalProperties": False,
+                },
+                "input": {
+                    "type": "object",
+                    "properties": {
+                        "param": STRING, "cn_name": STRING, "type": STRING,
+                        "required": {"type": "boolean"}, "note": STRING,
+                    },
+                    "required": ["param", "type", "required"],
+                    "additionalProperties": False,
+                },
+                "output": {
+                    "type": "object",
+                    "properties": {"field": STRING, "cn_name": STRING, "type": STRING, "note": STRING},
+                    "required": ["field", "type"],
+                    "additionalProperties": False,
+                },
+                "key": STRING,
+                "changes": DOMAIN_ACTION_CHANGES,
+            },
+            "required": ["op"],
+            "additionalProperties": False,
+        },
+    }
+
+
+DOMAIN_MUTATION_ENVELOPE = {
+    "expected_revision": WORKING_REVISION,
+    "mutation_id": MUTATION_ID,
+    "edit_session_id": MUTATION_ID,
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+}
+PLAN_TASK_ID = {"type": "string", "minLength": 1, "maxLength": 160}
+OBJECT_PATCH_ACTIONS = [
+    "set_title", "set_description", "set_aliases", "set_query_boundary",
+    "add_field", "update_field", "remove_field",
+    "add_relation", "update_relation", "remove_relation",
+]
+RULE_PATCH_ACTIONS = [
+    "set_title", "set_description", "set_content", "attach_evidence", "detach_evidence",
+    "add_condition", "update_condition", "remove_condition",
+    "add_exception", "remove_exception", "add_target", "remove_target",
+]
+OPERATION_PATCH_ACTIONS = [
+    "set_title", "set_description", "attach_evidence", "detach_evidence",
+    "add_input", "update_input", "remove_input", "add_output", "update_output", "remove_output",
+    "insert_step", "update_step", "move_step", "remove_step",
+    "add_reference", "remove_reference", "add_note", "remove_note",
+]
+METRIC_PATCH_ACTIONS = [
+    "set_title", "set_description", "set_caliber", "set_unit", "set_grain",
+    "attach_evidence", "detach_evidence",
+    "add_boundary", "update_boundary", "remove_boundary",
+    "upsert_null_policy", "remove_null_policy", "upsert_dimension", "remove_dimension",
+    "add_object_reference", "remove_object_reference",
+]
+
+CHANGE_PLAN_TASK = {
+    "type": "object",
+    "properties": {
+        "client_key": {"type": "string", "minLength": 1, "maxLength": 64},
+        "title": {"type": "string", "minLength": 1, "maxLength": 300},
+        "resource_kind": {
+            "type": "string",
+            "enum": ["object", "rule", "operation", "metric", "script", "binding", "other"],
+        },
+        "target_key": {
+            "type": "string", "minLength": 1, "maxLength": 160,
+            "description": "一个且仅一个目标资源的稳定 key；不能填写目录、类别、通配符或多个资源的概括。",
+        },
+        "allowed_tools": {
+            "type": "array", "minItems": 1, "maxItems": 20,
+            "items": {"type": "string", "enum": [
+                "create_object", "create_rule", "create_operation", "create_metric",
+                "patch_object", "patch_rule", "patch_operation", "patch_metric",
+                "sync_schema_objects", "patch_object_source_binding", "delete_domain_resource", "stage_script_source",
+            ]},
+        },
+        "depends_on": {"type": "array", "maxItems": 100, "items": STRING},
+        "acceptance": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "required": {"type": "boolean"},
+    },
+    "required": [
+        "client_key", "title", "resource_kind", "target_key", "allowed_tools", "acceptance",
+    ],
+    "additionalProperties": False,
+}
+CHANGE_SET_TASK_ID = {
+    "type": "string", "minLength": 1,
+    "description": "Core 返回的任务 ID；必须与本动作 tool 和 arguments 中的单一资源目标完全对应。",
+}
+
+
+def change_set_arguments(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object", "properties": properties, "required": required,
+        "additionalProperties": False,
+    }
+
+
+def change_set_action_variant(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "task_id": CHANGE_SET_TASK_ID,
+            "tool": {"type": "string", "enum": [tool]},
+            "arguments": arguments,
+        },
+        "required": ["task_id", "tool", "arguments"],
+        "additionalProperties": False,
+    }
+
+
+CHANGE_SET_CREATE_OBJECT_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING,
+    "aliases": {"type": "array", "items": STRING}, "query_boundary": STRING,
+    "fields": {"type": "array", "minItems": 1, "items": DOMAIN_FIELD},
+    "relations": {"type": "array", "items": DOMAIN_RELATION},
+}, ["key", "title", "description", "fields"])
+CHANGE_SET_CREATE_RULE_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING, "content": STRING,
+    "conditions": {"type": "array", "items": {
+        "type": "object", "properties": {"condition": STRING, "conclusion": STRING},
+        "required": ["condition", "conclusion"], "additionalProperties": False,
+    }},
+    "exceptions": {"type": "array", "items": STRING},
+    "targets": {"type": "array", "items": RESOURCE_ID},
+    "evidence": {"type": "array", "minItems": 1, "items": STRING},
+}, ["key", "title", "content", "evidence"])
+CHANGE_SET_CREATE_OPERATION_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING,
+    "inputs": {"type": "array", "items": {
+        "type": "object", "properties": {
+            "param": STRING, "cn_name": STRING, "type": STRING,
+            "required": {"type": "boolean"}, "note": STRING,
+        }, "required": ["param", "type", "required"], "additionalProperties": False,
+    }},
+    "outputs": {"type": "array", "items": {
+        "type": "object", "properties": {
+            "field": STRING, "cn_name": STRING, "type": STRING, "note": STRING,
+        }, "required": ["field", "type"], "additionalProperties": False,
+    }},
+    "flow": {"type": "array", "minItems": 1, "items": STRING},
+    "notes": {"type": "array", "items": STRING},
+    "references": {"type": "array", "items": RESOURCE_ID},
+    "evidence": {"type": "array", "minItems": 1, "items": STRING},
+}, ["key", "title", "description", "flow", "evidence"])
+CHANGE_SET_CREATE_METRIC_ARGUMENTS = change_set_arguments({
+    "key": STRING, "title": STRING, "description": STRING, "unit": STRING, "grain": STRING,
+    "caliber": STRING, "boundaries": {"type": "array", "minItems": 1, "items": STRING},
+    "null_policy": {"type": "array", "items": {
+        "type": "object", "properties": {"field": STRING, "handling": STRING},
+        "required": ["field", "handling"], "additionalProperties": False,
+    }},
+    "dimensions": {"type": "array", "items": {
+        "type": "object", "properties": {"key": STRING, "note": STRING},
+        "required": ["key", "note"], "additionalProperties": False,
+    }},
+    "object_references": {"type": "array", "items": RESOURCE_ID},
+    "evidence": {"type": "array", "minItems": 1, "items": STRING},
+}, ["key", "title", "caliber", "boundaries", "evidence"])
+
+
+def change_set_patch_arguments(operations: list[str]) -> dict[str, Any]:
+    return change_set_arguments({
+        "resource_id": RESOURCE_ID,
+        "expected_resource_hash": RESOURCE_HASH,
+        "actions": domain_action_schema(operations),
+    }, ["resource_id", "expected_resource_hash", "actions"])
+
+
+CHANGE_SET_ACTION = {"oneOf": [
+    change_set_action_variant("create_object", CHANGE_SET_CREATE_OBJECT_ARGUMENTS),
+    change_set_action_variant("create_rule", CHANGE_SET_CREATE_RULE_ARGUMENTS),
+    change_set_action_variant("create_operation", CHANGE_SET_CREATE_OPERATION_ARGUMENTS),
+    change_set_action_variant("create_metric", CHANGE_SET_CREATE_METRIC_ARGUMENTS),
+    change_set_action_variant("patch_object", change_set_patch_arguments(OBJECT_PATCH_ACTIONS)),
+    change_set_action_variant("patch_rule", change_set_patch_arguments(RULE_PATCH_ACTIONS)),
+    change_set_action_variant("patch_operation", change_set_patch_arguments(OPERATION_PATCH_ACTIONS)),
+    change_set_action_variant("patch_metric", change_set_patch_arguments(METRIC_PATCH_ACTIONS)),
+]}
 
 
 CORE_TOOL_SPECS = (
@@ -526,6 +1010,304 @@ CORE_TOOL_SPECS = (
     ToolSpec("list_dir", "列出知识包目录。", {"path": PATH}, ("path",), display="正在查看知识包目录"),
     ToolSpec("read_file", "读取知识包文件。", {"path": PATH}, ("path",), display="正在读取知识文件"),
     ToolSpec(
+        "create_change_plan",
+        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
+        {
+            "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "mode": {"type": "string", "enum": ["expert_edit", "generation"]},
+            "expected_revision": WORKING_REVISION,
+            "tasks": {"type": "array", "minItems": 1, "maxItems": 100, "items": CHANGE_PLAN_TASK},
+        },
+        ("goal", "mode", "expected_revision", "tasks"),
+        False,
+        "正在建立受控建模计划",
+    ),
+    ToolSpec(
+        "get_change_plan",
+        "读取当前结构化建模计划、Core 分配的任务 ID、完成事实和剩余项。不要用对话记忆猜任务状态。",
+        {"plan_id": STRING},
+        (),
+        True,
+        "正在核对建模计划",
+    ),
+    ToolSpec(
+        "revise_change_plan",
+        "记录范围调整、增加任务或跳过可选任务。执行开始后扩大范围必须先得到用户明确决定。",
+        {
+            "plan_id": STRING,
+            "expected_version": {"type": "integer", "minimum": 1},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "add_tasks": {"type": "array", "maxItems": 100, "items": CHANGE_PLAN_TASK},
+            "skip_task_ids": {"type": "array", "maxItems": 100, "items": STRING},
+            "scope_approved": {"type": "boolean"},
+        },
+        ("plan_id", "expected_version", "reason"),
+        False,
+        "正在记录计划调整",
+    ),
+    ToolSpec(
+        "stage_change_set",
+        "把依赖闭合的 1 到 4 个计划任务作为一个小型原子 Change Set 提交。每个 action 只对应一个计划任务和一个目标资源；同一资源需要补多个字段时应放进该 patch 的 actions，一次完成。大计划必须分批读取最新计划和资源快照后继续，最后再整体验证。只能使用白名单领域动作；每批成功或整批不生效。",
+        {
+            "plan_id": STRING,
+            "expected_revision": WORKING_REVISION,
+            "mutation_id": MUTATION_ID,
+            "actions": {"type": "array", "minItems": 1, "maxItems": 4, "items": CHANGE_SET_ACTION},
+        },
+        ("plan_id", "expected_revision", "mutation_id", "actions"),
+        False,
+        "正在原子生成待确认修改",
+    ),
+    ToolSpec(
+        "get_change_set_receipt",
+        "查询 Change Set 是否实际提交。超时或响应丢失后必须先查回执，禁止猜测并重复写入。",
+        {"mutation_id": MUTATION_ID},
+        ("mutation_id",),
+        True,
+        "正在核对修改回执",
+    ),
+    ToolSpec(
+        "validate_change_set",
+        "只有计划全部必选任务形成候选后，才对完整批次校验并冻结确认回执。",
+        {"plan_id": STRING, "summary": {"type": "string", "maxLength": 1000}},
+        ("plan_id",),
+        False,
+        "正在校验完整建模计划",
+    ),
+    ToolSpec(
+        "discard_change_set",
+        "放弃尚未进入确认的当前计划和候选修改，不影响已确认版本。",
+        {"plan_id": STRING, "reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        ("plan_id", "reason"),
+        False,
+        "正在放弃待确认修改",
+    ),
+    ToolSpec(
+        "list_domain_resources",
+        "按领域列出当前工作修订中的资源、稳定 ID 和资源哈希。修改前先读取，不要从旧对话盲改。",
+        {
+            "kind": {"type": "string", "enum": ["object", "rule", "operation", "metric"]},
+            "working_revision": WORKING_REVISION,
+            "query": STRING,
+            "cursor": STRING,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        ("kind",),
+        display="正在读取领域资源",
+    ),
+    ToolSpec(
+        "get_domain_resource",
+        "读取单个资源的规范化结构、资源哈希、稳定子项 ID 和允许动作。Patch 必须基于本次返回。",
+        {"resource_id": RESOURCE_ID, "working_revision": WORKING_REVISION},
+        ("resource_id",),
+        display="正在读取资源快照",
+    ),
+    ToolSpec(
+        "suggest_object_relations",
+        "Return deterministic object relation candidates from current objects, fields, primary keys, sources, existing relations and operation references. This tool never writes the package or mapping. Use scope to keep increment runs focused; do not show the full candidate list to experts. High-confidence candidates may be drafted into a Change Set summary, while ambiguous candidates should become only a few concrete business questions.",
+        {
+            "working_revision": WORKING_REVISION,
+            "expected_revision": WORKING_REVISION,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            "cursor": STRING,
+            "includeLowConfidence": {"type": "boolean"},
+            "include_low_confidence": {"type": "boolean"},
+            "previousRelations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
+            "previous_relations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
+            "rejectedFingerprints": {"type": "array", "items": STRING, "maxItems": 500},
+            "rejected_fingerprints": {"type": "array", "items": STRING, "maxItems": 500},
+            "scope": OBJECT_RELATION_SUGGESTION_SCOPE,
+        },
+        (),
+        True,
+        "Suggesting object relations",
+    ),
+    ToolSpec(
+        "sync_schema_objects",
+        "按所有 purpose=schema 的已解析 Sheet 确定性同步物理对象。每张 Sheet 恰好生成一个对象，字段、主键、来源和 mapping 由 Core 生成；模型不得传对象正文或字段映射。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
+        },
+        ("plan_task_id", "expected_revision", "mutation_id", "reason"),
+        False,
+        "正在按数据 Schema 同步全部物理对象",
+    ),
+    ToolSpec(
+        "create_object",
+        "仅在项目没有确定数据 Schema 时创建不绑定物理表的虚拟对象。存在 Schema 时必须改用 sync_schema_objects。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING,
+            "aliases": {"type": "array", "items": STRING}, "query_boundary": STRING,
+            "fields": {"type": "array", "minItems": 1, "items": DOMAIN_FIELD},
+            "relations": {"type": "array", "items": DOMAIN_RELATION},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "description", "fields"),
+        False,
+        "正在创建业务对象",
+    ),
+    ToolSpec(
+        "create_rule",
+        "创建业务规则。targets 使用 object:key 或 operation:key；服务端统一校验引用和证据。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING, "content": STRING,
+            "conditions": {"type": "array", "items": {
+                "type": "object", "properties": {"condition": STRING, "conclusion": STRING},
+                "required": ["condition", "conclusion"], "additionalProperties": False,
+            }},
+            "exceptions": {"type": "array", "items": STRING},
+            "targets": {"type": "array", "items": RESOURCE_ID},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "content", "evidence"),
+        False,
+        "正在创建业务规则",
+    ),
+    ToolSpec(
+        "create_operation",
+        "创建业务操作。references 使用对象、规则或指标资源 ID；服务端生成详情与索引。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING,
+            "inputs": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "param": STRING, "cn_name": STRING, "type": STRING,
+                    "required": {"type": "boolean"}, "note": STRING,
+                }, "required": ["param", "type", "required"], "additionalProperties": False,
+            }},
+            "outputs": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "field": STRING, "cn_name": STRING, "type": STRING, "note": STRING,
+                }, "required": ["field", "type"], "additionalProperties": False,
+            }},
+            "flow": {"type": "array", "minItems": 1, "items": STRING},
+            "notes": {"type": "array", "items": STRING},
+            "references": {"type": "array", "items": RESOURCE_ID},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "description", "flow", "evidence"),
+        False,
+        "正在创建业务操作",
+    ),
+    ToolSpec(
+        "create_metric",
+        "创建业务指标。服务端校验口径、边界、对象引用和证据，并生成详情与索引。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "key": STRING, "title": STRING, "description": STRING, "unit": STRING, "grain": STRING,
+            "caliber": STRING, "boundaries": {"type": "array", "minItems": 1, "items": STRING},
+            "null_policy": {"type": "array", "items": {
+                "type": "object", "properties": {"field": STRING, "handling": STRING},
+                "required": ["field", "handling"], "additionalProperties": False,
+            }},
+            "dimensions": {"type": "array", "items": {
+                "type": "object", "properties": {"key": STRING, "note": STRING},
+                "required": ["key", "note"], "additionalProperties": False,
+            }},
+            "object_references": {"type": "array", "items": RESOURCE_ID},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        ("expected_revision", "mutation_id", "reason", "key", "title", "caliber", "boundaries", "evidence"),
+        False,
+        "正在创建业务指标",
+    ),
+    ToolSpec(
+        "patch_object",
+        "按稳定字段 key 和关系 ID 增量修改对象。未出现在 actions 的内容由服务端完整保留。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(OBJECT_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改对象",
+    ),
+    ToolSpec(
+        "patch_object_source_binding",
+        "把对象完整绑定到一张已解析数据表。提交全部字段的一一映射和主键；服务端按资源哈希防覆盖并重建对象与 mappings。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
+            "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH,
+            "document_id": STRING,
+            "table": STRING,
+            "field_bindings": {"type": "array", "minItems": 1, "items": {
+                "type": "object",
+                "properties": {"field_key": STRING, "source_column": STRING},
+                "required": ["field_key", "source_column"],
+                "additionalProperties": False,
+            }},
+            "primary_key": {"type": "array", "minItems": 1, "items": STRING},
+            "evidence": {"type": "array", "minItems": 1, "items": STRING},
+        },
+        (
+            "resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason",
+            "document_id", "table", "field_bindings", "primary_key", "evidence",
+        ),
+        False,
+        "正在更新对象数据绑定",
+    ),
+    ToolSpec(
+        "patch_rule",
+        "按稳定子项 ID 增量修改规则条件、例外、引用或元数据，不完整替换规则。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(RULE_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改规则",
+    ),
+    ToolSpec(
+        "patch_operation",
+        "按参数 key 和稳定步骤 ID 增量修改操作，不重传未变化的输入、输出和流程。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(OPERATION_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改操作",
+    ),
+    ToolSpec(
+        "patch_metric",
+        "增量修改指标口径、边界、空值策略、维度和对象引用，未涉及内容保持不变。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE, "resource_id": RESOURCE_ID,
+            "expected_resource_hash": RESOURCE_HASH, "actions": domain_action_schema(METRIC_PATCH_ACTIONS),
+        },
+        ("resource_id", "expected_revision", "expected_resource_hash", "mutation_id", "reason", "actions"),
+        False,
+        "正在增量修改指标",
+    ),
+    ToolSpec(
+        "preview_domain_delete",
+        "删除前确定性预览入站引用和受影响资源。只生成与当前引用图绑定的预览 token，不写候选。",
+        {
+            "resource_ids": {"type": "array", "minItems": 1, "maxItems": 100, "items": RESOURCE_ID},
+            "expected_revision": WORKING_REVISION,
+        },
+        ("resource_ids", "expected_revision"),
+        display="正在预览删除影响",
+    ),
+    ToolSpec(
+        "delete_domain_resource",
+        "使用刚生成的预览 token 原子删除领域资源并清理显式引用；状态变化后 token 自动失效。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
+            "resource_ids": {"type": "array", "minItems": 1, "maxItems": 100, "items": RESOURCE_ID},
+            "preview_token": STRING,
+            "cleanup_references": {"type": "boolean", "const": True},
+        },
+        ("resource_ids", "expected_revision", "mutation_id", "reason", "preview_token", "cleanup_references"),
+        False,
+        "正在删除领域资源",
+    ),
+    ToolSpec(
         "write_file",
         "写入非受管候选文件，不改变已确认版本。规则、操作和对象数据映射优先使用领域工具；change_group 是本轮确认的最小单位。",
         {
@@ -553,7 +1335,7 @@ CORE_TOOL_SPECS = (
             }},
             "relations": {"type": "array", "items": {
                 "type": "object",
-                "properties": {"relation": STRING, "target": STRING, "note": STRING,
+                "properties": {"relation": RELATION_NAME, "target": STRING, "note": STRING,
                                "evidence": {"type": "array", "items": STRING}},
                 "required": ["relation", "target"], "additionalProperties": False,
             }},
@@ -767,6 +1549,27 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("grep_package", "跨知识包文件检索文本。", {"pattern": STRING}, ("pattern",), display="正在检索知识包"),
     ToolSpec("gate_status", "读取门禁的确定性结果；Agent 不能自行宣布门禁通过。", {"gate": STRING}, ("gate",), display="正在检查门禁"),
+    ToolSpec(
+        "analyze_deterministic_capabilities",
+        "由核心代码分析已确认知识中的计算、聚合、排序和精确转换，返回脚本候选及建议契约；本工具只分析，不生成脚本。",
+        {},
+        (),
+        display="正在分析确定性计算范围",
+    ),
+    ToolSpec(
+        "confirm_deterministic_scope",
+        "保存专家对当前确定性计算范围的明确决定。selected_operation_keys 为空表示专家明确决定本轮不生成脚本；不得在没有专家确认卡答案时调用。",
+        {
+            "expected_scope_hash": RESOURCE_HASH,
+            "selected_operation_keys": {
+                "type": "array", "items": STRING, "maxItems": 100, "uniqueItems": True,
+            },
+            "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+        },
+        ("expected_scope_hash", "selected_operation_keys", "reason"),
+        False,
+        "正在保存脚本范围决定",
+    ),
     ToolSpec("who_references", "返回直接引用目标的一跳条目；是否继续传播由你判断。", {"target": STRING}, ("target",), display="正在核对引用关系"),
     ToolSpec(
         "analyze_material_impact",
@@ -1012,11 +1815,82 @@ CORE_TOOL_SPECS = (
         ("rev_a", "rev_b"),
         display="正在生成变更对照",
     ),
-    ToolSpec("update_plan", "更新 .modeling/plan.md 的工作拆解；不得在计划里声明当前业务阶段、门禁状态或复制项目状态。", {"markdown": STRING}, ("markdown",), False, "正在更新工作拆解"),
+    ToolSpec("update_work_notes", "更新 .modeling/plan.md 的工作笔记；它不代表受控建模计划、业务阶段或门禁状态。", {"markdown": STRING}, ("markdown",), False, "正在更新工作笔记"),
+    ToolSpec("update_plan", "仅供历史 checkpoint 恢复：更新 .modeling/plan.md 工作笔记。新运行使用 update_work_notes。", {"markdown": STRING}, ("markdown",), False, "正在恢复历史工作笔记"),
+    ToolSpec(
+        "define_script_contract",
+        "先定义脚本的绑定操作、CLI 参数、结构化输出、超时和执行边界；这一步不写源码或候选文件。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "script_key": STRING,
+            "title": STRING,
+            "description": STRING,
+            "operation_id": RESOURCE_ID,
+            "expected_operation_hash": RESOURCE_HASH,
+            "entrypoint": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.py$"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+            "parameters": {"type": "array", "maxItems": 100, "items": {
+                "type": "object", "properties": {
+                    "name": STRING, "flag": {"type": "string", "pattern": "^--[a-z][a-z0-9-]*$"},
+                    "type": STRING, "required": {"type": "boolean"},
+                    "default_value": {"oneOf": [
+                        {"type": "string"}, {"type": "number"}, {"type": "boolean"},
+                    ]},
+                    "description": STRING, "multiple": {"type": "boolean"},
+                    "action": {"type": "string", "enum": ["store_true", "store_false"]},
+                }, "required": ["name", "flag", "type", "required"], "additionalProperties": False,
+            }},
+            "outputs": {"type": "array", "minItems": 1, "maxItems": 100, "items": {
+                "type": "object", "properties": {"key": STRING, "type": STRING, "description": STRING},
+                "required": ["key", "type"], "additionalProperties": False,
+            }},
+            "boundaries": {"type": "array", "minItems": 1, "maxItems": 100, "items": STRING},
+            "evidence": {"type": "array", "minItems": 1, "maxItems": 100, "items": STRING},
+        },
+        (
+            "expected_revision", "mutation_id", "reason", "script_key", "title", "description",
+            "operation_id", "expected_operation_hash", "entrypoint", "timeout_seconds",
+            "parameters", "outputs", "boundaries", "evidence",
+        ),
+        False,
+        "正在定义脚本契约",
+    ),
+    ToolSpec(
+        "get_script_contract",
+        "读取当前 run 中已定义的脚本契约和契约哈希，不返回源码。",
+        {"script_key": STRING},
+        ("script_key",),
+        display="正在读取脚本契约",
+    ),
+    ToolSpec(
+        "stage_script_source",
+        "按已定义契约提交 Python 源码。核心检查语法、安全、argparse、JSON 输出、占位实现和操作双向绑定后，原子生成候选。",
+        {
+            "script_key": STRING,
+            "plan_task_id": PLAN_TASK_ID,
+            "expected_revision": WORKING_REVISION,
+            "expected_contract_hash": RESOURCE_HASH,
+            "mutation_id": MUTATION_ID,
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "source_code": {"type": "string", "minLength": 1, "maxLength": 100000},
+        },
+        ("script_key", "expected_revision", "expected_contract_hash", "mutation_id", "reason", "source_code"),
+        False,
+        "正在校验并提交脚本源码",
+    ),
     ToolSpec(
         "run_script_test",
-        "在 JiuwenBox 中运行脚本契约测试。",
-        {"script": STRING, "cases": {"type": "array", "items": {"type": "object"}}},
+        "按知识包 Markdown 中的脚本契约拼装 CLI 参数，再在 JiuwenBox 中从脚本入口启动子进程。"
+        "每个用例只能提供业务 input 和完整 expected；不接受 function 或 argv，不能直调 Python 内部函数。",
+        {"script": STRING, "cases": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "input": {"type": "object", "additionalProperties": True},
+                "expected": {},
+            },
+            "required": ["input", "expected"],
+            "additionalProperties": False,
+        }}},
         ("script", "cases"),
         False,
         "正在沙箱中测试脚本",
@@ -1033,7 +1907,20 @@ CORE_TOOL_SPECS = (
         {"round_id": STRING},
         display="正在读取评测结果",
     ),
-    ToolSpec("query_eval_db", "只读查询评测数据源。", {"sql": STRING}, ("sql",), display="正在查询评测数据"),
+    ToolSpec(
+        "cancel_evaluation",
+        "仅在用户明确要求停止当前或指定评测轮次时使用。重复停止已结束轮次会返回同一终态，不会影响后来启动的轮次。",
+        {"round_id": STRING},
+        parallel_safe=False,
+        display="正在停止评测",
+    ),
+    ToolSpec(
+        "query_eval_db",
+        "仅用于诊断 modeling 服务端可直连的 MySQL 评测库镜像，要求服务端已配置评测库直连地址；参数必须是一条只读 SQL。不要用它查询项目数据源配置，也不要用它访问 Neo4j 或仅由 NL2SQL 服务内部管理的数据连接。",
+        {"sql": STRING},
+        ("sql",),
+        display="正在查询评测库镜像",
+    ),
 )
 
 PROJECT_STATE_TOOL_SPECS = (
@@ -1077,6 +1964,10 @@ class CoreTool(Tool):
                 name=spec.name,
                 description=spec.description,
                 input_params=spec.input_schema,
+                properties=(
+                    {"resilience": {"timeout_s": FULL_READ_TOOL_TIMEOUT_SECONDS}}
+                    if spec.name == "read_documents_fully" else {}
+                ),
                 parallel_safe=spec.parallel_safe,
             )
         )
@@ -1087,6 +1978,14 @@ class CoreTool(Tool):
         if self.context.cancel_event is not None and self.context.cancel_event.is_set():
             raise asyncio.CancelledError
         arguments = input_dict(inputs)
+        if self.spec.name == "cancel_evaluation" and not self.context.evaluation_cancel_authorized:
+            return json.dumps({
+                "error": "EVALUATION_CANCEL_NOT_REQUESTED",
+                "reason": "用户没有明确要求停止评测",
+                "retryable": False,
+                "instruction": "不要停止评测；如需说明能力，只回答当前能力和状态。",
+                "display": {"text": "未停止评测：当前没有明确的停止请求"},
+            }, ensure_ascii=False)
         arguments = _bounded_source_arguments(self.spec.name, arguments)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         activity_id = f"{self.spec.name}:{started_after}"
@@ -1163,10 +2062,53 @@ class CoreTool(Tool):
         finally:
             if self.context.inflight_core_calls is not None:
                 self.context.inflight_core_calls.discard(call)
+        autonomous_recovery = _autonomous_recovery(self.spec.name, arguments, result, self.context)
+        if autonomous_recovery is not None:
+            result = autonomous_recovery
+        redirect = _tool_redirect(result)
+        if redirect is not None:
+            issue_id = str(redirect["issueId"])
+            required_tool = str(redirect["requiredTool"])
+            recovery = {
+                **redirect,
+                "sourceTool": self.spec.name,
+                "arguments": arguments,
+            }
+            self.context.technical_recoveries[issue_id] = recovery
+            if self.context.require_tool is not None:
+                self.context.require_tool(required_tool, recovery)
+            result = {
+                **result,
+                "issueId": issue_id,
+                "issueStatus": "repairing",
+                "tracePhase": "repairing",
+            }
         if _is_retryable_validation_failure(self.spec.name, result):
             result = self.context.validation_repair.decorate(result)
         elif not result.get("error"):
-            self.context.validation_repair.record_success(self.spec.name)
+            resolved_validation_issue_ids = self.context.validation_repair.record_success(
+                self.spec.name,
+            )
+            resolved_issue_ids = [
+                issue_id for issue_id, recovery in self.context.technical_recoveries.items()
+                if str(recovery.get("requiredTool") or "") == self.spec.name
+            ]
+            for issue_id in resolved_issue_ids:
+                self.context.technical_recoveries.pop(issue_id, None)
+            resolved_issue_ids = list(dict.fromkeys([
+                *resolved_validation_issue_ids,
+                *resolved_issue_ids,
+            ]))
+            if resolved_issue_ids:
+                if self.context.resolve_issues is not None:
+                    self.context.resolve_issues(resolved_issue_ids)
+                result = {
+                    **result,
+                    "issueStatus": "resolved",
+                    "resolvedIssueIds": resolved_issue_ids,
+                }
+        if result.get("problemVisibility") == "recovery":
+            self.context.recovery_waiting = True
         if not result.get("error") and self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
         return json.dumps(_compact_source_result(self.spec.name, result), ensure_ascii=False)
@@ -1196,6 +2138,134 @@ def _is_retryable_validation_failure(name: str, result: Mapping[str, Any]) -> bo
     return has_retryable_error and (
         isinstance(result.get("findings"), list) or has_report
     )
+
+
+def _tool_redirect(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    if result.get("error") is None or result.get("requiredAction") != "redirect_tool":
+        return None
+    required_tool = str(result.get("requiredTool") or "").strip()
+    if not required_tool:
+        return None
+    issue_id = str(result.get("issueId") or "").strip()
+    if not issue_id:
+        source = json.dumps({
+            "error": result.get("error"),
+            "requiredTool": required_tool,
+            "targetKind": result.get("targetKind"),
+            "managedPath": result.get("managedPath"),
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        issue_id = f"tool-issue-{hashlib.sha256(source.encode('utf-8')).hexdigest()[:20]}"
+    recovery_action = result.get("recoveryAction")
+    action_id = str(
+        recovery_action.get("id")
+        if isinstance(recovery_action, Mapping) else "resume_required_tool"
+    ).strip() or "resume_required_tool"
+    return {
+        "issueId": issue_id,
+        "requiredTool": required_tool,
+        "targetKind": str(result.get("targetKind") or ""),
+        "actionId": action_id,
+    }
+
+
+def _autonomous_recovery(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    result: Mapping[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | None:
+    recovery_config = result.get("recovery")
+    if (
+        not result.get("error")
+        or not isinstance(recovery_config, Mapping)
+        or str(recovery_config.get("owner") or "") != "agent"
+    ):
+        return None
+    strategy = str(recovery_config.get("strategy") or "refresh_and_retry").strip()
+    required_tool = str(recovery_config.get("requiredTool") or tool_name).strip() or tool_name
+    try:
+        max_attempts = max(1, int(recovery_config.get("maxAttempts") or 2))
+    except (TypeError, ValueError):
+        max_attempts = 2
+    scope = {
+        key: arguments.get(key)
+        for key in ("plan_id", "resource_id", "round_id", "path")
+        if arguments.get(key) is not None
+    }
+    identity = json.dumps({
+        "error": result.get("error"),
+        "sourceTool": tool_name,
+        "strategy": strategy,
+        "scope": scope,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    issue_id = str(result.get("issueId") or "").strip() or (
+        f"agent-recovery-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:20]}"
+    )
+    previous = context.technical_recoveries.get(issue_id, {})
+    previous_attempt = _non_negative_int(previous.get("attempt"))
+    exhausted = previous_attempt >= max_attempts
+    attempt = previous_attempt if exhausted else previous_attempt + 1
+    recovery_actions = [
+        {
+            "id": "retry_from_latest",
+            "label": "基于最新内容继续",
+            "description": "重新同步当前计划和内容，只处理尚未完成的部分。",
+        },
+        {
+            "id": "keep_current_progress",
+            "label": "保留当前成果，结束本轮",
+            "description": "保留已经完成的修改，暂不继续本轮处理。",
+        },
+    ]
+    recovery = {
+        "issueId": issue_id,
+        "requiredTool": required_tool,
+        "sourceTool": tool_name,
+        "strategy": strategy,
+        "actionId": "retry_from_latest",
+        "recoveryActions": recovery_actions,
+        "attempt": attempt,
+        "maxAttempts": max_attempts,
+        "exhausted": exhausted,
+        "scope": scope,
+    }
+    context.technical_recoveries[issue_id] = recovery
+    if context.require_tool is not None:
+        context.require_tool(required_tool, recovery)
+    context.stable_read_cache.clear()
+    if not exhausted:
+        return {
+            **dict(result),
+            "issueId": issue_id,
+            "issueStatus": "repairing",
+            "repairAttempt": attempt,
+            "tracePhase": "repairing",
+            "problemVisibility": "activity",
+            "instruction": (
+                "这是系统可自行恢复的版本冲突。先重新读取当前建模计划和涉及的资源快照，"
+                "再按最新 revision 与 resource hash 生成新的参数和 mutation_id；"
+                "不得原样重放旧 Change Set。"
+            ),
+            "display": {"text": "内容版本已更新，正在同步最新状态后继续"},
+        }
+    if context.release_required_tool is not None:
+        context.release_required_tool(required_tool)
+    return {
+        **dict(result),
+        "issueId": issue_id,
+        "issueStatus": "awaiting_user",
+        "repairAttempt": attempt,
+        "repairStopped": True,
+        "tracePhase": "waiting",
+        "problemVisibility": "recovery",
+        "customerSummary": "自动同步仍未完成，请选择如何处理当前成果。",
+        "instruction": (
+            "自动恢复已达到上限。停止继续尝试并等待用户选择；不要把技术错误或内部参数交给用户。"
+        ),
+        "display": {"text": "自动同步仍未完成，等待选择后续处理"},
+        "recoveryAction": recovery_actions[0],
+        "recoveryActions": recovery_actions,
+    }
 
 
 def _bounded_positive_integer(value: Any, maximum: int) -> int:
@@ -1491,15 +2561,97 @@ class RequestReleaseTool(CoreTool):
 
 
 def build_tools(context: ToolContext) -> list[Tool]:
+    core_specs = core_tool_specs_for_phase(
+        context.phase,
+        context.required_tools,
+        tool_profile=context.tool_profile,
+    )
     return [
         *(ProjectStateTool(spec, context) for spec in PROJECT_STATE_TOOL_SPECS),
-        *(CoreTool(spec, context) for spec in CORE_TOOL_SPECS),
+        *(CoreTool(spec, context) for spec in core_specs),
         FocusTool(context),
         NotifyTool(context),
         AskTool(context.run_id),
         RequestConfirmationTool(context),
-        RequestReleaseTool(context),
+        *([RequestReleaseTool(context)] if context.phase in {"", "evaluation", "release"} else []),
     ]
+
+
+DOMAIN_PHASE_TOOLS = frozenset({
+    "create_change_plan", "get_change_plan", "revise_change_plan",
+    "stage_change_set", "get_change_set_receipt", "validate_change_set", "discard_change_set",
+    "list_domain_resources", "get_domain_resource",
+    "create_object", "create_rule", "create_operation", "create_metric",
+    "patch_object", "patch_rule", "patch_operation", "patch_metric",
+    "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
+    "preview_domain_delete", "delete_domain_resource",
+    "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
+    "stage_tabular_dataset",
+})
+FUSION_PHASE_TOOLS = frozenset({
+    "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",
+    "get_package_fusion_plan", "create_package_fusion_plan", "update_package_fusion_plan",
+    "compile_package_fusion_plan", "analyze_package_merge", "read_package_source_file",
+    "stage_package_merge",
+})
+EVALUATION_PHASE_TOOLS = frozenset({"run_evaluation", "get_evaluation_results", "cancel_evaluation", "query_eval_db"})
+SCRIPT_PHASE_TOOLS = frozenset({
+    "analyze_deterministic_capabilities", "confirm_deterministic_scope",
+    "define_script_contract", "get_script_contract", "stage_script_source", "run_script_test",
+})
+LEGACY_TOOL_ALIASES = frozenset({
+    "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
+    "update_plan",
+})
+CHANGE_SET_DIRECT_ACTION_TOOLS = frozenset({
+    "create_object", "create_rule", "create_operation", "create_metric",
+    "patch_object", "patch_rule", "patch_operation", "patch_metric",
+})
+
+
+def core_tool_specs_for_phase(
+    phase: str,
+    required_tools: frozenset[str] = frozenset(),
+    *,
+    tool_profile: str = "domain-v2",
+) -> tuple[ToolSpec, ...]:
+    """Keep production Leader schemas aligned with the current business phase.
+
+    An empty phase preserves the full surface for old tests and recovery callers that do not
+    carry project state yet. Explicit read-only subagents continue to use build_core_tools.
+    """
+    legacy_profile = tool_profile == "legacy-v1"
+    if not phase:
+        selected_specs: list[ToolSpec] = []
+        for spec in CORE_TOOL_SPECS:
+            if legacy_profile or spec.name not in LEGACY_TOOL_ALIASES:
+                selected_specs.append(spec)
+        return tuple(selected_specs)
+    allowed_domain = phase in {"knowledge", "increment"}
+    allowed_fusion = phase == "increment"
+    allowed_evaluation = phase in {"validation", "evaluation", "release"}
+    selected_specs = []
+    for spec in CORE_TOOL_SPECS:
+        if not legacy_profile and spec.name in LEGACY_TOOL_ALIASES:
+            continue
+        required_for_recovery = spec.name in required_tools
+        allowed_for_phase = (
+            (spec.name not in DOMAIN_PHASE_TOOLS or allowed_domain)
+            and (spec.name not in FUSION_PHASE_TOOLS or allowed_fusion)
+            and (spec.name not in EVALUATION_PHASE_TOOLS or allowed_evaluation)
+            and (spec.name not in SCRIPT_PHASE_TOOLS or phase in {"validation", "increment"})
+        )
+        if not required_for_recovery and not allowed_for_phase:
+            continue
+        direct_change_forbidden = (
+            not legacy_profile
+            and phase in {"knowledge", "increment"}
+            and spec.name in CHANGE_SET_DIRECT_ACTION_TOOLS | {"write_file", "delete_file"}
+        )
+        if direct_change_forbidden:
+            continue
+        selected_specs.append(spec)
+    return tuple(selected_specs)
 
 
 def build_core_tools(context: ToolContext, names: set[str]) -> list[Tool]:

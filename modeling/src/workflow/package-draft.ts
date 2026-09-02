@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { getPackageArtifactStore, PackageArtifactStoreError } from '../artifacts/index.js';
+import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import { ArtifactRepositoryError } from '../artifacts/repository.js';
 import { getDb, nowIso } from '../db/index.js';
 import type { CoverageResult, DataDictTable, PackageSpec } from '../types.js';
@@ -358,52 +359,54 @@ export async function createOrGetPackageDraft(
   projectId: string,
   createdBy: string,
 ): Promise<{ draft: PackageDraftView; created: boolean }> {
-  const existing = activeDraftRow(projectId);
-  if (existing) return { draft: await toDraftView(existing), created: false };
+  return runProjectWriteExclusive(projectId, async () => {
+    const existing = activeDraftRow(projectId);
+    if (existing) return { draft: await toDraftView(existing), created: false };
 
-  const current = await getPackageArtifactStore().current(projectId);
-  if (!current) {
-    throw new PackageDraftError(
-      'PACKAGE_DRAFT_BASE_VERSION_REQUIRED',
-      '尚未生成知识包，无法开始人工编辑草稿',
-      409,
-    );
-  }
-  // This ID only satisfies the legacy foreign key. The draft content and stale check
-  // are bound exclusively to current.revision.oid below.
-  const versionAnchor = getDb().prepare(`SELECT id FROM package_versions
-    WHERE project_id = ?
-    ORDER BY CASE WHEN revision_oid = ? THEN 0 ELSE 1 END, rowid DESC
-    LIMIT 1`).get(projectId, current.revision.oid) as { id: string } | undefined;
-  if (!versionAnchor) {
-    throw new PackageDraftError(
-      'PACKAGE_DRAFT_BASE_VERSION_REQUIRED',
-      '当前 Git 工件尚未建立正式版本索引，无法开始人工编辑草稿',
-      409,
-    );
-  }
-  const created = inImmediateTransaction(() => {
-    const raced = activeDraftRow(projectId);
-    if (raced) return { row: raced, created: false };
-    const now = nowIso();
-    const id = `pd_${randomUUID().slice(0, 12)}`;
-    getDb().prepare(`INSERT INTO package_drafts
-      (id, project_id, base_package_version_id, base_version, base_revision_oid,
-       status, revision, created_by, created_at, updated_at)
-      VALUES (?,?,?,?,?, 'active', 0, ?,?,?)`)
-      .run(
-        id,
-        projectId,
-        versionAnchor.id,
-        current.packageVersion,
-        current.revision.oid,
-        createdBy,
-        now,
-        now,
+    const current = await getPackageArtifactStore().current(projectId);
+    if (!current) {
+      throw new PackageDraftError(
+        'PACKAGE_DRAFT_BASE_VERSION_REQUIRED',
+        '尚未生成知识包，无法开始人工编辑草稿',
+        409,
       );
-    return { row: draftRowById(id)!, created: true };
+    }
+    // This ID only satisfies the legacy foreign key. The draft content and stale check
+    // are bound exclusively to current.revision.oid below.
+    const versionAnchor = getDb().prepare(`SELECT id FROM package_versions
+      WHERE project_id = ?
+      ORDER BY CASE WHEN revision_oid = ? THEN 0 ELSE 1 END, rowid DESC
+      LIMIT 1`).get(projectId, current.revision.oid) as { id: string } | undefined;
+    if (!versionAnchor) {
+      throw new PackageDraftError(
+        'PACKAGE_DRAFT_BASE_VERSION_REQUIRED',
+        '当前 Git 工件尚未建立正式版本索引，无法开始人工编辑草稿',
+        409,
+      );
+    }
+    const created = inImmediateTransaction(() => {
+      const raced = activeDraftRow(projectId);
+      if (raced) return { row: raced, created: false };
+      const now = nowIso();
+      const id = `pd_${randomUUID().slice(0, 12)}`;
+      getDb().prepare(`INSERT INTO package_drafts
+        (id, project_id, base_package_version_id, base_version, base_revision_oid,
+         status, revision, created_by, created_at, updated_at)
+        VALUES (?,?,?,?,?, 'active', 0, ?,?,?)`)
+        .run(
+          id,
+          projectId,
+          versionAnchor.id,
+          current.packageVersion,
+          current.revision.oid,
+          createdBy,
+          now,
+          now,
+        );
+      return { row: draftRowById(id)!, created: true };
+    });
+    return { draft: await toDraftView(created.row), created: created.created };
   });
-  return { draft: await toDraftView(created.row), created: created.created };
 }
 
 export async function getPackageDraftFile(

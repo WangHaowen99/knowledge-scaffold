@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parse as parseYaml } from 'yaml';
 import { isPackageMarkdownHref, resolvePackageMarkdownTarget } from '../../packageMarkdownLink.js';
-import { store } from '../lib/appStore.js';
+import { actions, store } from '../lib/appStore.js';
 import {
   displayEvidenceReferences,
   evidenceReferenceFromHref,
@@ -35,6 +35,7 @@ export default function FileView({ path }) {
   const [mode, setMode] = useState('rendered');
   const demo = useStore(store, (state) => state.demo);
   const fileContents = useStore(store, (state) => state.fileContents);
+  const fileError = useStore(store, (state) => state.fileErrors[path]);
   const materials = useStore(store, (state) => state.materials);
   const files = useStore(store, (state) => state.files);
   const content = demo ? SAMPLE : fileContents[path];
@@ -60,7 +61,14 @@ export default function FileView({ path }) {
         )}
       </div>
       {content === undefined
-        ? <div className="empty">正在读取文件…</div>
+        ? fileError
+          ? <div className="wb-file-read-error" role="alert">
+              <b>当前文件暂时不可用</b>
+              <span>{fileError}</span>
+              <small>项目其他区域仍可使用；可以重试，也可以在右侧继续询问建模助手。</small>
+              <button type="button" className="btn btn-p btn-sm" onClick={() => void actions.loadFile(path)}>重试</button>
+            </div>
+          : <div className="empty">正在读取文件…</div>
         : mode === 'rendered' && type === 'markdown'
           ? <article className="wb-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
               a: ({ node: _node, href, children, ...props }) => (

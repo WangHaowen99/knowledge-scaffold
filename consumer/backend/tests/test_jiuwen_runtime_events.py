@@ -16,6 +16,7 @@ from agent.runtime import (
 )
 from agent.runtime.mock import ListRuntimeEventSink
 from agent.runtime.async_utils import run_sync_compat
+from agent.runtime.jiuwen import _build_resumable_llm_context
 from agent.exceptions import ModelInvocationError, ModelOutputTruncatedError
 from agent.runtime.lifecycle import JiuwenRuntimeLifecycleError
 
@@ -162,7 +163,9 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
 
         cases = [
             (ModelInvocationError(TimeoutError("slow")), "MODEL_TIMEOUT", "model", True, None),
+            (ModelInvocationError(HttpError(408)), "MODEL_TIMEOUT", "model", True, 408),
             (ModelInvocationError(HttpError(429)), "MODEL_RATE_LIMITED", "model", True, 429),
+            (ModelInvocationError(HttpError(409)), "MODEL_PROVIDER_ERROR", "model", True, 409),
             (ModelInvocationError(HttpError(401)), "AUTHENTICATION_FAILED", "model", False, 401),
             (ModelInvocationError(HttpError(403)), "AUTHENTICATION_FAILED", "model", False, 403),
             (ModelInvocationError(HttpError(503)), "MODEL_PROVIDER_ERROR", "model", True, 503),
@@ -190,6 +193,127 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(error.error_code, "MODEL_CONNECTION_ERROR")
                 self.assertEqual(error.source, "model")
                 self.assertTrue(error.retriable)
+
+    def test_resumable_context_trims_incomplete_tool_call_suffix(self):
+        messages = [
+            {"role": "user", "content": "synthetic request"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-complete",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-complete",
+                "name": "lookup",
+                "content": "synthetic result",
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-incomplete",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
+
+        checkpoint = _build_resumable_llm_context(messages)
+
+        self.assertEqual(
+            [message["role"] for message in checkpoint],
+            ["user", "assistant", "tool"],
+        )
+        self.assertEqual(checkpoint[-1]["tool_call_id"], "call-complete")
+        self.assertNotIn("call-incomplete", str(checkpoint))
+
+    async def test_retriable_model_failure_returns_recovery_and_valid_history(self):
+        class ProviderError(RuntimeError):
+            status_code = 503
+
+        class FailingEngine:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def arun(self, state, **kwargs):
+                del kwargs
+                state["messages"] = [
+                    {"role": "user", "content": "runtime request"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-complete",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call-complete",
+                        "name": "lookup",
+                        "content": "synthetic result",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-incomplete",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                ]
+                raise ModelInvocationError(ProviderError("private detail"))
+
+        runtime = JiuwenAsyncAgentRuntime(
+            agent_config=SimpleNamespace(),
+            engine_factory=FailingEngine,
+        )
+        sink = ListRuntimeEventSink()
+
+        result = await runtime.arun(_context("run-recoverable"), sink)
+        terminal = sink.events[-1]
+        draft = PublicEventAdapter().adapt(terminal)
+
+        self.assertEqual(result.status, "failed")
+        self.assertTrue(result.error.retriable)
+        self.assertEqual(result.recovery.action, "continue")
+        self.assertEqual(result.recovery.label, "继续执行")
+        self.assertEqual(
+            result.recovery.message,
+            "Continue the previous task from where it was interrupted, using the "
+            "preserved context. Do not repeat steps that have already been completed.",
+        )
+        self.assertEqual(
+            [message.role for message in result.history_messages],
+            ["user", "assistant", "tool"],
+        )
+        self.assertNotIn("call-incomplete", str(result.history_messages))
+        self.assertEqual(terminal.payload["recovery"]["action"], "continue")
+        self.assertIsNotNone(draft)
+        assert draft is not None
+        self.assertEqual(draft.payload["recovery"]["action"], "continue")
+        self.assertNotIn("history_messages", draft.payload)
 
     def test_runtime_error_classification_walks_wrapped_causes(self):
         try:

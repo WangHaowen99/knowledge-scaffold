@@ -3,6 +3,7 @@ import type { LlmDeps } from '../llm/provider.js';
 import { makeAgent, runAgentCaptured } from '../workflow/agent.js';
 import type { DataDictTable, PackageSpec } from '../types.js';
 import type { QualityGap } from '../workflow/data-quality.js';
+import { mapWithConcurrency } from '../workflow/generation-planner.js';
 import type { EvalResult } from '../workflow/m3-repo.js';
 import { buildTools } from '../workflow/tools.js';
 import type { EvaluationExecutionTrace } from './trace-client.js';
@@ -306,6 +307,7 @@ const LLM_CATEGORIES = ['testcase_gap', 'data_gap', 'knowledge_gap', 'routing_is
 const REPAIR_SCOPES = ['testcase', 'runtime', 'data', 'package', 'script', 'judge'] as const;
 const SEMANTIC_DIAGNOSIS_BATCH_ITEMS = 4;
 const SEMANTIC_DIAGNOSIS_BATCH_CHARS = 45_000;
+const SEMANTIC_DIAGNOSIS_CONCURRENCY = 4;
 
 function semanticDiagnosisBatches(candidates: EvalResult[]): EvalResult[][] {
   const batches: EvalResult[][] = [];
@@ -333,6 +335,21 @@ function semanticDiagnosisBatches(candidates: EvalResult[]): EvalResult[][] {
   return batches;
 }
 
+function semanticDiagnosisFailureCode(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '').trim()
+    : '';
+  if (/^[A-Z][A-Z0-9_-]{2,80}$/u.test(code)) return code;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (/timeout|timed\s*out|超时/iu.test(message)) return 'MODEL_REQUEST_TIMEOUT';
+  if (/rate\s*limit|too\s*many\s*requests|限流|\b429\b/iu.test(message)) return 'MODEL_RATE_LIMITED';
+  if (/未按协议|未调用|未提交|submit|capture/iu.test(message)) return 'MODEL_CAPTURE_FAILED';
+  const name = error instanceof Error ? error.name.trim() : '';
+  return name && name !== 'Error' && /^[A-Za-z][A-Za-z0-9_-]{2,80}$/u.test(name)
+    ? name
+    : 'MODEL_DIAGNOSIS_FAILED';
+}
+
 async function semanticDiagnoses(
   input: DiagnoseEvaluationInput,
   llm: LlmDeps,
@@ -349,9 +366,45 @@ async function semanticDiagnoses(
   if (!candidates.length) return [];
   const batches = semanticDiagnosisBatches(candidates);
   if (batches.length > 1) {
-    const diagnoses: FailureDiagnosis[] = [];
-    for (const batch of batches) {
-      diagnoses.push(...await semanticDiagnoses({ ...input, results: batch }, llm, existing));
+    const outcomes = await mapWithConcurrency(
+      batches,
+      SEMANTIC_DIAGNOSIS_CONCURRENCY,
+      async (batch, index) => {
+        try {
+          return {
+            diagnoses: await semanticDiagnoses(
+              { ...input, results: batch },
+              llm,
+              existing,
+            ),
+            failedResults: [] as EvalResult[],
+            failureEvidence: '',
+          };
+        } catch (error) {
+          return {
+            diagnoses: [] as FailureDiagnosis[],
+            failedResults: batch,
+            failureEvidence: `诊断批次 ${index + 1}：${semanticDiagnosisFailureCode(error)}`,
+          };
+        }
+      },
+    );
+    const failedResults = outcomes.flatMap((outcome) => outcome.failedResults);
+    const diagnoses = outcomes.flatMap((outcome) => outcome.diagnoses);
+    if (failedResults.length) {
+      diagnoses.push({
+        category: 'runtime_error',
+        title: '部分失败原因分析未完成',
+        summary: `${failedResults.length} 条失败用例的语义诊断未完整返回；其他已完成批次的诊断结果仍然保留。`,
+        evidence: outcomes.map((outcome) => outcome.failureEvidence).filter(Boolean),
+        confidence: 'high',
+        blocking: false,
+        repairScope: 'runtime',
+        packageOptimizable: false,
+        resultIds: failedResults.map((result) => result.id),
+        relatedQuestions: failedResults.map((result) => result.question),
+        suggestedAction: '确认后台任务模型可用后重新诊断；不要根据未完成批次直接修改知识包。',
+      });
     }
     return diagnoses;
   }

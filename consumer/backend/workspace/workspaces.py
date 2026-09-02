@@ -48,6 +48,9 @@ WORKSPACE_HEADER = "X-Workspace-Id"
 LEGACY_DEFAULT_WORKSPACE_ID = "default"
 _WORKSPACE_ID_MAX_LEN = 64
 _WORKSPACE_MEMBERS_MAX_COUNT = 64
+_PERSONAL_WORKSPACE_ID_PATTERN = re.compile(
+    r"^home-[0-9a-f]{20}(?:-[0-9a-f]{8})?$"
+)
 _MCP_ENDPOINT_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _MCP_ENDPOINT_LOCK_FILE = "workspace-mcp-endpoints.lock"
 _MCP_ENDPOINT_BACKUP_SUFFIX = "pre-workspace-mcp-endpoint-id-v1.bak"
@@ -1358,6 +1361,7 @@ def create_workspace(
     auto_set_default: bool = True,
     owner: Optional[str] = None,
     enforce_workspace_limit: bool = True,
+    allow_reserved_id: bool = False,
 ) -> Dict[str, str]:
     _ensure_workspace_state()
     normalized_name = _normalize_workspace_name(name)
@@ -1397,6 +1401,10 @@ def create_workspace(
                 candidate = _slugify_workspace_name(normalized_name)
                 while _workspace_exists_authoritative(candidate):
                     candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
+            if not allow_reserved_id and _PERSONAL_WORKSPACE_ID_PATTERN.fullmatch(
+                candidate
+            ):
+                raise ValueError("工作空间 ID 使用了系统保留前缀")
 
             if enforce_workspace_limit:
                 max_workspaces = LimitsConfig.from_env().workspace_max_count
