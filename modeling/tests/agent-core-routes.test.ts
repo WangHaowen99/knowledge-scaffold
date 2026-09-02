@@ -908,6 +908,129 @@ test('物理对象 mapping 是编译产物，Agent 不能按路径删除', async
   assert.equal(after.json().content, before.json().content);
 });
 
+test('suggest_object_relations 只读推荐对象关系并支持稳定过滤', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'synthetic relation suggestions', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: 'synthetic-relation-suggestions',
+    name: 'synthetic relation suggestions',
+    description: 'Synthetic package for deterministic object relation suggestions.',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: {
+      ...structuredClone(initial.spec),
+      objects: [{
+        key: 'customer',
+        title: 'Customer',
+        description: 'Synthetic customer object.',
+        primaryKey: ['customer_id'],
+        fields: [
+          { key: 'customer_id', type: 'string', required: true, sourceColumn: 'customer_id' },
+          { key: 'customer_name', type: 'string', required: false, sourceColumn: 'customer_name' },
+        ],
+      }, {
+        key: 'order',
+        title: 'Order',
+        description: 'Synthetic order object.',
+        primaryKey: ['order_id'],
+        fields: [
+          { key: 'order_id', type: 'string', required: true, sourceColumn: 'order_id' },
+          { key: 'customer_id', type: 'string', required: false, sourceColumn: 'customer_id' },
+        ],
+        relations: [{ relation: 'belongs_to', target: 'customer', note: 'Already confirmed.' }],
+      }, {
+        key: 'invoice',
+        title: 'Invoice',
+        description: 'Synthetic invoice object.',
+        primaryKey: ['invoice_id'],
+        fields: [
+          { key: 'invoice_id', type: 'string', required: true, sourceColumn: 'invoice_id' },
+          { key: 'customer_id', type: 'string', required: false, sourceColumn: 'customer_id' },
+        ],
+      }],
+      operations: [{
+        key: 'review_invoice',
+        title: 'Review invoice',
+        description: 'Synthetic operation using related objects.',
+        inputs: [],
+        outputs: [],
+        flow: ['read invoice'],
+        relatedObjects: ['invoice', 'customer'],
+      }],
+    },
+    coverage: initial.coverage,
+    note: 'Seed synthetic relation suggestion package.',
+    action: {
+      cause: 'test.seed_relation_suggestions',
+      summary: 'Seed synthetic relation suggestion package.',
+      actorKind: 'system',
+      actorName: 'test',
+    },
+  });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  assert.equal(listed.statusCode, 200, listed.body);
+
+  const suggested = await tool(app, project.id, 'suggest_object_relations', {
+    working_revision: listed.json().working_revision,
+    limit: 20,
+  }, runId);
+  assert.equal(suggested.statusCode, 200, suggested.body);
+  const candidates = suggested.json().candidates;
+  assert.ok(candidates.some((candidate: any) => (
+    candidate.sourceObject === 'invoice'
+    && candidate.targetObject === 'customer'
+    && candidate.relation === 'belongs_to'
+    && candidate.sourceField === 'customer_id'
+    && candidate.targetField === 'customer_id'
+    && candidate.confidence === 'high'
+  )));
+  assert.ok(!candidates.some((candidate: any) => (
+    candidate.sourceObject === 'order'
+    && candidate.targetObject === 'customer'
+    && candidate.relation === 'belongs_to'
+  )));
+  const invoiceCandidate = candidates.find((candidate: any) => (
+    candidate.sourceObject === 'invoice'
+    && candidate.targetObject === 'customer'
+    && candidate.relation === 'belongs_to'
+  ));
+  assert.ok(invoiceCandidate?.candidateFingerprint);
+  assert.equal(invoiceCandidate.evidence, undefined);
+  assert.equal(String(invoiceCandidate.candidateFingerprint).startsWith('rel:'), true);
+  assert.ok(!String(invoiceCandidate.candidateFingerprint).includes(suggested.json().schemaInputHash));
+  assert.ok(!JSON.stringify(candidates).includes('C-001'));
+
+  const rejected = await tool(app, project.id, 'suggest_object_relations', {
+    working_revision: listed.json().working_revision,
+    limit: 20,
+    rejectedFingerprints: [invoiceCandidate.candidateFingerprint],
+  }, runId);
+  assert.equal(rejected.statusCode, 200, rejected.body);
+  assert.ok(!rejected.json().candidates.some((candidate: any) => (
+    candidate.sourceObject === 'invoice'
+    && candidate.targetObject === 'customer'
+    && candidate.relation === 'belongs_to'
+  )));
+
+  const scoped = await tool(app, project.id, 'suggest_object_relations', {
+    working_revision: listed.json().working_revision,
+    limit: 20,
+    scope: { affectedObjects: ['order'] },
+  }, runId);
+  assert.equal(scoped.statusCode, 200, scoped.body);
+  assert.ok(!scoped.json().candidates.some((candidate: any) => (
+    candidate.sourceObject === 'invoice'
+    || candidate.targetObject === 'invoice'
+  )));
+
+  const pending = getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ? AND run_id = ?`).get(project.id, runId) as { count: number };
+  assert.equal(pending.count, 0);
+});
+
 test('虚拟对象模式缺失 mapping 是合法状态', async (t) => {
   const project = createProject({ owner: 'alice', name: '虚拟对象无映射', runtime: 'agent' });
   const artifacts = getPackageArtifactStore();

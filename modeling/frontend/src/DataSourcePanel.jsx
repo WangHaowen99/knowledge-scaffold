@@ -4,6 +4,7 @@ import {
   getDataSource,
   getEvaluationDatabaseTarget,
   getPackageFile,
+  getPackageDataSource,
   getSettings,
   saveDataSource,
 } from './api.js';
@@ -12,7 +13,9 @@ import {
   dataSourceFormError,
   dataSourceFormPayload,
   dataSourceToForm,
+  normalizeProviderForPackageDataSource,
   providerLabel,
+  providerOptionsForPackageDataSource,
 } from './data-source-form.js';
 import { runGraphImportContextRequest } from './graph-import-form.js';
 import { loadLatestKnowledgePackageManifestId } from './knowledge-package-manifest.js';
@@ -121,9 +124,15 @@ function databaseUrlPreview(databaseUrl) {
   }
 }
 
-export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRequest = saveDataSource }) {
+export default function DataSourcePanel({
+  projectId,
+  onAdvance,
+  saveDataSourceRequest = saveDataSource,
+  packageDataSourceType: packageDataSourceTypeProp = '',
+}) {
   const [form, setForm] = useState(null);
   const [saved, setSaved] = useState(null);
+  const [packageDataSourceType, setPackageDataSourceType] = useState(packageDataSourceTypeProp || '');
   const [providerSelectionChanged, setProviderSelectionChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncingOntologyId, setSyncingOntologyId] = useState(false);
@@ -151,22 +160,27 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
       request: () => Promise.all([
         getDataSource(contextKey),
         getSettings().catch(() => ({ evalBinding: {} })),
+        packageDataSourceTypeProp
+          ? Promise.resolve({ packageDataSource: { dataSourceType: packageDataSourceTypeProp } })
+          : getPackageDataSource(contextKey).catch(() => ({ packageDataSource: { dataSourceType: '' } })),
       ]),
     }).then((outcome) => {
       if (outcome.kind !== 'current') return;
-      const [source, settings] = outcome.value;
+      const [source, settings, packageSource] = outcome.value;
+      const selectedPackageDataSourceType = packageSource.packageDataSource?.dataSourceType || '';
       const dataSource = source.dataSource || null;
+      setPackageDataSourceType(selectedPackageDataSourceType);
       setSaved(dataSource);
-      setForm(dataSourceToForm(dataSource, settings.evalBinding || {}));
+      setForm(dataSourceToForm(dataSource, settings.evalBinding || {}, selectedPackageDataSourceType));
     }).catch((e) => {
       if (active && projectContextRef.current === contextKey) setErr(e.message);
     });
     return () => { active = false; };
-  }, [projectId]);
+  }, [projectId, packageDataSourceTypeProp]);
 
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
   const changeProvider = (event) => {
-    const provider = event.target.value;
+    const provider = normalizeProviderForPackageDataSource(event.target.value, packageDataSourceType);
     providerRevisionRef.current += 1;
     setProviderSelectionChanged(true);
     setForm((current) => ({ ...current, provider }));
@@ -276,7 +290,7 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
       const result = outcome.value;
       setSaved(result.dataSource);
       setProviderSelectionChanged(false);
-      setForm(dataSourceToForm(result.dataSource));
+      setForm(dataSourceToForm(result.dataSource, {}, packageDataSourceType));
       setMessage(submittedForm.mode === 'none' ? '配置已保存' : '连接测试通过，评测连接已同步，配置已保存');
       if (result.dataSource.mode !== 'connection') {
         onAdvance?.(result.dataSource);
@@ -289,6 +303,11 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
   };
 
   if (!form) return <div className="empty">加载中…</div>;
+  const providerOptions = providerOptionsForPackageDataSource(packageDataSourceType);
+  const packageDataSourceLabel = packageDataSourceType === 'nl2sql' ? 'NL2SQL' : 'Neo4j';
+  const packageDataSourceNotice = packageDataSourceType === 'nl2sql' || packageDataSourceType === 'neo4j'
+    ? `当前知识包数据源类型：${packageDataSourceLabel}`
+    : '';
   return (
     <div>
       <Tour scene={DATA_SOURCE_TOUR_SCENE} steps={dataSourceTourSteps(form.provider)} autoStart={false} />
@@ -303,16 +322,24 @@ export default function DataSourcePanel({ projectId, onAdvance, saveDataSourceRe
       </div>
 
       {form.mode === 'connection' ? (
+        <>
+        {packageDataSourceNotice && (
+          <div className="ev-launch" style={{ color: 'var(--muted)', fontSize: 12.5, marginBottom: 10 }}>
+            {packageDataSourceNotice}
+          </div>
+        )}
         <DataSourceConnectionFields
           form={form}
           busy={busy}
           syncingOntologyId={syncingOntologyId}
           onFieldChange={set}
           onProviderChange={changeProvider}
+          providerOptions={providerOptions}
           creatingDatabase={creatingDatabase}
           onCreateProjectDatabase={requestProjectDatabaseCreation}
           onSyncOntologyId={syncOntologyId}
         />
+        </>
       ) : (
         <div className="ev-launch" style={{ color: 'var(--muted)', fontSize: 12.5 }}>
           评测将不使用业务数据源；已有本体数据源配置会在每轮评测导入后被清除。

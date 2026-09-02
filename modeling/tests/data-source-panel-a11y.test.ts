@@ -33,6 +33,27 @@ test('数据源字段提供稳定的标签关联和可访问名称', () => {
   assert.match(html, /<label for="[^"]+">Provider<\/label>/);
 });
 
+test('数据源 Provider 下拉可按知识包数据源类型收窄', () => {
+  const html = renderToStaticMarkup(React.createElement(DataSourceConnectionFields, {
+    form: {
+      provider: 'neo4j', uri: '', database: '', username: '', password: '',
+      workspace_property: '', workspace_value: '', ontology_property: '', ontology_value: '',
+    },
+    busy: false,
+    syncingOntologyId: false,
+    creatingDatabase: false,
+    providerOptions: [{ value: 'neo4j', label: 'Neo4j' }],
+    onFieldChange: () => () => {},
+    onProviderChange: () => {},
+    onCreateProjectDatabase: () => {},
+    onSyncOntologyId: () => {},
+  }));
+
+  assert.match(html, />Neo4j<\/option>/);
+  assert.doesNotMatch(html, /NL2SQL Template/);
+  assert.doesNotMatch(html, /NL2SQL HTTP/);
+});
+
 test('数据源问号说明默认隐藏，并支持鼠标悬停与键盘聚焦展示', () => {
   const html = renderToStaticMarkup(React.createElement(PackageDataSourceHelp));
 
