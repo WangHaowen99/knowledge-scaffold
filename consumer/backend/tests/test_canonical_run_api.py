@@ -23,6 +23,7 @@ from starlette.requests import Request
 
 from agent.runtime.contracts import (
     PublicEventDraft,
+    RunPreflightSnapshot,
     RuntimeErrorInfo,
     RuntimeResult,
     RunScope,
@@ -443,6 +444,52 @@ def test_post_run_allocates_server_ids_and_exact_retry_starts_one_task(
                 "session_api_contract"
             )
             assert len(history["turns"]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_post_run_attaches_one_protocol_preflight_snapshot(monkeypatch, tmp_path):
+    async def scenario() -> None:
+        app, harness = _install_harness(monkeypatch, tmp_path)
+        expected = RunPreflightSnapshot(
+            workspace_id=_WORKSPACE_ID,
+            workspace_config_generation=1,
+            system_config_generation=2,
+            deterministic_candidate=False,
+            model_profile={"id": "profile_demo"},
+        )
+        calls = []
+
+        class _OptimizedOrchestrator(_SyntheticOrchestrator):
+            @staticmethod
+            def build_run_preflight_snapshot(**kwargs):
+                calls.append(kwargs)
+                return expected
+
+        monkeypatch.setattr(
+            workflows,
+            "_get_orchestrator",
+            lambda: _OptimizedOrchestrator(),
+        )
+        monkeypatch.setattr(
+            workflows,
+            "resolve_effective_llm_profile_config",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("optimized protocol path must resolve once")
+            ),
+        )
+
+        async with await _client_for(app) as client:
+            response = await client.post(
+                "/agentic/runs",
+                json=_ordinary_payload(session_id="session_preflight_contract"),
+                headers=_headers("preflight-request-key"),
+            )
+
+        assert response.status_code == 202, response.text
+        assert len(calls) == 1
+        assert calls[0]["workspace_id"] == _WORKSPACE_ID
+        assert harness.manager.started_contexts[0].preflight_snapshot is expected
 
     asyncio.run(scenario())
 

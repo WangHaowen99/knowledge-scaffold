@@ -1,5 +1,6 @@
 import pytest
 
+import config.settings as settings_module
 import workspace.workspaces as workspaces_module
 from workspace.workspaces import (
     create_workspace,
@@ -18,6 +19,38 @@ def test_runtime_root_uses_explicit_project_root(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(expected_root))
 
     assert workspaces_module.get_runtime_root() == expected_root.resolve()
+
+
+def test_runtime_root_uses_storage_only_config_accessor(tmp_path, monkeypatch):
+    expected_root = tmp_path / ".onto-runtime"
+    calls = []
+
+    class FakeStorageConfig:
+        project_root = str(expected_root)
+
+        @classmethod
+        def from_env(cls):
+            calls.append(True)
+            return cls()
+
+    monkeypatch.setattr(
+        workspaces_module,
+        "StorageConfig",
+        FakeStorageConfig,
+        raising=False,
+    )
+
+    def fail_full_app_config(cls):
+        raise AssertionError("runtime-root resolution must not build AppConfig")
+
+    monkeypatch.setattr(
+        settings_module.AppConfig,
+        "from_env",
+        classmethod(fail_full_app_config),
+    )
+
+    assert workspaces_module.get_runtime_root() == expected_root.resolve()
+    assert calls == [True]
 
 
 def test_runtime_config_rejects_unknown_top_level_key(tmp_path, monkeypatch):

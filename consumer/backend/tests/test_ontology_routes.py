@@ -2,12 +2,17 @@
 
 import io
 import json
+import shutil
 import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
+import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from api.testing import TestApplication
 from api.routes import ontologies as ontologies_module
@@ -24,6 +29,7 @@ def _build_test_client(
     username: str = "admin",
     password: str = "TestBootstrap#2026",
     role: str = "admin",
+    raise_server_exceptions: bool = True,
 ):
     app = TestApplication()
     app.state.services["TESTING"] = True
@@ -42,7 +48,10 @@ def _build_test_client(
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(ontologies_router)
 
-    client = TestClient(app)
+    client = TestClient(
+        app,
+        raise_server_exceptions=raise_server_exceptions,
+    )
     token = auth_manager.issue_token(user)
     headers = {"Authorization": "Bearer {}".format(token)}
     return client, headers
@@ -106,6 +115,279 @@ def _write_example_ontology(workspace_paths):
         encoding="utf-8",
     )
     return ontology_dir
+
+
+@pytest.mark.parametrize("mutation_kind", ["update", "upload"])
+def test_file_mutation_conflict_restores_bytes_without_advancing_view_revision(
+    tmp_path,
+    monkeypatch,
+    mutation_kind,
+):
+    import ontology.view_cache as view_cache_module
+    from ontology.mutations import OntologyMutationConflictError
+    from ontology.view_cache import OntologyViewCache, get_ontology_mutation_revision
+
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = _write_example_ontology(workspace_paths)
+    target = ontology_dir / "versions" / "1.0.0" / "objects" / "TargetItem.md"
+    original = target.read_bytes()
+
+    class ConflictAfterFilesystemCommit:
+        def commit(self, mutation):
+            if mutation.precondition is not None:
+                mutation.precondition()
+            mutation.commit()
+            mutation.rollback()
+            if mutation.finalize is not None:
+                mutation.finalize()
+            raise OntologyMutationConflictError(
+                "MUTATION_REVISION_CONFLICT",
+                "synthetic final revision conflict",
+            )
+
+    monkeypatch.setattr(
+        view_cache_module,
+        "_view_cache",
+        OntologyViewCache(max_entries=8),
+    )
+    monkeypatch.setattr(
+        ontologies_module,
+        "_mutation_coordinator",
+        lambda _workspace_id: ConflictAfterFilesystemCommit(),
+    )
+    client, headers = _build_test_client(tmp_path)
+    before_revision = get_ontology_mutation_revision("demo", EXAMPLE_ONTOLOGY_ID)
+    replacement = (
+        "# Synthetic replacement\n\n"
+        "| field | description |\n"
+        "| --- | --- |\n"
+        "| id | synthetic |\n"
+    )
+
+    if mutation_kind == "update":
+        response = client.put(
+            "/agentic/ontologies/{}/file".format(EXAMPLE_ONTOLOGY_ID),
+            headers=headers,
+            json={
+                "folder": "objects",
+                "version": "1.0.0",
+                "name": "TargetItem.md",
+                "content": replacement,
+            },
+        )
+    else:
+        response = _post(
+            client,
+            "/agentic/ontologies/{}/upload".format(EXAMPLE_ONTOLOGY_ID),
+            headers=headers,
+            data={
+                "folder": "objects",
+                "version": "1.0.0",
+                "file": (io.BytesIO(replacement.encode("utf-8")), "TargetItem.md"),
+            },
+        )
+
+    assert response.status_code == 409
+    assert target.read_bytes() == original
+    assert (
+        get_ontology_mutation_revision("demo", EXAMPLE_ONTOLOGY_ID)
+        == before_revision
+    )
+
+
+def _write_two_version_file_ontology(workspace_paths):
+    ontology_dir = workspace_paths.ontologies_dir / EXAMPLE_ONTOLOGY_ID
+    version_one = ontology_dir / "versions" / "1.0.0"
+    version_two = ontology_dir / "versions" / "2.0.0"
+    for version_dir, content in ((version_one, "version-one"), (version_two, "version-two")):
+        objects_dir = version_dir / "objects"
+        objects_dir.mkdir(parents=True)
+        (objects_dir / "TargetItem.md").write_text(content, encoding="utf-8")
+    manifest_path = ontology_dir / "manifest.yaml"
+
+    def write_manifest(active_version):
+        manifest_path.write_text(
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: {}\n".format(EXAMPLE_ONTOLOGY_ID)
+            + "name: Synthetic Ontology\n"
+            "description: Synthetic ontology for concurrency tests\n"
+            "version: {}\n".format(active_version)
+            + "active_version: {}\n".format(active_version)
+            + "versions:\n"
+            "  - 1.0.0\n"
+            "  - 2.0.0\n"
+            "language: en-US\n"
+            "enabled: true\n",
+            encoding="utf-8",
+        )
+
+    write_manifest("1.0.0")
+    return ontology_dir, version_one, version_two, write_manifest
+
+
+@pytest.mark.parametrize("mutation_kind", ["update", "upload"])
+def test_file_mutation_resolves_implicit_active_version_after_lock_acquisition(
+    tmp_path,
+    monkeypatch,
+    mutation_kind,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir, version_one, version_two, write_manifest = (
+        _write_two_version_file_ontology(workspace_paths)
+    )
+    switched = False
+
+    @contextmanager
+    def switch_active_version(_ontology_dir):
+        nonlocal switched
+        if not switched:
+            write_manifest("2.0.0")
+            switched = True
+        yield
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "_ontology_install_lock",
+        switch_active_version,
+    )
+    client, headers = _build_test_client(tmp_path)
+    replacement = "# Synthetic active-version replacement\n"
+
+    if mutation_kind == "update":
+        response = client.put(
+            "/agentic/ontologies/{}/file".format(EXAMPLE_ONTOLOGY_ID),
+            headers=headers,
+            json={
+                "folder": "objects",
+                "name": "TargetItem.md",
+                "content": replacement,
+            },
+        )
+        assert response.status_code == 200
+        assert (version_one / "objects" / "TargetItem.md").read_text(
+            encoding="utf-8"
+        ) == "version-one"
+        assert (version_two / "objects" / "TargetItem.md").read_text(
+            encoding="utf-8"
+        ) == replacement
+    else:
+        response = _post(
+            client,
+            "/agentic/ontologies/{}/upload".format(EXAMPLE_ONTOLOGY_ID),
+            headers=headers,
+            data={
+                "folder": "objects",
+                "file": (io.BytesIO(replacement.encode("utf-8")), "NewItem.md"),
+            },
+        )
+        assert response.status_code == 201
+        assert not (version_one / "objects" / "NewItem.md").exists()
+        assert (version_two / "objects" / "NewItem.md").read_text(
+            encoding="utf-8"
+        ) == replacement
+    assert yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))[
+        "active_version"
+    ] == "2.0.0"
+
+
+def test_non_active_file_cleanup_failure_keeps_success_and_publishes_invalidation(
+    tmp_path,
+    monkeypatch,
+):
+    import ontology.view_cache as view_cache_module
+    from ontology.view_cache import OntologyViewCache, get_ontology_mutation_revision
+
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    _ontology_dir, _version_one, version_two, _write_manifest = (
+        _write_two_version_file_ontology(workspace_paths)
+    )
+    original_prepare = ontologies_module._stage_and_commit_revision_file
+
+    def prepare_with_failed_cleanup(*args, **kwargs):
+        commit, rollback, finalize = original_prepare(*args, **kwargs)
+
+        def failed_finalize():
+            finalize()
+            raise OSError("synthetic cleanup failure")
+
+        return commit, rollback, failed_finalize
+
+    monkeypatch.setattr(
+        view_cache_module,
+        "_view_cache",
+        OntologyViewCache(max_entries=8),
+    )
+    monkeypatch.setattr(
+        ontologies_module,
+        "_stage_and_commit_revision_file",
+        prepare_with_failed_cleanup,
+    )
+    before_revision = get_ontology_mutation_revision("demo", EXAMPLE_ONTOLOGY_ID)
+    client, headers = _build_test_client(tmp_path)
+    replacement = "# Synthetic non-active replacement\n"
+
+    response = client.put(
+        "/agentic/ontologies/{}/file".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        json={
+            "folder": "objects",
+            "version": "2.0.0",
+            "name": "TargetItem.md",
+            "content": replacement,
+        },
+    )
+
+    assert response.status_code == 200
+    assert (version_two / "objects" / "TargetItem.md").read_text(
+        encoding="utf-8"
+    ) == replacement
+    assert (
+        get_ontology_mutation_revision("demo", EXAMPLE_ONTOLOGY_ID)
+        == before_revision + 1
+    )
+
+
+def test_upload_does_not_recreate_ontology_deleted_after_locked_resolution(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir, _version_one, _version_two, _write_manifest = (
+        _write_two_version_file_ontology(workspace_paths)
+    )
+    original_resolver = getattr(
+        ontologies_module,
+        "_resolve_ontology_file_write_target",
+        None,
+    )
+
+    def resolve_then_delete(*args, **kwargs):
+        assert original_resolver is not None
+        target = original_resolver(*args, **kwargs)
+        shutil.rmtree(ontology_dir)
+        return target
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "_resolve_ontology_file_write_target",
+        resolve_then_delete,
+        raising=False,
+    )
+    client, headers = _build_test_client(tmp_path)
+
+    response = _post(
+        client,
+        "/agentic/ontologies/{}/upload".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+        data={
+            "folder": "objects",
+            "file": (io.BytesIO(b"# Synthetic upload\n"), "NewItem.md"),
+        },
+    )
+
+    assert response.status_code == 404
+    assert not ontology_dir.exists()
 
 
 def _build_zip_file(entries: dict[str, str | bytes]) -> io.BytesIO:
@@ -588,6 +870,12 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
+    invalidations = []
+    monkeypatch.setattr(
+        ontologies_module,
+        "invalidate_ontology_views",
+        lambda **scope: invalidations.append(scope),
+    )
 
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     response = client.put(
@@ -599,6 +887,15 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload == {"success": True, "ontology_id": "demo-ontology", "enabled": False}
+    no_op_response = client.put(
+        "/agentic/ontologies/demo-ontology/status",
+        headers=headers,
+        json={"enabled": False},
+    )
+    assert no_op_response.status_code == 200
+    assert invalidations == [
+        {"workspace_id": "demo", "ontology_id": "demo-ontology"}
+    ]
 
     manifest = (ontology_dir / "manifest.yaml").read_text(encoding="utf-8")
     assert "enabled: false" in manifest
@@ -606,6 +903,34 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
     list_response = client.get("/agentic/ontologies", headers=headers)
     list_payload = list_response.json()
     assert list_payload["ontologies"][0]["enabled"] is False
+
+
+def test_delete_ontology_invalidates_only_after_success(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = _write_example_ontology(workspace_paths)
+    invalidations = []
+    monkeypatch.setattr(
+        ontologies_module,
+        "invalidate_ontology_views",
+        lambda **scope: invalidations.append(scope),
+    )
+    client, headers = _build_test_client(tmp_path)
+
+    missing = client.delete(
+        "/agentic/ontologies/missing-ontology",
+        headers=headers,
+    )
+    deleted = client.delete(
+        "/agentic/ontologies/{}".format(EXAMPLE_ONTOLOGY_ID),
+        headers=headers,
+    )
+
+    assert missing.status_code == 404
+    assert deleted.status_code == 200
+    assert not ontology_dir.exists()
+    assert invalidations == [
+        {"workspace_id": "demo", "ontology_id": EXAMPLE_ONTOLOGY_ID}
+    ]
 
 
 def test_workspace_owner_can_manage_ontology_package(tmp_path, monkeypatch):
@@ -1167,6 +1492,12 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, owner="modeler")
     client, headers = _build_test_client(tmp_path, username="modeler", role="user")
     operation_content = "x" * 15000
+    invalidations = []
+    monkeypatch.setattr(
+        ontologies_module,
+        "invalidate_ontology_views",
+        lambda **scope: invalidations.append(scope),
+    )
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
@@ -1195,6 +1526,9 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
     assert response.status_code == 201
     assert response.json()["import_mode"] == "converted"
     assert (workspace_paths.ontologies_dir / "converted-demo").exists()
+    assert invalidations == [
+        {"workspace_id": "demo", "ontology_id": "converted-demo"}
+    ]
 
 
 def test_import_does_not_write_package_when_checkpoint_reset_fails(tmp_path, monkeypatch):
@@ -2494,6 +2828,12 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
     )
     (version1 / "operations" / "index.md").write_text("- v1-op\n", encoding="utf-8")
     (version2 / "operations" / "index.md").write_text("- v2-op\n", encoding="utf-8")
+    invalidations = []
+    monkeypatch.setattr(
+        ontologies_module,
+        "invalidate_ontology_views",
+        lambda **scope: invalidations.append(scope),
+    )
 
     client, headers = _build_test_client(tmp_path, username="modeler", role="user")
     response = client.put(
@@ -2503,6 +2843,15 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["active_version"] == "2.0.0"
+    no_op_response = client.put(
+        "/agentic/ontologies/demo-ontology/active-version",
+        headers=headers,
+        json={"version": "2.0.0"},
+    )
+    assert no_op_response.status_code == 200
+    assert invalidations == [
+        {"workspace_id": "demo", "ontology_id": "demo-ontology"}
+    ]
 
     monkeypatch.setattr(ontology_registry_module, "_global_registry", None)
     ontology = get_ontology_registry().get_ontology("demo-ontology")
@@ -2602,13 +2951,24 @@ def test_delete_ontology_version_removes_only_target_version(tmp_path, monkeypat
     )
     (version1 / "operations" / "流程A.md").write_text("v1\n", encoding="utf-8")
     (version2 / "operations" / "流程A.md").write_text("v2\n", encoding="utf-8")
+    invalidations = []
+    monkeypatch.setattr(
+        ontologies_module,
+        "invalidate_ontology_views",
+        lambda **scope: invalidations.append(scope),
+    )
 
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
+    blocked_response = client.delete(
+        "/agentic/ontologies/demo-ontology/versions/1.0.0",
+        headers=headers,
+    )
     response = client.delete(
         "/agentic/ontologies/demo-ontology/versions/2.0.0",
         headers=headers,
     )
 
+    assert blocked_response.status_code == 409
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
@@ -2622,6 +2982,178 @@ def test_delete_ontology_version_removes_only_target_version(tmp_path, monkeypat
     assert manifest["active_version"] == "1.0.0"
     assert manifest["version"] == "1.0.0"
     assert manifest["versions"] == ["1.0.0"]
+    assert invalidations == [
+        {"workspace_id": "demo", "ontology_id": "demo-ontology"}
+    ]
+
+
+@pytest.mark.parametrize("failing_hook", ("registry", "export"))
+def test_delete_ontology_version_post_commit_hooks_are_best_effort(
+    tmp_path,
+    monkeypatch,
+    failing_hook,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
+    for version in ("1.0.0", "2.0.0"):
+        version_dir = ontology_dir / "versions" / version
+        version_dir.mkdir(parents=True)
+        (version_dir / "content.md").write_text(version, encoding="utf-8")
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: demo-ontology\n"
+            "name: Demo Ontology\n"
+            "description: Post-commit hook failure\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions: [1.0.0, 2.0.0]\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+    invalidations = []
+    hook_calls = []
+
+    class Registry:
+        def refresh(self):
+            hook_calls.append("registry")
+            if failing_hook == "registry":
+                raise OSError("synthetic registry refresh failure")
+
+    def export_snapshot(**_scope):
+        hook_calls.append("export")
+        if failing_hook == "export":
+            raise OSError("synthetic snapshot export failure")
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "invalidate_ontology_views",
+        lambda **scope: invalidations.append(scope),
+    )
+    monkeypatch.setattr(
+        ontologies_module,
+        "get_ontology_registry",
+        lambda **_scope: Registry(),
+    )
+    monkeypatch.setattr(
+        ontologies_module,
+        "export_ontology_snapshot_safely",
+        export_snapshot,
+    )
+    client, headers = _build_test_client(
+        tmp_path,
+        raise_server_exceptions=False,
+    )
+
+    response = client.delete(
+        "/agentic/ontologies/demo-ontology/versions/2.0.0",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["versions"] == ["1.0.0"]
+    assert not (ontology_dir / "versions" / "2.0.0").exists()
+    manifest = yaml.safe_load(
+        (ontology_dir / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["versions"] == ["1.0.0"]
+    assert invalidations == [
+        {"workspace_id": "demo", "ontology_id": "demo-ontology"}
+    ]
+    assert hook_calls == ["registry", "export"]
+
+
+def test_concurrent_version_deletes_keep_manifest_and_directories_consistent(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
+    for version in ("1.0.0", "2.0.0", "3.0.0"):
+        version_dir = ontology_dir / "versions" / version
+        version_dir.mkdir(parents=True)
+        (version_dir / "content.md").write_text(version, encoding="utf-8")
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: demo-ontology\n"
+            "name: Demo Ontology\n"
+            "description: Concurrent version deletion\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions:\n"
+            "  - 1.0.0\n"
+            "  - 2.0.0\n"
+            "  - 3.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+
+    original_ensure = ontologies_module.ensure_ontology_versions
+    snapshots_ready = threading.Barrier(2)
+
+    def synchronize_snapshot(path):
+        manifest = original_ensure(path)
+        try:
+            snapshots_ready.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return manifest
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "ensure_ontology_versions",
+        synchronize_snapshot,
+    )
+    recorded_base_revisions = []
+    original_commit = ontologies_module.OntologyMutationCoordinator.commit
+
+    def record_prepared_base(coordinator, mutation):
+        recorded_base_revisions.append(mutation.base_mutation_revision)
+        return original_commit(coordinator, mutation)
+
+    monkeypatch.setattr(
+        ontologies_module.OntologyMutationCoordinator,
+        "commit",
+        record_prepared_base,
+    )
+
+    def delete(version):
+        request = Request(
+            {
+                "type": "http",
+                "method": "DELETE",
+                "path": "/agentic/ontologies/demo-ontology/versions/{}".format(
+                    version
+                ),
+                "headers": [],
+                "query_string": b"",
+            }
+        )
+        return ontologies_module.delete_ontology_version(
+            "demo-ontology",
+            version,
+            request,
+            workspace_id="demo",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(delete, ("2.0.0", "3.0.0")))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    manifest = yaml.safe_load(
+        (ontology_dir / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["active_version"] == "1.0.0"
+    assert manifest["versions"] == ["1.0.0"]
+    assert recorded_base_revisions == [0, 1]
+    assert (ontology_dir / "versions" / "1.0.0").is_dir()
+    assert not (ontology_dir / "versions" / "2.0.0").exists()
+    assert not (ontology_dir / "versions" / "3.0.0").exists()
 
 
 def test_delete_active_ontology_version_returns_409(tmp_path, monkeypatch):

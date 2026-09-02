@@ -79,6 +79,21 @@ test('session knowledge package options include the stable package id', () => {
   assert.equal(chatSource.includes('{packageDisplayLabel(ontology)}'), true);
 });
 
+test('chat consumes the AppShell ontology resource without issuing a second list request', () => {
+  assert.equal(chatSource.includes("authFetch('/agentic/ontologies')"), false);
+  assert.equal(chatSource.includes('ontologies: sharedOntologies'), true);
+  assert.equal(appShellSource.includes('ontologies={kb.packages}'), true);
+});
+
+test('chat represents shared ontology loading and error states instead of treating them as an empty list', () => {
+  assert.equal(chatSource.includes('ontologiesLoading = false'), true);
+  assert.equal(chatSource.includes("ontologiesError = ''"), true);
+  assert.equal(chatSource.includes('onRetryOntologies'), true);
+  assert.equal(chatSource.includes("ontologiesLoading ? '正在加载知识包…'"), true);
+  assert.equal(chatSource.includes("ontologiesError ? '知识包加载失败'"), true);
+  assert.equal(chatSource.includes('onClick={onRetryOntologies}'), true);
+});
+
 test('session version appears directly after the knowledge package selector', () => {
   const ontologySelect = chatSource.indexOf('<select value={selectedOntologyId}');
   const versionNote = chatSource.indexOf('{displayedOntologyVersion && (', ontologySelect);
@@ -95,6 +110,17 @@ test('chat activity refreshes session ordering at send and terminal stream state
   assert.equal(agenticStreamSource.includes('onSessionUpdated?.();'), true);
   assert.equal(chatSessionsSource.includes('const touchSession = useCallback'), true);
   assert.equal(chatSessionsSource.includes('updated_at: updatedAt'), true);
+});
+
+test('session history requests bounded pages and exposes a deduplicating load-more action', () => {
+  const sidebarSource = readFileSync(join(currentDir, 'ChatHistorySidebar.jsx'), 'utf8');
+
+  assert.equal(chatSessionsSource.includes("'/agentic/sessions?limit=50'"), true);
+  assert.equal(chatSessionsSource.includes('nextSessionCursorRef'), true);
+  assert.equal(chatSessionsSource.includes('mergeSessionPage'), true);
+  assert.equal(chatSessionsSource.includes('loadMoreSessions'), true);
+  assert.equal(sidebarSource.includes('hasMoreSessions'), true);
+  assert.equal(sidebarSource.includes('loadMoreSessions'), true);
 });
 
 test('agent stream ownership remains mounted while the chat surface changes', () => {

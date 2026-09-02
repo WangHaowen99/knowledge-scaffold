@@ -35,6 +35,7 @@ from api.protocols.acp.models import (
     RunResponse,
     RunStatus,
 )
+from api.protocols.preflight import build_protocol_preflight_snapshot
 from api.request_parsing import read_optional_json_object
 from llm.llm_request_mode import normalize_llm_request_mode
 from persistence.execution_store import InteractionCheckpointError
@@ -268,6 +269,24 @@ async def _admit_run(
         raise ValueError("arguments must be an object or null")
     async with manager.session_guard(scope, session_id):
         await manager.assert_session_available(scope, session_id)
+        model_profile_id = (
+            str(context_values.get("model_profile_id") or "").strip() or None
+        )
+        preflight_snapshot = await build_protocol_preflight_snapshot(
+            runtime,
+            user_request=query,
+            user_context={
+                **context_values,
+                "interaction_response": interaction_response,
+            },
+            arguments=(
+                dict(raw_arguments) if isinstance(raw_arguments, dict) else None
+            ),
+            session_id=session_id,
+            model_profile_id=model_profile_id,
+            user_id=user.username,
+            workspace_id=workspace_id,
+        )
         metadata = _protocol_metadata(
             external_run_id,
             context_values,
@@ -311,9 +330,8 @@ async def _admit_run(
             llm_request_mode=normalize_llm_request_mode(
                 context_values.get("llm_request_mode")
             ),
-            model_profile_id=(
-                str(context_values.get("model_profile_id") or "").strip() or None
-            ),
+            model_profile_id=model_profile_id,
+            preflight_snapshot=preflight_snapshot,
             requested_operation_key=(
                 str(context_values.get("requested_operation_key") or "").strip()
                 or None

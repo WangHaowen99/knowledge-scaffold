@@ -1,17 +1,35 @@
 """Application configuration helpers."""
 
+from copy import deepcopy
 from dataclasses import dataclass, field
+import os
 import posixpath
 from pathlib import Path
 import re
+from threading import Lock
 from typing import Any, Dict, Optional, Set
 
 from config.system_config import (
     SystemConfigValidationError,
+    get_system_config_generation,
     load_system_config,
+    load_system_config_section,
     resolve_llm_profile_config,
 )
 from config.ops_config import load_ops_config
+
+
+_APP_CONFIG_CACHE_LOCK = Lock()
+_APP_CONFIG_CACHE: tuple[type, int, Any] | None = None
+
+
+def _system_config_snapshot_enabled() -> bool:
+    value = os.getenv("PERF_CONFIG_SNAPSHOT_ENABLED", "true")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _copy_app_config(config: "AppConfig") -> "AppConfig":
+    return deepcopy(config)
 
 
 @dataclass
@@ -254,31 +272,51 @@ class AppConfig:
     @classmethod
     def from_env(cls) -> "AppConfig":
         """Load configuration from system config with env/default fallback."""
+        global _APP_CONFIG_CACHE
+
+        if not _system_config_snapshot_enabled():
+            with _APP_CONFIG_CACHE_LOCK:
+                _APP_CONFIG_CACHE = None
+            return cls._build_from_env()
+
+        generation = get_system_config_generation()
+        with _APP_CONFIG_CACHE_LOCK:
+            cached = _APP_CONFIG_CACHE
+            if cached is None or cached[0] is not cls or cached[1] != generation:
+                while True:
+                    generation = get_system_config_generation()
+                    cached = _APP_CONFIG_CACHE
+                    if (
+                        cached is not None
+                        and cached[0] is cls
+                        and cached[1] == generation
+                    ):
+                        break
+                    config = cls._build_from_env()
+                    built_generation = get_system_config_generation()
+                    if built_generation != generation:
+                        continue
+                    cached = (cls, generation, config)
+                    _APP_CONFIG_CACHE = cached
+                    break
+            canonical = cached[2]
+
+        return _copy_app_config(canonical)
+
+    @classmethod
+    def _build_from_env(cls) -> "AppConfig":
         config = load_system_config()
         llm = LLMConfig.from_env()
         task_llm = LLMConfig.from_env(prefix="TASK_LLM", fallback=llm)
-        storage = config["storage"]
+        storage = StorageConfig.from_mapping(config["storage"])
         auth = config["auth"]
-        project_root = cls._resolve_storage_path(storage["project_root"], project_root=storage["project_root"])
         return cls(
             llm=llm,
             task_llm=task_llm,
-            chat_storage_dir=cls._resolve_storage_path(
-                storage["chat_storage_dir"],
-                project_root=project_root,
-                default_relative="data/chats",
-            ),
-            execution_storage_dir=cls._resolve_storage_path(
-                storage["execution_storage_dir"],
-                project_root=project_root,
-                default_relative="data/executions",
-            ),
-            project_root=project_root,
-            auth_users_file=cls._resolve_storage_path(
-                storage["auth_users_file"],
-                project_root=project_root,
-                default_relative="users.json",
-            ),
+            chat_storage_dir=storage.chat_storage_dir,
+            execution_storage_dir=storage.execution_storage_dir,
+            project_root=storage.project_root,
+            auth_users_file=storage.auth_users_file,
             auth_secret=auth.get("auth_secret") or None,
             auth_token_ttl_seconds=int(auth["auth_token_ttl_seconds"]),
             auth_server_url=str(auth.get("auth_server_url") or "").strip(),
@@ -286,6 +324,45 @@ class AppConfig:
             auth_server_audience=str(auth.get("auth_server_audience") or "meta-wise").strip(),
             auth_server_issuer=str(auth.get("auth_server_issuer") or "").strip(),
         )
+
+
+@dataclass
+class StorageConfig:
+    """Resolved storage paths without constructing model or auth configuration."""
+
+    chat_storage_dir: str
+    execution_storage_dir: str
+    project_root: str
+    auth_users_file: str
+
+    @classmethod
+    def from_mapping(cls, storage: Dict[str, Any]) -> "StorageConfig":
+        project_root = AppConfig._resolve_storage_path(
+            storage["project_root"],
+            project_root=storage["project_root"],
+        )
+        return cls(
+            chat_storage_dir=AppConfig._resolve_storage_path(
+                storage["chat_storage_dir"],
+                project_root=project_root,
+                default_relative="data/chats",
+            ),
+            execution_storage_dir=AppConfig._resolve_storage_path(
+                storage["execution_storage_dir"],
+                project_root=project_root,
+                default_relative="data/executions",
+            ),
+            project_root=project_root,
+            auth_users_file=AppConfig._resolve_storage_path(
+                storage["auth_users_file"],
+                project_root=project_root,
+                default_relative="users.json",
+            ),
+        )
+
+    @classmethod
+    def from_env(cls) -> "StorageConfig":
+        return cls.from_mapping(load_system_config_section("storage"))
 
 
 @dataclass

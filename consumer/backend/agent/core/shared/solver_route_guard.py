@@ -159,6 +159,10 @@ class SolverRouteExecutionGuard:
         )
 
 
+def _is_catalog_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
 def resolve_solver_route_requirement(
     *,
     user_request: str,
@@ -166,6 +170,7 @@ def resolve_solver_route_requirement(
     selected_ontology_id: str | None,
     selected_ontology_version: str | None,
     workspace_id: str | None,
+    root_payload: Mapping[str, Any] | None = None,
 ) -> SolverRouteRequirement | None:
     package_id = str(selected_ontology_id or "").strip()
     package_revision = str(selected_ontology_version or "").strip()
@@ -178,14 +183,18 @@ def resolve_solver_route_requirement(
     if _is_explanation_only(query):
         return None
 
-    payload = _load_solver_root_payload(
-        package_id=package_id,
-        package_revision=package_revision,
-        workspace_id=workspace,
+    payload = (
+        root_payload
+        if isinstance(root_payload, Mapping)
+        else _load_solver_root_payload(
+            package_id=package_id,
+            package_revision=package_revision,
+            workspace_id=workspace,
+        )
     )
     operations = payload.get("operations_catalog")
     solvers = payload.get("solver_catalog")
-    if not isinstance(operations, list) or not isinstance(solvers, list):
+    if not _is_catalog_sequence(operations) or not _is_catalog_sequence(solvers):
         return None
 
     operation_rows: dict[str, Mapping[str, Any]] = {}

@@ -36,6 +36,10 @@ export default function McpSettingsPanel({
   workspaceName = '',
   authenticated = false,
   canManageTokens = true,
+  ontologies: sharedOntologies = [],
+  ontologiesLoading = false,
+  ontologiesError = '',
+  onRetryOntologies,
   request = authFetch,
 }) {
   const scopeKey = mcpScopeKey(workspaceId);
@@ -44,8 +48,17 @@ export default function McpSettingsPanel({
   const loadControllerRef = useRef(null);
   const actionControllerRef = useRef(null);
   const copyTimerRef = useRef(null);
+  const normalizedOntologies = useMemo(
+    () => normalizeMcpOntologies({ ontologies: sharedOntologies }),
+    [sharedOntologies],
+  );
+  const ontologyListReady = !ontologiesLoading && !ontologiesError;
+  const currentOntologies = useMemo(
+    () => (ontologyListReady ? normalizedOntologies : []),
+    [normalizedOntologies, ontologyListReady],
+  );
   const [scopeState, setScopeState] = useState(() => createMcpScopeState(scopeKey));
-  const [remoteState, setRemoteState] = useState({ scopeKey: '', status: null, tokens: [], ontologies: [] });
+  const [remoteState, setRemoteState] = useState({ scopeKey: '', status: null, tokens: [] });
   const [loadingScope, setLoadingScope] = useState('');
   const [actionState, setActionState] = useState({ scopeKey: '', kind: '', tokenId: '' });
   const [message, setMessage] = useState({ scopeKey: '', type: '', text: '' });
@@ -55,7 +68,7 @@ export default function McpSettingsPanel({
 
   const currentRemote = remoteState.scopeKey === scopeKey
     ? remoteState
-    : { status: null, tokens: [], ontologies: [] };
+    : { status: null, tokens: [] };
   const currentMessage = message.scopeKey === scopeKey ? message : { type: '', text: '' };
   const loading = loadingScope === scopeKey;
   const acting = actionState.scopeKey === scopeKey ? actionState : { kind: '', tokenId: '' };
@@ -64,15 +77,15 @@ export default function McpSettingsPanel({
   const selectedService = services.find((service) => service.id === scopeState.selectedServiceId) || null;
   const revokeToken = currentRemote.tokens.find((token) => token.token_id === scopeState.revokeTokenId) || null;
   const configToken = scopeState.createdToken || '<MCP_TOKEN>';
-  const selectedOntology = currentRemote.ontologies.find(
+  const selectedOntology = currentOntologies.find(
     (ontology) => ontology.id === scopeState.form.ontologyId,
   ) || null;
   const ontologyOptions = useMemo(
-    () => currentRemote.ontologies.map((ontology) => ({
+    () => currentOntologies.map((ontology) => ({
       ...ontology,
       eligibility: mcpOntologyEligibility(ontology, scopeState.form.scopes),
     })),
-    [currentRemote.ontologies, scopeState.form.scopes],
+    [currentOntologies, scopeState.form.scopes],
   );
   const activeTokenCount = useMemo(
     () => currentRemote.tokens.filter((token) => token.status === 'active').length,
@@ -95,42 +108,23 @@ export default function McpSettingsPanel({
       requestSequence,
     });
     try {
-      const [statusResponse, tokensResponse, ontologiesResponse] = await Promise.all([
+      const [statusResponse, tokensResponse] = await Promise.all([
         request('/agentic/mcp/runtime/status', { signal: controller.signal }),
         request('/agentic/mcp/tokens', { signal: controller.signal }),
-        request('/agentic/ontologies', { signal: controller.signal }),
       ]);
-      const [statusPayload, tokensPayload, ontologiesPayload] = await Promise.all([
+      const [statusPayload, tokensPayload] = await Promise.all([
         statusResponse.json().catch(() => ({})),
         tokensResponse.json().catch(() => ({})),
-        ontologiesResponse.json().catch(() => ({})),
       ]);
       if (!statusResponse.ok) throw new Error(payloadMessage(statusPayload, '加载 MCP 服务状态失败'));
       if (!tokensResponse.ok) throw new Error(payloadMessage(tokensPayload, '加载 MCP Token 失败'));
-      if (!ontologiesResponse.ok) throw new Error(payloadMessage(ontologiesPayload, '加载知识包列表失败'));
       const status = normalizeMcpStatus(statusPayload, workspaceId);
       if (!status.valid) throw new Error(status.error);
       if (!accepted()) return;
-      const ontologies = normalizeMcpOntologies(ontologiesPayload);
       setRemoteState({
         scopeKey: requestScope,
         status,
         tokens: normalizeMcpTokens(tokensPayload, workspaceId),
-        ontologies,
-      });
-      setScopeState((current) => {
-        const safe = current.scopeKey === requestScope ? current : createMcpScopeState(requestScope);
-        return {
-          ...safe,
-          form: {
-            ...safe.form,
-            ontologyId: resolveMcpOntologySelection({
-              ontologies,
-              scopes: safe.form.scopes,
-              currentId: safe.form.ontologyId,
-            }),
-          },
-        };
       });
     } catch (error) {
       if (accepted()) setMessage({ scopeKey: requestScope, type: 'error', text: error.message || '加载 MCP 配置失败' });
@@ -139,6 +133,38 @@ export default function McpSettingsPanel({
       if (loadControllerRef.current === controller) loadControllerRef.current = null;
     }
   }, [authenticated, request, scopeKey, workspaceId]);
+
+  const retryOntologyList = useCallback(
+    () => Promise.resolve().then(() => onRetryOntologies?.()),
+    [onRetryOntologies],
+  );
+
+  const refreshAll = useCallback(
+    () => Promise.allSettled([
+      loadData({ clearMessage: true }),
+      retryOntologyList(),
+    ]),
+    [loadData, retryOntologyList],
+  );
+
+  useEffect(() => {
+    if (!ontologyListReady) return;
+    const ontologies = normalizedOntologies;
+    setScopeState((current) => {
+      if (current.scopeKey !== scopeKey) return current;
+      return {
+        ...current,
+        form: {
+          ...current.form,
+          ontologyId: resolveMcpOntologySelection({
+            ontologies,
+            scopes: current.form.scopes,
+            currentId: current.form.ontologyId,
+          }),
+        },
+      };
+    });
+  }, [normalizedOntologies, ontologyListReady, scopeKey]);
 
   useEffect(() => {
     actionControllerRef.current?.abort();
@@ -190,36 +216,39 @@ export default function McpSettingsPanel({
     }
   };
 
-  const createToken = () => performAction('create', async (controller, requestScope) => {
-    const body = buildMcpTokenRequest(scopeState.form);
-    const response = await request('/agentic/mcp/tokens', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
+  const createToken = () => {
+    if (!ontologyListReady) return;
+    return performAction('create', async (controller, requestScope) => {
+      const body = buildMcpTokenRequest(scopeState.form);
+      const response = await request('/agentic/mcp/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payloadMessage(payload, '创建 MCP Token 失败'));
+      if (controller.signal.aborted || scopeRef.current !== requestScope) return;
+      const createdBinding = currentOntologies.find(
+        (ontology) => ontology.id === scopeState.form.ontologyId,
+      );
+      const resetForm = createMcpScopeState(requestScope).form;
+      updateScopeState({
+        createdToken: createdMcpToken(payload),
+        createdOntologyId: scopeState.form.ontologyId,
+        createdOntologyVersion: createdBinding?.active_version || '',
+        form: {
+          ...resetForm,
+          ontologyId: resolveMcpOntologySelection({
+            ontologies: currentOntologies,
+            scopes: resetForm.scopes,
+          }),
+        },
+      });
+      setMessage({ scopeKey: requestScope, type: 'success', text: 'Token 已创建。明文仅在当前工作空间的本次页面会话中展示，请立即复制。' });
+      await loadData();
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payloadMessage(payload, '创建 MCP Token 失败'));
-    if (controller.signal.aborted || scopeRef.current !== requestScope) return;
-    const createdBinding = currentRemote.ontologies.find(
-      (ontology) => ontology.id === scopeState.form.ontologyId,
-    );
-    const resetForm = createMcpScopeState(requestScope).form;
-    updateScopeState({
-      createdToken: createdMcpToken(payload),
-      createdOntologyId: scopeState.form.ontologyId,
-      createdOntologyVersion: createdBinding?.active_version || '',
-      form: {
-        ...resetForm,
-        ontologyId: resolveMcpOntologySelection({
-          ontologies: currentRemote.ontologies,
-          scopes: resetForm.scopes,
-        }),
-      },
-    });
-    setMessage({ scopeKey: requestScope, type: 'success', text: 'Token 已创建。明文仅在当前工作空间的本次页面会话中展示，请立即复制。' });
-    await loadData();
-  });
+  };
 
   const revokeTokenAction = () => performAction('revoke', async (controller, requestScope) => {
     const tokenId = scopeState.revokeTokenId;
@@ -255,7 +284,7 @@ export default function McpSettingsPanel({
     updateForm({
       scopes,
       ontologyId: resolveMcpOntologySelection({
-        ontologies: currentRemote.ontologies,
+        ontologies: currentOntologies,
         scopes,
         currentId: scopeState.form.ontologyId,
       }),
@@ -269,8 +298,8 @@ export default function McpSettingsPanel({
     <div className="settings-mcp-panel">
       <section className="card settings-mcp-overview">
         <div><h3>MCP 自服务接入</h3><p>{workspaceName || workspaceId} · Token 绑定当前账号、当前工作空间与所选知识包。</p></div>
-        <button className="btn" type="button" disabled={loading} onClick={() => loadData({ clearMessage: true })}>
-          <RefreshCw size={14} />{loading ? '刷新中…' : '刷新'}
+        <button className="btn" type="button" disabled={loading || ontologiesLoading} onClick={refreshAll}>
+          <RefreshCw size={14} />{loading || ontologiesLoading ? '刷新中…' : '刷新'}
         </button>
       </section>
       {!selfServiceAvailable && <div className="settings-mcp-notice">当前认证能力未开放 MCP Token 自服务。</div>}
@@ -314,9 +343,13 @@ export default function McpSettingsPanel({
             disabled={!selfServiceAvailable || Boolean(acting.kind)} onChange={() => toggleScope(scope)} />{scope}</label>
         ))}</fieldset>
         <label>绑定知识包<select value={scopeState.form.ontologyId}
-          disabled={!selfServiceAvailable || Boolean(acting.kind)}
+          disabled={!selfServiceAvailable || Boolean(acting.kind) || !ontologyListReady}
           onChange={(event) => updateForm({ ontologyId: event.target.value })}>
-          <option value="">请选择知识包</option>
+          <option value="">
+            {ontologiesLoading ? '正在加载知识包…'
+              : ontologiesError ? '知识包加载失败'
+                : '请选择知识包'}
+          </option>
           {ontologyOptions.map((ontology) => (
             <option key={ontology.id} value={ontology.id} disabled={!ontology.eligibility.eligible}>
               {ontology.name}（{ontology.active_version || '无激活版本'}）
@@ -327,12 +360,18 @@ export default function McpSettingsPanel({
         {selectedOntology && <div className="settings-mcp-binding-hint">
           当前激活版本：<strong>{selectedOntology.active_version}</strong>。Token 只绑定知识包 ID，执行时按调用或会话规则解析版本。
         </div>}
-        {!loading && !ontologyOptions.some((item) => item.eligibility.eligible) && (
+        {ontologiesError && (
+          <div className="settings-mcp-binding-hint error" role="alert">
+            知识包列表加载失败：{ontologiesError}
+            <button className="btn" type="button" onClick={retryOntologyList}>重新加载知识包</button>
+          </div>
+        )}
+        {ontologyListReady && !ontologyOptions.some((item) => item.eligibility.eligible) && (
           <div className="settings-mcp-binding-hint error">当前权限组合下没有可绑定的知识包。</div>
         )}
         <button className="btn btn-p" type="button"
           disabled={!selfServiceAvailable || Boolean(acting.kind)
-            || !scopeState.form.ontologyId || !scopeState.form.scopes.length}
+            || !ontologyListReady || !scopeState.form.ontologyId || !scopeState.form.scopes.length}
           onClick={createToken}>
           <Plus size={14} />{acting.kind === 'create' ? '生成中…' : '生成 Token'}
         </button>
@@ -353,7 +392,7 @@ export default function McpSettingsPanel({
         </tr></thead><tbody>
           {currentRemote.tokens.map((token) => <tr key={token.token_id}>
             <td>{token.name || token.token_id}</td><td><code>{token.token_masked || '已隐藏'}</code></td>
-            <td>{currentRemote.ontologies.find((item) => item.id === token.ontology_id)?.name || token.ontology_id || '工作空间级（旧 Token）'}</td>
+            <td>{currentOntologies.find((item) => item.id === token.ontology_id)?.name || token.ontology_id || '工作空间级（旧 Token）'}</td>
             <td>{token.scopes.join('、') || '—'}</td><td>{token.status || '—'}</td><td>{formatDate(token.expires_at)}</td>
             <td><button className="btn btn-danger" type="button" disabled={!selfServiceAvailable || token.status !== 'active' || Boolean(acting.kind)}
               onClick={() => updateScopeState({ revokeTokenId: token.token_id })}><Trash2 size={14} />吊销</button></td>

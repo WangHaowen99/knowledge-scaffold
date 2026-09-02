@@ -12,6 +12,7 @@ import tempfile
 import unicodedata
 import uuid
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional
 
@@ -82,6 +83,12 @@ from ontology.operation_execution import (
 )
 from ontology.mutation_lock import ontology_mutation_lock
 from ontology.directory_replacement import portable_replace_directory
+from ontology.view_cache import (
+    OntologyPackageRevisionError,
+    build_package_tree_source_signature,
+    get_package_tree_cached,
+    invalidate_ontology_views,
+)
 from agent.tools.business_data.ontology_sources_store import (
     build_ontology_business_data_summary,
     clear_ontology_data_source_on_delete,
@@ -113,6 +120,17 @@ ONTOLOGY_FOLDER_LABELS = {
     "objects": "实体",
     "assets": "公共文件",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _OntologyFileWriteTarget:
+    ontology_dir: Path
+    version_dir: Path
+    folder_path: Path
+    folder_key: str
+    active_version: str
+    target_version: str
+    enabled: bool
 ONTOLOGY_MAX_ZIP_BYTES = 50 * 1024 * 1024
 ONTOLOGY_MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 ONTOLOGY_MAX_ZIP_MEMBERS = 10_000
@@ -176,12 +194,21 @@ def _mutation_audit_fields(request: Optional[Request] = None) -> dict:
 def _manifest_state(ontology_dir: Path) -> tuple[dict, str, bool]:
     manifest = load_ontology_manifest_data(ontology_dir)
     active_version = str(manifest.get("active_version") or manifest.get("version") or "").strip()
+    return manifest, active_version, _manifest_enabled(manifest)
+
+
+def _manifest_enabled(manifest: Mapping[str, object]) -> bool:
     raw_enabled = manifest.get("enabled", True)
     if isinstance(raw_enabled, bool):
-        enabled = raw_enabled
-    else:
-        enabled = str(raw_enabled).strip().lower() not in {"false", "0", "no", "off", "disabled", "禁用"}
-    return manifest, active_version, enabled
+        return raw_enabled
+    return str(raw_enabled).strip().lower() not in {
+        "false",
+        "0",
+        "no",
+        "off",
+        "disabled",
+        "禁用",
+    }
 
 
 def _mutation_base_revision(workspace_id: str, ontology_id: str) -> int:
@@ -389,8 +416,8 @@ def _resolve_ontology_folder(
     if ontology_dir is None:
         return None, None
 
-    normalized = (folder_name or "").strip().lower()
-    if normalized not in ONTOLOGY_FOLDER_LABELS:
+    normalized = _normalize_ontology_folder_key(folder_name)
+    if normalized is None:
         return None, None
 
     version_dir = (
@@ -404,30 +431,98 @@ def _resolve_ontology_folder(
     return version_dir / normalized, normalized
 
 
-def _resolve_existing_version_dir_checked(
+def _normalize_ontology_folder_key(folder_name: object) -> Optional[str]:
+    normalized = str(folder_name or "").strip().lower()
+    return normalized if normalized in ONTOLOGY_FOLDER_LABELS else None
+
+
+def _resolve_existing_version_snapshot_checked(
     ontology_dir: Path,
     version: Optional[str] = None,
-) -> Optional[Path]:
-    manifest = load_ontology_manifest_data(ontology_dir)
+    *,
+    manifest: Optional[dict] = None,
+) -> tuple[str, Optional[Path]]:
+    if manifest is None:
+        manifest = load_ontology_manifest_data(ontology_dir)
     active_version = str(manifest.get("active_version") or manifest.get("version") or "").strip()
     target_version = str(version or active_version).strip()
     if not target_version:
-        return ontology_dir
+        return "", ontology_dir
 
     versions_dir = ontology_dir / "versions"
     if not versions_dir.is_dir():
         legacy_version = str(manifest.get("version") or active_version).strip()
         if target_version != legacy_version:
-            return None
+            return target_version, None
         try:
             with _ontology_install_lock(ontology_dir):
                 if not versions_dir.is_dir():
                     ensure_ontology_versions(ontology_dir)
         except Exception:
             logger.exception("Failed to migrate legacy ontology directory: %s", ontology_dir)
-            return None
+            return target_version, None
 
-    return get_ontology_version_dir(ontology_dir, target_version, create=False)
+    return target_version, get_ontology_version_dir(
+        ontology_dir,
+        target_version,
+        create=False,
+        manifest=manifest,
+    )
+
+
+def _resolve_ontology_file_write_target(
+    ontology_dir: Path,
+    folder_name: object,
+    version: Optional[str] = None,
+) -> Optional[_OntologyFileWriteTarget]:
+    folder_key = _normalize_ontology_folder_key(folder_name)
+    if folder_key is None:
+        return None
+    manifest = load_ontology_manifest_data(ontology_dir)
+    active_version = str(
+        manifest.get("active_version") or manifest.get("version") or ""
+    ).strip()
+    target_version, version_dir = _resolve_existing_version_snapshot_checked(
+        ontology_dir,
+        version,
+        manifest=manifest,
+    )
+    if version_dir is None:
+        return None
+    return _OntologyFileWriteTarget(
+        ontology_dir=ontology_dir,
+        version_dir=version_dir,
+        folder_path=version_dir / folder_key,
+        folder_key=folder_key,
+        active_version=active_version,
+        target_version=target_version,
+        enabled=_manifest_enabled(manifest),
+    )
+
+
+def _ontology_file_write_target_is_current(
+    ontology_id: str,
+    target: _OntologyFileWriteTarget,
+) -> bool:
+    current_ontology_dir = _resolve_ontology_dir(ontology_id)
+    return bool(
+        current_ontology_dir == target.ontology_dir
+        and target.ontology_dir.is_dir()
+        and not target.ontology_dir.is_symlink()
+        and target.version_dir.is_dir()
+        and not target.version_dir.is_symlink()
+    )
+
+
+def _resolve_existing_version_dir_checked(
+    ontology_dir: Path,
+    version: Optional[str] = None,
+) -> Optional[Path]:
+    _resolved_version, version_dir = _resolve_existing_version_snapshot_checked(
+        ontology_dir,
+        version,
+    )
+    return version_dir
 
 
 def _resolve_existing_version_dir(ontology_dir: Path, version: Optional[str] = None) -> Optional[Path]:
@@ -443,6 +538,16 @@ def _resolve_package_browser_version_dir(
 ) -> Optional[Path]:
     try:
         return _resolve_existing_version_dir_checked(ontology_dir, version)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise PackageBrowserError("invalid_path", "Invalid file path") from exc
+
+
+def _resolve_package_browser_version_snapshot(
+    ontology_dir: Path,
+    version: Optional[str] = None,
+) -> tuple[str, Optional[Path]]:
+    try:
+        return _resolve_existing_version_snapshot_checked(ontology_dir, version)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         raise PackageBrowserError("invalid_path", "Invalid file path") from exc
 
@@ -757,7 +862,6 @@ def list_ontologies(
 ):
     with workspace_scope(workspace_id):
         registry = get_ontology_registry(workspace_id=workspace_id)
-        registry.refresh()
 
         try:
             checkpoint_capabilities = get_business_checkpoint_capabilities(
@@ -930,6 +1034,10 @@ def update_ontology_status(
                         **_mutation_audit_fields(request),
                     )
                 )
+                invalidate_ontology_views(
+                    workspace_id=workspace_id,
+                    ontology_id=ontology_id,
+                )
             ontology = OntologyLoader.load_ontology(ontology_dir)
             if ontology is None:
                 raise ValueError("Failed to reload ontology manifest")
@@ -1008,6 +1116,10 @@ def update_ontology_active_version(
                         )
                     )
                     mutation_revision = mutation_result.mutation_revision
+                    invalidate_ontology_views(
+                        workspace_id=workspace_id,
+                        ontology_id=ontology_id,
+                    )
                 ontology = OntologyLoader.load_ontology(ontology_dir)
                 if ontology is None:
                     raise ValueError("Failed to reload ontology manifest")
@@ -1076,6 +1188,10 @@ def delete_ontology(
                         **_mutation_audit_fields(request),
                     )
                 )
+                invalidate_ontology_views(
+                    workspace_id=workspace_id,
+                    ontology_id=ontology_id,
+                )
         except OntologyMutationConflictError as exc:
             return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except Exception:
@@ -1131,6 +1247,79 @@ def delete_ontology_version(
         ontology_dir = _resolve_ontology_dir(ontology_id)
         if ontology_dir is None:
             return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
+        with _ontology_install_lock(ontology_dir):
+            locked_ontology_dir = _resolve_ontology_dir(ontology_id)
+            if locked_ontology_dir != ontology_dir:
+                return JSONResponse(
+                    content={"error": "Ontology not found"},
+                    status_code=404,
+                )
+            result = _delete_ontology_version_locked(
+                ontology_id,
+                version,
+                request,
+                workspace_id,
+            )
+        if isinstance(result, JSONResponse):
+            return result
+
+        active_version, updated_versions, mutation_result, version_dir = result
+        try:
+            registry = get_ontology_registry(workspace_id=workspace_id)
+            registry.refresh()
+        except Exception:
+            logger.warning(
+                "Ontology version delete registry refresh failed: "
+                "workspace_id=%s ontology_id=%s version=%s",
+                workspace_id,
+                ontology_id,
+                version,
+                exc_info=True,
+            )
+
+        logger.info(
+            "Ontology version deleted: workspace_id=%s ontology_id=%s version=%s path=%s",
+            workspace_id,
+            ontology_id,
+            version,
+            version_dir,
+        )
+
+        try:
+            export_ontology_snapshot_safely(workspace_id=workspace_id)
+        except Exception:
+            logger.warning(
+                "Ontology version delete snapshot export failed: "
+                "workspace_id=%s ontology_id=%s version=%s",
+                workspace_id,
+                ontology_id,
+                version,
+                exc_info=True,
+            )
+        return JSONResponse(content={
+            "success": True,
+            "ontology_id": ontology_id,
+            "deleted_version": version,
+            "active_version": active_version,
+            "versions": updated_versions,
+            "mutation_revision": mutation_result.mutation_revision,
+        })
+
+
+def _delete_ontology_version_locked(
+    ontology_id: str,
+    version: str,
+    request: Request,
+    workspace_id: str,
+):
+    if not is_valid_ontology_version(version):
+        payload, status_code = _version_error_payload(version)
+        return JSONResponse(content=payload, status_code=status_code)
+
+    with workspace_scope(workspace_id):
+        ontology_dir = _resolve_ontology_dir(ontology_id)
+        if ontology_dir is None:
+            return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
 
         try:
             manifest = ensure_ontology_versions(ontology_dir)
@@ -1163,7 +1352,12 @@ def delete_ontology_version(
                 "versions": versions,
             }, status_code=404)
 
-        version_dir = get_ontology_version_dir(ontology_dir, version, create=False)
+        version_dir = get_ontology_version_dir(
+            ontology_dir,
+            version,
+            create=False,
+            manifest=manifest,
+        )
         if version_dir is None or not version_dir.is_dir():
             return JSONResponse(content={
                 "error": "Ontology version not found",
@@ -1216,7 +1410,8 @@ def delete_ontology_version(
             updated_manifest["version"] = active_version
             updated_manifest["active_version"] = active_version
             updated_manifest["versions"] = updated_versions
-            _manifest, _active, enabled = _manifest_state(ontology_dir)
+            enabled = _manifest_enabled(manifest)
+            base_revision = _mutation_base_revision(workspace_id, ontology_id)
             directory_step = _prepare_atomic_directory_delete(version_dir)
             manifest_step = _prepare_atomic_bytes_replace(
                 ontology_dir / "manifest.yaml",
@@ -1237,8 +1432,13 @@ def delete_ontology_version(
                     finalize=finalize,
                     digest_hints=empty_digest_hints(scope_version=active_version or None),
                     trigger="api",
+                    base_mutation_revision=base_revision,
                     **_mutation_audit_fields(request),
                 )
+            )
+            invalidate_ontology_views(
+                workspace_id=workspace_id,
+                ontology_id=ontology_id,
             )
         except OntologyMutationConflictError as exc:
             return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
@@ -1252,26 +1452,7 @@ def delete_ontology_version(
             )
             return JSONResponse(content={"error": "Failed to delete ontology version"}, status_code=500)
 
-        registry = get_ontology_registry(workspace_id=workspace_id)
-        registry.refresh()
-
-        logger.info(
-            "Ontology version deleted: workspace_id=%s ontology_id=%s version=%s path=%s",
-            workspace_id,
-            ontology_id,
-            version,
-            version_dir,
-        )
-
-        export_ontology_snapshot_safely(workspace_id=workspace_id)
-        return JSONResponse(content={
-            "success": True,
-            "ontology_id": ontology_id,
-            "deleted_version": version,
-            "active_version": active_version,
-            "versions": updated_versions,
-            "mutation_revision": mutation_result.mutation_revision,
-        })
+        return active_version, updated_versions, mutation_result, version_dir
 
 
 @ontologies_router.get("/ontologies/{ontology_id}/download")
@@ -1378,20 +1559,43 @@ def get_ontology_tree(
         if ontology_dir is None:
             return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
         try:
-            version_dir = _resolve_package_browser_version_dir(ontology_dir, version or None)
+            resolved_version, version_dir = _resolve_package_browser_version_snapshot(
+                ontology_dir,
+                version or None,
+            )
         except PackageBrowserError as exc:
             return _package_browser_error_response(exc)
         if version_dir is None:
             return JSONResponse(content={"error": "Ontology version not found"}, status_code=404)
 
         try:
-            entries = build_package_tree(version_dir, trusted_root=ontology_dir)
+            entries = get_package_tree_cached(
+                workspace_id=workspace_id,
+                ontology_id=ontology_id,
+                version=resolved_version,
+                loader=lambda: build_package_tree(
+                    version_dir,
+                    trusted_root=ontology_dir,
+                ),
+                signature_loader=lambda: build_package_tree_source_signature(
+                    version_dir
+                ),
+            )
         except PackageBrowserError as exc:
             return _package_browser_error_response(exc)
+        except OntologyPackageRevisionError:
+            return JSONResponse(
+                content={
+                    "error": "Ontology package tree is changing; retry the request",
+                    "code": "ONTOLOGY_PACKAGE_REVISION_UNSTABLE",
+                    "retriable": True,
+                },
+                status_code=503,
+            )
         return JSONResponse(content=
             {
                 "ontology_id": ontology_id,
-                "version": version,
+                "version": resolved_version,
                 "excluded": sorted(
                     name
                     for name in EXCLUDED_DIRECTORY_NAMES
@@ -1586,14 +1790,11 @@ def update_ontology_file(
         if version and not is_valid_ontology_version(version):
             payload, status_code = _version_error_payload(version)
             return JSONResponse(content=payload, status_code=status_code)
-        folder_path, folder_key = _resolve_ontology_folder(ontology_id, data.get("folder", ""), version or None)
-        if folder_path is None or folder_key is None:
+        folder_key = _normalize_ontology_folder_key(data.get("folder", ""))
+        if folder_key is None:
             return JSONResponse(content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}, status_code=400)
         if folder_key == "assets":
             return JSONResponse(content={"error": "Asset files are read-only in this editor."}, status_code=400)
-        immutable_response = _deterministic_package_immutable_response(folder_path)
-        if immutable_response is not None:
-            return immutable_response
 
         safe_name = _sanitize_md_filename(data.get("name", ""))
         if not safe_name:
@@ -1602,73 +1803,131 @@ def update_ontology_file(
         content = data.get("content")
         if not isinstance(content, str):
             return JSONResponse(content={"error": "Content must be a string"}, status_code=400)
-        declaration_response = _deterministic_declaration_immutable_response(
-            folder_key,
-            content,
-        )
-        if declaration_response is not None:
-            return declaration_response
-
-        validation_error = _validate_md_limits(content, folder_key)
-        if validation_error:
-            return JSONResponse(content={"error": validation_error}, status_code=400)
-
-        file_path = folder_path / safe_name
-        if not _is_safe_path(folder_path, file_path):
-            return JSONResponse(content={"error": "Unsafe file path"}, status_code=400)
-        if not file_path.exists() or not file_path.is_file():
-            return JSONResponse(content={"error": "File not found"}, status_code=404)
-
+        ontology_dir = _resolve_ontology_dir(ontology_id)
+        if ontology_dir is None:
+            return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
         mutation_revision = None
+        file_path: Optional[Path] = None
         try:
             content_bytes = content.encode("utf-8")
-            current_bytes = file_path.read_bytes()
-            if current_bytes != content_bytes:
-                _stage_and_commit_revision_file(
-                    folder_path.parent,
-                    file_path.relative_to(folder_path.parent),
+            with _ontology_install_lock(ontology_dir):
+                locked_ontology_dir = _resolve_ontology_dir(ontology_id)
+                if locked_ontology_dir != ontology_dir:
+                    return JSONResponse(
+                        content={"error": "Ontology not found"},
+                        status_code=404,
+                    )
+                target = _resolve_ontology_file_write_target(
+                    locked_ontology_dir,
+                    folder_key,
+                    version or None,
+                )
+                if target is None:
+                    return JSONResponse(
+                        content={
+                            "error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."
+                        },
+                        status_code=400,
+                    )
+                if not _ontology_file_write_target_is_current(ontology_id, target):
+                    return JSONResponse(
+                        content={"error": "Ontology not found"},
+                        status_code=404,
+                    )
+                immutable_response = _deterministic_package_immutable_response(
+                    target.folder_path
+                )
+                if immutable_response is not None:
+                    return immutable_response
+                declaration_response = _deterministic_declaration_immutable_response(
+                    folder_key,
                     content,
                 )
-                ontology_dir = _resolve_ontology_dir(ontology_id)
-                if ontology_dir is None:
-                    return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
-                _manifest, active_version, enabled = _manifest_state(ontology_dir)
-                target_version = version or active_version
-                if target_version == active_version:
-                    base_revision = _mutation_base_revision(workspace_id, ontology_id)
-                    digest_hints = build_digest_hints(
-                        scope_version=active_version,
-                        completeness="partial",
-                        mutation_revision=1,
-                        entries={
-                            f"{folder_key}/{safe_name}": {
-                                "sha256": hashlib.sha256(content_bytes).hexdigest(),
-                                "size_bytes": len(content_bytes),
-                            }
-                        },
+                if declaration_response is not None:
+                    return declaration_response
+                validation_error = _validate_md_limits(content, folder_key)
+                if validation_error:
+                    return JSONResponse(
+                        content={"error": validation_error},
+                        status_code=400,
                     )
-                    mutation_result = _mutation_coordinator(workspace_id).commit(
-                        PreparedOntologyMutation(
-                            workspace_id=workspace_id,
-                            ontology_id=ontology_id,
-                            mutation_type="ONTOLOGY_FILE_CHANGED",
-                            before_version=active_version,
-                            after_version=active_version,
-                            before_enabled=enabled,
-                            after_enabled=enabled,
-                            # The staged revision write above already replaced the
-                            # file; the mutation only records the revision and
-                            # revokes the evidence index pointer so a worker can
-                            # rebuild the ontology revision.
-                            commit=lambda: None,
-                            rollback=lambda: None,
-                            digest_hints=digest_hints,
-                            trigger="api",
-                            base_mutation_revision=base_revision,
-                            **_mutation_audit_fields(request),
+                file_path = target.folder_path / safe_name
+                if not _is_safe_path(target.folder_path, file_path):
+                    return JSONResponse(
+                        content={"error": "Unsafe file path"},
+                        status_code=400,
+                    )
+                if not file_path.exists() or not file_path.is_file():
+                    return JSONResponse(
+                        content={"error": "File not found"},
+                        status_code=404,
+                    )
+                current_bytes = file_path.read_bytes()
+                if current_bytes != content_bytes:
+                    coordinator = None
+                    base_revision = None
+                    digest_hints = None
+                    if target.target_version == target.active_version:
+                        coordinator = _mutation_coordinator(workspace_id)
+                        base_revision = _mutation_base_revision(
+                            workspace_id,
+                            ontology_id,
+                        )
+                        digest_hints = build_digest_hints(
+                            scope_version=target.active_version,
+                            completeness="partial",
+                            mutation_revision=1,
+                            entries={
+                                f"{folder_key}/{safe_name}": {
+                                    "sha256": hashlib.sha256(content_bytes).hexdigest(),
+                                    "size_bytes": len(content_bytes),
+                                }
+                            },
+                        )
+                    audit_fields = _mutation_audit_fields(request)
+                    file_commit, file_rollback, file_finalize = (
+                        _stage_and_commit_revision_file(
+                            target.version_dir,
+                            file_path.relative_to(target.version_dir),
+                            content,
                         )
                     )
-                    mutation_revision = mutation_result.mutation_revision
+                    file_precondition = _file_content_precondition(
+                        file_path,
+                        current_bytes,
+                    )
+                    if coordinator is not None:
+                        mutation_result = coordinator.commit(
+                            PreparedOntologyMutation(
+                                workspace_id=workspace_id,
+                                ontology_id=ontology_id,
+                                mutation_type="ONTOLOGY_FILE_CHANGED",
+                                before_version=target.active_version,
+                                after_version=target.active_version,
+                                before_enabled=target.enabled,
+                                after_enabled=target.enabled,
+                                commit=file_commit,
+                                rollback=file_rollback,
+                                finalize=file_finalize,
+                                precondition=file_precondition,
+                                digest_hints=digest_hints,
+                                trigger="api",
+                                base_mutation_revision=base_revision,
+                                **audit_fields,
+                            )
+                        )
+                        mutation_revision = mutation_result.mutation_revision
+                    else:
+                        _commit_prepared_file_without_revision(
+                            commit=file_commit,
+                            rollback=file_rollback,
+                            finalize=file_finalize,
+                            precondition=file_precondition,
+                        )
+                    invalidate_ontology_views(
+                        workspace_id=workspace_id,
+                        ontology_id=ontology_id,
+                    )
         except OntologyMutationConflictError as exc:
             return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except ValueError as exc:
@@ -1701,18 +1960,11 @@ def upload_ontology_file(
         if version and not is_valid_ontology_version(version):
             payload, status_code = _version_error_payload(version)
             return JSONResponse(content=payload, status_code=status_code)
-        folder_path, folder_key = _resolve_ontology_folder(
-            ontology_id,
-            form.get("folder", ""),
-            version or None,
-        )
-        if folder_path is None or folder_key is None:
+        folder_key = _normalize_ontology_folder_key(form.get("folder", ""))
+        if folder_key is None:
             return JSONResponse(content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}, status_code=400)
         if folder_key == "assets":
             return JSONResponse(content={"error": "Asset upload is not supported from this editor."}, status_code=400)
-        immutable_response = _deterministic_package_immutable_response(folder_path)
-        if immutable_response is not None:
-            return immutable_response
 
         uploaded_file = form.get("file")
         if not isinstance(uploaded_file, UploadFile):
@@ -1731,77 +1983,140 @@ def upload_ontology_file(
             content = uploaded_bytes.decode("utf-8")
         except UnicodeDecodeError:
             return JSONResponse(content={"error": "File encoding must be UTF-8"}, status_code=400)
-        declaration_response = _deterministic_declaration_immutable_response(
-            folder_key,
-            content,
-        )
-        if declaration_response is not None:
-            return declaration_response
-
-        validation_error = _validate_md_limits(content, folder_key)
-        if validation_error:
-            return JSONResponse(content={"error": validation_error}, status_code=400)
-
-        folder_path.mkdir(parents=True, exist_ok=True)
-        target_path = folder_path / safe_name
-        if not _is_safe_path(folder_path, target_path):
-            return JSONResponse(content={"error": "Unsafe file path"}, status_code=400)
-
-        count_error = _validate_new_markdown_file_count(folder_path, folder_key, target_path)
-        if count_error:
-            return JSONResponse(content={"error": count_error}, status_code=400)
-        existed = target_path.exists()
+        ontology_dir = _resolve_ontology_dir(ontology_id)
+        if ontology_dir is None:
+            return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
+        target_path: Optional[Path] = None
+        existed = False
         mutation_revision = None
 
         try:
-            existing_bytes = target_path.read_bytes() if target_path.is_file() else None
-            unchanged = existing_bytes is not None and existing_bytes == uploaded_bytes
-            if not unchanged:
-                _stage_and_commit_revision_file(
-                    folder_path.parent,
-                    target_path.relative_to(folder_path.parent),
+            with _ontology_install_lock(ontology_dir):
+                locked_ontology_dir = _resolve_ontology_dir(ontology_id)
+                if locked_ontology_dir != ontology_dir:
+                    return JSONResponse(
+                        content={"error": "Ontology not found"},
+                        status_code=404,
+                    )
+                target = _resolve_ontology_file_write_target(
+                    locked_ontology_dir,
+                    folder_key,
+                    version or None,
+                )
+                if target is None:
+                    return JSONResponse(
+                        content={
+                            "error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."
+                        },
+                        status_code=400,
+                    )
+                if not _ontology_file_write_target_is_current(ontology_id, target):
+                    return JSONResponse(
+                        content={"error": "Ontology not found"},
+                        status_code=404,
+                    )
+                immutable_response = _deterministic_package_immutable_response(
+                    target.folder_path
+                )
+                if immutable_response is not None:
+                    return immutable_response
+                declaration_response = _deterministic_declaration_immutable_response(
+                    folder_key,
                     content,
                 )
-                ontology_dir = _resolve_ontology_dir(ontology_id)
-                if ontology_dir is None:
-                    return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
-                _manifest, active_version, enabled = _manifest_state(ontology_dir)
-                target_version = version or active_version
-                if target_version == active_version:
-                    base_revision = _mutation_base_revision(workspace_id, ontology_id)
-                    digest_hints = build_digest_hints(
-                        scope_version=active_version,
-                        completeness="partial",
-                        mutation_revision=1,
-                        entries={
-                            f"{folder_key}/{safe_name}": {
-                                "sha256": hashlib.sha256(uploaded_bytes).hexdigest(),
-                                "size_bytes": len(uploaded_bytes),
-                            }
-                        },
+                if declaration_response is not None:
+                    return declaration_response
+                validation_error = _validate_md_limits(content, folder_key)
+                if validation_error:
+                    return JSONResponse(
+                        content={"error": validation_error},
+                        status_code=400,
                     )
-                    mutation_result = _mutation_coordinator(workspace_id).commit(
-                        PreparedOntologyMutation(
-                            workspace_id=workspace_id,
-                            ontology_id=ontology_id,
-                            mutation_type="ONTOLOGY_FILE_CHANGED",
-                            before_version=active_version,
-                            after_version=active_version,
-                            before_enabled=enabled,
-                            after_enabled=enabled,
-                            # The staged revision write above already replaced the
-                            # file; the mutation only records the revision and
-                            # revokes the evidence index pointer so a worker can
-                            # rebuild the ontology revision.
-                            commit=lambda: None,
-                            rollback=lambda: None,
-                            digest_hints=digest_hints,
-                            trigger="upload",
-                            base_mutation_revision=base_revision,
-                            **_mutation_audit_fields(request),
+                target_path = target.folder_path / safe_name
+                if not _is_safe_path(target.folder_path, target_path):
+                    return JSONResponse(
+                        content={"error": "Unsafe file path"},
+                        status_code=400,
+                    )
+                target.folder_path.mkdir(parents=True, exist_ok=True)
+                count_error = _validate_new_markdown_file_count(
+                    target.folder_path,
+                    folder_key,
+                    target_path,
+                )
+                if count_error:
+                    return JSONResponse(
+                        content={"error": count_error},
+                        status_code=400,
+                    )
+                existed = target_path.exists()
+                existing_bytes = target_path.read_bytes() if target_path.is_file() else None
+                unchanged = existing_bytes is not None and existing_bytes == uploaded_bytes
+                if not unchanged:
+                    coordinator = None
+                    base_revision = None
+                    digest_hints = None
+                    if target.target_version == target.active_version:
+                        coordinator = _mutation_coordinator(workspace_id)
+                        base_revision = _mutation_base_revision(
+                            workspace_id,
+                            ontology_id,
+                        )
+                        digest_hints = build_digest_hints(
+                            scope_version=target.active_version,
+                            completeness="partial",
+                            mutation_revision=1,
+                            entries={
+                                f"{folder_key}/{safe_name}": {
+                                    "sha256": hashlib.sha256(uploaded_bytes).hexdigest(),
+                                    "size_bytes": len(uploaded_bytes),
+                                }
+                            },
+                        )
+                    audit_fields = _mutation_audit_fields(request)
+                    file_commit, file_rollback, file_finalize = (
+                        _stage_and_commit_revision_file(
+                            target.version_dir,
+                            target_path.relative_to(target.version_dir),
+                            content,
                         )
                     )
-                    mutation_revision = mutation_result.mutation_revision
+                    file_precondition = _file_content_precondition(
+                        target_path,
+                        existing_bytes,
+                    )
+                    if coordinator is not None:
+                        mutation_result = coordinator.commit(
+                            PreparedOntologyMutation(
+                                workspace_id=workspace_id,
+                                ontology_id=ontology_id,
+                                mutation_type="ONTOLOGY_FILE_CHANGED",
+                                before_version=target.active_version,
+                                after_version=target.active_version,
+                                before_enabled=target.enabled,
+                                after_enabled=target.enabled,
+                                commit=file_commit,
+                                rollback=file_rollback,
+                                finalize=file_finalize,
+                                precondition=file_precondition,
+                                digest_hints=digest_hints,
+                                trigger="upload",
+                                base_mutation_revision=base_revision,
+                                **audit_fields,
+                            )
+                        )
+                        mutation_revision = mutation_result.mutation_revision
+                    else:
+                        _commit_prepared_file_without_revision(
+                            commit=file_commit,
+                            rollback=file_rollback,
+                            finalize=file_finalize,
+                            precondition=file_precondition,
+                        )
+                    invalidate_ontology_views(
+                        workspace_id=workspace_id,
+                        ontology_id=ontology_id,
+                    )
         except OntologyMutationConflictError as exc:
             return JSONResponse(content={"error": str(exc), "code": exc.code}, status_code=409)
         except ValueError as exc:
@@ -2289,8 +2604,8 @@ def _stage_and_commit_revision_file(
     version_dir: Path,
     relative_path: Path,
     content: str,
-) -> None:
-    """Validate a proposed edit in a complete staged revision before commit."""
+) -> tuple[Callable[[], None], Callable[[], None], Callable[[], None]]:
+    """Validate a proposed edit and prepare a reversible live-file replace."""
 
     version_dir = Path(version_dir)
     relative_path = Path(relative_path)
@@ -2325,12 +2640,42 @@ def _stage_and_commit_revision_file(
         staged_path.write_text(content, encoding="utf-8")
         validate_ontology_revision(staged_root)
 
-    live_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_file_atomic(
+    return _prepare_atomic_bytes_replace(
         live_path,
         content.encode("utf-8"),
-        prefix=".ontology-file-",
     )
+
+
+def _commit_prepared_file_without_revision(
+    *,
+    commit: Callable[[], None],
+    rollback: Callable[[], None],
+    finalize: Callable[[], None],
+    precondition: Callable[[], None],
+) -> None:
+    """Commit a non-active version edit with the same rollback contract."""
+    try:
+        precondition()
+        commit()
+    except Exception:
+        try:
+            rollback()
+        finally:
+            try:
+                finalize()
+            except Exception:
+                logger.warning(
+                    "Non-active ontology file rollback cleanup failed",
+                    exc_info=True,
+                )
+        raise
+    try:
+        finalize()
+    except Exception:
+        logger.warning(
+            "Non-active ontology file post-commit cleanup failed",
+            exc_info=True,
+        )
 
 
 def _count_markdown_files(folder_path: Path) -> int:
@@ -2687,6 +3032,10 @@ def _install_ontology_version_package(
                     **audit_fields,
                 )
             )
+            invalidate_ontology_views(
+                workspace_id=workspace_id,
+                ontology_id=ontology_id,
+            )
         return ontology_dir / "versions" / target_version, mutation_result.mutation_revision
     except Exception as exc:
         _cleanup_mutation_staging_root(staging_root, exc)
@@ -2777,6 +3126,10 @@ def _overwrite_ontology_active_version_package(
                 base_mutation_revision=base_revision,
                 **audit_fields,
             )
+        )
+        invalidate_ontology_views(
+            workspace_id=workspace_id,
+            ontology_id=ontology_id,
         )
         return (
             ontology_dir / "versions" / active_version,

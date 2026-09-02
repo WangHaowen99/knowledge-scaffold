@@ -72,6 +72,38 @@ def test_route_guard_matches_named_solver_operation_without_domain_hardcoding(mo
     assert requirement.tool_name == "solve_optimize_minus_one_route_abcd1234"
 
 
+def test_route_guard_reuses_preflight_root_payload_without_package_read(monkeypatch):
+    monkeypatch.setattr(
+        solver_route_guard,
+        "_load_solver_root_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("solver routing must reuse the preflight payload")
+        ),
+    )
+    monkeypatch.setattr(
+        solver_route_guard,
+        "build_solver_tool_specs",
+        lambda _records: (
+            SimpleNamespace(name="solve_optimize_minus_one_route_abcd1234"),
+        ),
+    )
+    payload = {
+        "operations_catalog": tuple(_payload()["operations_catalog"]),
+        "solver_catalog": tuple(_payload()["solver_catalog"]),
+    }
+
+    requirement = solver_route_guard.resolve_solver_route_requirement(
+        user_request="execute optimize_minus_one_route",
+        selected_ontology_id="package-a",
+        selected_ontology_version="9.4.2",
+        workspace_id="workspace-a",
+        root_payload=payload,
+    )
+
+    assert requirement is not None
+    assert requirement.operation_key == "optimize_minus_one_route"
+
+
 def test_route_guard_matches_unique_solver_schema_from_structured_arguments(monkeypatch):
     monkeypatch.setattr(
         solver_route_guard,

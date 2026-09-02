@@ -9,7 +9,7 @@ from agent.core.shared.solver_route_guard import (
     solver_route_requirement_from_state,
     solver_tools_suppressed_from_state,
 )
-from agent.runtime.contracts import RuntimeInvocationContext
+from agent.runtime.contracts import RunPreflightSnapshot, RuntimeInvocationContext
 from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.runtime.jiuwen_events import JiuwenRuntimeEventBridge
 from agent.runtime.service import AsyncExecutionService, OrchestratorSessionAdapter
@@ -81,6 +81,182 @@ def test_native_runtime_binds_solver_route_from_current_request(monkeypatch):
     }
     assert solver_route_requirement_from_state(state) == _requirement()
     assert solver_tools_suppressed_from_state(state) is False
+
+
+def test_native_runtime_seeds_exact_preflight_products(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "agent.core.shared.solver_route_guard.resolve_solver_route_requirement",
+        lambda **kwargs: captured.update(kwargs) or None,
+    )
+    snapshot = RunPreflightSnapshot(
+        workspace_id="workspace-solver",
+        workspace_config_generation=1,
+        system_config_generation=2,
+        ontology_id="ontology-solver",
+        ontology_version="2.1.0",
+        mutation_revision=3,
+        ontology_manifest={
+            "id": "ontology-solver",
+            "version": "2.1.0",
+            "ontology_dir": "C:/synthetic/ontology-solver",
+        },
+        root_payload={"operations_catalog": [], "solver_catalog": []},
+        selected_ontology_context="<Selected-Ontology />",
+        preload_records=(
+            {
+                "path": "ontologies/ontology-solver/index.md",
+                "normalized_path": "ontologies/ontology-solver/index.md",
+                "source": "preload",
+                "turn_id": 0,
+            },
+        ),
+        deterministic_candidate=False,
+    )
+    context = _context("run-preflight-products").model_copy(
+        update={"preflight_snapshot": snapshot}
+    )
+
+    state = JiuwenAsyncAgentRuntime._build_engine_state(context)
+
+    assert captured["root_payload"] is snapshot.root_payload
+    assert state["_selected_ontology_context_cache"] == "<Selected-Ontology />"
+    assert state["_preflight_selected_ontology_preload_records"] == (
+        tuple(dict(record) for record in snapshot.preload_records)
+    )
+    assert (
+        state["_preflight_selected_ontology_preload_records"]
+        is not snapshot.preload_records
+    )
+
+
+def test_native_runtime_uses_private_frozen_preflight_model_config(monkeypatch):
+    from agent.core.jiuwen_engine import _resolve_jiuwen_llm_config
+
+    current_resolutions = []
+
+    class CurrentRouter:
+        agent_config = SimpleNamespace()
+
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            current_resolutions.append((purpose, profile_id, workspace_id))
+            return SimpleNamespace(
+                model="current-model",
+                api_key="current-secret",
+                max_tokens=128,
+            )
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.get_llm_router",
+        lambda: CurrentRouter(),
+    )
+    observed = {}
+
+    class Engine:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def arun(self, state, **_kwargs):
+            resolved = _resolve_jiuwen_llm_config(
+                state,
+                caller="main",
+                agent_config=SimpleNamespace(),
+            )
+            observed["model"] = resolved.model
+            observed["api_key"] = resolved.api_key
+            observed["state"] = state
+            return {**state, "final_output": "frozen profile used"}
+
+    snapshot = RunPreflightSnapshot(
+        workspace_id="workspace-solver",
+        workspace_config_generation=1,
+        system_config_generation=2,
+        model_profile={
+            "id": "accepted-profile",
+            "model_profile_ref": {"scope": "global", "id": "accepted-profile"},
+            "provider": "openai_compatible",
+            "base_url": "https://synthetic.invalid/v1",
+            "model": "frozen-model",
+            "api_key": "frozen-secret",
+            "timeout": 30,
+            "max_tokens": 256,
+            "temperature": 0.1,
+        },
+        deterministic_candidate=False,
+    )
+    context = _context("run-frozen-profile").model_copy(
+        update={
+            "arguments": None,
+            "model_profile_id": "accepted-profile",
+            "model_profile_ref": {"scope": "global", "id": "accepted-profile"},
+            "preflight_snapshot": snapshot,
+        }
+    )
+
+    async def exercise():
+        runtime = JiuwenAsyncAgentRuntime(
+            agent_config=SimpleNamespace(),
+            engine_factory=Engine,
+        )
+        return [event async for event in runtime.astream(context)]
+
+    events = asyncio.run(exercise())
+
+    assert events[-1].status == "completed"
+    assert observed["model"] == "frozen-model"
+    assert observed["api_key"] == "frozen-secret"
+    assert current_resolutions == []
+    assert "preflight_snapshot" not in observed["state"]
+    assert "frozen-secret" not in repr(observed["state"])
+
+    current = _resolve_jiuwen_llm_config(
+        {
+            "workspace_id": "workspace-solver",
+            "user_context": {"model_profile_id": "accepted-profile"},
+        },
+        caller="main",
+        agent_config=SimpleNamespace(),
+    )
+    assert current.model == "current-model"
+    assert len(current_resolutions) == 1
+
+
+def test_preflight_preload_records_skip_second_package_read(monkeypatch):
+    from agent.core.shared.ontology_context import (
+        hydrate_selected_ontology_read_documents,
+    )
+
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.build_selected_ontology_preload_records",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preflight records must be reused")
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context._stamp_preload_evidence_context",
+        lambda *_args, **_kwargs: None,
+    )
+    path = "ontologies/ontology-solver/index.md"
+    state = {
+        "workspace_id": "workspace-solver",
+        "current_turn_id": 7,
+        "user_context": {
+            "selected_ontology_id": "ontology-solver",
+            "selected_ontology_version": "2.1.0",
+        },
+        "_preflight_selected_ontology_preload_records": (
+            {
+                "path": path,
+                "normalized_path": path,
+                "source": "preload",
+                "turn_id": 0,
+            },
+        ),
+    }
+
+    hydrate_selected_ontology_read_documents(state)
+
+    assert state["read_documents"]["by_path"][path]["turn_id"] == 7
 
 
 def test_native_runtime_suppresses_solver_tools_for_current_evaluation(monkeypatch):

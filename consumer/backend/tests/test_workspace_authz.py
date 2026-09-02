@@ -831,6 +831,9 @@ def test_legacy_workspace_without_owner_fields_still_works(tmp_path, monkeypatch
     client, headers = _build_env(tmp_path, monkeypatch)
     _setup_shared_and_owned(client, headers)
     _write_legacy_workspace(tmp_path)
+    from workspace.workspaces import invalidate_workspace_catalog
+
+    invalidate_workspace_catalog(workspace_id="legacy-ws")
 
     # list：普通用户可见，owner/members 以默认值补齐
     body = client.get("/agentic/workspaces", headers=headers["bob"]).json()

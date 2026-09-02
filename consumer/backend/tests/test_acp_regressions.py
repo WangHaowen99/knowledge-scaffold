@@ -10,6 +10,7 @@ from llm import LLMPurpose
 import utils.lang as lang_module
 from agent.runtime.contracts import (
     PublicEvent,
+    RunPreflightSnapshot,
     RunSnapshot,
     RunStatus as CanonicalRunStatus,
     RuntimeInvocationContext,
@@ -61,13 +62,16 @@ class _Manager:
         return snapshot if snapshot is not None and scope.owns(snapshot) else None
 
 
-def _request(manager):
+def _request(manager, *, preflight_builder=None):
     app = TestApplication()
-    app.state.runtime_container = SimpleNamespace(
+    runtime = SimpleNamespace(
         manager=manager,
         short_io=_InlinePool(),
         event_hub=SimpleNamespace(),
     )
+    if preflight_builder is not None:
+        runtime.protocol_preflight_builder = preflight_builder
+    app.state.runtime_container = runtime
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -136,6 +140,117 @@ def test_acp_forwards_explicit_deterministic_operation_and_arguments(
     from fastapi.responses import JSONResponse
 
     asyncio.run(scenario())
+
+
+def test_acp_builds_one_dynamic_preflight_before_each_durable_turn(tmp_path):
+    async def scenario():
+        manager = _Manager()
+        events = []
+        calls = []
+        expected = RunPreflightSnapshot(
+            workspace_id="workspace_demo",
+            workspace_config_generation=1,
+            system_config_generation=1,
+        )
+
+        def build_preflight(**kwargs):
+            events.append("preflight")
+            calls.append(kwargs)
+            return expected
+
+        request = _request(manager, preflight_builder=build_preflight)
+        store = ExecutionStore(str(tmp_path / "executions"))
+        create_turn = store.create_turn_for_run
+
+        def tracked_create_turn(*args, **kwargs):
+            events.append("durable_turn")
+            return create_turn(*args, **kwargs)
+
+        store.create_turn_for_run = tracked_create_turn
+        user = AuthUser(username="operator_a", role="user")
+        for index in range(2):
+            await acp_server._admit_run(
+                request,
+                user=user,
+                workspace_id="workspace_demo",
+                execution_store=store,
+                external_run_id=f"external_run_{index}",
+                session_id=f"session_dynamic_preflight_{index}",
+                query=f"synthetic question {index}",
+                context_values={"model_profile_id": "global:synthetic"},
+                lang=None,
+            )
+        return manager, expected, calls, events
+
+    manager, expected, calls, events = asyncio.run(scenario())
+
+    assert len(calls) == 2
+    assert [call["session_id"] for call in calls] == [
+        "session_dynamic_preflight_0",
+        "session_dynamic_preflight_1",
+    ]
+    assert events == [
+        "preflight",
+        "durable_turn",
+        "preflight",
+        "durable_turn",
+    ]
+    assert [context.preflight_snapshot for context in manager.contexts] == [
+        expected,
+        expected,
+    ]
+
+
+def test_protocol_preflight_uses_orchestrator_for_runtime_container(monkeypatch):
+    from agent.runtime.runtime import RuntimeContainer
+    import api.routes as routes
+    from api.protocols.preflight import build_protocol_preflight_snapshot
+
+    calls = []
+    expected = RunPreflightSnapshot(
+        workspace_id="workspace_demo",
+        workspace_config_generation=1,
+        system_config_generation=1,
+    )
+
+    def build_preflight(**kwargs):
+        calls.append(kwargs)
+        return expected
+
+    class _ProductionRuntime(RuntimeContainer):
+        def __init__(self):
+            self.short_io = _InlinePool()
+
+    monkeypatch.setattr(
+        routes,
+        "get_orchestrator",
+        lambda: SimpleNamespace(build_run_preflight_snapshot=build_preflight),
+    )
+    result = asyncio.run(
+        build_protocol_preflight_snapshot(
+            _ProductionRuntime(),
+            user_request="synthetic request",
+            user_context={"agent_mode": "quick"},
+            arguments={"code": "CODE-42"},
+            session_id="session_demo",
+            model_profile_id="global:synthetic",
+            user_id="operator_a",
+            workspace_id="workspace_demo",
+        )
+    )
+
+    assert result is expected
+    assert calls == [
+        {
+            "user_request": "synthetic request",
+            "user_context": {"agent_mode": "quick"},
+            "arguments": {"code": "CODE-42"},
+            "session_id": "session_demo",
+            "model_profile_id": "global:synthetic",
+            "user_id": "operator_a",
+            "workspace_id": "workspace_demo",
+        }
+    ]
 
 
 def test_acp_public_event_keeps_external_id_as_metadata_only():

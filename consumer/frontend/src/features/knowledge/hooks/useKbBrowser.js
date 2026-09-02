@@ -30,20 +30,29 @@ export const DIR_LABELS = {
 };
 export const DIR_ICONS = { objects: '▤', operations: '⚙', scripts: '𝑓', mappings: '⇄' };
 
-export default function useKbBrowser() {
-  const { can, workspaceId, status, workspaceDataReady } = useAuthContext();
+export default function useKbBrowser({
+  listEnabled = false,
+  treeEnabled = false,
+  ontologyResource,
+} = {}) {
+  const { can, user, workspaceId, status, workspaceDataReady } = useAuthContext();
+  const principalId = String(user?.username || '');
+  const scopeKey = `${workspaceDataReady ? 'ready' : status}:${principalId}:${workspaceId || ''}`;
+  const listStateKey = `${scopeKey}:${listEnabled ? 'enabled' : 'disabled'}`;
   const canImport = can('ws.kb.import');
   const canActivate = can('ws.kb.activate');
   const canManage = can('ws.kb.write');
   const [packages, setPackages] = useState([]);
   const [pkgsLoading, setPkgsLoading] = useState(true);
   const [packagesError, setPackagesError] = useState('');
+  const [resolvedListStateKey, setResolvedListStateKey] = useState(listStateKey);
   const [pkgId, setPkgId] = useState(null);
   const [tree, setTree] = useState([]);
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState('');
   const [treeReloadKey, setTreeReloadKey] = useState(0);
   const [knowledgeRevision, setKnowledgeRevision] = useState(0);
+  const knowledgeRevisionRef = useRef(0);
   // sel.dir = 当前目录相对路径（'' 为包根）；sel.file = 当前文件相对路径或 null
   const [sel, setSel] = useState({ dir: 'objects', file: null });
   const [importFlow, setImportFlow] = useState(createImportFlowState);
@@ -52,21 +61,40 @@ export default function useKbBrowser() {
   const [opBusy, setOpBusy] = useState('');
   const [opNotice, setOpNotice] = useState('');
   const packageRequestRef = useRef(0);
+  const packageSubscriptionRef = useRef(null);
+  const currentListContextRef = useRef(null);
+  const loadPackagesRef = useRef(null);
   const treeRequestRef = useRef(0);
   const selectionEpochRef = useRef(0);
   const importRequestRef = useRef(0);
   const importAbortRef = useRef(null);
   const importReconcileTimerRef = useRef(null);
-  const scopeKey = `${workspaceDataReady ? 'ready' : status}:${workspaceId || ''}`;
   const scopeRef = useRef(scopeKey);
   scopeRef.current = scopeKey;
+  currentListContextRef.current = {
+    principalId,
+    workspaceId,
+    listEnabled,
+    workspaceDataReady,
+  };
 
-  const pkg = packages.find((p) => p.id === pkgId) || null;
+  const listStateCurrent = resolvedListStateKey === listStateKey;
+  const visiblePackages = listStateCurrent ? packages : [];
+  const visiblePkgId = listStateCurrent ? pkgId : null;
+  const pkg = visiblePackages.find((p) => p.id === visiblePkgId) || null;
   const activeVersion = pkg?.active_version || pkg?.version || '';
   const viewVersion = versionOverride ?? activeVersion;
   const viewingActive = versionOverride === null || versionOverride === activeVersion;
 
-  const loadPackages = useCallback(async ({ signal } = {}) => {
+  const releasePackageSubscription = useCallback(() => {
+    packageSubscriptionRef.current?.release();
+    packageSubscriptionRef.current = null;
+  }, []);
+
+  const loadPackages = useCallback(async ({
+    signal,
+    revision = knowledgeRevisionRef.current,
+  } = {}) => {
     const requestId = ++packageRequestRef.current;
     const requestScope = scopeKey;
     const isCurrent = () => (
@@ -74,7 +102,8 @@ export default function useKbBrowser() {
       && requestId === packageRequestRef.current
       && requestScope === scopeRef.current
     );
-    if (!workspaceDataReady) {
+    if (!listEnabled || !workspaceDataReady || !ontologyResource) {
+      releasePackageSubscription();
       if (isCurrent()) {
         setPackages([]);
         setPkgId(null);
@@ -86,12 +115,13 @@ export default function useKbBrowser() {
     }
     setPkgsLoading(true);
     setPackagesError('');
+    const subscription = ontologyResource.subscribe({ principalId, workspaceId, revision });
+    const previousSubscription = packageSubscriptionRef.current;
+    packageSubscriptionRef.current = subscription;
+    previousSubscription?.release();
     try {
-      const res = await authFetch('/agentic/ontologies', { signal });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || data.detail || `知识包列表加载失败（${res.status}）`);
+      const list = await subscription.promise;
       if (!isCurrent()) return;
-      const list = data.ontologies || [];
       setPackages(list);
       setPkgId((prev) => (prev && list.some((p) => p.id === prev) ? prev : list[0]?.id || null));
     } catch (error) {
@@ -99,12 +129,26 @@ export default function useKbBrowser() {
       setPackages([]);
       setPackagesError(friendlyRequestError(error, '知识包列表加载失败'));
     } finally {
+      if (packageSubscriptionRef.current === subscription) {
+        packageSubscriptionRef.current = null;
+      }
+      subscription.release();
       if (isCurrent()) setPkgsLoading(false);
     }
-  }, [scopeKey, workspaceDataReady]);
+  }, [listEnabled, ontologyResource, principalId, releasePackageSubscription, scopeKey, workspaceDataReady, workspaceId]);
+  loadPackagesRef.current = loadPackages;
+
+  useEffect(() => {
+    knowledgeRevisionRef.current = 0;
+    setKnowledgeRevision(0);
+    return () => {
+      if (principalId && workspaceId) ontologyResource?.invalidateScope({ principalId, workspaceId });
+    };
+  }, [ontologyResource, principalId, workspaceId]);
 
   useEffect(() => {
     const controller = new AbortController();
+    setResolvedListStateKey(listStateKey);
     setPackages([]);
     setPkgId(null);
     setTree([]);
@@ -115,13 +159,14 @@ export default function useKbBrowser() {
     setSel({ dir: 'objects', file: null });
     setOpBusy('');
     setOpNotice('');
-    setPkgsLoading(workspaceDataReady);
+    setPkgsLoading(listEnabled && workspaceDataReady);
     const timer = setTimeout(() => loadPackages({ signal: controller.signal }), 0);
     return () => {
       clearTimeout(timer);
       controller.abort();
+      releasePackageSubscription();
     };
-  }, [loadPackages, workspaceDataReady]);
+  }, [listEnabled, listStateKey, loadPackages, releasePackageSubscription, workspaceDataReady]);
 
   useEffect(() => {
     if (importReconcileTimerRef.current) {
@@ -148,7 +193,7 @@ export default function useKbBrowser() {
   }, [pkg, versionOverride]);
 
   useEffect(() => {
-    if (!workspaceDataReady || !pkgId) {
+    if (!treeEnabled || !workspaceDataReady || !listStateCurrent || !pkgId) {
       setTree([]);
       setTreeLoading(false);
       return undefined;
@@ -187,7 +232,7 @@ export default function useKbBrowser() {
       }
     }, 0);
     return () => { controller.abort(); clearTimeout(t); };
-  }, [pkgId, workspaceId, versionOverride, workspaceDataReady, treeReloadKey]);
+  }, [listStateCurrent, pkgId, treeEnabled, workspaceId, versionOverride, workspaceDataReady, treeReloadKey]);
 
   const selectPkg = useCallback((id) => {
     selectionEpochRef.current += 1;
@@ -195,11 +240,11 @@ export default function useKbBrowser() {
     setVersionOverride(null);
     setTree([]);
     setTreeError('');
-    setTreeLoading(Boolean(id));
+    setTreeLoading(Boolean(id && treeEnabled));
     setSel({ dir: 'objects', file: null });
     setTreeReloadKey((value) => value + 1);
     setOpNotice('');
-  }, []);
+  }, [treeEnabled]);
   const selectDir = useCallback((dirPath) => { setSel({ dir: dirPath, file: null }); }, []);
   const selectFile = useCallback((filePath) => {
     const parent = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
@@ -209,6 +254,43 @@ export default function useKbBrowser() {
     setVersionOverride(version === activeVersion ? null : version);
   }, [activeVersion]);
   const reloadTree = useCallback(() => setTreeReloadKey((value) => value + 1), []);
+
+  const bumpKnowledgeRevision = useCallback(() => {
+    const revision = nextKnowledgeRevision(knowledgeRevisionRef.current);
+    knowledgeRevisionRef.current = revision;
+    setKnowledgeRevision(revision);
+    return revision;
+  }, []);
+
+  const advanceKnowledgeRevision = useCallback(() => {
+    ontologyResource?.invalidateScope({ principalId, workspaceId });
+    return bumpKnowledgeRevision();
+  }, [bumpKnowledgeRevision, ontologyResource, principalId, workspaceId]);
+
+  const refreshPackageList = useCallback(async ({
+    signal,
+    principalId: targetPrincipalId = principalId,
+    workspaceId: targetWorkspaceId = workspaceId,
+  } = {}) => {
+    const targetScope = {
+      principalId: String(targetPrincipalId || ''),
+      workspaceId: String(targetWorkspaceId || ''),
+    };
+    if (targetScope.principalId && targetScope.workspaceId) {
+      ontologyResource?.invalidateScope(targetScope);
+    }
+
+    const current = currentListContextRef.current;
+    if (
+      !current?.listEnabled
+      || !current.workspaceDataReady
+      || current.principalId !== targetScope.principalId
+      || current.workspaceId !== targetScope.workspaceId
+    ) return false;
+
+    const revision = bumpKnowledgeRevision();
+    return loadPackagesRef.current?.({ signal, revision });
+  }, [bumpKnowledgeRevision, ontologyResource, principalId, workspaceId]);
 
   // 所有会改变知识包文件内容的入口共用这一刷新边界。revision 让已选中的
   // raw-file 即使路径未变也会重新读取；treeReloadKey 刷新目录与文件元数据。
@@ -220,7 +302,8 @@ export default function useKbBrowser() {
   } = {}) => {
     const requestScope = scopeRef.current;
     const requestSelectionEpoch = selectionEpochRef.current;
-    if (refreshPackages) await loadPackages();
+    const revision = advanceKnowledgeRevision();
+    if (refreshPackages) await loadPackages({ revision });
     if (
       requestScope !== scopeRef.current
       || (!selectTarget && requestSelectionEpoch !== selectionEpochRef.current)
@@ -231,9 +314,8 @@ export default function useKbBrowser() {
     }
     setVersionOverride((current) => resolveKnowledgeVersionOverride(current, followActive));
     setTreeReloadKey((value) => value + 1);
-    setKnowledgeRevision(nextKnowledgeRevision);
     return true;
-  }, [loadPackages, pkgId]);
+  }, [advanceKnowledgeRevision, loadPackages, pkgId]);
 
   const executeImport = useCallback(async (flowState) => {
     if (!flowState?.file || flowState.phase !== IMPORT_PHASE.UPLOADING) return;
@@ -357,7 +439,7 @@ export default function useKbBrowser() {
       if (requestScope !== scopeRef.current) return;
       if (res.ok) {
         setOpNotice(enabled ? '知识包已启用' : '知识包已禁用，Agent 将不再使用该知识包');
-        await loadPackages();
+        await refreshPackageList();
       } else {
         setOpNotice(`操作失败：${data.error || data.detail || res.status}`);
       }
@@ -366,7 +448,7 @@ export default function useKbBrowser() {
     } finally {
       if (requestScope === scopeRef.current) setOpBusy('');
     }
-  }, [pkgId, loadPackages]);
+  }, [pkgId, refreshPackageList]);
 
   const setBusinessCheckpointEnabled = useCallback(async (enabled) => {
     if (!pkgId) return;
@@ -387,14 +469,14 @@ export default function useKbBrowser() {
       if (requestScope !== scopeRef.current) return;
       if (!res.ok) {
         if (res.status === 409) {
-          await loadPackages();
+          await refreshPackageList();
           if (requestScope !== scopeRef.current) return;
         }
         setOpNotice(`操作失败：${data.error || data.detail || res.status}`);
         return;
       }
       setOpNotice(enabled ? '业务阶段 CheckPoint 已开启' : '业务阶段 CheckPoint 已关闭');
-      await loadPackages();
+      await refreshPackageList();
     } catch (error) {
       if (requestScope === scopeRef.current) {
         setOpNotice(friendlyRequestError(error, 'CheckPoint 状态更新失败'));
@@ -402,7 +484,7 @@ export default function useKbBrowser() {
     } finally {
       if (requestScope === scopeRef.current) setOpBusy('');
     }
-  }, [pkg, pkgId, loadPackages]);
+  }, [pkg, pkgId, refreshPackageList]);
 
   const activateVersion = useCallback(async () => {
     if (!pkgId || !viewVersion) return;
@@ -420,7 +502,7 @@ export default function useKbBrowser() {
       if (res.ok) {
         setOpNotice(`已激活版本 ${viewVersion}`);
         setVersionOverride(null);
-        await loadPackages();
+        await refreshPackageList();
       } else {
         setOpNotice(`激活失败：${data.error || data.detail || res.status}`);
       }
@@ -429,7 +511,7 @@ export default function useKbBrowser() {
     } finally {
       if (requestScope === scopeRef.current) setOpBusy('');
     }
-  }, [pkgId, viewVersion, loadPackages]);
+  }, [pkgId, refreshPackageList, viewVersion]);
 
   const deleteVersion = useCallback(async () => {
     if (!pkgId || !viewVersion) return;
@@ -446,7 +528,7 @@ export default function useKbBrowser() {
       if (res.ok) {
         setOpNotice(`已删除版本 ${viewVersion}`);
         setVersionOverride(null);
-        await loadPackages();
+        await refreshPackageList();
       } else {
         setOpNotice(`删除失败：${data.error || data.detail || res.status}`);
       }
@@ -455,7 +537,7 @@ export default function useKbBrowser() {
     } finally {
       if (requestScope === scopeRef.current) setOpBusy('');
     }
-  }, [pkgId, viewVersion, loadPackages]);
+  }, [pkgId, refreshPackageList, viewVersion]);
 
   const deletePackage = useCallback(async () => {
     if (!pkgId) return;
@@ -469,14 +551,14 @@ export default function useKbBrowser() {
       if (res.ok) {
         setOpNotice(`已删除知识包 ${pkgId}`);
         setPkgId(null);
-        await loadPackages();
+        await refreshPackageList();
       } else setOpNotice(`删除失败：${data.error || data.detail || res.status}`);
     } catch (error) {
       if (requestScope === scopeRef.current) setOpNotice(friendlyRequestError(error, '知识包删除失败'));
     } finally {
       if (requestScope === scopeRef.current) setOpBusy('');
     }
-  }, [pkgId, loadPackages]);
+  }, [pkgId, refreshPackageList]);
 
   const downloadPkg = useCallback(async () => {
     if (!pkgId) return;
@@ -508,8 +590,17 @@ export default function useKbBrowser() {
   const clearOperationNotice = useCallback(() => setOpNotice(''), []);
 
   return {
-    canImport, canActivate, canManage, packages, pkgsLoading, packagesError, retryPackages: loadPackages,
-    pkg, pkgId, tree, treeLoading, treeError, retryTree: () => setTreeReloadKey((value) => value + 1),
+    canImport, canActivate, canManage,
+    packages: listStateCurrent ? packages : [],
+    pkgsLoading: listStateCurrent ? pkgsLoading : Boolean(listEnabled && workspaceDataReady),
+    packagesError: listStateCurrent ? packagesError : '',
+    retryPackages: refreshPackageList,
+    pkg,
+    pkgId: visiblePkgId,
+    tree: listStateCurrent ? tree : [],
+    treeLoading: listStateCurrent ? treeLoading : false,
+    treeError: listStateCurrent ? treeError : '',
+    retryTree: () => setTreeReloadKey((value) => value + 1),
     sel, selectPkg, selectDir, selectFile, importZip,
     importing: importFlow.phase === IMPORT_PHASE.UPLOADING,
     importReconciling: Boolean(importFlow.reconciliationPending),

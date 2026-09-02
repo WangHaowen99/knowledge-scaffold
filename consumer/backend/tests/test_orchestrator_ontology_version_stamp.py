@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from agent.core.orchestrator import AgenticOrchestrator
-from agent.runtime.contracts import RuntimeInvocationContext, RuntimeResult
+from agent.runtime.contracts import (
+    RunPreflightSnapshot,
+    RuntimeInvocationContext,
+    RuntimeResult,
+)
 from agent.runtime.service import OrchestratorSessionAdapter
 from config import AgentConfig, AppConfig
 from llm import LLMRouter, configure_llm_router, reset_llm_router_for_tests
@@ -243,6 +247,250 @@ def test_requested_ontology_version_skips_active_registry_resolution(
 
     assert prepared.arguments["selected_ontology_id"] == ONTOLOGY_ID
     assert prepared.arguments["selected_ontology_version"] == ACTIVE_VERSION
+
+
+def test_prepare_reuses_matching_preflight_manifest_and_profile(tmp_path, monkeypatch):
+    _orchestrator, adapter = _services(tmp_path)
+    monkeypatch.setattr(
+        "ontology.ontologies.get_runtime_ontology_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("matching preflight must avoid a second manifest read")
+        ),
+    )
+    monkeypatch.setattr(
+        "ontology.ontologies.get_ontology_registry",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("matching preflight must avoid a registry scan")
+        ),
+    )
+    monkeypatch.setattr(
+        "config.system_config.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("matching preflight must avoid a second profile read")
+        ),
+    )
+    snapshot = RunPreflightSnapshot(
+        workspace_id=WORKSPACE_ID,
+        workspace_config_generation=1,
+        system_config_generation=1,
+        ontology_id=ONTOLOGY_ID,
+        ontology_version=ACTIVE_VERSION,
+        mutation_revision=1,
+        ontology_manifest={
+            "id": ONTOLOGY_ID,
+            "name": "Ontology Demo",
+            "version": ACTIVE_VERSION,
+            "enabled": True,
+        },
+        root_payload={},
+        model_profile={
+            "id": "default",
+            "provider": "openai_compatible",
+            "model_profile_ref": {"scope": "global", "id": "default"},
+        },
+        deterministic_candidate=False,
+    )
+    context = _context(
+        run_id="run-preflight-reuse",
+        session_id="session-preflight-reuse",
+        turn_id=1,
+        arguments={
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+        },
+    ).model_copy(
+        update={
+            "model_profile_id": "default",
+            "preflight_snapshot": snapshot,
+        }
+    )
+
+    prepared = _prepare_and_finalize(adapter, context)
+
+    assert prepared.preflight_snapshot is snapshot
+    assert prepared.model_profile_id == "default"
+    assert prepared.arguments["selected_ontology_version"] == ACTIVE_VERSION
+
+
+def test_prepare_reloads_profile_when_session_changed_after_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    orchestrator, adapter = _services(tmp_path)
+    orchestrator.chat_store.create_session(
+        session_id="session-profile-race",
+        metadata={
+            "agent_mode": "quick",
+            "llm_request_mode": "stream",
+            "model_profile_id": "profile-a",
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_name": "Ontology Demo",
+            "selected_ontology_version": ACTIVE_VERSION,
+        },
+    )
+    profile_reads = []
+
+    def resolve_profile(profile_ref, **_kwargs):
+        profile_reads.append(profile_ref)
+        return {
+            "id": "profile-a",
+            "provider": "openai_compatible",
+            "model_profile_ref": {"scope": "global", "id": "profile-a"},
+        }
+
+    monkeypatch.setattr(
+        "config.system_config.resolve_effective_llm_profile_config",
+        resolve_profile,
+    )
+    snapshot = RunPreflightSnapshot(
+        workspace_id=WORKSPACE_ID,
+        workspace_config_generation=1,
+        system_config_generation=1,
+        ontology_id=ONTOLOGY_ID,
+        ontology_version=ACTIVE_VERSION,
+        mutation_revision=1,
+        ontology_manifest={
+            "id": ONTOLOGY_ID,
+            "name": "Ontology Demo",
+            "version": ACTIVE_VERSION,
+            "enabled": True,
+        },
+        root_payload={},
+        model_profile={
+            "id": "profile-b",
+            "provider": "openai_compatible",
+            "model_profile_ref": {"scope": "global", "id": "profile-b"},
+        },
+        deterministic_candidate=False,
+    )
+    context = _context(
+        run_id="run-profile-race",
+        session_id="session-profile-race",
+        turn_id=1,
+    ).model_copy(update={"preflight_snapshot": snapshot})
+
+    prepared = _prepare_and_finalize(adapter, context)
+
+    assert profile_reads == ["profile-a"]
+    assert prepared.model_profile_id == "profile-a"
+
+
+def test_orchestrator_preflight_caches_package_but_resolves_profile_per_request(
+    tmp_path,
+    monkeypatch,
+):
+    _write_ontology_manifest()
+    orchestrator, _adapter = _services(tmp_path)
+    package_loads = []
+    profile_loads = []
+    monkeypatch.setattr(
+        "agent.direct_execution.service.DeterministicExecutionService.is_potentially_applicable",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "ontology.ontology_catalog.build_root_payload",
+        lambda **_kwargs: package_loads.append("package")
+        or {"operations_catalog": [], "solver_catalog": []},
+    )
+    monkeypatch.setattr(
+        "config.system_config.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: profile_loads.append("profile")
+        or {
+            "id": "default",
+            "provider": "openai_compatible",
+            "model_profile_ref": {"scope": "global", "id": "default"},
+        },
+    )
+    kwargs = {
+        "user_request": "synthetic request",
+        "user_context": {
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+        },
+        "arguments": {
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+        },
+        "session_id": "session-preflight-cache",
+        "model_profile_id": "default",
+        "user_id": "user_demo",
+        "workspace_id": WORKSPACE_ID,
+    }
+
+    first = orchestrator.build_run_preflight_snapshot(**kwargs)
+    second = orchestrator.build_run_preflight_snapshot(**kwargs)
+
+    assert first.root_payload is second.root_payload
+    assert package_loads == ["package"]
+    assert profile_loads == ["profile", "profile"]
+
+
+def test_orchestrator_reloads_manifest_when_revision_changes_during_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    _write_ontology_manifest()
+    orchestrator, _adapter = _services(tmp_path)
+    from ontology.ontologies import get_runtime_ontology_manifest as real_loader
+
+    manifest = real_loader(
+        ONTOLOGY_ID,
+        version=ACTIVE_VERSION,
+        workspace_id=WORKSPACE_ID,
+    )
+    assert manifest is not None
+    manifests = [
+        manifest.model_copy(update={"name": "stale-manifest"}),
+        manifest.model_copy(update={"name": "current-manifest"}),
+    ]
+    manifest_reads = []
+
+    def load_manifest(*_args, **_kwargs):
+        selected = manifests[min(len(manifest_reads), len(manifests) - 1)]
+        manifest_reads.append(selected.name)
+        return selected
+
+    revisions = iter((7, 8, 8, 8))
+    monkeypatch.setattr(
+        "ontology.ontologies.get_runtime_ontology_manifest",
+        load_manifest,
+    )
+    monkeypatch.setattr(
+        "ontology.view_cache.get_ontology_mutation_revision",
+        lambda *_args, **_kwargs: next(revisions),
+    )
+    monkeypatch.setattr(
+        "ontology.ontology_catalog.build_root_payload",
+        lambda *, ontology, **_kwargs: {"marker": ontology.name},
+    )
+    monkeypatch.setattr(
+        "agent.direct_execution.service.DeterministicExecutionService.is_potentially_applicable",
+        lambda *_args, ontology_manifest=None, **_kwargs: (
+            ontology_manifest.name == "current-manifest"
+        ),
+    )
+
+    snapshot = orchestrator.build_run_preflight_snapshot(
+        user_request="synthetic request",
+        user_context={
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+        },
+        arguments={
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+        },
+        session_id="session-preflight-manifest-race",
+        model_profile_id="default",
+        user_id="user_demo",
+        workspace_id=WORKSPACE_ID,
+    )
+
+    assert manifest_reads == ["stale-manifest", "current-manifest"]
+    assert snapshot.mutation_revision == 8
+    assert snapshot.ontology_manifest["name"] == "current-manifest"
+    assert snapshot.root_payload["marker"] == "current-manifest"
+    assert snapshot.deterministic_candidate is True
 
 
 def test_requested_ontology_version_rejects_undeclared_installed_revision(
