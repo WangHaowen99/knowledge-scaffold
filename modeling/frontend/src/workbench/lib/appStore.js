@@ -69,6 +69,7 @@ const initial = {
   fileContents: {},
   fileErrors: {},
   candidateDiff: [],
+  candidateRevisionRefreshKey: 0,
   materials: [],
   materialContents: {},
   materialReferrers: {},
@@ -351,6 +352,24 @@ export const actions = {
         void actions.loadMaterial(material.id);
       }
     }
+  },
+  refreshCandidateRevisions() {
+    store.set((state) => ({
+      candidateRevisionRefreshKey: state.candidateRevisionRefreshKey + 1,
+    }));
+  },
+  openCandidateRevisionPreview(preview) {
+    const files = Array.isArray(preview?.files) ? preview.files : [];
+    const first = files[0];
+    store.set({
+      candidateDiff: files,
+      ...(first ? {
+        selectedPath: first.path,
+        focus: { kind: 'diff', target: first.path },
+        follow: false,
+        pendingFocus: null,
+      } : {}),
+    });
   },
   async loadFile(path) {
     const { projectId } = store.get();

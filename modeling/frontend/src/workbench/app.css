@@ -434,6 +434,51 @@
 .wb-who { display: flex; align-items: center; gap: var(--s-2); font-size: var(--t-sm); color: var(--c-faint); margin-bottom: var(--s-2); }
 .wb-who b { color: var(--c-muted); font-weight: 600; }
 .wb-msg-assistant-body { display: flex; flex-direction: column; gap: var(--s-3); padding-left: var(--s-4); border-left: 2px solid var(--c-agent-line); }
+.wb .candidate-revision-panel {
+  flex: none; overflow: hidden; border: 1px solid var(--c-accent-line);
+  border-radius: var(--r-md); background: var(--c-surface); box-shadow: var(--sh-1);
+}
+.wb .candidate-revision-panel-title {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s-3);
+  padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--c-line-soft);
+  background: var(--c-accent-bg);
+}
+.wb .candidate-revision-panel-title > div { min-width: 0; display: grid; gap: 2px; }
+.wb .candidate-revision-panel-title strong { color: var(--c-accent); font-size: var(--t-sm); }
+.wb .candidate-revision-panel-title span { color: var(--c-muted); font-size: var(--t-xs); line-height: 1.4; }
+.wb .candidate-revision-panel-title em {
+  min-width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--r-full);
+  color: #fff; background: var(--c-accent); font-size: var(--t-xs); font-style: normal; font-weight: 700;
+}
+.wb .candidate-revision-card { padding: var(--s-4); border-bottom: 1px solid var(--c-line-soft); }
+.wb .candidate-revision-card:last-child { border-bottom: 0; }
+.wb .candidate-revision-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); }
+.wb .candidate-revision-card-head > div { min-width: 0; display: grid; gap: 2px; }
+.wb .candidate-revision-eyebrow { color: var(--c-agent); font-size: var(--t-xs); font-weight: 700; }
+.wb .candidate-revision-card-head strong { overflow-wrap: anywhere; color: var(--c-ink-2); font-size: var(--t-sm); line-height: 1.45; }
+.wb .candidate-revision-card-head small, .wb .candidate-revision-deps, .wb .candidate-revision-auto { color: var(--c-muted); font-size: var(--t-xs); }
+.wb .candidate-revision-status { flex: none; padding: 2px 7px; border-radius: var(--r-full); color: var(--c-accent); background: var(--c-accent-bg); font-size: var(--t-xs); }
+.wb .candidate-revision-groups { display: grid; gap: var(--s-2); margin: var(--s-4) 0; }
+.wb .candidate-revision-group { display: flex; align-items: flex-start; gap: var(--s-2); padding: var(--s-3); border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-surface); cursor: pointer; }
+.wb .candidate-revision-group.auto-included { border-style: dashed; background: var(--c-surface-2); cursor: default; }
+.wb .candidate-revision-group input { margin-top: 2px; accent-color: var(--c-accent); }
+.wb .candidate-revision-group-body { min-width: 0; display: grid; gap: 2px; flex: 1; }
+.wb .candidate-revision-group-title { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); }
+.wb .candidate-revision-group-title strong { overflow-wrap: anywhere; color: var(--c-ink-2); font-size: var(--t-sm); }
+.wb .candidate-revision-group-title small { flex: none; color: var(--c-muted); font-size: var(--t-xs); }
+.wb .candidate-revision-validation { display: flex; gap: var(--s-1); }
+.wb .candidate-revision-validation em { border-radius: var(--r-full); padding: 1px 5px; font-size: var(--t-xs); font-style: normal; }
+.wb .candidate-revision-validation .error { color: var(--c-stale); background: var(--c-stale-bg); }
+.wb .candidate-revision-validation .warning { color: var(--c-wait); background: var(--c-wait-bg); }
+.wb .candidate-revision-card textarea { width: 100%; min-height: 52px; resize: vertical; border: 1px solid var(--c-line); border-radius: var(--r-sm); padding: var(--s-3); background: var(--c-surface); font-size: var(--t-sm); }
+.wb .candidate-revision-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-3); }
+.wb .candidate-revision-actions .btn { padding: 4px 8px; font-size: var(--t-sm); }
+.wb .candidate-revision-reject { color: var(--c-stale); }
+.wb .candidate-revision-notice { display: flex; align-items: flex-start; gap: var(--s-2); margin: var(--s-3); padding: var(--s-3); border: 1px solid var(--c-ok-line); border-radius: var(--r-sm); color: var(--c-ok); background: var(--c-ok-bg); }
+.wb .candidate-revision-notice > div { min-width: 0; display: grid; gap: 2px; }
+.wb .candidate-revision-notice strong { font-size: var(--t-sm); }
+.wb .candidate-revision-notice span { font-size: var(--t-xs); line-height: 1.45; }
+.wb .candidate-revision-error { margin-top: var(--s-2); padding: var(--s-3); border-radius: var(--r-sm); color: var(--c-stale); background: var(--c-stale-bg); font-size: var(--t-sm); }
 .wb-text { color: var(--c-ink-2); }
 .wb-text > :first-child { margin-top: 0; }
 .wb-text > :last-child { margin-bottom: 0; }
