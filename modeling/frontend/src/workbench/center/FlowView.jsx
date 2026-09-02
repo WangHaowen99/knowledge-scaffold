@@ -12,13 +12,30 @@ const selDemo = (s) => s.demo;
 const selContents = (s) => s.fileContents;
 const selMaterials = (s) => s.materials;
 
-export function fitMermaidZoom(viewWidth, availableWidth, minZoom = 0.25) {
+/**
+ * 按宽度贴合视口，高度只用来限制"放多大"，不参与缩小——
+ * 视口本身纵向可滚动，用高度去压会把长流程图缩成一团。
+ * 上限跟放大按钮一致给到 1.8：窄长的图原尺寸只占画布一角，值得放大，但不该放到失真。
+ */
+export function fitMermaidZoom(
+  viewWidth,
+  availableWidth,
+  viewHeight = 0,
+  availableHeight = 0,
+  { minZoom = 0.25, maxZoom = 1.8 } = {},
+) {
   const diagramWidth = Number(viewWidth);
   const viewportWidth = Number(availableWidth);
   if (!Number.isFinite(diagramWidth) || diagramWidth <= 0
     || !Number.isFinite(viewportWidth) || viewportWidth <= 0) return 1;
-  const fitted = Math.floor((viewportWidth / diagramWidth) * 1_000) / 1_000;
-  return Math.max(minZoom, Math.min(1, fitted));
+  let fitted = viewportWidth / diagramWidth;
+  const diagramHeight = Number(viewHeight);
+  const viewportHeight = Number(availableHeight);
+  if (Number.isFinite(diagramHeight) && diagramHeight > 0
+    && Number.isFinite(viewportHeight) && viewportHeight > 0) {
+    fitted = Math.min(fitted, Math.max(1, viewportHeight / diagramHeight));
+  }
+  return Math.max(minZoom, Math.min(maxZoom, Math.floor(fitted * 1_000) / 1_000));
 }
 
 /* Mermaid 按需加载；解析失败时保留轻量流程视图，保证中栏始终有可读内容。 */
@@ -154,10 +171,11 @@ function MermaidDiagram({ source, flow, focusNode, zoom, box, onFit }) {
       const viewWidth = svgNode?.viewBox?.baseVal?.width || 0;
       const viewHeight = svgNode?.viewBox?.baseVal?.height || 0;
       const available = Math.max(1, (box.current?.clientWidth || 0) - 40);
+      const availableHeight = Math.max(1, (box.current?.clientHeight || 0) - 40);
       if (viewWidth > 0 && viewHeight > 0) {
         setDimensions((current) => current?.width === viewWidth && current?.height === viewHeight
           ? current : { width: viewWidth, height: viewHeight });
-        onFit(fitMermaidZoom(viewWidth, available));
+        onFit(fitMermaidZoom(viewWidth, available, viewHeight, availableHeight));
       }
     };
     frame = requestAnimationFrame(fit);

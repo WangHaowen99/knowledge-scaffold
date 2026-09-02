@@ -522,6 +522,49 @@ test('优化器支持只提交变更资源补丁并由服务端保留完整规�
   assert.match(revised.rules.find((rule) => rule.key === 'product_match')?.content ?? '', /输入为空/);
 });
 
+test('优化候选先输出分析正文时会强制改用结构化补丁提交', async () => {
+  const spec = baseSpec();
+  const project: Project = {
+    id: 'p-candidate-capture', owner: 'tester', name: '测试', domain: '通用流程', background: '', stage: 'optimize',
+    createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z',
+  };
+  const suggestion: OptSuggestion = {
+    id: 's-candidate-capture', projectId: project.id, roundId: 'r-candidate-capture', basedVersion: '1.0.0',
+    title: '完善通用边界', detail: '补充运行时输入为空时的处理。', kind: 'modify_rule',
+    target: 'product_match', status: 'pending', createdAt: '2026-09-01T00:00:00.000Z',
+  };
+  const changedRule = {
+    ...spec.rules![0],
+    content: '满足准入条件时推荐；运行时输入为空或字段非法时返回明确错误。',
+  };
+  const core = createFauxCore({ provider: 'candidate-capture', models: [{ id: 'candidate-capture' }] });
+  core.setResponses([
+    fauxAssistantMessage('我先分析需要修改的资源。'),
+    fauxAssistantMessage([fauxToolCall('submit_optimization_patch', { rules: [changedRule] })]),
+  ]);
+  const requestContexts: string[] = [];
+  let patchToolPropertyNames: string[] = [];
+  const llm: LlmDeps = {
+    model: core.getModel(), getApiKey: () => 'faux',
+    streamFn: ((model: unknown, context: any, options: unknown) => {
+      requestContexts.push(JSON.stringify(context));
+      const tools = context?.tools ?? (options as any)?.tools ?? [];
+      const patchTool = tools.find((tool: any) => tool?.name === 'submit_optimization_patch');
+      const properties = patchTool?.parameters?.properties ?? patchTool?.inputSchema?.properties;
+      if (properties) patchToolPropertyNames = Object.keys(properties);
+      return core.streamSimple(model as any, context, options as any);
+    }) as LlmDeps['streamFn'],
+  };
+
+  const revised = await applyOptimizations(project, spec, [suggestion], llm);
+
+  assert.equal(core.state.callCount, 2);
+  assert.deepEqual(patchToolPropertyNames, ['rules']);
+  assert.match(requestContexts[1], /上一次未调用目标提交工具/);
+  assert.match(requestContexts[1], /submit_optimization_patch/);
+  assert.match(revised.rules.find((rule) => rule.key === 'product_match')?.content ?? '', /输入为空/);
+});
+
 test('优化器可以一次落实同一资源上的多条兼容修改建议', async () => {
   const spec = baseSpec();
   spec.rules![0].evidence = [

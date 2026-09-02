@@ -236,11 +236,13 @@ for index, case in enumerate(cases):
         json.dumps(actual, ensure_ascii=False)
         results.append({"index": index, "passed": actual == expected, "actual": actual, "expected": expected})
     except BaseException as error:
+        message = (str(error) or error.__class__.__name__)[:2000]
+        expected_error = expected.get("error") if isinstance(expected, dict) else None
         results.append({
             "index": index,
-            "passed": False,
+            "passed": bool(expected_error) and str(expected_error).lower() in message.lower(),
             "expected": expected,
-            "error": (str(error) or error.__class__.__name__)[:2000],
+            "error": message,
         })
 
 print(PREFIX + json.dumps(results, ensure_ascii=False, separators=(",", ":")))

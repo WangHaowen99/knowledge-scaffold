@@ -14,7 +14,12 @@ from modeling_agent.events import EventHub
 from modeling_agent.rails import ActivityRail, ToolBoundaryRail, WriteSafetyRail, _phase_write_problem, check_write_safety
 from modeling_agent.schemas import InteractionRecord, RUN_QUEUED, RUN_RUNNING, RunRecord
 from modeling_agent.store import RuntimeStore
-from modeling_agent.tools import CandidateValidationRepairState, ToolContext
+from modeling_agent.tools import (
+    CORE_TOOL_SPECS,
+    CandidateValidationRepairState,
+    CoreTool,
+    ToolContext,
+)
 from conftest import FakeGateway, ScriptedModel, service
 
 
@@ -61,6 +66,205 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
         store.close()
 
 
+def test_increment_round_persists_baseline_and_is_idempotent_until_terminal(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        initial = store.project_state("project_increment")
+        released = store.transition_project_state(
+            "project_increment",
+            expected_revision=initial.revision,
+            next_state="release:completed",
+            cause="test_released",
+        )
+
+        started, created = store.start_increment_round(
+            "project_increment",
+            baseline_revision="sha256:released-1",
+            package_version="1.2.0",
+        )
+        assert created is True
+        assert started.state == "increment:idle"
+        assert started.round_mode == "incremental"
+        assert started.round_id.startswith("increment_")
+        assert started.baseline_revision == "sha256:released-1"
+        assert started.revision == released.revision + 1
+
+        duplicate, created = store.start_increment_round(
+            "project_increment",
+            baseline_revision="sha256:released-1",
+            package_version="1.2.0",
+        )
+        assert created is False
+        assert duplicate.round_id == started.round_id
+        assert duplicate.revision == started.revision
+
+        created_run = store.create_run(run("run_increment", "project_increment"))
+        assert created_run.baseline_revision == "sha256:released-1"
+        store.update_run("run_increment", status="completed")
+        next_round, created = store.start_increment_round(
+            "project_increment",
+            baseline_revision="sha256:released-1",
+            package_version="1.2.0",
+        )
+        assert created is True
+        assert next_round.state == "increment:idle"
+        assert next_round.round_id != started.round_id
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("stale_phase", ["goal", "knowledge"])
+def test_increment_round_recovers_released_project_from_stale_phase(
+    tmp_path: Path,
+    stale_phase: str,
+) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        initial = store.project_state("project_stale_goal")
+        released = store.transition_project_state(
+            "project_stale_goal",
+            expected_revision=initial.revision,
+            next_state="release:completed",
+            cause="test_released",
+        )
+        stale = store.transition_project_state(
+            "project_stale_goal",
+            expected_revision=released.revision,
+            next_state=f"{stale_phase}:completed",
+            cause="test_legacy_read_rewind",
+        )
+
+        increment, created = store.start_increment_round(
+            "project_stale_goal",
+            baseline_revision="sha256:released-stale",
+        )
+
+        assert created is True
+        assert increment.state == "increment:idle"
+        assert increment.baseline_revision == "sha256:released-stale"
+        assert increment.revision == stale.revision + 1
+    finally:
+        store.close()
+
+
+def test_increment_round_does_not_replace_active_full_modeling_run(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        initial = store.project_state("project_active_knowledge")
+        store.transition_project_state(
+            "project_active_knowledge",
+            expected_revision=initial.revision,
+            next_state="knowledge:idle",
+            cause="test_active_full_modeling",
+        )
+        store.create_run(run("run_active_knowledge", "project_active_knowledge"))
+
+        with pytest.raises(AgentRuntimeError) as caught:
+            store.start_increment_round(
+                "project_active_knowledge",
+                baseline_revision="sha256:released-active",
+            )
+
+        assert caught.value.code == "INCREMENT_ROUND_BLOCKED"
+        assert store.project_state("project_active_knowledge").state == "knowledge:queued"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_released_material_event_starts_increment_round_without_auto_run(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    initial = runtime.store.project_state("project_released_material")
+    runtime.store.transition_project_state(
+        "project_released_material",
+        expected_revision=initial.revision,
+        next_state="release:completed",
+        cause="test_released",
+    )
+    try:
+        accepted = await runtime.handle_material_event(
+            project_id="project_released_material",
+            token="token_material",
+            event={
+                "eventId": "material:increment-doc:terminal",
+                "status": "parsed",
+                "documentId": "increment-doc",
+                "sourceKey": "source-increment-doc",
+                "filename": "新增规则.docx",
+                "revisionNo": 1,
+                "purpose": "goal",
+                "readingMode": "on_demand",
+                "autoContinue": False,
+                "semanticChanged": True,
+                "packageRevision": "sha256:released-material",
+                "packageVersion": "1.2.0",
+                "packageStatus": "released",
+            },
+        )
+
+        state = runtime.store.project_state("project_released_material")
+        assert accepted["continued"] is False
+        assert state.state == "increment:idle"
+        assert state.round_mode == "incremental"
+        assert state.baseline_revision == "sha256:released-material"
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_full_material_read_never_rewinds_released_phase(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    initial = runtime.store.project_state("project_read_only")
+    released = runtime.store.transition_project_state(
+        "project_read_only",
+        expected_revision=initial.revision,
+        next_state="release:completed",
+        cause="test_released",
+    )
+    live = service_module.LiveRun(
+        run_id="run_read_only",
+        project_id="project_read_only",
+        token="token_read_only",
+    )
+    try:
+        await runtime._after_core_tool(  # noqa: SLF001 - read-only state invariant
+            live,
+            "read_documents_fully",
+            {"filenames": ["目标说明.docx"]},
+            {"documents": [{"filename": "目标说明.docx", "purpose": "goal"}]},
+        )
+
+        current = runtime.store.project_state("project_read_only")
+        assert current.state == released.state
+        assert current.revision == released.revision
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_increment_phase_rejects_full_generation_plan() -> None:
+    gateway = FakeGateway()
+    context = ToolContext(
+        project_id="project_increment_plan",
+        run_id="run_increment_plan",
+        token="token_increment_plan",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+        phase="increment",
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "create_change_plan")
+
+    result = json.loads(await CoreTool(spec, context).invoke({
+        "mode": "generation",
+        "goal": "重新生成全部知识包",
+        "tasks": [],
+    }))
+
+    assert result["error"] == "INCREMENT_PLAN_MODE_REQUIRED"
+    assert result["retryable"] is False
+    assert gateway.calls == []
+
+
 def test_store_migrates_existing_checkpoints_to_legacy_tool_profile(tmp_path: Path) -> None:
     path = tmp_path / "legacy-runtime.sqlite"
     db = sqlite3.connect(path)
@@ -85,6 +289,38 @@ def test_store_migrates_existing_checkpoints_to_legacy_tool_profile(tmp_path: Pa
     store = RuntimeStore(path)
     try:
         assert store.require_run("run_legacy").tool_profile == "legacy-v1"
+    finally:
+        store.close()
+
+
+def test_store_migrates_legacy_project_state_round_columns(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-state.sqlite"
+    db = sqlite3.connect(path)
+    db.execute("""CREATE TABLE project_agent_state (
+      project_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'intake:idle',
+      revision INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '',
+      interaction_id TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '', open_questions_json TEXT NOT NULL DEFAULT '[]',
+      error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+    )""")
+    db.execute(
+        "INSERT INTO project_agent_state VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            "project_legacy_state", "release:completed", 7, "", "", "",
+            "已发布", "[]", "", "2026-08-31T00:00:00Z",
+        ),
+    )
+    db.commit()
+    db.close()
+
+    store = RuntimeStore(path)
+    try:
+        state = store.project_state("project_legacy_state")
+        assert state.state == "release:completed"
+        assert state.revision == 7
+        assert state.round_mode == "initial"
+        assert state.round_id == ""
+        assert state.baseline_revision == ""
     finally:
         store.close()
 

@@ -1,18 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 
 import type { PackageSpec } from '../src/types.js';
+import type { LlmDeps } from '../src/llm/provider.js';
+import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
+import { getDb } from '../src/db/index.js';
+import { createProject } from '../src/projects/repo.js';
 import { AgentRunTimeoutError } from '../src/workflow/agent.js';
 import {
   applyAtomicResourcePatch,
   buildAtomicPatchParameters,
   buildAtomicChangeContext,
+  buildScriptGenerationCliCases,
+  compileAtomicModelSubmission,
   generateAtomicResourcePatchInBatches,
   normalizeChangePlan,
   nextPackageChatVersion,
   partitionAtomicChangePlan,
   PackageCandidateRejectedError,
   PackageCandidateValidationError,
+  packageChatApply,
   preserveUnaffectedPackageFiles,
   resolveChangePlanTargets,
   resolvePackageApplyTimeoutMs,
@@ -21,6 +29,7 @@ import {
   type AtomicResourcePatch,
   type ChangePlan,
 } from '../src/workflow/package-chat.js';
+import { inspectPythonSource } from '../src/evaluation/python-source-patch.js';
 
 test('修复候选保留计划未影响的人工流程文件', () => {
   const previousCanonical = {
@@ -117,14 +126,493 @@ test('原子补丁工具只暴露当前批次资源且要求完整提交', () =>
   };
 
   const scriptSchema = buildAtomicPatchParameters({ ...plan, changes: [plan.changes[0]] }) as any;
-  assert.deepEqual(scriptSchema.required, ['scripts']);
-  assert.deepEqual(Object.keys(scriptSchema.properties), ['scripts']);
-  assert.equal(scriptSchema.properties.scripts.minItems, 1);
-  assert.equal(scriptSchema.properties.scripts.maxItems, 1);
+  assert.deepEqual(scriptSchema.required, ['newScripts']);
+  assert.deepEqual(Object.keys(scriptSchema.properties), ['newScripts']);
+  assert.equal(scriptSchema.properties.newScripts.minItems, 1);
+  assert.equal(scriptSchema.properties.newScripts.maxItems, 1);
+  assert.doesNotMatch(JSON.stringify(scriptSchema), /sourceCode/u);
 
   const operationSchema = buildAtomicPatchParameters({ ...plan, changes: [plan.changes[1]] }) as any;
   assert.deepEqual(operationSchema.required, ['operations']);
   assert.deepEqual(Object.keys(operationSchema.properties), ['operations']);
+});
+
+test('全量构建只提交脚本契约和业务函数，由 Core 组装完整 Python 源码', () => {
+  const current = spec();
+  const plan: ChangePlan = {
+    summary: '新增合成计算脚本',
+    changes: [{
+      targetKind: 'script', targetKey: 'CalculateSynthetic', action: 'add',
+      description: '新增参数化合成计算脚本',
+    }],
+  };
+  const patch = compileAtomicModelSubmission(current, plan, {
+    newScripts: [{
+      contract: {
+        key: 'CalculateSynthetic', title: '合成计算', description: '根据输入计算结果。',
+        boundOperation: 'FindOrder', runtime: 'python', entrypoint: 'calculate_synthetic.py',
+        timeoutSeconds: 30,
+        parameters: [{ name: 'value', flag: '--value', type: 'number', required: true }],
+        outputs: [{ key: 'result', type: 'number' }],
+        boundaries: ['输入必须是有限数字'], evidence: ['user-decision:synthetic-script'],
+      },
+      businessFunction: [
+        'def run_business_logic(inputs):',
+        '    value = float(inputs["value"])',
+        '    if value < 0:',
+        '        raise ValueError("value must be non-negative")',
+        '    return {"result": value * 2}',
+      ].join('\n'),
+      cases: [
+        { kind: 'normal', input: { value: 2 }, expected: { result: 4 } },
+        { kind: 'boundary', input: { value: 0 }, expected: { result: 0 } },
+        { kind: 'failure', input: { value: -1 }, expected: { error: 'non-negative' } },
+      ],
+    }],
+  });
+  const source = patch.scripts?.[0].sourceCode ?? '';
+  assert.match(source, /ArgumentParser/u);
+  assert.match(source, /def run_business_logic/u);
+  assert.match(source, /value \* 2/u);
+  assert.doesNotMatch(source, /NotImplementedError/u);
+});
+
+test('脚本构建必须同时提供正常、边界和失败用例', () => {
+  const current = spec();
+  const script = {
+    key: 'CalculateSynthetic', title: '合成计算', description: '根据输入计算结果。',
+    boundOperation: 'FindOrder', runtime: 'python' as const, entrypoint: 'calculate_synthetic.py',
+    timeoutSeconds: 30,
+    parameters: [{ name: 'value', flag: '--value', type: 'number', required: true }],
+    outputs: [{ key: 'result', type: 'number' }],
+    boundaries: ['输入必须是有限数字'], evidence: ['user-decision:synthetic-script'],
+    sourceCode: 'print("{}")',
+  };
+  current.scripts = [script];
+
+  assert.throws(() => buildScriptGenerationCliCases(script, [
+    { kind: 'normal', input: { value: 2 }, expected: { result: 4 } },
+    { kind: 'boundary', input: { value: 0 }, expected: { result: 0 } },
+  ]), /缺少契约测试类型：failure/u);
+  assert.throws(() => buildScriptGenerationCliCases(script, [
+    { kind: 'normal', input: {}, expected: { result: 4 } },
+    { kind: 'boundary', input: { value: 0 }, expected: { result: 0 } },
+    { kind: 'failure', input: { value: -1 }, expected: { error: 'non-negative' } },
+  ]), /测试输入无效/u);
+  assert.throws(() => buildScriptGenerationCliCases(script, [
+    { kind: 'normal', input: { value: 2 }, expected: { result: 4 } },
+    { kind: 'boundary', input: { value: 0 }, expected: { result: 0 } },
+    { kind: 'failure', input: { value: -1 }, expected: { result: -2 } },
+  ]), /失败用例必须用非空 error 文本/u);
+});
+
+test('增量构建只提交已读取函数补丁并保持未授权源码不变', () => {
+  const current = spec();
+  const source = [
+    'import argparse',
+    'import json',
+    '',
+    'def calculate(value):',
+    '    return float(value)',
+    '',
+    'def untouched(value):',
+    '    return value + 1',
+    '',
+    'def main():',
+    '    parser = argparse.ArgumentParser()',
+    '    parser.add_argument("--value", required=True, type=float)',
+    '    args = parser.parse_args()',
+    '    print(json.dumps({"result": calculate(args.value)}))',
+    '',
+    'if __name__ == "__main__":',
+    '    main()',
+  ].join('\n');
+  current.scripts = [{
+    key: 'CalculateSynthetic', title: '合成计算', description: '根据输入计算结果。',
+    boundOperation: 'FindOrder', runtime: 'python', entrypoint: 'calculate_synthetic.py',
+    timeoutSeconds: 30,
+    parameters: [{ name: 'value', flag: '--value', type: 'number', required: true }],
+    outputs: [{ key: 'result', type: 'number' }],
+    boundaries: ['输入必须是有限数字'], evidence: ['user-decision:synthetic-script'], sourceCode: source,
+  }];
+  const index = inspectPythonSource(source);
+  const calculate = index.symbols.find((item) => item.qualifiedName === 'calculate');
+  assert.ok(calculate);
+  const plan: ChangePlan = {
+    summary: '修正合成计算',
+    changes: [{
+      targetKind: 'script', targetKey: 'CalculateSynthetic', action: 'modify',
+      description: '只修改 calculate 函数',
+    }],
+  };
+  const patch = compileAtomicModelSubmission(current, plan, {
+    scriptPatches: [{
+      scriptKey: 'CalculateSynthetic',
+      baseSourceHash: index.baseSourceHash,
+      edits: [{
+        kind: 'replace_function', symbol: 'calculate', expectedNodeHash: calculate.nodeHash,
+        source: 'def calculate(value):\n    return float(value) * 2',
+      }],
+    }],
+  });
+  const revised = patch.scripts?.[0].sourceCode ?? '';
+  assert.match(revised, /float\(value\) \* 2/u);
+  assert.equal(
+    revised.slice(revised.indexOf('def untouched')),
+    source.slice(source.indexOf('def untouched')),
+  );
+  const context = JSON.stringify(buildAtomicChangeContext(current, plan));
+  assert.match(context, /baseSourceHash/u);
+  assert.match(context, /calculate/u);
+  assert.doesNotMatch(context, /return float\(value\)/u);
+});
+
+test('全量脚本构建通过契约与业务函数完成真实知识包版本生成', async () => {
+  const project = createProject({
+    owner: 'synthetic_operator',
+    name: '合成脚本增量协议测试',
+    domain: '通用计算',
+    background: '使用合成输入验证脚本生成协议。',
+  });
+  const store = getPackageArtifactStore();
+  const initial = await store.initializeDraftPackage(project.id, {
+    id: `project-${project.id.replace(/^pj_/u, '')}`,
+    name: project.name,
+    description: project.background,
+  });
+  const operation = {
+    key: 'calculate_synthetic',
+    title: '合成计算',
+    description: '根据显式输入执行确定性计算。',
+    inputs: [{ param: 'value', type: 'number', required: true }],
+    outputs: [{ field: 'result', type: 'number' }],
+    flow: ['读取显式输入', '返回结构化结果'],
+    relatedObjects: [],
+    competencyQuestion: '如何根据显式输入计算结果？',
+  };
+  const baseline = await store.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: { ...initial.spec, operations: [operation] },
+    coverage: initial.coverage,
+    note: '建立合成脚本协议测试基线',
+    action: {
+      cause: 'test.script_patch_baseline', summary: '建立合成脚本协议测试基线',
+      actorKind: 'system', actorName: 'test',
+    },
+  });
+  const core = createFauxCore({ provider: 'package-script-patch', models: [{ id: 'package-script-patch' }] });
+  const submittedNewScript = {
+    newScripts: [{
+      contract: {
+        key: 'calculate_synthetic_script', title: '合成计算脚本',
+        description: '根据显式数字输入返回二倍结果。',
+        boundOperation: operation.key, runtime: 'python', entrypoint: 'calculate_synthetic.py',
+        timeoutSeconds: 30,
+        parameters: [{ name: 'value', flag: '--value', type: 'number', required: true }],
+        outputs: [{ key: 'result', type: 'number' }],
+        boundaries: ['输入必须是有限数字'], evidence: ['user-decision:synthetic-contract'],
+      },
+      businessFunction: [
+        'def run_business_logic(inputs):',
+        '    value = float(inputs["value"])',
+        '    if value < 0:',
+        '        raise ValueError("value must be non-negative")',
+        '    return {"result": value * 2}',
+      ].join('\n'),
+      cases: [
+        { kind: 'normal', input: { value: 2 }, expected: { result: 4 } },
+        { kind: 'boundary', input: { value: 0 }, expected: { result: 0 } },
+        { kind: 'failure', input: { value: -1 }, expected: { error: 'non-negative' } },
+      ],
+    }],
+  };
+  const submittedOperation = {
+    operations: [{
+      ...operation,
+      flow: ['读取显式输入', '调用 script:calculate_synthetic_script', '返回结构化结果'],
+      script: { key: 'calculate_synthetic_script', required: true },
+    }],
+  };
+  core.setResponses([
+    fauxAssistantMessage([fauxToolCall('submit_resource_patch', submittedNewScript)]),
+    fauxAssistantMessage([fauxToolCall('submit_resource_patch', submittedOperation)]),
+  ]);
+  const contexts: string[] = [];
+  const llm: LlmDeps = {
+    model: core.getModel(),
+    getApiKey: () => 'faux',
+    streamFn: ((model: unknown, context: unknown, options: unknown) => {
+      contexts.push(JSON.stringify(context));
+      return core.streamSimple(model as any, context as any, options as any);
+    }) as LlmDeps['streamFn'],
+  };
+  const result = await packageChatApply(project, [], '生成合成计算脚本', {
+    summary: '新增合成计算脚本并绑定操作',
+    changes: [{
+      targetKind: 'script', targetKey: 'calculate_synthetic_script', action: 'add',
+      description: '按已确认输入输出生成确定性脚本',
+    }, {
+      targetKind: 'operation', targetKey: operation.key, action: 'modify',
+      description: '绑定新增确定性脚本',
+    }],
+  }, [], {
+    llmOverride: llm,
+    maxCandidateAttempts: 1,
+    runScriptCases: async (input) => ({
+      total: input.cases.length,
+      passed: input.cases.length,
+      failed: 0,
+      results: input.cases.map((item, index) => ({
+        index, passed: true, expected: item.expected, actual: item.expected,
+      })),
+      sandbox: 'jiuwenbox' as const,
+    }),
+  });
+  assert.ok(result.revision);
+  assert.notEqual(result.revision, baseline.revision.oid);
+  const current = await store.current(project.id);
+  const script = current?.spec.scripts?.find((item) => item.key === 'calculate_synthetic_script');
+  assert.match(script?.sourceCode ?? '', /ArgumentParser/u);
+  assert.match(script?.sourceCode ?? '', /value \* 2/u);
+  assert.doesNotMatch(script?.sourceCode ?? '', /NotImplementedError/u);
+  assert.equal(current?.spec.operations[0].script?.key, 'calculate_synthetic_script');
+  assert.equal(contexts.some((context) => context.includes('"sourceCode"')), false);
+  const receipt = getDb().prepare(`SELECT total, passed, failed, sandbox
+    FROM agent_script_test_receipts
+    WHERE project_id = ? AND script_path = ?`).get(
+    project.id,
+    'scripts/calculate_synthetic.py',
+  ) as { total: number; passed: number; failed: number; sandbox: string } | undefined;
+  assert.deepEqual({ ...receipt }, { total: 3, passed: 3, failed: 0, sandbox: 'jiuwenbox' });
+});
+
+test('脚本沙箱存在失败用例时保持知识包修订不变', async () => {
+  const project = createProject({
+    owner: 'synthetic_operator',
+    name: '合成脚本失败零写入测试',
+    domain: '通用计算',
+    background: '使用合成输入验证失败脚本不会形成新版本。',
+  });
+  const store = getPackageArtifactStore();
+  const initial = await store.initializeDraftPackage(project.id, {
+    id: `project-${project.id.replace(/^pj_/u, '')}`,
+    name: project.name,
+    description: project.background,
+  });
+  const operation = {
+    key: 'calculate_synthetic',
+    title: '合成计算',
+    description: '根据显式输入执行确定性计算。',
+    inputs: [{ param: 'value', type: 'number', required: true }],
+    outputs: [{ field: 'result', type: 'number' }],
+    flow: ['读取显式输入', '返回结构化结果'],
+    relatedObjects: [],
+    competencyQuestion: '如何根据显式输入计算结果？',
+  };
+  const baseline = await store.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: { ...initial.spec, operations: [operation] },
+    coverage: initial.coverage,
+    note: '建立脚本失败零写入测试基线',
+    action: {
+      cause: 'test.script_failure_baseline', summary: '建立脚本失败零写入测试基线',
+      actorKind: 'system', actorName: 'test',
+    },
+  });
+  const submission = {
+    newScripts: [{
+      contract: {
+        key: 'calculate_synthetic_script', title: '合成计算脚本',
+        description: '根据显式数字输入返回二倍结果。',
+        boundOperation: operation.key, runtime: 'python', entrypoint: 'calculate_synthetic.py',
+        timeoutSeconds: 30,
+        parameters: [{ name: 'value', flag: '--value', type: 'number', required: true }],
+        outputs: [{ key: 'result', type: 'number' }],
+        boundaries: ['输入必须是有限数字'], evidence: ['user-decision:synthetic-contract'],
+      },
+      businessFunction: [
+        'def run_business_logic(inputs):',
+        '    return {"result": float(inputs["value"]) * 2}',
+      ].join('\n'),
+      cases: [
+        { kind: 'normal', input: { value: 2 }, expected: { result: 4 } },
+        { kind: 'boundary', input: { value: 0 }, expected: { result: 0 } },
+        { kind: 'failure', input: { value: -1 }, expected: { error: 'non-negative' } },
+      ],
+    }],
+  };
+  const core = createFauxCore({ provider: 'package-script-failure', models: [{ id: 'package-script-failure' }] });
+  core.setResponses([
+    fauxAssistantMessage([fauxToolCall('submit_resource_patch', submission)]),
+    fauxAssistantMessage([fauxToolCall('submit_resource_patch', submission)]),
+  ]);
+  const llm: LlmDeps = {
+    model: core.getModel(),
+    getApiKey: () => 'faux',
+    streamFn: core.streamSimple as LlmDeps['streamFn'],
+  };
+  let sandboxRuns = 0;
+
+  await assert.rejects(() => packageChatApply(project, [], '生成合成计算脚本', {
+    summary: '新增合成计算脚本',
+    changes: [{
+      targetKind: 'script', targetKey: 'calculate_synthetic_script', action: 'add',
+      description: '按已确认输入输出生成确定性脚本',
+    }],
+  }, [], {
+    llmOverride: llm,
+    maxCandidateAttempts: 1,
+    runScriptCases: async (input) => {
+      sandboxRuns += 1;
+      return {
+        total: input.cases.length,
+        passed: input.cases.length - 1,
+        failed: 1,
+        results: input.cases.map((item, index) => ({
+          index,
+          passed: index !== input.cases.length - 1,
+          expected: item.expected,
+          ...(index === input.cases.length - 1 ? { actual: { result: -2 } } : { actual: item.expected }),
+        })),
+        sandbox: 'jiuwenbox' as const,
+      };
+    },
+  }));
+
+  assert.ok(sandboxRuns >= 1);
+  const current = await store.current(project.id);
+  assert.equal(current?.revision.oid, baseline.revision.oid);
+  assert.deepEqual(current?.spec.scripts ?? [], []);
+});
+
+test('增量脚本构建按需读取目标函数后提交双哈希补丁', async () => {
+  const project = createProject({
+    owner: 'synthetic_operator',
+    name: '合成脚本函数补丁测试',
+    domain: '通用计算',
+    background: '使用合成输入验证函数级增量修改。',
+  });
+  const store = getPackageArtifactStore();
+  const initial = await store.initializeDraftPackage(project.id, {
+    id: `project-${project.id.replace(/^pj_/u, '')}`,
+    name: project.name,
+    description: project.background,
+  });
+  const source = [
+    'import argparse',
+    'import json',
+    '',
+    'def calculate(value):',
+    '    return float(value)',
+    '',
+    'def untouched(value):',
+    '    return value + 1',
+    '',
+    'def main():',
+    '    parser = argparse.ArgumentParser()',
+    '    parser.add_argument("--value", required=True, type=float)',
+    '    args = parser.parse_args()',
+    '    print(json.dumps({"result": calculate(args.value)}))',
+    '',
+    'if __name__ == "__main__":',
+    '    main()',
+  ].join('\n');
+  const operation = {
+    key: 'calculate_synthetic', title: '合成计算', description: '执行确定性计算。',
+    inputs: [{ param: 'value', type: 'number', required: true }],
+    outputs: [{ field: 'result', type: 'number' }],
+    flow: ['调用 script:calculate_synthetic_script'], relatedObjects: [],
+    competencyQuestion: '如何执行确定性计算？',
+    script: { key: 'calculate_synthetic_script', required: true },
+  };
+  const script = {
+    key: 'calculate_synthetic_script', title: '合成计算脚本', description: '计算显式输入。',
+    boundOperation: operation.key, runtime: 'python' as const, entrypoint: 'calculate_synthetic.py',
+    timeoutSeconds: 30,
+    parameters: [{ name: 'value', flag: '--value', type: 'number', required: true }],
+    outputs: [{ key: 'result', type: 'number' }],
+    boundaries: ['输入必须是有限数字'], evidence: ['user-decision:synthetic-script'], sourceCode: source,
+  };
+  await store.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: { ...initial.spec, operations: [operation], scripts: [script] },
+    coverage: initial.coverage,
+    note: '建立函数补丁测试基线',
+    action: {
+      cause: 'test.script_symbol_baseline', summary: '建立函数补丁测试基线',
+      actorKind: 'system', actorName: 'test',
+    },
+  });
+  const index = inspectPythonSource(source);
+  const calculate = index.symbols.find((item) => item.qualifiedName === 'calculate');
+  assert.ok(calculate);
+  const core = createFauxCore({ provider: 'package-script-symbol', models: [{ id: 'package-script-symbol' }] });
+  core.setResponses([
+    fauxAssistantMessage([fauxToolCall('read_script_symbols', {
+      scriptKey: script.key,
+      symbols: ['calculate'],
+    })]),
+    fauxAssistantMessage([fauxToolCall('submit_resource_patch', {
+      scriptPatches: [{
+        scriptKey: script.key,
+        baseSourceHash: index.baseSourceHash,
+        edits: [{
+          kind: 'replace_function',
+          symbol: 'calculate',
+          expectedNodeHash: calculate.nodeHash,
+          source: [
+            'def calculate(value):',
+            '    number = float(value)',
+            '    if number < 0:',
+            '        raise ValueError("value must be non-negative")',
+            '    return number * 2',
+          ].join('\n'),
+        }],
+        cases: [
+          { kind: 'normal', input: { value: 2 }, expected: { result: 4 } },
+          { kind: 'boundary', input: { value: 0 }, expected: { result: 0 } },
+          { kind: 'failure', input: { value: -1 }, expected: { error: 'non-negative' } },
+        ],
+      }],
+    })]),
+  ]);
+  const contexts: string[] = [];
+  const llm: LlmDeps = {
+    model: core.getModel(),
+    getApiKey: () => 'faux',
+    streamFn: ((model: unknown, context: unknown, options: unknown) => {
+      contexts.push(JSON.stringify(context));
+      return core.streamSimple(model as any, context as any, options as any);
+    }) as LlmDeps['streamFn'],
+  };
+  await packageChatApply(project, [], '只修正 calculate 函数', {
+    summary: '修正合成计算函数',
+    changes: [{
+      targetKind: 'script', targetKey: script.key, action: 'modify',
+      description: '只修改 calculate 函数，其他源码保持不变',
+    }],
+  }, [], {
+    llmOverride: llm,
+    maxCandidateAttempts: 1,
+    runScriptCases: async (input) => ({
+      total: input.cases.length,
+      passed: input.cases.length,
+      failed: 0,
+      results: input.cases.map((item, index) => ({
+        index, passed: true, expected: item.expected, actual: item.expected,
+      })),
+      sandbox: 'jiuwenbox' as const,
+    }),
+  });
+  const current = await store.current(project.id);
+  const revised = current?.spec.scripts?.[0].sourceCode ?? '';
+  assert.match(revised, /return number \* 2/u);
+  assert.equal(
+    revised.slice(revised.indexOf('def untouched')),
+    source.slice(source.indexOf('def untouched')),
+  );
+  assert.doesNotMatch(contexts[0], /return float\(value\)/u);
+  assert.match(contexts.at(-1) ?? '', /return float\(value\)/u);
 });
 
 test('知识包应用超时默认十分钟且支持毫秒环境变量覆盖', () => {

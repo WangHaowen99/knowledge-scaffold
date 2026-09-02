@@ -20,6 +20,11 @@ class StartRunBody(BaseModel):
     baselineRevision: str = Field(default="", max_length=200)
 
 
+class StartIncrementRoundBody(BaseModel):
+    baselineRevision: str = Field(min_length=1, max_length=200)
+    packageVersion: str = Field(default="", max_length=100)
+
+
 class SteerBody(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     purposeReviewCompleted: bool = False
@@ -50,6 +55,9 @@ class MaterialEventBody(BaseModel):
     semanticChanged: bool | None = None
     purposeReviewRequired: bool = False
     sheetCount: int = Field(default=0, ge=0, le=10_000)
+    packageRevision: str = Field(default="", max_length=200)
+    packageVersion: str = Field(default="", max_length=100)
+    packageStatus: str = Field(default="", pattern="^(|draft|review|released|deprecated)$")
 
 
 class StudioReviewEventBody(BaseModel):
@@ -124,6 +132,16 @@ def create_app(service: AgentService) -> Starlette:
             purpose_review_completed=body.purposeReviewCompleted,
         )
         return JSONResponse(result, status_code=202)
+
+    async def start_increment_round(request: Request) -> JSONResponse:
+        body = _validate(StartIncrementRoundBody, await _body(request))
+        result = await service.start_increment_round(
+            project_id=request.path_params["project_id"],
+            token=_require_token(request),
+            baseline_revision=body.baselineRevision,
+            package_version=body.packageVersion,
+        )
+        return JSONResponse(result, status_code=201 if result.get("started") else 200)
 
     async def resume_issue(request: Request) -> JSONResponse:
         body = _validate(ResumeIssueBody, await _body(request))
@@ -245,6 +263,7 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/skills", skills, methods=["GET"]),
         Route("/v1/projects/{project_id}/state", state, methods=["GET"]),
         Route("/v1/projects/{project_id}/runs", start, methods=["POST"]),
+        Route("/v1/projects/{project_id}/increment/start", start_increment_round, methods=["POST"]),
         Route("/v1/projects/{project_id}/steer", steer, methods=["POST"]),
         Route("/v1/projects/{project_id}/issues/{issue_id}/resume", resume_issue, methods=["POST"]),
         Route("/v1/projects/{project_id}/cancel", cancel, methods=["POST"]),

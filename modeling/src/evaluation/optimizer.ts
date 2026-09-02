@@ -1,6 +1,6 @@
 import { Type } from '@earendil-works/pi-ai';
 import { buildTaskLlm, type LlmDeps } from '../llm/provider.js';
-import { makeAgent, runAgent } from '../workflow/agent.js';
+import { AgentCaptureError, AgentRunTimeoutError, makeAgent, runAgentCaptured } from '../workflow/agent.js';
 import { specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema } from '../workflow/tools.js';
 import { questionsMatch, validateSpecIntegrity } from '../workflow/spec-validation.js';
 import type { CheckFinding } from '../workflow/package-check.js';
@@ -10,6 +10,16 @@ import type { OptSuggestion } from '../workflow/m4-repo.js';
 import type { FailureDiagnosis } from './failure-diagnosis.js';
 import { attachKnowledgeChangeEvidence } from '../workflow/knowledge-evidence.js';
 import { DATA_PROVIDER_SCRIPT_CONTRACT } from '../workflow/script-safety.js';
+import { mapWithConcurrency } from '../workflow/generation-planner.js';
+import {
+  applyPythonSourceEdits,
+  inspectPythonSource,
+  pythonPatchBaseHash,
+  rewritePythonIdentifiers,
+  pythonSourceIdentifierNames,
+  pythonSourceHash,
+  type PythonSourceEdit,
+} from './python-source-patch.js';
 
 // M4 优化器（design.md 决策 8）：
 // ① proposeOptimizations —— 读未通过的评测结果 + 当前规格，产出结构化优化建议；
@@ -47,8 +57,61 @@ const EVALUATION_ORACLE_LANGUAGE = /(?:标准答案|参考答案|地面真值|(?
 const OPTIMIZATION_MAX_ATTEMPTS = 2;
 export const OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS = 12_000;
 export const OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS = 32_000;
+export const OPTIMIZATION_TARGETED_APPLY_MAX_OUTPUT_TOKENS = 16_000;
+export const OPTIMIZATION_TARGETED_SHARD_MAX_OUTPUT_TOKENS = 10_000;
+export const OPTIMIZATION_TARGETED_OPERATION_MAX_OUTPUT_TOKENS = 4_096;
 export const OPTIMIZATION_PROPOSAL_TIMEOUT_MS = 3 * 60_000;
-export const OPTIMIZATION_APPLY_TIMEOUT_MS = 5 * 60_000;
+export const OPTIMIZATION_APPLY_TIMEOUT_MS = 10 * 60_000;
+export const OPTIMIZATION_TARGETED_APPLY_TIMEOUT_MS = 5 * 60_000;
+const OPTIMIZATION_TARGETED_SHARD_CONCURRENCY = 4;
+const OPTIMIZATION_TARGETED_MAX_SHARDS = 8;
+const OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD = 7_500;
+// Existing business functions may legitimately be larger than a helper or
+// assignment. Keep a hard cap, but do not force the model to perform an
+// unsafe semantic refactor solely to stay below the helper budget.
+const OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS = 16_000;
+const OPTIMIZATION_TARGETED_SHARD_MAX_CAPTURE_ATTEMPTS = 2;
+const OPTIMIZATION_TARGETED_REPAIR_MAX_DRAFT_CHARS = 20_000;
+
+function targetedSymbolSourceLimit(kind: 'function' | 'assignment'): number {
+  return kind === 'function'
+    ? OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS
+    : OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD;
+}
+
+function targetedEditSourceLimit(edit: PythonSourceEdit): number {
+  if (edit.kind !== 'replace_function') return OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD;
+  return targetedSymbolSourceLimit('function');
+}
+
+function rejectTargetedScriptShard(field: 'scriptKey' | 'baseSourceHash' | 'edits', message: string): never {
+  throw new Error([
+    'Validation failed for tool "submit_targeted_script_shard":',
+    `  - ${field}: ${message.replace(/[\r\n]+/gu, ' ').slice(0, 500)}`,
+  ].join('\n'));
+}
+
+function createOptimizationBudget(timeoutMs: number) {
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const timer = setTimeout(() => {
+    controller.abort(new AgentRunTimeoutError(timeoutMs));
+  }, timeoutMs);
+  timer.unref?.();
+  return {
+    signal: controller.signal,
+    remainingMs() {
+      const remaining = timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0 || controller.signal.aborted) {
+        throw controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : new AgentRunTimeoutError(timeoutMs);
+      }
+      return remaining;
+    },
+    dispose() { clearTimeout(timer); },
+  };
+}
 
 export class OptimizationExpertReviewRequiredError extends Error {
   readonly validationErrors: string[];
@@ -59,6 +122,29 @@ export class OptimizationExpertReviewRequiredError extends Error {
     this.name = 'OptimizationExpertReviewRequiredError';
     this.validationErrors = unique;
   }
+}
+
+/**
+ * Structured shard capture can fail before a candidate exists. Keep that
+ * failure inside the optimizer retry loop so the exact tool validation error
+ * is sent back to the model instead of escaping as an HTTP 500.
+ */
+class TargetedGenerationRetryError extends Error {
+  readonly code = 'TARGETED_GENERATION_RETRYABLE';
+
+  constructor(readonly target: string, cause: Error) {
+    super(`${target} 生成失败：${cause.message}`);
+    this.name = 'TargetedGenerationRetryError';
+  }
+}
+
+function isModelRequestTimeout(error: unknown): error is Error & { code?: unknown } {
+  if (error instanceof AgentRunTimeoutError) return true;
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return false;
+  const detail = error as { code?: unknown; message?: unknown };
+  if (detail.code === 'MODEL_REQUEST_TIMEOUT') return true;
+  return typeof detail.message === 'string'
+    && /模型任务执行超时|model(?:\s+request)?\s+timed?\s*out/iu.test(detail.message);
 }
 
 const KIND_LITERALS = [
@@ -734,6 +820,7 @@ export async function proposeOptimizations(
     ? `请仅根据以下已确认诊断和包体检事实生成通用优化建议。不要索取、推测或复述原始评测问题与答案。${diagnosisBlock}${checkBlock}`
     : `未通过的评测用例如下，请给出优化建议：\n${failLines.join('\n')}${checkBlock}`;
   const llm = llmOverride ?? buildTaskLlm({ maxTokensCap: OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS });
+  const toolChoiceState = { mode: 'named' as const };
   let validationError: Error | undefined;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     cap.suggestions = undefined;
@@ -753,7 +840,25 @@ export async function proposeOptimizations(
         ].join('\n');
     // 每次重试使用全新上下文，避免上一轮包含具体数值的建议继续锚定后续输出。
     const agent = makeAgent(llm, sys, [submitSuggestions] as any);
-    await runAgent(agent, prompt, undefined, { timeoutMs: OPTIMIZATION_PROPOSAL_TIMEOUT_MS });
+    await runAgentCaptured(
+      agent,
+      prompt,
+      () => Boolean(cap.suggestions),
+      '不要继续输出分析正文。请把结论整理为结构化参数，并立即调用 submit_suggestions 提交；未通过工具提交的内容不会保存。',
+      undefined,
+      {
+        timeoutMs: OPTIMIZATION_PROPOSAL_TIMEOUT_MS,
+        maxCaptureAttempts: 2,
+        requireCapture: true,
+        requiredToolName: 'submit_suggestions',
+        toolChoiceState,
+        resetCapture: () => { cap.suggestions = undefined; },
+        captureDiagnostics: {
+          targetToolName: 'submit_suggestions',
+          onAttempt: () => undefined,
+        },
+      },
+    );
     const suggestions = cap.suggestions as RawSuggestion[] | undefined;
     if (!suggestions?.length) {
       validationError = new Error('优化器未产出建议，请重试');
@@ -780,10 +885,15 @@ type RevisedSpec = {
 };
 
 export interface OptimizationApplyProgressEvent {
-  phase: 'revision_started' | 'validation_failed' | 'validation_passed';
+  phase: 'scope_prepared' | 'target_plan_ready' | 'revision_started' | 'validation_failed' | 'validation_passed';
   attempt: number;
   maxAttempts: number;
   error?: string;
+  protocol?: 'targeted_incremental' | 'resource_patch';
+  changeSetCount?: number;
+  targetResourceKeys?: string[];
+  shardCount?: number;
+  shardOrdering?: 'parallel' | 'dependency_serial';
 }
 
 const resourceItems = (spec: PackageSpec | RevisedSpec, kind: ResourceKind): any[] => {
@@ -1075,7 +1185,15 @@ function suggestionRequirementText(suggestion: OptSuggestion): string {
   ].join('\n').normalize('NFKC').toLocaleLowerCase('zh-CN');
 }
 
-function dataProviderFieldOrderContract(spec: PackageSpec): string {
+function suggestionTargetText(suggestion: OptSuggestion): string {
+  return [
+    suggestion.title,
+    suggestion.detail,
+    suggestion.candidateFeedback ?? '',
+  ].join('\n').normalize('NFKC').toLocaleLowerCase('zh-CN');
+}
+
+function dataProviderFieldOrderContract(spec: Pick<PackageSpec, 'objects'>): string {
   const mappings = spec.objects.flatMap((object) => object.fields.map((field) => ({
     object: object.key,
     semanticKey: field.key,
@@ -1549,6 +1667,242 @@ function hasAllocationConservationCheck(source: string): boolean {
   return comparesTotals && blocksMismatch;
 }
 
+function requiresDefaultFallbackRemoval(requirements: string): boolean {
+  const genericDefaultPrefix = /(?:删除|移除|清除|去除|不得保留|禁止保留)[^。；;\n]{0,120}(?:全部|所有)?\s*DEFAULT_(?![A-Za-z0-9_])/iu;
+  const silentHardcodedFallback = /(?:禁止|不得|不能|不允许)[^。；;\n]{0,120}(?:静默回退|硬编码缺省|硬编码默认|hardcoded\s+defaults?|silent\s+fallback)/iu;
+  return genericDefaultPrefix.test(requirements) || silentHardcodedFallback.test(requirements);
+}
+
+function remainingDefaultFallbackSymbols(source: string): string[] {
+  return pythonSourceIdentifierNames(source)
+    .filter((symbol) => /^DEFAULT_[A-Za-z0-9_]*$/u.test(symbol));
+}
+
+type OptimizationSpecContracts = Pick<RevisedSpec, 'objects' | 'operations' | 'rules' | 'metrics' | 'scripts'>;
+
+type AuthoritativeDefaultPolicy = {
+  identity: string;
+  text: string;
+};
+
+function authoritativeDefaultPolicies(
+  spec: OptimizationSpecContracts,
+  script: RevisedSpec['scripts'][number],
+): AuthoritativeDefaultPolicy[] {
+  const operation = spec.operations.find((item) => item.key === script.boundOperation);
+  const objectKeys = new Set(operation?.relatedObjects ?? []);
+  const ruleKeys = new Set(operation?.usesRules ?? []);
+  const metricKeys = new Set(operation?.usesMetrics ?? []);
+  const { sourceCode: _sourceCode, ...scriptContract } = script;
+  const policy = (identity: string[], value: unknown): AuthoritativeDefaultPolicy => ({
+    identity: identity.join(' ').normalize('NFKC').toLocaleLowerCase('en-US'),
+    text: JSON.stringify(value).normalize('NFKC'),
+  });
+  return [
+    policy([script.key, script.title, script.entrypoint], scriptContract),
+    ...(operation ? [policy([operation.key, operation.title], operation)] : []),
+    ...spec.objects.filter((item) => objectKeys.has(item.key))
+      .map((item) => policy([item.key, item.title], item)),
+    ...spec.rules.filter((item) => ruleKeys.has(item.key)
+      || (item.appliesToOperations ?? []).includes(operation?.key ?? ''))
+      .map((item) => policy([item.key, item.title], item)),
+    ...spec.metrics.filter((item) => metricKeys.has(item.key)
+      || (item.usesObjects ?? []).some((key) => objectKeys.has(key)))
+      .map((item) => policy([item.key, item.title], item)),
+  ];
+}
+
+/**
+ * 评测建议是派生信息，不能覆盖正式知识契约明确确认的缺省口径。
+ * 这里只保护能够由契约文本确定性证明的 DEFAULT_ 常量；其余静默回退仍必须删除。
+ */
+function authoritativeDefaultFallbacks(
+  spec: OptimizationSpecContracts,
+  script: RevisedSpec['scripts'][number],
+): Map<string, string> {
+  const policies = authoritativeDefaultPolicies(spec, script);
+  const policyText = policies.map((policy) => policy.text).join('\n');
+  const policyNumbers = distinctiveNumericSignatures(policyText);
+  const defaultPolicy = /(?:默认|缺省|未提供|无法取值|缺失).{0,100}(?:按|采用|使用|取值|处理|视为)|(?:按|采用|使用).{0,80}(?:默认|缺省)|\bdefaults?\b/iu;
+  const approved = new Map<string, string>();
+  for (const symbol of inspectPythonSource(script.sourceCode).symbols) {
+    if (symbol.kind !== 'assignment' || !symbol.qualifiedName.startsWith('DEFAULT_')) continue;
+    const numericValues = distinctiveNumericSignatures(symbol.source);
+    const valuesConfirmed = numericValues.size > 0
+      && [...numericValues].every((value) => policyNumbers.has(value));
+    const semanticTokens = symbol.qualifiedName.slice('DEFAULT_'.length)
+      .toLocaleLowerCase('en-US').split('_').filter((item) => item.length >= 4);
+    const policyConfirmed = policies.some((policy) => defaultPolicy.test(policy.text)
+      && semanticTokens.some((token) => policy.identity.includes(token)));
+    if (valuesConfirmed || policyConfirmed) {
+      approved.set(symbol.qualifiedName, valuesConfirmed
+        ? '正式脚本、指标或规则契约明确确认了该缺省值'
+        : '正式规则明确允许该缺省处理');
+    }
+  }
+  return approved;
+}
+
+function unapprovedDefaultFallbackSymbols(
+  source: string,
+  approved: ReadonlyMap<string, string>,
+): string[] {
+  return remainingDefaultFallbackSymbols(source).filter((symbol) => !approved.has(symbol));
+}
+
+export function unreachableNewOptimizerHelpers(beforeSource: string, afterSource: string): Array<{
+  helper: string;
+  owner?: string;
+}> {
+  const beforeFunctions = new Set(inspectPythonSource(beforeSource).symbols
+    .filter((symbol) => symbol.kind === 'function')
+    .map((symbol) => symbol.qualifiedName));
+  const afterFunctions = inspectPythonSource(afterSource).symbols
+    .filter((symbol) => symbol.kind === 'function');
+  const byName = new Map(afterFunctions.map((symbol) => [symbol.qualifiedName, symbol]));
+  const reachable = new Set(afterFunctions
+    .filter((symbol) => !symbol.qualifiedName.startsWith('_opt_'))
+    .map((symbol) => symbol.qualifiedName));
+  const pending = [...reachable];
+  while (pending.length) {
+    const current = byName.get(pending.pop()!);
+    for (const dependency of current?.dependencies ?? []) {
+      if (!byName.has(dependency) || reachable.has(dependency)) continue;
+      reachable.add(dependency);
+      pending.push(dependency);
+    }
+  }
+  const businessFunctions = afterFunctions.filter((symbol) => !symbol.qualifiedName.startsWith('_opt_'));
+  return afterFunctions
+    .filter((symbol) => symbol.qualifiedName.startsWith('_opt_')
+      && !beforeFunctions.has(symbol.qualifiedName)
+      && !reachable.has(symbol.qualifiedName))
+    .map((symbol) => ({
+      helper: symbol.qualifiedName,
+      owner: businessFunctions.find((candidate) =>
+        symbol.qualifiedName.startsWith(`_opt_${candidate.qualifiedName}_`))?.qualifiedName,
+    }));
+}
+
+export function pruneUnreachableNewOptimizerHelpers(beforeSource: string, afterSource: string): string {
+  const unreachable = unreachableNewOptimizerHelpers(beforeSource, afterSource);
+  if (!unreachable.length) return afterSource;
+  const index = inspectPythonSource(afterSource);
+  return applyPythonSourceEdits(afterSource, unreachable.map(({ helper }) => {
+    const symbol = index.symbols.find((item) =>
+      item.kind === 'function' && item.qualifiedName === helper);
+    if (!symbol) throw new Error(`找不到待清理的优化辅助函数 ${helper}`);
+    return {
+      kind: 'delete_function' as const,
+      symbol: helper,
+      expectedNodeHash: symbol.nodeHash,
+    };
+  }), { expectedBaseSourceHash: index.baseSourceHash, requireNodeHashes: true });
+}
+
+export function loaderOutputDisconnects(source: string): string[] {
+  const loader = inspectPythonSource(source).symbols.find((symbol) =>
+    symbol.kind === 'function' && symbol.qualifiedName === 'load_reference_data');
+  if (!loader || !/\breturn\s*\{/u.test(loader.source)) return [];
+  const available = new Set([...loader.source.matchAll(/^\s*["']([^"']+)["']\s*:/gmu)]
+    .map((match) => match[1]));
+  for (const match of source.matchAll(/\bdata\s*\[\s*["']([^"']+)["']\s*\]\s*=/gu)) {
+    available.add(match[1]);
+  }
+  const consumed = new Set([...source.matchAll(/\bdata\.get\s*\(\s*["']([^"']+)["']/gu)]
+    .map((match) => match[1]));
+  return [...consumed].filter((key) => !available.has(key)).sort();
+}
+
+export function fileDataLoaderFunctions(source: string): string[] {
+  return inspectPythonSource(source).symbols
+    .filter((symbol) => symbol.kind === 'function')
+    .filter((symbol) => /(?:\bopen\s*\(|\.read_text\s*\(|\bjson\.load\s*\()/u.test(symbol.source))
+    .map((symbol) => symbol.qualifiedName);
+}
+
+function requiresAuthoritativeProviderData(requirements: string): boolean {
+  return /(?:DataProviderClient|(?:真实|平台|本体|业务).{0,40}(?:数据(?:源|表)?|源表)|数据(?:源|表).{0,40}(?:唯一|权威)|(?:唯一|权威).{0,40}(?:数据入口|读取入口)|(?:禁止|不得|移除|删除).{0,40}(?:文件读取|本地文件|file\s+fallback))/iu.test(requirements);
+}
+
+function requiresRuntimeSourceMapping(requirements: string): boolean {
+  return /(?=[\s\S]*(?:connections|material_flows|side_lines|连接表|物流表|侧线表))(?=[\s\S]*(?:运行时|动态|源表|读取|查询|分流路径|任意))/iu.test(requirements);
+}
+
+export function hardCodedRuntimeIdentifierCollections(source: string): string[] {
+  const collections: string[] = [];
+  for (const match of source.matchAll(
+    /^\s*([A-Za-z_]\w*(?:ids?|keys?|codes?|types?|lines?))\s*=\s*[\[(]([^\])\n]+)[\])]/gimu,
+  )) {
+    const name = match[1];
+    const literalCount = [...(match[2] ?? '').matchAll(/["'][^"']+["']/gu)].length;
+    if (literalCount < 2) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const iterates = new RegExp(`(?:\\b(?:in|not\\s+in)\\s+${escaped}\\b|\\bfor\\s+[A-Za-z_]\\w*\\s+in\\s+${escaped}\\b)`, 'u')
+      .test(source);
+    if (iterates) collections.push(name);
+  }
+  return [...new Set(collections)].sort();
+}
+
+function requiresDynamicTankInventory(requirements: string): boolean {
+  return /(?=[\s\S]*(?:罐容|储罐|tank))(?=[\s\S]*(?:逐批|动态|期初库存|initial_capacity))(?=[\s\S]*(?:库存|inventory|current_capacity).{0,80}(?:更新|入库|出库|inflow|outflow))/iu.test(requirements);
+}
+
+function requiresDependencyOrderedScriptGeneration(
+  scope: TargetedOptimizationScope,
+  scriptKeys: ReadonlySet<string>,
+): boolean {
+  return scope.groups
+    .filter((group) => group.kind === 'script' && scriptKeys.has(group.target))
+    .flatMap((group) => group.suggestions)
+    .some((suggestion) => {
+      const requirements = suggestionRequirementText(suggestion);
+      return requiresAuthoritativeProviderData(requirements)
+        || requiresRuntimeSourceMapping(requirements)
+        || requiresDynamicTankInventory(requirements);
+    });
+}
+
+export function hasReachableDynamicTankInventory(source: string): boolean {
+  const index = inspectPythonSource(source);
+  const byName = new Map(index.symbols
+    .filter((symbol) => symbol.kind === 'function')
+    .map((symbol) => [symbol.qualifiedName, symbol]));
+  const reachable = new Set(['check_tanks', 'process_batch', 'aggregate_month']
+    .filter((name) => byName.has(name)));
+  const pending = [...reachable];
+  while (pending.length) {
+    const symbol = byName.get(pending.pop()!);
+    for (const dependency of symbol?.dependencies ?? []) {
+      if (!byName.has(dependency) || reachable.has(dependency)) continue;
+      reachable.add(dependency);
+      pending.push(dependency);
+    }
+  }
+  const implementation = [...reachable].map((name) => byName.get(name)?.source ?? '').join('\n');
+  const hasInitialInventory = /\b(?:initial_capacity|initial_inventory|opening_(?:stock|inventory)|期初库存)\b/iu.test(implementation);
+  const hasRuntimeFlows = /\b(?:connections|material_flows|flows|inflow|outflow)\b/iu.test(implementation);
+  const singleExpressionUpdate = /\b(?:inventory|current_capacity|current|stock)\w*(?:\s*\[[^\]]+\])?\s*=\s*[^\n]*\+[^\n]*-[^\n]*/iu.test(implementation);
+  const additions = new Set([...implementation.matchAll(
+    /\b((?:inventory|current_capacity|current|stock)\w*(?:\s*\[[^\]]+\])?)\s*\+=/giu,
+  )].map((match) => match[1].replace(/\s+/gu, '')));
+  const subtractions = new Set([...implementation.matchAll(
+    /\b((?:inventory|current_capacity|current|stock)\w*(?:\s*\[[^\]]+\])?)\s*-=/giu,
+  )].map((match) => match[1].replace(/\s+/gu, '')));
+  const incrementalUpdate = [...additions].some((name) => subtractions.has(name));
+  return hasInitialInventory && hasRuntimeFlows && (singleExpressionUpdate || incrementalUpdate);
+}
+
+function requiresAssignmentRemoval(requirements: string, symbol: string): boolean {
+  if (symbol.startsWith('DEFAULT_') && requiresDefaultFallbackRemoval(requirements)) return true;
+  if (!symbolMentioned(requirements, symbol)) return false;
+  const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const removal = '(?:删除|移除|清除|去除|不得保留|禁止保留)';
+  return new RegExp(`(?:${removal}[^。；;\\n]{0,120}${escaped}|${escaped}[^。；;\\n]{0,120}${removal})`, 'iu')
+    .test(requirements);
+}
+
 function validateOptimizationScriptRequirements(
   spec: PackageSpec,
   revised: RevisedSpec,
@@ -1596,6 +1950,48 @@ function validateOptimizationScriptRequirements(
       ...script.boundaries,
     ].join('\n').normalize('NFKC').toLocaleLowerCase('zh-CN');
     const source = script.sourceCode.normalize('NFKC');
+    if (before) {
+      const unreachableHelpers = unreachableNewOptimizerHelpers(before.sourceCode, source);
+      if (unreachableHelpers.length) {
+        errors.push(`优化候选 script:${script.key} 新增的辅助函数未接入业务调用链：${unreachableHelpers
+          .map((item) => item.owner ? `${item.owner} -> ${item.helper}` : item.helper).join('、')}；必须由对应业务函数实际调用，不能只新增未生效实现`);
+      }
+      const previousDisconnects = new Set(loaderOutputDisconnects(before.sourceCode));
+      const newDisconnects = loaderOutputDisconnects(source)
+        .filter((key) => !previousDisconnects.has(key));
+      if (newDisconnects.length) {
+        errors.push(`优化候选 script:${script.key} 的 load_reference_data 未提供下游读取键：${newDisconnects.join('、')}；必须在装载器返回或明确写入 data 后才能读取`);
+      }
+    }
+    if (requiresAuthoritativeProviderData(requirements) && /\bDataProviderClient\b/u.test(source)) {
+      const fileLoaders = fileDataLoaderFunctions(source);
+      if (fileLoaders.length) {
+        errors.push(`优化候选 script:${script.key} 已使用 DataProviderClient，却仍保留文件数据读取函数 ${fileLoaders.join('、')}；平台数据源必须是唯一业务数据入口`);
+      }
+    }
+    if (requiresRuntimeSourceMapping(requirements)) {
+      const hardCodedCollections = hardCodedRuntimeIdentifierCollections(source);
+      if (hardCodedCollections.length) {
+        errors.push(`优化候选 script:${script.key} 要求从运行时源表解析映射，却仍遍历硬编码标识集合 ${hardCodedCollections.join('、')}；必须从 connections、material_flows 或 side_lines 查询结果构造集合`);
+      }
+    }
+    if (requiresDynamicTankInventory(requirements) && !hasReachableDynamicTankInventory(source)) {
+      errors.push(`优化候选 script:${script.key} 未在 check_tanks、process_batch 或 aggregate_month 的可达调用链落实动态罐存：必须读取 initial_capacity 和运行时物流路径，并执行库存 + 入库 - 出库更新`);
+    }
+    if (requiresDefaultFallbackRemoval(requirements)) {
+      const beforeScript = (spec.scripts ?? []).find((item) => item.key === suggestion.target) ?? script;
+      const approvedDefaults = authoritativeDefaultFallbacks({
+        objects: spec.objects,
+        operations: spec.operations,
+        rules: spec.rules ?? [],
+        metrics: spec.metrics ?? [],
+        scripts: spec.scripts ?? [],
+      }, beforeScript);
+      const remainingDefaults = unapprovedDefaultFallbackSymbols(source, approvedDefaults);
+      if (remainingDefaults.length) {
+        errors.push(`优化候选 script:${script.key} 仍保留未经正式契约确认的硬编码缺省或静默回退：${remainingDefaults.join('、')}；必须删除这些 DEFAULT_ 依赖`);
+      }
+    }
     if (/\bDataProviderClient\b/u.test(source) && hasPositionalBeforeSemanticFallback(source)) {
       errors.push(`优化候选 script:${script.key} 的数据行候选键顺序不正确：必须优先读取语义字段和来源字段，空值时才回退到位置索引`);
     }
@@ -1755,6 +2151,724 @@ function validateOptimizationRuleConsistency(spec: PackageSpec, revised: Revised
   if (errors.length) throw new Error([...new Set(errors)].join('；'));
 }
 
+type TargetedOptimizationGroup = {
+  kind: 'script' | 'operation';
+  target: string;
+  suggestions: OptSuggestion[];
+};
+
+type TargetedOptimizationChangeSet = {
+  id: string;
+  resourceKeys: string[];
+  suggestionIds: string[];
+};
+
+type TargetedOptimizationScope = {
+  groups: TargetedOptimizationGroup[];
+  changeSets: TargetedOptimizationChangeSet[];
+  scriptKeys: Set<string>;
+  operationKeys: Set<string>;
+};
+
+export type TargetedScriptShardPlan = {
+  id: string;
+  scriptKey: string;
+  symbols: string[];
+  suggestionIds: string[];
+  purpose: string;
+};
+
+export type TargetedSymbolPlan = {
+  scriptShards: TargetedScriptShardPlan[];
+};
+
+type TargetedScriptPatchSubmission = {
+  scriptKey: string;
+  baseSourceHash: string;
+  edits: PythonSourceEdit[];
+};
+
+type OperationSpec = PackageSpec['operations'][number];
+type TargetedOperationPatch = Partial<Omit<OperationSpec, 'key' | 'script' | 'evidence'>>;
+type TargetedOperationPatchSubmission = {
+  operationKey: string;
+  patch: TargetedOperationPatch;
+};
+
+type TargetedPatchSubmission = {
+  operations: PackageSpec['operations'];
+  scriptPatches: TargetedScriptPatchSubmission[];
+};
+
+const boundedOperationText = (maxLength: number, description?: string) => Type.String({
+  minLength: 1,
+  maxLength,
+  ...(description ? { description } : {}),
+});
+
+const boundedOperationStringList = (
+  maxItems: number,
+  maxLength: number,
+  description?: string,
+) => Type.Array(boundedOperationText(maxLength, description), { maxItems });
+
+const targetedOperationPatchSchema = () => Type.Object({
+  operationKey: boundedOperationText(80, '必须逐字复用当前 operation key'),
+  patch: Type.Object({
+    title: Type.Optional(boundedOperationText(200)),
+    description: Type.Optional(boundedOperationText(2_000)),
+    inputs: Type.Optional(Type.Array(Type.Object({
+      param: boundedOperationText(100),
+      cnName: Type.Optional(boundedOperationText(100)),
+      type: boundedOperationText(100),
+      required: Type.Boolean(),
+      note: Type.Optional(boundedOperationText(800)),
+    }, { additionalProperties: false }), { maxItems: 64 })),
+    outputs: Type.Optional(Type.Array(Type.Object({
+      field: boundedOperationText(100),
+      cnName: Type.Optional(boundedOperationText(100)),
+      type: boundedOperationText(100),
+      note: Type.Optional(boundedOperationText(800)),
+    }, { additionalProperties: false }), { maxItems: 64 })),
+    flow: Type.Optional(boundedOperationStringList(64, 1_000, '单条可执行流程步骤')),
+    relatedObjects: Type.Optional(boundedOperationStringList(128, 100)),
+    usesRules: Type.Optional(boundedOperationStringList(128, 100)),
+    usesMetrics: Type.Optional(boundedOperationStringList(128, 100)),
+    notes: Type.Optional(boundedOperationStringList(64, 1_000)),
+    competencyQuestionId: Type.Optional(boundedOperationText(200)),
+    competencyQuestion: Type.Optional(boundedOperationText(2_000)),
+  }, {
+    additionalProperties: false,
+    minProperties: 1,
+    description: '只提交实际变化的 operation 字段；key、脚本绑定与证据由服务端保留',
+  }),
+}, { additionalProperties: false });
+
+function mergeTargetedOperationPatch(
+  current: OperationSpec,
+  submission: TargetedOperationPatchSubmission,
+): OperationSpec {
+  if (submission.operationKey !== current.key) {
+    throw new Error(`当前任务只能修改 operation:${current.key}`);
+  }
+  const entries = Object.entries(submission.patch ?? {});
+  if (!entries.length) throw new Error(`operation:${current.key} 字段补丁为空`);
+  if (!entries.some(([field, value]) => JSON.stringify((current as any)[field]) !== JSON.stringify(value))) {
+    throw new Error(`operation:${current.key} 字段补丁没有产生实际变化`);
+  }
+  return {
+    ...current,
+    ...submission.patch,
+    key: current.key,
+    script: current.script,
+    evidence: current.evidence,
+  };
+}
+
+export function groupTargetedOptimizationSuggestions(
+  adopted: OptSuggestion[],
+  spec: PackageSpec,
+): TargetedOptimizationScope | undefined {
+  const groups = new Map<string, TargetedOptimizationGroup>();
+  const scriptKeys = new Set<string>();
+  const operationKeys = new Set<string>();
+  for (const suggestion of adopted) {
+    const kind = kindFromSuggestion(suggestion.kind);
+    const target = suggestion.target?.trim();
+    if (!target || suggestion.kind.startsWith('add_') || (kind !== 'script' && kind !== 'operation')) {
+      return undefined;
+    }
+    if (!resourceItems(spec, kind).some((item) => item.key === target)) return undefined;
+    const key = `${kind}:${target}`;
+    const group = groups.get(key) ?? { kind, target, suggestions: [] };
+    group.suggestions.push(suggestion);
+    groups.set(key, group);
+    if (kind === 'script') scriptKeys.add(target);
+    else operationKeys.add(target);
+  }
+  // 首轮穿刺只接管“多条建议收敛为更少 script + operation 目标”的复合修复；
+  // 单资源和新增资源继续走稳定的通用协议，避免一次上线改变全部历史候选行为。
+  if (groups.size < 2 || !scriptKeys.size || adopted.length <= groups.size
+    || scriptKeys.size > 2 || groups.size > 4) return undefined;
+  for (const scriptKey of scriptKeys) {
+    const script = (spec.scripts ?? []).find((item) => item.key === scriptKey);
+    if (script?.boundOperation) operationKeys.add(script.boundOperation);
+  }
+  const grouped = [...groups.values()];
+  const groupByResource = new Map(grouped.map((group) => [`${group.kind}:${group.target}`, group]));
+  const buckets = new Map<string, { scriptKeys: string[]; operationKey?: string }>();
+  for (const scriptKey of [...scriptKeys].sort()) {
+    const operationKey = (spec.scripts ?? []).find((item) => item.key === scriptKey)?.boundOperation;
+    const bucketKey = operationKey ? `operation:${operationKey}` : `script:${scriptKey}`;
+    const bucket = buckets.get(bucketKey) ?? { scriptKeys: [], ...(operationKey ? { operationKey } : {}) };
+    bucket.scriptKeys.push(scriptKey);
+    buckets.set(bucketKey, bucket);
+  }
+  const consumed = new Set<string>();
+  const changeSets: TargetedOptimizationChangeSet[] = [];
+  for (const [id, bucket] of buckets) {
+    const resourceKeys = [
+      ...bucket.scriptKeys.map((key) => `script:${key}`),
+      ...(bucket.operationKey ? [`operation:${bucket.operationKey}`] : []),
+    ];
+    resourceKeys.forEach((key) => consumed.add(key));
+    changeSets.push({
+      id,
+      resourceKeys,
+      suggestionIds: resourceKeys.flatMap((key) => groupByResource.get(key)?.suggestions.map((item) => item.id) ?? []),
+    });
+  }
+  for (const group of grouped) {
+    const resourceKey = `${group.kind}:${group.target}`;
+    if (consumed.has(resourceKey)) continue;
+    changeSets.push({
+      id: resourceKey,
+      resourceKeys: [resourceKey],
+      suggestionIds: group.suggestions.map((item) => item.id),
+    });
+  }
+  return { groups: grouped, changeSets, scriptKeys, operationKeys };
+}
+
+function targetedOptimizationContext(
+  base: RevisedSpec,
+  scope: TargetedOptimizationScope,
+  hashBase: RevisedSpec = base,
+) {
+  const scripts = base.scripts
+    .filter((script) => scope.scriptKeys.has(script.key))
+    .map((script) => {
+      const originalSource = hashBase.scripts
+        .find((candidate) => candidate.key === script.key)?.sourceCode ?? script.sourceCode;
+      const safeIndex = inspectPythonSource(script.sourceCode);
+      const originalIndex = inspectPythonSource(originalSource);
+      const originalBySymbol = new Map(originalIndex.symbols
+        .map((symbol) => [`${symbol.kind}:${symbol.qualifiedName}`, symbol]));
+      const { sourceCode: _sourceCode, ...metadata } = script;
+      return {
+        ...metadata,
+        sourceIndex: {
+          baseSourceHash: originalIndex.baseSourceHash,
+          canonicalSourceHash: originalIndex.canonicalSourceHash,
+          symbols: safeIndex.symbols.map((symbol) => {
+            const original = originalBySymbol.get(`${symbol.kind}:${symbol.qualifiedName}`);
+            if (!original) throw new Error(`目标脚本 ${script.key} 的安全源码索引与原始源码不一致`);
+            return {
+              kind: symbol.kind,
+              qualifiedName: symbol.qualifiedName,
+              nodeHash: original.nodeHash,
+              source: symbol.source,
+              dependencies: symbol.dependencies,
+            };
+          }),
+        },
+      };
+    });
+  const operations = base.operations.filter((operation) => scope.operationKeys.has(operation.key));
+  const requirements = scope.groups.flatMap((group) => group.suggestions)
+    .map(suggestionRequirementText).join('\n');
+  const dependencyText = [
+    requirements,
+    JSON.stringify(operations),
+    ...scripts.flatMap((script) => script.sourceIndex.symbols.map((symbol) => symbol.source)),
+  ].join('\n').toLocaleLowerCase('zh-CN');
+  const normalizedDependencies = normalizedMention(dependencyText);
+  const mentioned = (item: { key: string; title?: string }) => {
+    const title = normalizedMention(item.title ?? '');
+    return dependencyText.includes(item.key.toLocaleLowerCase('zh-CN'))
+      || (title.length >= 4 && normalizedDependencies.includes(title));
+  };
+  const relatedObjectKeys = new Set(operations.flatMap((operation) => operation.relatedObjects ?? []));
+  const relatedRuleKeys = new Set(operations.flatMap((operation) => operation.usesRules ?? []));
+  const relatedMetricKeys = new Set(operations.flatMap((operation) => operation.usesMetrics ?? []));
+  const objectContracts = base.objects.filter((item) => relatedObjectKeys.has(item.key) || mentioned(item));
+  const ruleContracts = base.rules.filter((item) => relatedRuleKeys.has(item.key) || mentioned(item));
+  const metricContracts = base.metrics.filter((item) => relatedMetricKeys.has(item.key) || mentioned(item));
+  return {
+    editable: { scripts, operations },
+    dependencies: {
+      objects: objectContracts,
+      rules: ruleContracts,
+      metrics: metricContracts,
+      fieldOrderContract: dataProviderFieldOrderContract({ objects: objectContracts }),
+    },
+    changeSets: scope.changeSets,
+    resourceCatalog: {
+      objects: base.objects.map((item) => ({ key: item.key, title: item.title })),
+      operations: base.operations.map((item) => ({ key: item.key, title: item.title })),
+      rules: base.rules.map((item) => ({ key: item.key, title: item.title })),
+      metrics: base.metrics.map((item) => ({ key: item.key, title: item.title })),
+      scripts: base.scripts.map((item) => ({ key: item.key, title: item.title })),
+    },
+  };
+}
+
+function targetedSuggestionGroups(scope: TargetedOptimizationScope) {
+  return scope.groups.map((group) => ({
+    kind: group.kind,
+    target: group.target,
+    requirements: group.suggestions.map((suggestion) => ({
+      id: suggestion.id,
+      title: safeOptimizationSuggestionValue(suggestion.title),
+      detail: safeOptimizationSuggestionValue(suggestion.detail),
+      diagnosisIds: suggestion.diagnosisIds ?? [],
+      generalizationPlan: safeOptimizationSuggestionValue(suggestion.generalizationPlan ?? ''),
+      validationPlan: safeOptimizationSuggestionValue(suggestion.validationPlan ?? ''),
+      candidateFeedback: safeOptimizationSuggestionValue(suggestion.candidateFeedback ?? ''),
+    })),
+  }));
+}
+
+function hanNgrams(value: string): Set<string> {
+  const grams = new Set<string>();
+  for (const token of value.match(/[\p{Script=Han}]+/gu) ?? []) {
+    for (const size of [2, 3, 4]) {
+      for (let index = 0; index + size <= token.length; index += 1) {
+        grams.add(token.slice(index, index + size));
+      }
+    }
+  }
+  return grams;
+}
+
+function identifierWords(value: string): Set<string> {
+  return new Set((value.match(/[A-Za-z_][A-Za-z0-9_]*/gu) ?? [])
+    .map((item) => item.toLocaleLowerCase('en-US')));
+}
+
+function symbolMentioned(requirement: string, symbol: string): boolean {
+  return new RegExp(`(^|[^A-Za-z0-9_])${symbol.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}([^A-Za-z0-9_]|$)`, 'iu')
+    .test(requirement);
+}
+
+function symbolRelevance(requirement: string, source: string): number {
+  const requirementGrams = hanNgrams(requirement);
+  const sourceGrams = hanNgrams(source);
+  const requirementWords = identifierWords(requirement);
+  const sourceWords = identifierWords(source);
+  const hanScore = [...requirementGrams].filter((item) => sourceGrams.has(item)).length * 3;
+  const wordScore = [...requirementWords].filter((item) => sourceWords.has(item)).length;
+  return hanScore + wordScore;
+}
+
+function deterministicTargetedSymbolPlan(
+  base: RevisedSpec,
+  scope: TargetedOptimizationScope,
+): TargetedSymbolPlan {
+  const selected = new Map<string, {
+    scriptKey: string;
+    symbol: string;
+    kind: 'function' | 'assignment';
+    sourceChars: number;
+    suggestionIds: Set<string>;
+    titles: Set<string>;
+  }>();
+  for (const group of scope.groups.filter((item) => item.kind === 'script')) {
+    const script = base.scripts.find((item) => item.key === group.target);
+    if (!script) throw new Error(`目标脚本不存在：${group.target}`);
+    const symbols = inspectPythonSource(script.sourceCode).symbols;
+    const selectableSymbols = symbols.filter((symbol) => !(symbol.kind === 'function'
+      && symbol.qualifiedName.startsWith('_opt_')));
+    const approvedDefaults = authoritativeDefaultFallbacks(base, script);
+    for (const suggestion of group.suggestions) {
+      const requirement = suggestionRequirementText(suggestion);
+      const targetText = suggestionTargetText(suggestion);
+      const removeAllDefaultFallbacks = requiresDefaultFallbackRemoval(requirement);
+      const removeFileDataLoaders = requiresAuthoritativeProviderData(requirement);
+      const fileLoaderNames = removeFileDataLoaders
+        ? new Set(fileDataLoaderFunctions(script.sourceCode)) : new Set<string>();
+      const explicitPrefixes = [...targetText.matchAll(/\b([A-Z][A-Z0-9]*_)(?![A-Z0-9_])/giu)]
+        .map((match) => match[1].toLocaleUpperCase('en-US'));
+      const exact = selectableSymbols.filter((symbol) => {
+        if (symbol.kind === 'assignment' && approvedDefaults.has(symbol.qualifiedName)
+          && requiresAssignmentRemoval(requirement, symbol.qualifiedName)) return false;
+        return symbolMentioned(targetText, symbol.qualifiedName)
+          || (symbol.kind === 'assignment'
+            && explicitPrefixes.some((prefix) => symbol.qualifiedName.startsWith(prefix)))
+          || (removeAllDefaultFallbacks
+            && ((symbol.kind === 'assignment' && symbol.qualifiedName.startsWith('DEFAULT_'))
+              || (symbol.kind === 'function'
+                && unapprovedDefaultFallbackSymbols(symbol.source, approvedDefaults).length > 0)))
+          || (symbol.kind === 'function' && fileLoaderNames.has(symbol.qualifiedName));
+      });
+      const hasExactFunction = exact.some((symbol) => symbol.kind === 'function');
+      const fallbackFunctions = hasExactFunction ? [] : selectableSymbols.filter((symbol) => symbol.kind === 'function')
+        .map((symbol) => ({ symbol, score: symbolRelevance(requirement, symbol.source) }))
+        .filter((item) => item.score > 0)
+        .sort((left, right) => right.score - left.score || left.symbol.qualifiedName.localeCompare(right.symbol.qualifiedName))
+        .slice(0, 3)
+        .map((item) => item.symbol);
+      const targets = [...new Map([...exact, ...fallbackFunctions]
+        .map((symbol) => [symbol.qualifiedName, symbol])).values()];
+      if (!targets.length) {
+        throw new Error(`优化建议「${suggestion.title}」无法确定 Python 修改符号，请在建议中明确函数或常量名`);
+      }
+      for (const symbol of targets) {
+        const key = `${script.key}:${symbol.qualifiedName}`;
+        const entry = selected.get(key) ?? {
+          scriptKey: script.key,
+          symbol: symbol.qualifiedName,
+          kind: symbol.kind,
+          sourceChars: symbol.source.length,
+          suggestionIds: new Set<string>(),
+          titles: new Set<string>(),
+        };
+        entry.suggestionIds.add(suggestion.id);
+        entry.titles.add(safeOptimizationSuggestionValue(suggestion.title));
+        selected.set(key, entry);
+      }
+    }
+  }
+  const bins: Array<{
+    scriptKey: string;
+    sourceChars: number;
+    hasFunction: boolean;
+    symbols: string[];
+    suggestionIds: Set<string>;
+    titles: Set<string>;
+  }> = [];
+  const entries = [...selected.values()].sort((left, right) => right.sourceChars - left.sourceChars
+    || left.symbol.localeCompare(right.symbol));
+  for (const entry of entries) {
+    const entryLimit = targetedSymbolSourceLimit(entry.kind);
+    if (entry.sourceChars > entryLimit) {
+      throw new Error(`Python 符号 ${entry.scriptKey}:${entry.symbol} 过大（${entry.sourceChars} 字符，上限 ${entryLimit}），需要先拆分函数再优化`);
+    }
+    const bin = bins.filter((candidate) => candidate.scriptKey === entry.scriptKey
+      && [...entry.suggestionIds].some((id) => candidate.suggestionIds.has(id))
+      && (entry.kind !== 'function' || !candidate.hasFunction)
+      && candidate.sourceChars + entry.sourceChars <= (
+        candidate.hasFunction || entry.kind === 'function'
+          ? OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS
+          : OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD))
+      .sort((left, right) => right.sourceChars - left.sourceChars)[0];
+    const target = bin ?? {
+      scriptKey: entry.scriptKey,
+      sourceChars: 0,
+      hasFunction: false,
+      symbols: [],
+      suggestionIds: new Set<string>(),
+      titles: new Set<string>(),
+    };
+    if (!bin) bins.push(target);
+    target.sourceChars += entry.sourceChars;
+    if (entry.kind === 'function') target.hasFunction = true;
+    target.symbols.push(entry.symbol);
+    entry.suggestionIds.forEach((id) => target.suggestionIds.add(id));
+    entry.titles.forEach((title) => target.titles.add(title));
+  }
+  if (bins.length > OPTIMIZATION_TARGETED_MAX_SHARDS) {
+    throw new Error(`目标脚本需要 ${bins.length} 个符号分片，超过当前上限 ${OPTIMIZATION_TARGETED_MAX_SHARDS}`);
+  }
+  return validateTargetedSymbolPlan({
+    scriptShards: bins.map((bin, index) => ({
+      id: `${bin.scriptKey}:shard:${index + 1}`,
+      scriptKey: bin.scriptKey,
+      symbols: bin.symbols,
+      suggestionIds: [...bin.suggestionIds],
+      purpose: [...bin.titles].join('；'),
+    })),
+  }, base, scope);
+}
+
+const VALIDATION_REPAIR_IDENTIFIER_STOP_WORDS = new Set([
+  'data', 'error', 'field', 'fields', 'input', 'item', 'number', 'output', 'python',
+  'record', 'records', 'script', 'source', 'value', 'values', 'validation',
+]);
+
+function selectTargetedValidationRepairShards(
+  plan: TargetedSymbolPlan,
+  base: RevisedSpec,
+  validationError: string,
+): TargetedSymbolPlan {
+  if (!validationError.trim()) return plan;
+  const errorText = validationError.normalize('NFKC');
+  // A capture failure names the exact shard. Capture failures happen before
+  // any complete submission exists, so the next outer attempt must regenerate
+  // the complete plan rather than silently dropping unrelated shards.
+  if (/(?:提交工具参数校验失败|未调用|未提交增量补丁)/u.test(errorText)) return plan;
+  const shardId = errorText.match(/脚本分片\s+([A-Za-z0-9_.-]+:shard:\d+)/u)?.[1];
+  if (shardId) {
+    const exact = plan.scriptShards.find((shard) => shard.id === shardId);
+    if (exact) return { scriptShards: [exact] };
+  }
+  const errorIdentifiers = new Set([...identifierWords(errorText)]
+    .filter((item) => item.length >= 4 && !VALIDATION_REPAIR_IDENTIFIER_STOP_WORDS.has(item)));
+  const scored = plan.scriptShards.map((shard) => {
+    const script = base.scripts.find((item) => item.key === shard.scriptKey);
+    const index = script ? inspectPythonSource(script.sourceCode) : undefined;
+    const symbols = index?.symbols.filter((item) => shard.symbols.includes(item.qualifiedName)) ?? [];
+    const exactNames = shard.symbols.filter((name) => symbolMentioned(errorText, name));
+    const sourceIdentifiers = new Set(symbols.flatMap((item) => [...identifierWords(item.source)]));
+    const identifierHits = [...errorIdentifiers].filter((item) => sourceIdentifiers.has(item));
+    return { shard, score: exactNames.length * 100 + identifierHits.length };
+  });
+  const selected = scored.filter((item) => item.score > 0).map((item) => item.shard);
+  return selected.length ? { scriptShards: selected } : plan;
+}
+
+export function planTargetedOptimizationSymbols(
+  adopted: OptSuggestion[],
+  spec: PackageSpec,
+): TargetedSymbolPlan | undefined {
+  const normalized = normalizeOptimizationSuggestionTargets(adopted, spec) as OptSuggestion[];
+  const scope = groupTargetedOptimizationSuggestions(normalized, spec);
+  if (!scope) return undefined;
+  return deterministicTargetedSymbolPlan({
+    objects: spec.objects,
+    operations: spec.operations,
+    rules: spec.rules ?? [],
+    metrics: spec.metrics ?? [],
+    scripts: spec.scripts ?? [],
+  }, scope);
+}
+
+export function planTargetedOptimizationRepairSymbols(
+  adopted: OptSuggestion[],
+  spec: PackageSpec,
+  validationError: string,
+): TargetedSymbolPlan | undefined {
+  const normalized = normalizeOptimizationSuggestionTargets(adopted, spec) as OptSuggestion[];
+  const scope = groupTargetedOptimizationSuggestions(normalized, spec);
+  if (!scope) return undefined;
+  const base: RevisedSpec = {
+    objects: spec.objects,
+    operations: spec.operations,
+    rules: spec.rules ?? [],
+    metrics: spec.metrics ?? [],
+    scripts: spec.scripts ?? [],
+  };
+  return selectTargetedValidationRepairShards(
+    deterministicTargetedSymbolPlan(base, scope),
+    base,
+    validationError,
+  );
+}
+
+function validateTargetedSymbolPlan(
+  raw: TargetedSymbolPlan | undefined,
+  base: RevisedSpec,
+  scope: TargetedOptimizationScope,
+): TargetedSymbolPlan {
+  const shards = raw?.scriptShards ?? [];
+  if (!shards.length) throw new Error('目标增量修改计划没有脚本分片');
+  if (shards.length > OPTIMIZATION_TARGETED_MAX_SHARDS) {
+    throw new Error(`目标增量修改计划最多允许 ${OPTIMIZATION_TARGETED_MAX_SHARDS} 个脚本分片`);
+  }
+  const expectedSuggestionIds = new Set(scope.groups
+    .filter((group) => group.kind === 'script')
+    .flatMap((group) => group.suggestions.map((item) => item.id)));
+  const coveredSuggestionIds = new Set<string>();
+  const occupiedSymbols = new Set<string>();
+  const normalized = shards.map((shard, index) => {
+    if (!scope.scriptKeys.has(shard.scriptKey)) {
+      throw new Error(`目标增量修改计划包含未授权脚本：${shard.scriptKey}`);
+    }
+    const script = base.scripts.find((item) => item.key === shard.scriptKey);
+    if (!script) throw new Error(`目标增量修改计划找不到脚本：${shard.scriptKey}`);
+    const sourceIndex = inspectPythonSource(script.sourceCode);
+    const symbols = [...new Set((shard.symbols ?? []).map((item) => String(item).trim()).filter(Boolean))];
+    if (!symbols.length) throw new Error(`目标增量修改计划分片 ${index + 1} 没有指定 Python 符号`);
+    const sourceChars = symbols.reduce((total, symbolName) => {
+      const symbol = sourceIndex.symbols.find((item) => item.qualifiedName === symbolName);
+      if (!symbol) throw new Error(`目标增量修改计划找不到 Python 符号：${shard.scriptKey}:${symbolName}`);
+      const identity = `${shard.scriptKey}:${symbolName}`;
+      if (occupiedSymbols.has(identity)) throw new Error(`目标增量修改计划重复编辑 Python 符号：${identity}`);
+      occupiedSymbols.add(identity);
+      return total + symbol.source.length;
+    }, 0);
+    const hasFunction = symbols.some((symbolName) => sourceIndex.symbols.some((item) =>
+      item.kind === 'function' && item.qualifiedName === symbolName));
+    const sourceLimit = hasFunction
+      ? OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS
+      : OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD;
+    if (sourceChars > sourceLimit) {
+      throw new Error(`目标增量修改计划分片 ${index + 1} 的源码过大（${sourceChars} 字符，上限 ${sourceLimit}），请继续拆分符号`);
+    }
+    const suggestionIds = [...new Set((shard.suggestionIds ?? [])
+      .map((item) => String(item).trim()).filter(Boolean))];
+    if (!suggestionIds.length) throw new Error(`目标增量修改计划分片 ${index + 1} 没有关联优化建议`);
+    for (const suggestionId of suggestionIds) {
+      if (!expectedSuggestionIds.has(suggestionId)) {
+        throw new Error(`目标增量修改计划引用了不属于脚本修复的建议：${suggestionId}`);
+      }
+      coveredSuggestionIds.add(suggestionId);
+    }
+    return {
+      id: String(shard.id || `script-shard-${index + 1}`).trim() || `script-shard-${index + 1}`,
+      scriptKey: shard.scriptKey,
+      symbols,
+      suggestionIds,
+      purpose: safeOptimizationSuggestionValue(shard.purpose || ''),
+    };
+  });
+  const missing = [...expectedSuggestionIds].filter((id) => !coveredSuggestionIds.has(id));
+  if (missing.length) throw new Error(`目标增量修改计划没有覆盖脚本建议：${missing.join(', ')}`);
+  return { scriptShards: normalized };
+}
+
+function targetedShardContext(
+  base: RevisedSpec,
+  scope: TargetedOptimizationScope,
+  shard: TargetedScriptShardPlan,
+  helperNamePrefix: string,
+  serverManagedDeletes: {
+    assignments?: ReadonlySet<string>;
+    functions?: ReadonlySet<string>;
+  } = {},
+  approvedDefaults: ReadonlyMap<string, string> = new Map(),
+) {
+  const script = base.scripts.find((item) => item.key === shard.scriptKey);
+  if (!script) throw new Error(`目标脚本不存在：${shard.scriptKey}`);
+  const index = inspectPythonSource(script.sourceCode);
+  const deletedNames = new Set([
+    ...(serverManagedDeletes.assignments ?? []),
+    ...(serverManagedDeletes.functions ?? []),
+  ]);
+  const targetNames = new Set(shard.symbols.filter((symbol) => !deletedNames.has(symbol)));
+  const targetSymbols = index.symbols.filter((item) => targetNames.has(item.qualifiedName));
+  const dependencyNames = new Set(targetSymbols.flatMap((item) => item.dependencies));
+  const readOnlySymbols = index.symbols.filter((item) => dependencyNames.has(item.qualifiedName)
+    && !targetNames.has(item.qualifiedName)
+    && !deletedNames.has(item.qualifiedName));
+  const existingHelpers = index.symbols.filter((item) => item.kind === 'function'
+    && item.qualifiedName.startsWith(helperNamePrefix)
+    && !deletedNames.has(item.qualifiedName));
+  const requirements = scope.groups.filter((group) => group.kind === 'script' && group.target === shard.scriptKey)
+    .flatMap((group) => group.suggestions)
+    .filter((suggestion) => shard.suggestionIds.includes(suggestion.id));
+  const operation = base.operations.find((item) => item.key === script.boundOperation);
+  const searchText = normalizedMention([
+    shard.purpose,
+    ...requirements.map(suggestionRequirementText),
+    ...targetSymbols.map((item) => item.source),
+  ].join('\n'));
+  const mentioned = (item: { key: string; title?: string }) => {
+    const key = normalizedMention(item.key);
+    const title = normalizedMention(item.title ?? '');
+    return searchText.includes(key) || (title.length >= 4 && searchText.includes(title));
+  };
+  const objects = base.objects.filter(mentioned);
+  const rules = base.rules.filter(mentioned);
+  const metrics = base.metrics.filter(mentioned);
+  const { sourceCode: _sourceCode, ...metadata } = script;
+  return {
+    editable: {
+      script: metadata,
+      baseSourceHash: index.baseSourceHash,
+      helperNamePrefix,
+      sourceBudget: {
+        maxFunctionReplacementChars: OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS,
+        maxHelperInsertChars: OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD,
+        maxAssignmentReplacementChars: OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD,
+      },
+      symbols: targetSymbols.map((item) => ({
+        kind: item.kind,
+        qualifiedName: item.qualifiedName,
+        nodeHash: item.nodeHash,
+        source: item.source,
+      })),
+      existingHelpers: existingHelpers.map((item) => ({
+        qualifiedName: item.qualifiedName,
+        nodeHash: item.nodeHash,
+        source: item.source,
+      })),
+    },
+    serverManaged: {
+      deleteAssignments: [...(serverManagedDeletes.assignments ?? [])].sort(),
+      ...((serverManagedDeletes.functions?.size ?? 0) > 0
+        ? { deleteFunctions: [...serverManagedDeletes.functions!].sort() } : {}),
+    },
+    readOnly: {
+      authoritativeDefaults: [...approvedDefaults].map(([symbol, reason]) => ({ symbol, reason })),
+      dependencies: readOnlySymbols.map((item) => ({
+        kind: item.kind,
+        qualifiedName: item.qualifiedName,
+        source: item.source,
+      })),
+      operation: operation ? {
+        key: operation.key,
+        title: operation.title,
+        description: operation.description,
+        relatedObjects: operation.relatedObjects,
+        usesRules: operation.usesRules,
+        usesMetrics: operation.usesMetrics,
+      } : undefined,
+      contracts: { objects, rules, metrics },
+      fieldOrderContract: dataProviderFieldOrderContract({ objects }),
+    },
+    requirements: requirements.map((suggestion) => ({
+      id: suggestion.id,
+      title: safeOptimizationSuggestionValue(suggestion.title),
+      detail: safeOptimizationSuggestionValue(suggestion.detail),
+      generalizationPlan: safeOptimizationSuggestionValue(suggestion.generalizationPlan ?? ''),
+      validationPlan: safeOptimizationSuggestionValue(suggestion.validationPlan ?? ''),
+    })),
+    resourceCatalog: {
+      objects: base.objects.map((item) => ({ key: item.key, title: item.title })),
+      rules: base.rules.map((item) => ({ key: item.key, title: item.title })),
+      metrics: base.metrics.map((item) => ({ key: item.key, title: item.title })),
+    },
+  };
+}
+
+/**
+ * Helper names are an implementation detail of the server-owned shard
+ * namespace. A model can use a unique temporary Python name; the server
+ * assigns the physical name and rewrites references in this submission.
+ */
+export function normalizeTargetedHelperNames(
+  edits: PythonSourceEdit[],
+  sourceIndex: ReturnType<typeof inspectPythonSource>,
+  helperNamePrefix: string,
+): PythonSourceEdit[] {
+  const existingNames = new Set(sourceIndex.symbols.map((symbol) => symbol.qualifiedName));
+  const usedPhysicalNames = new Set(existingNames);
+  const mappings = new Map<string, string>();
+  const mappingSources = new Map<string, string>();
+
+  for (const edit of edits) {
+    if (edit.kind !== 'insert_before_function') continue;
+    const fragment = inspectPythonSource(edit.source);
+    for (const symbol of fragment.symbols.filter((item) => item.kind === 'function')) {
+      const logicalName = symbol.qualifiedName;
+      // Existing helpers already have a server-owned physical name.
+      if (logicalName.startsWith(helperNamePrefix)) continue;
+      if (sourceIndex.symbols.some((item) => item.qualifiedName === logicalName)) {
+        throw new Error(`辅助函数逻辑名 ${logicalName} 与现有 Python 符号冲突，请使用唯一临时名称`);
+      }
+      const previousSource = mappingSources.get(logicalName);
+      if (previousSource && previousSource !== symbol.source) {
+        throw new Error(`辅助函数逻辑名 ${logicalName} 在同一补丁中对应多个源码，请分别命名`);
+      }
+      if (mappings.has(logicalName)) continue;
+
+      // Keep the physical name short enough that renaming cannot consume the
+      // source budget. The source hash also makes it deterministic and unique.
+      const digest = pythonSourceHash(`${logicalName}\n${symbol.source}`)
+        .replace(/[^A-Fa-f0-9]/gu, '')
+        .slice(0, 10)
+        .toLowerCase();
+      const base = `${helperNamePrefix}h_${digest}`;
+      let physicalName = base;
+      let suffix = 2;
+      while (usedPhysicalNames.has(physicalName)) {
+        physicalName = `${base}_${suffix}`;
+        suffix += 1;
+      }
+      mappings.set(logicalName, physicalName);
+      mappingSources.set(logicalName, symbol.source);
+      usedPhysicalNames.add(physicalName);
+    }
+  }
+
+  if (!mappings.size) return edits;
+  return edits.map((edit) => {
+    if (!('source' in edit)) return edit;
+    return { ...edit, source: rewritePythonIdentifiers(edit.source, mappings) };
+  });
+}
+
 export async function applyOptimizations(
   project: Project,
   spec: PackageSpec,
@@ -1769,6 +2883,7 @@ export async function applyOptimizations(
   scripts: NonNullable<PackageSpec['scripts']>;
 }> {
   adopted = normalizeOptimizationSuggestionTargets(adopted, spec) as OptSuggestion[];
+  const targetedScope = groupTargetedOptimizationSuggestions(adopted, spec);
   validateScriptOptimizationDecisions(adopted, diagnoses, spec);
   const cap: { revised?: RevisedSpec } = {};
   const originalPatchBase: RevisedSpec = {
@@ -1778,6 +2893,28 @@ export async function applyOptimizations(
     metrics: spec.metrics ?? [],
     scripts: spec.scripts ?? [],
   };
+  const patchResourceKinds = new Set<ResourceKind>();
+  for (const suggestion of adopted) {
+    let kind = kindFromSuggestion(suggestion.kind);
+    if (suggestion.kind === 'clarify_description' && suggestion.target) {
+      kind = (['object', 'operation', 'rule', 'metric', 'script'] as ResourceKind[])
+        .find((candidate) => resourceItems(spec, candidate).some((item) => item.key === suggestion.target));
+    }
+    if (kind) patchResourceKinds.add(kind);
+    // 脚本与 operation 绑定是一个原子契约，脚本建议允许同步更新绑定操作。
+    if (kind === 'script') patchResourceKinds.add('operation');
+  }
+  if (!patchResourceKinds.size) {
+    for (const kind of ['object', 'operation', 'rule', 'metric', 'script'] as ResourceKind[]) {
+      patchResourceKinds.add(kind);
+    }
+  }
+  const patchProperties: Record<string, any> = {};
+  if (patchResourceKinds.has('object')) patchProperties.objects = Type.Optional(Type.Array(specObjectSchema()));
+  if (patchResourceKinds.has('operation')) patchProperties.operations = Type.Optional(Type.Array(specOperationSchema()));
+  if (patchResourceKinds.has('rule')) patchProperties.rules = Type.Optional(Type.Array(specRuleSchema()));
+  if (patchResourceKinds.has('metric')) patchProperties.metrics = Type.Optional(Type.Array(specMetricSchema()));
+  if (patchResourceKinds.has('script')) patchProperties.scripts = Type.Optional(Type.Array(specScriptSchema()));
   let patchBase = originalPatchBase;
   const mergeResourcePatch = <T extends { key: string }>(base: T[], changes: T[]): T[] => {
     const changedByKey = new Map(changes.map((item) => [item.key, item]));
@@ -1791,13 +2928,7 @@ export async function applyOptimizations(
     name: 'submit_optimization_patch',
     label: '提交知识资源补丁',
     description: '只提交本轮实际修改或新增的资源；未涉及资源无需重复，服务端会与当前完整规格合并后执行全部校验',
-    parameters: Type.Object({
-      objects: Type.Optional(Type.Array(specObjectSchema())),
-      operations: Type.Optional(Type.Array(specOperationSchema())),
-      rules: Type.Optional(Type.Array(specRuleSchema())),
-      metrics: Type.Optional(Type.Array(specMetricSchema())),
-      scripts: Type.Optional(Type.Array(specScriptSchema())),
-    }),
+    parameters: Type.Object(patchProperties),
     async execute(_id: string, params: any) {
       cap.revised = {
         objects: mergeResourcePatch(patchBase.objects, params.objects ?? []),
@@ -1830,8 +2961,87 @@ export async function applyOptimizations(
       return { content: [{ type: 'text' as const, text: '修订规格已提交。' }], details: {}, terminate: true };
     },
   };
+  const pythonSourceEditSchema = Type.Union([
+    Type.Object({
+      kind: Type.Literal('replace_function'),
+      symbol: Type.String({ description: '现有顶层函数名' }),
+      expectedNodeHash: Type.String({ description: 'sourceIndex 中该函数的 nodeHash' }),
+      source: Type.String({
+        description: `包含 def 行的完整同名函数定义；最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符。仅在确实需要时拆分辅助函数`,
+      }),
+    }),
+    Type.Object({
+      kind: Type.Literal('replace_assignment'),
+      symbol: Type.String({ description: '现有顶层模块常量名' }),
+      expectedNodeHash: Type.String({ description: 'sourceIndex 中该常量的 nodeHash' }),
+      source: Type.String({
+        description: `包含变量名和等号的完整同名赋值语句；最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符`,
+      }),
+    }),
+    Type.Object({
+      kind: Type.Literal('delete_function'),
+      symbol: Type.String({ description: '要删除的现有顶层函数名' }),
+      expectedNodeHash: Type.String({ description: 'sourceIndex 中该函数的 nodeHash' }),
+    }),
+    Type.Object({
+      kind: Type.Literal('delete_assignment'),
+      symbol: Type.String({ description: '要删除的现有顶层模块常量名' }),
+      expectedNodeHash: Type.String({ description: 'sourceIndex 中该常量的 nodeHash' }),
+    }),
+    Type.Object({
+      kind: Type.Literal('insert_before_function'),
+      symbol: Type.String({ description: '作为插入锚点的现有顶层函数名' }),
+      expectedNodeHash: Type.String({ description: 'sourceIndex 中锚点函数的 nodeHash' }),
+      source: Type.String({
+        description: `一个或多个待新增的完整顶层函数定义；单次最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符。函数名可使用唯一临时名，服务端会自动映射到当前分片的安全命名空间`,
+      }),
+    }),
+  ]);
+  const applyTargetedSubmission = (submission: TargetedPatchSubmission) => {
+    if (!targetedScope) throw new Error('目标资源增量补丁缺少目标范围');
+    const operations = submission.operations ?? [];
+    const scriptPatches = submission.scriptPatches ?? [];
+    if (!operations.length && !scriptPatches.length) throw new Error('目标资源增量补丁为空');
+    if (operations.some((operation) => !targetedScope.operationKeys.has(operation.key))) {
+      throw new Error('目标资源增量补丁包含未授权的 operation');
+    }
+    const duplicateOperations = operations.filter((operation, index) =>
+      operations.findIndex((candidate) => candidate.key === operation.key) !== index);
+    if (duplicateOperations.length) throw new Error(`目标资源增量补丁重复提交 operation:${duplicateOperations[0].key}`);
+    let scripts = patchBase.scripts;
+    for (const patch of scriptPatches) {
+      if (!targetedScope.scriptKeys.has(patch.scriptKey)) {
+        throw new Error(`目标资源增量补丁包含未授权的 script:${patch.scriptKey}`);
+      }
+      // 同一脚本允许按顺序提交多个链式分片：后一个分片的
+      // baseSourceHash 必须匹配前一个分片应用后的实际源码哈希。
+      // 这既支持依赖敏感分片共享前一分片新增的 helper，也保留了
+      // 乐观锁校验，不能用旧基线或并行冲突补丁覆盖当前源码。
+      const current = scripts.find((script) => script.key === patch.scriptKey);
+      if (!current) throw new Error(`目标资源增量补丁找不到 script:${patch.scriptKey}`);
+      const actualHash = pythonPatchBaseHash(current.sourceCode);
+      if (patch.baseSourceHash !== actualHash) {
+        throw new Error(`script:${patch.scriptKey} 基础源码哈希已变化，请基于 ${actualHash} 重新生成补丁`);
+      }
+      const changed = {
+        ...current,
+        sourceCode: applyPythonSourceEdits(current.sourceCode, patch.edits, {
+          expectedBaseSourceHash: patch.baseSourceHash,
+          requireNodeHashes: true,
+        }),
+      };
+      scripts = mergeResourcePatch(scripts, [changed]);
+    }
+    cap.revised = {
+      objects: patchBase.objects,
+      operations: mergeResourcePatch(patchBase.operations, operations),
+      rules: patchBase.rules,
+      metrics: patchBase.metrics,
+      scripts,
+    };
+  };
 
-  const sys = [
+  const legacySystemPrompt = [
     '你是知识包优化器。请把专家采纳的优化建议应用到当前知识包规格上，产出修订后的完整规格。',
     '要求：① 保留原有对象、操作、规则、指标和脚本（除非建议要求修改）；② 每条建议都要落实；',
     '③ add_rule/modify_rule 落到 rules，add_metric/modify_metric 落到 metrics，不得改写成一段 operation 描述；',
@@ -1863,6 +3073,20 @@ export async function applyOptimizations(
     '只有无法用资源补丁表达时才使用 submit_revised_spec 提交五类资源的全量规格。',
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n');
+  const targetedSharedRules = targetedScope ? [
+    '服务端已经把专家采纳的建议按资源和 Python 顶层符号拆分；只能修改当前任务 editable 中列出的内容。',
+    '正式知识契约高于评测派生建议。readOnly.authoritativeDefaults 中列出的缺省值已有正式规则、指标或脚本边界依据，必须保留；不得为了落实“删除全部默认值”的派生措辞而删除或绕过。',
+    '禁止回传完整知识包或完整脚本，禁止输出分析正文；必须通过当前任务指定的结构化工具提交。',
+    'Python replacement 必须逐字复用 baseSourceHash 和目标 nodeHash，并提交语法完整的顶层定义。',
+    '新增 import 请放在被替换函数内部；未列入 editable 的符号和知识资源由服务端原样保留。',
+    '不得写入标准答案、评测问题原文、判分理由、当前用例批次/日期/结果数值或样例专用分支。',
+    'DataProviderClient 是平台数据唯一读取入口；不得保留文件读取、静默缺省数据或人工手算兜底作为权威计算路径。',
+    DATA_PROVIDER_SCRIPT_CONTRACT,
+    '所有结构化数值必须先显式转换并校验；数据行按本体语义字段、来源列字段、位置索引的顺序跳过空值读取。',
+    '当校验错误列出 load_reference_data 的下游读取键时，必须逐一核对：每个键要么按真实源表契约由同一个 load_reference_data 返回，要么删除不必要的下游读取；禁止使用别名、空壳 None、静默默认值或只在局部变量写入来绕过。',
+    '当建议涉及动态罐容时，check_tanks 的可执行函数体必须直接调用或内联已有查询/辅助逻辑，形成可见调用链；必须读取 initial_capacity 及 connections、material_flows 或 flows，并逐批执行 inventory = previous + inflow - outflow。只新增未调用的 helper 不算落实。',
+    `项目背景：${project.background || project.domain || project.name}`,
+  ].join('\n') : '';
 
   // 规格 JSON 不截断：截断会让模型（或 faux 解析）看不到尾部对象/操作，
   // 提交的「全量规格」静默缺内容并被覆盖式入库
@@ -1887,7 +3111,6 @@ export async function applyOptimizations(
     JSON.stringify(promptSuggestions),
     '请应用以上建议，并优先通过 submit_optimization_patch 只提交实际变更或新增的资源。',
   ].join('\n');
-
   let validationRevisionForRetry: RevisedSpec | undefined;
   const validateRevision = (revised: RevisedSpec | undefined): RevisedSpec => {
     if (!revised || (!revised.objects.length && !revised.operations.length
@@ -1952,7 +3175,16 @@ export async function applyOptimizations(
       operations: withEvidence.operations,
       rules: withEvidence.rules ?? [],
       metrics: withEvidence.metrics ?? [],
-      scripts: withEvidence.scripts ?? [],
+      scripts: (withEvidence.scripts ?? []).map((script) => {
+        const before = (spec.scripts ?? []).find((item) => item.key === script.key);
+        if (!before || before.sourceCode === script.sourceCode) return script;
+        return {
+          ...script,
+          // 新增但不可达的 helper 对运行行为没有贡献。服务端先确定性清理，
+          // 避免把一次模型修正浪费在删除死代码上；业务语义仍由下方门禁独立校验。
+          sourceCode: pruneUnreachableNewOptimizerHelpers(before.sourceCode, script.sourceCode),
+        };
+      }),
     };
     // 服务端会补齐脚本绑定、保护未触及资源并附加证据。后续校验若失败，
     // 重试上下文必须携带这份实际被校验的候选，而不是模型最初提交的原始补丁；
@@ -1993,10 +3225,564 @@ export async function applyOptimizations(
   };
 
   const llm = llmOverride ?? buildTaskLlm({ maxTokensCap: OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS });
+  const targetedScriptShardLlm = targetedScope
+    ? llmOverride ?? buildTaskLlm({
+      maxTokensCap: OPTIMIZATION_TARGETED_SHARD_MAX_OUTPUT_TOKENS,
+      disableThinking: true,
+    })
+    : undefined;
+  const targetedOperationLlm = targetedScope
+    ? llmOverride ?? buildTaskLlm({
+      maxTokensCap: OPTIMIZATION_TARGETED_OPERATION_MAX_OUTPUT_TOKENS,
+      disableThinking: true,
+    })
+    : undefined;
+  const toolChoiceState = { mode: 'named' as const };
   let lastValidationError = '';
   let lastRejectedRevision: RevisedSpec | undefined;
   const validationErrors: string[] = [];
-  for (let attempt = 1; attempt <= OPTIMIZATION_MAX_ATTEMPTS; attempt += 1) {
+  if (targetedScope) {
+    await onProgress?.({
+      phase: 'scope_prepared',
+      attempt: 0,
+      maxAttempts: OPTIMIZATION_MAX_ATTEMPTS,
+      protocol: 'targeted_incremental',
+      changeSetCount: targetedScope.changeSets.length,
+      targetResourceKeys: [...new Set(targetedScope.changeSets.flatMap((item) => item.resourceKeys))],
+    });
+  }
+  const budget = targetedScope ? createOptimizationBudget(OPTIMIZATION_TARGETED_APPLY_TIMEOUT_MS) : undefined;
+  const generateTargetedSubmission = async (
+    base: RevisedSpec,
+    validationError = '',
+    attempt = 1,
+  ): Promise<TargetedPatchSubmission> => {
+    if (!targetedScope || !targetedScriptShardLlm || !targetedOperationLlm || !budget) {
+      throw new Error('目标增量生成缺少运行上下文');
+    }
+    const completePlan = deterministicTargetedSymbolPlan(base, targetedScope);
+    const plan = validationError
+      ? selectTargetedValidationRepairShards(completePlan, base, validationError)
+      : completePlan;
+    const dependencyOrdered = requiresDependencyOrderedScriptGeneration(targetedScope, new Set(
+      plan.scriptShards.map((shard) => shard.scriptKey),
+    ));
+    await onProgress?.({
+      phase: 'target_plan_ready',
+      attempt,
+      maxAttempts: OPTIMIZATION_MAX_ATTEMPTS,
+      shardCount: plan.scriptShards.length + targetedScope.groups.filter((group) => group.kind === 'operation').length,
+      shardOrdering: dependencyOrdered ? 'dependency_serial' : 'parallel',
+    });
+
+    const runScriptShard = async (
+      shard: TargetedScriptShardPlan,
+      workingBase: RevisedSpec = base,
+    ): Promise<TargetedScriptPatchSubmission> => {
+      const script = workingBase.scripts.find((item) => item.key === shard.scriptKey);
+      if (!script) throw new Error(`目标脚本不存在：${shard.scriptKey}`);
+      const sourceIndex = inspectPythonSource(script.sourceCode);
+      const allowedSymbols = new Set(shard.symbols);
+      const primaryFunction = sourceIndex.symbols.find((symbol) =>
+        symbol.kind === 'function' && allowedSymbols.has(symbol.qualifiedName));
+      const helperNamespace = (primaryFunction?.qualifiedName ?? shard.id)
+        .replace(/[^A-Za-z0-9_]/gu, '_')
+        .replace(/^[^A-Za-z_]/u, '_');
+      const helperNamePrefix = `_opt_${helperNamespace}_`;
+      const ownedExistingHelpers = new Set(sourceIndex.symbols
+        .filter((symbol) => symbol.kind === 'function'
+          && symbol.qualifiedName.startsWith(helperNamePrefix))
+        .map((symbol) => symbol.qualifiedName));
+      const shardSuggestions = targetedScope.groups
+        .filter((group) => group.kind === 'script' && group.target === shard.scriptKey)
+        .flatMap((group) => group.suggestions)
+        .filter((suggestion) => shard.suggestionIds.includes(suggestion.id));
+      const removeAllDefaultFallbacks = shardSuggestions.some((suggestion) =>
+        requiresDefaultFallbackRemoval(suggestionRequirementText(suggestion)));
+      const removeFileDataLoaders = shardSuggestions.some((suggestion) =>
+        requiresAuthoritativeProviderData(suggestionRequirementText(suggestion)));
+      const approvedDefaults = authoritativeDefaultFallbacks(workingBase, script);
+      const defaultDependentFunctions = removeAllDefaultFallbacks
+        ? sourceIndex.symbols.filter((symbol) => symbol.kind === 'function'
+          && allowedSymbols.has(symbol.qualifiedName)
+          && unapprovedDefaultFallbackSymbols(symbol.source, approvedDefaults).length > 0)
+        : [];
+      const deterministicAssignmentDeletes = new Map(sourceIndex.symbols
+        .filter((symbol) => symbol.kind === 'assignment' && allowedSymbols.has(symbol.qualifiedName))
+        .filter((symbol) => !approvedDefaults.has(symbol.qualifiedName))
+        .filter((symbol) => shardSuggestions.some((suggestion) =>
+          requiresAssignmentRemoval(suggestionRequirementText(suggestion), symbol.qualifiedName)))
+        .map((symbol) => [symbol.qualifiedName, symbol.nodeHash]));
+      const deterministicFunctionDeletes = new Map(removeFileDataLoaders
+        ? sourceIndex.symbols
+          .filter((symbol) => symbol.kind === 'function' && allowedSymbols.has(symbol.qualifiedName))
+          .filter((symbol) => fileDataLoaderFunctions(symbol.source).includes(symbol.qualifiedName))
+          .map((symbol) => [symbol.qualifiedName, symbol.nodeHash])
+        : []);
+      const deterministicDeleteSymbols = new Set([
+        ...deterministicAssignmentDeletes.keys(),
+        ...deterministicFunctionDeletes.keys(),
+      ]);
+      const deterministicDeleteEdits: PythonSourceEdit[] = [
+        ...[...deterministicAssignmentDeletes].map(([symbol, expectedNodeHash]) => ({
+        kind: 'delete_assignment' as const,
+        symbol,
+        expectedNodeHash,
+        })),
+        ...[...deterministicFunctionDeletes].map(([symbol, expectedNodeHash]) => ({
+          kind: 'delete_function' as const,
+          symbol,
+          expectedNodeHash,
+        })),
+      ];
+      const modelEditableSymbols = shard.symbols.filter((symbol) => !deterministicDeleteSymbols.has(symbol));
+      if (!modelEditableSymbols.length) {
+        return {
+          scriptKey: shard.scriptKey,
+          baseSourceHash: sourceIndex.baseSourceHash,
+          edits: deterministicDeleteEdits,
+        };
+      }
+      let captured: TargetedScriptPatchSubmission | undefined;
+      let rejectedDraft: TargetedScriptPatchSubmission | undefined;
+      let rejectedReason = '';
+      let repairTargetFunction: string | undefined;
+      const normalizeSubmittedEdits = (edits: PythonSourceEdit[]): PythonSourceEdit[] => {
+        const normalized: PythonSourceEdit[] = [];
+        for (const edit of edits) {
+          if (edit.kind !== 'insert_before_function') {
+            normalized.push(edit);
+            continue;
+          }
+          try {
+            const fragment = inspectPythonSource(edit.source);
+            if (fragment.imports.length || !fragment.symbols.length
+              || fragment.symbols.some((symbol) => symbol.kind !== 'function'
+                || symbol.source.length > OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD)) {
+              normalized.push(edit);
+              continue;
+            }
+            for (const symbol of fragment.symbols) {
+              const existing = sourceIndex.symbols.find((item) => item.kind === 'function'
+                && item.qualifiedName === symbol.qualifiedName);
+              normalized.push(existing && symbol.qualifiedName.startsWith(helperNamePrefix)
+                ? {
+                    kind: 'replace_function',
+                    symbol: existing.qualifiedName,
+                    expectedNodeHash: existing.nodeHash,
+                    source: symbol.source,
+                  }
+                : { ...edit, source: symbol.source });
+            }
+          } catch {
+            normalized.push(edit);
+          }
+        }
+        return normalized;
+      };
+      const submitScriptShard = {
+        name: 'submit_targeted_script_shard',
+        label: '提交 Python 符号增量补丁',
+        description: '只提交当前分片允许的 Python 顶层符号编辑',
+        parameters: Type.Object({
+          scriptKey: Type.String(),
+          baseSourceHash: Type.String(),
+          edits: Type.Array(pythonSourceEditSchema, { minItems: 1 }),
+        }),
+        async execute(_id: string, params: TargetedScriptPatchSubmission) {
+          let submittedEdits = normalizeSubmittedEdits(params.edits ?? []);
+          const rejectEdits = (message: string, targetFunction?: string): never => {
+            const modelEdits = submittedEdits
+              .filter((edit) => !deterministicDeleteSymbols.has(edit.symbol));
+            const draftChars = modelEdits.reduce((total, edit) =>
+              total + ('source' in edit ? edit.source.length : 0), 0);
+            if (draftChars <= OPTIMIZATION_TARGETED_REPAIR_MAX_DRAFT_CHARS) {
+              rejectedDraft = {
+                scriptKey: params.scriptKey,
+                baseSourceHash: params.baseSourceHash,
+                edits: modelEdits,
+              };
+              rejectedReason = message;
+              repairTargetFunction = targetFunction;
+            }
+            rejectTargetedScriptShard('edits', message);
+          };
+          try {
+            submittedEdits = normalizeTargetedHelperNames(
+              submittedEdits,
+              sourceIndex,
+              helperNamePrefix,
+            );
+          } catch (error) {
+            rejectEdits(error instanceof Error ? error.message : String(error));
+          }
+          if (params.scriptKey !== shard.scriptKey) {
+            rejectTargetedScriptShard('scriptKey', `当前分片只能修改 script:${shard.scriptKey}`);
+          }
+          if (params.baseSourceHash !== sourceIndex.baseSourceHash) {
+            rejectTargetedScriptShard('baseSourceHash', `必须逐字复用 editable.baseSourceHash（script:${shard.scriptKey}）`);
+          }
+          if (removeAllDefaultFallbacks) {
+            const missingRewrites = defaultDependentFunctions.filter((symbol) =>
+              !submittedEdits.some((edit) =>
+                edit.kind === 'replace_function' && edit.symbol === symbol.qualifiedName));
+            if (missingRewrites.length) {
+              rejectEdits(
+                `必须提交 replace_function 并删除 DEFAULT_ 引用：${missingRewrites.map((item) => item.qualifiedName).join('、')}`,
+                missingRewrites[0]?.qualifiedName,
+              );
+            }
+            const submittedDefaults = [...new Set(submittedEdits
+              .flatMap((edit) => 'source' in edit
+                ? unapprovedDefaultFallbackSymbols(edit.source, approvedDefaults) : []))].sort();
+            if (submittedDefaults.length) {
+              const targetFunction = submittedEdits.find((edit) =>
+                edit.kind === 'replace_function'
+                && unapprovedDefaultFallbackSymbols(edit.source, approvedDefaults).length)?.symbol;
+              rejectEdits(
+                `提交源码仍保留 DEFAULT_ 引用：${submittedDefaults.join('、')}`,
+                targetFunction,
+              );
+            }
+          }
+          const edits = [
+            ...submittedEdits.filter((edit) => !deterministicDeleteSymbols.has(edit.symbol)),
+            ...deterministicDeleteEdits,
+          ];
+          for (const edit of edits) {
+            if (!allowedSymbols.has(edit.symbol) && !ownedExistingHelpers.has(edit.symbol)) {
+              rejectEdits('只能编辑 editable.symbols 中列出的 Python 符号');
+            }
+            if ('source' in edit && edit.source.length > targetedEditSourceLimit(edit)) {
+              const sourceLimit = targetedEditSourceLimit(edit);
+              rejectEdits(
+                `${edit.kind} 的 source 过大（${edit.source.length} 字符，上限 ${sourceLimit}），请拆分辅助函数或减少本次修改范围`,
+                edit.kind === 'replace_function' ? edit.symbol : undefined,
+              );
+            }
+            if (edit.kind === 'insert_before_function') {
+              let invalidHelper: string | undefined;
+              try {
+                invalidHelper = inspectPythonSource(edit.source).symbols
+                  .find((symbol) => symbol.kind === 'function'
+                    && !symbol.qualifiedName.startsWith(helperNamePrefix))?.qualifiedName;
+              } catch {
+                rejectEdits('insert_before_function 的 source 存在 Python 语法错误');
+              }
+              if (invalidHelper) rejectEdits(`服务端生成的辅助函数仍未落入 ${helperNamePrefix} 命名空间`);
+            }
+          }
+          try {
+            applyPythonSourceEdits(script.sourceCode, edits, {
+              expectedBaseSourceHash: params.baseSourceHash,
+              requireNodeHashes: true,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '';
+            const reason = /语法错误/u.test(message)
+              ? '提交的 Python 顶层定义存在语法错误'
+              : /重复新增函数/u.test(message)
+                ? '新增辅助函数与现有函数或同批辅助函数重名'
+                : /哈希|已变化/u.test(message)
+                  ? '必须逐字复用 editable.symbols 中对应的 nodeHash'
+                  : '增量补丁必须使用合法的顶层定义、唯一编辑目标和非重叠修改';
+            rejectEdits(reason);
+          }
+          captured = { ...params, edits };
+          return {
+            content: [{ type: 'text' as const, text: `已提交 ${edits.length} 个 Python 符号编辑。` }],
+            details: {
+              scriptKey: shard.scriptKey,
+              symbols: shard.symbols,
+              editCount: edits.length,
+              deterministicDeleteCount: deterministicDeleteSymbols.size,
+            },
+            terminate: true,
+          };
+        },
+      };
+      const shardContext = targetedShardContext(
+        workingBase,
+        targetedScope,
+        shard,
+        helperNamePrefix,
+        {
+          assignments: new Set(deterministicAssignmentDeletes.keys()),
+          functions: new Set(deterministicFunctionDeletes.keys()),
+        },
+        approvedDefaults,
+      );
+      const submitNudge = `不要继续分析，立即调用 submit_targeted_script_shard 提交当前符号分片。已有函数替换最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符；新增 helper 和常量替换最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符。不要重做其他分片。`;
+      const agent = makeAgent(targetedScriptShardLlm, targetedSharedRules, [submitScriptShard] as any);
+      const shardToolChoiceState = { mode: 'named' as const };
+      const captureOptions = (targetToolName = 'submit_targeted_script_shard') => ({
+        timeoutMs: budget.remainingMs(), signal: budget.signal,
+        maxCaptureAttempts: 1,
+        requireCapture: true, requiredToolName: targetToolName,
+        toolChoiceState: shardToolChoiceState,
+        captureDiagnostics: {
+          targetToolName,
+          acceptedToolNames: [targetToolName],
+          onAttempt: () => undefined,
+        },
+      });
+      let firstFailure: AgentCaptureError | undefined;
+      try {
+        await runAgentCaptured(
+          agent,
+          [
+            `【当前符号分片 ${shard.id}】`,
+            JSON.stringify(shardContext),
+            ...(validationError && (validationError.includes(shard.id)
+              || (/(?:脚本分片|submit_targeted_script_shard)/u.test(validationError)
+                && /(?:提交工具参数校验失败|未调用|未提交增量补丁)/u.test(validationError)))
+              ? ['【上次提交错误】', validationError] : []),
+            `只修改 editable.symbols 或 editable.existingHelpers 中列出的现有符号。serverManaged.deleteAssignments/deleteFunctions 由服务端自动删除，不要为它们提交编辑。已有函数替换最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符；新增 helper 和常量替换最多 ${OPTIMIZATION_TARGETED_MAX_SOURCE_CHARS_PER_SHARD} 字符。复杂逻辑仅在确实需要时拆分 helper，并保持原函数简洁。新增辅助函数请使用唯一临时 Python 名称，服务端会自动映射到 editable.helperNamePrefix（${helperNamePrefix}）命名空间；不要依赖其他分片的 helper。existingHelpers 必须接入当前业务函数调用链，不需要的 helper 必须用 delete_function 删除。`,
+            '请立即调用 submit_targeted_script_shard。',
+          ].join('\n'),
+          () => Boolean(captured),
+          submitNudge,
+          undefined,
+          captureOptions(),
+        );
+      } catch (error) {
+        if (!(error instanceof AgentCaptureError)) throw error;
+        firstFailure = error;
+        captured = undefined;
+      }
+      if (!captured && firstFailure) {
+        const targetFunction = repairTargetFunction
+          ? sourceIndex.symbols.find((symbol) =>
+            symbol.kind === 'function' && symbol.qualifiedName === repairTargetFunction)
+          : undefined;
+        const functionRepairTool = targetFunction ? {
+          name: 'submit_targeted_function_repair',
+          label: '提交单个 Python 函数修正',
+          description: `只提交 ${targetFunction.qualifiedName} 的完整函数源码，最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符`,
+          parameters: Type.Object({
+            source: Type.String({ description: `语法完整的 def ${targetFunction.qualifiedName}(...) 顶层函数定义` }),
+          }),
+          async execute(_id: string, params: { source: string }) {
+            const existingEdits = (rejectedDraft?.edits ?? [])
+              .filter((edit) => !(edit.kind === 'replace_function'
+                && edit.symbol === targetFunction.qualifiedName));
+            return submitScriptShard.execute(_id, {
+              scriptKey: shard.scriptKey,
+              baseSourceHash: sourceIndex.baseSourceHash,
+              edits: [...existingEdits, {
+                kind: 'replace_function' as const,
+                symbol: targetFunction.qualifiedName,
+                expectedNodeHash: targetFunction.nodeHash,
+                source: params.source,
+              }],
+            });
+          },
+        } : undefined;
+        const retryAgent = functionRepairTool
+          ? makeAgent(targetedScriptShardLlm, [
+            targetedSharedRules,
+            `你是单函数局部修正器。只返回 ${targetFunction!.qualifiedName} 的完整函数定义，最多 ${OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS} 字符；服务端负责脚本、哈希和 helper 命名。禁止输出其他函数或分析正文。`,
+          ].join('\n'), [functionRepairTool] as any)
+          : rejectedDraft
+            ? makeAgent(targetedScriptShardLlm, [
+            targetedSharedRules,
+            '你是局部补丁修正器。只修复 rejectedDraft 的 validationError，保留草稿中已经满足要求的业务逻辑；禁止重新设计、扩展范围或修改其他分片。',
+          ].join('\n'), [submitScriptShard] as any)
+            : agent;
+        const retryPrompt = functionRepairTool
+          ? [
+            `【当前符号分片 ${shard.id} 的单函数修正】`,
+            JSON.stringify({
+              function: {
+                qualifiedName: targetFunction!.qualifiedName,
+                nodeHash: targetFunction!.nodeHash,
+                source: (() => {
+                  const draftEdit = (rejectedDraft?.edits ?? []).find((edit) =>
+                    edit.kind === 'replace_function'
+                    && edit.symbol === targetFunction!.qualifiedName);
+                  return draftEdit && 'source' in draftEdit ? draftEdit.source : targetFunction!.source;
+                })(),
+              },
+              supportingEdits: rejectedDraft?.edits ?? [],
+              readOnly: shardContext.readOnly,
+              requirements: shardContext.requirements,
+              validationError: rejectedReason,
+              forbiddenReferences: removeAllDefaultFallbacks
+                ? [...new Set(defaultDependentFunctions
+                  .flatMap((symbol) => unapprovedDefaultFallbackSymbols(symbol.source, approvedDefaults)))].sort()
+                : [],
+              authoritativeDefaults: [...approvedDefaults].map(([symbol, reason]) => ({ symbol, reason })),
+            }),
+            `只调用 submit_targeted_function_repair，source 必须是 def ${targetFunction!.qualifiedName}(...) 的完整定义，并修复 validationError。`,
+          ].join('\n')
+          : rejectedDraft
+            ? [
+            `【当前符号分片 ${shard.id} 的局部修正】`,
+            JSON.stringify({
+              editable: shardContext.editable,
+              serverManaged: shardContext.serverManaged,
+              requirements: shardContext.requirements,
+              validationError: rejectedReason,
+              rejectedDraft,
+            }),
+            '逐字保留无需修正的草稿内容，只改正 validationError；然后立即提交完整的修正后分片。',
+          ].join('\n')
+            : `${submitNudge}\n上一次没有形成可复用草稿，请重新提交完整且合法的结构化参数。`;
+        const retryToolName = functionRepairTool
+          ? 'submit_targeted_function_repair'
+          : 'submit_targeted_script_shard';
+        try {
+          await runAgentCaptured(
+            retryAgent,
+            retryPrompt,
+            () => Boolean(captured),
+            submitNudge,
+            undefined,
+            captureOptions(retryToolName),
+          );
+        } catch (error) {
+          if (error instanceof AgentCaptureError) {
+            throw new AgentCaptureError(error.diagnostics, OPTIMIZATION_TARGETED_SHARD_MAX_CAPTURE_ATTEMPTS);
+          }
+          throw error;
+        }
+      }
+      if (!captured) throw new Error(`脚本分片 ${shard.id} 未提交增量补丁`);
+      return captured;
+    };
+
+    const allOperationGroups = targetedScope.groups.filter((group) => group.kind === 'operation');
+    const localizedScriptRepair = Boolean(validationError)
+      && plan.scriptShards.length < completePlan.scriptShards.length;
+    const operationGroups = localizedScriptRepair
+      ? allOperationGroups.filter((group) => symbolMentioned(validationError, group.target)
+        || /(?:operation|操作流程|必填输入|competencyQuestion)/iu.test(validationError))
+      : allOperationGroups;
+    const runOperation = async (group: TargetedOptimizationGroup): Promise<PackageSpec['operations'][number]> => {
+      const operation = base.operations.find((item) => item.key === group.target);
+      if (!operation) throw new Error(`目标 operation 不存在：${group.target}`);
+      let captured: TargetedOperationPatchSubmission | undefined;
+      const submitOperation = {
+        name: 'submit_targeted_operation_patch',
+        label: '提交目标 operation 字段补丁',
+        description: '只提交当前 operation 实际变化的字段；不要重复未修改字段',
+        parameters: targetedOperationPatchSchema(),
+        async execute(_id: string, params: TargetedOperationPatchSubmission) {
+          if (params.operationKey !== group.target) throw new Error(`当前任务只能修改 operation:${group.target}`);
+          captured = params;
+          return {
+            content: [{ type: 'text' as const, text: `已提交 operation:${group.target} 的最小字段补丁。` }],
+            details: { operationKey: group.target, fields: Object.keys(params.patch ?? {}) },
+            terminate: true,
+          };
+        },
+      };
+      const agent = makeAgent(targetedOperationLlm, [
+        '你是知识包 operation 编辑器。只提交给定 operation 实际变化的字段补丁。',
+        '不得修改 key、脚本绑定或证据；未提交字段由服务端原样保留。',
+        '必须调用 submit_targeted_operation_patch，不要输出分析正文。',
+        `项目背景：${project.background || project.domain || project.name}`,
+      ].join('\n'), [submitOperation] as any);
+      await runAgentCaptured(
+        agent,
+        [
+          '【当前 operation】', JSON.stringify(operation),
+          '【修改要求】', JSON.stringify(group.suggestions.map((item) => ({
+            id: item.id,
+            title: safeOptimizationSuggestionValue(item.title),
+            detail: safeOptimizationSuggestionValue(item.detail),
+            generalizationPlan: safeOptimizationSuggestionValue(item.generalizationPlan ?? ''),
+            validationPlan: safeOptimizationSuggestionValue(item.validationPlan ?? ''),
+          }))),
+          ...(validationError ? ['【整包上次校验错误】', validationError] : []),
+          '只提交实际变化的字段，请立即调用 submit_targeted_operation_patch。',
+        ].join('\n'),
+        () => Boolean(captured),
+        '不要继续分析，立即调用 submit_targeted_operation_patch 提交最小字段补丁。',
+        undefined,
+        {
+          timeoutMs: budget.remainingMs(), signal: budget.signal, maxCaptureAttempts: 1,
+          requireCapture: true, requiredToolName: 'submit_targeted_operation_patch',
+          toolChoiceState: { mode: 'named' },
+          captureDiagnostics: {
+            targetToolName: 'submit_targeted_operation_patch',
+            acceptedToolNames: ['submit_targeted_operation_patch'],
+            onAttempt: () => undefined,
+          },
+        },
+      );
+      if (!captured) throw new Error(`operation:${group.target} 未提交修改`);
+      return mergeTargetedOperationPatch(operation, captured);
+    };
+
+    const runUnit = async (
+      unit: { kind: 'script'; shard: TargetedScriptShardPlan } | { kind: 'operation'; group: TargetedOptimizationGroup },
+      workingBase: RevisedSpec = base,
+    ) => {
+      try {
+        return unit.kind === 'script'
+          ? { kind: 'script' as const, value: await runScriptShard(unit.shard, workingBase) }
+          : { kind: 'operation' as const, value: await runOperation(unit.group) };
+      } catch (error) {
+        const target = unit.kind === 'script' ? `脚本分片 ${unit.shard.id}` : `operation:${unit.group.target}`;
+        if (error instanceof AgentCaptureError || isModelRequestTimeout(error)) {
+          throw new TargetedGenerationRetryError(target, error);
+        }
+        throw new Error(`${target} 生成失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    // 先启动脚本分片，保持工具调用顺序与计划顺序稳定；faux/流式模型和生产模型
+    // 都可能按首次请求顺序分配响应，不能让 operation 竞争掉首个脚本响应。
+    const scriptParts = dependencyOrdered
+      ? await (async () => {
+        const parts: TargetedScriptPatchSubmission[] = [];
+        let workingBase = base;
+        for (const shard of plan.scriptShards) {
+          const part = await runUnit({ kind: 'script', shard }, workingBase);
+          const patch = part.value as TargetedScriptPatchSubmission;
+          parts.push(patch);
+          const current = workingBase.scripts.find((item) => item.key === patch.scriptKey);
+          if (!current) throw new Error(`目标脚本不存在：${patch.scriptKey}`);
+          const sourceCode = applyPythonSourceEdits(current.sourceCode, patch.edits, {
+            expectedBaseSourceHash: patch.baseSourceHash,
+            requireNodeHashes: true,
+          });
+          workingBase = {
+            ...workingBase,
+            scripts: workingBase.scripts.map((item) => item.key === patch.scriptKey
+              ? { ...item, sourceCode } : item),
+          };
+        }
+        return parts;
+      })()
+      : await mapWithConcurrency(
+        plan.scriptShards.map((shard) => ({ kind: 'script' as const, shard })),
+        OPTIMIZATION_TARGETED_SHARD_CONCURRENCY,
+        async (unit) => runUnit(unit),
+      ).then((items) => items.map((item) => item.value as TargetedScriptPatchSubmission));
+    const operationOutputsPromise = mapWithConcurrency(
+      operationGroups.map((group) => ({ kind: 'operation' as const, group })),
+      OPTIMIZATION_TARGETED_SHARD_CONCURRENCY,
+      async (unit) => runUnit(unit),
+    );
+    const operationOutputs = await operationOutputsPromise;
+    const operations = operationOutputs.map((item) => item.value as PackageSpec['operations'][number]);
+    const scriptPatches = [...new Set(scriptParts.map((item) => item.scriptKey))].flatMap((scriptKey) => {
+      const parts = scriptParts.filter((item) => item.scriptKey === scriptKey);
+      const baseSourceHashes = new Set(parts.map((item) => item.baseSourceHash));
+      if (baseSourceHashes.size === 1) return [{
+        scriptKey,
+        baseSourceHash: parts[0].baseSourceHash,
+        edits: parts.flatMap((item) => item.edits),
+      }];
+      // 依赖顺序生成时，每个分片基于上一个分片的源码；保留链式补丁，
+      // 由 applyTargetedSubmission 按顺序校验并应用，避免把后续 helper 脱离上下文。
+      return parts;
+    });
+    return { operations, scriptPatches };
+  };
+  try {
+    for (let attempt = 1; attempt <= OPTIMIZATION_MAX_ATTEMPTS; attempt += 1) {
     cap.revised = undefined;
     validationRevisionForRetry = undefined;
     const canReuseRejectedRevision = attempt > 1
@@ -2047,8 +3833,52 @@ export async function applyOptimizations(
       '候选补丁因安全原因不能回传。请依据当前规格重新提交资源补丁，且不得复用被拒绝的评测证据或样例数值。',
     ].join('\n');
     await onProgress?.({ phase: 'revision_started', attempt, maxAttempts: OPTIMIZATION_MAX_ATTEMPTS });
-    const agent = makeAgent(llm, sys, [submitPatch, submitRevised] as any);
-    await runAgent(agent, repairPrompt, undefined, { timeoutMs: OPTIMIZATION_APPLY_TIMEOUT_MS });
+    if (targetedScope) {
+      let submission: TargetedPatchSubmission;
+      try {
+        submission = await generateTargetedSubmission(
+          patchBase,
+          attempt > 1 ? lastValidationError : '',
+          attempt,
+        );
+        applyTargetedSubmission(submission);
+      } catch (error) {
+        if (!(error instanceof TargetedGenerationRetryError)) throw error;
+        lastValidationError = error.message;
+        validationErrors.push(`第 ${attempt} 次：${lastValidationError}`);
+        await onProgress?.({
+          phase: 'validation_failed', attempt, maxAttempts: OPTIMIZATION_MAX_ATTEMPTS,
+          error: lastValidationError,
+        });
+        if (attempt === OPTIMIZATION_MAX_ATTEMPTS) {
+          throw new OptimizationExpertReviewRequiredError(validationErrors);
+        }
+        continue;
+      }
+    } else {
+      const targetToolName = 'submit_optimization_patch';
+      const agent = makeAgent(llm, legacySystemPrompt, [submitPatch, submitRevised] as any);
+      await runAgentCaptured(
+        agent,
+        repairPrompt,
+        () => Boolean(cap.revised),
+        '不要继续输出分析正文。请把本轮实际修改整理为资源补丁，并立即调用 submit_optimization_patch；未通过工具提交的内容不会形成候选。',
+        undefined,
+        {
+          timeoutMs: OPTIMIZATION_APPLY_TIMEOUT_MS,
+          maxCaptureAttempts: 2,
+          requireCapture: true,
+          requiredToolName: targetToolName,
+          toolChoiceState,
+          resetCapture: () => { cap.revised = undefined; },
+          captureDiagnostics: {
+            targetToolName,
+            acceptedToolNames: ['submit_optimization_patch', 'submit_revised_spec'],
+            onAttempt: () => undefined,
+          },
+        },
+      );
+    }
     try {
       const revised = validateRevision(cap.revised);
       await onProgress?.({ phase: 'validation_passed', attempt, maxAttempts: OPTIMIZATION_MAX_ATTEMPTS });
@@ -2064,6 +3894,9 @@ export async function applyOptimizations(
         throw new OptimizationExpertReviewRequiredError(validationErrors);
       }
     }
+    }
+    throw new Error(`优化器未能正确落实建议：${lastValidationError}`);
+  } finally {
+    budget?.dispose();
   }
-  throw new Error(`优化器未能正确落实建议：${lastValidationError}`);
 }
