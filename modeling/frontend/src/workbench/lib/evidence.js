@@ -13,7 +13,7 @@ export function displayEvidenceReferences(value, materials = []) {
 
 const MATERIAL_PREFIX = 'material:';
 const EVIDENCE_HREF_PREFIX = '#evidence:';
-const ANCHOR_END = /[\s，。；、)\]}>]/u;
+const ANCHOR_END = /[\s，。；、,;()（）\]}>]/u;
 
 export function materialEvidence(reference, materials = []) {
   const normalized = String(reference ?? '').normalize('NFKC').trim();
@@ -46,7 +46,9 @@ export function readableEvidenceAnchor(anchor) {
 }
 
 export function evidenceHref(reference) {
-  return `${EVIDENCE_HREF_PREFIX}${encodeURIComponent(String(reference ?? '').normalize('NFKC').trim())}`;
+  const encoded = encodeURIComponent(String(reference ?? '').normalize('NFKC').trim())
+    .replace(/[!'()*]/gu, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `${EVIDENCE_HREF_PREFIX}${encoded}`;
 }
 
 export function evidenceReferenceFromHref(href) {
