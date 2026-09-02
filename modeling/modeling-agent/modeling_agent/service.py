@@ -2095,10 +2095,25 @@ class AgentService:
                     task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._settle_cancelled_tool_events(project_id, run.id)
         updated = self.store.update_run(run.id, status=RUN_CANCELLED, error="用户已停止运行")
         self._publish_state(project_id, run.id)
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
         return self._run_public(updated, self.store.project_state(project_id))
+
+    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
+        for event in self.store.unfinished_tool_events(run_id):
+            started = event.payload
+            payload = {
+                "name": str(started.get("name") or ""),
+                "phase": "cancelled",
+                "summary": "运行已停止，当前操作已取消",
+                "toolCallId": str(started.get("toolCallId") or ""),
+            }
+            trace_group_id = str(started.get("traceGroupId") or "")
+            if trace_group_id:
+                payload["traceGroupId"] = trace_group_id
+            self.events.publish(project_id, run_id, "tool", payload)
 
     async def _resume(
         self,
