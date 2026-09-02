@@ -694,6 +694,31 @@ DOMAIN_RELATION = {
     "required": ["target_id"],
     "additionalProperties": False,
 }
+PREVIOUS_OBJECT_RELATION = {
+    "type": "object",
+    "properties": {
+        "sourceObject": STRING,
+        "source_object": STRING,
+        "targetObject": STRING,
+        "target_object": STRING,
+        "relation": STRING,
+        "note": STRING,
+        "evidence": {"type": "array", "items": STRING, "maxItems": 20},
+        "status": {"type": "string", "enum": ["previous", "discarded", "needs_review"]},
+    },
+    "required": ["relation"],
+    "additionalProperties": False,
+}
+OBJECT_RELATION_SUGGESTION_SCOPE = {
+    "type": "object",
+    "properties": {
+        "affectedObjects": {"type": "array", "items": STRING, "maxItems": 100},
+        "affected_objects": {"type": "array", "items": STRING, "maxItems": 100},
+        "affectedOperations": {"type": "array", "items": STRING, "maxItems": 100},
+        "affected_operations": {"type": "array", "items": STRING, "maxItems": 100},
+    },
+    "additionalProperties": False,
+}
 DOMAIN_ACTION_CHANGES = {
     "type": "object",
     "properties": {
@@ -1076,6 +1101,26 @@ CORE_TOOL_SPECS = (
         {"resource_id": RESOURCE_ID, "working_revision": WORKING_REVISION},
         ("resource_id",),
         display="正在读取资源快照",
+    ),
+    ToolSpec(
+        "suggest_object_relations",
+        "Return deterministic object relation candidates from current objects, fields, primary keys, sources, existing relations and operation references. This tool never writes the package or mapping. Use scope to keep increment runs focused; do not show the full candidate list to experts. High-confidence candidates may be drafted into a Change Set summary, while ambiguous candidates should become only a few concrete business questions.",
+        {
+            "working_revision": WORKING_REVISION,
+            "expected_revision": WORKING_REVISION,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            "cursor": STRING,
+            "includeLowConfidence": {"type": "boolean"},
+            "include_low_confidence": {"type": "boolean"},
+            "previousRelations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
+            "previous_relations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
+            "rejectedFingerprints": {"type": "array", "items": STRING, "maxItems": 500},
+            "rejected_fingerprints": {"type": "array", "items": STRING, "maxItems": 500},
+            "scope": OBJECT_RELATION_SUGGESTION_SCOPE,
+        },
+        (),
+        True,
+        "Suggesting object relations",
     ),
     ToolSpec(
         "sync_schema_objects",
@@ -2538,7 +2583,7 @@ DOMAIN_PHASE_TOOLS = frozenset({
     "list_domain_resources", "get_domain_resource",
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",
-    "sync_schema_objects", "patch_object_source_binding",
+    "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
     "preview_domain_delete", "delete_domain_resource",
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
