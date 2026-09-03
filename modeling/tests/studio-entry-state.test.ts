@@ -35,6 +35,31 @@ test('Studio 字段修正后清除对应错误并恢复 dirty 状态', () => {
   assert.equal(state.fieldErrors['changes.relations[0].targetId'], '关系目标不存在');
 });
 
+test('Studio 删除必填内容时立即返回字段错误，补回后清除错误', () => {
+  const baseline = { title: '规则名称', content: '必须满足规则' };
+  const empty = { ...baseline, content: '' };
+  const invalid = studioSaveStateAfterDraftChange({ phase: 'idle', fieldErrors: {} }, {
+    baseline,
+    draft: empty,
+    field: 'content',
+    incompleteField: 'content',
+  });
+  assert.deepEqual(invalid, {
+    phase: 'error',
+    message: '请先补完整必填内容',
+    failure: null,
+    fieldErrors: { 'changes.content': '必填内容不能为空' },
+  });
+
+  const corrected = studioSaveStateAfterDraftChange(invalid, {
+    baseline,
+    draft: { ...baseline, content: '新的规则内容' },
+    field: 'content',
+  });
+  assert.equal(corrected.phase, 'dirty');
+  assert.deepEqual(corrected.fieldErrors, {});
+});
+
 test('Studio 草稿改回基线后立即回到已同步状态', () => {
   const baseline = { title: '记录', description: '原说明', aliases: ['record'] };
   const state = studioSaveStateAfterDraftChange({
@@ -155,6 +180,8 @@ test('StudioView 接线字段纠错、NO_CHANGES 同步和完整资源删除文�
   assert.match(source, /studioDeleteCopy\(detail\.kind, detail\.title\)\.button/);
   assert.match(source, /remember\(\{ \.\.\.draftRef\.current, \[field\.key\]: value \}, field\.key\)/);
   assert.match(source, /studioIncompleteDraftField\(draft, kindSchema\)/);
+  assert.match(source, /incompleteField && !previousIncompleteField[\s\S]*onIncompleteDraft/);
+  assert.match(source, /onIncompleteDraft=\{probeStudioRevision\}/);
   assert.match(source, /if \(!canUpdate\) \{[\s\S]*当前项目处于只读状态/);
   assert.match(source, /failure\.code === 'STUDIO_WRITE_LOCKED'[\s\S]*getStudioSchema\(projectId\)/);
   assert.match(source, /studioDraftFieldValue\(draft, detail\.values, field\.key\)/);
@@ -188,7 +215,7 @@ test('StudioView 接线字段纠错、NO_CHANGES 同步和完整资源删除文�
     new URL('../frontend/src/workbench/lib/appStore.js', import.meta.url),
     'utf8',
   );
-  assert.match(appStoreSource, /const agentTarget = \{ \.\.\.focus, source: 'agent' \}/);
+  assert.match(appStoreSource, /const agentTarget = \{ \.\.\.visibleFocus, source: 'agent' \}/);
   assert.match(source, /description\.trim\(\)/);
   assert.match(source, /kind === 'operation' \? \{ flow: \[coreContent\.trim\(\)\] \}/);
   assert.match(source, /state\.preview\.textReferences/);

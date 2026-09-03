@@ -19,13 +19,28 @@ export function studioSyncedSaveState() {
   return { phase: 'idle', message: '', failure: null, fieldErrors: {} };
 }
 
-export function studioSaveStateAfterDraftChange(current, { baseline, draft, field, saving = false }) {
+export function studioSaveStateAfterDraftChange(
+  current,
+  { baseline, draft, field, saving = false, incompleteField = '' },
+) {
   if (!saving && studioDraftEqual(draft, baseline)) return studioSyncedSaveState();
+  const fieldErrors = clearStudioFieldErrors(current?.fieldErrors, field);
+  if (incompleteField) {
+    return {
+      phase: 'error',
+      message: '请先补完整必填内容',
+      failure: null,
+      fieldErrors: {
+        ...fieldErrors,
+        [`changes.${incompleteField}`]: '必填内容不能为空',
+      },
+    };
+  }
   return {
     phase: 'dirty',
     message: '有未保存修改',
     failure: null,
-    fieldErrors: clearStudioFieldErrors(current?.fieldErrors, field),
+    fieldErrors,
   };
 }
 

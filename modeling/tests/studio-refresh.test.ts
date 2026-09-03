@@ -9,6 +9,7 @@ const [
     markStudioDraftsForRefresh,
     STUDIO_PROJECT_REFRESH_EVENT_TYPES,
     planStudioProjectEvent,
+    planStudioRevisionProbe,
     planStudioWindowRefresh,
     studioHasPendingLocalEdits,
     studioPendingDraftRefresh,
@@ -129,6 +130,36 @@ test('Studio 的 window 刷新在本地草稿存在时也会延后', () => {
   assert.equal(studioHasPendingLocalEdits({ entryDrafts: {} }), false);
 });
 
+test('Studio 必填删除后的 revision 探测会立即区分载入与保留草稿', () => {
+  assert.deepEqual(planStudioRevisionProbe({
+    currentRevision: 'revision-old',
+    latestRevision: 'revision-new',
+    localEdits: true,
+  }), {
+    scheduleLoad: false,
+    deferLoad: true,
+    revisionId: 'revision-new',
+  });
+  assert.deepEqual(planStudioRevisionProbe({
+    currentRevision: 'revision-old',
+    latestRevision: 'revision-new',
+    localEdits: false,
+  }), {
+    scheduleLoad: true,
+    deferLoad: false,
+    revisionId: 'revision-new',
+  });
+  assert.deepEqual(planStudioRevisionProbe({
+    currentRevision: 'revision-current',
+    latestRevision: 'revision-current',
+    localEdits: true,
+  }), {
+    scheduleLoad: false,
+    deferLoad: false,
+    revisionId: '',
+  });
+});
+
 test('Studio 外部刷新提示会携带 revision 前缀', () => {
   assert.equal(
     studioRefreshNoticeMessage('1234567890abcdef'),
@@ -189,7 +220,8 @@ test('StudioView 保留 revision 事件刷新、window 更新与脏态保护', (
 
   assert.match(source, /planStudioProjectEvent\(\{/);
   assert.match(source, /planStudioWindowRefresh\(\{\s*localEdits:\s*localEditsRef\.current\s*\}\)/);
-  assert.match(source, /entryDrafts: markStudioDraftsForRefresh\(current\.entryDrafts, plan\.revisionId\)/);
+  assert.match(source, /if \(plan\.deferLoad\) deferStudioRefresh\(plan\.revisionId\)/);
+  assert.match(source, /entryDrafts: markStudioDraftsForRefresh\(current\.entryDrafts, revision\)/);
   assert.match(source, /studioPendingDraftRefresh\(previous\.entryDrafts, list\.workingRevision\)/);
   assert.match(source, /if \(!entryDraftDirty \|\| !externalRefreshNotice\.pending\) return;/);
   assert.match(source, /if \(!entryDraftDirty && deferredRefreshRef\.current\) \{/);
