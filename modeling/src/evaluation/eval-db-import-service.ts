@@ -1,8 +1,10 @@
 import { getProjectDataSource } from './data-source-repo.js';
 import {
   importEvaluationDatabaseExcel,
+  mergeEvaluationDatabaseExcelFiles,
   validateEvaluationDatabaseExcelUpload,
   type EvaluationDatabaseDependencies,
+  type EvaluationDatabaseExcelFileInput,
 } from './eval-db.js';
 import { importEvaluationDatabaseExcelInWorker } from './eval-db-import-worker-client.js';
 import {
@@ -66,6 +68,17 @@ function loadEvaluationDatabaseTarget(
   return resolveEvaluationDatabaseTarget(dataSource.config.scene, databaseUrl);
 }
 
+function normalizeEvaluationDatabaseImportInput(input: {
+  filename?: string;
+  buffer?: Buffer;
+  files?: EvaluationDatabaseExcelFileInput[];
+}): EvaluationDatabaseExcelFileInput {
+  return mergeEvaluationDatabaseExcelFiles(input.files ?? [{
+    filename: input.filename ?? '',
+    buffer: input.buffer ?? Buffer.alloc(0),
+  }]);
+}
+
 async function runEvaluationDatabaseImportTask(input: {
   run: EvaluationDatabaseImportRun;
   filename: string;
@@ -112,8 +125,9 @@ export function assertProjectEvaluationDatabaseImportAvailable(projectId: string
 export function startProjectEvaluationDatabaseImport(
   input: {
     projectId: string;
-    filename: string;
-    buffer: Buffer;
+    filename?: string;
+    buffer?: Buffer;
+    files?: EvaluationDatabaseExcelFileInput[];
     replaceConfirmed: boolean;
     databaseUrl?: string;
   },
@@ -128,18 +142,19 @@ export function startProjectEvaluationDatabaseImport(
     input.projectId,
     input.databaseUrl || dependencies.databaseUrl,
   );
-  validateEvaluationDatabaseExcelUpload(input.filename, input.buffer);
+  const upload = normalizeEvaluationDatabaseImportInput(input);
+  validateEvaluationDatabaseExcelUpload(upload.filename, upload.buffer);
   const run = createEvaluationDatabaseImportRun({
     projectId: input.projectId,
-    filename: input.filename,
+    filename: upload.filename,
     database: target.database,
   });
   const schedule = dependencies.schedule ?? scheduleBackgroundTask;
   try {
     schedule(() => runEvaluationDatabaseImportTask({
       run,
-      filename: input.filename,
-      buffer: input.buffer,
+      filename: upload.filename,
+      buffer: upload.buffer,
       target,
       dependencies,
     }));

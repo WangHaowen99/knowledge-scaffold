@@ -38,6 +38,10 @@ interface BuiltEntity {
 
 type GraphImportEntitySchema = GraphImportObjectSchema | GraphImportValueBindingSchema;
 
+function isValueBindingSchema(object: GraphImportEntitySchema): object is GraphImportValueBindingSchema {
+  return 'valueField' in object && 'semanticField' in object;
+}
+
 export function normalizeGraphImportMapping(mapping: GraphImportMapping): GraphImportMapping {
   const relations = (mapping as any)?.relations;
   if (!Array.isArray(relations)) throw new Error('mapping.relations 必须是数组');
@@ -64,9 +68,17 @@ export function normalizeGraphImportMapping(mapping: GraphImportMapping): GraphI
 function tableForObject(tables: DataDictTable[], object: GraphImportEntitySchema): DataDictTable {
   const table = tables.find((item) => item.name === object.defaultSheet);
   if (!table) {
+    if (isValueBindingSchema(object)) {
+      throw new Error(`术语绑定「${object.key}」引用的术语表 Sheet「${object.defaultSheet}」不存在于 Excel`);
+    }
     throw new Error(`实体「${object.key}」在知识包中固定的 Sheet「${object.defaultSheet}」不存在于 Excel`);
   }
-  if (!table.rows) throw new Error(`实体「${object.key}」固定 Sheet「${table.name}」没有可导入的数据行`);
+  if (!table.rows) {
+    if (isValueBindingSchema(object)) {
+      throw new Error(`术语绑定「${object.key}」引用的术语表 Sheet「${table.name}」没有可导入的数据行`);
+    }
+    throw new Error(`实体「${object.key}」固定 Sheet「${table.name}」没有可导入的数据行`);
+  }
   return table;
 }
 
