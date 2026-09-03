@@ -981,6 +981,27 @@ state = ?, revision = ?, round_mode = ?, round_id = ?, baseline_revision = ?,
                 error=error or state.error,
             )
 
+    def clear_recovery_status(self, status: str, *, cause: str) -> int:
+        """Clear a stale recovery status after the corresponding invariant is verified."""
+        cleared = 0
+        with self._lock, self._db:
+            rows = self._db.execute(
+                "SELECT * FROM project_agent_state WHERE recovery_status = ?",
+                (status,),
+            ).fetchall()
+            for row in rows:
+                state = _project_state_from_row(row)
+                self._transition_project_state_locked(
+                    state,
+                    next_state=state.state,
+                    cause=cause,
+                    actor_run_id=state.run_id,
+                    recovery_status=RECOVERY_NONE,
+                    error="",
+                )
+                cleared += 1
+        return cleared
+
     def tool_receipt(
         self,
         run_id: str,
