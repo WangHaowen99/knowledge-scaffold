@@ -20,6 +20,10 @@ import {
 } from './llm-default-snapshots-repo.js';
 import type { LlmPurpose } from './llm-defaults-repo.js';
 import { getLlmDefaultSettings } from './llm-defaults-repo.js';
+import {
+  normalizeLlmAdvancedSettings,
+  type LlmAdvancedSettings,
+} from './llm-extra-params.js';
 
 export type { LlmSettingSource, LlmSettings } from './llm-resolver.js';
 
@@ -49,13 +53,18 @@ export function getConsumerApiUrl(): string {
   return (getSetting('consumer_api_url') || config.consumerApiUrl).replace(/\/+$/, '');
 }
 
-export type UserLlmSettingKey = 'base_url' | 'model' | 'api_key' | 'max_tokens' | 'context_window';
+export type UserLlmSettingKey =
+  | 'base_url' | 'model' | 'api_key' | 'max_tokens' | 'context_window'
+  | 'thinking_mode' | 'reasoning_effort' | 'extra_body_json';
 const USER_LLM_COLUMNS: Record<UserLlmSettingKey, UserLlmSettingKey> = {
   base_url: 'base_url',
   model: 'model',
   api_key: 'api_key',
   max_tokens: 'max_tokens',
   context_window: 'context_window',
+  thinking_mode: 'thinking_mode',
+  reasoning_effort: 'reasoning_effort',
+  extra_body_json: 'extra_body_json',
 };
 
 interface UserLlmSettingsRow {
@@ -64,6 +73,9 @@ interface UserLlmSettingsRow {
   api_key: string | null;
   max_tokens: number | null;
   context_window: number | null;
+  thinking_mode: LlmAdvancedSettings['thinkingMode'] | null;
+  reasoning_effort: LlmAdvancedSettings['reasoningEffort'] | null;
+  extra_body_json: string | null;
 }
 
 function normalizedUsername(username: string): string {
@@ -77,7 +89,8 @@ function userLlmTable(purpose: LlmPurpose): 'user_llm_settings' | 'user_task_llm
 }
 
 function userLlmRow(username: string, purpose: LlmPurpose = 'main'): UserLlmSettingsRow | undefined {
-  return getDb().prepare(`SELECT base_url, model, api_key, max_tokens, context_window
+  return getDb().prepare(`SELECT base_url, model, api_key, max_tokens, context_window,
+      thinking_mode, reasoning_effort, extra_body_json
     FROM ${userLlmTable(purpose)} WHERE username = ?`)
     .get(normalizedUsername(username)) as UserLlmSettingsRow | undefined;
 }
@@ -122,6 +135,14 @@ export function setUserLlmSetting(
       throw new Error('LLM 上下文窗口必须是大于等于 1 的整数');
     }
   }
+  if (column === 'thinking_mode' || column === 'reasoning_effort' || column === 'extra_body_json') {
+    normalizeLlmAdvancedSettings({
+      thinkingMode: column === 'thinking_mode' ? setting : undefined,
+      reasoningEffort: column === 'reasoning_effort' ? setting : undefined,
+      ...(column === 'reasoning_effort' ? { thinkingMode: 'enabled' } : {}),
+      extraBodyJson: column === 'extra_body_json' ? setting : undefined,
+    });
+  }
   const db = getDb();
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -154,7 +175,8 @@ export function deleteUserLlmSetting(
     .run(nowIso(), normalized);
   db.prepare(`DELETE FROM ${table}
     WHERE username = ? AND base_url IS NULL AND model IS NULL
-      AND api_key IS NULL AND max_tokens IS NULL AND context_window IS NULL`).run(normalized);
+      AND api_key IS NULL AND max_tokens IS NULL AND context_window IS NULL
+      AND thinking_mode IS NULL AND reasoning_effort IS NULL AND extra_body_json IS NULL`).run(normalized);
 }
 
 export interface UpdateUserLlmSettingsInput {
@@ -165,6 +187,9 @@ export interface UpdateUserLlmSettingsInput {
   providerClear?: boolean;
   maxTokens?: string;
   contextWindow?: string;
+  thinkingMode?: unknown;
+  reasoningEffort?: unknown;
+  extraBodyJson?: unknown;
 }
 
 export class UserLlmSettingsValidationError extends Error {
@@ -207,6 +232,12 @@ export function updateUserLlmSettings(
     ?? (providerChanged ? (getUserLlmDefaultSnapshotMaxTokens(normalized, purpose) ?? null) : null);
   let contextWindow = current?.context_window
     ?? (providerChanged ? (getUserLlmDefaultSnapshotContextWindow(normalized, purpose) ?? null) : null);
+  let thinkingMode = current?.thinking_mode ?? null;
+  let reasoningEffort = current?.reasoning_effort ?? null;
+  let extraBodyJson = current?.extra_body_json ?? null;
+  const advancedChanged = input.thinkingMode !== undefined
+    || input.reasoningEffort !== undefined
+    || input.extraBodyJson !== undefined;
 
   if (input.providerClear === true) {
     if (input.baseUrl || input.model || input.apiKey) {
@@ -215,6 +246,9 @@ export function updateUserLlmSettings(
     baseUrl = null;
     model = null;
     apiKey = null;
+    thinkingMode = null;
+    reasoningEffort = null;
+    extraBodyJson = null;
   } else {
     if (input.baseUrl !== undefined) baseUrl = input.baseUrl.trim() || null;
     if (input.model !== undefined) model = input.model.trim() || null;
@@ -243,6 +277,20 @@ export function updateUserLlmSettings(
       contextWindow = parsed;
     }
   }
+  if (advancedChanged && input.providerClear !== true) {
+    try {
+      const advanced = normalizeLlmAdvancedSettings({
+        thinkingMode: input.thinkingMode ?? thinkingMode ?? 'default',
+        reasoningEffort: input.reasoningEffort ?? reasoningEffort ?? '',
+        extraBodyJson: input.extraBodyJson ?? extraBodyJson ?? '{}',
+      });
+      thinkingMode = advanced.thinkingMode;
+      reasoningEffort = advanced.reasoningEffort;
+      extraBodyJson = advanced.extraBodyJson;
+    } catch (error) {
+      throw new UserLlmSettingsValidationError(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   const providerConfigured = [baseUrl, model, apiKey].some((value) => value !== null);
   if (providerConfigured && (!baseUrl || !model)) {
@@ -255,20 +303,36 @@ export function updateUserLlmSettings(
   try {
     if (providerChanged) deleteUserLlmDefaultSnapshot(normalized, purpose);
     const table = userLlmTable(purpose);
-    if ([baseUrl, model, apiKey, maxTokens, contextWindow].every((value) => value === null)) {
+    if ([baseUrl, model, apiKey, maxTokens, contextWindow, thinkingMode, reasoningEffort, extraBodyJson]
+      .every((value) => value === null)) {
       db.prepare(`DELETE FROM ${table} WHERE username = ?`).run(normalized);
     } else {
       db.prepare(`INSERT INTO ${table} (
-          username, base_url, model, api_key, max_tokens, context_window, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          username, base_url, model, api_key, max_tokens, context_window,
+          thinking_mode, reasoning_effort, extra_body_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(username) DO UPDATE SET
           base_url = excluded.base_url,
           model = excluded.model,
           api_key = excluded.api_key,
           max_tokens = excluded.max_tokens,
           context_window = excluded.context_window,
+          thinking_mode = excluded.thinking_mode,
+          reasoning_effort = excluded.reasoning_effort,
+          extra_body_json = excluded.extra_body_json,
           updated_at = excluded.updated_at`)
-        .run(normalized, baseUrl, model, apiKey, maxTokens, contextWindow, nowIso());
+        .run(
+          normalized,
+          baseUrl,
+          model,
+          apiKey,
+          maxTokens,
+          contextWindow,
+          thinkingMode,
+          reasoningEffort,
+          extraBodyJson,
+          nowIso(),
+        );
     }
     db.exec('COMMIT');
   } catch (error) {
@@ -288,6 +352,9 @@ function userLlmSnapshot(
     apiKey: row.api_key,
     maxTokens: row.max_tokens,
     contextWindow: row.context_window,
+    thinkingMode: row.thinking_mode,
+    reasoningEffort: row.reasoning_effort,
+    extraBodyJson: row.extra_body_json,
   } : undefined;
 }
 
@@ -298,6 +365,9 @@ function legacyLlmSnapshot(): LegacyLlmSettingsSnapshot {
     apiKey: getSetting('llm_api_key'),
     maxTokens: getSetting('llm_max_tokens'),
     contextWindow: getSetting('llm_context_window'),
+    thinkingMode: getSetting('llm_thinking_mode'),
+    reasoningEffort: getSetting('llm_reasoning_effort'),
+    extraBodyJson: getSetting('llm_extra_body_json'),
   };
 }
 

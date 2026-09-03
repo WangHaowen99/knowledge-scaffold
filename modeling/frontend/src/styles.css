@@ -1311,6 +1311,9 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .admin-llm-actions .btn, .mwr .cfg-key-clear { display: inline-flex; align-items: center; gap: 5px; }
 .mwr .admin-llm-primary-actions { display: grid; grid-template-columns: repeat(2, 112px); gap: 8px; margin-left: auto; }
 .mwr .admin-llm-primary-actions .btn { width: 100%; justify-content: center; }
+.mwr .cfg-advanced-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 220px); gap: 0 12px; }
+.mwr .cfg-json-input { width: 100%; min-height: 104px; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; line-height: 1.45; resize: vertical; }
+.mwr .cfg-request-preview { margin: 0; background: #151a22; color: #dbeafe; border-radius: 8px; padding: 9px 10px; font-size: 11px; line-height: 1.55; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .mwr .cfg-llm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
 .mwr .cfg-sync-default, .mwr .cfg-reset-personal { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 .mwr .cfg-sync-default { min-width: 164px; }
@@ -1386,6 +1389,7 @@ body { background: #f2f4f8; overflow: hidden; }
   .mwr .admin-llm-wide { grid-column: auto; }
   .mwr .admin-llm-primary-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
   .mwr .admin-llm-actions .btn { min-width: 0; }
+  .mwr .cfg-advanced-grid { grid-template-columns: minmax(0, 1fr); }
   .mwr .cfg-mcp-copy-row, .mwr .cfg-mcp-token-row { grid-template-columns: minmax(0, 1fr); }
   .mwr .cfg-mcp-head, .mwr .cfg-mcp-title-row { display: grid; }
 }

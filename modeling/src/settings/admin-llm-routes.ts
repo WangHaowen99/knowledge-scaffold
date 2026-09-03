@@ -69,6 +69,9 @@ export function registerAdminLlmRoutes(app: FastifyInstance, authenticate = fals
           contextWindow: body.contextWindow === undefined
             ? (saved?.contextWindow ?? DEFAULT_LLM_CONTEXT_WINDOW)
             : Number(body.contextWindow),
+          thinkingMode: body.thinkingMode,
+          reasoningEffort: body.reasoningEffort,
+          extraBodyJson: body.extraBodyJson,
           apiKey: body.apiKey === undefined ? undefined : String(body.apiKey),
           apiKeyClear: body.apiKeyClear === true,
           expectedRevision: expectedRevision(body.expectedRevision),
@@ -97,6 +100,9 @@ export function registerAdminLlmRoutes(app: FastifyInstance, authenticate = fals
         contextWindow: body.contextWindow === undefined
           ? (saved?.contextWindow ?? DEFAULT_LLM_CONTEXT_WINDOW)
           : Number(body.contextWindow),
+        thinkingMode: body.thinkingMode === undefined ? saved?.thinkingMode : body.thinkingMode,
+        reasoningEffort: body.reasoningEffort === undefined ? saved?.reasoningEffort : body.reasoningEffort,
+        extraBodyJson: body.extraBodyJson === undefined ? saved?.extraBodyJson : body.extraBodyJson,
       };
       validateLlmDefaultDraft(draft);
       const apiKey = body.apiKeyClear === true

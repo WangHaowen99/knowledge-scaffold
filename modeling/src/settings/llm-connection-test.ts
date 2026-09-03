@@ -1,7 +1,16 @@
+import {
+  buildLlmRequestPreviewBody,
+  normalizeLlmAdvancedSettings,
+  type LlmAdvancedSettingsInput,
+} from './llm-extra-params.js';
+
 export interface LlmConnectionTestInput {
   baseUrl: string;
   model: string;
   apiKey?: string;
+  thinkingMode?: unknown;
+  reasoningEffort?: unknown;
+  extraBodyJson?: unknown;
 }
 
 export interface LlmConnectionTestResult {
@@ -10,6 +19,7 @@ export interface LlmConnectionTestResult {
   latencyMs?: number;
   detail?: string;
   error?: string;
+  requestPreview?: Record<string, unknown>;
 }
 
 function redactSecret(text: string, secret: string | undefined): string {
@@ -17,12 +27,25 @@ function redactSecret(text: string, secret: string | undefined): string {
   return text.split(secret).join('[REDACTED]');
 }
 
-/** 最小 OpenAI-compatible 请求；响应和异常在返回前移除本次使用的 Key。 */
 export async function testLlmConnection(input: LlmConnectionTestInput): Promise<LlmConnectionTestResult> {
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, '');
   const model = input.model.trim();
-  if (baseUrl === 'faux') return { ok: true, detail: 'faux 演示模式（不调用真实端点）' };
-  if (!baseUrl || !model) return { ok: false, error: 'Base URL 与模型名必填' };
+  let advanced;
+  try {
+    advanced = normalizeLlmAdvancedSettings(input as LlmAdvancedSettingsInput);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const requestPreview = buildLlmRequestPreviewBody({ model, ...advanced });
+  if (baseUrl === 'faux') {
+    return { ok: true, detail: 'faux demo mode; no remote endpoint is called', requestPreview };
+  }
+  if (!baseUrl || !model) {
+    return { ok: false, error: 'Base URL and model are required', requestPreview };
+  }
 
   const startedAt = Date.now();
   try {
@@ -32,26 +55,23 @@ export async function testLlmConnection(input: LlmConnectionTestInput): Promise<
         'Content-Type': 'application/json',
         ...(input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-      }),
+      body: JSON.stringify(requestPreview),
       signal: AbortSignal.timeout(20_000),
     });
     const raw = redactSecret(await response.text(), input.apiKey).slice(0, 1000);
     if (!response.ok) {
-      return { ok: false, status: response.status, latencyMs: Date.now() - startedAt, error: raw };
+      return { ok: false, status: response.status, latencyMs: Date.now() - startedAt, error: raw, requestPreview };
     }
-    return { ok: true, status: response.status, latencyMs: Date.now() - startedAt };
+    return { ok: true, status: response.status, latencyMs: Date.now() - startedAt, requestPreview };
   } catch (error) {
     const detail = error instanceof Error
-      ? `${error.name}: ${error.message}${error.cause ? `（${String(error.cause)}）` : ''}`
+      ? `${error.name}: ${error.message}${error.cause ? ` (${String(error.cause)})` : ''}`
       : String(error);
     return {
       ok: false,
       latencyMs: Date.now() - startedAt,
       error: redactSecret(detail, input.apiKey),
+      requestPreview,
     };
   }
 }

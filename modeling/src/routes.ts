@@ -660,6 +660,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         llm: {
           baseUrl: llm.baseUrl, model: llm.model,
           maxTokens: llm.maxTokens, contextWindow: llm.contextWindow,
+          thinkingMode: llm.thinkingMode, reasoningEffort: llm.reasoningEffort,
+          extraBodyJson: llm.extraBodyJson,
           apiKeySet: !!llm.apiKey, // key 不回显
           personalApiKeySet: getUserLlmSetting(username, 'api_key') !== null,
           source: getLlmSource(username),
@@ -669,6 +671,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         taskLlm: {
           baseUrl: taskLlm.baseUrl, model: taskLlm.model,
           maxTokens: taskLlm.maxTokens, contextWindow: taskLlm.contextWindow,
+          thinkingMode: taskLlm.thinkingMode, reasoningEffort: taskLlm.reasoningEffort,
+          extraBodyJson: taskLlm.extraBodyJson,
           apiKeySet: !!taskLlm.apiKey,
           personalApiKeySet: getUserLlmSetting(username, 'api_key', 'task') !== null,
           source: getTaskLlmSource(username),
@@ -698,6 +702,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const hasUserLlmPatch = [
         'llmBaseUrl', 'llmModel', 'llmApiKey', 'llmApiKeyClear',
         'llmProviderClear', 'llmMaxTokens', 'llmContextWindow',
+        'llmThinkingMode', 'llmReasoningEffort', 'llmExtraBodyJson',
       ].some((key) => Object.hasOwn(b, key));
       if (hasUserLlmPatch) {
         try {
@@ -709,6 +714,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             providerClear: b.llmProviderClear === true,
             maxTokens: b.llmMaxTokens === undefined ? undefined : String(b.llmMaxTokens),
             contextWindow: b.llmContextWindow === undefined ? undefined : String(b.llmContextWindow),
+            thinkingMode: b.llmThinkingMode,
+            reasoningEffort: b.llmReasoningEffort,
+            extraBodyJson: b.llmExtraBodyJson,
           }, llmPurpose);
         } catch (error) {
           if (error instanceof UserLlmSettingsValidationError) {
@@ -765,6 +773,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         baseUrl,
         apiKey,
         model,
+        thinkingMode: b.thinkingMode ?? saved.thinkingMode,
+        reasoningEffort: b.reasoningEffort ?? saved.reasoningEffort,
+        extraBodyJson: b.extraBodyJson ?? saved.extraBodyJson,
       });
     });
 

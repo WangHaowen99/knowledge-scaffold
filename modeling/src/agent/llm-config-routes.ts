@@ -52,6 +52,9 @@ export function registerAgentLlmConfigRoutes(app: FastifyInstance): void {
         apiKey: llm.apiKey,
         maxTokens: llm.maxTokens,
         contextWindow: llm.contextWindow,
+        thinkingMode: llm.thinkingMode,
+        reasoningEffort: llm.reasoningEffort,
+        extraBodyJson: llm.extraBodyJson,
         source: getLlmSource(username),
       },
     };
