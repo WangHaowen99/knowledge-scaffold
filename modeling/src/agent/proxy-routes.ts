@@ -11,6 +11,8 @@ import { ChangeControlStore } from './change-control.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 import { takeAcceptanceFault } from '../acceptance/faults.js';
 
+const AGENT_REQUEST_TIMEOUT_MS = 30_000;
+
 export function registerAgentProxyRoutes(app: FastifyInstance): void {
   const artifacts = getPackageArtifactStore();
   app.get('/api/projects/:id/agent/state', async (request, reply) => {
@@ -89,33 +91,29 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
   app.post('/api/projects/:id/agent/recovery/terminate-stale', async (request, reply) => {
     const id = projectId(request);
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
-    let upstream: Response;
-    try {
-      upstream = await fetch(
-        `${config.agentBaseUrl}/v1/projects/${encodeURIComponent(id)}/recovery/terminate-stale`,
-        {
-          method: 'POST',
-          headers: {
-            ...authorizationHeaders(request),
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify(request.body ?? {}),
-        },
-      );
-    } catch (error) {
-      request.log.error({ err: error }, 'Agent 请求不可用');
-      return reply.code(503).send({ code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' });
-    }
-    const payload = (await upstream.json().catch(() => ({}))) as Record<string, unknown>;
-    if (upstream.status >= 400) {
-      return reply.code(upstream.status).send(payload);
+    const upstream = await agentJson(
+      request,
+      `/v1/projects/${encodeURIComponent(id)}/recovery/terminate-stale`,
+      'POST',
+      request.body,
+    );
+    if (upstream.status >= 400 && upstream.payload.code !== 'RUN_NOT_ACTIVE') {
+      return reply.code(upstream.status).send(upstream.payload);
     }
     try {
+      const terminatedRunId = typeof upstream.payload.terminatedRunId === 'string'
+        ? upstream.payload.terminatedRunId
+        : undefined;
       const cancelled = new ChangeControlStore(getDb()).safeTerminateActivePlansForProject({
         projectId: id,
         actor: request.user!.username,
+        ...(terminatedRunId ? { runId: terminatedRunId } : {}),
       });
-      return reply.code(upstream.status).send({ ...payload, cancelledActivePlans: cancelled });
+      return reply.code(200).send({
+        ...upstream.payload,
+        cancelledActivePlans: cancelled,
+        ...(upstream.status >= 400 ? { reconciledAfterPythonShortCircuit: true } : {}),
+      });
     } catch (error) {
       request.log.error({ err: error, projectId: id }, '安全终止 Node 侧活动计划失败');
       return reply.code(500).send({
@@ -271,6 +269,34 @@ function takeAcceptanceMessageFailure(
   });
 }
 
+async function agentJson(
+  request: FastifyRequest,
+  path: string,
+  method: 'GET' | 'POST' = 'GET',
+  body?: unknown,
+): Promise<{ status: number; payload: Record<string, unknown> }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AGENT_REQUEST_TIMEOUT_MS);
+  try {
+    const upstream = await fetch(`${config.agentBaseUrl}${path}`, {
+      method,
+      headers: {
+        ...authorizationHeaders(request),
+        ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(method === 'POST' ? { body: JSON.stringify(body ?? {}) } : {}),
+      signal: controller.signal,
+    });
+    const payload = (await upstream.json().catch(() => ({}))) as Record<string, unknown>;
+    return { status: upstream.status, payload };
+  } catch (error) {
+    request.log.error({ err: error }, 'Agent 请求不可用');
+    return { status: 503, payload: { code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' } };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function proxyJson(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -283,22 +309,8 @@ async function proxyJson(
     ? canWriteProject(id, request.user!.username)
     : canReadProject(id, request.user!.username);
   if (!allowed) return reply.code(404).send({ error: '项目不存在' });
-  let upstream: Response;
-  try {
-    upstream = await fetch(`${config.agentBaseUrl}${path}`, {
-      method,
-      headers: {
-        ...authorizationHeaders(request),
-        ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
-      },
-      ...(method === 'POST' ? { body: JSON.stringify(request.body ?? {}) } : {}),
-    });
-  } catch (error) {
-    request.log.error({ err: error }, 'Agent 请求不可用');
-    return reply.code(503).send({ code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' });
-  }
-  const payload = (await upstream.json().catch(() => ({}))) as Record<string, unknown>;
-  return reply.code(upstream.status).send(payload);
+  const result = await agentJson(request, path, method, method === 'POST' ? request.body : undefined);
+  return reply.code(result.status).send(result.payload);
 }
 
 function projectId(request: FastifyRequest): string {

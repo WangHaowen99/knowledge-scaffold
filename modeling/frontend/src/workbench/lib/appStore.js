@@ -227,6 +227,10 @@ export function resolveWorkbenchBootstrapResults(results) {
   };
 }
 
+export function shouldUseStaleRunTermination(recovery) {
+  return Boolean(recovery && ['stale_run', 'plan_unreadable'].includes(recovery.status));
+}
+
 /* ---- actions ---- */
 export const actions = {
   /** 门禁是按需拉的：computeGates 要叠加整个候选工作区，不适合跟着事件流反复算。 */
@@ -805,10 +809,9 @@ export const actions = {
     const { projectId, recovery } = store.get();
     if (!projectId || !planId) return null;
     try {
-      const result = await safeTerminateChangePlanRequest(projectId, planId);
-      if (recovery) {
-        await terminateStaleRunRequest(projectId);
-      }
+      const result = shouldUseStaleRunTermination(recovery)
+        ? await terminateStaleRunRequest(projectId)
+        : await safeTerminateChangePlanRequest(projectId, planId);
       store.set((state) => ({
         changePlan: null,
         error: '',
