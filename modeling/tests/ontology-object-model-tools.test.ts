@@ -6,17 +6,22 @@ import test from 'node:test';
 
 import Fastify from 'fastify';
 
+import type { SpecScript } from '../src/types.js';
+import { buildPythonScriptScaffold } from '../src/workflow/python-script-scaffold.js';
+
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-ontology-object-tools-'));
 
 const [
   { registerAgentCoreRoutes },
   { createProject },
   { getPackageArtifactStore },
+  { getDb },
   { insertDocument },
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
+  import('../src/db/index.js'),
   import('../src/documents/repo.js'),
 ]);
 
@@ -128,6 +133,130 @@ async function seedProject(projectId: string) {
       actorName: '测试系统',
     },
   });
+}
+
+async function seedProjectWithManagedScript(projectId: string) {
+  const seeded = await seedProject(projectId);
+  const contract: Omit<SpecScript, 'sourceCode'> = {
+    key: 'render_synthetic_summary',
+    title: '生成合成摘要脚本',
+    description: '读取合成 JSON 并返回结构化摘要。',
+    boundOperation: 'render_synthetic_summary',
+    runtime: 'python',
+    entrypoint: 'render_synthetic_summary.py',
+    timeoutSeconds: 30,
+    parameters: [{
+      name: 'input_json', flag: '--input-json', type: 'string', required: true,
+      description: 'Synthetic JSON input',
+    }],
+    outputs: [{ key: 'result', type: 'object', description: 'Structured synthetic result' }],
+    boundaries: ['只处理显式传入的合成 JSON，不访问网络或本地文件'],
+    evidence: ['user-decision:managed-script-baseline'],
+  };
+  const sourceCode = buildPythonScriptScaffold(contract).replace(
+    'def run_business_logic(inputs):\n    raise NotImplementedError("run_business_logic must be implemented")',
+    'def run_business_logic(inputs):\n    payload = json.loads(inputs["input_json"])\n    return {"result": payload}',
+  );
+  return getPackageArtifactStore().savePackageVersion(projectId, {
+    expectedRevision: seeded.revision.oid,
+    spec: {
+      ...structuredClone(seeded.spec),
+      operations: seeded.spec.operations.map((operation) => operation.key === contract.boundOperation
+        ? { ...operation, script: { key: contract.key, required: true } }
+        : operation),
+      rules: [...(seeded.spec.rules ?? []), {
+        key: 'unplanned',
+        title: '计划外规则',
+        description: '用于验证脚本计划不会夹带未授权知识修改。',
+        content: '这条规则保持基线内容。',
+        evidence: ['user-decision:managed-script-baseline'],
+      }],
+      scripts: [{ ...contract, sourceCode }],
+    },
+    coverage: seeded.coverage,
+    note: '写入受管脚本增量测试基线',
+    action: {
+      cause: 'test.managed_script_seeded', summary: '写入受管脚本增量测试基线',
+      actorKind: 'system', actorName: '测试系统',
+    },
+  });
+}
+
+async function prepareIncrementalScriptPlan(
+  app: ReturnType<typeof Fastify>,
+  projectId: string,
+  runId: string,
+) {
+  const operation = await tool(app, projectId, 'get_domain_resource', {
+    resource_id: 'operation:render_synthetic_summary',
+  }, runId);
+  assert.equal(operation.statusCode, 200, operation.body);
+  const planResponse = await tool(app, projectId, 'create_change_plan', {
+    goal: '只更新合成摘要操作说明和其已绑定脚本函数',
+    mode: 'expert_edit',
+    expected_revision: operation.json().working_revision,
+    tasks: [{
+      client_key: 'operation', title: '更新合成摘要操作', resource_kind: 'operation',
+      target_key: 'render_synthetic_summary', allowed_tools: ['patch_operation'],
+      acceptance: '只更新操作说明',
+    }, {
+      client_key: 'unrelated-rule', title: '更新计划外规则', resource_kind: 'rule',
+      target_key: 'unplanned', allowed_tools: ['patch_rule'],
+      acceptance: '该任务不属于脚本依赖链',
+    }, {
+      client_key: 'script', title: '更新合成摘要脚本函数', resource_kind: 'script',
+      target_key: 'render_synthetic_summary', allowed_tools: ['stage_script_patch'],
+      depends_on: ['operation'], acceptance: '只替换 run_business_logic',
+    }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  const stagedOperation = await tool(app, projectId, 'stage_change_set', {
+    plan_id: plan.id,
+    expected_revision: operation.json().working_revision,
+    mutation_id: `${runId}-operation`,
+    actions: [{
+      task_id: plan.tasks[0].id,
+      tool: 'patch_operation',
+      arguments: {
+        resource_id: 'operation:render_synthetic_summary',
+        expected_resource_hash: operation.json().resource.resource_hash,
+        actions: [{ op: 'set_description', value: '读取合成 JSON 并返回带字段数量的结构化摘要。' }],
+      },
+    }],
+  }, runId);
+  assert.equal(stagedOperation.statusCode, 200, stagedOperation.body);
+  const updatedOperation = await tool(app, projectId, 'get_domain_resource', {
+    resource_id: 'operation:render_synthetic_summary',
+    working_revision: stagedOperation.json().working_revision,
+  }, runId);
+  assert.equal(updatedOperation.statusCode, 200, updatedOperation.body);
+  const defined = await tool(app, projectId, 'define_script_contract', {
+    expected_revision: updatedOperation.json().working_revision,
+    mutation_id: `${runId}-contract`,
+    reason: '按同一增量计划更新脚本契约',
+    script_key: 'render_synthetic_summary',
+    title: '生成合成摘要脚本',
+    description: '读取合成 JSON 并返回结构化摘要。',
+    operation_id: 'operation:render_synthetic_summary',
+    expected_operation_hash: updatedOperation.json().resource.operation_contract_hash,
+    entrypoint: 'render_synthetic_summary.py',
+    timeout_seconds: 30,
+    parameters: [{
+      name: 'input_json', flag: '--input-json', type: 'string', required: true,
+      description: 'Synthetic JSON input',
+    }],
+    outputs: [{ key: 'result', type: 'object', description: 'Structured synthetic result' }],
+    boundaries: ['只处理显式传入的合成 JSON，不访问网络或本地文件'],
+    evidence: ['user-decision:managed-script-increment'],
+  }, runId);
+  assert.equal(defined.statusCode, 200, defined.body);
+  const context = await tool(app, projectId, 'get_script_edit_context', {
+    script_key: 'render_synthetic_summary',
+    symbols: ['run_business_logic'],
+  }, runId);
+  assert.equal(context.statusCode, 200, context.body);
+  return { plan, defined: defined.json(), context: context.json() };
 }
 
 test('对象模型工具支持列表、详情和主键保护校验', async (t) => {
@@ -596,6 +725,60 @@ test('脚本工具先固化契约，再原子生成源码、说明、索引和�
   assert.equal(defined.json().contract.parameters[1].action, 'store_true');
   assert.equal(defined.json().contract.parameters[1].default_value, false);
 
+  const scriptIndex = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'render_synthetic_summary',
+  });
+  assert.equal(scriptIndex.statusCode, 200, scriptIndex.body);
+  assert.equal(scriptIndex.json().scaffold, true);
+  assert.match(scriptIndex.json().base_source_hash, /^sha256:[a-f0-9]{64}$/u);
+  assert.ok(scriptIndex.json().symbols.some((item: any) => item.qualified_name === 'run_business_logic'));
+  assert.equal(scriptIndex.json().symbols.some((item: any) => Object.hasOwn(item, 'source')), false);
+
+  const editContext = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'render_synthetic_summary',
+    symbols: ['run_business_logic'],
+  });
+  assert.equal(editContext.statusCode, 200, editContext.body);
+  const businessNode = editContext.json().symbols.find(
+    (item: any) => item.qualified_name === 'run_business_logic',
+  );
+  assert.match(businessNode.source, /NotImplementedError/u);
+  assert.match(businessNode.node_hash, /^sha256:[a-f0-9]{64}$/u);
+
+  const staleSourcePatch = await tool(app, project.id, 'stage_script_patch', {
+    script_key: 'render_synthetic_summary',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'synthetic-stage-stale-source-v1',
+    reason: 'A stale source hash must be rejected',
+    base_source_hash: `sha256:${'0'.repeat(64)}`,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: 'def run_business_logic(inputs):\n    return {"result": inputs}',
+    }],
+  });
+  assert.equal(staleSourcePatch.statusCode, 409, staleSourcePatch.body);
+  assert.equal(staleSourcePatch.json().code, 'SCRIPT_PATCH_CONFLICT');
+
+  const staleNodePatch = await tool(app, project.id, 'stage_script_patch', {
+    script_key: 'render_synthetic_summary',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'synthetic-stage-stale-node-v1',
+    reason: 'A stale node hash must be rejected',
+    base_source_hash: editContext.json().base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: `sha256:${'f'.repeat(64)}`,
+      source: 'def run_business_logic(inputs):\n    return {"result": inputs}',
+    }],
+  });
+  assert.equal(staleNodePatch.statusCode, 409, staleNodePatch.body);
+  assert.equal(staleNodePatch.json().code, 'SCRIPT_PATCH_CONFLICT');
+
   const directSourceWrite = await tool(app, project.id, 'write_file', {
     path: 'scripts/render_synthetic_summary.py',
     content: 'print("bypass")',
@@ -603,42 +786,44 @@ test('脚本工具先固化契约，再原子生成源码、说明、索引和�
     evidence: [],
   });
   assert.equal(directSourceWrite.statusCode, 409, directSourceWrite.body);
-  assert.equal(directSourceWrite.json().requiredTool, 'stage_script_source');
+  assert.equal(directSourceWrite.json().requiredTool, 'stage_script_patch');
 
-  const placeholderSource = await tool(app, project.id, 'stage_script_source', {
+  const placeholderSource = await tool(app, project.id, 'stage_script_patch', {
     script_key: 'render_synthetic_summary',
     expected_revision: defined.json().working_revision,
     expected_contract_hash: defined.json().contract_hash,
     mutation_id: 'synthetic-stage-placeholder-v1',
     reason: 'The placeholder must be rejected',
-    source_code: `import argparse\nimport json\n\nparser = argparse.ArgumentParser()\nparser.add_argument("--input-json", required=True)\nparser.add_argument("--verbose", action="store_true")\nparser.parse_args()\nprint(json.dumps({"result": "hello world"}))\n`,
+    base_source_hash: editContext.json().base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: 'def run_business_logic(inputs):\n    return {"result": "hello world"}',
+    }],
   });
   assert.equal(placeholderSource.statusCode, 400, placeholderSource.body);
   assert.equal(placeholderSource.json().code, 'INVALID_DOMAIN_PAYLOAD');
-  assert.match(placeholderSource.json().reason, /演示或占位实现/u);
+  assert.match(placeholderSource.json().reason, /hello world 演示实现|演示或占位实现/u);
 
-  const sourceCode = `import argparse
-import json
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-json", required=True)
-    parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
-    payload = json.loads(args.input_json)
+  const businessSource = `def run_business_logic(inputs):
+    payload = json.loads(inputs["input_json"])
     result = {"received_keys": sorted(payload.keys())}
-    print(json.dumps({"result": result}, ensure_ascii=False))
-
-if __name__ == "__main__":
-    main()
+    return {"result": result}
 `;
-  const staged = await tool(app, project.id, 'stage_script_source', {
+  const staged = await tool(app, project.id, 'stage_script_patch', {
     script_key: 'render_synthetic_summary',
     expected_revision: defined.json().working_revision,
     expected_contract_hash: defined.json().contract_hash,
     mutation_id: 'synthetic-stage-script-v1',
     reason: 'Stage a contract-compliant synthetic script',
-    source_code: sourceCode,
+    base_source_hash: editContext.json().base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: businessSource,
+    }],
   });
   assert.equal(staged.statusCode, 200, staged.body);
   assert.equal(staged.json().candidate, true);
@@ -651,30 +836,108 @@ if __name__ == "__main__":
     'index.md',
   ]);
 
-  const replayed = await tool(app, project.id, 'stage_script_source', {
+  const generatedSource = await tool(app, project.id, 'read_file', {
+    path: 'scripts/render_synthetic_summary.py',
+  });
+  assert.equal(generatedSource.statusCode, 409, generatedSource.body);
+  assert.equal(generatedSource.json().code, 'MANAGED_FILE_REQUIRES_DOMAIN_TOOL');
+  assert.equal(generatedSource.json().requiredTool, 'get_script_edit_context');
+
+  const businessContext = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'render_synthetic_summary',
+    symbols: ['run_business_logic'],
+  });
+  assert.equal(businessContext.statusCode, 200, businessContext.body);
+  assert.equal(businessContext.json().symbols.length, 1);
+  assert.equal(businessContext.json().symbols[0].qualified_name, 'run_business_logic');
+  assert.equal(businessContext.json().symbols[0].source, businessSource);
+  assert.doesNotMatch(businessContext.json().symbols[0].source, /def main/u);
+
+  const replayed = await tool(app, project.id, 'stage_script_patch', {
     script_key: 'render_synthetic_summary',
     expected_revision: defined.json().working_revision,
     expected_contract_hash: defined.json().contract_hash,
     mutation_id: 'synthetic-stage-script-v1',
     reason: 'Stage a contract-compliant synthetic script',
-    source_code: sourceCode,
+    base_source_hash: editContext.json().base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: businessSource,
+    }],
   });
   assert.equal(replayed.statusCode, 200, replayed.body);
   assert.equal(replayed.json().replayed, true);
 
-  const revisedSourceCode = sourceCode
+  const nextContext = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'render_synthetic_summary',
+    symbols: ['run_business_logic'],
+  });
+  assert.equal(nextContext.statusCode, 200, nextContext.body);
+  assert.equal(nextContext.json().scaffold, true);
+  const protectedContext = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'render_synthetic_summary',
+    symbols: ['main'],
+  });
+  assert.equal(protectedContext.statusCode, 200, protectedContext.body);
+  const mainNode = protectedContext.json().symbols.find(
+    (item: any) => item.qualified_name === 'main',
+  );
+  const protectedPatch = await tool(app, project.id, 'stage_script_patch', {
+    script_key: 'render_synthetic_summary',
+    expected_revision: staged.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    mutation_id: 'synthetic-stage-protected-main-v1',
+    reason: 'Core scaffold functions stay immutable after the first business patch',
+    base_source_hash: protectedContext.json().base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'main',
+      expected_node_hash: mainNode.node_hash,
+      source: 'def main(argv=None):\n    return None',
+    }],
+  });
+  assert.equal(protectedPatch.statusCode, 409, protectedPatch.body);
+  assert.equal(protectedPatch.json().code, 'SCAFFOLD_NODE_IMMUTABLE');
+  const nextBusinessNode = nextContext.json().symbols.find(
+    (item: any) => item.qualified_name === 'run_business_logic',
+  );
+  const revisedBusinessSource = businessSource
     .replace('result = {"received_keys": sorted(payload.keys())}', 'revised_result = {"received_keys": sorted(payload.keys())}')
-    .replace('{"result": result}', '{"result": revised_result}');
-  const restaged = await tool(app, project.id, 'stage_script_source', {
+    .replace('return {"result": result}', 'return {"result": revised_result}');
+  const restaged = await tool(app, project.id, 'stage_script_patch', {
     script_key: 'render_synthetic_summary',
     expected_revision: staged.json().working_revision,
     expected_contract_hash: defined.json().contract_hash,
     mutation_id: 'synthetic-stage-script-v2',
     reason: 'Restage the current synthetic script after a source-only rename',
-    source_code: revisedSourceCode,
+    base_source_hash: nextContext.json().base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: nextBusinessNode.node_hash,
+      source: revisedBusinessSource,
+    }],
   });
   assert.equal(restaged.statusCode, 200, restaged.body);
   assert.notEqual(restaged.json().source_hash, staged.json().source_hash);
+
+  const formalBeforeStudioReview = (await getPackageArtifactStore().current(project.id))!.revision.oid;
+  const blockedStudioReview = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: restaged.json().working_revision,
+      clientMutationId: 'synthetic-studio-review-before-script-test',
+    },
+  });
+  assert.equal(blockedStudioReview.statusCode, 409, blockedStudioReview.body);
+  assert.equal(blockedStudioReview.json().code, 'SCRIPT_TEST_REQUIRED');
+  assert.deepEqual(blockedStudioReview.json().blockers, ['scripts/render_synthetic_summary.py']);
+  assert.equal((await getPackageArtifactStore().current(project.id))!.revision.oid, formalBeforeStudioReview);
+  assert.ok(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ?`).get(project.id)!.count > 0);
 
   const prepared = await tool(app, project.id, 'prepare_confirmation_groups');
   assert.equal(prepared.statusCode, 200, prepared.body);
@@ -867,6 +1130,94 @@ test('对象模型工具支持查询 review 状态与审计记录', async (t) =>
   assert.equal(acceptedOnly.statusCode, 200, acceptedOnly.body);
   assert.equal(acceptedOnly.json().items.length, 1);
   assert.equal(acceptedOnly.json().items[0].status, 'accepted');
+});
+
+test('增量脚本补丁可依赖同一专家计划内已暂存的知识修改', async (t) => {
+  const project = createProject({ owner: 'alice', name: '计划内增量脚本依赖', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProjectWithManagedScript(project.id);
+  const runId = `run-planned-script-${project.id}`;
+  const { plan, defined, context } = await prepareIncrementalScriptPlan(app, project.id, runId);
+  const node = context.symbols.find((item: any) => item.qualified_name === 'run_business_logic');
+  const staged = await tool(app, project.id, 'stage_script_patch', {
+    plan_task_id: plan.tasks[2].id,
+    script_key: 'render_synthetic_summary',
+    expected_revision: defined.working_revision,
+    expected_contract_hash: defined.contract_hash,
+    mutation_id: `${runId}-script`,
+    reason: '只替换同一计划内脚本的业务函数',
+    base_source_hash: context.base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: node.node_hash,
+      source: [
+        'def run_business_logic(inputs):',
+        '    payload = json.loads(inputs["input_json"])',
+        '    return {"result": {"field_count": len(payload)}}',
+      ].join('\n'),
+    }],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.deepEqual(staged.json().applied_edits, [{ kind: 'replace_function', symbol: 'run_business_logic' }]);
+  assert.deepEqual(staged.json().plan.tasks.map((task: any) => task.status), ['staged', 'pending', 'staged']);
+});
+
+test('计划内脚本补丁不会放行未授权的待确认知识修改', async (t) => {
+  const project = createProject({ owner: 'alice', name: '增量脚本拒绝夹带修改', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProjectWithManagedScript(project.id);
+  const runId = `run-planned-script-blocked-${project.id}`;
+  const { plan, defined } = await prepareIncrementalScriptPlan(app, project.id, runId);
+  const unrelatedRule = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'rule:unplanned',
+    working_revision: defined.working_revision,
+  }, runId);
+  assert.equal(unrelatedRule.statusCode, 200, unrelatedRule.body);
+  const unrelated = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id,
+    expected_revision: unrelatedRule.json().working_revision,
+    mutation_id: `${runId}-unrelated-rule`,
+    actions: [{
+      task_id: plan.tasks[1].id,
+      tool: 'patch_rule',
+      arguments: {
+        resource_id: 'rule:unplanned',
+        expected_resource_hash: unrelatedRule.json().resource.resource_hash,
+        actions: [{ op: 'set_description', value: '这项待确认修改不属于脚本任务的依赖链。' }],
+      },
+    }],
+  }, runId);
+  assert.equal(unrelated.statusCode, 200, unrelated.body);
+  const blockedContext = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'render_synthetic_summary',
+    symbols: ['run_business_logic'],
+  }, runId);
+  assert.equal(blockedContext.statusCode, 200, blockedContext.body);
+  const node = blockedContext.json().symbols.find(
+    (item: any) => item.qualified_name === 'run_business_logic',
+  );
+  const blocked = await tool(app, project.id, 'stage_script_patch', {
+    plan_task_id: plan.tasks[2].id,
+    script_key: 'render_synthetic_summary',
+    expected_revision: blockedContext.json().working_revision,
+    expected_contract_hash: defined.contract_hash,
+    mutation_id: `${runId}-script`,
+    reason: '夹带计划外知识时必须拒绝脚本修改',
+    base_source_hash: blockedContext.json().base_source_hash,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: node.node_hash,
+      source: [
+        'def run_business_logic(inputs):',
+        '    payload = json.loads(inputs["input_json"])',
+        '    return {"result": {"field_count": len(payload)}}',
+      ].join('\n'),
+    }],
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'GATE_UNMET');
 });
 
 test('Change Plan 用一个原子 Change Set 完成跨类型修改并可重放回执', async (t) => {

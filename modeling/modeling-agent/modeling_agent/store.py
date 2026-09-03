@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -121,6 +122,9 @@ CREATE TABLE IF NOT EXISTS project_agent_state (
   project_id TEXT PRIMARY KEY,
   state TEXT NOT NULL DEFAULT 'intake:idle',
   revision INTEGER NOT NULL DEFAULT 0,
+  round_mode TEXT NOT NULL DEFAULT 'initial',
+  round_id TEXT NOT NULL DEFAULT '',
+  baseline_revision TEXT NOT NULL DEFAULT '',
   run_id TEXT NOT NULL DEFAULT '',
   interaction_id TEXT NOT NULL DEFAULT '',
   checkpoint_id TEXT NOT NULL DEFAULT '',
@@ -238,6 +242,18 @@ class RuntimeStore:
             self._db.execute(
                 "ALTER TABLE project_agent_state ADD COLUMN recovery_status TEXT NOT NULL DEFAULT ''"
             )
+        if "round_mode" not in state_columns:
+            self._db.execute(
+                "ALTER TABLE project_agent_state ADD COLUMN round_mode TEXT NOT NULL DEFAULT 'initial'"
+            )
+        if "round_id" not in state_columns:
+            self._db.execute(
+                "ALTER TABLE project_agent_state ADD COLUMN round_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "baseline_revision" not in state_columns:
+            self._db.execute(
+                "ALTER TABLE project_agent_state ADD COLUMN baseline_revision TEXT NOT NULL DEFAULT ''"
+            )
         timestamp = now_iso()
         terminal = tuple(sorted(TERMINAL_RUN_STATUSES))
         placeholders = ",".join("?" for _ in terminal)
@@ -268,6 +284,12 @@ class RuntimeStore:
                 AND interaction.status = 'pending' AND run.status = 'waiting'
             )""",
         )
+        # A continuation claim is process-local work. After a restart the Core
+        # outbox must be able to redeliver and claim any interrupted event.
+        self._db.execute(
+            """UPDATE external_project_events SET continuation_status = 'pending'
+            WHERE continuation_status = 'continuing'""",
+        )
         self._db.commit()
 
     def close(self) -> None:
@@ -295,6 +317,9 @@ class RuntimeStore:
         summary: str | None = None,
         open_questions: list[str] | None = None,
         error: str | None = None,
+        round_mode: str | None = None,
+        round_id: str | None = None,
+        baseline_revision: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ProjectAgentState:
         _validate_state(next_state)
@@ -318,8 +343,79 @@ class RuntimeStore:
                 summary=summary,
                 open_questions=open_questions,
                 error=error,
+                round_mode=round_mode,
+                round_id=round_id,
+                baseline_revision=baseline_revision,
                 metadata=metadata,
             )
+
+    def start_increment_round(
+        self,
+        project_id: str,
+        *,
+        baseline_revision: str,
+        package_version: str = "",
+        actor_run_id: str = "",
+    ) -> tuple[ProjectAgentState, bool]:
+        baseline = baseline_revision.strip()
+        if not baseline:
+            raise AgentRuntimeError("INCREMENT_BASELINE_REQUIRED", "增量建模缺少已确认基线", status=400)
+        with self._lock, self._db:
+            current = self._ensure_project_state_locked(project_id)
+            phase, _separator, execution = current.state.partition(":")
+            is_same_increment_round = (
+                phase == "increment"
+                and current.round_mode == "incremental"
+                and current.baseline_revision == baseline
+            )
+            if is_same_increment_round and execution in {*ACTIVE_RUN_STATUSES, "idle"}:
+                return current, False
+            if execution in ACTIVE_RUN_STATUSES and phase not in {"release", "goal", "increment"}:
+                raise AgentRuntimeError(
+                    "INCREMENT_ROUND_BLOCKED",
+                    "当前建模任务正在其他阶段执行，请先停止或完成后再开始增量建模",
+                    status=409,
+                    details={"state": current.state, "runId": current.run_id},
+                )
+            if phase not in {
+                "release", "goal", "process", "knowledge",
+                "increment", "validation", "evaluation",
+            }:
+                raise AgentRuntimeError(
+                    "INCREMENT_BASELINE_STATE_REQUIRED",
+                    "只有已发布项目才能开始新的增量建模轮次",
+                    status=409,
+                    details={"state": current.state},
+                )
+            active = execution in ACTIVE_RUN_STATUSES
+            next_execution = execution if active else "idle"
+            round_id = f"increment_{uuid.uuid4().hex}"
+            version = package_version.strip()
+            summary = (
+                f"已基于知识包 {version} 开始增量建模；正式基线保持不变。"
+                if version else "已基于当前正式知识包开始增量建模；正式基线保持不变。"
+            )
+            updated = self._transition_project_state_locked(
+                current,
+                next_state=f"increment:{next_execution}",
+                cause="increment_round_started",
+                actor_run_id=actor_run_id or (current.run_id if active else ""),
+                run_id=current.run_id if active else "",
+                interaction_id=current.interaction_id if active else "",
+                checkpoint_id=current.checkpoint_id if active else "",
+                summary=summary,
+                error="",
+                round_mode="incremental",
+                round_id=round_id,
+                baseline_revision=baseline,
+                metadata={
+                    "roundId": round_id,
+                    "baselineRevision": baseline,
+                    "packageVersion": version,
+                    "previousPhase": phase,
+                },
+            )
+            return updated, True
 
     def _ensure_project_state_locked(self, project_id: str) -> ProjectAgentState:
         row = self._db.execute(
@@ -356,9 +452,10 @@ class RuntimeStore:
         )
         self._db.execute(
             """INSERT INTO project_agent_state (
-            project_id, state, revision, run_id, interaction_id, checkpoint_id,
+            project_id, state, revision, round_mode, round_id, baseline_revision,
+            run_id, interaction_id, checkpoint_id,
             summary, open_questions_json, error, recovery_status, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             _project_state_values(state),
         )
         return state
@@ -377,6 +474,9 @@ class RuntimeStore:
         open_questions: list[str] | None = None,
         error: str | None = None,
         recovery_status: str | None = None,
+        round_mode: str | None = None,
+        round_id: str | None = None,
+        baseline_revision: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ProjectAgentState:
         _validate_state(next_state)
@@ -384,6 +484,11 @@ class RuntimeStore:
             project_id=current.project_id,
             state=next_state,
             revision=current.revision + 1,
+            round_mode=current.round_mode if round_mode is None else round_mode,
+            round_id=current.round_id if round_id is None else round_id,
+            baseline_revision=(
+                current.baseline_revision if baseline_revision is None else baseline_revision
+            ),
             run_id=current.run_id if run_id is None else run_id,
             interaction_id=current.interaction_id if interaction_id is None else interaction_id,
             checkpoint_id=current.checkpoint_id if checkpoint_id is None else checkpoint_id,
@@ -397,12 +502,16 @@ class RuntimeStore:
         )
         changed = self._db.execute(
             """UPDATE project_agent_state SET
-            state = ?, revision = ?, run_id = ?, interaction_id = ?, checkpoint_id = ?,
+            state = ?, revision = ?, round_mode = ?, round_id = ?, baseline_revision = ?,
+            run_id = ?, interaction_id = ?, checkpoint_id = ?,
             summary = ?, open_questions_json = ?, error = ?, recovery_status = ?, updated_at = ?
             WHERE project_id = ? AND revision = ?""",
             (
                 updated.state,
                 updated.revision,
+                updated.round_mode,
+                updated.round_id,
+                updated.baseline_revision,
                 updated.run_id,
                 updated.interaction_id,
                 updated.checkpoint_id,
@@ -470,6 +579,7 @@ class RuntimeStore:
                     status=409,
                     details={"runId": state.run_id, "state": state.state},
                 )
+            run.baseline_revision = run.baseline_revision.strip() or state.baseline_revision
             self._db.execute(
                 """INSERT INTO agent_runs
                 (id, project_id, session_id, status, prompt, token_fingerprint,
@@ -871,6 +981,27 @@ class RuntimeStore:
                 error=error or state.error,
             )
 
+    def clear_recovery_status(self, status: str, *, cause: str) -> int:
+        """Clear a stale recovery status after the corresponding invariant is verified."""
+        cleared = 0
+        with self._lock, self._db:
+            rows = self._db.execute(
+                "SELECT * FROM project_agent_state WHERE recovery_status = ?",
+                (status,),
+            ).fetchall()
+            for row in rows:
+                state = _project_state_from_row(row)
+                self._transition_project_state_locked(
+                    state,
+                    next_state=state.state,
+                    cause=cause,
+                    actor_run_id=state.run_id,
+                    recovery_status=RECOVERY_NONE,
+                    error="",
+                )
+                cleared += 1
+        return cleared
+
     def tool_receipt(
         self,
         run_id: str,
@@ -1105,6 +1236,31 @@ class RuntimeStore:
             ).fetchone()
         return bool(row and row["continuation_status"] == "pending")
 
+    def claim_external_event_continuation(self, event_id: str, project_id: str) -> str:
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE external_project_events
+                SET continuation_status = 'continuing'
+                WHERE id = ? AND project_id = ? AND continuation_status = 'pending'""",
+                (event_id, project_id),
+            )
+            if cursor.rowcount == 1:
+                return "claimed"
+            row = self._db.execute(
+                """SELECT continuation_status FROM external_project_events
+                WHERE id = ? AND project_id = ?""",
+                (event_id, project_id),
+            ).fetchone()
+        return str(row["continuation_status"]) if row else "missing"
+
+    def release_external_event_continuation(self, event_id: str, project_id: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                """UPDATE external_project_events SET continuation_status = 'pending'
+                WHERE id = ? AND project_id = ? AND continuation_status = 'continuing'""",
+                (event_id, project_id),
+            )
+
     def latest_presented_evaluation(
         self,
         project_id: str,
@@ -1133,7 +1289,8 @@ class RuntimeStore:
             self._db.execute(
                 """UPDATE external_project_events
                 SET continuation_status = 'continued', continued_at = ?
-                WHERE id = ? AND project_id = ? AND continuation_status = 'pending'""",
+                WHERE id = ? AND project_id = ?
+                  AND continuation_status IN ('pending', 'continuing')""",
                 (now_iso(), event_id, project_id),
             )
 
@@ -1210,6 +1367,31 @@ class RuntimeStore:
             payload=_object(row["payload_json"]),
             created_at=row["created_at"],
         )
+
+    def unfinished_tool_events(self, run_id: str) -> list[RuntimeEvent]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM agent_events
+                WHERE run_id = ? AND kind = 'tool' ORDER BY seq""",
+                (run_id,),
+            ).fetchall()
+        active: dict[str, RuntimeEvent] = {}
+        for row in rows:
+            event = RuntimeEvent(
+                seq=int(row["seq"]),
+                project_id=row["project_id"],
+                run_id=row["run_id"],
+                kind=row["kind"],
+                payload=_object(row["payload_json"]),
+                created_at=row["created_at"],
+            )
+            phase = str(event.payload.get("phase") or "")
+            identity = _tool_event_identity(event)
+            if phase in {"started", "repairing"}:
+                active[identity] = event
+            elif phase in {"completed", "failed", "blocked", "rejected", "waiting", "cancelled"}:
+                active.pop(identity, None)
+        return sorted(active.values(), key=lambda event: event.seq)
 
     def latest_event_seq(self, project_id: str) -> int:
         with self._lock:
@@ -1302,6 +1484,18 @@ def _arguments_hash(arguments: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _tool_event_identity(event: RuntimeEvent) -> str:
+    payload = event.payload
+    tool_call_id = str(payload.get("toolCallId") or "").strip()
+    if tool_call_id:
+        return f"call:{tool_call_id}"
+    trace_group_id = str(payload.get("traceGroupId") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if trace_group_id:
+        return f"group:{trace_group_id}"
+    return f"name:{name}"
+
+
 def _retry_entry_from_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "runId": str(row["run_id"]),
@@ -1350,6 +1544,9 @@ def _project_state_values(state: ProjectAgentState) -> tuple[Any, ...]:
         state.project_id,
         state.state,
         state.revision,
+        state.round_mode,
+        state.round_id,
+        state.baseline_revision,
         state.run_id,
         state.interaction_id,
         state.checkpoint_id,
@@ -1371,6 +1568,9 @@ def _project_state_from_row(row: sqlite3.Row) -> ProjectAgentState:
         project_id=row["project_id"],
         state=row["state"],
         revision=int(row["revision"]),
+        round_mode=str(row["round_mode"] or "initial"),
+        round_id=str(row["round_id"] or ""),
+        baseline_revision=str(row["baseline_revision"] or ""),
         run_id=row["run_id"],
         interaction_id=row["interaction_id"],
         checkpoint_id=row["checkpoint_id"],

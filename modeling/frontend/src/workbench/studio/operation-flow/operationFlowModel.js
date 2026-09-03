@@ -6,6 +6,14 @@ const NODE_HORIZONTAL_PADDING = 24;
 const NODE_LINE_HEIGHT = 17;
 const NODE_VERTICAL_PADDING = 20;
 
+export function operationFlowZoom(value) {
+  return Math.min(2, Math.max(0.5, Math.round((Number(value) || 1) * 4) / 4));
+}
+
+export function operationFlowWheelZoom(currentZoom, deltaY) {
+  return operationFlowZoom((Number(currentZoom) || 1) + (Number(deltaY) < 0 ? 0.25 : -0.25));
+}
+
 export function operationFlowMode(flow) {
   if (flow?.defaultView === 'business-flow' && flow.diagrams?.length) return 'business-flow';
   if (flow?.steps?.length) return 'operation-steps';
@@ -62,7 +70,8 @@ export function projectOperationFlowDiagram(diagram, focusedNodeIds = []) {
       id: edge.id,
       source: edge.from,
       target: edge.to,
-      type: 'smoothstep',
+      // Use sharp orthogonal segments so zooming cannot amplify rounded-corner distortion.
+      type: 'step',
       label: displayEdgeLabel(edge) || undefined,
       data: { kind: edge.kind || 'sequence' },
     })),

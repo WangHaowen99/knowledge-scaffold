@@ -935,6 +935,24 @@ class JiuwenAsyncAgentRuntime:
 
     @staticmethod
     def _runtime_error(exc: Exception) -> RuntimeErrorInfo:
+        if isinstance(exc, BaseExceptionGroup):
+            child_errors = [
+                JiuwenAsyncAgentRuntime._runtime_error(child)
+                for child in exc.exceptions
+                if isinstance(child, Exception)
+            ]
+            if child_errors and all(
+                error.error_code != "INTERNAL_ERROR"
+                for error in child_errors
+            ):
+                first = child_errors[0]
+                first_payload = first.model_dump(mode="json")
+                if all(
+                    item.model_dump(mode="json") == first_payload
+                    for item in child_errors[1:]
+                ):
+                    return first
+
         exception_type = type(exc)
         is_solver_guard_error = (
             exception_type.__name__ == "SolverRouteGuardError"
@@ -1005,11 +1023,16 @@ class JiuwenAsyncAgentRuntime:
                 getattr(exc, "error_code", None)
                 or type(exc).__name__
             ).strip()
+            source = (
+                "tool"
+                if str(getattr(exc, "tool_name", None) or "").strip()
+                else JiuwenAsyncAgentRuntime._error_source_from_code(explicit_code)
+            )
             return RuntimeErrorInfo(
                 error_code=explicit_code[:160],
                 message=redact_sensitive_text(safe_public_message).strip()[:1000],
                 retriable=bool(getattr(exc, "retriable", False)),
-                source=JiuwenAsyncAgentRuntime._error_source_from_code(explicit_code),
+                source=source,
                 details={},
             )
 

@@ -28,6 +28,7 @@ ResolveIssues = Callable[[list[str]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 # Keep the outer tool deadline beyond the core client's 1800-second deadline.
 FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
+EVALUATION_PENDING_MESSAGE = "正式评测任务已创建，可在评测界面查看实时进度。"
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
 LEADER_TABLE_SAMPLE_ROWS = 5
 TABLE_FIELD_SAMPLE_VALUES = 3
@@ -57,6 +58,7 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "patch_object_source_binding",
     "delete_domain_resource",
     "stage_script_source",
+    "stage_script_patch",
 })
 VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "stage_change_set",
@@ -83,6 +85,7 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "patch_object_source_binding",
     "delete_domain_resource",
     "stage_script_source",
+    "stage_script_patch",
 })
 VALIDATION_REPAIR_RESET_TOOLS = frozenset({
     "discard_change_set",
@@ -148,6 +151,7 @@ class ToolContext:
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     recovery_waiting: bool = False
+    pending_evaluation: dict[str, Any] | None = None
     evaluation_cancel_authorized: bool = False
     allowed_tools: frozenset[str] | None = None
     confirmation_required: bool = False
@@ -743,9 +747,16 @@ def domain_action_schema(operations: list[str]) -> dict[str, Any]:
             "properties": {
                 "op": {"type": "string", "enum": operations},
                 "value": {
+                    "description": (
+                        "文本、列表、流程步骤和普通标量动作的值；"
+                        "attach_evidence/detach_evidence 禁止使用此字段。"
+                    ),
                     "oneOf": [STRING, {"type": "array", "items": STRING, "maxItems": 500}],
                 },
-                "token": STRING,
+                "token": {
+                    **STRING,
+                    "description": "attach_evidence/detach_evidence 必填的单个证据 token。",
+                },
                 "item_id": STRING,
                 "after_id": STRING,
                 "field_key": STRING,
@@ -835,7 +846,7 @@ CHANGE_PLAN_TASK = {
             "items": {"type": "string", "enum": [
                 "create_object", "create_rule", "create_operation", "create_metric",
                 "patch_object", "patch_rule", "patch_operation", "patch_metric",
-                "sync_schema_objects", "patch_object_source_binding", "delete_domain_resource", "stage_script_source",
+                "sync_schema_objects", "patch_object_source_binding", "delete_domain_resource", "stage_script_patch",
             ]},
         },
         "depends_on": {"type": "array", "maxItems": 100, "items": STRING},
@@ -1008,7 +1019,13 @@ CORE_TOOL_SPECS = (
         "正在同步完整数据表",
     ),
     ToolSpec("list_dir", "列出知识包目录。", {"path": PATH}, ("path",), display="正在查看知识包目录"),
-    ToolSpec("read_file", "读取知识包文件。", {"path": PATH}, ("path",), display="正在读取知识文件"),
+    ToolSpec(
+        "read_file",
+        "读取非脚本知识包文件。scripts/*.py 是受管源码，必须使用 get_script_edit_context 按符号读取，禁止通过此工具读取完整 Python 文件。",
+        {"path": PATH},
+        ("path",),
+        display="正在读取知识文件",
+    ),
     ToolSpec(
         "create_change_plan",
         "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
@@ -1863,8 +1880,61 @@ CORE_TOOL_SPECS = (
         display="正在读取脚本契约",
     ),
     ToolSpec(
+        "get_script_edit_context",
+        "读取脚本符号索引；指定 symbols 时只返回目标顶层符号及直接依赖源码。"
+        "新增脚本返回 Core 生成的 CLI 脚手架，禁止通过该工具读取无关脚本源码。",
+        {
+            "script_key": STRING,
+            "symbols": {
+                "type": "array", "maxItems": 20, "items": {
+                    "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                },
+            },
+        },
+        ("script_key",),
+        display="正在读取脚本符号上下文",
+    ),
+    ToolSpec(
+        "stage_script_patch",
+        "按当前源码、契约和目标节点哈希提交 Python 顶层符号补丁。Core 只替换授权节点，"
+        "其余源码保持不变，并复用脚本安全、绑定和候选门禁。",
+        {
+            "script_key": STRING,
+            "plan_task_id": PLAN_TASK_ID,
+            "expected_revision": WORKING_REVISION,
+            "expected_contract_hash": RESOURCE_HASH,
+            "base_source_hash": RESOURCE_HASH,
+            "mutation_id": MUTATION_ID,
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "edits": {
+                "type": "array", "minItems": 1, "maxItems": 20, "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["replace_function", "replace_assignment", "insert_before_function"],
+                        },
+                        "symbol": {
+                            "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                        },
+                        "expected_node_hash": RESOURCE_HASH,
+                        "source": {"type": "string", "minLength": 1, "maxLength": 100000},
+                    },
+                    "required": ["kind", "symbol", "expected_node_hash", "source"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        (
+            "script_key", "expected_revision", "expected_contract_hash", "base_source_hash",
+            "mutation_id", "reason", "edits",
+        ),
+        False,
+        "正在应用脚本符号补丁",
+    ),
+    ToolSpec(
         "stage_script_source",
-        "按已定义契约提交 Python 源码。核心检查语法、安全、argparse、JSON 输出、占位实现和操作双向绑定后，原子生成候选。",
+        "仅供历史 checkpoint 恢复：按已定义契约提交完整 Python 源码。新运行必须使用 stage_script_patch。",
         {
             "script_key": STRING,
             "plan_task_id": PLAN_TASK_ID,
@@ -1897,7 +1967,8 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "run_evaluation",
-        "运行现有评测管道。省略 case_ids 表示全量；仅在验证融合前来源回归时传 source_id。",
+        "创建一个后台评测任务并立即返回。省略 case_ids 表示全量；仅在验证融合前来源回归时传 source_id。"
+        "任务创建后立即结束当前 Agent 回合，真实进度和终态由评测界面及终态事件提供。",
         {"case_ids": {"type": "array", "items": STRING}, "source_id": STRING},
         display="正在运行评测",
     ),
@@ -1985,6 +2056,21 @@ class CoreTool(Tool):
                 "retryable": False,
                 "instruction": "不要停止评测；如需说明能力，只回答当前能力和状态。",
                 "display": {"text": "未停止评测：当前没有明确的停止请求"},
+            }, ensure_ascii=False)
+        if (
+            self.spec.name == "create_change_plan"
+            and self.context.phase == "increment"
+            and str(arguments.get("mode") or "") == "generation"
+        ):
+            return json.dumps({
+                "error": "INCREMENT_PLAN_MODE_REQUIRED",
+                "reason": "增量建模必须基于影响范围修改现有基线，不能建立全量生成计划",
+                "retryable": False,
+                "instruction": (
+                    "先完成资料影响分析，再使用 mode='expert_edit'，"
+                    "只为本轮直接受影响的资源建立修改任务。"
+                ),
+                "display": {"text": "已阻止全量生成计划，请只规划本轮受影响内容"},
             }, ensure_ascii=False)
         arguments = _bounded_source_arguments(self.spec.name, arguments)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -2399,7 +2485,10 @@ class FocusTool(Tool):
             ToolCard(
                 id=f"focus_{context.run_id}",
                 name="focus",
-                description="控制前端中栏当前展示和高亮。引用文件、流程节点、知识条目、diff 或门禁前先调用。",
+                description=(
+                    "控制前端中栏当前展示和高亮。引用文件、流程节点、知识条目、diff 或门禁前先调用；"
+                    "影响分析结果会由系统自动定位，通常不要传 data，也不要复制原始证据清单。"
+                ),
                 input_params={
                     "type": "object",
                     "properties": {
@@ -2407,7 +2496,8 @@ class FocusTool(Tool):
                         "target": STRING,
                         "node": STRING,
                         "anchor": STRING,
-                        "view": {"type": "string", "enum": ["graph", "table", "entry"]},
+                        "view": {"type": "string", "enum": ["graph", "table", "entry", "runs"]},
+                        "roundId": STRING,
                         "elementId": {
                             "type": "string",
                             "description": "Studio 稳定元素 ID，例如 rule:safety-stock。",
@@ -2432,7 +2522,7 @@ class FocusTool(Tool):
         target = input_dict(inputs)
         target = {
             key: target[key]
-            for key in ("kind", "target", "node", "anchor", "view", "elementId", "data")
+            for key in ("kind", "target", "node", "anchor", "view", "roundId", "elementId", "data")
             if target.get(key)
         }
         if target.get("kind") == "studio":
@@ -2588,6 +2678,7 @@ DOMAIN_PHASE_TOOLS = frozenset({
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
 })
+DOMAIN_READ_TOOLS = frozenset({"list_domain_resources", "get_domain_resource"})
 FUSION_PHASE_TOOLS = frozenset({
     "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",
     "get_package_fusion_plan", "create_package_fusion_plan", "update_package_fusion_plan",
@@ -2597,11 +2688,12 @@ FUSION_PHASE_TOOLS = frozenset({
 EVALUATION_PHASE_TOOLS = frozenset({"run_evaluation", "get_evaluation_results", "cancel_evaluation", "query_eval_db"})
 SCRIPT_PHASE_TOOLS = frozenset({
     "analyze_deterministic_capabilities", "confirm_deterministic_scope",
-    "define_script_contract", "get_script_contract", "stage_script_source", "run_script_test",
+    "define_script_contract", "get_script_contract", "get_script_edit_context",
+    "stage_script_patch", "stage_script_source", "run_script_test",
 })
 LEGACY_TOOL_ALIASES = frozenset({
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
-    "update_plan",
+    "update_plan", "stage_script_source",
 })
 CHANGE_SET_DIRECT_ACTION_TOOLS = frozenset({
     "create_object", "create_rule", "create_operation", "create_metric",
@@ -2628,6 +2720,7 @@ def core_tool_specs_for_phase(
                 selected_specs.append(spec)
         return tuple(selected_specs)
     allowed_domain = phase in {"knowledge", "increment"}
+    allowed_domain_read = allowed_domain or phase == "validation"
     allowed_fusion = phase == "increment"
     allowed_evaluation = phase in {"validation", "evaluation", "release"}
     selected_specs = []
@@ -2636,7 +2729,9 @@ def core_tool_specs_for_phase(
             continue
         required_for_recovery = spec.name in required_tools
         allowed_for_phase = (
-            (spec.name not in DOMAIN_PHASE_TOOLS or allowed_domain)
+            (spec.name not in DOMAIN_PHASE_TOOLS
+             or allowed_domain
+             or (allowed_domain_read and spec.name in DOMAIN_READ_TOOLS))
             and (spec.name not in FUSION_PHASE_TOOLS or allowed_fusion)
             and (spec.name not in EVALUATION_PHASE_TOOLS or allowed_evaluation)
             and (spec.name not in SCRIPT_PHASE_TOOLS or phase in {"validation", "increment"})

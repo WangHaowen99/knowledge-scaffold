@@ -99,7 +99,12 @@ export class AgentCaptureAttemptTracker {
   constructor(
     private readonly attempt: number,
     private readonly targetToolName: string,
-  ) {}
+    acceptedToolNames: readonly string[] = [targetToolName],
+  ) {
+    this.acceptedToolNames = new Set([targetToolName, ...acceptedToolNames]);
+  }
+
+  private readonly acceptedToolNames: ReadonlySet<string>;
 
   observe(event: unknown): void {
     if (!event || typeof event !== 'object') return;
@@ -125,7 +130,7 @@ export class AgentCaptureAttemptTracker {
       return;
     }
 
-    if (candidate.toolName !== this.targetToolName) return;
+    if (typeof candidate.toolName !== 'string' || !this.acceptedToolNames.has(candidate.toolName)) return;
     if (candidate.type === 'tool_execution_start') {
       this.targetToolStartedCount += 1;
       return;

@@ -8,7 +8,11 @@ const PHASES = {
   },
   revision: {
     completedSteps: 1,
-    current: (state) => `模型正在修改知识包（第 ${state.attempt}/${state.maxAttempts} 次）`,
+    current: (state) => state.protocol === 'targeted_incremental'
+      ? state.shardCount
+        ? `${state.shardOrdering === 'dependency_serial' ? '正在按依赖顺序生成' : '正在并行生成'} ${state.shardCount} 个目标符号补丁（第 ${state.attempt}/${state.maxAttempts} 次）`
+        : `正在生成 ${state.changeSetCount || 1} 个目标资源变更组（第 ${state.attempt}/${state.maxAttempts} 次）`
+      : `模型正在修改知识包（第 ${state.attempt}/${state.maxAttempts} 次）`,
     next: ['校验修改结果', '保存待确认的修改'],
   },
   validation: {
@@ -36,9 +40,11 @@ export function optimizationProgress(node, now = Date.now()) {
   const phaseElapsed = Math.max(0, (now - phaseStartedAt) / 1000);
   // 完整规格会随知识资源数增长；线上 30 个左右资源、3 条建议曾耗时约 18 分钟。
   // 初始估算取保守值，避免给用户一个明显偏短的倒计时。
-  const revisionSeconds = Math.min(1800,
-    360 + Math.max(0, Number(state.resourceCount) || 0) * 12
-      + Math.max(0, Number(state.selectedCount) || 0) * 60);
+  const revisionSeconds = state.protocol === 'targeted_incremental'
+    ? 300
+    : Math.min(1800,
+      360 + Math.max(0, Number(state.resourceCount) || 0) * 12
+        + Math.max(0, Number(state.selectedCount) || 0) * 60);
   const estimateOverdue = state.phase === 'revision' && phaseElapsed >= revisionSeconds;
   let estimatedSeconds = 0;
   if (state.phase === 'prepare') estimatedSeconds = Math.max(5, 10 - phaseElapsed) + revisionSeconds + 15 + 10;

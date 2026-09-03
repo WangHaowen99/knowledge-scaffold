@@ -13,7 +13,8 @@ export const CHANGE_SET_DOMAIN_TOOLS = new Set([
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
 ]);
 export const CHANGE_PLAN_DIRECT_TOOLS = new Set([
-  'sync_schema_objects', 'patch_object_source_binding', 'delete_domain_resource', 'stage_script_source',
+  'sync_schema_objects', 'patch_object_source_binding', 'delete_domain_resource',
+  'stage_script_source', 'stage_script_patch',
 ]);
 const CHANGE_PLAN_ALLOWED_TOOLS = new Set([
   ...CHANGE_SET_DOMAIN_TOOLS,
@@ -84,6 +85,13 @@ export interface ChangeSetActionInput {
   taskId: string;
   tool: string;
   arguments: Record<string, unknown>;
+}
+
+export interface ScriptCandidateDependencyAuthorization {
+  planId: string;
+  taskId: string;
+  allowedGroupIds: string[];
+  allowedPaths: string[];
 }
 
 interface TaskInput {
@@ -342,6 +350,61 @@ export class ChangeControlStore {
       });
     }
     return { plan, task };
+  }
+
+  scriptCandidateDependencyAuthorization(input: {
+    projectId: string;
+    runId: string;
+    taskId: string;
+    tool: string;
+    targetKey: string;
+  }): ScriptCandidateDependencyAuthorization | null {
+    // Incremental scripts may consume staged knowledge only through their declared dependency chain.
+    // Returning both group IDs and paths prevents an unrelated candidate from sharing this exception.
+    const plan = this.activePlan(input.projectId, input.runId);
+    if (!plan || plan.mode !== 'expert_edit' || plan.approval_status !== 'approved') return null;
+    const tasks = this.taskRows(plan.id);
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const task = taskById.get(input.taskId);
+    if (!task || task.resource_kind !== 'script' || task.target_key !== input.targetKey) return null;
+    if (!['pending', 'staged'].includes(task.status)) return null;
+    if (!parseStringArray(task.allowed_tools_json).includes(input.tool)) return null;
+
+    const allowedGroupIds = new Set<string>();
+    const allowedPaths = new Set<string>();
+    const visited = new Set<string>();
+    const pending = [...parseStringArray(task.depends_on_json)];
+    while (pending.length) {
+      const dependencyId = pending.pop()!;
+      if (visited.has(dependencyId)) continue;
+      visited.add(dependencyId);
+      const dependency = taskById.get(dependencyId);
+      if (!dependency || !['staged', 'validated', 'waiting_user', 'accepted', 'skipped'].includes(dependency.status)) {
+        return null;
+      }
+      pending.push(...parseStringArray(dependency.depends_on_json));
+      const prefix = {
+        object: 'objects',
+        operation: 'operations',
+        rule: 'rules',
+        metric: 'metrics',
+      }[dependency.resource_kind];
+      if (!prefix || ['accepted', 'skipped'].includes(dependency.status)) continue;
+      if (!dependency.change_set_id) return null;
+      const changeSet = this.db.prepare(`SELECT * FROM agent_change_sets
+        WHERE id = ? AND project_id = ? AND run_id = ? AND plan_id = ?`)
+        .get(dependency.change_set_id, input.projectId, input.runId, plan.id) as ChangeSetRow | undefined;
+      if (!changeSet?.group_id || !['staged', 'validated', 'waiting_user'].includes(changeSet.status)) return null;
+      allowedGroupIds.add(changeSet.group_id);
+      allowedPaths.add(`${prefix}/${dependency.target_key}.md`);
+    }
+    if (!allowedGroupIds.size || !allowedPaths.size) return null;
+    return {
+      planId: plan.id,
+      taskId: task.id,
+      allowedGroupIds: [...allowedGroupIds],
+      allowedPaths: [...allowedPaths],
+    };
   }
 
   completeDirectTask(input: {

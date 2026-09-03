@@ -207,3 +207,85 @@ export const createFiles = [
   { name: '供应商台账.xlsx', st: 'ok', meta: '解析完成 · 1 张表 / 12 字段' },
   { name: '质检记录扫描件.pdf', st: 'parsing', pct: 64, meta: '解析中' },
 ];
+
+/* 阶段轨 demo 数据。真实模式下阶段表来自 modeling-agent 的 /state、
+   门禁来自确定性核心的 /agent/progress，组件用 demo 开关分流，不会混用。 */
+export const railPhases = [
+  { phase: 'intake', label: '资料与目标准备', gate: null, linear: true },
+  { phase: 'goal', label: '目标确认', gate: 'materials_ready', linear: true },
+  { phase: 'process', label: '流程建模', gate: 'goal_confirmed', linear: true },
+  { phase: 'knowledge', label: '知识建模', gate: 'process_confirmed', linear: true },
+  { phase: 'increment', label: '增量建模', gate: null, linear: false },
+  { phase: 'validation', label: '确定性验证', gate: 'knowledge_confirmed', linear: true },
+  { phase: 'evaluation', label: '评测', gate: 'ready_for_eval', linear: true },
+  { phase: 'release', label: '发布交付', gate: 'releasable', linear: true },
+];
+
+export const railScenePhase = {
+  modeling: 'knowledge',
+  confirm: 'knowledge',
+  materials: 'intake',
+  increment: 'increment',
+  merge: 'knowledge',
+  gates: 'release',
+};
+
+export const railSceneExecution = {
+  modeling: 'running',
+  confirm: 'waiting',
+  materials: 'running',
+  increment: 'idle',
+  merge: 'running',
+  gates: 'waiting',
+};
+
+const passing = (id, label) => ({ id, label, pass: true, blockers: [], warnings: [] });
+
+/* 按场景给一套自洽的门禁：阶段停在哪一步，没通过的闸就该出现在那一步之后。
+   真实模式下这些结论全部来自 /agent/progress。 */
+export const railGates = {
+  default: [
+    passing('materials_ready', '资料准备'),
+    passing('goal_confirmed', '建模目标确认'),
+    passing('process_confirmed', '业务流程确认'),
+    {
+      id: 'knowledge_confirmed',
+      label: '知识内容确认',
+      pass: false,
+      blockers: ['确认知识条目 rules/安全库存判断.md', '确认知识条目 metrics/周转率.md'],
+      warnings: [],
+    },
+    { id: 'ready_for_eval', label: '评测准备', pass: false, blockers: ['先完成知识内容确认'], warnings: [] },
+    { id: 'releasable', label: '发布条件', pass: false, blockers: ['先通过评测准备'], warnings: [] },
+  ],
+  materials: [
+    { id: 'materials_ready', label: '资料准备', pass: false, blockers: ['至少上传并成功解析 1 份资料'], warnings: ['资料无法解析：质检记录扫描件.pdf'] },
+    { id: 'goal_confirmed', label: '建模目标确认', pass: false, blockers: ['确认当前建模目标'], warnings: [] },
+    { id: 'process_confirmed', label: '业务流程确认', pass: false, blockers: ['形成并确认至少 1 条业务流程'], warnings: [] },
+    { id: 'knowledge_confirmed', label: '知识内容确认', pass: false, blockers: ['形成并确认对象、操作或规则知识'], warnings: [] },
+    { id: 'ready_for_eval', label: '评测准备', pass: false, blockers: ['先完成知识内容确认'], warnings: [] },
+    { id: 'releasable', label: '发布条件', pass: false, blockers: ['先通过评测准备'], warnings: [] },
+  ],
+  gates: [
+    passing('materials_ready', '资料准备'),
+    passing('goal_confirmed', '建模目标确认'),
+    passing('process_confirmed', '业务流程确认'),
+    passing('knowledge_confirmed', '知识内容确认'),
+    passing('ready_for_eval', '评测准备'),
+    {
+      id: 'releasable',
+      label: '发布条件',
+      pass: false,
+      blockers: ['由项目负责人确认真实用例覆盖和稳定版本号，并完成正式发布'],
+      warnings: [],
+    },
+  ],
+  increment: [
+    passing('materials_ready', '资料准备'),
+    passing('goal_confirmed', '建模目标确认'),
+    passing('process_confirmed', '业务流程确认'),
+    passing('knowledge_confirmed', '知识内容确认'),
+    passing('ready_for_eval', '评测准备'),
+    passing('releasable', '发布条件'),
+  ],
+};

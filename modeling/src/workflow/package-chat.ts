@@ -4,7 +4,8 @@ import { AgentRunTimeoutError, makeAgent, runAgent, runAgentCaptured } from './a
 import { assertObjectDataMappings } from './data-mapping.js';
 import {
   buildDocumentReadingTools,
-  specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema,
+  specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema,
+  specScriptContractSchema,
 } from './tools.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './spec-validation.js';
 import type {
@@ -25,6 +26,17 @@ import { attachKnowledgeChangeEvidence } from './knowledge-evidence.js';
 import { renderPackage } from './package-render.js';
 import { canonicalizePackageSpec } from './package-spec.js';
 import { DATA_PROVIDER_SCRIPT_CONTRACT } from './script-safety.js';
+import { buildScriptCliArguments } from './script-cli.js';
+import { recordScriptTestReceipt, scriptTestSourceHash } from './script-test-receipts.js';
+import { runScriptCasesInJiuwenbox } from '../agent/sandbox.js';
+import { buildPythonScriptScaffold } from './python-script-scaffold.js';
+import {
+  applyPythonSourceEdits,
+  inspectPythonSource,
+  pythonPatchBaseHash,
+  selectPythonSourceSymbols,
+  type PythonSourceEdit,
+} from '../evaluation/python-source-patch.js';
 import { MAX_CHANGE_PLAN_DESCRIPTION_LENGTH } from '../ai-construction/messages.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 import { withCurrentContent } from '../ai-construction/change-plan-context.js';
@@ -60,6 +72,37 @@ export interface AtomicResourcePatch {
   metrics?: SpecMetric[];
   scripts?: SpecScript[];
 }
+
+type NewScriptSubmission = {
+  contract: Omit<SpecScript, 'sourceCode'>;
+  businessFunction: string;
+  helperFunctions?: string[];
+  cases: ScriptGenerationCase[];
+};
+
+type ExistingScriptSubmission = {
+  scriptKey: string;
+  baseSourceHash: string;
+  edits: PythonSourceEdit[];
+  metadata?: {
+    title?: string;
+    description?: string;
+    boundaries?: string[];
+    evidence?: string[];
+  };
+  cases: ScriptGenerationCase[];
+};
+
+type ScriptGenerationCase = {
+  kind: 'normal' | 'boundary' | 'failure';
+  input: Record<string, unknown>;
+  expected: unknown;
+};
+
+type AtomicModelSubmission = Omit<AtomicResourcePatch, 'scripts'> & {
+  newScripts?: NewScriptSubmission[];
+  scriptPatches?: ExistingScriptSubmission[];
+};
 export interface ChatPlanResult {
   reply?: string;
   plan?: ChangePlan;
@@ -98,6 +141,14 @@ export interface PackageApplyCandidate {
   spec: PackageSpec;
   coverage: CoverageResult;
   files: Record<string, string>;
+  scriptTests: Array<{
+    scriptKey: string;
+    sourceHash: string;
+    total: number;
+    passed: number;
+    failed: number;
+    sandbox: 'jiuwenbox';
+  }>;
 }
 
 /** 候选复检与正式保存一致，保留不由 PackageSpec 生成的流程图和扩展附件。 */
@@ -141,6 +192,10 @@ export interface PackageApplyOptions {
   completedBatches?: Record<string, AtomicResourcePatch>;
   onBatchCompleted?: (batchKey: string, patch: AtomicResourcePatch) => void;
   onProgress?: (progress: PackageApplyProgress) => void | Promise<void>;
+  /** 受控测试可注入任务模型；生产默认使用后台任务模型。 */
+  llmOverride?: LlmDeps;
+  /** 生产使用 JiuwenBox；测试可注入等价隔离执行器。 */
+  runScriptCases?: typeof runScriptCasesInJiuwenbox;
   /** 受控修复需先收尾质量尝试，再由控制器广播版本事件。 */
   emitRevisionEvent?: boolean;
   createExpertReview?: (
@@ -619,13 +674,75 @@ const resourceProperty: Record<ResourceKind, keyof AtomicResourcePatch> = {
   script: 'scripts',
 };
 
-const resourceSchema: Record<ResourceKind, () => unknown> = {
+const resourceSchema: Record<Exclude<ResourceKind, 'script'>, () => unknown> = {
   object: specObjectSchema,
   operation: specOperationSchema,
   rule: specRuleSchema,
   metric: specMetricSchema,
-  script: specScriptSchema,
 };
+
+const pythonSourceEditSchema = () => Type.Union([
+  Type.Object({
+    kind: Type.Literal('replace_function'),
+    symbol: Type.String({ pattern: '^[A-Za-z_][A-Za-z0-9_]*$' }),
+    expectedNodeHash: Type.String({ pattern: '^sha256:[a-f0-9]{64}$' }),
+    source: Type.String({ minLength: 1, maxLength: 100_000 }),
+  }),
+  Type.Object({
+    kind: Type.Literal('replace_assignment'),
+    symbol: Type.String({ pattern: '^[A-Za-z_][A-Za-z0-9_]*$' }),
+    expectedNodeHash: Type.String({ pattern: '^sha256:[a-f0-9]{64}$' }),
+    source: Type.String({ minLength: 1, maxLength: 100_000 }),
+  }),
+  Type.Object({
+    kind: Type.Literal('insert_before_function'),
+    symbol: Type.String({ pattern: '^[A-Za-z_][A-Za-z0-9_]*$' }),
+    expectedNodeHash: Type.String({ pattern: '^sha256:[a-f0-9]{64}$' }),
+    source: Type.String({ minLength: 1, maxLength: 100_000 }),
+  }),
+]);
+
+const scriptGenerationCasesSchema = () => Type.Array(Type.Object({
+  kind: Type.Union([
+    Type.Literal('normal'),
+    Type.Literal('boundary'),
+    Type.Literal('failure'),
+  ]),
+  input: Type.Record(Type.String(), Type.Unknown()),
+  expected: Type.Unknown(),
+}), {
+  minItems: 3,
+  maxItems: 12,
+  description: '至少包含 normal、boundary、failure 各一个生产同型 CLI 用例。',
+});
+
+export function buildScriptGenerationCliCases(
+  script: SpecScript,
+  cases: ScriptGenerationCase[],
+) {
+  const kinds = new Set(cases.map((item) => item.kind));
+  const missingKinds = (['normal', 'boundary', 'failure'] as const)
+    .filter((kind) => !kinds.has(kind));
+  if (missingKinds.length) {
+    throw new Error(`脚本 ${script.key} 缺少契约测试类型：${missingKinds.join('、')}`);
+  }
+  return cases.map((testCase, caseIndex) => {
+    if (testCase.kind === 'failure') {
+      const expected = testCase.expected as { error?: unknown } | null;
+      if (!expected || typeof expected !== 'object'
+        || typeof expected.error !== 'string' || !expected.error.trim()) {
+        throw new Error(`脚本 ${script.key} 的失败用例必须用非空 error 文本声明预期错误`);
+      }
+    }
+    const cli = buildScriptCliArguments(script.parameters, testCase.input);
+    if (cli.missing.length || cli.invalid.length) {
+      throw new Error(
+        `脚本 ${script.key} 的第 ${caseIndex + 1} 个测试输入无效：${[...cli.missing, ...cli.invalid].join('；')}`,
+      );
+    }
+    return { argv: cli.args, expected: testCase.expected };
+  });
+}
 
 export function atomicChangeBatchKey(batch: ChangePlan): string {
   return batch.changes
@@ -638,16 +755,138 @@ export function atomicChangeBatchKey(batch: ChangePlan): string {
 export function buildAtomicPatchParameters(batch: ChangePlan) {
   const properties: Record<string, unknown> = {};
   for (const kind of ['object', 'operation', 'rule', 'metric', 'script'] as ResourceKind[]) {
-    const count = batch.changes.filter((change) => (
+    const changes = batch.changes.filter((change) => (
       change.targetKind === kind && change.action !== 'remove'
-    )).length;
+    ));
+    const count = changes.length;
     if (!count) continue;
+    if (kind === 'script') {
+      const additions = changes.filter((change) => change.action === 'add').length;
+      const modifications = changes.filter((change) => change.action === 'modify').length;
+      if (additions) {
+        properties.newScripts = Type.Array(Type.Object({
+          contract: specScriptContractSchema(),
+          businessFunction: Type.String({
+            minLength: 1,
+            maxLength: 100_000,
+            description: '只提交完整的 run_business_logic 顶层函数，不得包含 CLI 或 main。',
+          }),
+          helperFunctions: Type.Optional(Type.Array(Type.String({
+            minLength: 1,
+            maxLength: 100_000,
+            description: '可选的完整顶层辅助函数定义。',
+          }), { maxItems: 20 })),
+          cases: scriptGenerationCasesSchema(),
+        }), { minItems: additions, maxItems: additions });
+      }
+      if (modifications) {
+        properties.scriptPatches = Type.Array(Type.Object({
+          scriptKey: Type.String(),
+          baseSourceHash: Type.String({ pattern: '^sha256:[a-f0-9]{64}$' }),
+          edits: Type.Array(pythonSourceEditSchema(), { minItems: 1, maxItems: 20 }),
+          metadata: Type.Optional(Type.Object({
+            title: Type.Optional(Type.String()),
+            description: Type.Optional(Type.String()),
+            boundaries: Type.Optional(Type.Array(Type.String())),
+            evidence: Type.Optional(Type.Array(Type.String())),
+          })),
+          cases: scriptGenerationCasesSchema(),
+        }), { minItems: modifications, maxItems: modifications });
+      }
+      continue;
+    }
     properties[resourceProperty[kind]] = Type.Array(resourceSchema[kind]() as any, {
       minItems: count,
       maxItems: count,
     });
   }
   return Type.Object(properties as any, { additionalProperties: false });
+}
+
+export function compileAtomicModelSubmission(
+  current: PackageSpec,
+  batch: ChangePlan,
+  submission: AtomicModelSubmission,
+): AtomicResourcePatch {
+  const patch: AtomicResourcePatch = {
+    ...(submission.objects ? { objects: submission.objects } : {}),
+    ...(submission.operations ? { operations: submission.operations } : {}),
+    ...(submission.rules ? { rules: submission.rules } : {}),
+    ...(submission.metrics ? { metrics: submission.metrics } : {}),
+  };
+  const additions = batch.changes.filter((change) => (
+    change.targetKind === 'script' && change.action === 'add'
+  ));
+  const modifications = batch.changes.filter((change) => (
+    change.targetKind === 'script' && change.action === 'modify'
+  ));
+  if ((submission.newScripts?.length ?? 0) !== additions.length) {
+    throw new Error(`模型必须提交 ${additions.length} 个新增脚本业务实现`);
+  }
+  if ((submission.scriptPatches?.length ?? 0) !== modifications.length) {
+    throw new Error(`模型必须提交 ${modifications.length} 个已有脚本符号补丁`);
+  }
+  const expectedAdditions = new Set(additions.map((change) => change.targetKey));
+  const expectedModifications = new Set(modifications.map((change) => change.targetKey));
+  const scripts: SpecScript[] = [];
+  for (const submitted of submission.newScripts ?? []) {
+    const contract = submitted.contract;
+    if (!expectedAdditions.delete(contract.key)) {
+      throw new Error(`模型提交了计划外的新增脚本 ${contract.key}`);
+    }
+    const scaffold = buildPythonScriptScaffold(contract);
+    const index = inspectPythonSource(scaffold);
+    const businessNode = index.symbols.find((symbol) => symbol.qualifiedName === 'run_business_logic');
+    if (!businessNode) throw new Error(`Core 脚手架缺少 run_business_logic：${contract.key}`);
+    const edits: PythonSourceEdit[] = [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expectedNodeHash: businessNode.nodeHash,
+      source: submitted.businessFunction,
+    }];
+    if (submitted.helperFunctions?.length) {
+      edits.push({
+        kind: 'insert_before_function',
+        symbol: 'run_business_logic',
+        expectedNodeHash: businessNode.nodeHash,
+        source: submitted.helperFunctions.join('\n\n'),
+      });
+    }
+    scripts.push({
+      ...contract,
+      sourceCode: applyPythonSourceEdits(scaffold, edits, {
+        expectedBaseSourceHash: index.baseSourceHash,
+        requireNodeHashes: true,
+      }),
+    });
+  }
+  if (expectedAdditions.size) {
+    throw new Error(`模型遗漏新增脚本：${[...expectedAdditions].join('、')}`);
+  }
+  for (const submitted of submission.scriptPatches ?? []) {
+    if (!expectedModifications.delete(submitted.scriptKey)) {
+      throw new Error(`模型提交了计划外的脚本补丁 ${submitted.scriptKey}`);
+    }
+    const existing = (current.scripts ?? []).find((script) => script.key === submitted.scriptKey);
+    if (!existing) throw new Error(`已有脚本不存在：${submitted.scriptKey}`);
+    const actualBaseHash = pythonPatchBaseHash(existing.sourceCode);
+    if (submitted.baseSourceHash !== actualBaseHash) {
+      throw new Error(`脚本 ${submitted.scriptKey} 的基线源码已变化，请重新读取符号上下文`);
+    }
+    scripts.push({
+      ...existing,
+      ...(submitted.metadata ?? {}),
+      sourceCode: applyPythonSourceEdits(existing.sourceCode, submitted.edits, {
+        expectedBaseSourceHash: submitted.baseSourceHash,
+        requireNodeHashes: true,
+      }),
+    });
+  }
+  if (expectedModifications.size) {
+    throw new Error(`模型遗漏脚本补丁：${[...expectedModifications].join('、')}`);
+  }
+  if (scripts.length) patch.scripts = scripts;
+  return patch;
 }
 
 function assertAtomicBatchPatch(batch: ChangePlan, patch: AtomicResourcePatch): void {
@@ -802,11 +1041,28 @@ export function applyAtomicResourcePatch(
 }
 
 export function buildAtomicChangeContext(current: PackageSpec, plan: ChangePlan) {
-  const targets = plan.changes.map((change) => ({
-    ...change,
-    current: resourcesOf(current, change.targetKind)
-      .find((item) => item.key === change.targetKey) ?? null,
-  }));
+  const targets = plan.changes.map((change) => {
+    const resource = resourcesOf(current, change.targetKind)
+      .find((item) => item.key === change.targetKey) ?? null;
+    if (change.targetKind !== 'script' || !resource) return { ...change, current: resource };
+    const script = resource as SpecScript;
+    const { sourceCode: _sourceCode, ...metadata } = script;
+    const index = inspectPythonSource(script.sourceCode);
+    return {
+      ...change,
+      current: {
+        ...metadata,
+        baseSourceHash: index.baseSourceHash,
+        imports: index.imports,
+        symbols: index.symbols.map((symbol) => ({
+          kind: symbol.kind,
+          qualifiedName: symbol.qualifiedName,
+          nodeHash: symbol.nodeHash,
+          dependencies: symbol.dependencies,
+        })),
+      },
+    };
+  });
   return {
     targets,
     referenceIndex: {
@@ -1070,8 +1326,9 @@ export async function packageChatApply(
     'modify 必须保留目标资源的 key，专家文本中的“重命名”只能解释为调整 title/description/caliber 等展示与口径；不得改 key 或新建替代资源。',
     'modify 必须保留目标资源中未被计划要求改变的字段、证据和来源引用，并产生真实内容变化。',
     '例外：若目标对象当前错误地同时绑定多张物理表，为使其成为汇总派生业务对象而移除该目标的 table sourceRefs、sourceTable 和字段 sourceColumn，属于修复数据映射所必需的变更，不视为越过计划边界。',
-    '新增 script 时必须提交完整的 python 脚本规格：boundOperation、entrypoint、参数、输出、边界和 sourceCode；',
-    'sourceCode 必须使用 argparse 接收结构化输入并输出 JSON，不得访问网络、任意文件系统、子进程或动态执行代码。',
+    '新增 script 时通过 newScripts 提交结构化契约、run_business_logic 和必要辅助函数；CLI、JSON 输出和 main 由 Core 脚手架生成。',
+    '修改 script 时先调用 read_script_symbols 读取目标函数及直接依赖，再通过 scriptPatches 提交带整源哈希和节点哈希的符号补丁。',
+    '任何路径都禁止返回、重传或重写完整 Python 文件；不得修改未授权的函数、CLI 外壳或入口。',
     DATA_PROVIDER_SCRIPT_CONTRACT,
     '脚本与 operation 必须双向绑定：script.boundOperation 指向 operation，operation.script.key 指回 script，并在 flow 中明确调用。',
     '每个物理数据对象都必须保留资料来源：sourceRefs 只能引用一张真实 Sheet，字段通过 sourceColumn 对应真实列；产品、场景、跨表汇总等派生业务对象引用原始文档、逐来源明细对象及证据位置。',
@@ -1085,6 +1342,7 @@ export async function packageChatApply(
   const spec = latest.spec;
   const version = nextPackageChatVersion(latest.spec);
   const timeoutMs = resolvePackageApplyTimeoutMs(process.env.MODELING_PACKAGE_APPLY_TIMEOUT_MS);
+  const applySignal = AbortSignal.timeout(timeoutMs);
   const maxCandidateAttempts = options.maxCandidateAttempts
     ?? (options.validateCandidate ? 3 : 1);
   const quality = await runCandidateQualityLoop<PackageApplyCandidate>({
@@ -1122,6 +1380,7 @@ export async function packageChatApply(
       }
     },
     generate: async (attempt, qualityFeedback) => {
+      const scriptTests = new Map<string, PackageApplyCandidate['scriptTests'][number]>();
       const patch = needsGeneratedPatch
         ? await generateAtomicResourcePatchInBatches(plan, async (batch, index, total) => {
           await report({
@@ -1135,14 +1394,97 @@ export async function packageChatApply(
             attempt, maxAttempts: maxCandidateAttempts, batch: index + 1, totalBatches: total,
           });
           const cap: { patch?: AtomicResourcePatch } = {};
+          const readableScripts = new Set(batch.changes.filter((change) => (
+            change.targetKind === 'script' && change.action === 'modify'
+          )).map((change) => change.targetKey));
+          const readSymbols = new Map<string, Set<string>>();
+          const readScriptSymbols = {
+            name: 'read_script_symbols',
+            label: '读取脚本目标符号',
+            description: '按脚本 key 和顶层符号名读取目标源码及直接依赖；不返回完整 Python 文件。',
+            parameters: Type.Object({
+              scriptKey: Type.String(),
+              symbols: Type.Array(Type.String({ pattern: '^[A-Za-z_][A-Za-z0-9_]*$' }), {
+                minItems: 1,
+                maxItems: 20,
+              }),
+            }),
+            async execute(_id: string, params: { scriptKey: string; symbols: string[] }) {
+              if (!readableScripts.has(params.scriptKey)) {
+                throw new Error(`当前批次不允许读取脚本 ${params.scriptKey}`);
+              }
+              const script = (latest.spec.scripts ?? []).find((item) => item.key === params.scriptKey);
+              if (!script) throw new Error(`脚本不存在：${params.scriptKey}`);
+              const selected = selectPythonSourceSymbols(script.sourceCode, params.symbols);
+              const remembered = readSymbols.get(params.scriptKey) ?? new Set<string>();
+              for (const symbol of selected.symbols) remembered.add(symbol.qualifiedName);
+              readSymbols.set(params.scriptKey, remembered);
+              const result = {
+                scriptKey: params.scriptKey,
+                baseSourceHash: selected.baseSourceHash,
+                imports: selected.imports,
+                symbols: selected.symbols.map((symbol) => ({
+                  kind: symbol.kind,
+                  qualifiedName: symbol.qualifiedName,
+                  nodeHash: symbol.nodeHash,
+                  dependencies: symbol.dependencies,
+                  source: symbol.source,
+                })),
+              };
+              return {
+                content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+                details: result,
+              };
+            },
+          };
           const submitPatch = {
             name: 'submit_resource_patch',
             label: '提交计划内资源补丁',
-            description: '只提交当前批次已确认计划中 add/modify 的完整资源；不得提交未列入当前批次的资源，remove 资源无需返回。',
+            description: '提交当前批次资源补丁。非脚本资源提交完整定义；新增脚本提交契约和业务函数；已有脚本只提交已读取符号的哈希补丁。',
             parameters: buildAtomicPatchParameters(batch),
             async execute(_id: string, params: any) {
-              cap.patch = params as AtomicResourcePatch;
-              return { content: [{ type: 'text' as const, text: '当前批次资源补丁已提交。' }], details: {}, terminate: true };
+              const submission = params as AtomicModelSubmission;
+              for (const scriptPatch of submission.scriptPatches ?? []) {
+                const allowedSymbols = readSymbols.get(scriptPatch.scriptKey) ?? new Set<string>();
+                const unread = scriptPatch.edits.find((edit) => !allowedSymbols.has(edit.symbol));
+                if (unread) {
+                  throw new Error(`提交脚本补丁前必须读取目标符号 ${scriptPatch.scriptKey}:${unread.symbol}`);
+                }
+              }
+              const compiled = compileAtomicModelSubmission(latest.spec, batch, submission);
+              const testResults: Array<{ scriptKey: string; total: number; passed: number }> = [];
+              for (const script of compiled.scripts ?? []) {
+                const cases = submission.newScripts?.find((item) => item.contract.key === script.key)?.cases
+                  ?? submission.scriptPatches?.find((item) => item.scriptKey === script.key)?.cases
+                  ?? [];
+                const cliCases = buildScriptGenerationCliCases(script, cases);
+                const result = await (options.runScriptCases ?? runScriptCasesInJiuwenbox)({
+                  runId: `package-${project.id}-${attempt}-${index + 1}`,
+                  source: script.sourceCode,
+                  cases: cliCases,
+                });
+                if (result.failed) {
+                  const failures = result.results.filter((item) => !item.passed).map((item) => (
+                    `#${item.index + 1} ${item.error ?? `actual=${JSON.stringify(item.actual)}`}`
+                  ));
+                  throw new Error(`脚本 ${script.key} 的生产同型沙箱测试失败：${failures.join('；')}`);
+                }
+                testResults.push({ scriptKey: script.key, total: result.total, passed: result.passed });
+                scriptTests.set(script.key, {
+                  scriptKey: script.key,
+                  sourceHash: scriptTestSourceHash(script.sourceCode),
+                  total: result.total,
+                  passed: result.passed,
+                  failed: result.failed,
+                  sandbox: result.sandbox,
+                });
+              }
+              cap.patch = compiled;
+              return {
+                content: [{ type: 'text' as const, text: '当前批次资源补丁和脚本沙箱测试已通过。' }],
+                details: { scriptTests: testResults },
+                terminate: true,
+              };
             },
           };
           const batchRequirements = batch.changes.map((change) => (
@@ -1160,8 +1502,29 @@ export async function packageChatApply(
               : '',
             '请只提交当前批次计划内资源补丁。',
           ].filter(Boolean).join('\n');
-          const agent = makeAgent(buildTaskLlm(), sys, [submitPatch] as any);
-          await runAgent(agent, body, undefined, { timeoutMs });
+          const tools = readableScripts.size ? [readScriptSymbols, submitPatch] : [submitPatch];
+          const agent = makeAgent(options.llmOverride ?? buildTaskLlm(), sys, tools as any);
+          await runAgentCaptured(
+            agent,
+            body,
+            () => Boolean(cap.patch),
+            '不要继续输出分析正文。已有脚本先调用 read_script_symbols，再调用 submit_resource_patch 提交符号补丁；新增脚本只提交契约和业务函数。',
+            undefined,
+            {
+              timeoutMs,
+              signal: applySignal,
+              maxCaptureAttempts: 2,
+              requireCapture: true,
+              requiredToolName: 'submit_resource_patch',
+              toolChoiceState: { mode: 'named' as const },
+              resetCapture: () => { cap.patch = undefined; },
+              captureDiagnostics: {
+                targetToolName: 'submit_resource_patch',
+                acceptedToolNames: ['submit_resource_patch'],
+                onAttempt: () => undefined,
+              },
+            },
+          );
           if (!cap.patch) {
             throw new PackageCandidateValidationError(
               `agent 未产出第 ${index + 1}/${total} 批计划内资源补丁，请重试`,
@@ -1218,6 +1581,7 @@ export async function packageChatApply(
           previousCanonicalFiles,
           renderPackage(newSpec),
         ),
+        scriptTests: [...scriptTests.values()],
       };
     },
     validate: options.validateCandidate ?? (async () => ({ accepted: true, feedback: '' })),
@@ -1252,6 +1616,24 @@ export async function packageChatApply(
     note: `内容修改：${plan.summary.slice(0, 60)}`,
     action: {
       cause: 'agent_update', summary: plan.summary.slice(0, 500), actorKind: 'agent', actorName: '智能助手',
+    },
+    beforeCommit: async () => {
+      for (const test of candidate.scriptTests) {
+        const script = newSpec.scripts?.find((item) => item.key === test.scriptKey);
+        if (!script || scriptTestSourceHash(script.sourceCode) !== test.sourceHash) {
+          throw new Error(`脚本 ${test.scriptKey} 的源码在测试后发生变化，拒绝保存版本`);
+        }
+        recordScriptTestReceipt({
+          projectId: project.id,
+          runId: `package-chat:${candidate.baseRevision}:${test.sourceHash.slice(-12)}`,
+          scriptPath: `scripts/${script.entrypoint}`,
+          source: script.sourceCode,
+          total: test.total,
+          passed: test.passed,
+          failed: test.failed,
+          sandbox: test.sandbox,
+        });
+      }
     },
   });
   if (options.emitRevisionEvent !== false) {

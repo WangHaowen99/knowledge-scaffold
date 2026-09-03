@@ -20,7 +20,13 @@ from modeling_agent.schemas import (
     RunRecord,
 )
 from modeling_agent.store import RuntimeStore
-from modeling_agent.tools import CandidateValidationRepairState, ToolContext
+from modeling_agent.tools import (
+    CORE_TOOL_SPECS,
+    CandidateValidationRepairState,
+    CoreTool,
+    EVALUATION_PENDING_MESSAGE,
+    ToolContext,
+)
 from conftest import FakeGateway, ScriptedModel, service
 
 
@@ -67,6 +73,242 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
         store.close()
 
 
+def test_external_event_continuation_claim_is_atomic_and_recovers_after_restart(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    event = {
+        "eventId": "evaluation:round_claim:terminal",
+        "roundId": "round_claim",
+        "status": "done",
+    }
+    try:
+        assert store.record_external_event(
+            event["eventId"], "project_claim", "evaluation_terminal", event,
+        ) is True
+        assert store.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "claimed"
+        assert store.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "continuing"
+    finally:
+        store.close()
+
+    recovered = RuntimeStore(path)
+    try:
+        assert recovered.external_event_pending(event["eventId"], "project_claim") is True
+        assert recovered.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "claimed"
+        recovered.mark_external_event_continued(event["eventId"], "project_claim")
+        assert recovered.claim_external_event_continuation(
+            event["eventId"], "project_claim",
+        ) == "continued"
+    finally:
+        recovered.close()
+
+
+def test_increment_round_persists_baseline_and_is_idempotent_until_terminal(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        initial = store.project_state("project_increment")
+        released = store.transition_project_state(
+            "project_increment",
+            expected_revision=initial.revision,
+            next_state="release:completed",
+            cause="test_released",
+        )
+
+        started, created = store.start_increment_round(
+            "project_increment",
+            baseline_revision="sha256:released-1",
+            package_version="1.2.0",
+        )
+        assert created is True
+        assert started.state == "increment:idle"
+        assert started.round_mode == "incremental"
+        assert started.round_id.startswith("increment_")
+        assert started.baseline_revision == "sha256:released-1"
+        assert started.revision == released.revision + 1
+
+        duplicate, created = store.start_increment_round(
+            "project_increment",
+            baseline_revision="sha256:released-1",
+            package_version="1.2.0",
+        )
+        assert created is False
+        assert duplicate.round_id == started.round_id
+        assert duplicate.revision == started.revision
+
+        created_run = store.create_run(run("run_increment", "project_increment"))
+        assert created_run.baseline_revision == "sha256:released-1"
+        store.update_run("run_increment", status="completed")
+        next_round, created = store.start_increment_round(
+            "project_increment",
+            baseline_revision="sha256:released-1",
+            package_version="1.2.0",
+        )
+        assert created is True
+        assert next_round.state == "increment:idle"
+        assert next_round.round_id != started.round_id
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("stale_phase", ["goal", "knowledge"])
+def test_increment_round_recovers_released_project_from_stale_phase(
+    tmp_path: Path,
+    stale_phase: str,
+) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        initial = store.project_state("project_stale_goal")
+        released = store.transition_project_state(
+            "project_stale_goal",
+            expected_revision=initial.revision,
+            next_state="release:completed",
+            cause="test_released",
+        )
+        stale = store.transition_project_state(
+            "project_stale_goal",
+            expected_revision=released.revision,
+            next_state=f"{stale_phase}:completed",
+            cause="test_legacy_read_rewind",
+        )
+
+        increment, created = store.start_increment_round(
+            "project_stale_goal",
+            baseline_revision="sha256:released-stale",
+        )
+
+        assert created is True
+        assert increment.state == "increment:idle"
+        assert increment.baseline_revision == "sha256:released-stale"
+        assert increment.revision == stale.revision + 1
+    finally:
+        store.close()
+
+
+def test_increment_round_does_not_replace_active_full_modeling_run(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        initial = store.project_state("project_active_knowledge")
+        store.transition_project_state(
+            "project_active_knowledge",
+            expected_revision=initial.revision,
+            next_state="knowledge:idle",
+            cause="test_active_full_modeling",
+        )
+        store.create_run(run("run_active_knowledge", "project_active_knowledge"))
+
+        with pytest.raises(AgentRuntimeError) as caught:
+            store.start_increment_round(
+                "project_active_knowledge",
+                baseline_revision="sha256:released-active",
+            )
+
+        assert caught.value.code == "INCREMENT_ROUND_BLOCKED"
+        assert store.project_state("project_active_knowledge").state == "knowledge:queued"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_released_material_event_starts_increment_round_without_auto_run(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    initial = runtime.store.project_state("project_released_material")
+    runtime.store.transition_project_state(
+        "project_released_material",
+        expected_revision=initial.revision,
+        next_state="release:completed",
+        cause="test_released",
+    )
+    try:
+        accepted = await runtime.handle_material_event(
+            project_id="project_released_material",
+            token="token_material",
+            event={
+                "eventId": "material:increment-doc:terminal",
+                "status": "parsed",
+                "documentId": "increment-doc",
+                "sourceKey": "source-increment-doc",
+                "filename": "新增规则.docx",
+                "revisionNo": 1,
+                "purpose": "goal",
+                "readingMode": "on_demand",
+                "autoContinue": False,
+                "semanticChanged": True,
+                "packageRevision": "sha256:released-material",
+                "packageVersion": "1.2.0",
+                "packageStatus": "released",
+            },
+        )
+
+        state = runtime.store.project_state("project_released_material")
+        assert accepted["continued"] is False
+        assert state.state == "increment:idle"
+        assert state.round_mode == "incremental"
+        assert state.baseline_revision == "sha256:released-material"
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_full_material_read_never_rewinds_released_phase(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    initial = runtime.store.project_state("project_read_only")
+    released = runtime.store.transition_project_state(
+        "project_read_only",
+        expected_revision=initial.revision,
+        next_state="release:completed",
+        cause="test_released",
+    )
+    live = service_module.LiveRun(
+        run_id="run_read_only",
+        project_id="project_read_only",
+        token="token_read_only",
+    )
+    try:
+        await runtime._after_core_tool(  # noqa: SLF001 - read-only state invariant
+            live,
+            "read_documents_fully",
+            {"filenames": ["目标说明.docx"]},
+            {"documents": [{"filename": "目标说明.docx", "purpose": "goal"}]},
+        )
+
+        current = runtime.store.project_state("project_read_only")
+        assert current.state == released.state
+        assert current.revision == released.revision
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_increment_phase_rejects_full_generation_plan() -> None:
+    gateway = FakeGateway()
+    context = ToolContext(
+        project_id="project_increment_plan",
+        run_id="run_increment_plan",
+        token="token_increment_plan",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+        phase="increment",
+    )
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "create_change_plan")
+
+    result = json.loads(await CoreTool(spec, context).invoke({
+        "mode": "generation",
+        "goal": "重新生成全部知识包",
+        "tasks": [],
+    }))
+
+    assert result["error"] == "INCREMENT_PLAN_MODE_REQUIRED"
+    assert result["retryable"] is False
+    assert gateway.calls == []
+
+
 def test_store_migrates_existing_checkpoints_to_legacy_tool_profile(tmp_path: Path) -> None:
     path = tmp_path / "legacy-runtime.sqlite"
     db = sqlite3.connect(path)
@@ -91,6 +333,38 @@ def test_store_migrates_existing_checkpoints_to_legacy_tool_profile(tmp_path: Pa
     store = RuntimeStore(path)
     try:
         assert store.require_run("run_legacy").tool_profile == "legacy-v1"
+    finally:
+        store.close()
+
+
+def test_store_migrates_legacy_project_state_round_columns(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-state.sqlite"
+    db = sqlite3.connect(path)
+    db.execute("""CREATE TABLE project_agent_state (
+      project_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'intake:idle',
+      revision INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '',
+      interaction_id TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '', open_questions_json TEXT NOT NULL DEFAULT '[]',
+      error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+    )""")
+    db.execute(
+        "INSERT INTO project_agent_state VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            "project_legacy_state", "release:completed", 7, "", "", "",
+            "已发布", "[]", "", "2026-08-31T00:00:00Z",
+        ),
+    )
+    db.commit()
+    db.close()
+
+    store = RuntimeStore(path)
+    try:
+        state = store.project_state("project_legacy_state")
+        assert state.state == "release:completed"
+        assert state.revision == 7
+        assert state.round_mode == "initial"
+        assert state.round_id == ""
+        assert state.baseline_revision == ""
     finally:
         store.close()
 
@@ -387,6 +661,36 @@ def test_begin_run_cancellation_atomically_closes_pending_interaction(tmp_path: 
         store.close()
 
 
+def test_unfinished_tool_events_track_each_tool_call_terminal_state(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        current = store.create_run(run("run_tool_activity"))
+        for payload in (
+            {"name": "stage_change_set", "phase": "started", "toolCallId": "call_done"},
+            {"name": "stage_change_set", "phase": "completed", "toolCallId": "call_done"},
+            {"name": "stage_change_set", "phase": "started", "toolCallId": "call_repairing"},
+            {"name": "stage_change_set", "phase": "repairing", "toolCallId": "call_repairing"},
+            {"name": "validate_change_set", "phase": "started", "toolCallId": "call_active"},
+        ):
+            store.append_event(current.project_id, current.id, "tool", payload)
+
+        unfinished = store.unfinished_tool_events(current.id)
+
+        assert [event.payload["toolCallId"] for event in unfinished] == [
+            "call_repairing", "call_active",
+        ]
+        store.append_event(current.project_id, current.id, "tool", {
+            "name": "stage_change_set",
+            "phase": "cancelled",
+            "toolCallId": "call_repairing",
+        })
+        assert [
+            event.payload["toolCallId"] for event in store.unfinished_tool_events(current.id)
+        ] == ["call_active"]
+    finally:
+        store.close()
+
+
 def test_store_startup_closes_legacy_pending_interaction_from_terminal_run(tmp_path: Path) -> None:
     path = tmp_path / "runtime.sqlite"
     store = RuntimeStore(path)
@@ -546,6 +850,54 @@ async def test_tool_boundary_reuses_completed_evaluation_read_until_new_round() 
     after_new_round = _tool_call_context("get_evaluation_results", {}, "call-results-3")
     await rail.before_tool_call(after_new_round)  # type: ignore[arg-type]
     assert after_new_round.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+async def test_tool_boundary_finishes_agent_round_after_background_evaluation_starts() -> None:
+    events: list[tuple[str, dict]] = []
+    context = ToolContext(
+        project_id="project_evaluation_pending",
+        run_id="run_evaluation_pending",
+        token="",
+        gateway=FakeGateway(),
+        emit=lambda kind, payload: events.append((kind, payload)),
+    )
+    rail = ToolBoundaryRail(context)
+
+    class Callback:
+        def __init__(self) -> None:
+            self.inputs = SimpleNamespace(
+                tool_name="run_evaluation",
+                tool_args={},
+                tool_call=SimpleNamespace(id="call-evaluation-pending"),
+                tool_result=json.dumps({
+                    "roundId": "round-pending",
+                    "status": "running",
+                    "pending": True,
+                    "terminal": False,
+                }),
+            )
+            self.extra: dict = {}
+            self.finish: dict | None = None
+
+        def request_force_finish(self, result: dict) -> None:
+            self.finish = result
+
+    callback = Callback()
+    await rail.after_tool_call(callback)  # type: ignore[arg-type]
+
+    assert context.pending_evaluation == {"roundId": "round-pending"}
+    assert events == [("focus", {"target": {
+        "kind": "evaluation",
+        "target": "正式评测",
+        "view": "runs",
+        "roundId": "round-pending",
+    }})]
+    assert callback.finish == {
+        "result_type": "answer",
+        "output": EVALUATION_PENDING_MESSAGE,
+        "pending_evaluation": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -1250,6 +1602,26 @@ def test_stale_run_record_is_diagnosed_and_does_not_block_new_plan_after_termina
         ]
     finally:
         store.close()
+
+
+# def test_clear_recovery_status_only_clears_requested_status(tmp_path: Path) -> None:
+#     store = RuntimeStore(tmp_path / "runtime.sqlite")
+#     try:
+#         state = store.project_state("project_recovery_status")
+#         store.transition_project_state(
+#             "project_recovery_status",
+#             expected_revision=state.revision,
+#             next_state="evaluation:completed",
+#             cause="test_setup",
+#             recovery_status="volume_mismatch",
+#         )
+#         assert store.clear_recovery_status(
+#             "volume_mismatch",
+#             cause="storage_verified_after_checkpoint_path_fix",
+#         ) == 1
+#         assert store.project_state("project_recovery_status").recovery_status == ""
+#     finally:
+#         store.close()
 
 
 def test_recover_interrupted_keeps_waiting_interaction_pending(tmp_path: Path) -> None:

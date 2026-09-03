@@ -22,9 +22,11 @@ import {
   uploadMaterial,
   uploadPackageSource,
   savePackageDataSource,
+  startAgentIncrementRound,
   respondChangePlan as respondChangePlanRequest,
   safeTerminateChangePlan as safeTerminateChangePlanRequest,
   terminateStaleRun as terminateStaleRunRequest,
+  getProgress,
 } from './api.js';
 import { prefetchStudioBootstrap } from '../studio/studio-api.js';
 
@@ -59,11 +61,15 @@ const initial = {
   packageVersion: null,
   packageStatus: null,
   workflow: null,
+  phases: [],
+  progress: null,
+  progressError: '',
   changePlan: null,
   files: [],
   fileContents: {},
   fileErrors: {},
   candidateDiff: [],
+  candidateRevisionRefreshKey: 0,
   materials: [],
   materialContents: {},
   materialReferrers: {},
@@ -108,6 +114,9 @@ export const store = createStore(initial);
 
 const UPLOAD_POLL_INTERVAL_MS = 800;
 const UPLOAD_POLL_TIMEOUT_MS = 11 * 60_000;
+const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'stopping']);
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_TOOL_PHASES = new Set(['completed', 'failed', 'blocked', 'rejected', 'waiting', 'cancelled']);
 const PURPOSE_REVIEW_CONTINUATION = '我已确认本批全部资料的明确用途和表格 Sheet 处理方式。现在开始按确认结果读取资料、形成建模目标；需要全文精读的资料继续按已保存设置执行。';
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 let optimisticSequence = 0;
@@ -220,6 +229,20 @@ export function resolveWorkbenchBootstrapResults(results) {
 
 /* ---- actions ---- */
 export const actions = {
+  /** 门禁是按需拉的：computeGates 要叠加整个候选工作区，不适合跟着事件流反复算。 */
+  async loadProgress() {
+    const { projectId, demo, progress } = store.get();
+    if (demo || !projectId || progress) return progress;
+    try {
+      const next = await getProgress(projectId);
+      store.set({ progress: next, progressError: '' });
+      return next;
+    } catch (error) {
+      store.set({ progressError: error instanceof Error ? error.message : '门禁结果暂时读不到' });
+      return null;
+    }
+  },
+
   async bootstrap(projectId) {
     store.set({ demo: false, projectId, loading: true, error: '' });
     try {
@@ -255,6 +278,9 @@ export const actions = {
         packageVersion: snapshot.packageVersion || null,
         packageStatus: snapshot.packageStatus || null,
         workflow: agent.state || null,
+        phases: Array.isArray(agent.phases) ? agent.phases : [],
+        progress: null,
+        progressError: '',
         changePlan: null,
         files: snapshot.files,
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
@@ -326,6 +352,24 @@ export const actions = {
         void actions.loadMaterial(material.id);
       }
     }
+  },
+  refreshCandidateRevisions() {
+    store.set((state) => ({
+      candidateRevisionRefreshKey: state.candidateRevisionRefreshKey + 1,
+    }));
+  },
+  openCandidateRevisionPreview(preview) {
+    const files = Array.isArray(preview?.files) ? preview.files : [];
+    const first = files[0];
+    store.set({
+      candidateDiff: files,
+      ...(first ? {
+        selectedPath: first.path,
+        focus: { kind: 'diff', target: first.path },
+        follow: false,
+        pendingFocus: null,
+      } : {}),
+    });
   },
   async loadFile(path) {
     const { projectId } = store.get();
@@ -408,6 +452,7 @@ export const actions = {
     if (eventType === 'state' && !replaying) {
       store.set((state) => ({
         workflow: event,
+        progress: null,
         recovery: event.recovery
           ? { ...(state.recovery || {}), ...event.recovery }
           : state.recovery,
@@ -431,14 +476,24 @@ export const actions = {
         }],
       });
     }
-    if (eventType === 'change_set' && !replaying) void actions.refreshSnapshot();
+    if (eventType === 'change_set' && !replaying) {
+      store.set({ progress: null });
+      void actions.refreshSnapshot();
+    }
     if (eventType === 'progress' && !replaying) {
-      store.set({ activity: progressActivity(event, store.get().activity) });
+      store.set((state) => {
+        const runStatus = String(state.run?.status || '');
+        const eventRunId = String(event.runId || '');
+        const currentRunId = String(state.run?.id || '');
+        if ((runStatus && !ACTIVE_RUN_STATUSES.has(runStatus))
+          || (eventRunId && currentRunId && eventRunId !== currentRunId)) return state;
+        return { activity: progressActivity(event, state.activity) };
+      });
     }
     if (eventType === 'tool') {
       const createdAt = event.createdAt || new Date().toISOString();
       const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
-      const terminal = ['completed', 'failed', 'blocked', 'rejected', 'waiting'].includes(event.phase);
+      const terminal = TERMINAL_TOOL_PHASES.has(event.phase);
       store.set((state) => ({
         // 刷新后的历史回放只重建轨迹，不能清空 state 接口恢复的最新活动。
         activity: replaying
@@ -657,17 +712,26 @@ export const actions = {
       }
     }
     if (eventType === 'status' && !replaying) {
-      const inactive = ['waiting', 'suspended', 'completed', 'failed', 'cancelled'].includes(event.status);
       const statusTime = Date.parse(String(event.createdAt || ''));
-      store.set({
-        run: {
-          ...(store.get().run || {}),
-          id: event.runId,
-          status: event.status,
-          updatedAt: Number.isFinite(statusTime) ? event.createdAt : null,
-        },
-        statusText: event.text || '',
-        ...(inactive ? { activity: null } : {}),
+      store.set((state) => {
+        const eventRunId = String(event.runId || state.run?.id || '');
+        const sameRun = Boolean(eventRunId && eventRunId === String(state.run?.id || ''));
+        if (sameRun && TERMINAL_RUN_STATUSES.has(String(state.run?.status || ''))
+          && ACTIVE_RUN_STATUSES.has(String(event.status || ''))) return state;
+        const inactive = ['waiting', 'suspended', 'completed', 'failed', 'cancelled'].includes(event.status);
+        return {
+          run: {
+            ...(state.run || {}),
+            id: eventRunId,
+            status: event.status,
+            updatedAt: Number.isFinite(statusTime) ? event.createdAt : null,
+          },
+          statusText: event.text || '',
+          ...(inactive ? { activity: null } : {}),
+          ...(event.status === 'cancelled'
+            ? { trace: settleCancelledToolTrace(state.trace, eventRunId) }
+            : {}),
+        };
       });
     }
     if (seq) store.set({
@@ -829,6 +893,27 @@ export const actions = {
           recovery: '输入内容仍保留在发送框中，请检查后重试。',
         },
       }));
+      return null;
+    }
+  },
+  async startIncrementRound() {
+    const { projectId } = store.get();
+    if (!projectId) return null;
+    try {
+      const result = await startAgentIncrementRound(projectId);
+      store.set({
+        workflow: result.state || store.get().workflow,
+        error: '',
+      });
+      return result;
+    } catch (error) {
+      store.set({
+        error: {
+          scope: 'increment_round',
+          message: error instanceof Error ? error.message : '增量建模启动失败',
+          recovery: '当前正式版本保持不变，请处理页面提示后重试。',
+        },
+      });
       return null;
     }
   },
@@ -1216,7 +1301,12 @@ export const actions = {
     });
     try {
       const result = await cancelAgent(projectId);
-      store.set({ run: result.run, activity: null, statusText: '已停止，已完成内容保留' });
+      store.set((state) => ({
+        run: result.run,
+        activity: null,
+        statusText: '已停止，已完成内容保留',
+        trace: settleCancelledToolTrace(state.trace, run.id),
+      }));
       return result;
     } catch (error) {
       store.set({
@@ -1424,6 +1514,16 @@ export function mergeToolTrace(trace, event, seq) {
     toolCallIds: nextCallIds,
   };
   return merged.slice(-300);
+}
+
+export function settleCancelledToolTrace(trace, runId) {
+  const targetRunId = String(runId || '');
+  return (Array.isArray(trace) ? trace : []).map((item) => (
+    String(item?.runId || '') === targetRunId
+      && ['started', 'repairing'].includes(String(item?.phase || ''))
+      ? { ...item, phase: 'cancelled', summary: '运行已停止，当前操作已取消' }
+      : item
+  ));
 }
 
 function legacyRejectedTraceIndex(trace, event, seq, createdAt) {

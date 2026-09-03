@@ -40,6 +40,8 @@ export interface RunAgentCaptureOptions extends RunAgentOptions {
   resetCapture?: () => void | Promise<void>;
   captureDiagnostics?: {
     targetToolName: string;
+    /** Treat compatibility or legacy submission tools as successful captures. */
+    acceptedToolNames?: string[];
     onAttempt: (diagnostics: AgentCaptureAttemptDiagnostics) => void | Promise<void>;
   };
   /** Ask the provider to call this tool during capture-only attempts. */
@@ -314,8 +316,12 @@ export function makeAgent(
   messages: unknown[] = [],
   options: MakeAgentOptions = {},
 ): Agent {
+  // Some providers keep a session-level tool registry and warn when the same
+  // tool id appears more than once. Preserve the last definition so retries
+  // can refresh a tool intentionally without registering duplicate ids.
+  const uniqueTools = [...new Map(tools.map((tool) => [tool.name, tool])).values()];
   const requiredToolName = options.requiredToolName;
-  if (requiredToolName !== undefined && !tools.some((tool) => tool.name === requiredToolName)) {
+  if (requiredToolName !== undefined && !uniqueTools.some((tool) => tool.name === requiredToolName)) {
     throw new Error(`强制调用的工具未注册：${requiredToolName || '<empty>'}`);
   }
   const toolChoiceMode = options.toolChoiceMode ?? 'named';
@@ -338,7 +344,7 @@ export function makeAgent(
     initialState: {
       model: llm.model,
       systemPrompt,
-      tools: tools as any,
+      tools: uniqueTools as any,
       messages: messages as any,
     },
     ...(options.transformContext ? {
@@ -505,7 +511,11 @@ export async function runAgentCaptured(
       const attemptPrompt = attempt === 1
         ? prompt
         : captureRetryPrompt(nudge, previousDiagnostics!);
-      let tracker = new AgentCaptureAttemptTracker(attempt, captureDiagnostics.targetToolName);
+      let tracker = new AgentCaptureAttemptTracker(
+        attempt,
+        captureDiagnostics.targetToolName,
+        captureDiagnostics.acceptedToolNames,
+      );
       while (true) {
         const initialMessageCount = Array.isArray(agent?.state?.messages) ? agent.state.messages.length : 0;
         try {
@@ -536,7 +546,11 @@ export async function runAgentCaptured(
               toMode: nextMode,
               modelApi: enrichCaptureDiagnostics(tracker.finish(false), agent).modelApi,
             });
-            tracker = new AgentCaptureAttemptTracker(attempt, captureDiagnostics.targetToolName);
+            tracker = new AgentCaptureAttemptTracker(
+              attempt,
+              captureDiagnostics.targetToolName,
+              captureDiagnostics.acceptedToolNames,
+            );
             continue;
           }
           const diagnostics = {

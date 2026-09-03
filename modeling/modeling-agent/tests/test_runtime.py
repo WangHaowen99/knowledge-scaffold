@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +30,7 @@ from modeling_agent.tools import (
     ProjectStateTool,
     RequestConfirmationTool,
     CandidateValidationRepairState,
+    EVALUATION_PENDING_MESSAGE,
     ToolContext,
     core_tool_specs_for_phase,
 )
@@ -76,10 +78,13 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert "create_package_fusion_plan" not in knowledge
     assert "patch_rule" not in validation
     assert {
+        "list_domain_resources", "get_domain_resource", "define_script_contract",
         "analyze_deterministic_capabilities", "confirm_deterministic_scope",
-        "run_script_test", "run_evaluation", "get_evaluation_results", "cancel_evaluation",
+        "get_script_edit_context", "stage_script_patch", "run_script_test",
+        "run_evaluation", "get_evaluation_results", "cancel_evaluation",
     } <= validation
     assert not {"analyze_deterministic_capabilities", "confirm_deterministic_scope"} & knowledge
+    assert "stage_script_source" not in validation
     assert {
         "stage_change_set", "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
         "analyze_material_impact", "compile_package_fusion_plan",
@@ -91,6 +96,10 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert {"write_file", "patch_object", "create_metric", "upsert_object", "bind_object_source"} <= legacy
     assert "update_plan" in legacy
     intake_recovery: set[str] = set()
+    legacy_validation = {
+        spec.name for spec in core_tool_specs_for_phase("validation", tool_profile="legacy-v1")
+    }
+    assert "stage_script_source" in legacy_validation
     required_tools = frozenset({"run_evaluation", "compile_package_fusion_plan"})
     for spec in core_tool_specs_for_phase("intake", required_tools):
         intake_recovery.add(spec.name)
@@ -103,6 +112,12 @@ async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypa
     assert parameter_schema["properties"]["action"]["enum"] == ["store_true", "store_false"]
 
     case_schema = specs["run_script_test"].properties["cases"]["items"]
+    patch_schema = specs["stage_script_patch"].properties
+    assert "source_code" not in patch_schema
+    assert patch_schema["edits"]["items"]["required"] == [
+        "kind", "symbol", "expected_node_hash", "source",
+    ]
+
     assert case_schema["required"] == ["input", "expected"]
     assert case_schema["additionalProperties"] is False
     assert "argv" not in case_schema["properties"]
@@ -177,6 +192,20 @@ async def test_evaluation_cancel_requires_explicit_user_intent() -> None:
     )).invoke({"round_id": "round_demo"}))
     assert allowed["cancelled"] is True
     assert [call["tool"] for call in allowed_gateway.calls] == ["cancel_evaluation"]
+
+
+async def test_named_document_rule_request_requires_read_impact_and_plan() -> None:
+    required = _required_tools_for_user_intent(
+        "请读取《安全管理办法.docx》，根据内容新增一条业务规则",
+    )
+    assert {"read_document", "create_change_plan"} <= required
+    assert "analyze_material_impact" not in required
+    assert _required_tools_for_user_intent("请新增一条业务规则") == set()
+    assert _required_tools_for_user_intent(
+        "是否可以读取《安全管理办法.docx》并新增规则？",
+    ) == set()
+
+
 async def test_upsert_object_relation_name_is_model_generated_chinese_text() -> None:
     spec = next(item for item in CORE_TOOL_SPECS if item.name == "upsert_object")
     relation = spec.input_schema["properties"]["relations"]["items"]["properties"]["relation"]
@@ -2948,15 +2977,16 @@ async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(sett
     class BlockingEvaluationGateway(FakeGateway):
         def __init__(self) -> None:
             super().__init__()
-            self.evaluation_started = asyncio.Event()
-            self.evaluation_cancelled = asyncio.Event()
+            self.evaluation_started = threading.Event()
+            self.evaluation_cancelled = threading.Event()
 
         async def call(self, **kwargs):
             tool = kwargs["tool"]
             if tool == "run_evaluation":
                 self.calls.append(kwargs)
                 self.evaluation_started.set()
-                await self.evaluation_cancelled.wait()
+                if not await asyncio.to_thread(self.evaluation_cancelled.wait, 5):
+                    raise TimeoutError("evaluation cancellation was not forwarded")
                 return {
                     "error": "EVALUATION_RUN_FAILED",
                     "reason": "评测运行失败，本轮已停止",
@@ -2980,7 +3010,11 @@ async def test_cancel_waits_for_inflight_evaluation_and_prevents_late_retry(sett
             token="token_1",
             message="运行评测",
         )
-        await asyncio.wait_for(gateway.evaluation_started.wait(), timeout=5)
+        deadline = asyncio.get_running_loop().time() + 5
+        while not gateway.evaluation_started.is_set():
+            if asyncio.get_running_loop().time() >= deadline:
+                pytest.fail("evaluation did not start before cancellation")
+            await asyncio.sleep(0.01)
 
         cancelled = await runtime.cancel(project_id="project_cancel_evaluation")
         await asyncio.sleep(0.05)
@@ -3033,6 +3067,56 @@ async def test_cancel_run_publishes_pending_interaction_closure(settings) -> Non
         await runtime.shutdown()
 
 
+async def test_cancel_run_settles_unfinished_tool_activity(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    run = runtime.store.create_run(RunRecord(
+        id="run_cancel_change_set",
+        project_id="project_cancel_change_set",
+        session_id="session_cancel_change_set",
+        status=RUN_RUNNING,
+        prompt="继续知识建模",
+        token_fingerprint="000000000000",
+    ))
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    runtime._live[run.id] = LiveRun(  # noqa: SLF001 - cancellation reconciliation invariant
+        run_id=run.id,
+        project_id=run.project_id,
+        token="token_cancel_change_set",
+    )
+    runtime.events.publish(run.project_id, run.id, "progress", {
+        "text": "正在原子生成待确认修改",
+        "detail": "正在处理当前批次",
+        "counters": {},
+    })
+    runtime.events.publish(run.project_id, run.id, "tool", {
+        "name": "stage_change_set",
+        "phase": "started",
+        "summary": "正在原子生成待确认修改",
+        "toolCallId": "call_cancel_change_set",
+    })
+    try:
+        cancelled = await runtime.cancel(project_id=run.project_id)
+
+        events = runtime.store.events_after(run.project_id, 0)
+        tool_events = [
+            event for event in events
+            if event.kind == "tool"
+            and event.payload.get("toolCallId") == "call_cancel_change_set"
+        ]
+        assert cancelled["status"] == "cancelled"
+        assert [event.payload.get("phase") for event in tool_events] == ["started", "cancelled"]
+        assert tool_events[-1].payload["summary"] == "运行已停止，当前操作已取消"
+        assert runtime.store.unfinished_tool_events(run.id) == []
+        assert runtime.project_state(run.project_id)["activity"] is None
+        cancelled_status = next(
+            event for event in events
+            if event.kind == "status" and event.payload.get("status") == "cancelled"
+        )
+        assert tool_events[-1].seq < cancelled_status.seq
+    finally:
+        await runtime.shutdown()
+
+
 async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("run_evaluation", {})], []],
@@ -3068,6 +3152,56 @@ async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settin
         await runtime.shutdown()
 
 
+async def test_pending_evaluation_stops_agent_without_autonomous_polling(settings) -> None:
+    model = ScriptedModel(
+        [
+            [ToolTurn("run_evaluation", {})],
+            [ToolTurn("get_project_state", {})],
+        ],
+        final="不应继续轮询评测。",
+    )
+    gateway = FakeGateway({
+        "run_evaluation": {
+            "roundId": "round-pending",
+            "status": "running",
+            "pending": True,
+            "terminal": False,
+            "display": {"text": "正式评测任务已创建，可在评测界面查看实时进度"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_evaluation_pending",
+            token="token_1",
+            message="请立即运行评测",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        assert completed["result"] == EVALUATION_PENDING_MESSAGE
+        assert model.calls == 1
+        core_calls = [call for call in gateway.calls if call["tool"] != "claim_candidate_workspace"]
+        assert [call["tool"] for call in core_calls] == ["run_evaluation"]
+        events = runtime.store.events_after("project_evaluation_pending", 0)
+        focus_events = [event.payload for event in events if event.kind == "focus"]
+        assert focus_events == [{"target": {
+            "kind": "evaluation",
+            "target": "正式评测",
+            "view": "runs",
+            "roundId": "round-pending",
+        }}]
+        visible_text = "".join(
+            str(event.payload.get("delta") or "")
+            for event in events
+            if event.kind == "message_delta"
+        )
+        assert visible_text == EVALUATION_PENDING_MESSAGE
+    finally:
+        await runtime.shutdown()
+
+
 async def test_agent_reads_and_transitions_single_project_state(settings) -> None:
     model = ScriptedModel([
         [ToolTurn("get_project_state")],
@@ -3093,6 +3227,44 @@ async def test_agent_reads_and_transitions_single_project_state(settings) -> Non
         assert state.summary == "已取得一份可读资料，正在形成目标候选。"
         assert state.open_questions == ["目标范围待确认"]
         assert any(call["tool"] == "gate_status" for call in gateway.calls)
+    finally:
+        await runtime.shutdown()
+
+
+async def test_checkpoint_db_points_to_openjiuwen_physical_database(settings) -> None:
+    assert settings.checkpoint_db.name == "checkpoints.sqlite.db"
+
+
+async def test_global_checkpoint_failure_does_not_mark_idle_project_as_recovery(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    runtime._storage_diag = {"healthy": False, "checkpointDbExists": False}
+    try:
+        state = runtime.project_state("project_new")
+        assert "recovery" not in state["state"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_checkpoint_failure_is_reported_for_recoverable_project(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    run = RunRecord(
+        id="run_checkpoint_missing",
+        project_id="project_checkpoint_missing",
+        session_id="session_checkpoint_missing",
+        status=RUN_RUNNING,
+        prompt="继续建模",
+        token_fingerprint="fingerprint",
+    )
+    runtime.store.create_run(run)
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    runtime._storage_diag = {"healthy": False, "checkpointDbExists": False}
+    try:
+        state = runtime.project_state(run.project_id)
+        assert state["state"]["recovery"] == {
+            "status": "volume_mismatch",
+            "missing": ["checkpoint"],
+            "nextSteps": ["核对建模服务数据卷与 checkpoints.sqlite.db 后重启"],
+        }
     finally:
         await runtime.shutdown()
 
@@ -3154,7 +3326,20 @@ async def test_project_state_uses_authoritative_terminal_evaluation_and_rejects_
 
 
 async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_cache(settings) -> None:
-    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    model = ScriptedModel([
+        [ToolTurn("get_evaluation_results", {"round_id": "round_event"})],
+        [],
+        [],
+    ], final="已读取本轮失败结果。")
+    gateway = FakeGateway({
+        "get_evaluation_results": {
+            "round": {"id": "round_event", "status": "done"},
+            "counts": {"pass": 3, "fail": 1},
+            "results": [{"testcaseId": "case-failed", "verdict": "fail"}],
+            "display": {"text": "已读取 4 条真实评测结果"},
+        },
+    })
+    runtime = service(settings, model, gateway)
     await runtime.startup()
     try:
         initial = runtime.store.project_state("project_evaluation_event")
@@ -3186,14 +3371,20 @@ async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_c
         first = await runtime.handle_evaluation_event(
             project_id="project_evaluation_event", token="token_1", event=event,
         )
+        continuation_run_id = runtime.store.project_state("project_evaluation_event").run_id
         second = await runtime.handle_evaluation_event(
             project_id="project_evaluation_event", token="token_1", event=event,
         )
+        completed = await wait_for_status(
+            runtime, continuation_run_id, {"completed", "failed"},
+        )
 
         assert first["reconciled"] is True
+        assert first["continued"] is True
         assert second == {
             "accepted": True, "duplicate": True, "reconciled": False,
         }
+        assert completed["status"] == "completed", completed["error"]
         state = runtime.store.project_state("project_evaluation_event")
         assert "已完成" in state.summary
         assert "运行中" not in state.summary
@@ -3204,8 +3395,206 @@ async def test_evaluation_terminal_event_reconciles_state_once_and_invalidates_c
             if item.kind == "message" and item.payload.get("externalEventId") == event["eventId"]
         ]
         assert len(messages) == 1
+        result_calls = [
+            call for call in gateway.calls if call["tool"] == "get_evaluation_results"
+        ]
+        assert len(result_calls) == 1
+        assert result_calls[0]["arguments"] == {"round_id": "round_event"}
     finally:
         runtime._live.pop("run_evaluation_event", None)
+        await runtime.shutdown()
+
+
+async def test_concurrent_evaluation_terminal_event_starts_one_continuation(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("get_evaluation_results", {"round_id": "round_concurrent"})],
+        [],
+        [],
+    ], final="已读取本轮失败结果。")
+    gateway = FakeGateway({
+        "get_evaluation_results": {
+            "round": {"id": "round_concurrent", "status": "done"},
+            "counts": {"pass": 2, "fail": 1},
+            "results": [{"testcaseId": "case-failed", "verdict": "fail"}],
+            "display": {"text": "已读取 3 条合成评测结果"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    release_continuation = asyncio.Event()
+    continuation_started = asyncio.Event()
+    continuation_calls = 0
+    original_continue = runtime._continue_for_external_event
+
+    async def blocked_continue(**kwargs) -> None:
+        nonlocal continuation_calls
+        continuation_calls += 1
+        continuation_started.set()
+        await release_continuation.wait()
+        await original_continue(**kwargs)
+
+    runtime._continue_for_external_event = blocked_continue  # type: ignore[method-assign]
+    first_task: asyncio.Task | None = None
+    try:
+        initial = runtime.store.project_state("project_evaluation_concurrent")
+        runtime.store.transition_project_state(
+            "project_evaluation_concurrent",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        event = {
+            "eventId": "evaluation:round_concurrent:terminal",
+            "roundId": "round_concurrent",
+            "status": "done",
+            "done": 3,
+            "total": 3,
+            "passed": 2,
+            "finishedAt": "2026-08-31T11:00:00.000Z",
+        }
+
+        first_task = asyncio.create_task(runtime.handle_evaluation_event(
+            project_id="project_evaluation_concurrent", token="token_1", event=event,
+        ))
+        await asyncio.wait_for(continuation_started.wait(), timeout=5)
+
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime.handle_evaluation_event(
+                project_id="project_evaluation_concurrent", token="token_1", event=event,
+            )
+        assert raised.value.code == "EVALUATION_EVENT_IN_PROGRESS"
+        assert raised.value.status == 409
+
+        release_continuation.set()
+        first = await first_task
+        continuation_run_id = runtime.store.project_state(
+            "project_evaluation_concurrent",
+        ).run_id
+        completed = await wait_for_status(
+            runtime, continuation_run_id, {"completed", "failed"},
+        )
+        duplicate = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_concurrent", token="token_1", event=event,
+        )
+
+        assert first["continued"] is True
+        assert completed["status"] == "completed", completed["error"]
+        assert duplicate == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        assert continuation_calls == 1
+        result_calls = [
+            call for call in gateway.calls if call["tool"] == "get_evaluation_results"
+        ]
+        assert len(result_calls) == 1
+        assert result_calls[0]["arguments"] == {"round_id": "round_concurrent"}
+    finally:
+        release_continuation.set()
+        if first_task is not None and not first_task.done():
+            await asyncio.gather(first_task, return_exceptions=True)
+        await runtime.shutdown()
+
+
+async def test_passed_evaluation_terminal_event_opens_release_confirmation_once(settings) -> None:
+    model = ScriptedModel([
+        [ToolTurn("request_release", {"summary": "确认真实用例覆盖并发布"})],
+    ])
+    gateway = FakeGateway({
+        "release_preflight": {
+            "ready": True,
+            "version": "1.0.0",
+            "testcase_count": 4,
+            "questions": ["合成评测问题"],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_passed")
+        runtime.store.transition_project_state(
+            "project_evaluation_passed",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        event = {
+            "eventId": "evaluation:round_passed:terminal",
+            "roundId": "round_passed",
+            "status": "done",
+            "done": 4,
+            "total": 4,
+            "passed": 4,
+            "finishedAt": "2026-08-31T10:00:00.000Z",
+        }
+
+        first = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_passed", token="token_1", event=event,
+        )
+        continuation_run_id = runtime.store.project_state("project_evaluation_passed").run_id
+        second = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_passed", token="token_1", event=event,
+        )
+        waiting = await wait_for_status(
+            runtime, continuation_run_id, {"waiting", "failed"},
+        )
+
+        assert first["continued"] is True
+        assert second == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_evaluation_passed")
+        assert interaction is not None and interaction.kind == "release_confirmation"
+        assert [call["tool"] for call in gateway.calls].count("release_preflight") == 1
+        assert not [call for call in gateway.calls if call["tool"] == "get_evaluation_results"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_cancelled_evaluation_terminal_event_does_not_continue_agent(settings) -> None:
+    model = ScriptedModel([[]])
+    gateway = FakeGateway()
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        initial = runtime.store.project_state("project_evaluation_cancelled")
+        runtime.store.transition_project_state(
+            "project_evaluation_cancelled",
+            expected_revision=initial.revision,
+            next_state="evaluation:idle",
+            cause="test_setup",
+            summary="评测正在运行中。",
+            open_questions=["等待评测完成"],
+        )
+        event = {
+            "eventId": "evaluation:round_cancelled:terminal",
+            "roundId": "round_cancelled",
+            "status": "cancelled",
+            "done": 1,
+            "total": 4,
+            "passed": 1,
+            "finishedAt": "2026-08-31T10:00:00.000Z",
+        }
+
+        first = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_cancelled", token="token_1", event=event,
+        )
+        second = await runtime.handle_evaluation_event(
+            project_id="project_evaluation_cancelled", token="token_1", event=event,
+        )
+
+        assert first["continued"] is False
+        assert second == {
+            "accepted": True, "duplicate": True, "reconciled": False,
+        }
+        assert runtime.store.active_run("project_evaluation_cancelled") is None
+        assert model.calls == 0
+        assert gateway.calls == []
+    finally:
         await runtime.shutdown()
 
 
@@ -3660,7 +4049,9 @@ async def test_full_read_intent_requires_directive_and_verified_full_read_tools(
         assert completed["status"] == "completed", completed["error"]
         assert [call["tool"] for call in gateway.calls].count("set_material_directive") == 1
         assert [call["tool"] for call in gateway.calls].count("read_documents_fully") == 1
-        assert runtime.project_state("project_full_read")["state"]["phase"] == "knowledge"
+        # Reading a document in a released project is read-only; it must not
+        # rewind the published phase into full knowledge modeling.
+        assert runtime.project_state("project_full_read")["state"]["phase"] == "release"
         visible = "".join(
             event.payload.get("delta", "")
             for event in runtime.store.events_after("project_full_read", 0)

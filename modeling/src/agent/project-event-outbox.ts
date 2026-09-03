@@ -19,6 +19,9 @@ export interface MaterialParseProjectEvent {
   semanticChanged?: boolean;
   purposeReviewRequired?: boolean;
   sheetCount?: number;
+  packageRevision?: string;
+  packageVersion?: string;
+  packageStatus?: 'draft' | 'review' | 'released' | 'deprecated';
 }
 
 export interface StudioReviewProjectEvent {
@@ -192,11 +195,17 @@ function reconcileMaterialParseTerminalEvents(projectId: string): void {
     let autoContinue = true;
     let uploadBatchId = documentId;
     let uploadBatchSize = 1;
+    let packageRevision = '';
+    let packageVersion = '';
+    let packageStatus: MaterialParseProjectEvent['packageStatus'];
     try {
       const started = JSON.parse(String(row.started_payload_json || '{}')) as MaterialParseProjectEvent;
       autoContinue = started.autoContinue !== false;
       uploadBatchId = started.uploadBatchId || documentId;
       uploadBatchSize = Math.max(1, Number(started.uploadBatchSize) || 1);
+      packageRevision = started.packageRevision || '';
+      packageVersion = started.packageVersion || '';
+      packageStatus = started.packageStatus;
     } catch {
       // 旧事件没有该字段时维持增量资料的默认自动续跑语义。
     }
@@ -212,6 +221,9 @@ function reconcileMaterialParseTerminalEvents(projectId: string): void {
       autoContinue,
       uploadBatchId,
       uploadBatchSize,
+      ...(packageRevision ? { packageRevision } : {}),
+      ...(packageVersion ? { packageVersion } : {}),
+      ...(packageStatus ? { packageStatus } : {}),
       ...(row.parse_error ? { parseError: String(row.parse_error) } : {}),
       ...(row.change_kind ? { changeKind: row.change_kind } : {}),
       ...(row.semantic_changed != null ? { semanticChanged: Boolean(row.semantic_changed) } : {}),

@@ -18,7 +18,7 @@ const [
   { getPackageArtifactStore },
   { getDb },
   { getDocument, insertDocumentRevision },
-  { MaterialPurposeReviewStore },
+  { MaterialPurposeReviewStore, findMaterialPurposeReviewProblems },
   { requireAuth },
   { storePackageMergeSource },
   { renderPackage },
@@ -382,6 +382,45 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
   }, runId);
   assert.equal(staleGoalCannotAuthorizeProcess.statusCode, 409, staleGoalCannotAuthorizeProcess.body);
   assert.equal(staleGoalCannotAuthorizeProcess.json().gate, 'goal_confirmed');
+});
+
+test('阶段轨进度端点一次给出全部门禁，且没有工作区时如实说读不到', async (t) => {
+  const project = createProject({ owner: 'alice', name: '阶段轨进度', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+
+  // 助手还没认领工作区时不能编造门禁结论，前端据此把闸位画成中性连接线。
+  const before = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/progress` });
+  assert.equal(before.statusCode, 200, before.body);
+  assert.equal(before.json().available, false);
+  assert.deepEqual(before.json().gates, []);
+
+  await confirmGoal(app, project.id, runId);
+
+  const after = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/progress` });
+  assert.equal(after.statusCode, 200, after.body);
+  const body = after.json();
+  assert.equal(body.available, true);
+  assert.ok(body.revision);
+
+  // 一次请求要拿到全部门禁，前端画一条轨不该发六次请求。
+  const byId = new Map(body.gates.map((gate: any) => [gate.id, gate]));
+  for (const id of ['materials_ready', 'goal_confirmed', 'process_confirmed',
+    'knowledge_confirmed', 'ready_for_eval', 'releasable']) {
+    assert.ok(byId.has(id), `进度端点缺少门禁 ${id}`);
+    assert.equal(typeof byId.get(id).pass, 'boolean');
+    assert.ok(Array.isArray(byId.get(id).blockers));
+    assert.ok(byId.get(id).label, `门禁 ${id} 没有业务标签`);
+  }
+  assert.equal(byId.get('goal_confirmed').pass, true);
+  assert.equal(byId.get('process_confirmed').pass, false);
+  assert.ok(byId.get('process_confirmed').blockers.length > 0);
+
+  // 拆分后单点查询必须和整体计算一致，否则助手和阶段轨会各说各话。
+  const single = await tool(app, project.id, 'gate_status', { gate: 'process_confirmed' }, runId);
+  assert.equal(single.statusCode, 200, single.body);
+  assert.equal(single.json().pass, byId.get('process_confirmed').pass);
+  assert.deepEqual(single.json().blockers, byId.get('process_confirmed').blockers);
 });
 
 test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
@@ -2276,6 +2315,90 @@ test('实体 Sheet 尚未映射时允许确认目标、流程和非知识资源�
   assert.equal(manifestPreflight.statusCode, 200, manifestPreflight.body);
 });
 
+test('增量操作候选不被正式基线已有的 Sheet 映射缺口阻断', async (t) => {
+  const project = createProject({ owner: 'alice', name: '增量基线映射差分', runtime: 'agent' });
+  const artifacts = getPackageArtifactStore();
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: 'increment-baseline-mapping-diff',
+    name: '增量基线映射差分',
+    description: '验证无关的历史映射问题不会阻断操作增量。',
+  });
+  const baseline = await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initial.revision.oid,
+    spec: {
+      ...initial.spec,
+      version: '1.0.0',
+      objects: [{
+        key: 'record',
+        title: '记录',
+        description: '已有的虚拟记录对象。',
+        fields: [{ key: 'id', type: 'string', required: true }],
+      }],
+    },
+    coverage: { covered: [], uncovered: [] },
+    action: {
+      cause: 'test_setup', summary: '建立带历史映射缺口的正式基线',
+      actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const material = insertDocumentRevision({
+    projectId: project.id,
+    filename: 'baseline-schema.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'records',
+      rowCount: 1,
+      fields: [{ name: 'record_id', inferredType: 'string', sampleValues: ['R-1'], distinctRatio: 1 }],
+      rows: [['R-1']],
+    }],
+  }).document;
+  const reviews = new MaterialPurposeReviewStore(getDb());
+  const suggestion = reviews.suggest(material, {
+    purpose: 'schema',
+    sheets: [{ sheet: 'records', semanticRole: 'schema', importDisposition: 'object' }],
+    suggestedBy: 'agent',
+  });
+  reviews.confirm(material, {
+    purpose: 'schema',
+    sheets: suggestion.sheetSuggestions,
+    confirmedBy: 'alice',
+    expectedDirectiveRevision: 0,
+  });
+  assert.equal(findMaterialPurposeReviewProblems(getDb(), project.id, baseline.spec).length, 1);
+
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const group = { id: 'increment-operation', tier: 'structural', title: '补充记录查询操作' };
+  const operation = await tool(app, project.id, 'upsert_operation', {
+    key: 'read_record',
+    title: '读取记录',
+    description: '根据记录编号读取已有记录。',
+    inputs: [{ param: 'id', type: 'string', required: true }],
+    outputs: [{ field: 'id', type: 'string' }],
+    flow: ['根据 id 查询 object:record'],
+    related_objects: ['record'],
+    uses_rules: [],
+    uses_metrics: [],
+    evidence: ['user-decision:increment-operation'],
+    change_group: group.id,
+  }, runId);
+  assert.equal(operation.statusCode, 200, operation.body);
+
+  const preflight = await tool(app, project.id, 'request_confirmation_preflight', {
+    summary: group.title,
+    change_groups: [group],
+  }, runId);
+  assert.equal(preflight.statusCode, 200, preflight.body);
+  const payload = preflight.json();
+  assert.equal(payload.validation_summary.baseline_finding_count, 1);
+  assert.equal(payload.validation_summary.baseline_warning_count, 1);
+  assert.equal(payload.validation_summary.introduced_finding_count, 0);
+  const changedPaths = getDb().prepare(`SELECT path FROM agent_candidate_changes
+    WHERE project_id = ? AND run_id = ? ORDER BY path`).all(project.id, runId) as Array<{ path: string }>;
+  assert.equal(changedPaths.some((item) => item.path === 'mappings/object-data-mappings.json'), false);
+});
+
 test('没有实体 Sheet 时数据映射台账视为完整', async (t) => {
   const project = createProject({ owner: 'alice', name: '无实体表映射台账', runtime: 'agent' });
   await getPackageArtifactStore().initializeDraftPackage(project.id, {
@@ -3021,6 +3144,19 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
     expectedRevision: initial.revision.oid,
     spec: {
       ...structuredClone(initial.spec),
+      objects: [{
+        key: 'device_plan',
+        title: '装置计划',
+        description: '装置加工计划及其计算输入。',
+        fields: [
+          { key: 'amount', cnName: '加工量', type: 'number', required: true },
+          { key: 'days', cnName: '运行天数', type: 'number', required: true },
+        ],
+        primaryKey: ['id'],
+        aliases: [],
+        queryBoundary: '',
+        relations: [],
+      }],
       operations: [{
         key: 'calculate_device_load',
         title: '计算装置负荷率',
@@ -3031,7 +3167,7 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
         ],
         outputs: [{ field: 'load_rate', type: 'number' }],
         flow: ['汇总加工量', '换算日均负荷', '计算负荷率'],
-        relatedObjects: [],
+        relatedObjects: ['device_plan'],
       }],
     },
     coverage: initial.coverage,
@@ -3154,6 +3290,15 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
   assert.deepEqual(selected.json().missing_script_bindings, ['calculate_device_load']);
   assert.deepEqual(selected.json().missing_script_tests, []);
 
+  const staleOperationHash = await tool(app, project.id, 'define_script_contract', {
+    ...contractArgs,
+    mutation_id: 'define-device-load-contract-stale-hash',
+    expected_operation_hash: `sha256:${'0'.repeat(64)}`,
+  }, nextRunId);
+  assert.equal(staleOperationHash.statusCode, 409, staleOperationHash.body);
+  assert.equal(staleOperationHash.json().code, 'RESOURCE_HASH_CONFLICT');
+  assert.equal(staleOperationHash.json().retryable, false);
+
   const defined = await tool(app, project.id, 'define_script_contract', contractArgs, nextRunId);
   assert.equal(defined.statusCode, 200, defined.body);
   const stillBlocked = await tool(app, project.id, 'gate_status', {
@@ -3162,29 +3307,42 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
   assert.equal(stillBlocked.json().pass, false);
   assert.ok(stillBlocked.json().blockers.some((item: string) => /完成已确认业务操作/u.test(item)));
 
-  const sourceCode = `import argparse
-import json
+  const scriptIndex = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'calculate_device_load',
+  }, nextRunId);
+  assert.equal(scriptIndex.statusCode, 200, scriptIndex.body);
+  assert.ok(scriptIndex.json().symbols.some(
+    (item: any) => item.qualified_name === 'run_business_logic',
+  ));
+  const editContext = await tool(app, project.id, 'get_script_edit_context', {
+    script_key: 'calculate_device_load',
+    symbols: ['run_business_logic'],
+  }, nextRunId);
+  assert.equal(editContext.statusCode, 200, editContext.body);
+  const businessNode = editContext.json().symbols.find(
+    (item: any) => item.qualified_name === 'run_business_logic',
+  );
+  assert.ok(businessNode);
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--amount", required=True, type=float)
-    parser.add_argument("--days", required=True, type=float)
-    parser.add_argument("--strict", action="store_true")
-    args = parser.parse_args()
-    if args.days <= 0:
+  const businessSource = `def run_business_logic(inputs):
+    days = inputs["days"]
+    if days <= 0:
         raise ValueError("days must be greater than zero")
-    print(json.dumps({"load_rate": args.amount / args.days}, ensure_ascii=False))
-
-if __name__ == "__main__":
-    main()
+    return {"load_rate": inputs["amount"] / days}
 `;
-  const staged = await tool(app, project.id, 'stage_script_source', {
+  const staged = await tool(app, project.id, 'stage_script_patch', {
     script_key: 'calculate_device_load',
     expected_revision: defined.json().working_revision,
     expected_contract_hash: defined.json().contract_hash,
-    mutation_id: 'stage-device-load-script',
+    base_source_hash: editContext.json().base_source_hash,
+    mutation_id: 'stage-device-load-script-patch',
     reason: '按专家确认的契约实现装置负荷率计算',
-    source_code: sourceCode,
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: businessSource,
+    }],
   }, nextRunId);
   assert.equal(staged.statusCode, 200, staged.body);
   const beforeTest = await tool(app, project.id, 'gate_status', {
@@ -3549,6 +3707,101 @@ test('Agent 评测忽略转发的旧 Access Token，只接受 Core 托管的可�
   assert.equal(response.statusCode, 401, response.body);
   assert.equal(response.json().code, 'AUTH_REQUIRED');
   assert.match(response.json().reason, /可续期的登录凭据/u);
+});
+
+test('Agent 评测创建后台轮次后立即返回，不等待 Consumer 执行结束', async (t) => {
+  const [{ backgroundAuthSessions }, { saveProjectDataSource }, m3, settings] = await Promise.all([
+    import('../src/auth/background-session.js'),
+    import('../src/evaluation/data-source-repo.js'),
+    import('../src/workflow/m3-repo.js'),
+    import('../src/settings/repo.js'),
+  ]);
+  const project = createProject({
+    owner: 'alice', name: 'Agent 异步评测回执', kind: 'package', runtime: 'agent',
+  });
+  const store = getPackageArtifactStore();
+  const initial = await store.initializeDraftPackage(project.id, {
+    id: 'async-evaluation-package',
+    name: 'Agent 异步评测回执',
+    description: '验证评测创建回执不等待后台执行',
+  });
+  await store.saveFiles(project.id, {
+    files: {
+      'package/objects/evaluation-check.md': '# 评测检查\n\n用于异步评测回执测试。\n',
+    },
+    expectedRevision: initial.revision.oid,
+    action: {
+      cause: 'test_setup', summary: '建立合成知识基线', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  m3.addTestcase(project.id, '当前回答是否符合预期？', '回答应符合预期', 'manual');
+  saveProjectDataSource({
+    projectId: project.id,
+    mode: 'none',
+    workspaceId: `evaluation-${project.id.replace(/[^a-zA-Z0-9-]/g, '-')}`.slice(0, 60),
+  });
+
+  let released = false;
+  let markConsumerRequestStarted = () => {};
+  const consumerRequestStarted = new Promise<void>((resolve) => {
+    markConsumerRequestStarted = resolve;
+  });
+  const pendingResponses = new Set<any>();
+  const evaluationServer = createServer((_request, serverResponse) => {
+    markConsumerRequestStarted();
+    if (released) {
+      serverResponse.writeHead(503, { 'content-type': 'application/json' });
+      serverResponse.end(JSON.stringify({ error: 'synthetic unavailable response' }));
+      return;
+    }
+    pendingResponses.add(serverResponse);
+  });
+  await new Promise<void>((resolve) => evaluationServer.listen(0, '127.0.0.1', resolve));
+  const address = evaluationServer.address();
+  assert.ok(address && typeof address === 'object');
+  const previousConsumerUrl = settings.getSetting('consumer_api_url');
+  settings.setSetting('consumer_api_url', `http://127.0.0.1:${address.port}`);
+  backgroundAuthSessions.remember('alice', 'synthetic-access-token', 'synthetic-refresh-token');
+  const releaseEvaluation = () => {
+    released = true;
+    for (const serverResponse of pendingResponses) {
+      serverResponse.writeHead(503, { 'content-type': 'application/json' });
+      serverResponse.end(JSON.stringify({ error: 'synthetic unavailable response' }));
+    }
+    pendingResponses.clear();
+  };
+  t.after(async () => {
+    releaseEvaluation();
+    backgroundAuthSessions.forget('alice');
+    if (previousConsumerUrl === null) settings.deleteSetting('consumer_api_url');
+    else settings.setSetting('consumer_api_url', previousConsumerUrl);
+    await new Promise<void>((resolve) => evaluationServer.close(() => resolve()));
+  });
+
+  const app = appFor(t);
+  const response = await Promise.race([
+    tool(app, project.id, 'run_evaluation', {}, `run-${project.id}`),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('评测启动接口仍在等待后台执行')), 3000);
+    }),
+  ]);
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json(), {
+    roundId: response.json().roundId,
+    status: 'running',
+    pending: true,
+    terminal: false,
+    scope: { kind: 'current', all: true },
+    display: { text: '正式评测任务已创建，可在评测界面查看实时进度' },
+  });
+  assert.ok(response.json().roundId);
+  await consumerRequestStarted;
+  assert.equal(m3.getRound(response.json().roundId)?.status, 'running');
+
+  releaseEvaluation();
+  const { waitForEvaluation } = await import('../src/evaluation/engine.js');
+  await waitForEvaluation(project.id, response.json().roundId);
 });
 
 test('Agent 可读取最近一轮真实评测的运行错误和轨迹', async (t) => {

@@ -15,6 +15,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail,
 from .tools import (
     AskTool,
     CandidateValidationRepairState,
+    EVALUATION_PENDING_MESSAGE,
     EventSink,
     RequestConfirmationTool,
     RequestReleaseTool,
@@ -239,6 +240,7 @@ class WriteSafetyRail(AgentRail):
         "sync_schema_objects", "patch_object_source_binding",
         "delete_domain_resource",
         "stage_script_source",
+        "stage_script_patch",
     })
     RECOVERY_TOOLS = frozenset({
         "delete_file", "delete_domain_resource", "discard_rejected_candidate_changes", "discard_change_set",
@@ -397,7 +399,7 @@ def _phase_write_problem(tool: str, arguments: dict[str, Any], phase: str) -> st
         "delete_domain_resource",
     }:
         return "领域知识只能在知识建模或增量建模阶段修改" if phase not in {"knowledge", "increment"} else ""
-    if tool == "stage_script_source":
+    if tool in {"stage_script_source", "stage_script_patch"}:
         return "脚本源码只能在确定性验证或增量建模阶段提交" if phase not in {"validation", "increment"} else ""
     if tool == "compile_package_fusion_plan":
         # 批量融合只消费只读来源和已裁决账本，并生成整体待确认候选；
@@ -446,7 +448,7 @@ class InterjectionSafetyRail(AgentRail):
         "sync_schema_objects", "patch_object_source_binding",
         "delete_domain_resource",
         "confirm_deterministic_scope",
-        "define_script_contract", "stage_script_source",
+        "define_script_contract", "stage_script_source", "stage_script_patch",
         "create_package_fusion_plan", "update_package_fusion_plan", "compile_package_fusion_plan",
         "update_project_context", "transition_project_state",
         "run_script_test", "run_evaluation", "cancel_evaluation",
@@ -540,16 +542,32 @@ class ToolBoundaryRail(AgentRail):
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
         if not result:
             return
+        name = _tool_name(ctx)
         if not ctx.extra.get("_tool_receipt_replayed") and not ctx.extra.get("_stable_read_replayed"):
             _remember_stable_read(
                 self._context.stable_read_cache,
-                _tool_name(ctx),
+                name,
                 _call_args(ctx),
                 result,
             )
+        if name == "run_evaluation" and result.get("pending") is True and not result.get("error"):
+            round_id = str(result.get("roundId") or "").strip()
+            if round_id:
+                self._context.pending_evaluation = {"roundId": round_id}
+                self._context.emit("focus", {"target": {
+                    "kind": "evaluation",
+                    "target": "正式评测",
+                    "view": "runs",
+                    "roundId": round_id,
+                }})
+                ctx.request_force_finish({
+                    "result_type": "answer",
+                    "output": EVALUATION_PENDING_MESSAGE,
+                    "pending_evaluation": True,
+                })
         if (
             ctx.extra.get("_tool_receipt_replayed")
-            or _tool_name(ctx) in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
+            or name in _CONTEXT_DEPENDENT_RECEIPT_TOOLS
             or self._context.tool_receipt_save is None
         ):
             return
@@ -558,7 +576,7 @@ class ToolBoundaryRail(AgentRail):
             return
         if result.get("error"):
             return
-        self._context.tool_receipt_save(_tool_name(ctx), call_id, _call_args(ctx), result)
+        self._context.tool_receipt_save(name, call_id, _call_args(ctx), result)
 
 
 class PhaseTransitionRail(AgentRail):
@@ -795,7 +813,7 @@ def _is_business_ambiguity(question: str, evidence: list[Any]) -> bool:
 
 
 _KNOWLEDGE_CANDIDATE_PATH = re.compile(
-    r"^(?:objects|operations|rules|metrics|mappings)/",
+    r"^(?:objects|mappings)/",
 )
 
 
@@ -1445,6 +1463,17 @@ class ActivityRail(AgentRail):
         if trace_group_id:
             payload["traceGroupId"] = trace_group_id
         self._emit("tool", payload)
+        # The impact view is already a structured server result. Persist the
+        # focus event here so the model does not have to copy long, quoted
+        # evidence strings into a second JSON tool call.
+        if name == "analyze_material_impact":
+            impact_view = result.get("view")
+            if isinstance(impact_view, Mapping):
+                self._emit("focus", {"target": {
+                    "kind": "impact",
+                    "target": str(result.get("source") or "资料影响范围"),
+                    "data": dict(impact_view),
+                }})
         plan = result.get("plan")
         if name in {"create_change_plan", "get_change_plan", "revise_change_plan", "validate_change_set"} \
                 and isinstance(plan, Mapping):

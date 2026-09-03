@@ -7,6 +7,7 @@ import DiffView from './DiffView.jsx';
 import ImpactView from './ImpactView.jsx';
 import ConflictView from './ConflictView.jsx';
 import GateView from './GateView.jsx';
+import ProgressView from './ProgressView.jsx';
 import EvaluationView from './EvaluationView.jsx';
 import DocView from './DocView.jsx';
 import Icon from '../ui/Icon.jsx';
@@ -32,6 +33,7 @@ const TITLES = {
   impact: () => '影响分析',
   conflict: (f) => f.target || '多来源融合',
   gates: () => '正式发布门禁',
+  progress: () => '建模进度',
   evaluation: () => '正式评测',
   file: (f) => displayPackageEntryName(f.target),
   studio: () => '知识包 Studio',
@@ -63,6 +65,7 @@ export default function CenterPane() {
     flow: '渲染 / 源码', diff: '待确认的修改前后对照', doc: '资料原文与引用',
     impact: '保持有效 / 需要处理', conflict: '范围 / 冲突处置', gates: '确定性实时结果',
     evaluation: '准备 / 真实用例 / 运行结果 / 失败诊断 / 优化建议',
+    progress: '从产物与门禁实时投影 · 只读',
     file: '渲染 / 源码',
     studio: '图 / 表 / 条目',
   }[focus.kind];
@@ -148,7 +151,8 @@ function Body({ kind, focus, demo }) {
     case 'impact': return <ImpactView data={focus.data} demo={demo} />;
     case 'conflict': return <ConflictView data={demo ? undefined : focus.data} />;
     case 'gates': return <GateView data={demo ? undefined : focus.data} />;
-    case 'evaluation': return <EvaluationView />;
+    case 'progress': return <ProgressView />;
+    case 'evaluation': return <EvaluationView focus={focus} />;
     case 'studio':
       return (
         <Suspense fallback={<PaneSkeleton />}>

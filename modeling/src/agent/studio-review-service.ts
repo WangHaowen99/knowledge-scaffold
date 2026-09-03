@@ -8,6 +8,7 @@ import { getDb, nowIso } from '../db/index.js';
 import type { Project } from '../types.js';
 import { runFormatChecks } from '../workflow/package-check.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
+import { untestedScriptPaths } from '../workflow/script-test-receipts.js';
 import {
   introducedSpecIntegrityProblems,
   listSpecIntegrityProblems,
@@ -228,6 +229,20 @@ export class StudioReviewService {
   ): Promise<StudioReviewResponse> {
     let candidateId = '';
     try {
+      const untestedScripts = untestedScriptPaths(
+        context.project.id,
+        context.workspace.run_id,
+        context.changes,
+        this.db,
+      );
+      if (untestedScripts.length) {
+        throw new StudioWriteError(
+          'SCRIPT_TEST_REQUIRED',
+          '脚本修改尚未在隔离环境通过当前版本测试',
+          409,
+          { blockers: untestedScripts },
+        );
+      }
       const current = await this.artifacts.current(context.project.id);
       if (!current || current.revision.oid !== context.baseRevision) {
         throw revisionConflict(context.baseRevision, current?.revision.oid ?? '');
@@ -369,6 +384,7 @@ export class StudioReviewService {
       if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
         throw revisionConflict(context.baseRevision, String(error.details?.actualRevision ?? ''));
       }
+      if (error instanceof StudioWriteError) throw error;
       if (error instanceof Error && /版本|废弃/u.test(error.message)) {
         throw new StudioWriteError('PACKAGE_NOT_EDITABLE', error.message, 409);
       }

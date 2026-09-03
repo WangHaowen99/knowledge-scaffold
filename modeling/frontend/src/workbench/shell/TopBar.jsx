@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Archive, Settings } from 'lucide-react';
+import { Archive, GitBranch, Settings } from 'lucide-react';
 
 import { store, actions, SCENES } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
@@ -53,6 +53,11 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
   };
   const incr = scene === 'increment';
   const running = !interaction && ['queued', 'running', 'stopping'].includes(run?.status);
+  const showRunningStatus = demo ? Boolean(activity || running) : running;
+  const canStartIncrement = packageStatus === 'released'
+    && workflow?.phase !== 'increment'
+    && !interaction
+    && !running;
   const structuralPolicy = confirmPolicy.find((item) => item.tier === 'structural');
   const projectName = demo ? project.name : (realProject?.name || '正在加载项目');
   const openPending = () => {
@@ -147,11 +152,7 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
         </button>
       )}
 
-      {!demo && workflow?.phaseLabel && (
-        <span className="pill wb-phase-pill" title={`当前阶段：${workflow.phaseLabel}`}>{workflow.phaseLabel}</span>
-      )}
-
-      {!interaction && (activity || running) && (
+      {!interaction && showRunningStatus && (
         <span className="pill pill-agent wb-priority-status"><i className="dot-pulse" />{run?.status === 'stopping' ? '正在停止' : '助手运行中'}</span>
       )}
 
@@ -176,6 +177,11 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
 
       {!demo && (
         <>
+          {canStartIncrement && <button className="btn btn-ghost" type="button"
+            onClick={() => void actions.startIncrementRound()}
+            title="基于当前正式版本开始一轮增量建模">
+            <GitBranch size={13} />增量
+          </button>}
           <button
             className="btn btn-ghost"
             disabled={settingsLoading}

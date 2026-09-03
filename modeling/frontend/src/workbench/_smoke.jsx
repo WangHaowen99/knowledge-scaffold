@@ -8,7 +8,7 @@ import LeftPane from './left/LeftPane.jsx';
 import { initialUploadOptions } from './pages/CreatePage.jsx';
 import { documentParagraphs, evidenceHighlight, evidenceLocationOffset } from './center/DocView.jsx';
 import EvidenceLinks from './center/EvidenceLinks.jsx';
-import { DiagnosisProgress, EvaluationSetupPanel, evaluationScopeLabel, OptimizationProgress, RunsPanel } from './center/EvaluationView.jsx';
+import { DiagnosisProgress, EvaluationSetupPanel, evaluationFocusRequest, evaluationScopeLabel, OptimizationProgress, RunsPanel } from './center/EvaluationView.jsx';
 import {
   defaultExpandedEvaluationIds,
   EvaluationResultsList,
@@ -17,6 +17,7 @@ import {
 import FileView from './center/FileView.jsx';
 import DiffView from './center/DiffView.jsx';
 import { fitMermaidZoom } from './center/FlowView.jsx';
+import { blockingGateIndex, stepCounts } from './shell/PhaseRail.jsx';
 import GateView from './center/GateView.jsx';
 import ImpactView from './center/ImpactView.jsx';
 import { Block } from './right/blocks/Blocks.jsx';
@@ -42,6 +43,7 @@ import ProcessDrawer, {
 import { userFacingText } from './lib/userFacingText.js';
 import {
   evidenceLabel,
+  evidenceHref,
   evidenceReferenceFromHref,
   linkEvidenceReferences,
   readableEvidenceAnchor,
@@ -120,6 +122,8 @@ import {
 import {
   operationFlowMode,
   operationFlowScrollCanvas,
+  operationFlowWheelZoom,
+  operationFlowZoom,
   operationStepsDiagram,
   projectOperationFlowDiagram,
 } from './studio/operation-flow/operationFlowModel.js';
@@ -247,6 +251,7 @@ try {
     ...projected,
     nodes: projected.nodes.map((node, index) => ({ ...node, position: { x: -20, y: index * 680 - 40 } })),
   }, 56, { width: 1600, height: 900 });
+  const flowPanelSource = readFileSync('src/workbench/studio/operation-flow/OperationFlowPanel.jsx', 'utf8');
   if (operationFlowMode({ defaultView: 'business-flow', diagrams: [{}], steps: ['步骤一'] }) !== 'business-flow'
     || operationFlowMode({ diagrams: [], steps: ['步骤一'] }) !== 'operation-steps'
     || steps.nodes.length !== 4
@@ -257,6 +262,14 @@ try {
     || scrollCanvas.width !== 1600
     || Math.min(...scrollCanvas.nodes.map((node) => node.position.x)) < 600
     || scrollCanvas.nodes.some((node) => node.position.x < 0 || node.position.y < 0)
+    || operationFlowZoom(0.1) !== 0.5
+    || operationFlowZoom(2.4) !== 2
+    || operationFlowWheelZoom(1, -100) !== 1.25
+    || operationFlowWheelZoom(1, 100) !== 0.75
+    || !flowPanelSource.includes("addEventListener('wheel', handleFullscreenWheel, { passive: false })")
+    || !flowPanelSource.includes("removeEventListener('wheel', handleFullscreenWheel)")
+    || flowPanelSource.includes('onWheel={(event) =>')
+    || projected.edges.some((edge) => edge.type !== 'step')
     || projected.edges[0]?.source !== 'start') {
     throw new Error('操作步骤、默认视图或业务流程高亮投影不一致');
   }
@@ -650,6 +663,17 @@ try {
 } catch (e) { console.log('✗ 评测数据源配置:', e.message); bad++; }
 
 try {
+  const request = evaluationFocusRequest({
+    kind: 'evaluation', target: '正式评测', view: 'runs', roundId: 'round-demo',
+  });
+  if (request?.view !== 'runs' || request.roundId !== 'round-demo'
+    || evaluationFocusRequest({ kind: 'evaluation', target: '正式评测' }) !== null) {
+    throw new Error('评测焦点没有准确指向运行结果和指定轮次');
+  }
+  console.log('✓ 评测焦点可打开指定轮次的运行进度');
+} catch (e) { console.log('✗ 评测运行焦点:', e.message); bad++; }
+
+try {
   const html = renderToString(<DiagnosisProgress task={{
     operation: 'diagnose', startedAt: new Date(Date.now() - 65_000).toISOString(),
   }} />);
@@ -667,8 +691,14 @@ try {
   const apply = renderToString(<OptimizationProgress operation="apply" task={{
     operation: 'apply', startedAt: new Date(Date.now() - 65_000).toISOString(),
   }} />);
+  const targeted = renderToString(<OptimizationProgress operation="apply" task={{ node: { output: {
+    taskType: 'optimization_apply', protocol: 'targeted_incremental', selectedCount: 5,
+    changeSetCount: 1, targetResourceKeys: ['script:calculate', 'operation:calculate'],
+    startedAt: new Date(Date.now() - 65_000).toISOString(),
+  } } }} />);
   if (!proposal.includes('正在生成优化建议') || !proposal.includes('已运行')
-    || !apply.includes('正在生成知识包候选') || !apply.includes('确定性校验')) {
+    || !apply.includes('正在生成知识包候选') || !apply.includes('确定性校验')
+    || !targeted.includes('5 条建议合并为 1 个变更组') || !targeted.includes('涉及 2 个资源')) {
     throw new Error('优化长任务没有显示可恢复的进度反馈');
   }
   console.log('✓ 优化长任务显示进度反馈');
@@ -716,22 +746,78 @@ try {
 try {
   if (fitMermaidZoom(8_000, 1_040) !== 0.25
     || fitMermaidZoom(1_000, 640) !== 0.64
-    || fitMermaidZoom(480, 960) !== 1
-    || fitMermaidZoom(0, 960) !== 1) {
-    throw new Error('超大图自动适配没有保持最小可读缩放');
+    || fitMermaidZoom(480, 960) !== 1.8
+    || fitMermaidZoom(0, 960) !== 1
+    // 小图按宽度能放到 6 倍，但视口高度只够 1.5 倍，取较紧的一档
+    || fitMermaidZoom(160, 960, 400, 600) !== 1.5
+    // 长图高度装不下也不缩小：视口纵向可滚动，压扁了反而看不清
+    || fitMermaidZoom(160, 960, 900, 600) !== 1
+    // 高度未知时退回只看宽度，行为与改动前一致
+    || fitMermaidZoom(1_000, 640, 0, 0) !== 0.64) {
+    throw new Error('流程图自动适配没有按宽度贴合、按高度限制放大');
   }
-  console.log('✓ Mermaid 自动适配保持最小可读缩放');
+  console.log('✓ Mermaid 按宽度贴合视口，高度只限制放大不造成缩小');
 } catch (e) { console.log('✗ Mermaid 自动适配:', e.message); bad++; }
+
+try {
+  const steps = [
+    { phase: 'intake', label: '资料与目标准备', gate: null },
+    { phase: 'goal', label: '目标确认', gate: 'materials_ready' },
+    { phase: 'process', label: '流程建模', gate: 'goal_confirmed' },
+    { phase: 'knowledge', label: '知识建模', gate: 'process_confirmed' },
+  ];
+  const gateById = new Map([
+    ['materials_ready', { id: 'materials_ready', pass: true, blockers: [] }],
+    ['goal_confirmed', { id: 'goal_confirmed', pass: false, blockers: ['确认当前建模目标'] }],
+    ['process_confirmed', { id: 'process_confirmed', pass: false, blockers: ['形成并确认至少 1 条业务流程'] }],
+  ]);
+  // 当前停在"目标确认"：只有紧接其后的那道闸算挡路，更远的那道不该也亮起来
+  const atGoal = (index) => (index < 1 ? 'passed' : index > 1 ? 'future' : 'current');
+  if (blockingGateIndex(steps, gateById, atGoal) !== 2) {
+    throw new Error('挡路的闸没有取当前步之后的第一道');
+  }
+  // 还站在第一步时，后面那道没通过的闸只是"还没轮到"，不该提前点亮
+  const atIntake = (index) => (index === 0 ? 'current' : 'future');
+  if (blockingGateIndex(steps, gateById, atIntake) !== -1) {
+    throw new Error('尚未走到的闸被提前标成了挡路');
+  }
+  // 门禁还没拉回来时不能凭空点亮任何一道
+  if (blockingGateIndex(steps, new Map(), atGoal) !== -1) {
+    throw new Error('没有门禁数据时仍然标了挡路的闸');
+  }
+  const files = [
+    'diagrams/采购申请.mmd', 'diagrams/入库校验.mmd',
+    'objects/备件.md', 'objects/index.md', 'rules/安全库存判断.md',
+    'scripts/reorder.py',
+  ];
+  if (stepCounts('process', files, []) !== '2 条流程'
+    || stepCounts('knowledge', files, []) !== '2 项知识'
+    || stepCounts('validation', files, []) !== '1 个脚本'
+    || stepCounts('intake', files, [{ id: 'm1' }]) !== '1 份资料'
+    || stepCounts('release', files, []) !== '') {
+    throw new Error('阶段产出计数没有按目录投影，或把 index.md 算成了知识条目');
+  }
+  console.log('✓ 阶段轨只点亮一道闸，产出计数按目录投影');
+} catch (e) { console.log('✗ 阶段轨门禁与计数:', e.message); bad++; }
 
 try {
   const evidence = 'material:doc-evidence#§3.2';
   const materials = [{ id: 'doc-evidence', filename: '作业手册.docx' }];
   const linked = linkEvidenceReferences(`> 依据：${evidence}`, materials);
   const href = linked.match(/\((#evidence:[^)]+)\)/u)?.[1];
+  const contextual = linkEvidenceReferences(
+    '资料：material:doc-evidence#前言（合成资料说明，提供业务背景）',
+    materials,
+  );
+  const strictHref = evidenceHref('material:doc-evidence#章节(补充)');
   const paragraphs = documentParagraphs('概述\n\n§3.2 安全库存应扣除已占用数量。\n\n附录');
   const highlight = evidenceHighlight(paragraphs[1], { anchor: '§3.2', offset: 4 });
   if (!linked.includes('《作业手册.docx》 · §3.2') || evidenceReferenceFromHref(href) !== evidence
-    || evidenceLabel(evidence, materials).includes('doc-evidence') || highlight?.start !== 0 || highlight?.end !== 4) {
+    || evidenceLabel(evidence, materials).includes('doc-evidence') || highlight?.start !== 0 || highlight?.end !== 4
+    || !contextual.includes('《作业手册.docx》 · 前言')
+    || !contextual.endsWith('（合成资料说明，提供业务背景）')
+    || contextual.includes('· 前言（') || strictHref.includes('(') || strictHref.includes(')')
+    || evidenceReferenceFromHref(strictHref) !== 'material:doc-evidence#章节(补充)') {
     throw new Error('证据引用没有转换成可读链接或正文锚点');
   }
   if (readableEvidenceAnchor('offset=12500') !== '正文第 12,500 字附近'
@@ -1349,6 +1435,49 @@ try {
   console.log('✓ 取消运行同步关闭待处理决定卡');
 } catch (e) { console.log('✗ 取消运行关闭决定卡:', e.message); bad++; }
 
+store.set({
+  demo: false,
+  run: { id: 'cancel-tool-run', status: 'running' },
+  interaction: null,
+  activity: { text: '正在原子生成待确认修改', progress: {}, observedAt: Date.now() },
+  trace: [{
+    id: 'tool:cancel-tool-run:call-stage-change-set', seq: 1,
+    runId: 'cancel-tool-run', toolCallId: 'call-stage-change-set',
+    name: 'stage_change_set', phase: 'started', summary: '正在原子生成待确认修改',
+    createdAt: new Date().toISOString(),
+  }],
+  lastSeq: 0,
+  replayUntilSeq: 0,
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'cancel-tool-run',
+  toolCallId: 'call-stage-change-set', name: 'stage_change_set',
+  phase: 'cancelled', summary: '运行已停止，当前操作已取消',
+});
+actions.handleEvent({
+  eventType: 'status', seq: 3, runId: 'cancel-tool-run', status: 'cancelled',
+  text: '已停止，已完成的候选内容保留',
+});
+actions.handleEvent({
+  eventType: 'progress', seq: 4, runId: 'cancel-tool-run',
+  text: '正在原子生成待确认修改', detail: '迟到的旧进度', counters: {},
+});
+actions.handleEvent({
+  eventType: 'status', seq: 5, runId: 'cancel-tool-run', status: 'running',
+  text: '迟到的运行状态',
+});
+try {
+  const html = renderToString(<App />);
+  const drawer = renderToString(<ProcessDrawer onClose={() => {}} />);
+  if (store.get().run?.status !== 'cancelled' || store.get().activity
+    || store.get().trace[0]?.phase !== 'cancelled'
+    || html.includes('助手运行中') || !drawer.includes('已取消')
+    || !drawer.includes('运行已停止，当前操作已取消')) {
+    throw new Error('取消后工具活动、顶栏或迟到事件没有收敛到同一终态');
+  }
+  console.log('✓ 取消运行同步结算工具活动并拒绝迟到运行事件');
+} catch (e) { console.log('✗ 取消运行工具终态:', e.message); bad++; }
+
 try {
   const html = renderToString(<Block block={{
     type: 'release',
@@ -1472,21 +1601,50 @@ try {
 store.set({
   demo: false,
   loading: false,
-  project: { name: '真实项目' },
+  files: [],
+  messages: [],
+  interaction: null,
+  project: { name: '合成项目' },
   focus: { kind: 'diff', target: '.modeling/goal.md' },
-  materials: [{ id: 'doc-real', filename: '真实资料#1.docx' }],
+  materials: [{ id: 'doc-synthetic', filename: '合成资料说明.docx' }],
   candidateDiff: [{
-    path: '.modeling/goal.md', before: '', after: '# 目标\n\n来源：material:doc-real#第一章', additions: 3, deletions: 0,
+    path: '.modeling/goal.md', before: '',
+    after: '# 目标\n\n资料：material:doc-synthetic#前言（合成资料说明，提供业务背景）',
+    additions: 3, deletions: 0,
   }],
 });
 try {
   const html = renderToString(<App />);
-  if (!html.includes('goal.md') || html.includes('rules/安全库存判断.md')
-    || !html.includes('【真实资料#1.docx】#第一章') || html.includes('material:doc-real')) {
-    throw new Error('真实候选标题仍使用演示 diff 路径');
+  if (!html.includes('goal.md') || !html.includes('<h1>目标</h1>')
+    || !html.includes('《合成资料说明.docx》 · 前言') || !html.includes('（合成资料说明，提供业务背景）')
+    || html.includes('material:doc-synthetic') || html.includes('#evidence:')
+    || html.includes('[《') || html.includes('# 目标')) {
+    throw new Error('合成 goal.md 候选没有使用渲染后的 Markdown 内容');
   }
-  console.log('✓ 真实候选标题来自 Agent 焦点');
-} catch (e) { console.log('✗ 真实候选标题:', e.message); bad++; }
+  console.log('✓ 合成 goal.md 候选默认展示渲染后的 Markdown');
+} catch (e) { console.log('✗ 合成候选标题:', e.message); bad++; }
+
+try {
+  const appCss = readFileSync('src/workbench/app.css', 'utf8');
+  const renderedRule = appCss.match(/\.wb-diff-markdown \.wb-markdown\s*\{([^}]*)\}/u)?.[1] || '';
+  const sourceRule = appCss.match(/\.wb-diff-markdown \.wb-flow-source \.l\s*\{([^}]*)\}/u)?.[1] || '';
+  const sourceShellRule = appCss.match(/\.wb-diff-markdown \.wb-flow-source\s*\{([^}]*)\}/u)?.[1] || '';
+  const inlineEvidenceRule = appCss.match(/\.wb-markdown \.wb-evidence-link\s*\{([^}]*)\}/u)?.[1] || '';
+  const inlineEvidenceIconRule = appCss.match(/\.wb-markdown \.wb-evidence-link svg\s*\{([^}]*)\}/u)?.[1] || '';
+  if (!/width:\s*100%/u.test(renderedRule) || !/max-width:\s*none/u.test(renderedRule)
+    || !/white-space:\s*pre-wrap/u.test(sourceRule)
+    || !/overflow-wrap:\s*anywhere/u.test(sourceRule)
+    || !/word-break:\s*break-word/u.test(sourceRule)
+    || !/overflow-x:\s*hidden/u.test(sourceShellRule)
+    || !/background:\s*var\(--c-surface-2\)/u.test(sourceShellRule)
+    || !/display:\s*inline/u.test(inlineEvidenceRule)
+    || !/line-height:\s*inherit/u.test(inlineEvidenceRule)
+    || !/vertical-align:\s*baseline/u.test(inlineEvidenceRule)
+    || !/vertical-align:\s*-0\.125em/u.test(inlineEvidenceIconRule)) {
+    throw new Error('Markdown 候选宽度、源码布局或证据文字基线不正确');
+  }
+  console.log('✓ Markdown 候选使用完整宽度，源码自动换行，证据与说明文字基线对齐');
+} catch (e) { console.log('✗ Markdown 候选源码布局:', e.message); bad++; }
 
 store.set({
   demo: false,
@@ -1651,7 +1809,13 @@ store.set({
   packageVersion: '1.0.0',
   packageStatus: 'released',
   revision: 'deadbeefcafebabedeadbeefcafebabedeadbeef',
-  workflow: { phaseLabel: '发布交付', revision: 108 },
+  workflow: { phase: 'release', phaseLabel: '发布交付', execution: 'completed', revision: 108 },
+  phases: [
+    { phase: 'intake', label: '资料与目标准备', gate: null, linear: true },
+    { phase: 'goal', label: '目标确认', gate: 'materials_ready', linear: true },
+    { phase: 'release', label: '发布交付', gate: 'releasable', linear: true },
+  ],
+  progress: null,
   files: [],
   focus: { kind: 'empty', target: '' },
   messages: [],

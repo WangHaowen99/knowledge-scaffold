@@ -41,7 +41,7 @@ from .project_transfer import (
     export_project_transfer,
     import_project_transfer,
 )
-from .tools import CandidateValidationRepairState, ToolContext
+from .tools import CandidateValidationRepairState, EVALUATION_PENDING_MESSAGE, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 from .workflows import (
     build_execution_brief_workflow,
@@ -85,7 +85,8 @@ PHASE_EDGES = {
     "goal": ("process",),
     "process": ("goal", "knowledge"),
     "knowledge": ("goal", "process", "validation"),
-    "increment": ("goal", "process", "knowledge", "validation", "evaluation"),
+    # 增量轮次在同一阶段内完成影响分析和受控修改，不能重新退回全量建模链路。
+    "increment": ("validation", "evaluation"),
     "validation": ("goal", "process", "knowledge", "evaluation"),
     "evaluation": ("goal", "process", "knowledge", "validation", "release"),
     "release": ("goal", "process", "knowledge"),
@@ -99,6 +100,24 @@ PHASE_GATES = {
     "release": "releasable",
 }
 
+
+def _phase_projection() -> list[dict[str, Any]]:
+    """阶段顺序、标签和入口门禁的只读投影。
+
+    前端的阶段轨照这份数据渲染，不再自己抄一份阶段表——否则 PHASE_LABELS
+    一改就得改两处。increment 是正式基线上的独立轮次，标出来让前端画成支线。
+    """
+    return [
+        {
+            "phase": phase,
+            "label": label,
+            "gate": PHASE_GATES.get(phase),
+            "linear": phase != "increment",
+        }
+        for phase, label in PHASE_LABELS.items()
+    ]
+
+
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
 MAX_DECISION_CARD_RETRIES = 2
@@ -110,6 +129,7 @@ MAX_TOOL_SUMMARIES = 60
 MAX_MODEL_RECOVERY_ATTEMPTS = 1
 MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS = 3.5
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "create_change_plan",
     "revise_change_plan",
@@ -139,6 +159,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "confirm_deterministic_scope",
     "define_script_contract",
     "stage_script_source",
+    "stage_script_patch",
     "bind_object_sources",
     "discard_rejected_candidate_changes",
     "regroup_changes",
@@ -147,7 +168,6 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "compile_package_fusion_plan",
     "transition_project_state",
     "run_script_test",
-    "run_evaluation",
     "cancel_evaluation",
 })
 
@@ -203,12 +223,16 @@ class LiveRun:
     plan_approval_required: bool = False
     technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     deferred_purpose_continuation: tuple[int, str, str] | None = None
+    evaluation_launch_active: bool = False
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
     terminal_attempts = live.required_tools & FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL
     successful_results = live.required_tools - terminal_attempts
     missing = (terminal_attempts - live.attempted_tools) | (successful_results - live.observed_tools)
+    # 服务端确认的全文阅读强于单页读取，不要让模型被迫重复读取同一份资料。
+    if "read_document" in missing and "read_documents_fully" in live.observed_tools:
+        missing.remove("read_document")
     if live.required_material_directives - live.observed_material_directives:
         missing.add("set_material_directive")
     return missing
@@ -392,6 +416,11 @@ class AgentService:
         await Runner.start()
         self._started = True
         self._storage_diag = self._storage_diagnostic()
+        if self._storage_diag.get("healthy", False):
+            self.store.clear_recovery_status(
+                RECOVERY_VOLUME_MISMATCH,
+                cause="storage_verified_after_checkpoint_path_fix",
+            )
         recovered_runs = self.store.recover_interrupted()
         if recovered_runs:
             if not self._storage_diag.get("healthy", True):
@@ -538,7 +567,7 @@ class AgentService:
         missing_checkpoint_with_runs = not checkpoint_db.exists() and diagnostic["runCount"] > 0
         if not same_directory or not runtime_db.exists() or missing_checkpoint_with_runs:
             diagnostic["healthy"] = False
-            diagnostic["reason"] = "runtime.sqlite 与 checkpoints.sqlite 不在同一持久卷，或存在运行记录但检查点数据库缺失"
+            diagnostic["reason"] = "runtime.sqlite 与 checkpoints.sqlite.db 不在同一持久卷，或存在运行记录但检查点数据库缺失"
         try:
             if checkpoint_db.exists():
                 database = sqlite3.connect(f"file:{checkpoint_db}?mode=ro", uri=True)
@@ -558,7 +587,7 @@ class AgentService:
                     database.close()
         except sqlite3.Error:
             diagnostic["healthy"] = False
-            diagnostic["reason"] = "checkpoints.sqlite 无法读取"
+            diagnostic["reason"] = "checkpoints.sqlite.db 无法读取"
         self._recovery_summary = {
             "status": "healthy" if diagnostic["healthy"] else "storage_unhealthy",
             "volumeId": volume_id,
@@ -621,6 +650,7 @@ class AgentService:
         public_state["phaseLabel"] = PHASE_LABELS.get(public_state["phase"], public_state["phase"])
         return {
             "state": public_state,
+            "phases": _phase_projection(),
             "run": self._run_public(run, state) if run else None,
             "interaction": interaction.public() if interaction else None,
             "activity": {
@@ -639,9 +669,14 @@ class AgentService:
         missing: list[str] = []
         if state.run_id and self.store.get_run(state.run_id) is None:
             missing.append("run")
+        _phase, _separator, execution = state.state.partition(":")
+        has_recoverable_run = bool(state.run_id) and execution in ACTIVE_RUN_STATUSES
         storage = self._storage_diag or {}
-        if not storage.get("healthy", True) and not storage.get("checkpointDbExists", False):
-            missing.append("checkpoint")
+        if has_recoverable_run and "run" not in missing:
+            storage_unhealthy = not storage.get("healthy", True)
+            checkpoint_missing = not storage.get("checkpointDbExists", False)
+            if storage_unhealthy and checkpoint_missing:
+                missing.append("checkpoint")
         status = state.recovery_status or ""
         if not status and missing:
             status = RECOVERY_STALE_RUN if "run" in missing else RECOVERY_VOLUME_MISMATCH
@@ -651,7 +686,7 @@ class AgentService:
         if "run" in missing:
             next_steps.append("安全终止失效计划后重新规划")
         if "checkpoint" in missing:
-            next_steps.append("核对建模服务数据卷与 checkpoints.sqlite 后重启")
+            next_steps.append("核对建模服务数据卷与 checkpoints.sqlite.db 后重启")
         if status == RECOVERY_RESUME_FAILED:
             next_steps.append("从最近检查点手动恢复，或取消当前运行后重新规划")
         diagnostic: dict[str, Any] = {"status": status}
@@ -747,12 +782,32 @@ class AgentService:
             technical_recoveries=self.store.technical_recoveries(run_id),
         )
         self._live[run_id] = live
-        state_snapshot = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
+        state_payload = self.project_state(project_id)["state"]
+        state_snapshot = json.dumps(state_payload, ensure_ascii=False)[:12_000]
+        increment_constraint = ""
+        if state_payload.get("roundMode") == "incremental":
+            increment_constraint = (
+                "\n# 当前增量轮次约束（服务端已绑定正式基线）\n"
+                "留在 increment 阶段完成影响分析和受控修改，不得回到 goal、process 或 knowledge "
+                "重跑全量建模。先核对新增或变化的资料，只处理直接受影响的已有资源；"
+                "create_change_plan 必须使用 expert_edit，未受影响的正式内容保持不变。"
+            )
+            if _document_rule_change_requested(prompt):
+                increment_constraint += (
+                    "\n本轮是发布后指定文档新增规则：先读取用户点名的文档，再核对现有规则及其引用；"
+                    "如果平台已有该文档的修订影响记录，再调用资料影响分析，"
+                    "如果只是读取已存在文档且没有修订记录，则直接用文档证据界定范围，"
+                    "只建立 rules/ 下新增规则的受控修改计划。不得修改或重写 objects/、operations/、"
+                    "metrics/、scripts/，不得改动已有规则或正式基线；索引等平台派生文件由核心服务维护。"
+                    "资料影响结果会由服务端自动定位到中栏，不要调用 focus 携带完整 data；"
+                    "如确需定位，只传 kind 和 target，不要复制带引号的原始清单。"
+                )
         runtime_prompt = (
             f"{prompt}\n\n"
             "# 项目唯一 Agent 状态快照（服务端在本轮启动时注入）\n"
             f"{state_snapshot}\n"
             "执行前仍应调用 get_project_state 获取最新版本；状态转换只能调用 transition_project_state。"
+            f"{increment_constraint}"
         )
         live.task = asyncio.create_task(self._execute(live, runtime_prompt))
         return self._run_public(run, self.store.project_state(project_id))
@@ -803,6 +858,11 @@ class AgentService:
             "externalEventId": aggregate_id,
             "blocks": [self._material_batch_block(terminal_events)],
         })
+        await self._start_increment_for_material_events(
+            project_id=project_id,
+            token=token,
+            events=terminal_events,
+        )
         self._rewind_for_material_events(project_id, terminal_events)
         if aggregate.get("autoContinue") is False:
             self.store.mark_material_batch_continued(project_id, batch_id)
@@ -878,6 +938,7 @@ class AgentService:
                 ),
             }],
         })
+        round_id = f"increment_{uuid.uuid4().hex}"
         state = self.store.transition_project_state(
             project_id,
             expected_revision=state.revision,
@@ -887,8 +948,12 @@ class AgentService:
                 f"已导入知识包“{package_name}” {package_version} 作为增量基线；"
                 "尚未运行本项目的真实业务评测。"
             ),
+            round_mode="incremental",
+            round_id=round_id,
+            baseline_revision=baseline_revision,
             metadata={
                 "eventId": event_id,
+                "roundId": round_id,
                 "baselineRevision": baseline_revision,
                 "packageName": package_name,
                 "packageVersion": package_version,
@@ -908,6 +973,37 @@ class AgentService:
             "state": state.public(),
         }
 
+    async def start_increment_round(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        baseline_revision: str,
+        package_version: str = "",
+    ) -> dict[str, Any]:
+        _require_project_and_token(project_id, token)
+        state, started = self.store.start_increment_round(
+            project_id,
+            baseline_revision=baseline_revision,
+            package_version=package_version,
+        )
+        public = state.public()
+        public["phaseLabel"] = PHASE_LABELS["increment"]
+        if started:
+            self.events.publish(project_id, state.run_id, "state", public)
+            version = package_version.strip()
+            self.events.publish(project_id, state.run_id, "message", {
+                "role": "assistant",
+                "blocks": [{
+                    "type": "text",
+                    "text": (
+                        f"已基于知识包 {version} 开始增量建模。"
+                        if version else "已基于当前正式知识包开始增量建模。"
+                    ) + "本轮只核对新增或变化的资料，未受影响的已确认内容保持不变。",
+                }],
+            })
+        return {"started": started, "state": public}
+
     async def handle_evaluation_event(
         self,
         *,
@@ -923,15 +1019,55 @@ class AgentService:
             raise AgentRuntimeError("INVALID_EVALUATION_EVENT", "评测终态事件不完整", status=400)
 
         inserted = self.store.record_external_event(event_id, project_id, "evaluation_terminal", event)
-        if not self.store.external_event_pending(event_id, project_id):
+        claim = self.store.claim_external_event_continuation(event_id, project_id)
+        if claim == "continued":
             return {"accepted": True, "duplicate": True, "reconciled": False}
+        if claim == "continuing":
+            raise AgentRuntimeError(
+                "EVALUATION_EVENT_IN_PROGRESS",
+                "评测终态正在处理，请稍后重试",
+                status=409,
+            )
+        if claim != "claimed":
+            raise AgentRuntimeError(
+                "EVALUATION_EVENT_CONFLICT",
+                "评测终态事件与项目不匹配",
+                status=409,
+            )
+
+        try:
+            result = await self._handle_claimed_evaluation_event(
+                project_id=project_id,
+                token=token,
+                event=event,
+                event_id=event_id,
+                round_id=round_id,
+                status=status,
+                inserted=inserted,
+            )
+            self.store.mark_external_event_continued(event_id, project_id)
+            return result
+        except BaseException:
+            self.store.release_external_event_continuation(event_id, project_id)
+            raise
+
+    async def _handle_claimed_evaluation_event(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        event: dict[str, Any],
+        event_id: str,
+        round_id: str,
+        status: str,
+        inserted: bool,
+    ) -> dict[str, Any]:
 
         latest = self.store.latest_presented_evaluation(
             project_id,
             exclude_event_id=event_id,
         )
         if latest is not None and _evaluation_event_is_stale(event, latest):
-            self.store.mark_external_event_continued(event_id, project_id)
             return {
                 "accepted": True,
                 "duplicate": not inserted,
@@ -957,7 +1093,11 @@ class AgentService:
         current = self.store.project_state(project_id)
         phase, _separator, _execution = current.state.partition(":")
         reconciled = False
-        if phase == "evaluation":
+        needs_reconciliation = (
+            current.summary != summary
+            or any(_claims_active_evaluation(item) for item in current.open_questions)
+        )
+        if phase == "evaluation" and needs_reconciliation:
             updated = self.store.transition_project_state(
                 project_id,
                 expected_revision=current.revision,
@@ -984,14 +1124,60 @@ class AgentService:
             self.events.publish(project_id, run_id, "state", public)
             reconciled = True
 
-        self.store.mark_external_event_continued(event_id, project_id)
+        continuation = _evaluation_terminal_continuation(event)
+        if continuation is None:
+            return {
+                "accepted": True,
+                "duplicate": not inserted,
+                "reconciled": reconciled,
+                "continued": False,
+                "status": status,
+                "roundId": round_id,
+            }
+
+        await self._wait_for_evaluation_launch_boundary(project_id)
+        prompt, required_tools = continuation
+        await self._continue_for_external_event(
+            project_id=project_id,
+            token=token,
+            prompt=prompt,
+            required_tools=required_tools,
+            event=event,
+        )
         return {
             "accepted": True,
             "duplicate": not inserted,
             "reconciled": reconciled,
+            "continued": True,
             "status": status,
             "roundId": round_id,
         }
+
+    async def _wait_for_evaluation_launch_boundary(self, project_id: str) -> None:
+        active = self.store.active_run(project_id)
+        live = self._live.get(active.id) if active is not None else None
+        if live is None or not live.evaluation_launch_active:
+            return
+        task = live.task
+        if task is None or task.done():
+            return
+        if task is asyncio.current_task():
+            raise AgentRuntimeError(
+                "EVALUATION_LAUNCH_SETTLING",
+                "评测终态已保存，启动回合仍在结束",
+                status=409,
+            )
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as error:
+            raise AgentRuntimeError(
+                "EVALUATION_LAUNCH_SETTLING",
+                "评测终态已保存，启动回合仍在结束",
+                status=409,
+            ) from error
 
     async def handle_studio_review_event(
         self,
@@ -1135,6 +1321,10 @@ class AgentService:
         target = "goal" if any(item.get("purpose") == "goal" for item in changed) else "knowledge"
         current = self.store.project_state(project_id)
         phase, _separator, execution = current.state.partition(":")
+        # 带正式基线的新事件已在上一步进入 increment；这里只阻止增量轮次退回全量阶段。
+        # 部署前已经入队、缺少基线字段的存量事件仍沿用原来的定向回退，确保能够被消费。
+        if phase == "increment":
+            return
         if phase not in PHASE_ORDER or PHASE_ORDER.index(phase) <= PHASE_ORDER.index(target):
             return
         updated = self.store.transition_project_state(
@@ -1153,6 +1343,35 @@ class AgentService:
         public = updated.public()
         public["phaseLabel"] = PHASE_LABELS[target]
         self.events.publish(project_id, current.run_id, "state", public)
+
+    async def _start_increment_for_material_events(
+        self,
+        *,
+        project_id: str,
+        token: str,
+        events: list[dict[str, Any]],
+    ) -> None:
+        baseline_event = None
+        for item in events:
+            is_parsed_change = (
+                item.get("status") == "parsed"
+                and item.get("semanticChanged") is True
+            )
+            if not is_parsed_change:
+                continue
+            is_released_package = str(item.get("packageStatus") or "") == "released"
+            has_package_revision = bool(str(item.get("packageRevision") or "").strip())
+            if is_released_package and has_package_revision:
+                baseline_event = item
+                break
+        if baseline_event is None:
+            return
+        await self.start_increment_round(
+            project_id=project_id,
+            token=token,
+            baseline_revision=str(baseline_event.get("packageRevision") or ""),
+            package_version=str(baseline_event.get("packageVersion") or ""),
+        )
 
     @staticmethod
     def _material_event_block(event: dict[str, Any]) -> dict[str, Any]:
@@ -1668,6 +1887,8 @@ class AgentService:
                 token,
                 {interaction.tool_call_id: answer},
                 restore_interaction=interaction,
+                required_tools=_required_tools_for_user_intent(message),
+                autonomous_seed=True,
             )
             return {"mode": "interjection", "run": resumed}
 
@@ -2089,7 +2310,10 @@ class AgentService:
                 live.observed_material_directives.add(filename)
             if result.get("requiresUserConfirmation") is True:
                 return
-        if name not in {"set_material_directive", "read_documents_fully"}:
+        # 读取资料是只读动作，不能改变已发布事实或业务阶段。
+        if name == "read_documents_fully":
+            return
+        if name != "set_material_directive":
             return
         purposes: list[str] = []
         filenames: list[str] = []
@@ -2101,13 +2325,11 @@ class AgentService:
             # 只改变阅读方式时，等全文读取成功后再回退阶段。
             if purpose == "auto":
                 return
-        else:
-            documents = result.get("documents") if isinstance(result.get("documents"), list) else []
-            purposes.extend(str(item.get("purpose") or "auto") for item in documents if isinstance(item, dict))
-            filenames.extend(str(item.get("filename") or "") for item in documents if isinstance(item, dict))
         target = "goal" if "goal" in purposes else "knowledge"
         current = self.store.project_state(live.project_id)
         phase, _separator, execution = current.state.partition(":")
+        if phase in {"release", "increment"}:
+            return
         if phase not in PHASE_ORDER or PHASE_ORDER.index(phase) <= PHASE_ORDER.index(target):
             return
         if current.run_id != live.run_id or execution != RUN_RUNNING:
@@ -2120,7 +2342,7 @@ class AgentService:
             live.project_id,
             expected_revision=current.revision,
             next_state=f"{target}:{execution}",
-            cause="material_directive_applied" if name == "set_material_directive" else "material_full_read_completed",
+            cause="material_directive_applied",
             actor_run_id=live.run_id,
             metadata={
                 "filenames": [item for item in filenames if item][:50],
@@ -2286,6 +2508,7 @@ class AgentService:
                     task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._settle_cancelled_tool_events(project_id, run.id)
         updated = self.store.update_run(run.id, status=RUN_CANCELLED, error="用户已停止运行")
         self._publish_state(project_id, run.id)
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
@@ -2360,6 +2583,20 @@ class AgentService:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
+
+    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
+        for event in self.store.unfinished_tool_events(run_id):
+            started = event.payload
+            payload = {
+                "name": str(started.get("name") or ""),
+                "phase": "cancelled",
+                "summary": "运行已停止，当前操作已取消",
+                "toolCallId": str(started.get("toolCallId") or ""),
+            }
+            trace_group_id = str(started.get("traceGroupId") or "")
+            if trace_group_id:
+                payload["traceGroupId"] = trace_group_id
+            self.events.publish(project_id, run_id, "tool", payload)
 
     async def _resume(
         self,
@@ -2552,6 +2789,8 @@ class AgentService:
                     if kind == "tool":
                         phase = str(payload.get("phase") or "")
                         name = str(payload.get("name") or "")
+                        if name == "run_evaluation" and phase == "started":
+                            live.evaluation_launch_active = True
                         if phase in {"completed", "failed", "repairing", "blocked", "rejected"}:
                             live.attempted_tools.add(name)
                             summary = sanitize_visible_text(str(payload.get("summary") or "")).strip()
@@ -2637,6 +2876,17 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                if context.pending_evaluation is not None:
+                    result = await self._ensure_visible_result(live, run, {
+                        "result_type": "success",
+                        "output": EVALUATION_PENDING_MESSAGE,
+                        "streamed": (
+                            result.get("streamed") is True
+                            and str(result.get("output") or "").strip() == EVALUATION_PENDING_MESSAGE
+                        ),
+                    })
+                    self._settle(live, run, result)
+                    return
                 if context.recovery_waiting or result.get("recovery_wait") is True:
                     self.store.update_run(
                         run.id,
@@ -3705,6 +3955,20 @@ _FULL_READ_INTENT = re.compile(
     r"全文.{0,6}(?:精读|阅读|通读)|(?:精读|通读).{0,12}(?:文档|文件|资料|材料)",
 )
 
+_DOCUMENT_REFERENCE_INTENT = re.compile(
+    r"《[^》]{1,200}》|"
+    r"[\w\u4e00-\u9fff][\w\u4e00-\u9fff ._-]{0,120}\.(?:docx?|pdf|xlsx?|csv|md|txt)|"
+    r"(?:这个|该|指定的?|上述)\s*(?:文档|文件|资料)|"
+    r"(?:读取|查看|参考|根据|按照|依据).{0,80}(?:文档|文件|资料)",
+    re.IGNORECASE,
+)
+
+_RULE_MUTATION_INTENT = re.compile(
+    r"(?:新增|添加|补充|增加|制定|写入|修改|更新|完善)\s*(?:一条|一项|新的?|相关的?)?\s*(?:业务)?规则|"
+    r"(?:业务)?规则\s*(?:新增|添加|补充|增加|制定|写入|修改|更新|完善)",
+    re.IGNORECASE,
+)
+
 _MATERIAL_DIRECTIVE_INTENT = re.compile(
     r"(?:作为|用作|设为).{0,12}(?:建模目标|目标依据|数据\s*Schema|数据模式|业务依据)|"
     r"(?:建模目标|目标依据|数据\s*Schema|数据模式|业务依据).{0,12}(?:资料|材料|文档|文件)",
@@ -3736,6 +4000,13 @@ def _release_reentry_requested(text: str) -> bool:
     return bool(_RELEASE_REENTRY_INTENT.search(str(text or "")))
 
 
+def _document_rule_change_requested(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or re.search(r"(?:为什么|为何|怎么|如何|是否|有没有|是什么|能否|可否|请问|吗\s*[？?]?|[？?])", value):
+        return False
+    return bool(_DOCUMENT_REFERENCE_INTENT.search(value) and _RULE_MUTATION_INTENT.search(value))
+
+
 def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
 
@@ -3757,6 +4028,10 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
         required.update({"set_material_directive", "read_documents_fully"})
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
         required.add("set_material_directive")
+    if _document_rule_change_requested(value):
+        # 点名文档后必须先取证并建计划；已有文档不一定有“修订影响”记录，
+        # 因此不能把直接读取强制送入只适用于上传修订的工具。
+        required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
     return required
@@ -3792,6 +4067,37 @@ def _evaluation_terminal_summary(evaluation: dict[str, Any]) -> str:
     if status == "cancelled":
         return f"正式评测已停止：已执行 {done}/{total} 条，通过 {passed} 条。"
     return f"正式评测已结束，运行失败：已执行 {done}/{total} 条，通过 {passed} 条。"
+
+
+def _evaluation_terminal_continuation(
+    evaluation: dict[str, Any],
+) -> tuple[str, set[str]] | None:
+    status = str(evaluation.get("status") or "failed")
+    if status == "cancelled":
+        return None
+    round_id = str(evaluation.get("roundId") or "").strip()
+    done = max(0, int(evaluation.get("done") or 0))
+    total = max(0, int(evaluation.get("total") or 0))
+    passed = max(0, int(evaluation.get("passed") or 0))
+    evaluation_completed = status == "done" and total > 0
+    all_cases_passed = done >= total and passed >= total
+    if evaluation_completed and all_cases_passed:
+        return (
+            "服务端已收到正式评测全量通过的终态事件。"
+            "这不是用户对话消息，不得伪造用户发言，也不得重新运行或轮询评测。"
+            "立即发起正式发布确认，让用户决定是否发布；确认前不得自行发布。"
+            "不要向用户复述工具名、参数、轮次编号或其他内部标识。",
+            {"request_release"},
+        )
+    return (
+        "服务端已收到正式评测未全量通过或运行失败的终态事件。"
+        "这不是用户对话消息，不得伪造用户发言，也不得重新运行或轮询评测。"
+        "只读取一次事件指定轮次的真实评测结果并据此归因；如果全部用例都是运行错误，"
+        "只能报告环境阻断，不得修改知识包、映射、用例或参考答案。"
+        "不要向用户复述工具名、参数、轮次编号或其他内部标识。\n"
+        f"指定轮次：{round_id}",
+        {"get_evaluation_results"},
+    )
 
 
 def _evaluation_event_is_stale(
