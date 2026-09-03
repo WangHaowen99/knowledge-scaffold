@@ -460,11 +460,26 @@ def test_missing_flock_fails_before_docker_with_clear_error(tmp_path):
     bundle_root, deploy_root, env, _, docker_calls = _prepare_storage_mode_bundle(
         tmp_path
     )
-    (tmp_path / "bin" / "flock").unlink()
+    bash_executable = shutil.which(TEST_BASH) or TEST_BASH
+    fake_bin = tmp_path / "bin"
+    (fake_bin / "flock").unlink()
+    if os.name != "nt":
+        fake_dirname = fake_bin / "dirname"
+        fake_dirname.write_text(
+            "#!/bin/sh\n"
+            "path=\"$1\"\n"
+            "case \"$path\" in\n"
+            "  */*) printf '%s\\n' \"${path%/*}\" ;;\n"
+            "  *) printf '.\\n' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_dirname.chmod(0o755)
+        env["PATH"] = str(fake_bin)
 
     result = subprocess.run(
         [
-            TEST_BASH,
+            bash_executable,
             "-c",
             f'source "{(deploy_root / "common.sh").as_posix()}"; docker info',
         ],
