@@ -16,6 +16,14 @@ RUN_CANCELLED = "cancelled"
 ACTIVE_RUN_STATUSES = frozenset({RUN_QUEUED, RUN_RUNNING, RUN_STOPPING, RUN_WAITING, RUN_SUSPENDED})
 TERMINAL_RUN_STATUSES = frozenset({RUN_COMPLETED, RUN_FAILED, RUN_CANCELLED})
 
+# 服务重启后的恢复一致性诊断。空串表示没有待处理的恢复事项。
+RECOVERY_NONE = ""
+RECOVERY_STALE_RUN = "stale_run"
+RECOVERY_CHECKPOINT_MISSING = "checkpoint_missing"
+RECOVERY_RESUME_FAILED = "resume_failed"
+RECOVERY_PLAN_UNREADABLE = "plan_unreadable"
+RECOVERY_VOLUME_MISMATCH = "volume_mismatch"
+
 
 @dataclass
 class RunRecord:
@@ -33,6 +41,9 @@ class RunRecord:
     baseline_revision: str = ""
     candidate_revision: str = ""
     interaction_id: str = ""
+    # 最近一次交互/续跑的业务事实快照，用于空正文紧凑摘要恢复时保留最新问题、
+    # 答案、续跑提示和脚本契约摘要，避免恢复摘要回退到最初 run.prompt 或旧计划。
+    latest_interaction: dict[str, Any] = field(default_factory=dict)
     result: str = ""
     error: str = ""
     created_at: str = ""
@@ -95,11 +106,12 @@ class ProjectAgentState:
     summary: str = ""
     open_questions: list[str] = field(default_factory=list)
     error: str = ""
+    recovery_status: str = RECOVERY_NONE
     updated_at: str = ""
 
     def public(self) -> dict[str, Any]:
         phase, _, execution = self.state.partition(":")
-        return {
+        public = {
             "projectId": self.project_id,
             "state": self.state,
             "phase": phase,
@@ -116,6 +128,9 @@ class ProjectAgentState:
             "error": self.error or None,
             "updatedAt": self.updated_at,
         }
+        if self.recovery_status:
+            public["recovery"] = {"status": self.recovery_status}
+        return public
 
 
 @dataclass(frozen=True)

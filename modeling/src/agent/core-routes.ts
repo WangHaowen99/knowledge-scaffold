@@ -119,6 +119,22 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
   });
 
+  app.post('/api/projects/:id/agent/change-plans/:planId/safe-terminate', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      return service.safeTerminateChangePlan(
+        project,
+        request.user!.username,
+        String((request.params as any).planId ?? ''),
+      );
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
   app.get('/api/projects/:id/agent/package-data-source', async (request, reply) => {
     const project = getProject(String((request.params as any).id ?? ''));
     if (!project || !canReadProject(project.id, request.user!.username)) {
