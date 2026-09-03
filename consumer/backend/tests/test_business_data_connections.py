@@ -86,6 +86,66 @@ def _test_candidate(client, headers, provider: str, config: dict):
     )
 
 
+def test_modeling_internal_runtime_search_uses_workspace_source(
+    tmp_path, monkeypatch
+):
+    client, _headers = _build_test_client(tmp_path, monkeypatch)
+    service_token = "s" * 32
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", service_token)
+    captured = {}
+
+    async def fake_search(**kwargs):
+        captured.update(kwargs)
+        return '{"success":true,"result_count":205}'
+
+    monkeypatch.setattr(
+        "api.routes.business_data.handle_business_data_search_async",
+        fake_search,
+    )
+    response = client.post(
+        "/agentic/internal/modeling/business-data/search",
+        headers={
+            "Authorization": f"Bearer {service_token}",
+            "X-Workspace-Id": "demo",
+        },
+        json={
+            "ontology_id": "demo-ontology",
+            "ontology_version": "1.0.0",
+            "entity": "synthetic_record",
+            "query": "查找完整运行时记录",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["result"] == '{"success":true,"result_count":205}'
+    assert captured == {
+        "ontology_id": "demo-ontology",
+        "ontology_version": "1.0.0",
+        "entity": "synthetic_record",
+        "query": "查找完整运行时记录",
+        "workspace_id": "demo",
+    }
+
+
+def test_modeling_internal_runtime_search_requires_service_token(
+    tmp_path, monkeypatch
+):
+    client, _headers = _build_test_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+
+    response = client.post(
+        "/agentic/internal/modeling/business-data/search",
+        headers={"Authorization": "Bearer wrong-service-token"},
+        json={
+            "ontology_id": "demo-ontology",
+            "entity": "synthetic_record",
+            "query": "查找完整运行时记录",
+        },
+    )
+
+    assert response.status_code == 403
+
+
 @pytest.mark.parametrize(
     ("method", "path", "resolver_name"),
     [
