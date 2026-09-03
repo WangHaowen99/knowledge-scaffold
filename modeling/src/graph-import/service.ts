@@ -1,4 +1,5 @@
 import { parseExcel } from '../documents/parser.js';
+import XLSX from 'xlsx';
 import { getProjectDataSource } from '../evaluation/data-source-repo.js';
 import { getPackageArtifactStore } from '../artifacts/index.js';
 import { extractGraphImportSchema } from './package-schema.js';
@@ -59,6 +60,11 @@ export interface GraphImportUploadPreview {
   packageRevisionOid: string;
   sheets: GraphImportSheetPreview[];
   schema: GraphImportPackageSchema;
+}
+
+export interface GraphImportExcelFileInput {
+  filename: string;
+  buffer: Buffer;
 }
 
 export interface GraphImportCounts {
@@ -251,6 +257,48 @@ function validateMapping(
   }
 }
 
+function mergeGraphImportExcelFiles(files: GraphImportExcelFileInput[]): GraphImportExcelFileInput {
+  if (!files.length) throw new GraphImportInputError('GRAPH_IMPORT_INPUT', '缺少 Excel 文件');
+  if (files.length === 1) return files[0];
+  const totalSize = files.reduce((sum, file) => sum + file.buffer.byteLength, 0);
+  if (totalSize > MAX_FILE_SIZE) {
+    throw new GraphImportInputError('GRAPH_IMPORT_INPUT', 'Excel 文件总大小不能超过 50MB');
+  }
+  const workbook = XLSX.utils.book_new();
+  const seenSheets = new Map<string, string>();
+  for (const file of files) {
+    try {
+      const parsed = XLSX.read(file.buffer, {
+        type: 'buffer',
+        cellDates: false,
+        cellNF: true,
+        cellText: false,
+      });
+      for (const sheetName of parsed.SheetNames) {
+        const previous = seenSheets.get(sheetName);
+        if (previous) {
+          throw new GraphImportInputError(
+            'GRAPH_IMPORT_INPUT',
+            `多个 Excel 中存在重复 Sheet「${sheetName}」：${previous}、${file.filename}`,
+          );
+        }
+        seenSheets.set(sheetName, file.filename);
+        XLSX.utils.book_append_sheet(workbook, parsed.Sheets[sheetName], sheetName);
+      }
+    } catch (error) {
+      if (error instanceof GraphImportInputError) throw error;
+      throw new GraphImportInputError(
+        'GRAPH_IMPORT_INPUT',
+        error instanceof Error ? error.message : 'Excel 文件内容不正确',
+      );
+    }
+  }
+  return {
+    filename: files.map((file) => file.filename).join(' + '),
+    buffer: Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' })),
+  };
+}
+
 function sheetPreviews(tables: ReturnType<typeof parseExcel>): GraphImportSheetPreview[] {
   return tables.map((table) => {
     const profiles = inferGraphImportColumns(table);
@@ -289,17 +337,22 @@ function safeError(error: unknown, password: string): string {
 export async function uploadGraphImportExcel(input: {
   projectId: string;
   owner: string;
-  filename: string;
-  buffer: Buffer;
+  filename?: string;
+  buffer?: Buffer;
+  files?: GraphImportExcelFileInput[];
 }): Promise<GraphImportUploadPreview> {
-  if (input.buffer.byteLength > MAX_FILE_SIZE) {
+  const merged = mergeGraphImportExcelFiles(input.files ?? [{
+    filename: input.filename ?? '',
+    buffer: input.buffer ?? Buffer.alloc(0),
+  }]);
+  if (merged.buffer.byteLength > MAX_FILE_SIZE) {
     throw new GraphImportInputError('GRAPH_IMPORT_INPUT', 'Excel 文件不能超过 50MB');
   }
   const packageContext = await loadPackage(input.projectId);
   loadConnection(input.projectId, '', false);
   let tables: ReturnType<typeof parseExcel>;
   try {
-    tables = parseExcel(input.buffer, {
+    tables = parseExcel(merged.buffer, {
       maxRows: MAX_ROWS_PER_SHEET,
       rejectOverflow: true,
       includeCellMetadata: true,
@@ -312,7 +365,10 @@ export async function uploadGraphImportExcel(input: {
   }
   if (!tables.length) throw new GraphImportInputError('GRAPH_IMPORT_INPUT', 'Excel 中没有可导入的 Sheet');
   const upload = saveGraphImportUpload({
-    ...input,
+    projectId: input.projectId,
+    owner: input.owner,
+    filename: merged.filename,
+    buffer: merged.buffer,
     packageRevisionOid: packageContext.revisionOid,
   });
   return {
