@@ -6,6 +6,8 @@ import { config } from '../config.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { MaterialPurposeReviewStore } from '../documents/material-purpose-review.js';
 import { canReadProject, canWriteProject } from '../projects/repo.js';
+import { getDb } from '../db/index.js';
+import { ChangeControlStore } from './change-control.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 import { takeAcceptanceFault } from '../acceptance/faults.js';
 
@@ -87,7 +89,40 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
   app.post('/api/projects/:id/agent/recovery/terminate-stale', async (request, reply) => {
     const id = projectId(request);
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
-    return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/recovery/terminate-stale`, 'POST', id);
+    let upstream: Response;
+    try {
+      upstream = await fetch(
+        `${config.agentBaseUrl}/v1/projects/${encodeURIComponent(id)}/recovery/terminate-stale`,
+        {
+          method: 'POST',
+          headers: {
+            ...authorizationHeaders(request),
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(request.body ?? {}),
+        },
+      );
+    } catch (error) {
+      request.log.error({ err: error }, 'Agent 请求不可用');
+      return reply.code(503).send({ code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' });
+    }
+    const payload = (await upstream.json().catch(() => ({}))) as Record<string, unknown>;
+    if (upstream.status >= 400) {
+      return reply.code(upstream.status).send(payload);
+    }
+    try {
+      const cancelled = new ChangeControlStore(getDb()).safeTerminateActivePlansForProject({
+        projectId: id,
+        actor: request.user!.username,
+      });
+      return reply.code(upstream.status).send({ ...payload, cancelledActivePlans: cancelled });
+    } catch (error) {
+      request.log.error({ err: error, projectId: id }, '安全终止 Node 侧活动计划失败');
+      return reply.code(500).send({
+        code: 'PLAN_SAFE_TERMINATE_FAILED',
+        error: '失效运行已终止，但旧计划清理失败，请重试',
+      });
+    }
   });
 
   app.post('/api/projects/:id/agent/interactions/:interactionId/answer', async (request, reply) => {
@@ -214,7 +249,7 @@ async function prepareIncrementRound(
     request.log.error({ err: error, projectId: projectIdValue }, '增量轮次入口不可用');
     return { status: 503, payload: { code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' } };
   }
-  const payload = await upstream.json().catch(() => ({}));
+  const payload = (await upstream.json().catch(() => ({}))) as Record<string, unknown>;
   return {
     status: upstream.status,
     payload: payload && typeof payload === 'object'
@@ -262,7 +297,7 @@ async function proxyJson(
     request.log.error({ err: error }, 'Agent 请求不可用');
     return reply.code(503).send({ code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' });
   }
-  const payload = await upstream.json().catch(() => ({}));
+  const payload = (await upstream.json().catch(() => ({}))) as Record<string, unknown>;
   return reply.code(upstream.status).send(payload);
 }
 

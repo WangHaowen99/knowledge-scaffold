@@ -811,6 +811,25 @@ export class ChangeControlStore {
     return { terminated: true, planId: plan.id };
   }
 
+  safeTerminateActivePlansForProject(input: {
+    projectId: string;
+    actor: string;
+  }): { terminated: number; planIds: string[] } {
+    const plans = this.db.prepare(`SELECT * FROM agent_change_plans
+      WHERE project_id = ? AND status = 'active' ORDER BY created_at`)
+      .all(input.projectId) as unknown as PlanRow[];
+    const planIds: string[] = [];
+    for (const plan of plans) {
+      this.safeTerminatePlan({
+        projectId: input.projectId,
+        planId: plan.id,
+        actor: input.actor,
+      });
+      planIds.push(plan.id);
+    }
+    return { terminated: planIds.length, planIds };
+  }
+
   private taskRows(planId: string): TaskRow[] {
     return this.db.prepare(`SELECT * FROM agent_change_plan_tasks WHERE plan_id = ? ORDER BY ordinal`)
       .all(planId) as unknown as TaskRow[];

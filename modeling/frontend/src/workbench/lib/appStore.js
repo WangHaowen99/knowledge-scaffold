@@ -802,10 +802,13 @@ if (eventType === 'state' && !replaying) {
     }
   },
   async safeTerminateChangePlan(planId) {
-    const { projectId } = store.get();
+    const { projectId, recovery } = store.get();
     if (!projectId || !planId) return null;
     try {
       const result = await safeTerminateChangePlanRequest(projectId, planId);
+      if (recovery) {
+        await terminateStaleRunRequest(projectId);
+      }
       store.set((state) => ({
         changePlan: null,
         error: '',
