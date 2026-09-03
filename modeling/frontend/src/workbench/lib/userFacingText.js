@@ -83,6 +83,7 @@ const DISCLOSURE_CONTAINER = /<\/?details(?:\s[^>]*)?>/gi;
 const UNRESOLVED_IMPACT_FIELD = /\bscopeResolved\s*=\s*false\b/gi;
 const RESOLVED_IMPACT_FIELD = /\bscopeResolved\s*=\s*true\b/gi;
 const IMPACT_PARAMETER = /\b(?:direct_resources|directResources)\b/gi;
+const TECHNICAL_CAPABILITY_CLAIM = /[^。！？\n]*(?:工具集中没有|工具集没有|没有(?:该|读取)能力|本会话工具|平台侧能力缺口|平台能力缺口|平台是否开放)[^。！？\n]*[。！？]?/giu;
 
 export function userFacingText(value) {
   if (value == null) return '';
@@ -92,6 +93,7 @@ export function userFacingText(value) {
     .replace(UNRESOLVED_IMPACT_FIELD, '影响范围尚未界定')
     .replace(RESOLVED_IMPACT_FIELD, '影响范围已界定')
     .replace(IMPACT_PARAMETER, '直接影响范围')
+    .replace(TECHNICAL_CAPABILITY_CLAIM, '当前步骤需要系统继续核对，现有进展已保留。')
     .replace(MODEL_QUOTA_FAILURE, '模型额度暂不可用，本轮已暂停；候选和进度已保留，可稍后继续。')
     .replace(DATABASE_FAILURE, '评测数据暂时不可用')
     .replace(INTERNAL_RESOURCE, '当前处理')
