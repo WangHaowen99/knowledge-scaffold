@@ -250,11 +250,12 @@ export class StudioReadService {
     if (normalized !== this.workingPackage.workingRevision) {
       throw new StudioReadError(
         'WORKING_REVISION_CHANGED',
-        '知识包工作修订已经变化，请刷新后重试',
+        '知识包工作修订已经变化，请基于当前修订重新基线化计划后再继续',
         409,
         {
           expectedRevision: normalized,
           actualRevision: this.workingPackage.workingRevision,
+          next: ['查看 expected 与 actual 修订差异，确认后基于当前工作修订重新规划'],
         },
       );
     }

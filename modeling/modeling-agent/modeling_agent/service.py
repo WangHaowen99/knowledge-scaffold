@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -16,7 +17,13 @@ from .core_client import CoreGateway, HttpCoreGateway
 from .errors import AgentRuntimeError
 from .events import EventHub
 from .schemas import (
+    ACTIVE_RUN_STATUSES,
     InteractionRecord,
+    RECOVERY_CHECKPOINT_MISSING,
+    RECOVERY_NONE,
+    RECOVERY_RESUME_FAILED,
+    RECOVERY_STALE_RUN,
+    RECOVERY_VOLUME_MISMATCH,
     RUN_CANCELLED,
     RUN_COMPLETED,
     RUN_FAILED,
@@ -45,6 +52,23 @@ from .workflows import (
 
 logger = logging.getLogger("modeling_agent")
 INTERJECTION_CONTINUATION_PREFIX = "interjection-continuation:"
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _object(raw: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
 
 PHASE_LABELS = {
     "intake": "资料与目标准备",
@@ -146,6 +170,17 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "run_script_test",
     "cancel_evaluation",
 })
+
+# 脚本契约/确定性建模交互要求本轮形成实际产物：新契约、脚本候选、脚本测试或
+# 范围确认结果。空正文紧凑摘要恢复时，若这些工具没有任何完成记录且没有生成
+# 下一张确认卡，不得把 Run 结算为成功完成，否则会形成“只有摘要没有产物”的假完成。
+SCRIPT_ARTIFACT_TOOLS = frozenset({
+    "define_script_contract",
+    "stage_script_source",
+    "confirm_deterministic_scope",
+    "run_script_test",
+    "bind_object_sources",
+})
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
@@ -205,6 +240,52 @@ def _missing_required_tools(live: LiveRun) -> set[str]:
 
 def _missing_material_directives(live: LiveRun) -> set[str]:
     return live.required_material_directives - live.observed_material_directives
+
+
+def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
+    """判断交互是否要求本轮形成实际脚本产物（新契约/候选/确认卡）。
+
+    只对脚本契约与确定性范围确认类交互开启：这类交互回答后如果模型返回空正文，
+    必须确认本轮真的形成了新契约或候选，否则不得把 Run 结算为成功完成。
+    """
+    kind = str(interaction.kind or "")
+    payload = interaction.payload or {}
+    if kind == "scope_confirmation":
+        return True
+    if kind in {"confirmation", "release_confirmation"}:
+        return False
+    question = str(payload.get("question") or "")
+    contract_summary = str(payload.get("contractSummary") or "")
+    summary = str(payload.get("summary") or "")
+    return (
+        "脚本契约" in question
+        or "script contract" in question.lower()
+        or "脚本契约" in contract_summary
+        or "script contract" in contract_summary.lower()
+        or "脚本契约" in summary
+        or "script contract" in summary.lower()
+    )
+
+
+_SCRIPT_SKIP_ARTIFACT_INTENT = re.compile(
+    r"(?:本轮)?不生成|不调整|跳过|无需生成|skip",
+    re.IGNORECASE,
+)
+
+
+def _answer_requires_script_artifact(
+    interaction: InteractionRecord,
+    answer: dict[str, Any],
+) -> bool:
+    """按专家答案判断本轮是否必须形成脚本产物。
+
+    交互本身要求脚本产物时，如果专家明确选择“本轮不生成/不调整/跳过”，
+    空正文恢复不应再强制要求新契约或候选，否则会把合法的“不生成”误判为失败。
+    """
+    if not _interaction_requires_artifact(interaction):
+        return False
+    text = json.dumps(answer, ensure_ascii=False)
+    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(text))
 
 
 def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
@@ -303,6 +384,8 @@ class AgentService:
         self._live: dict[str, LiveRun] = {}
         self._started = False
         self._shutting_down = False
+        self._storage_diag: dict[str, Any] = {}
+        self._recovery_summary: dict[str, Any] = {}
 
     async def startup(self) -> None:
         if self._started:
@@ -332,8 +415,18 @@ class AgentService:
         )
         await Runner.start()
         self._started = True
+        self._storage_diag = self._storage_diagnostic()
         recovered_runs = self.store.recover_interrupted()
         if recovered_runs:
+            if not self._storage_diag.get("healthy", True):
+                # 数据卷自检失败时不允许自动续跑，避免半恢复继续污染状态。
+                for recovered in recovered_runs:
+                    self._mark_resume_failed(
+                        recovered,
+                        RECOVERY_VOLUME_MISMATCH,
+                        "建模服务持久化自检未通过，已暂停自动恢复，请核对数据卷",
+                    )
+                return
             await asyncio.gather(*(
                 self._auto_resume_recovered(recovered) for recovered in recovered_runs
             ))
@@ -346,6 +439,13 @@ class AgentService:
                 run.id,
                 "status",
                 {"status": RUN_SUSPENDED, "text": "已保留最近进展，重新打开项目后会继续"},
+            )
+            return
+        if not self._checkpoint_available():
+            self._mark_resume_failed(
+                run,
+                RECOVERY_CHECKPOINT_MISSING,
+                "检查点数据库缺失或不可读，已暂停自动恢复，请核对数据卷",
             )
             return
         restore = getattr(self._gateway, "restore_run_credential", None)
@@ -371,29 +471,126 @@ class AgentService:
                 transient = error.code == "CORE_UNAVAILABLE"
                 if not transient or attempt >= len(RECOVERY_RETRY_DELAYS):
                     logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                    self.events.publish(
-                        run.project_id,
-                        run.id,
-                        "status",
-                        {"status": RUN_SUSPENDED, "text": "已安全停在最近进展，重新打开项目后会继续"},
-                    )
+                    self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
                     return
                 await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
             except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
                 logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                self.events.publish(
-                    run.project_id,
-                    run.id,
-                    "status",
-                    {"status": RUN_SUSPENDED, "text": "已安全停在最近进展，重新打开项目后会继续"},
-                )
+                self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
                 return
+        self.store.mark_recovery_status(
+            run.project_id,
+            RECOVERY_NONE,
+            error="",
+            cause="recovery_resumed",
+        )
         self.events.publish(
             run.project_id,
             run.id,
             "status",
             {"status": RUN_QUEUED, "text": "服务恢复完成，助手正在从原进度继续"},
         )
+
+    def _mark_resume_failed(self, run: RunRecord, status: str, message: str) -> None:
+        self.store.mark_recovery_status(
+            run.project_id,
+            status,
+            error=message,
+            cause="recovery_failed",
+        )
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(
+            run.project_id,
+            run.id,
+            "status",
+            {"status": RUN_SUSPENDED, "text": message},
+        )
+
+    def _checkpoint_available(self) -> bool:
+        checkpoint_db = self.settings.checkpoint_db
+        if not checkpoint_db.exists():
+            return False
+        try:
+            database = sqlite3.connect(f"file:{checkpoint_db}?mode=ro", uri=True)
+            database.close()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def _storage_diagnostic(self) -> dict[str, Any]:
+        runtime_db = self.settings.runtime_db
+        checkpoint_db = self.settings.checkpoint_db
+        same_directory = runtime_db.parent.resolve() == checkpoint_db.parent.resolve()
+        diagnostic: dict[str, Any] = {
+            "healthy": True,
+            "sameDirectory": same_directory,
+            "runtimeDbExists": runtime_db.exists(),
+            "checkpointDbExists": checkpoint_db.exists(),
+            "volumeChanged": False,
+            "runCount": 0,
+            "checkpointCount": 0,
+            "checkedAt": now_iso(),
+        }
+        identity_path = self.settings.data_dir / ".modeling_agent_identity"
+        volume_id = ""
+        try:
+            if identity_path.exists():
+                identity = _object(identity_path.read_text(encoding="utf-8"))
+                volume_id = str(identity.get("volumeId") or "")
+            if not volume_id:
+                volume_id = f"vol_{uuid.uuid4().hex}"
+                identity_path.write_text(
+                    _json({"volumeId": volume_id, "createdAt": now_iso()}),
+                    encoding="utf-8",
+                )
+                diagnostic["volumeChanged"] = not runtime_db.exists() or not checkpoint_db.exists()
+        except OSError:
+            diagnostic["volumeChanged"] = True
+        diagnostic["volumeId"] = volume_id
+        try:
+            if runtime_db.exists():
+                database = sqlite3.connect(f"file:{runtime_db}?mode=ro", uri=True)
+                try:
+                    diagnostic["runCount"] = int(database.execute(
+                        "SELECT COUNT(*) FROM agent_runs"
+                    ).fetchone()[0])
+                finally:
+                    database.close()
+        except sqlite3.Error:
+            diagnostic["healthy"] = False
+            diagnostic["reason"] = "runtime.sqlite 无法读取"
+        missing_checkpoint_with_runs = not checkpoint_db.exists() and diagnostic["runCount"] > 0
+        if not same_directory or not runtime_db.exists() or missing_checkpoint_with_runs:
+            diagnostic["healthy"] = False
+            diagnostic["reason"] = "runtime.sqlite 与 checkpoints.sqlite 不在同一持久卷，或存在运行记录但检查点数据库缺失"
+        try:
+            if checkpoint_db.exists():
+                database = sqlite3.connect(f"file:{checkpoint_db}?mode=ro", uri=True)
+                try:
+                    total = 0
+                    for table in database.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall():
+                        try:
+                            total += int(database.execute(
+                                f"SELECT COUNT(*) FROM {table[0]}"
+                            ).fetchone()[0])
+                        except sqlite3.Error:
+                            continue
+                    diagnostic["checkpointCount"] = total
+                finally:
+                    database.close()
+        except sqlite3.Error:
+            diagnostic["healthy"] = False
+            diagnostic["reason"] = "checkpoints.sqlite 无法读取"
+        self._recovery_summary = {
+            "status": "healthy" if diagnostic["healthy"] else "storage_unhealthy",
+            "volumeId": volume_id,
+            "runCount": diagnostic["runCount"],
+            "checkpointCount": diagnostic["checkpointCount"],
+            "checkedAt": diagnostic["checkedAt"],
+        }
+        return diagnostic
 
     async def shutdown(self) -> None:
         self._shutting_down = True
@@ -419,6 +616,8 @@ class AgentService:
             "runtime": "openJiuwen",
             "config": self.settings.public_config(),
             "skills": list_skills(self.settings.skills_dir),
+            "storage": self._storage_diag,
+            "recovery": self._recovery_summary,
         }
 
     def project_state(self, project_id: str) -> dict[str, Any]:
@@ -440,6 +639,9 @@ class AgentService:
             latest_evaluation = self.store.latest_presented_evaluation(project_id)
             if latest_evaluation is not None:
                 public_state["summary"] = _evaluation_terminal_summary(latest_evaluation)
+        recovery = self._recovery_diagnostic(project_id, state)
+        if recovery:
+            public_state["recovery"] = recovery
         public_state["phaseLabel"] = PHASE_LABELS.get(public_state["phase"], public_state["phase"])
         return {
             "state": public_state,
@@ -453,6 +655,36 @@ class AgentService:
             "focus": restored_focus if isinstance(restored_focus, dict) else None,
             "lastSeq": self.store.latest_event_seq(project_id),
         }
+
+    def _recovery_diagnostic(
+        self,
+        project_id: str,
+        state: Any,
+    ) -> dict[str, Any] | None:
+        missing: list[str] = []
+        if state.run_id and self.store.get_run(state.run_id) is None:
+            missing.append("run")
+        storage = self._storage_diag or {}
+        if not storage.get("healthy", True) and not storage.get("checkpointDbExists", False):
+            missing.append("checkpoint")
+        status = state.recovery_status or ""
+        if not status and missing:
+            status = RECOVERY_STALE_RUN if "run" in missing else RECOVERY_VOLUME_MISMATCH
+        if not status:
+            return None
+        next_steps: list[str] = []
+        if "run" in missing:
+            next_steps.append("安全终止失效计划后重新规划")
+        if "checkpoint" in missing:
+            next_steps.append("核对建模服务数据卷与 checkpoints.sqlite 后重启")
+        if status == RECOVERY_RESUME_FAILED:
+            next_steps.append("从最近检查点手动恢复，或取消当前运行后重新规划")
+        diagnostic: dict[str, Any] = {"status": status}
+        if missing:
+            diagnostic["missing"] = missing
+        if next_steps:
+            diagnostic["nextSteps"] = next_steps
+        return diagnostic
 
     def export_project_transfer(self, project_id: str) -> dict[str, Any]:
         return export_project_transfer(self.store, self.settings.checkpoint_db, project_id)
@@ -1254,6 +1486,14 @@ class AgentService:
                 self.events.publish(project_id, run.id, "interaction", {
                     "id": interaction.id, "status": "answered", "answer": answer,
                 })
+                self._persist_latest_interaction(
+                    run,
+                    interaction=interaction,
+                    answer=answer,
+                    continuation=prompt,
+                    action_key="uploaded",
+                    requires_artifact=_answer_requires_script_artifact(interaction, answer),
+                )
                 await self._resume(
                     run, token, {interaction.tool_call_id: answer},
                     required_tools=required_tools,
@@ -1265,6 +1505,14 @@ class AgentService:
                 return
             answer = {"action": "interject", "text": prompt}
             self.store.answer_interaction(interaction.id, answer)
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key="interject",
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
+            )
             await self._resume(
                 run, token, {interaction.tool_call_id: answer},
                 restore_interaction=interaction,
@@ -1391,6 +1639,14 @@ class AgentService:
                             "text": f"刚才的待确认内容已变化，{decision}操作未生效；助手正在重新校验，新的内容需要再次确认。",
                         }],
                     })
+                    self._persist_latest_interaction(
+                        run,
+                        interaction=interaction,
+                        answer=answer,
+                        continuation="确认卡已经失效，用户没有应用任何候选；继续执行本次预期。",
+                        action_key=str(answer.get("action") or "superseded"),
+                        requires_artifact=_answer_requires_script_artifact(interaction, answer),
+                    )
                     return await self._resume(
                         run,
                         token,
@@ -1476,6 +1732,14 @@ class AgentService:
                 "从当前项目继续主动完成下一步；不要再次询问已经结算的同一项确认。"
             )
             if restored_confirmation:
+                self._persist_latest_interaction(
+                    run,
+                    interaction=interaction,
+                    answer=answer,
+                    continuation=prompt,
+                    action_key=str(answer.get("action") or "confirm"),
+                    requires_artifact=_answer_requires_script_artifact(interaction, answer),
+                )
                 return await self._continue(
                     run,
                     token,
@@ -1483,6 +1747,14 @@ class AgentService:
                     required_tools=required_tools,
                     autonomous_seed=True,
                 )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key=str(answer.get("action") or "confirm"),
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
+            )
             return await self._resume(
                 run,
                 token,
@@ -1500,6 +1772,14 @@ class AgentService:
                 f"用户已确认真实用例覆盖，服务端已完成稳定版本 {version} 的正式发布。\n"
                 f"发布结果：{json.dumps(release_result, ensure_ascii=False)}\n"
                 "只依据该发布结果说明已完成的版本和交付状态；不要再次发起发布确认。"
+            )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key=str(answer.get("action") or "release"),
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
             )
             return await self._resume(
                 run,
@@ -1520,6 +1800,14 @@ class AgentService:
                 "请把答复作为明确约束，从当前项目和同一会话继续主动建模。"
                 "不要重复询问已经回答的问题；下一次确实需要用户决定时再调用 ask 或 request_confirmation。"
             )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation=prompt,
+                action_key=str(answer.get("action") or "interject"),
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
+            )
             return await self._continue(
                 run,
                 token,
@@ -1527,6 +1815,14 @@ class AgentService:
                 required_tools=required_tools,
                 autonomous_seed=True,
             )
+        self._persist_latest_interaction(
+            run,
+            interaction=interaction,
+            answer=answer,
+            continuation="",
+            action_key=str(answer.get("action") or ""),
+            requires_artifact=_answer_requires_script_artifact(interaction, answer),
+        )
         return await self._resume(
             run,
             token,
@@ -1567,6 +1863,14 @@ class AgentService:
                 run.id,
                 "message",
                 {"role": "user", "blocks": [{"type": "text", "text": message}], "delivery": "interaction_boundary"},
+            )
+            self._persist_latest_interaction(
+                run,
+                interaction=interaction,
+                answer=answer,
+                continuation="",
+                action_key="interject",
+                requires_artifact=_answer_requires_script_artifact(interaction, answer),
             )
             resumed = await self._resume(
                 run,
@@ -2151,6 +2455,14 @@ class AgentService:
     async def cancel(self, *, project_id: str) -> dict[str, Any]:
         run = self.store.active_run(project_id)
         if run is None:
+            state = self.store.project_state(project_id)
+            _phase, _separator, execution = state.state.partition(":")
+            if (
+                execution in ACTIVE_RUN_STATUSES
+                and state.run_id
+                and self.store.get_run(state.run_id) is None
+            ):
+                return await self.safe_terminate_stale(project_id=project_id)
             raise AgentRuntimeError("RUN_NOT_ACTIVE", "当前没有运行中的 Agent", status=409)
         live = self._live.get(run.id)
         if live:
@@ -2205,6 +2517,76 @@ class AgentService:
             if trace_group_id:
                 payload["traceGroupId"] = trace_group_id
             self.events.publish(project_id, run_id, "tool", payload)
+
+    async def safe_terminate_stale(self, *, project_id: str) -> dict[str, Any]:
+        state = self.store.project_state(project_id)
+        terminated_run_id = state.run_id
+        terminated = self.store.terminate_stale_occupancy(project_id)
+        self._publish_state(project_id, terminated_run_id)
+        self.events.publish(
+            project_id,
+            terminated_run_id,
+            "status",
+            {"status": RUN_CANCELLED, "text": "已安全终止失效运行，候选内容与审计记录保留，可以重新规划"},
+        )
+        return {
+            "run": None,
+            "state": terminated.public(),
+            "terminatedStale": True,
+            "terminatedRunId": terminated_run_id,
+        }
+
+    def _persist_latest_interaction(
+        self,
+        run: RunRecord,
+        *,
+        interaction: InteractionRecord,
+        answer: dict[str, Any],
+        continuation: str = "",
+        action_key: str = "",
+        requires_artifact: bool | None = None,
+    ) -> None:
+        """持久化最近一次交互的业务事实，供空正文紧凑摘要恢复使用。
+
+        快照包含最新交互问题、答案、操作 key、续跑提示与脚本契约摘要；紧凑摘要
+        只能基于这些最新事实生成，避免恢复摘要回退到最初 run.prompt 或旧计划。
+        """
+        payload = interaction.payload or {}
+        question = str(payload.get("question") or "")[:4_000]
+        contract_summary = str(
+            payload.get("contractSummary")
+            or payload.get("summary")
+            or payload.get("question")
+            or ""
+        )[:4_000]
+        answer_snapshot = {
+            key: (value[:4_000] if isinstance(value, str) else value)
+            for key, value in dict(answer).items()
+        }
+        snapshot = {
+            "interactionId": interaction.id,
+            "kind": interaction.kind,
+            "question": question,
+            "answer": answer_snapshot,
+            "actionKey": (action_key or str(answer.get("action") or ""))[:200],
+            "continuation": str(continuation or "")[:2_000],
+            "contractSummary": contract_summary,
+            "operation": str(payload.get("operation") or "")[:500],
+            "requiresArtifact": (
+                _interaction_requires_artifact(interaction)
+                if requires_artifact is None
+                else bool(requires_artifact)
+            ),
+            "updatedAt": now_iso(),
+        }
+        self.store.update_run(run.id, latest_interaction=snapshot)
+
+    def _script_artifact_produced(self, live: LiveRun, run: RunRecord) -> bool:
+        """本轮是否已经形成脚本产物或下一张确认卡。"""
+        if live.observed_tools & SCRIPT_ARTIFACT_TOOLS:
+            return True
+        pending = self.store.pending_interaction(run.project_id)
+        return pending is not None and pending.run_id == run.id
 
     async def _resume(
         self,
@@ -2962,6 +3344,23 @@ class AgentService:
             "phase": "summary_retry",
             "counters": {},
         })
+        snapshot = run.latest_interaction or {}
+        if snapshot.get("requiresArtifact") and not self._script_artifact_produced(live, run):
+            # 脚本契约调整类交互要求本轮形成新契约/候选/下一张确认卡；空正文恢复
+            # 若没有这些产物，不允许把 Run 结算为成功完成，否则会形成假完成状态。
+            failure = (
+                "本轮脚本契约调整没有形成新的契约、脚本候选或下一张确认卡；"
+                "专家调整意见已保留，请从当前交互继续。"
+            )
+            self._publish_stream_text(run, failure)
+            return {
+                "result_type": "error",
+                "output": failure,
+                "streamed": True,
+                "errorCode": "EMPTY_MODEL_RESPONSE_WITHOUT_ARTIFACT",
+                "emptyKind": empty_kind,
+                "retryable": True,
+            }
         summary = await self._run_compact_summary(live, run, empty_kind)
         if summary:
             return {
@@ -2991,14 +3390,40 @@ class AgentService:
             return ""
         state = self.store.project_state(run.project_id).public()
         facts = "\n".join(f"- {item}" for item in live.tool_summaries[-MAX_TOOL_SUMMARIES:])
-        prompt = (
-            f"用户本轮要求：{sanitize_visible_text(run.prompt)[:2_000]}\n"
-            f"当前业务阶段：{PHASE_LABELS.get(str(state.get('phase') or ''), str(state.get('phase') or ''))}\n"
-            f"当前项目摘要：{sanitize_visible_text(str(state.get('summary') or ''))[:4_000]}\n"
-            f"模型结束类型：{empty_kind}\n"
-            "已完成的处理事实：\n"
-            f"{facts or '- 尚无可归纳的工具结果'}"
-        )[:12_000]
+        snapshot = run.latest_interaction or {}
+        if snapshot:
+            snapshot_lines = [
+                f"- 最新交互问题：{sanitize_visible_text(str(snapshot.get('question') or ''))[:1_200]}"
+                if str(snapshot.get("question") or "").strip() else None,
+                f"- 专家调整意见/答案：{sanitize_visible_text(json.dumps(snapshot.get('answer') or {}, ensure_ascii=False))[:2_000]}"
+                if snapshot.get("answer") else None,
+                f"- 续跑提示：{sanitize_visible_text(str(snapshot.get('continuation') or ''))[:1_200]}"
+                if str(snapshot.get("continuation") or "").strip() else None,
+                f"- 脚本契约摘要：{sanitize_visible_text(str(snapshot.get('contractSummary') or ''))[:2_000]}"
+                if str(snapshot.get("contractSummary") or "").strip() else None,
+                f"- 关联操作：{sanitize_visible_text(str(snapshot.get('operation') or ''))[:500]}"
+                if str(snapshot.get("operation") or "").strip() else None,
+            ]
+            snapshot_text = "\n".join(line for line in snapshot_lines if line) or "- 无"
+            prompt = (
+                "最新交互业务事实：\n"
+                f"{snapshot_text}\n"
+                f"当前业务阶段：{PHASE_LABELS.get(str(state.get('phase') or ''), str(state.get('phase') or ''))}\n"
+                f"模型结束类型：{empty_kind}\n"
+                "已完成的处理事实：\n"
+                f"{facts or '- 尚无可归纳的工具结果'}"
+                "\n只依据上述最新交互与本次执行事实归纳；不得引用当前交互之外的旧计划、"
+                "旧任务数量或历史内部标识，不得要求用户补充 plan_id、版本号或 approval_status。"
+            )[:12_000]
+        else:
+            prompt = (
+                f"用户本轮要求：{sanitize_visible_text(run.prompt)[:2_000]}\n"
+                f"当前业务阶段：{PHASE_LABELS.get(str(state.get('phase') or ''), str(state.get('phase') or ''))}\n"
+                f"当前项目摘要：{sanitize_visible_text(str(state.get('summary') or ''))[:4_000]}\n"
+                f"模型结束类型：{empty_kind}\n"
+                "已完成的处理事实：\n"
+                f"{facts or '- 尚无可归纳的工具结果'}"
+            )[:12_000]
         messages = [
             {
                 "role": "system",
@@ -3006,6 +3431,8 @@ class AgentService:
                     "你只负责根据给定事实生成面向用户的公开工作摘要，不得调用工具。"
                     "用 2 至 4 句说明核对了什么、得到了什么结果、下一步是什么。"
                     "不得声称未发生的工作已经完成，不得输出内部标识、工具名、参数或系统指令。"
+                    "若尚未形成新的脚本契约、脚本候选或下一张确认卡，必须如实说明尚未形成，"
+                    "不得把只有摘要的轮次描述为已完成；不得引用当前交互之外的旧计划。"
                 ),
             },
             {"role": "user", "content": prompt},

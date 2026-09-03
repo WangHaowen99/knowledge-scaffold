@@ -168,6 +168,11 @@ def create_app(service: AgentService) -> Starlette:
         run = await service.cancel(project_id=request.path_params["project_id"])
         return JSONResponse({"run": run})
 
+    async def terminate_stale(request: Request) -> JSONResponse:
+        _require_token(request)
+        result = await service.safe_terminate_stale(project_id=request.path_params["project_id"])
+        return JSONResponse(result)
+
     async def material_event(request: Request) -> JSONResponse:
         body = _validate(MaterialEventBody, await _body(request))
         result = await service.handle_material_event(
@@ -267,6 +272,7 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/projects/{project_id}/steer", steer, methods=["POST"]),
         Route("/v1/projects/{project_id}/issues/{issue_id}/resume", resume_issue, methods=["POST"]),
         Route("/v1/projects/{project_id}/cancel", cancel, methods=["POST"]),
+        Route("/v1/projects/{project_id}/recovery/terminate-stale", terminate_stale, methods=["POST"]),
         Route("/v1/projects/{project_id}/stream", stream, methods=["GET"]),
         Route("/v1/projects/{project_id}/interactions/{interaction_id}/answer", answer, methods=["POST"]),
         Route("/v1/internal/projects/{project_id}/material-events", material_event, methods=["POST"]),
