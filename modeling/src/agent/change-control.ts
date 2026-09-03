@@ -278,6 +278,12 @@ export class ChangeControlStore {
       ORDER BY created_at DESC LIMIT 1`).get(projectId, runId) as PlanRow | undefined) ?? null;
   }
 
+  activePlanForProject(projectId: string, excludeRunId = ''): PlanRow | null {
+    return (this.db.prepare(`SELECT * FROM agent_change_plans
+      WHERE project_id = ? AND status = 'active' AND run_id <> ?
+      ORDER BY created_at DESC LIMIT 1`).get(projectId, excludeRunId) as PlanRow | undefined) ?? null;
+  }
+
   transferActiveRun(projectId: string, previousRunId: string, nextRunId: string): void {
     if (!previousRunId || previousRunId === nextRunId) return;
     const plan = this.activePlan(projectId, previousRunId);
@@ -408,7 +414,19 @@ export class ChangeControlStore {
     const plan = rawPlanId
       ? this.requirePlan(projectId, runId, rawPlanId)
       : this.activePlan(projectId, runId);
-    if (!plan) throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '当前运行还没有受控建模计划', 404);
+    if (!plan) {
+      const otherRun = this.activePlanForProject(projectId, runId);
+      if (otherRun) {
+        throw new ChangeControlError('CHANGE_PLAN_STALE_RUN', '当前运行还没有接续服务重启前的建模计划', 409, {
+          plan_id: otherRun.id,
+          expected_run_id: otherRun.run_id,
+          current_run_id: runId,
+          next: ['从最近检查点恢复后继续，或安全终止失效计划后重新规划'],
+          retryable: false,
+        });
+      }
+      throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '当前运行还没有受控建模计划', 404);
+    }
     const tasks = this.taskRows(plan.id).map((task) => ({
       id: task.id,
       client_key: task.client_key,
@@ -670,9 +688,64 @@ export class ChangeControlStore {
 
   private requirePlan(projectId: string, runId: string, planId: string): PlanRow {
     const row = this.db.prepare(`SELECT * FROM agent_change_plans
-      WHERE id = ? AND project_id = ? AND run_id = ?`).get(planId, projectId, runId) as PlanRow | undefined;
+      WHERE id = ? AND project_id = ?`).get(planId, projectId) as PlanRow | undefined;
     if (!row) throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '建模计划不存在或不属于当前运行', 404);
+    if (row.run_id !== runId) {
+      if (row.status === 'active') {
+        throw new ChangeControlError(
+          'CHANGE_PLAN_STALE_RUN',
+          '建模计划属于另一段运行，服务重启后尚未接续',
+          409,
+          {
+            plan_id: row.id,
+            expected_run_id: row.run_id,
+            current_run_id: runId,
+            next: ['从最近检查点恢复后继续，或安全终止失效计划后重新规划'],
+            retryable: false,
+          },
+        );
+      }
+      throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '建模计划不存在或不属于当前运行', 404);
+    }
     return row;
+  }
+
+  safeTerminatePlan(input: {
+    projectId: string;
+    planId: string;
+    actor: string;
+  }): { terminated: boolean; planId: string } {
+    const plan = this.db.prepare(`SELECT * FROM agent_change_plans
+      WHERE id = ? AND project_id = ?`).get(input.planId, input.projectId) as PlanRow | undefined;
+    if (!plan) throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '建模计划不存在', 404);
+    if (plan.status !== 'active') {
+      throw new ChangeControlError('CHANGE_PLAN_CLOSED', '这份建模计划已经结束，无需终止', 409);
+    }
+    const timestamp = nowIso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`UPDATE agent_change_plans SET status = 'cancelled', version = version + 1,
+        updated_at = ? WHERE id = ? AND status = 'active'`).run(timestamp, plan.id);
+      this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'cancelled', updated_at = ?
+        WHERE plan_id = ? AND status NOT IN ('accepted', 'skipped', 'cancelled')`).run(timestamp, plan.id);
+      // 候选修改与回执不删除，仅把未结算批次标记为取消，保留审计链。
+      this.db.prepare(`UPDATE agent_change_sets SET status = 'cancelled', updated_at = ?
+        WHERE plan_id = ? AND status IN ('staging', 'staged', 'failed')`).run(timestamp, plan.id);
+      this.event(
+        input.projectId,
+        plan.run_id,
+        plan.id,
+        null,
+        'plan.safe_terminated',
+        '已安全终止失效建模计划，候选内容与审计记录保留',
+        { actor: input.actor, plan_run_id: plan.run_id },
+      );
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return { terminated: true, planId: plan.id };
   }
 
   private taskRows(planId: string): TaskRow[] {

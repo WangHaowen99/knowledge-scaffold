@@ -136,6 +136,15 @@ export const answerAgent = (id, interactionId, answer) => api(
   { method: 'POST', body: JSON.stringify({ answer }) },
 );
 export const cancelAgent = (id) => api(`${P(id)}/agent/cancel`, { method: 'POST', body: '{}' });
+export const safeTerminateChangePlan = (id, planId) => api(
+  `${P(id)}/agent/change-plans/${encodeURIComponent(planId)}/safe-terminate`,
+  { method: 'POST', body: '{}' },
+);
+export const terminateStaleRun = (id) => api(
+  `${P(id)}/agent/recovery/terminate-stale`,
+  { method: 'POST', body: '{}' },
+);
+
 export const uploadMaterial = uploadDocument;
 export const updateMaterialDirectives = updateDocumentDirectives;
 export const confirmMaterialPurposeReview = confirmDocumentPurposeReview;

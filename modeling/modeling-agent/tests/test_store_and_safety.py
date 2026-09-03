@@ -12,7 +12,13 @@ import modeling_agent.service as service_module
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.events import EventHub
 from modeling_agent.rails import ActivityRail, ToolBoundaryRail, WriteSafetyRail, _phase_write_problem, check_write_safety
-from modeling_agent.schemas import InteractionRecord, RUN_QUEUED, RUN_RUNNING, RunRecord
+from modeling_agent.schemas import (
+    InteractionRecord,
+    RUN_QUEUED,
+    RUN_RUNNING,
+    RUN_WAITING,
+    RunRecord,
+)
 from modeling_agent.store import RuntimeStore
 from modeling_agent.tools import CandidateValidationRepairState, ToolContext
 from conftest import FakeGateway, ScriptedModel, service
@@ -1197,3 +1203,75 @@ async def test_legacy_suspended_run_without_scoped_credential_waits_for_user(set
         assert result["mode"] == "checkpoint_resume"
     finally:
         await runtime.shutdown()
+
+
+def test_stale_run_record_is_diagnosed_and_does_not_block_new_plan_after_termination(
+    tmp_path: Path,
+) -> None:
+    """run 记录丢失但状态仍被占用时，恢复应标记 stale 而不是静默续跑或阻塞新建。"""
+    path = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(path)
+    store.create_run(run("run_stale"))
+    store.update_run("run_stale", status=RUN_RUNNING)
+    store.save_tool_receipt(
+        "run_stale",
+        "call_stale_done",
+        "write_file",
+        {"path": "objects/unit.md", "content": "# Unit"},
+        {"ok": True, "revision": "candidate-1"},
+    )
+    # 模拟半恢复：runtime.sqlite 保留了状态与回执，但 agent_runs 行丢失。
+    database = sqlite3.connect(path)
+    database.execute("DELETE FROM agent_runs WHERE id = 'run_stale'")
+    database.commit()
+    database.close()
+    try:
+        assert store.recover_interrupted() == []
+        state = store.project_state("project_demo")
+        assert state.recovery_status == "stale_run"
+        assert state.public()["recovery"] == {"status": "stale_run"}
+        with pytest.raises(AgentRuntimeError) as caught:
+            store.create_run(run("run_new"))
+        assert caught.value.code == "RUN_STALE_OCCUPIED"
+        assert caught.value.details["recovery"]["missing"] == ["run"]
+
+        terminated = store.terminate_stale_occupancy("project_demo")
+        assert terminated.state == "intake:cancelled"
+        assert terminated.run_id == ""
+        assert terminated.recovery_status == ""
+        store.create_run(run("run_new"))
+        assert store.active_run("project_demo").id == "run_new"
+        transitions = store._db.execute(  # noqa: SLF001 - persistence invariant test
+            "SELECT cause FROM project_agent_state_transitions ORDER BY id"
+        ).fetchall()
+        assert [row["cause"] for row in transitions][-2:] == [
+            "stale_occupancy_terminated",
+            "run_started",
+        ]
+    finally:
+        store.close()
+
+
+def test_recover_interrupted_keeps_waiting_interaction_pending(tmp_path: Path) -> None:
+    """等待用户回答的交互在重启后保留，不转入自动恢复队列。"""
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.create_run(run("run_waiting"))
+    store.update_run("run_waiting", status=RUN_WAITING)
+    store.create_interaction(
+        InteractionRecord(
+            id="interaction_waiting",
+            project_id="project_demo",
+            run_id="run_waiting",
+            tool_call_id="call_waiting",
+            kind="question",
+            payload={"question": "请确认业务口径"},
+        )
+    )
+    try:
+        assert store.recover_interrupted() == []
+        state = store.project_state("project_demo")
+        assert state.state == "intake:waiting"
+        assert state.interaction_id == "interaction_waiting"
+        assert state.recovery_status == ""
+    finally:
+        store.close()
