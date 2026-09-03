@@ -88,6 +88,26 @@ test('failed conflict request keeps retry and return-to-decision context', () =>
   assert.equal(reduceImportFlow(state, { type: 'REOPEN_CONFLICT' }).phase, IMPORT_PHASE.CONFLICT);
 });
 
+test('name conflict requires package rename and cannot retry the same upload', () => {
+  const file = { name: 'package-beta.zip', size: 10 };
+  let state = reduceImportFlow(createImportFlowState(), { type: 'SELECT_FILE', file });
+  state = reduceImportFlow(state, { type: 'SET_ACKNOWLEDGED', value: true });
+  state = reduceImportFlow(state, { type: 'START_UPLOAD' });
+  state = { ...state, conflict: normalizeImportConflict({ conflict_type: 'version_exists' }) };
+  state = reduceImportFlow(state, {
+    type: 'FAILURE',
+    error: '知识包名称已存在，请修改名称后重新导入。',
+    errorCode: 'ontology_name_conflict',
+  });
+
+  assert.equal(state.phase, IMPORT_PHASE.ERROR);
+  assert.equal(state.errorCode, 'ontology_name_conflict');
+  assert.equal(state.request, null);
+  assert.equal(state.conflict, null);
+  assert.equal(reduceImportFlow(state, { type: 'RETRY' }).phase, IMPORT_PHASE.ERROR);
+  assert.match(importFlowNotice(state), /修改名称后重新导入/);
+});
+
 test('request fields match backend import contract', () => {
   assert.deepEqual(importRequestFields({}), {});
   assert.deepEqual(importRequestFields({ action: IMPORT_ACTION.OVERWRITE_MATCHING }), {

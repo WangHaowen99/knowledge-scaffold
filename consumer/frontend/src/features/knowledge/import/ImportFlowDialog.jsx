@@ -88,8 +88,9 @@ export default function ImportFlowDialog({
   }
 
   if (state?.phase === IMPORT_PHASE.ERROR) {
+    const nameConflict = state.errorCode === 'ontology_name_conflict';
     return (
-      <Modal title="知识包导入失败" description={state.error} onClose={onCancel}
+      <Modal title={nameConflict ? '知识包名称已存在' : '知识包导入失败'} description={state.error} onClose={onCancel}
         actions={(
           <>
             <button className="btn" type="button" onClick={onCancel}>取消</button>
@@ -99,7 +100,9 @@ export default function ImportFlowDialog({
         )}>
         <div className="kb-import-dialog">
           <div className="kb-import-error" role="alert">
-            {state.request
+            {nameConflict
+              ? '请修改知识包 manifest.yaml 中的 name 字段，重新打包后再导入。'
+              : state.request
               ? '已保留文件与导入决策，可直接重试或重新选择处理方式。'
               : '请关闭提示后重新选择符合要求的 ZIP 文件。'}
           </div>

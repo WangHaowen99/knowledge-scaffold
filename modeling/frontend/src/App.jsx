@@ -14,6 +14,7 @@ import LoginPage from './LoginPage.jsx';
 import AcceptancePage from './AcceptancePage.jsx';
 import ProjectList from './ProjectList.jsx';
 import ProjectWorkbenchRouter from './ProjectWorkbenchRouter.jsx';
+import PackageNameConflictDialog from './PackageNameConflictDialog.jsx';
 import SettingsModal from './SettingsModal.jsx';
 import Tour, { PROJECT_STEPS } from './Tour.jsx';
 import {
@@ -58,6 +59,8 @@ export default function App() {
   const [projectImportProgress, setProjectImportProgress] = useState(0);
   const [importError, setImportError] = useState('');
   const [importNotice, setImportNotice] = useState('');
+  const [packageNameConflict, setPackageNameConflict] = useState(null);
+  const [packageNameConflictError, setPackageNameConflictError] = useState('');
   const [projectAccessNotice, setProjectAccessNotice] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('llm');
@@ -162,15 +165,34 @@ export default function App() {
     replaceWorkspaceRoute(null, 'modeling');
   }, []);
 
-  const importPackage = async (file) => {
+  const importPackage = async (file, packageName = '') => {
     if (!file) return;
+    if (!packageName) {
+      setPackageNameConflict(null);
+      setPackageNameConflictError('');
+    }
     setImportingPackage(true); setImportError(''); setImportNotice('');
     try {
-      const result = await importPackageWorkspace(file);
+      const result = await importPackageWorkspace(file, packageName);
+      setPackageNameConflict(null);
+      setPackageNameConflictError('');
       setImportNotice((result.warnings ?? []).join('；'));
       window.location.assign(projectWorkbenchUrl(result.project.id));
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : '知识包导入失败');
+      if (error?.status === 409 && error?.data?.code === 'PACKAGE_NAME_CONFLICT') {
+        const conflict = error.data.conflict || {};
+        setPackageNameConflict({
+          file,
+          originalName: String(conflict.originalName || ''),
+          attemptedName: String(conflict.attemptedName || ''),
+          candidates: Array.isArray(conflict.candidates) ? conflict.candidates.map(String) : [],
+        });
+        setPackageNameConflictError('');
+      } else if (packageName) {
+        setPackageNameConflictError(error instanceof Error ? error.message : '知识包导入失败');
+      } else {
+        setImportError(error instanceof Error ? error.message : '知识包导入失败');
+      }
     } finally {
       setImportingPackage(false);
     }
@@ -291,6 +313,16 @@ export default function App() {
           : <ProjectList onOpen={openProject} />}
       </div>
       {!projectId && !acceptanceOpen && <Tour scene="projects" steps={PROJECT_STEPS} />}
+      {packageNameConflict && <PackageNameConflictDialog
+        conflict={packageNameConflict}
+        busy={importingPackage}
+        error={packageNameConflictError}
+        onCancel={() => {
+          if (importingPackage) return;
+          setPackageNameConflict(null);
+          setPackageNameConflictError('');
+        }}
+        onConfirm={(name) => void importPackage(packageNameConflict.file, name)} />}
       {settingsOpen && <SettingsModal user={user} projectId={projectId} tab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>
   );

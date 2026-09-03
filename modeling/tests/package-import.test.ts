@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { strToU8, zipSync } from 'fflate';
 
-import { decodeLegacyZipEntryName, parsePackageArchive } from '../src/workflow/package-import.js';
+import {
+  decodeLegacyZipEntryName,
+  parsePackageArchive,
+  renameImportedPackageArchive,
+} from '../src/workflow/package-import.js';
 import { zipPackage } from '../src/workflow/export.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import type { PackageSpec } from '../src/types.js';
@@ -148,6 +152,25 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   });
   assert.equal(imported.files['manifest.yaml'], files['manifest.yaml']);
   assert.equal(imported.files['objects/Customer.md'], files['objects/Customer.md']);
+});
+
+test('导入副本改名会同步更新规格、文本 manifest 和原始 manifest 字节', () => {
+  const files = renderPackage(demoSpec());
+  files['manifest.yaml'] = `# 保留来源注释\n${files['manifest.yaml']}`;
+  const imported = parsePackageArchive(zipPackage(files, 'import-demo'));
+
+  const renamed = renameImportedPackageArchive(imported, '导入演示知识包（2）');
+
+  assert.equal(renamed.spec.name, '导入演示知识包（2）');
+  assert.match(renamed.files['manifest.yaml'], /^# 保留来源注释$/mu);
+  assert.match(renamed.files['manifest.yaml'], /^name: 导入演示知识包（2）$/mu);
+  assert.equal(
+    new TextDecoder().decode(renamed.rawFiles['manifest.yaml']),
+    renamed.files['manifest.yaml'],
+  );
+  assert.match(renamed.warnings.at(-1) ?? '', /导入演示知识包（2）/u);
+  assert.equal(imported.spec.name, '导入演示知识包');
+  assert.doesNotMatch(imported.files['manifest.yaml'], /导入演示知识包（2）/u);
 });
 
 test('来源 ZIP 缺少 manifest status 时按 draft 兼容导入，但仍拒绝非法状态', () => {
