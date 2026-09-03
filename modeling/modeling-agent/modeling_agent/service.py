@@ -416,6 +416,11 @@ class AgentService:
         await Runner.start()
         self._started = True
         self._storage_diag = self._storage_diagnostic()
+        if self._storage_diag.get("healthy", False):
+            self.store.clear_recovery_status(
+                RECOVERY_VOLUME_MISMATCH,
+                cause="storage_verified_after_checkpoint_path_fix",
+            )
         recovered_runs = self.store.recover_interrupted()
         if recovered_runs:
             if not self._storage_diag.get("healthy", True):
@@ -562,7 +567,7 @@ class AgentService:
         missing_checkpoint_with_runs = not checkpoint_db.exists() and diagnostic["runCount"] > 0
         if not same_directory or not runtime_db.exists() or missing_checkpoint_with_runs:
             diagnostic["healthy"] = False
-            diagnostic["reason"] = "runtime.sqlite 与 checkpoints.sqlite 不在同一持久卷，或存在运行记录但检查点数据库缺失"
+            diagnostic["reason"] = "runtime.sqlite 与 checkpoints.sqlite.db 不在同一持久卷，或存在运行记录但检查点数据库缺失"
         try:
             if checkpoint_db.exists():
                 database = sqlite3.connect(f"file:{checkpoint_db}?mode=ro", uri=True)
@@ -582,7 +587,7 @@ class AgentService:
                     database.close()
         except sqlite3.Error:
             diagnostic["healthy"] = False
-            diagnostic["reason"] = "checkpoints.sqlite 无法读取"
+            diagnostic["reason"] = "checkpoints.sqlite.db 无法读取"
         self._recovery_summary = {
             "status": "healthy" if diagnostic["healthy"] else "storage_unhealthy",
             "volumeId": volume_id,
@@ -664,9 +669,14 @@ class AgentService:
         missing: list[str] = []
         if state.run_id and self.store.get_run(state.run_id) is None:
             missing.append("run")
+        _phase, _separator, execution = state.state.partition(":")
+        has_recoverable_run = bool(state.run_id) and execution in ACTIVE_RUN_STATUSES
         storage = self._storage_diag or {}
-        if not storage.get("healthy", True) and not storage.get("checkpointDbExists", False):
-            missing.append("checkpoint")
+        if has_recoverable_run and "run" not in missing:
+            storage_unhealthy = not storage.get("healthy", True)
+            checkpoint_missing = not storage.get("checkpointDbExists", False)
+            if storage_unhealthy and checkpoint_missing:
+                missing.append("checkpoint")
         status = state.recovery_status or ""
         if not status and missing:
             status = RECOVERY_STALE_RUN if "run" in missing else RECOVERY_VOLUME_MISMATCH
@@ -676,7 +686,7 @@ class AgentService:
         if "run" in missing:
             next_steps.append("安全终止失效计划后重新规划")
         if "checkpoint" in missing:
-            next_steps.append("核对建模服务数据卷与 checkpoints.sqlite 后重启")
+            next_steps.append("核对建模服务数据卷与 checkpoints.sqlite.db 后重启")
         if status == RECOVERY_RESUME_FAILED:
             next_steps.append("从最近检查点手动恢复，或取消当前运行后重新规划")
         diagnostic: dict[str, Any] = {"status": status}
