@@ -647,7 +647,7 @@ async def test_scope_confirmation_empty_response_without_artifact_keeps_latest_i
             project_id="project_scope_empty_response",
             interaction_id=interaction.id,
             token="token_2",
-            answer={"value": "adjust", "text": "保留 optional_route 为可选输入"},
+            answer={"action": "adjust", "value": "adjust", "text": "保留 optional_route 为可选输入"},
         )
         finished = await wait_for_status(runtime, started["id"], {"completed", "failed"})
         assert finished["status"] == "failed"
@@ -713,6 +713,7 @@ async def test_compact_summary_carries_latest_interaction_facts_without_old_plan
         content = "".join(
             str(message.get("content") or "")
             for message in model.seen_messages[-1]
+            if message.get("role") == "user"
         )
         assert "optional_route" in content
         assert "保留" in content
