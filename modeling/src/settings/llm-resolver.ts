@@ -1,7 +1,12 @@
 import { config } from '../config.js';
+import {
+  emptyLlmAdvancedSettings,
+  normalizeLlmAdvancedSettings,
+  type LlmAdvancedSettings,
+} from './llm-extra-params.js';
 
 export type LlmSettingSource = 'user' | 'platform_default' | 'default_snapshot' | 'main' | 'settings' | 'env';
-export interface LlmSettings {
+export interface LlmSettings extends LlmAdvancedSettings {
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -15,6 +20,9 @@ export interface UserLlmSettingsSnapshot {
   apiKey: string | null;
   maxTokens: number | null;
   contextWindow: number | null;
+  thinkingMode: LlmAdvancedSettings['thinkingMode'] | null;
+  reasoningEffort: LlmAdvancedSettings['reasoningEffort'] | null;
+  extraBodyJson: string | null;
 }
 
 export interface LegacyLlmSettingsSnapshot {
@@ -23,6 +31,9 @@ export interface LegacyLlmSettingsSnapshot {
   apiKey: string | null;
   maxTokens: string | null;
   contextWindow: string | null;
+  thinkingMode: string | null;
+  reasoningEffort: string | null;
+  extraBodyJson: string | null;
 }
 
 interface ResolveLlmInput {
@@ -52,10 +63,22 @@ function normalizedContextWindow(
   return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : fallback;
 }
 
+function advancedFrom(
+  value: Partial<UserLlmSettingsSnapshot | LegacyLlmSettingsSnapshot | LlmSettings> | undefined,
+  fallback: LlmAdvancedSettings = emptyLlmAdvancedSettings(),
+): LlmAdvancedSettings {
+  return normalizeLlmAdvancedSettings({
+    thinkingMode: value?.thinkingMode ?? fallback.thinkingMode,
+    reasoningEffort: value?.reasoningEffort ?? fallback.reasoningEffort,
+    extraBodyJson: value?.extraBodyJson ?? fallback.extraBodyJson,
+  });
+}
+
 function fromAssignedDefault(
   settings: LlmSettings,
   personalMaxTokens?: number | null,
   personalContextWindow?: number | null,
+  personalAdvanced?: Partial<UserLlmSettingsSnapshot>,
 ): LlmSettings {
   return {
     baseUrl: settings.baseUrl.trim(),
@@ -63,6 +86,7 @@ function fromAssignedDefault(
     apiKey: settings.apiKey,
     maxTokens: normalizedMaxTokens(personalMaxTokens, settings.maxTokens),
     contextWindow: normalizedContextWindow(personalContextWindow, settings.contextWindow),
+    ...advancedFrom(personalAdvanced, settings),
   };
 }
 
@@ -70,7 +94,9 @@ function deploymentMainSettings(
   personalMaxTokens: number | null | undefined,
   personalContextWindow: number | null | undefined,
   legacy: LegacyLlmSettingsSnapshot | undefined,
+  personalAdvanced?: Partial<UserLlmSettingsSnapshot>,
 ): LlmSettings {
+  const deploymentAdvanced = advancedFrom(legacy);
   return {
     baseUrl: (legacy?.baseUrl || config.llm.baseUrl || '').trim(),
     model: (legacy?.model || config.llm.model || '').trim(),
@@ -83,6 +109,7 @@ function deploymentMainSettings(
       personalContextWindow ?? legacy?.contextWindow ?? config.llm.contextWindow,
       config.llm.contextWindow,
     ),
+    ...advancedFrom(personalAdvanced, deploymentAdvanced),
   };
 }
 
@@ -123,18 +150,20 @@ export function resolveLlmSettings(input: ResolveLlmInput): LlmSettings {
         personal?.contextWindow ?? config.llm.contextWindow,
         config.llm.contextWindow,
       ),
+      ...advancedFrom(personal),
     };
   }
   if (username && platformDefaults?.main) {
-    return fromAssignedDefault(platformDefaults.main, personal?.maxTokens, personal?.contextWindow);
+    return fromAssignedDefault(platformDefaults.main, personal?.maxTokens, personal?.contextWindow, personal);
   }
   if (username && assignedDefaults?.main) {
-    return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens, personal?.contextWindow);
+    return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens, personal?.contextWindow, personal);
   }
   return deploymentMainSettings(
     personal?.maxTokens,
     personal?.contextWindow,
     username ? undefined : input.legacy,
+    personal,
   );
 }
 
@@ -154,6 +183,7 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
       apiKey: personalTask?.apiKey ?? '',
       maxTokens: normalizedMaxTokens(personalTask?.maxTokens, fallback.maxTokens),
       contextWindow: normalizedContextWindow(personalTask?.contextWindow, fallback.contextWindow),
+      ...advancedFrom(personalTask),
     };
   }
 
@@ -162,6 +192,7 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
       platformDefaults.task ?? platformDefaults.main!,
       personalTask?.maxTokens,
       personalTask?.contextWindow,
+      personalTask,
     );
   }
 
@@ -170,10 +201,11 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
       assignedDefaults.task,
       personalTask?.maxTokens,
       personalTask?.contextWindow,
+      personalTask,
     );
   }
 
-  if (username) return fromAssignedDefault(main, personalTask?.maxTokens, personalTask?.contextWindow);
+  if (username) return fromAssignedDefault(main, personalTask?.maxTokens, personalTask?.contextWindow, personalTask);
 
   const deploymentTaskConfigured = Boolean(
     config.taskLlm.baseUrl || config.taskLlm.model || config.taskLlm.apiKey,
@@ -185,11 +217,13 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
       apiKey: config.taskLlm.apiKey,
       maxTokens: config.llm.maxTokens,
       contextWindow: config.llm.contextWindow,
+      ...emptyLlmAdvancedSettings(),
     };
   }
   return deploymentMainSettings(
     undefined,
     undefined,
     username ? undefined : input.legacy,
+    undefined,
   );
 }

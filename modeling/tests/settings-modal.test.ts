@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+test('LLM request preview rejects blocked custom request params', async () => {
+  const { buildLlmPreviewBody } = await import('../frontend/src/llmAdvancedConfig.js');
+
+  assert.match(
+    buildLlmPreviewBody({ extraBodyJson: '{"messages":[]}' }).error,
+    /blocked key/,
+  );
+  assert.match(
+    buildLlmPreviewBody({ extraBodyJson: '{"nested":{"authorization":"Bearer synthetic"}}' }).error,
+    /blocked key/,
+  );
+});
+
 test('settings modal: backdrop does not close the modal', async () => {
   const { SettingsModalOverlay } = await import('../frontend/src/SettingsModal.jsx');
   const child = { type: 'modal-content' };
