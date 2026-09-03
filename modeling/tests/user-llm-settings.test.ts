@@ -42,10 +42,12 @@ test('每个用户读取和保存独立的 LLM 配置', () => {
   assert.deepEqual(alice, {
     baseUrl: 'https://alice.example.com/v1', model: 'alice-model', apiKey: '',
     maxTokens: 4096, contextWindow: 1000000,
+    thinkingMode: 'default', reasoningEffort: '', extraBodyJson: '{}',
   });
   assert.deepEqual(bob, {
     baseUrl: 'https://default.example.com/v1', model: 'default-model', apiKey: '',
     maxTokens: 8192, contextWindow: 128000,
+    thinkingMode: 'default', reasoningEffort: '', extraBodyJson: '{}',
   });
   assert.equal(context.runWithLlmUser('alice', () => repo.getLlmSource()), 'user');
   assert.equal(context.runWithLlmUser('bob', () => repo.getLlmSource()), 'env');
@@ -82,10 +84,12 @@ test('每个用户可独立配置后台任务模型，清空后重新使用主�
   assert.deepEqual(repo.getLlmSettings('task-owner'), {
     baseUrl: 'https://main-model.example.com/v1', model: 'main-model',
     apiKey: 'synthetic-main-key', maxTokens: 4096, contextWindow: 128000,
+    thinkingMode: 'default', reasoningEffort: '', extraBodyJson: '{}',
   });
   assert.deepEqual(repo.getTaskLlmSettings('task-owner'), {
     baseUrl: 'https://background-model.example.com/v1', model: 'background-model',
     apiKey: 'synthetic-background-key', maxTokens: 2048, contextWindow: 64000,
+    thinkingMode: 'default', reasoningEffort: '', extraBodyJson: '{}',
   });
   assert.equal(repo.getTaskLlmSource('task-owner'), 'user');
 
@@ -136,6 +140,9 @@ test('个人 provider patch 原子校验并可整体恢复默认', () => {
     apiKey: 'synthetic-charlie-key',
     maxTokens: '2048',
     contextWindow: '262144',
+    thinkingMode: 'enabled',
+    reasoningEffort: 'high',
+    extraBodyJson: '{"parallel_tool_calls":false}',
   });
   assert.deepEqual(context.runWithLlmUser('charlie', () => repo.getLlmSettings()), {
     baseUrl: 'https://charlie.example.com/v1',
@@ -143,15 +150,27 @@ test('个人 provider patch 原子校验并可整体恢复默认', () => {
     apiKey: 'synthetic-charlie-key',
     maxTokens: 2048,
     contextWindow: 262144,
+    thinkingMode: 'enabled',
+    reasoningEffort: 'high',
+    extraBodyJson: '{"parallel_tool_calls":false}',
   });
 
-  repo.updateUserLlmSettings('charlie', { providerClear: true, maxTokens: '', contextWindow: '' });
+  repo.updateUserLlmSettings('charlie', {
+    providerClear: true,
+    maxTokens: '',
+    contextWindow: '',
+    thinkingMode: 'default',
+    reasoningEffort: '',
+    extraBodyJson: '{}',
+  });
   const inherited = context.runWithLlmUser('charlie', () => repo.getLlmSettings());
   assert.equal(inherited.baseUrl, 'https://default.example.com/v1');
   assert.equal(inherited.model, 'default-model');
   assert.equal(inherited.maxTokens, 8192);
   assert.equal(inherited.contextWindow, 128000);
   assert.equal(repo.getUserLlmSetting('charlie', 'api_key'), null);
+  assert.equal(repo.getUserLlmSetting('charlie', 'thinking_mode'), null);
+  assert.equal(repo.getUserLlmSetting('charlie', 'extra_body_json'), null);
 });
 
 test('个人上下文窗口接受 API 支持的安全整数', () => {

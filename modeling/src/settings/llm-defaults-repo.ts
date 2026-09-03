@@ -1,6 +1,11 @@
 import { getDb, nowIso } from '../db/index.js';
 import { config } from '../config.js';
 import { decryptLlmDefaultApiKey, encryptLlmDefaultApiKey } from './llm-secret-codec.js';
+import {
+  emptyLlmAdvancedSettings,
+  normalizeLlmAdvancedSettings,
+  type LlmAdvancedSettings,
+} from './llm-extra-params.js';
 
 export const LLM_PURPOSES = ['main', 'task'] as const;
 export type LlmPurpose = typeof LLM_PURPOSES[number];
@@ -12,12 +17,15 @@ interface LlmDefaultRow {
   api_key_ciphertext: string | null;
   max_tokens: number;
   context_window: number;
+  thinking_mode: LlmAdvancedSettings['thinkingMode'];
+  reasoning_effort: LlmAdvancedSettings['reasoningEffort'];
+  extra_body_json: string;
   revision: number;
   updated_by: string;
   updated_at: string;
 }
 
-export interface LlmDefaultSettings {
+export interface LlmDefaultSettings extends LlmAdvancedSettings {
   purpose: LlmPurpose;
   baseUrl: string;
   model: string;
@@ -39,6 +47,9 @@ export interface SaveLlmDefaultInput {
   model: string;
   maxTokens: number;
   contextWindow?: number;
+  thinkingMode?: unknown;
+  reasoningEffort?: unknown;
+  extraBodyJson?: unknown;
   apiKey?: string;
   apiKeyClear?: boolean;
   expectedRevision?: number;
@@ -60,17 +71,24 @@ export class LlmDefaultRevisionConflictError extends Error {
 
 function rowFor(purpose: LlmPurpose): LlmDefaultRow | undefined {
   return getDb().prepare(`SELECT purpose, base_url, model, api_key_ciphertext,
-      max_tokens, context_window, revision, updated_by, updated_at
+      max_tokens, context_window, thinking_mode, reasoning_effort, extra_body_json,
+      revision, updated_by, updated_at
     FROM llm_default_settings WHERE purpose = ?`).get(purpose) as LlmDefaultRow | undefined;
 }
 
 function publicRow(row: LlmDefaultRow): PublicLlmDefaultSettings {
+  const advanced = normalizeLlmAdvancedSettings({
+    thinkingMode: row.thinking_mode,
+    reasoningEffort: row.reasoning_effort,
+    extraBodyJson: row.extra_body_json,
+  });
   return {
     purpose: row.purpose,
     baseUrl: row.base_url,
     model: row.model,
     maxTokens: row.max_tokens,
     contextWindow: row.context_window,
+    ...advanced,
     apiKeySet: Boolean(row.api_key_ciphertext),
     revision: row.revision,
     updatedBy: row.updated_by,
@@ -83,7 +101,8 @@ export function isLlmPurpose(value: unknown): value is LlmPurpose {
 }
 
 export function validateLlmDefaultDraft(
-  input: Pick<SaveLlmDefaultInput, 'baseUrl' | 'model' | 'maxTokens' | 'contextWindow'>,
+  input: Pick<SaveLlmDefaultInput, 'baseUrl' | 'model' | 'maxTokens' | 'contextWindow'>
+    & Partial<Pick<SaveLlmDefaultInput, 'thinkingMode' | 'reasoningEffort' | 'extraBodyJson'>>,
 ): void {
   const baseUrl = input.baseUrl.trim();
   const model = input.model.trim();
@@ -99,6 +118,16 @@ export function validateLlmDefaultDraft(
   if (!Number.isSafeInteger(input.maxTokens) || input.maxTokens < 1 || input.maxTokens > 1_000_000) {
     throw new LlmDefaultValidationError('maxTokens 必须是 1 到 1000000 的整数');
   }
+  try {
+    normalizeLlmAdvancedSettings({
+      thinkingMode: input.thinkingMode,
+      reasoningEffort: input.reasoningEffort,
+      extraBodyJson: input.extraBodyJson,
+    });
+  } catch (error) {
+    if (error instanceof Error) throw new LlmDefaultValidationError(error.message);
+    throw error;
+  }
   const contextWindow = input.contextWindow ?? config.llm.contextWindow;
   if (!Number.isSafeInteger(contextWindow) || contextWindow < 1) {
     throw new LlmDefaultValidationError('contextWindow 必须是大于等于 1 的整数');
@@ -108,6 +137,11 @@ export function validateLlmDefaultDraft(
 export function getLlmDefaultSettings(purpose: LlmPurpose): LlmDefaultSettings | undefined {
   const row = rowFor(purpose);
   if (!row) return undefined;
+  const advanced = normalizeLlmAdvancedSettings({
+    thinkingMode: row.thinking_mode,
+    reasoningEffort: row.reasoning_effort,
+    extraBodyJson: row.extra_body_json,
+  });
   return {
     purpose: row.purpose,
     baseUrl: row.base_url,
@@ -115,6 +149,7 @@ export function getLlmDefaultSettings(purpose: LlmPurpose): LlmDefaultSettings |
     apiKey: decryptLlmDefaultApiKey(row.api_key_ciphertext, purpose),
     maxTokens: row.max_tokens,
     contextWindow: row.context_window,
+    ...advanced,
     revision: row.revision,
     updatedBy: row.updated_by,
     updatedAt: row.updated_at,
@@ -136,6 +171,12 @@ export function getPublicLlmDefaults(): Record<LlmPurpose, PublicLlmDefaultSetti
 export function saveLlmDefaultSettings(input: SaveLlmDefaultInput, updatedBy: string): PublicLlmDefaultSettings {
   validateLlmDefaultDraft(input);
   const contextWindow = input.contextWindow ?? config.llm.contextWindow;
+  const advanced = normalizeLlmAdvancedSettings({
+    ...emptyLlmAdvancedSettings(),
+    thinkingMode: input.thinkingMode,
+    reasoningEffort: input.reasoningEffort,
+    extraBodyJson: input.extraBodyJson,
+  });
   const actor = updatedBy.trim();
   if (!actor) throw new LlmDefaultValidationError('修改者不能为空');
   if (input.expectedRevision !== undefined
@@ -161,14 +202,17 @@ export function saveLlmDefaultSettings(input: SaveLlmDefaultInput, updatedBy: st
     const revision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO llm_default_settings (
         purpose, base_url, model, api_key_ciphertext, max_tokens, context_window,
-        revision, updated_by, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        thinking_mode, reasoning_effort, extra_body_json, revision, updated_by, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(purpose) DO UPDATE SET
         base_url = excluded.base_url,
         model = excluded.model,
         api_key_ciphertext = excluded.api_key_ciphertext,
         max_tokens = excluded.max_tokens,
         context_window = excluded.context_window,
+        thinking_mode = excluded.thinking_mode,
+        reasoning_effort = excluded.reasoning_effort,
+        extra_body_json = excluded.extra_body_json,
         revision = excluded.revision,
         updated_by = excluded.updated_by,
         updated_at = excluded.updated_at`)
@@ -179,6 +223,9 @@ export function saveLlmDefaultSettings(input: SaveLlmDefaultInput, updatedBy: st
         ciphertext,
         input.maxTokens,
         contextWindow,
+        advanced.thinkingMode,
+        advanced.reasoningEffort,
+        advanced.extraBodyJson,
         revision,
         actor,
         nowIso(),

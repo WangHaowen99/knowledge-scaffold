@@ -6,9 +6,11 @@ import {
   testAdminLlmDefault,
 } from './api.js';
 import LlmPurposeTabs from './LlmPurposeTabs.jsx';
+import { DEFAULT_ADVANCED_LLM, prettyJsonText, previewJsonText } from './llmAdvancedConfig.js';
 
 const EMPTY_DRAFT = {
   baseUrl: '', model: '', apiKey: '', apiKeyClear: false, maxTokens: '128000', contextWindow: '1000000',
+  ...DEFAULT_ADVANCED_LLM,
 };
 
 function draftFrom(value) {
@@ -19,6 +21,9 @@ function draftFrom(value) {
     apiKeyClear: false,
     maxTokens: String(value.maxTokens),
     contextWindow: String(value.contextWindow ?? 1000000),
+    thinkingMode: value.thinkingMode ?? 'default',
+    reasoningEffort: value.reasoningEffort ?? '',
+    extraBodyJson: prettyJsonText(value.extraBodyJson ?? '{}'),
   } : { ...EMPTY_DRAFT };
 }
 
@@ -59,6 +64,9 @@ export default function AdminLlmDefaults({ onChanged }) {
     apiKeyClear: draft.apiKeyClear,
     maxTokens: draft.maxTokens,
     contextWindow: draft.contextWindow,
+    thinkingMode: draft.thinkingMode,
+    reasoningEffort: draft.reasoningEffort,
+    extraBodyJson: draft.extraBodyJson,
     expectedRevision: saved?.revision ?? 0,
   });
 
@@ -163,6 +171,34 @@ export default function AdminLlmDefaults({ onChanged }) {
               {draft.apiKeyClear ? '保存后清除 Key' : '清除 Key'}
             </button>
           )}
+        </div>
+        <div className="field">
+          <label>思考模式</label>
+          <select value={draft.thinkingMode} onChange={(event) => setField('thinkingMode', event.target.value)}>
+            <option value="default">默认</option>
+            <option value="enabled">开启</option>
+            <option value="disabled">关闭</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>思考强度</label>
+          <select value={draft.reasoningEffort} disabled={draft.thinkingMode !== 'enabled'} onChange={(event) => setField('reasoningEffort', event.target.value)}>
+            <option value="">默认</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="max">max</option>
+          </select>
+        </div>
+        <div className="field admin-llm-wide">
+          <label>自定义请求参数 JSON</label>
+          <textarea className="cfg-json-input" value={draft.extraBodyJson}
+            onChange={(event) => setField('extraBodyJson', event.target.value)}
+            spellCheck={false} rows={5} placeholder={'{"custom_param": true}'} />
+        </div>
+        <div className="field admin-llm-wide">
+          <label>请求报文预览</label>
+          <pre className="cfg-request-preview">{previewJsonText(draft)}</pre>
         </div>
       </div>
 
