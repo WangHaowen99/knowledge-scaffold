@@ -1520,6 +1520,26 @@ def test_stale_run_record_is_diagnosed_and_does_not_block_new_plan_after_termina
         store.close()
 
 
+def test_clear_recovery_status_only_clears_requested_status(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        state = store.project_state("project_recovery_status")
+        store.transition_project_state(
+            "project_recovery_status",
+            expected_revision=state.revision,
+            next_state="evaluation:completed",
+            cause="test_setup",
+            recovery_status="volume_mismatch",
+        )
+        assert store.clear_recovery_status(
+            "volume_mismatch",
+            cause="storage_verified_after_checkpoint_path_fix",
+        ) == 1
+        assert store.project_state("project_recovery_status").recovery_status == ""
+    finally:
+        store.close()
+
+
 def test_recover_interrupted_keeps_waiting_interaction_pending(tmp_path: Path) -> None:
     """等待用户回答的交互在重启后保留，不转入自动恢复队列。"""
     store = RuntimeStore(tmp_path / "runtime.sqlite")

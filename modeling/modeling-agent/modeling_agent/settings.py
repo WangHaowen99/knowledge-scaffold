@@ -48,7 +48,9 @@ class Settings:
 
     @property
     def checkpoint_db(self) -> Path:
-        return self.data_dir / "checkpoints.sqlite"
+        # OpenJiuwen's SQLite persistence appends .db when the configured path
+        # does not already have that suffix. Keep diagnostics on the same file.
+        return self.data_dir / "checkpoints.sqlite.db"
 
     @classmethod
     def from_env(cls) -> "Settings":
