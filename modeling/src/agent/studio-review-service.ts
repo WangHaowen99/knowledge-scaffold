@@ -20,6 +20,11 @@ import {
 import { isHiddenCandidateGroup } from './candidate-change-scope.js';
 import { StudioWriteError } from './studio-write-service.js';
 import { StudioReadService } from './studio-read-service.js';
+import {
+  isNoOpCandidateChange,
+  removeNoOpCandidateChanges,
+  type CandidateChangeRow,
+} from './effective-changes.js';
 
 const MUTATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
@@ -42,6 +47,12 @@ interface ChangeRow {
 interface ReviewInput {
   expectedRevision: string;
   clientMutationId: string;
+}
+
+interface NoChangesReceipt {
+  code: 'NO_CHANGES';
+  reason: string;
+  removedPaths: string[];
 }
 
 export interface StudioReviewResponse {
@@ -112,15 +123,7 @@ export class StudioReviewService {
       FROM studio_mutation_receipts WHERE project_id = ? AND client_mutation_id = ?`)
       .get(project.id, input.clientMutationId) as { request_hash: string; response_json: string } | undefined;
     if (directReceipt) {
-      if (directReceipt.request_hash !== hash) {
-        throw new StudioWriteError(
-          'MUTATION_ID_REUSED',
-          '这个复核标识已经用于另一批修改，请生成新的操作标识后重试',
-          409,
-          { clientMutationId: input.clientMutationId },
-        );
-      }
-      return { ...(JSON.parse(directReceipt.response_json) as StudioReviewResponse), replayed: true };
+      return replayDirectReceipt(directReceipt, hash, input.clientMutationId);
     }
 
     await this.artifacts.ensureProject(project.id);
@@ -133,6 +136,15 @@ export class StudioReviewService {
 
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      const lockedDirectReceipt = this.db.prepare(`SELECT request_hash, response_json
+        FROM studio_mutation_receipts WHERE project_id = ? AND client_mutation_id = ?`)
+        .get(project.id, input.clientMutationId) as { request_hash: string; response_json: string } | undefined;
+      if (lockedDirectReceipt) {
+        const response = replayDirectReceipt(lockedDirectReceipt, hash, input.clientMutationId);
+        this.db.exec('COMMIT');
+        return response;
+      }
+
       const existing = this.db.prepare(`SELECT payload_json FROM agent_project_event_outbox
         WHERE id = ? AND project_id = ? AND event_type = 'studio_review'`)
         .get(eventId, project.id) as { payload_json: string } | undefined;
@@ -172,19 +184,50 @@ export class StudioReviewService {
           { candidateRevision: workspace.candidate_id },
         );
       }
-      const changes = this.db.prepare(`SELECT path, kind, content, group_id FROM agent_candidate_changes
+      const rawChanges = this.db.prepare(`SELECT path, kind, content, group_id FROM agent_candidate_changes
         WHERE project_id = ? AND run_id = ? ORDER BY path`)
         .all(project.id, workspace.run_id) as unknown as ChangeRow[];
-      if (!changes.length) throw new StudioWriteError('NO_CANDIDATE', '当前没有待复核修改', 409);
+      if (!rawChanges.length) throw new StudioWriteError('NO_CANDIDATE', '当前没有待复核修改', 409);
 
-      const workingFiles = applyChanges(baseFiles, changes);
-      const actualRevision = workingContentRevision(baseRevision, workingFiles);
-      if (input.expectedRevision !== actualRevision) {
-        throw revisionConflict(input.expectedRevision, actualRevision);
+      const rawWorkingFiles = applyChanges(baseFiles, rawChanges);
+      const rawRevision = workingContentRevision(baseRevision, rawWorkingFiles);
+      if (input.expectedRevision !== rawRevision) {
+        throw revisionConflict(input.expectedRevision, rawRevision);
       }
 
+      // 先在内存中剔除 no-op 变更：复核失败时不落库删除，避免失败请求吞掉草稿行。
+      const changes = rawChanges.filter((change) => !isNoOpCandidateChange(change, baseFiles));
+      if (!changes.length) {
+        this.db.prepare(`DELETE FROM agent_candidate_changes
+          WHERE project_id = ? AND run_id = ?`).run(project.id, workspace.run_id);
+        const removedPaths = rawChanges.map((change) => change.path);
+        const receipt: NoChangesReceipt = {
+          code: 'NO_CHANGES',
+          reason: '当前草稿与知识包基线一致，没有待应用修改',
+          removedPaths,
+        };
+        this.db.prepare(`INSERT INTO studio_mutation_receipts (
+          project_id, client_mutation_id, request_hash, response_json, created_at
+        ) VALUES (?,?,?,?,?)`).run(
+          project.id,
+          input.clientMutationId,
+          hash,
+          JSON.stringify(receipt),
+          nowIso(),
+        );
+        this.db.exec('COMMIT');
+        throw new StudioWriteError('NO_CHANGES', receipt.reason, 400, {
+          removedPaths,
+          next: ['刷新当前工作区后继续编辑'],
+        });
+      }
+
+      // no-op 变更不改变文件映射，过滤前后的 working revision 必然一致。
+      const workingFiles = rawWorkingFiles;
+      const actualRevision = rawRevision;
       const reviewableChanges = changes.filter((change) => !isHiddenCandidateGroup(change.group_id));
       if (!reviewableChanges.length) {
+        removeNoOpCandidateChanges(this.db, project.id, workspace.run_id, rawChanges, baseFiles);
         const response: StudioReviewResponse = {
           workingRevision: actualRevision,
           clientMutationId: input.clientMutationId,
@@ -210,7 +253,9 @@ export class StudioReviewService {
       }
 
       const changedPaths = reviewableChanges.map((change) => change.path).sort();
-      const elementIds = elementIdsFromPaths(changedPaths);
+      const elementIds = elementIdsFromPaths(rawChanges.map((change) => change.path));
+      // 确定性判定基于工作区呈现的完整路径集合，含补齐前的 no-op 元素行，
+      // 避免 no-op 剔除静默把确定性直提交翻转为 agent 复核。
       if (isDeterministicStudioScope(elementIds)) {
         this.db.exec('COMMIT');
         return await this.applyDeterministicReview({
@@ -247,6 +292,7 @@ export class StudioReviewService {
         summary,
       };
       enqueueStudioReviewProjectEvent(project.id, event, this.db);
+      removeNoOpCandidateChanges(this.db, project.id, workspace.run_id, rawChanges, baseFiles);
       this.db.exec('COMMIT');
       return responseFromEvent(event, false);
     } catch (error) {
@@ -328,10 +374,17 @@ export class StudioReviewService {
       try {
         const latestChanges = this.db.prepare(`SELECT path, kind, content FROM agent_candidate_changes
           WHERE project_id = ? AND run_id = ? ORDER BY path`)
-          .all(context.project.id, context.workspace.run_id) as unknown as ChangeRow[];
+          .all(context.project.id, context.workspace.run_id) as unknown as CandidateChangeRow[];
+        const latestEffectiveChanges = removeNoOpCandidateChanges(
+          this.db,
+          context.project.id,
+          context.workspace.run_id,
+          latestChanges,
+          context.baseFiles,
+        );
         const latestWorkingRevision = workingContentRevision(
           context.baseRevision,
-          applyChanges(context.baseFiles, latestChanges),
+          applyChanges(context.baseFiles, latestEffectiveChanges),
         );
         if (latestWorkingRevision !== context.workingRevision) {
           throw revisionConflict(context.workingRevision, latestWorkingRevision);
@@ -596,6 +649,26 @@ function requestHash(input: ReviewInput): string {
     .digest('hex');
 }
 
+function replayDirectReceipt(
+  receipt: { request_hash: string; response_json: string },
+  expectedHash: string,
+  clientMutationId: string,
+): StudioReviewResponse {
+  if (receipt.request_hash !== expectedHash) {
+    throw new StudioWriteError(
+      'MUTATION_ID_REUSED',
+      '这个复核标识已经用于另一批修改，请生成新的操作标识后重试',
+      409,
+      { clientMutationId },
+    );
+  }
+  const stored = JSON.parse(receipt.response_json) as StudioReviewResponse | NoChangesReceipt;
+  if ('code' in stored) {
+    throw new StudioWriteError('NO_CHANGES', stored.reason, 400, { removedPaths: stored.removedPaths });
+  }
+  return { ...stored, replayed: true };
+}
+
 function revisionConflict(expectedRevision: string, actualRevision: string): StudioWriteError {
   return new StudioWriteError(
     'REVISION_CONFLICT',
@@ -605,7 +678,10 @@ function revisionConflict(expectedRevision: string, actualRevision: string): Stu
   );
 }
 
-function applyChanges(base: Record<string, string>, changes: ChangeRow[]): Record<string, string> {
+function applyChanges(
+  base: Record<string, string>,
+  changes: readonly Pick<ChangeRow, 'path' | 'kind' | 'content'>[],
+): Record<string, string> {
   const files = { ...base };
   for (const change of changes) {
     if (change.kind === 'delete') delete files[change.path];

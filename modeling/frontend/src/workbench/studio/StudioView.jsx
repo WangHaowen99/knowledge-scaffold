@@ -510,7 +510,15 @@ export default function StudioView({ focus }) {
         setReviewSubmitState({ phase: 'saved', message: response.display?.text || '已提交复核' });
       }
     } catch (error) {
-      setReviewSubmitState({ phase: 'error', message: studioError(error).message });
+      const failure = studioError(error);
+      if (isStudioNoChangesFailure(failure)) {
+        update({ studioPendingReview: false });
+        store.set({ studioPendingCount: 0 });
+        setReviewSubmitState({ phase: 'saved', message: failure.message || '当前草稿与知识包基线一致，没有待应用修改' });
+        await loadStudio({ cache: 'reload' });
+        return;
+      }
+      setReviewSubmitState({ phase: 'error', message: failure.message });
     }
   }, [loadStudio, projectId, reviewSubmitState.phase, update]);
 

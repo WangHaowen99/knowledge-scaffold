@@ -87,6 +87,85 @@ async function seedLegacyDanglingPackage(projectId: string) {
   });
 }
 
+async function seedPhysicalMappingPackage(projectId: string) {
+  const artifacts = getPackageArtifactStore();
+  const initialized = await artifacts.initializeDraftPackage(projectId, {
+    id: `mapping-noop-${projectId}`,
+    name: 'Studio 物理对象基线',
+    description: '用于验证 mapping no-op 草稿不会阻塞确定性应用。',
+  });
+  return artifacts.savePackageVersion(projectId, {
+    expectedRevision: initialized.revision.oid,
+    spec: {
+      ...structuredClone(initialized.spec),
+      objects: [{
+        key: 'synthetic_record',
+        title: '合成记录',
+        description: '合成物理对象。',
+        sourceTable: 'synthetic_records',
+        sourceRefs: [{ kind: 'table' as const, table: 'synthetic_records' }],
+        primaryKey: ['record_id'],
+        fields: [{
+          key: 'record_id', cnName: '记录编号', type: 'string', required: true, sourceColumn: 'record_id',
+        }],
+      }],
+    },
+    coverage: initialized.coverage,
+    note: '建立包含已提交 mapping 的基线',
+    action: {
+      cause: 'mapping_noop_seeded',
+      summary: '写入 mapping no-op 测试基线',
+      actorKind: 'system',
+      actorName: '测试系统',
+    },
+  });
+}
+
+function insertNoOpDraft(projectId: string, runId: string, baseFiles: Record<string, string>) {
+  const mapping = baseFiles['mappings/object-data-mappings.json'];
+  assert.ok(mapping);
+  const insert = getDb().prepare(`INSERT INTO agent_candidate_changes (
+    project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
+  ) VALUES (?,?,?,?,?,?,'[]',?,?)`);
+  insert.run(
+    projectId, runId, 'mappings/object-data-mappings.json', 'write', mapping,
+    'legacy-noop', '残留 mapping no-op 草稿', '2026-09-03T00:00:00.000Z',
+  );
+  insert.run(
+    projectId, runId, 'mappings/not-in-base.json', 'delete', null,
+    'legacy-noop', '残留 delete no-op 草稿', '2026-09-03T00:00:00.000Z',
+  );
+}
+
+async function seedRecordPackage(projectId: string) {
+  const artifacts = getPackageArtifactStore();
+  const initialized = await artifacts.initializeDraftPackage(projectId, {
+    id: `studio-format-record-${projectId}`,
+    name: 'Studio 格式检查基线',
+    description: '包含已提交对象的合成基线。',
+  });
+  return artifacts.savePackageVersion(projectId, {
+    expectedRevision: initialized.revision.oid,
+    spec: {
+      ...structuredClone(initialized.spec),
+      objects: [{
+        key: 'record',
+        title: '记录',
+        description: '已提交的合成记录对象。',
+        fields: [{ key: 'id', cnName: '标识', type: 'string', required: true }],
+      }],
+    },
+    coverage: initialized.coverage,
+    note: '建立格式检查测试基线',
+    action: {
+      cause: 'studio_format_seeded',
+      summary: '写入格式检查测试基线',
+      actorKind: 'system',
+      actorName: '测试系统',
+    },
+  });
+}
+
 test('Studio 新建规则必须引用当前项目的真实资料，后续编辑不能篡改证据', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Studio 规则证据', runtime: 'agent' });
   const material = insertDocument({
@@ -1315,20 +1394,19 @@ test('Studio 确定性检查阻止新增格式错误并保留工作草稿', asyn
   const project = createProject({ owner: 'alice', name: 'Studio 确定性检查', runtime: 'agent' });
   const app = appFor(t);
   const artifacts = getPackageArtifactStore();
+  await seedRecordPackage(project.id);
   const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
   const formalBefore = (await artifacts.current(project.id))!.revision.oid;
-  const created = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/studio/elements`,
+  const patched = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('object:record')}`,
     payload: {
       expectedRevision: initial.json().workingRevision,
-      clientMutationId: 'create-format-check-object',
-      kind: 'object',
-      key: 'record',
-      values: { title: '记录', description: '用于确定性格式检查的合成记录。' },
+      clientMutationId: 'patch-format-check-object',
+      changes: { description: '用于确定性格式检查的合成记录。' },
     },
   });
-  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(patched.statusCode, 200, patched.body);
   const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
     WHERE project_id = ?`).get(project.id) as { run_id: string };
   const corrupted = getDb().prepare(`UPDATE agent_candidate_changes SET kind = 'delete', content = NULL
@@ -1400,4 +1478,220 @@ test('Studio 删除会阻止仍被流程正文显式引用的知识条目', asyn
   });
   assert.equal(removed.statusCode, 409, removed.body);
   assert.equal(removed.json().code, 'DELETE_TEXT_REFERENCE_BLOCKED');
+});
+
+test('Studio 确定性应用过滤已提交 mapping 的 no-op 草稿', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio mapping no-op', runtime: 'agent' });
+  const app = appFor(t);
+  const artifacts = getPackageArtifactStore();
+  await seedPhysicalMappingPackage(project.id);
+  const baseline = (await artifacts.current(project.id))!;
+  const baseFiles = (await artifacts.readPackageFiles(project.id, baseline.revision.oid)).files;
+
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  assert.equal(initial.statusCode, 200, initial.body);
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'create-parse-synthetic-batch',
+      kind: 'operation',
+      key: 'parse_synthetic_batch',
+      values: {
+        title: '解析合成批次',
+        description: '解析合成批次结果。',
+        flow: ['读取 object:synthetic_record 并返回解析结果。'],
+      },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+
+  const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
+    WHERE project_id = ?`).get(project.id) as { run_id: string };
+  insertNoOpDraft(project.id, workspace.run_id, baseFiles);
+  const current = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const review = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: current.json().workingRevision,
+      clientMutationId: 'review-mapping-noop',
+    },
+  });
+  assert.equal(review.statusCode, 200, review.body);
+  assert.equal(review.json().mode, 'deterministic');
+  assert.deepEqual(review.json().elementIds, ['operation:parse_synthetic_batch']);
+  assert.equal(review.json().changedPaths.includes('mappings/object-data-mappings.json'), false);
+  assert.equal(review.json().changedPaths.includes('mappings/not-in-base.json'), false);
+  assert.equal((await artifacts.current(project.id))!.revision.oid, review.json().currentRevision);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ?`).get(project.id)!.count, 0);
+});
+
+test('Studio Review 清理全部 no-op 草稿后返回 NO_CHANGES 且不创建候选', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio all-noop review', runtime: 'agent' });
+  const app = appFor(t);
+  const artifacts = getPackageArtifactStore();
+  await seedPhysicalMappingPackage(project.id);
+  const baseline = (await artifacts.current(project.id))!;
+  const baseFiles = (await artifacts.readPackageFiles(project.id, baseline.revision.oid)).files;
+
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'create-all-noop-operation',
+      kind: 'operation',
+      key: 'temporary_operation',
+      values: { title: '临时操作', description: '仅用于建立工作区。', flow: ['返回空结果。'] },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+
+  const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
+    WHERE project_id = ?`).get(project.id) as { run_id: string };
+  getDb().prepare(`DELETE FROM agent_candidate_changes WHERE project_id = ?`).run(project.id);
+  insertNoOpDraft(project.id, workspace.run_id, baseFiles);
+
+  const current = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const before = (await artifacts.current(project.id))!.revision.oid;
+  const review = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: current.json().workingRevision,
+      clientMutationId: 'review-all-noop',
+    },
+  });
+  assert.equal(review.statusCode, 400, review.body);
+  assert.equal(review.json().code, 'NO_CHANGES');
+  assert.deepEqual(review.json().removedPaths, [
+    'mappings/not-in-base.json',
+    'mappings/object-data-mappings.json',
+  ]);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ?`).get(project.id)!.count, 0);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM artifact_candidate_revisions
+    WHERE project_id = ?`).get(project.id)!.count, 0);
+  assert.equal((await artifacts.current(project.id))!.revision.oid, before);
+
+  const replay = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: current.json().workingRevision,
+      clientMutationId: 'review-all-noop',
+    },
+  });
+  assert.equal(replay.statusCode, 400, replay.body);
+  assert.equal(replay.json().code, 'NO_CHANGES');
+});
+
+test('Studio 复核失败时不删除 no-op 草稿行', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio failed review keeps noops', runtime: 'agent' });
+  const app = appFor(t);
+  const artifacts = getPackageArtifactStore();
+  await seedPhysicalMappingPackage(project.id);
+  const baseline = (await artifacts.current(project.id))!;
+  const baseFiles = (await artifacts.readPackageFiles(project.id, baseline.revision.oid)).files;
+
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'create-failed-review-operation',
+      kind: 'operation',
+      key: 'blocked_operation',
+      values: { title: '待复核操作', description: '构造复核失败场景。', flow: ['返回空结果。'] },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+
+  const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
+    WHERE project_id = ?`).get(project.id) as { run_id: string };
+  const insert = getDb().prepare(`INSERT INTO agent_candidate_changes (
+    project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
+  ) VALUES (?,?,?,?,?,?,'[]',?,?)`);
+  insert.run(project.id, workspace.run_id, 'scripts/untested_extra.py', 'write',
+    'def main():\n    pass\n', 'unverified-script', '未测脚本草稿', '2026-09-03T00:00:00.000Z');
+  insert.run(project.id, workspace.run_id, 'mappings/object-data-mappings.json', 'write',
+    baseFiles['mappings/object-data-mappings.json'], 'legacy-noop', '残留 mapping no-op 草稿', '2026-09-03T00:00:00.000Z');
+
+  const current = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const review = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: current.json().workingRevision,
+      clientMutationId: 'review-blocked-script',
+    },
+  });
+  assert.equal(review.statusCode, 409, review.body);
+  assert.equal(review.json().code, 'SCRIPT_TEST_REQUIRED');
+  assert.ok(getDb().prepare(`SELECT 1 FROM agent_candidate_changes
+    WHERE project_id = ? AND path = ?`).get(project.id, 'mappings/object-data-mappings.json'));
+  assert.ok(getDb().prepare(`SELECT 1 FROM agent_candidate_changes
+    WHERE project_id = ? AND path = ?`).get(project.id, 'scripts/untested_extra.py'));
+});
+
+test('Studio no-op 元素草稿不改变确定性判定且提交有效改动', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio noop element keeps deterministic', runtime: 'agent' });
+  const app = appFor(t);
+  const artifacts = getPackageArtifactStore();
+  await seedPhysicalMappingPackage(project.id);
+  const baseline = (await artifacts.current(project.id))!;
+  const baseFiles = (await artifacts.readPackageFiles(project.id, baseline.revision.oid)).files;
+
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: initial.json().workingRevision,
+      clientMutationId: 'create-deterministic-seed-operation',
+      kind: 'operation',
+      key: 'seed_operation',
+      values: { title: '种子操作', description: '仅用于建立工作区。', flow: ['返回空结果。'] },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+
+  const workspace = getDb().prepare(`SELECT run_id FROM agent_candidate_workspaces
+    WHERE project_id = ?`).get(project.id) as { run_id: string };
+  getDb().prepare(`DELETE FROM agent_candidate_changes WHERE project_id = ?`).run(project.id);
+  const objectContent = baseFiles['objects/synthetic_record.md'];
+  assert.ok(objectContent);
+  const lineage = baseFiles['mappings/object-data-mappings.json'];
+  assert.ok(lineage);
+  const mappingContent = `${lineage}\n`;
+  const insert = getDb().prepare(`INSERT INTO agent_candidate_changes (
+    project_id, run_id, path, kind, content, group_id, evidence_json, reason, updated_at
+  ) VALUES (?,?,?,?,?,?,'[]',?,?)`);
+  insert.run(project.id, workspace.run_id, 'objects/synthetic_record.md', 'write', objectContent,
+    'legacy-noop', '残留 object no-op 草稿', '2026-09-03T00:00:00.000Z');
+  insert.run(project.id, workspace.run_id, 'mappings/object-data-mappings.json', 'write', mappingContent,
+    'real-mapping', '真实 mapping 草稿', '2026-09-03T00:00:00.000Z');
+
+  const current = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const review = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: current.json().workingRevision,
+      clientMutationId: 'review-element-noop',
+    },
+  });
+  assert.equal(review.statusCode, 200, review.body);
+  assert.equal(review.json().mode, 'deterministic');
+  assert.deepEqual(review.json().elementIds, ['object:synthetic_record']);
+  assert.equal(review.json().changedPaths.includes('objects/synthetic_record.md'), false);
+  assert.equal(review.json().changedPaths.includes('mappings/object-data-mappings.json'), true);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
+    WHERE project_id = ?`).get(project.id)!.count, 0);
+  assert.notEqual((await artifacts.current(project.id))!.revision.oid, baseline.revision.oid);
 });
