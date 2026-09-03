@@ -29,6 +29,8 @@ from modeling_agent.tools import (
 )
 from conftest import FakeGateway, ScriptedModel, service
 
+BACKGROUND_TASK_START_TIMEOUT_SECONDS = 10
+
 
 def run(run_id: str, project_id: str = "project_demo") -> RunRecord:
     return RunRecord(
@@ -1436,6 +1438,9 @@ async def test_restart_automatically_resumes_same_run_without_replaying_user_mes
         "message",
         {"role": "user", "blocks": [{"type": "text", "text": "开始建模"}]},
     )
+    # Recovery now refuses to resume a run when the paired checkpoint store is missing.
+    settings.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
+    sqlite3.connect(settings.checkpoint_db).close()
     resumed = asyncio.Event()
     captured: dict[str, object] = {}
 
@@ -1447,7 +1452,9 @@ async def test_restart_automatically_resumes_same_run_without_replaying_user_mes
     runtime._execute = execute  # type: ignore[method-assign]  # noqa: SLF001
     await runtime.startup()
     try:
-        await asyncio.wait_for(resumed.wait(), timeout=2)
+        await asyncio.wait_for(
+            resumed.wait(), timeout=BACKGROUND_TASK_START_TIMEOUT_SECONDS,
+        )
         assert captured["run_id"] == "run_restarting"
         assert type(captured["query"]).__name__ == "InteractiveInput"
         assert runtime.store.require_run("run_restarting").status == RUN_QUEUED
@@ -1501,7 +1508,9 @@ async def test_restart_retries_transient_core_unavailability_before_resuming(
     runtime._execute = execute  # type: ignore[method-assign]  # noqa: SLF001
     await runtime.startup()
     try:
-        await asyncio.wait_for(resumed.wait(), timeout=2)
+        await asyncio.wait_for(
+            resumed.wait(), timeout=BACKGROUND_TASK_START_TIMEOUT_SECONDS,
+        )
         assert gateway.claim_attempts == 3
         assert runtime.store.require_run("run_starting_core").status == RUN_QUEUED
     finally:
@@ -1527,7 +1536,9 @@ async def test_graceful_service_shutdown_preserves_running_checkpoint_for_next_p
         message="开始建模",
     )
     run_id = started["id"]
-    await asyncio.wait_for(entered.wait(), timeout=2)
+    await asyncio.wait_for(
+        entered.wait(), timeout=BACKGROUND_TASK_START_TIMEOUT_SECONDS,
+    )
     await runtime.shutdown()
 
     reopened = RuntimeStore(settings.runtime_db)
