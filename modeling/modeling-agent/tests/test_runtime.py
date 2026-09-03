@@ -21,7 +21,7 @@ from modeling_agent.rails import (
     tool_trace_group_id,
 )
 from modeling_agent.errors import AgentRuntimeError
-from modeling_agent.schemas import RUN_RUNNING, RunRecord
+from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
 from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
@@ -1149,6 +1149,60 @@ async def test_ask_rejects_technical_question_while_recovery_tool_is_available()
     assert result["issueId"] == issue_id
     assert result["issueStatus"] == "repairing"
     assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+
+
+async def test_ask_rejects_platform_capability_question_without_recovery_record() -> None:
+    context = ToolContext(
+        project_id="project_capability_question",
+        run_id="run_capability_question",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    tool_call = type("Call", (), {
+        "arguments": json.dumps({
+            "question": "本会话工具集中没有该读取能力，请问平台侧能力是否已开放？",
+            "kind": "clarification",
+            "evidence": [],
+        }, ensure_ascii=False),
+    })()
+
+    decision = await AskRail(context).resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    result = json.loads(decision.tool_result)
+    assert result["error"] == "TECHNICAL_RECOVERY_REQUIRED"
+    assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+    assert context.technical_capability_claimed is True
+
+
+async def test_option_value_is_saved_as_latest_interaction_action_key(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_option_action_key",
+            project_id="project_option_action_key",
+            session_id="session_option_action_key",
+            status=RUN_RUNNING,
+            prompt="确认脚本范围",
+            token_fingerprint="fingerprint",
+        ))
+        interaction = InteractionRecord(
+            id="interaction_option_action_key",
+            project_id=run.project_id,
+            run_id=run.id,
+            tool_call_id="call_option_action_key",
+            kind="scope_confirmation",
+            payload={"question": "是否调整脚本范围？"},
+        )
+        runtime._persist_latest_interaction(  # noqa: SLF001
+            run,
+            interaction=interaction,
+            answer={"value": "adjust", "text": "保留可选输入"},
+        )
+        snapshot = runtime.store.require_run(run.id).latest_interaction
+        assert snapshot["actionKey"] == "adjust"
+    finally:
+        await runtime.shutdown()
 
 
 async def test_structured_issue_action_resumes_terminal_run_without_fake_user_message(settings) -> None:
@@ -4580,6 +4634,103 @@ async def test_choice_text_with_ask_card_is_not_retried(settings) -> None:
         assert waiting["status"] == "waiting", waiting["error"]
         assert runtime.store.pending_interaction("project_decision_card_present") is not None
         assert model.calls == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_missing_confirmation_card_suspends_with_recovery_actions(settings) -> None:
+    model = ScriptedModel(
+        [[], [], []],
+        final="确认卡已生成，等待您确认。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_confirmation_review_recovery",
+            token="token_1",
+            message="继续复核当前候选",
+        )
+        suspended = await wait_for_status(runtime, started["id"], {"suspended", "failed"})
+
+        assert suspended["status"] == RUN_SUSPENDED
+        recoveries = runtime.store.technical_recoveries(started["id"])
+        assert len(recoveries) == 1
+        issue_id, recovery = next(iter(recoveries.items()))
+        assert issue_id == f"confirmation-review-{started['id']}"
+        assert recovery["strategy"] == "confirmation_review"
+        assert [item["id"] for item in recovery["recoveryActions"]] == [
+            "retry_from_latest", "keep_current_progress",
+        ]
+        events = runtime.store.events_after("project_confirmation_review_recovery", 0)
+        waiting = next(
+            event.payload for event in events
+            if event.kind == "tool" and event.payload.get("issueId") == issue_id
+        )
+        assert waiting["phase"] == "waiting"
+        assert waiting["code"] == "CONFIRMATION_CARD_NOT_CREATED"
+        assert waiting["projectPhase"] == "intake"
+        assert waiting["toolProfile"] == "domain-v2"
+        assert not any(
+            event.kind == "message"
+            and "助手未能形成整体确认" in str(event.payload)
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_confirmation_review_retries_from_latest_and_recreates_card(settings) -> None:
+    group = {"id": "script", "tier": "caliber", "title": "脚本范围"}
+    model = ScriptedModel(
+        [
+            [], [], [],
+            [ToolTurn("list_domain_resources", {"kind": "operation"})],
+            [ToolTurn("request_confirmation", {"summary": "请确认脚本范围"})],
+        ],
+        final="确认卡已生成，等待您确认。",
+    )
+    gateway = FakeGateway({
+        "list_domain_resources": {
+            "working_revision": "working-revision",
+            "kind": "operation",
+            "items": [],
+            "total": 0,
+        },
+        "prepare_confirmation_groups": {"change_groups": [group]},
+        "request_confirmation_preflight": {
+            "candidate_revision": "candidate-script",
+            "auto_approved": False,
+            "change_groups": [group],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_confirmation_review_resume",
+            token="token_1",
+            message="继续复核当前候选",
+        )
+        suspended = await wait_for_status(runtime, started["id"], {"suspended", "failed"})
+        assert suspended["status"] == RUN_SUSPENDED
+        issue_id = next(iter(runtime.store.technical_recoveries(started["id"])))
+
+        resumed = await runtime.resume_issue(
+            project_id="project_confirmation_review_resume",
+            token="token_2",
+            issue_id=issue_id,
+            action_id="retry_from_latest",
+        )
+        assert resumed["mode"] == "checkpoint_resume"
+        assert resumed["run"]["id"] == started["id"]
+
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting"
+        interaction = runtime.store.pending_interaction("project_confirmation_review_resume")
+        assert interaction is not None and interaction.kind == "confirmation"
+        assert [call["tool"] for call in gateway.calls].count("list_domain_resources") == 1
+        assert runtime.store.technical_recoveries(started["id"]) == {}
     finally:
         await runtime.shutdown()
 

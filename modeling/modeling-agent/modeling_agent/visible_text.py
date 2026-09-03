@@ -20,6 +20,7 @@ _PRIVATE_REASONING = re.compile(
     r"(?:system\s+prompt|developer\s+message|api[_-]?key|authorization|bearer\s+[A-Za-z0-9._-]+|"
     r"password|service[_-]?token|run[_-]?credential|token[_-]?fingerprint|sk-[A-Za-z0-9_-]{8,}|"
     r"tool\s*(?:call|arguments?)|工具参数|系统指令|系统提示|系统消息|开发者消息|密钥|认证信息|访问令牌|"
+    r"工具集中没有|工具集没有|没有(?:该|读取)能力|本会话工具|平台侧能力缺口|平台能力缺口|平台是否开放|"
     r"[\"']?(?:arguments|path|projectId|runId|sessionId)[\"']?\s*[:=])",
     re.IGNORECASE,
 )
