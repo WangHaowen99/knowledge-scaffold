@@ -120,7 +120,10 @@ import {
   evaluationDatabaseUrlSummary,
   selectEvaluationDatabaseUrlOverride,
 } from './evaluation/evaluation-database-target.js';
-import { validateEvaluationDatabaseExcelContents } from './evaluation/eval-db.js';
+import {
+  validateEvaluationDatabaseExcelFilesContents,
+  type EvaluationDatabaseExcelFileInput,
+} from './evaluation/eval-db.js';
 import { shadowWorkspaceId } from './evaluation/shadow-workspace.js';
 import {
   cancelGraphImportUpload,
@@ -384,21 +387,17 @@ function blockForActivePackageDraft(reply: any, projectId: string, operation: st
 }
 
 async function readEvaluationDatabaseUpload(req: any): Promise<{
-  filename: string;
-  buffer: Buffer;
+  files: EvaluationDatabaseExcelFileInput[];
   replaceConfirmed: boolean;
   databaseUrl?: string;
 }> {
-  let filename = '';
-  let buffer: Buffer | undefined;
+  const files: EvaluationDatabaseExcelFileInput[] = [];
   let replaceConfirmed = false;
   let databaseUrlMode = '';
   let customDatabaseUrl = '';
   for await (const part of req.parts()) {
     if (part.type === 'file') {
-      if (buffer) throw new Error('一次只能上传一个 Excel 文件');
-      filename = part.filename;
-      buffer = await part.toBuffer();
+      files.push({ filename: part.filename, buffer: await part.toBuffer() });
     } else if (part.fieldname === 'replace_confirmation') {
       replaceConfirmed = String(part.value ?? '') === 'replace_same_name_tables';
     } else if (part.fieldname === 'database_url_mode') {
@@ -407,28 +406,25 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
       customDatabaseUrl = String(part.value ?? '');
     }
   }
-  if (!buffer) throw new Error('缺少 Excel 文件');
+  if (!files.length) throw new Error('缺少 Excel 文件');
   return {
-    filename,
-    buffer,
+    files,
     replaceConfirmed,
     databaseUrl: selectEvaluationDatabaseUrlOverride(databaseUrlMode, customDatabaseUrl),
   };
 }
 
 async function readQuickEvaluationDatabaseUpload(req: any): Promise<{
-  filename: string;
-  buffer: Buffer;
+  files: EvaluationDatabaseExcelFileInput[];
 }> {
-  let upload: { filename: string; buffer: Buffer } | undefined;
+  const files: EvaluationDatabaseExcelFileInput[] = [];
   for await (const part of req.parts()) {
     if (part.type !== 'file') continue;
-    if (upload) throw new Error('一次只能上传一个 Excel 文件');
-    upload = { filename: part.filename, buffer: await part.toBuffer() };
+    files.push({ filename: part.filename, buffer: await part.toBuffer() });
   }
-  if (!upload) throw new Error('缺少 Excel 文件');
-  validateEvaluationDatabaseExcelContents(upload.filename, upload.buffer);
-  return upload;
+  if (!files.length) throw new Error('缺少 Excel 文件');
+  validateEvaluationDatabaseExcelFilesContents(files);
+  return { files };
 }
 
 function isAgentWorkflowFactRequest(req: FastifyRequest): boolean {
@@ -2357,13 +2353,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (blocked) return blocked;
       return withLock(`${c.p.id}:graph-upload`, reply, async () => {
         try {
-          const file = await (req as any).file();
-          if (!file) return reply.code(400).send({ error: '缺少 Excel 文件' });
+          const files: Array<{ filename: string; buffer: Buffer }> = [];
+          for await (const part of (req as any).parts()) {
+            if (part.type !== 'file') continue;
+            files.push({ filename: part.filename, buffer: await part.toBuffer() });
+          }
+          if (!files.length) return reply.code(400).send({ error: '缺少 Excel 文件' });
           const upload = await uploadGraphImportExcel({
             projectId: c.p.id,
             owner: req.user!.username,
-            filename: file.filename,
-            buffer: await file.toBuffer(),
+            files,
           });
           return reply.code(201).send({ upload });
         } catch (error) {
