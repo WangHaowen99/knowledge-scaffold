@@ -102,6 +102,7 @@ export default function CreatePage() {
   return (
     <div className="wb-app">
       <header className="wb-top">
+        <a className="btn btn-ghost btn-sm" href="/" title="返回项目列表"><Icon name="arrow" size={12} />项目</a>
         <span className="goal">新建建模项目</span>
         <span className="sep">·</span>
         <span className="muted t-sm">第 1 步，共 1 步</span>
@@ -175,6 +176,7 @@ export default function CreatePage() {
           <div className="btn-row" style={{ marginTop: 'var(--s-7)' }}>
             <button className="btn btn-p" style={{ padding: '9px 22px' }} disabled={!name.trim() || creating}
               onClick={() => void start()}>{creating ? '正在创建…' : '开始建模'}</button>
+            <a className="btn btn-ghost" href="/" title="取消建模并返回项目列表"><Icon name="x" size={13} />取消建模</a>
           </div>
           {!name.trim() && <div className="wb-disabled-reason" role="status">填写项目名称后即可开始建模。</div>}
           <div className="t-sm muted" style={{ marginTop: 'var(--s-3)' }}>
