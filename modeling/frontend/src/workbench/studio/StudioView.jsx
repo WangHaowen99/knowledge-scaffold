@@ -73,6 +73,7 @@ import {
   createStudioProjectEventBaseline,
   markStudioDraftsForRefresh,
   planStudioProjectEvent,
+  planStudioRevisionProbe,
   planStudioWindowRefresh,
   studioHasPendingLocalEdits,
   studioPendingDraftRefresh,
@@ -228,6 +229,33 @@ export default function StudioView({ focus }) {
       void reloadStudio();
     }, STUDIO_REFRESH_DEBOUNCE_MS);
   }, [reloadStudio]);
+  const deferStudioRefresh = useCallback((revisionId = '') => {
+    const revision = String(revisionId || '');
+    update((current) => ({
+      ...current,
+      entryDrafts: markStudioDraftsForRefresh(current.entryDrafts, revision),
+    }));
+    deferredRefreshRef.current = { revisionId: revision };
+    setExternalNotice({
+      pending: true,
+      message: studioRefreshNoticeMessage(revision),
+      revisionId: revision,
+    });
+  }, [setExternalNotice, update]);
+  const probeStudioRevision = useCallback(async () => {
+    try {
+      const latest = await getStudioElements(projectId, { limit: 1 });
+      const plan = planStudioRevisionProbe({
+        currentRevision: sessionRef.current.workingRevision,
+        latestRevision: latest.workingRevision,
+        localEdits: studioHasPendingLocalEdits(sessionRef.current),
+      });
+      if (plan.deferLoad) deferStudioRefresh(plan.revisionId);
+      else if (plan.scheduleLoad) scheduleStudioRefresh();
+    } catch {
+      // Project events and window refresh remain the fallback when this eager probe fails.
+    }
+  }, [deferStudioRefresh, projectId, scheduleStudioRefresh]);
 
   useEffect(() => {
     const cached = initialStudioSession(projectId);
@@ -353,38 +381,20 @@ export default function StudioView({ focus }) {
     });
     state.gate = plan.gate;
     if (plan.deferLoad) {
-      update((current) => ({
-        ...current,
-        entryDrafts: markStudioDraftsForRefresh(current.entryDrafts, plan.revisionId),
-      }));
-      deferredRefreshRef.current = { revisionId: plan.revisionId || '' };
-      setExternalNotice({
-        pending: true,
-        message: studioRefreshNoticeMessage(plan.revisionId),
-        revisionId: plan.revisionId || '',
-      });
+      deferStudioRefresh(plan.revisionId);
       return;
     }
     if (plan.scheduleLoad) {
       deferredRefreshRef.current = null;
       scheduleStudioRefresh();
     }
-  }, [projectEventBaseline.cursor, scheduleStudioRefresh, setExternalNotice, update]);
+  }, [deferStudioRefresh, projectEventBaseline.cursor, scheduleStudioRefresh]);
 
   useEffect(() => {
     const refresh = () => {
       const plan = planStudioWindowRefresh({ localEdits: localEditsRef.current });
       if (plan.deferLoad) {
-        update((current) => ({
-          ...current,
-          entryDrafts: markStudioDraftsForRefresh(current.entryDrafts),
-        }));
-        deferredRefreshRef.current = { revisionId: '' };
-        setExternalNotice({
-          pending: true,
-          message: studioRefreshNoticeMessage(''),
-          revisionId: '',
-        });
+        deferStudioRefresh('');
         return;
       }
       deferredRefreshRef.current = null;
@@ -401,7 +411,7 @@ export default function StudioView({ focus }) {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refreshOnVisible);
     };
-  }, [scheduleStudioRefresh, setExternalNotice, update]);
+  }, [deferStudioRefresh, scheduleStudioRefresh]);
 
   const navigate = useCallback((view, elementId = sessionRef.current.selectedElementId) => {
     const next = {
@@ -589,7 +599,7 @@ export default function StudioView({ focus }) {
           <StudioEntry session={session} update={update} onBack={() => navigate(session.returnView || 'graph')}
             onOpenRelation={(elementId) => openDetail(elementId, session.returnView)}
             onDelete={(elementId) => setDeleteIds([elementId])}
-            onMutation={applyMutation} projectId={projectId} />
+            onMutation={applyMutation} onIncompleteDraft={probeStudioRevision} projectId={projectId} />
         )}
         {createKind && (
           <StudioCreateDialog kind={createKind} session={session} projectId={projectId}
@@ -871,7 +881,16 @@ function StudioTable({
   );
 }
 
-function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMutation, projectId }) {
+function StudioEntry({
+  session,
+  update,
+  onBack,
+  onOpenRelation,
+  onDelete,
+  onMutation,
+  onIncompleteDraft,
+  projectId,
+}) {
   const detail = session.details[session.selectedElementId];
   const kindSchema = session.schema?.kinds.find((kind) => kind.kind === detail?.kind);
   const canUpdate = Boolean(kindSchema?.capabilities?.update);
@@ -911,6 +930,8 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
 
   const remember = (next, field = '') => {
     const synced = !savingRef.current && studioDraftEqual(next, baseline);
+    const previousIncompleteField = studioIncompleteDraftField(draftRef.current, kindSchema);
+    const incompleteField = studioIncompleteDraftField(next, kindSchema);
     pausedRef.current = false;
     draftRef.current = next;
     setDraft(next);
@@ -919,6 +940,7 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
       draft: next,
       field,
       saving: savingRef.current,
+      incompleteField,
     }));
     update((current) => {
       const previousDraft = current.entryDrafts?.[session.selectedElementId];
@@ -935,8 +957,9 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
               updatedAt: Date.now(),
             },
           },
-      };
+        };
     });
+    if (incompleteField && !previousIncompleteField) void onIncompleteDraft?.();
   };
 
   const saveDraft = useCallback(() => {
@@ -1086,8 +1109,13 @@ function StudioEntry({ session, update, onBack, onOpenRelation, onDelete, onMuta
       return undefined;
     }
     if (pausedRef.current || savingRef.current) return undefined;
-    if (studioIncompleteDraftField(draft, kindSchema)) {
-      setSaveState((current) => ({ ...current, phase: 'dirty', message: '请先补完整必填内容' }));
+    const incompleteField = studioIncompleteDraftField(draft, kindSchema);
+    if (incompleteField) {
+      setSaveState((current) => studioSaveStateAfterDraftChange(current, {
+        baseline,
+        draft,
+        incompleteField,
+      }));
       return undefined;
     }
     setSaveState((current) => current.phase === 'dirty'

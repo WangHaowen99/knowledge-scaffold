@@ -55,6 +55,17 @@ export function studioRefreshNoticeMessage(revisionId = '') {
   return `知识包已有新版本（${revision.slice(0, 12)}），当前显示你的本地未保存修改。`;
 }
 
+export function planStudioRevisionProbe({ currentRevision = '', latestRevision = '', localEdits = false } = {}) {
+  const current = String(currentRevision ?? '').trim();
+  const latest = String(latestRevision ?? '').trim();
+  const changed = Boolean(current && latest && current !== latest);
+  return {
+    scheduleLoad: Boolean(changed && !localEdits),
+    deferLoad: Boolean(changed && localEdits),
+    revisionId: changed ? latest : '',
+  };
+}
+
 export function planStudioWindowRefresh({ localEdits = false } = {}) {
   return {
     scheduleLoad: !localEdits,
