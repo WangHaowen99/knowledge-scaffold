@@ -62,6 +62,14 @@ export interface DiagnoseEvaluationInput {
   traces?: Record<string, EvaluationExecutionTrace>;
   tables?: DataDictTable[];
   documents?: { filename: string; textContent?: string }[];
+  /** 本轮评测实际使用的数据源范围；上传表格通常只包含结构和样例行。 */
+  runtimeDataSource?: {
+    mode: 'connection' | 'none';
+    provider?: string;
+    available: boolean;
+  };
+  /** 查询本轮评测实际绑定的数据源，禁止回退到上传样例推断记录是否存在。 */
+  runtimeDataSearch?: (input: { entity: string; query: string }) => Promise<string>;
   /** 评测在执行用例前失败时的轮次级错误日志。 */
   roundFailure?: string;
 }
@@ -259,9 +267,18 @@ function gapMatchesResult(gap: QualityGap, result: EvalResult): boolean {
   return false;
 }
 
-function dataGapDiagnoses(results: EvalResult[], gaps: QualityGap[]): FailureDiagnosis[] {
+function dataGapDiagnoses(
+  results: EvalResult[],
+  gaps: QualityGap[],
+  runtimeDataSource?: DiagnoseEvaluationInput['runtimeDataSource'],
+): FailureDiagnosis[] {
+  // qualityGaps 来自上传资料分析。连接型数据源是评测运行时的事实源，
+  // 上传表格产生的“缺表/缺字段”不能证明真实数据源缺少记录；交给语义阶段按需查询。
+  const effectiveGaps = runtimeDataSource?.mode === 'connection'
+    ? gaps.filter((gap) => !['缺数据表', '缺字段'].includes(gap.kind))
+    : gaps;
   const diagnoses: FailureDiagnosis[] = [];
-  for (const gap of gaps) {
+  for (const gap of effectiveGaps) {
     const related = results.filter((result) => result.verdict !== 'error' && gapMatchesResult(gap, result));
     if (!related.length) continue;
     diagnoses.push({
@@ -449,7 +466,7 @@ async function semanticDiagnoses(
   const traces = Object.fromEntries(candidates.map((result) => [result.id, input.traces?.[result.id] ?? null]));
   const system = [
     '你是评测失败诊断员。只定位根因，不修改知识包，不输出 operation/rule/metric/script 的具体补丁。',
-    '按证据区分：testcase_gap=用例问题本身缺少不可推断的必需决策或条件；data_gap=上传的源表或文档中缺少必需值，必须先补源数据；knowledge_gap=源资料已包含业务知识但知识包未表达；',
+    '按证据区分：testcase_gap=用例问题本身缺少不可推断的必需决策或条件；data_gap=权威数据源或上传文档中缺少必需值，必须先补源数据；knowledge_gap=源资料已包含业务知识但知识包未表达；',
     'routing_issue=正确资源存在但未走到；',
     '对“评测用例缺少运行所需输入”要核对问题原文：若值已给定但 operation 仍要求用户重复选择，属于 routing_issue；不得当成运行环境故障。',
     'caliber_issue=公式、统计粒度或边界错误；judge_issue=标准答案或判分依据不可靠。',
@@ -458,6 +475,11 @@ async function semanticDiagnoses(
     '若来源字段、对象定义或公式把输入列为多个组成项，必须逐项核对脚本是否覆盖；不得从其中一项的路由条件推断其他固定组成项不存在。',
     '诊断的 summary 与 evidence 必须一致；证据同时显示多个必需项时，不得把根因缩减成只缺其中一项。',
     '资料评估中的 qualityGaps 是待核对假设，不是资料缺失的最终证明。有证据工具时，先查看相关表字段、数据行或文档段落再下结论。',
+    input.runtimeDataSource?.mode === 'connection'
+      ? (input.runtimeDataSearch
+        ? '本轮评测使用连接型运行时数据源。上传表格中的行数和样例值只用于理解 schema，判断记录存在性前必须调用 business_data_search；不得依据上传样例声称真实记录不存在。'
+        : '本轮评测使用连接型运行时数据源，但当前诊断无法查询该数据源；不得依据上传样例声称真实记录不存在，必须降低置信度并明确数据源证据不可用。')
+      : '未配置连接型运行时数据源时，才可将上传资料作为数据证据；仍需区分样例行与完整数据。',
     '诊断证据应引用精确的表名、字段名、代表行或文档定位；不得仅以标准答案与回答不同作为公式证据。',
     '不能从标准答案反向编造规则。证据不足时降低 confidence，并明确需要补什么证据。',
     '任何标记为可优化的诊断，title、summary、evidence 和 suggestedAction 都不得引用标准答案、用例判定或智能体回答作为修改依据。',
@@ -472,14 +494,24 @@ async function semanticDiagnoses(
     packageSpec: input.spec,
     qualityGaps: input.qualityGaps ?? [],
     availableEvidence: {
-      tables: (input.tables ?? []).map((table) => ({ name: table.name, rowCount: table.rowCount })),
+      tables: (input.tables ?? []).map((table) => ({
+        name: table.name,
+        ...(input.runtimeDataSource?.mode === 'connection'
+          ? { scope: 'uploaded_sample' }
+          : { rowCount: table.rowCount }),
+      })),
       documents: (input.documents ?? []).map((document) => ({
         filename: document.filename, characters: document.textContent?.length ?? 0,
       })),
+      ...(input.runtimeDataSource ? { runtimeDataSource: input.runtimeDataSource } : {}),
     },
   });
   const evidenceTools = buildTools({
-    tables: input.tables ?? [], documents: input.documents ?? [], captured: {},
+    tables: input.tables ?? [],
+    documents: input.documents ?? [],
+    runtimeDataSearch: input.runtimeDataSearch,
+    runtimeDataSourceMode: input.runtimeDataSource?.mode,
+    captured: {},
   });
   const agent = makeAgent(llm, system, [...evidenceTools, submit] as any);
   await runAgentCaptured(
@@ -504,6 +536,21 @@ async function semanticDiagnoses(
       };
     }
     if (diagnosis.category === 'data_gap') {
+      if (input.runtimeDataSource?.mode === 'connection' && !input.runtimeDataSearch) {
+        return {
+          ...diagnosis,
+          resultIds,
+          category: 'judge_issue' as const,
+          title: '运行时数据源证据不可用',
+          summary: '当前无法查询评测实际使用的连接型数据源，不能依据上传样例判断业务记录是否缺失。',
+          evidence: ['连接型运行时数据源未提供给诊断器，上传表格只包含结构或示例行。'],
+          confidence: 'low' as const,
+          blocking: false,
+          repairScope: 'judge' as const,
+          packageOptimizable: false,
+          suggestedAction: '先恢复评测运行时数据源查询能力，再重新执行失败诊断。',
+        };
+      }
       return {
         ...diagnosis,
         resultIds,
@@ -539,15 +586,34 @@ export async function diagnoseEvaluationFailures(
     ...scriptRuntimeFailureDiagnoses(input.results, input.traces ?? {}),
     ...runtimeErrorDiagnoses(input.results, input.traces ?? {}),
     ...judgeProtocolDiagnoses(input.results),
-    ...dataGapDiagnoses(input.results, input.qualityGaps ?? []),
+    ...dataGapDiagnoses(input.results, input.qualityGaps ?? [], input.runtimeDataSource),
     ...scriptNeedDiagnoses(input.results, input.traces ?? {}),
   ];
   const diagnoses = llmOverride
     ? [...deterministic, ...await semanticDiagnoses(input, llmOverride, deterministic)]
     : deterministic;
+  const scopeWarning = input.runtimeDataSource?.mode === 'connection' && !input.runtimeDataSearch
+    ? '数据源范围提示：本轮评测使用连接型运行时数据源，但当前诊断无法查询该数据源；以下结论不应依据上传示例行理解。'
+    : undefined;
+  const scopeNote = input.runtimeDataSource
+    ? (input.runtimeDataSource.mode === 'connection'
+      ? (input.runtimeDataSearch
+        ? `数据源范围：已启用评测运行时数据源查询${input.runtimeDataSource.provider ? `（${input.runtimeDataSource.provider}）` : ''}；上传表格仅作为结构和示例证据。`
+        : '数据源范围：评测使用连接型运行时数据源，但当前诊断无法查询该数据源；未依据上传示例行判断真实记录是否存在。')
+      : '数据源范围：未启用连接型运行时数据源，本诊断中的表格证据来自上传资料，不能代表未展示的完整数据。')
+    : undefined;
+  const scopedDiagnoses = scopeNote
+    ? diagnoses.map((diagnosis) => ({
+      ...diagnosis,
+      ...(scopeWarning ? { summary: `${scopeWarning} ${diagnosis.summary}` } : {}),
+      evidence: diagnosis.evidence.includes(scopeNote)
+        ? diagnosis.evidence
+        : [...diagnosis.evidence, scopeNote],
+    }))
+    : diagnoses;
   return {
     projectId: input.projectId,
-    diagnoses,
-    canProposeOptimizations: hasOptimizableDiagnoses(diagnoses),
+    diagnoses: scopedDiagnoses,
+    canProposeOptimizations: hasOptimizableDiagnoses(scopedDiagnoses),
   };
 }

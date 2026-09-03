@@ -175,7 +175,7 @@ import {
   LlmDefaultSyncError,
   syncUserLlmToPlatformDefault,
 } from './settings/llm-default-sync.js';
-import { testConsumerConnectivity } from './consumer/client.js';
+import { modelingServiceFetch, testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
 import type { DocumentRecord } from './types.js';
@@ -2627,6 +2627,32 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         if (round.status === 'done' && !failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需诊断' });
         const analyzeNode = latestNodeOf(listNodes(c.p.id), 'analyze', ['done', 'stale']);
         const qualityGaps = ((analyzeNode?.output as any)?.quality?.gaps ?? []) as any[];
+        const projectDataSource = getProjectDataSource(c.p.id);
+        const runtimeDataSearch = projectDataSource?.mode === 'connection'
+          && projectDataSource.ontologyId === version.spec.id
+          && config.modelingServiceToken.length >= 32
+          ? async ({ entity, query }: { entity: string; query: string }): Promise<string> => {
+            const response = await modelingServiceFetch(
+              '/agentic/internal/modeling/business-data/search',
+              {
+                method: 'POST',
+                workspaceId: projectDataSource.workspaceId,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  ontology_id: version.spec.id,
+                  ontology_version: version.spec.version,
+                  entity,
+                  query,
+                }),
+              },
+            );
+            const data = await response.json().catch(() => ({})) as any;
+            if (!response.ok) {
+              throw new Error(String(data.error ?? data.detail ?? `Consumer 返回 ${response.status}`));
+            }
+            return String(data.result ?? '');
+          }
+          : undefined;
         try {
           const report = await diagnoseEvaluationFailures({
             projectId: c.p.id,
@@ -2636,6 +2662,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             traces: m3repo.listResultTraces(round.id),
             tables: c.ctx.tables,
             documents: c.ctx.documents,
+            runtimeDataSource: projectDataSource
+              ? {
+                mode: projectDataSource.mode,
+                provider: projectDataSource.provider,
+                available: Boolean(runtimeDataSearch),
+              }
+              : undefined,
+            runtimeDataSearch,
             roundFailure: round.status === 'failed' ? round.log : undefined,
           }, buildTaskLlm({ maxTokensCap: 12_000 }));
           const diagnoses = diagnosisRepo.replaceFailureDiagnoses(
