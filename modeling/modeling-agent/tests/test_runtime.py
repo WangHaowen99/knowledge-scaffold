@@ -3231,6 +3231,44 @@ async def test_agent_reads_and_transitions_single_project_state(settings) -> Non
         await runtime.shutdown()
 
 
+async def test_checkpoint_db_points_to_openjiuwen_physical_database(settings) -> None:
+    assert settings.checkpoint_db.name == "checkpoints.sqlite.db"
+
+
+async def test_global_checkpoint_failure_does_not_mark_idle_project_as_recovery(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    runtime._storage_diag = {"healthy": False, "checkpointDbExists": False}
+    try:
+        state = runtime.project_state("project_new")
+        assert "recovery" not in state["state"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_checkpoint_failure_is_reported_for_recoverable_project(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    run = RunRecord(
+        id="run_checkpoint_missing",
+        project_id="project_checkpoint_missing",
+        session_id="session_checkpoint_missing",
+        status=RUN_RUNNING,
+        prompt="继续建模",
+        token_fingerprint="fingerprint",
+    )
+    runtime.store.create_run(run)
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    runtime._storage_diag = {"healthy": False, "checkpointDbExists": False}
+    try:
+        state = runtime.project_state(run.project_id)
+        assert state["state"]["recovery"] == {
+            "status": "volume_mismatch",
+            "missing": ["checkpoint"],
+            "nextSteps": ["核对建模服务数据卷与 checkpoints.sqlite.db 后重启"],
+        }
+    finally:
+        await runtime.shutdown()
+
+
 async def test_project_state_uses_authoritative_terminal_evaluation_and_rejects_stale_summary(settings) -> None:
     gateway = FakeGateway({"evaluation_status": {
         "available": True,
