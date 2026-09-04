@@ -34,6 +34,7 @@ import {
   resolveBootstrapFocus,
   SCENES,
   studioFocusFromLocation,
+  shouldUseStaleRunTermination,
 } from './lib/appStore.js';
 import ProcessDrawer, {
   humanizeTraceSummary,
@@ -2265,5 +2266,15 @@ try {
   console.log('✓ 助手提供文件级资料用途批量确认卡');
 } catch (e) { console.log('✗ 资料用途批量确认卡:', e.message); bad++; }
 
+
+try {
+  if (!shouldUseStaleRunTermination({ status: 'stale_run' })
+    || !shouldUseStaleRunTermination({ status: 'plan_unreadable' })
+    || shouldUseStaleRunTermination({ status: 'resume_failed' })
+    || shouldUseStaleRunTermination(null)) {
+    throw new Error('恢复终止门控没有只覆盖 stale_run/plan_unreadable');
+  }
+  console.log('✓ stale-run 终止门控仅覆盖 stale_run/plan_unreadable');
+} catch (e) { console.log('✗ 恢复终止门控:', e.message); bad++; }
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);
