@@ -811,6 +811,48 @@ export class ChangeControlStore {
     return { terminated: true, planId: plan.id };
   }
 
+  safeTerminateActivePlansForProject(input: {
+    projectId: string;
+    actor: string;
+    runId?: string;
+  }): { terminated: number; planIds: string[] } {
+    const plans = (input.runId
+      ? this.db.prepare(`SELECT * FROM agent_change_plans
+          WHERE project_id = ? AND status = 'active' AND run_id = ? ORDER BY created_at`)
+          .all(input.projectId, input.runId)
+      : this.db.prepare(`SELECT * FROM agent_change_plans
+          WHERE project_id = ? AND status = 'active' ORDER BY created_at`)
+          .all(input.projectId)) as unknown as PlanRow[];
+    const planIds = plans.map((plan) => plan.id);
+    if (!planIds.length) return { terminated: 0, planIds };
+    const timestamp = nowIso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const plan of plans) {
+        this.db.prepare(`UPDATE agent_change_plans SET status = 'cancelled', version = version + 1,
+          updated_at = ? WHERE id = ? AND status = 'active'`).run(timestamp, plan.id);
+        this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'cancelled', updated_at = ?
+          WHERE plan_id = ? AND status NOT IN ('accepted', 'skipped', 'cancelled')`).run(timestamp, plan.id);
+        this.db.prepare(`UPDATE agent_change_sets SET status = 'cancelled', updated_at = ?
+          WHERE plan_id = ? AND status IN ('staging', 'staged', 'failed')`).run(timestamp, plan.id);
+        this.event(
+          input.projectId,
+          plan.run_id,
+          plan.id,
+          null,
+          'plan.safe_terminated',
+          '已安全终止失效建模计划，候选内容与审计记录保留',
+          { actor: input.actor, plan_run_id: plan.run_id },
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return { terminated: planIds.length, planIds };
+  }
+
   private taskRows(planId: string): TaskRow[] {
     return this.db.prepare(`SELECT * FROM agent_change_plan_tasks WHERE plan_id = ? ORDER BY ordinal`)
       .all(planId) as unknown as TaskRow[];
