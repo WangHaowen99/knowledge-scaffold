@@ -138,6 +138,71 @@ def _assert_private_manual_backup(source_path, expected: bytes):
     return backup_path
 
 
+def test_migration_removes_legacy_deterministic_fields_from_neo4j_source(
+    tmp_path,
+    monkeypatch,
+):
+    from agent.tools.business_data.ontology_sources_store import get_ontology_data_source
+    from agent.tools.business_data.provider_config_codec import encrypt_provider_config
+    from migrations.ontology_data_sources_direct_v2 import migrate_legacy_ontology_data_sources
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    config = {
+        "uri": "neo4j://neo4j.example.invalid:7687",
+        "database": "neo4j",
+        "username": "reader",
+        "password": "synthetic-password",
+        "workspace_property": "d2o_workspace_id",
+        "workspace_value": "demo",
+        "ontology_property": "d2o_ontology_id",
+        "ontology_value": "demo-ontology",
+        "data_revision": "legacy-revision",
+        "snapshot_selector": "neo4j",
+        "access_scope_revision": "legacy-scope",
+        "deterministic_read_only": True,
+        "deterministic_snapshot_immutable": True,
+        "deterministic_scope_isolated": True,
+    }
+    source_path = paths.workspace_dir / "ontology-data-sources.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "sources": {
+                    "demo-ontology": {
+                        "mode": "direct_provider",
+                        "provider": "neo4j",
+                        "config": encrypt_provider_config("neo4j", config),
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = migrate_legacy_ontology_data_sources(workspace_id="demo")
+
+    persisted = json.loads(source_path.read_text(encoding="utf-8"))
+    persisted_config = persisted["sources"]["demo-ontology"]["config"]
+    assert result["errors"] == []
+    assert set(persisted_config).isdisjoint(config.keys() & {
+        "data_revision",
+        "snapshot_selector",
+        "access_scope_revision",
+        "deterministic_read_only",
+        "deterministic_snapshot_immutable",
+        "deterministic_scope_isolated",
+    })
+    assert persisted_config["uri"] == "neo4j://neo4j.example.invalid:7687"
+    assert persisted_config["password"].startswith("enc:v1:")
+    stored = get_ontology_data_source("demo-ontology", workspace_id="demo")
+    assert stored is not None
+    assert stored.config["password"] == "synthetic-password"
+
+
 def test_ontology_data_source_encrypts_and_publicizes_secret_fields(tmp_path, monkeypatch):
     from agent.tools.business_data.ontology_sources_store import (
         get_ontology_data_source,

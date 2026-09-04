@@ -26,7 +26,11 @@ from agent.tools.business_data.provider_config_codec import (
     encrypt_provider_config,
     normalize_source_config,
 )
-from agent.tools.business_data.provider_registry import BusinessDataProviderError, normalize_provider_name
+from agent.tools.business_data.provider_registry import (
+    BusinessDataProviderError,
+    LEGACY_PROVIDER_ATTESTATION_FIELDS,
+    normalize_provider_name,
+)
 
 
 DOCUMENT_VERSION = 2
@@ -280,10 +284,30 @@ def _secret_key_available(runtime_root: Path) -> bool:
     ).is_file()
 
 
+def _without_legacy_provider_attestations(
+    provider: str,
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Drop fields removed from graph-provider configuration during migration.
+
+    Only the two graph providers ever exposed these fields.  Keeping unrelated
+    provider payloads untouched makes the migration fail closed for genuinely
+    unknown configuration instead of silently hiding a future field.
+    """
+    if provider not in {"neo4j", "hugegraph"}:
+        return dict(config)
+    return {
+        key: value
+        for key, value in config.items()
+        if key not in LEGACY_PROVIDER_ATTESTATION_FIELDS
+    }
+
+
 def _source_from_direct(ontology_id: str, payload: Dict[str, Any]) -> tuple[MigratedSource, bool]:
     provider = normalize_provider_name(payload.get("provider"))
     decrypted = decrypt_provider_config(provider, dict(payload.get("config") or {}))
-    normalized = normalize_source_config(provider, decrypted, existing_config=decrypted)
+    compatible = _without_legacy_provider_attestations(provider, decrypted)
+    normalized = normalize_source_config(provider, compatible, existing_config=compatible)
     source = MigratedSource(
         ontology_id=ontology_id,
         provider=provider,
@@ -305,8 +329,9 @@ def _source_from_connection(
 ) -> MigratedSource:
     provider = normalize_provider_name(connection_payload.get("provider"))
     decrypted = decrypt_provider_config(provider, dict(connection_payload.get("config") or {}))
+    compatible = _without_legacy_provider_attestations(provider, decrypted)
     try:
-        config = normalize_source_config(provider, decrypted, existing_config=decrypted)
+        config = normalize_source_config(provider, compatible, existing_config=compatible)
     except BusinessDataProviderError as exc:
         raise OntologyDataSourceMigrationError(
             "{}: 旧数据连接 {} 无效: {}".format(ontology_id, connection_id, str(exc))
