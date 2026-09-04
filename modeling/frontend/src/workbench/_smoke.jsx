@@ -1832,6 +1832,7 @@ try {
   const message = restoredVersionMessage('1.0.0', {});
   const leakedText = "评测轮次 rd_64bea577-467，基于修订 588743e；request_release；evaluation:running；评测库查询失败：Unknown database 'mv_shadow_pj_796c0f3e_156'；结果 5/5，版本 v1.0.0。";
   const agentText = userFacingText(leakedText);
+  const capabilityClaim = userFacingText('脚本契约需要读取领域资源，但本会话工具集中没有该读取能力，请确认平台是否开放。');
   const agentHtml = renderToString(<Block block={{ type: 'text', text: leakedText }} />);
   const quotaText = userFacingText("[181001] model call failed: RateLimitError: Error code: 429 - {'code':'insufficient_quota','message':'Allocated quota exceeded'}");
   if (!html.includes('v1.0.0 · 已发布') || !html.includes('发布交付')) {
@@ -1839,6 +1840,9 @@ try {
   }
   if (/deadbeef|request_release|run-|cp-013|工具事件|工具边界/.test(html)) {
     throw new Error('主界面仍暴露运行时实现标识');
+  }
+  if (capabilityClaim !== '当前步骤需要系统继续核对，现有进展已保留。') {
+    throw new Error('主界面仍暴露平台内部能力缺口');
   }
   if (message !== '已从版本历史恢复到v1.0.0，无需重复评测。'
     || /request_|preflight|API|checkpoint|running/.test(message)) {
