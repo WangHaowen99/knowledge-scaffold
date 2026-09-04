@@ -181,6 +181,27 @@ SCRIPT_ARTIFACT_TOOLS = frozenset({
     "run_script_test",
     "bind_object_sources",
 })
+# 整体确认卡连续未形成时，候选修改仍然是可恢复的中间状态。
+# 该恢复不依赖用户重新描述业务，也不把内部工具参数暴露给用户。
+CONFIRMATION_REVIEW_STRATEGY = "confirmation_review"
+CONFIRMATION_REVIEW_REQUIRED_TOOL = "list_domain_resources"
+
+
+def _confirmation_review_actions() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "retry_from_latest",
+            "label": "重新复核",
+            "description": "重新读取当前内容，继续形成整体确认卡。",
+        },
+        {
+            "id": "keep_current_progress",
+            "label": "保留当前成果，结束本轮",
+            "description": "保留已经形成的候选修改，暂不继续本轮处理。",
+        },
+    ]
+
+
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
@@ -2040,17 +2061,20 @@ class AgentService:
                 self.store.save_technical_recovery(run.id, normalized_issue, technical)
             required_tools = {str(technical.get("requiredTool") or "").strip()}
             required_tools.discard("")
-            recovery_prompt = (
-                "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
-                "先清除旧参数，重新读取当前建模计划和涉及的资源快照，"
-                "再用新的 mutation_id 生成 Change Set。"
-                "只处理尚未完成的任务，不得原样重放旧参数。"
-                if technical.get("strategy") == "refresh_change_set"
-                else (
-                    "页面请求继续一个仍然有效的系统恢复问题。不要把它当成用户业务发言；"
-                    "立即按已持久化的 required tool 恢复，成功后重新校验候选。"
+            if technical.get("strategy") == CONFIRMATION_REVIEW_STRATEGY:
+                recovery_prompt = self._confirmation_review_prompt(run)
+            else:
+                recovery_prompt = (
+                    "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
+                    "先清除旧参数，重新读取当前建模计划和涉及的资源快照，"
+                    "再用新的 mutation_id 生成 Change Set。"
+                    "只处理尚未完成的任务，不得原样重放旧参数。"
+                    if technical.get("strategy") == "refresh_change_set"
+                    else (
+                        "页面请求继续一个仍然有效的系统恢复问题。不要把它当成用户业务发言；"
+                        "立即按已持久化的 required tool 恢复，成功后重新校验候选。"
+                    )
                 )
-            )
             initial_recoveries = {normalized_issue: technical}
             initial_repair = None
         elif is_validation_issue:
@@ -2578,7 +2602,10 @@ class AgentService:
             "kind": interaction.kind,
             "question": question,
             "answer": answer_snapshot,
-            "actionKey": (action_key or str(answer.get("action") or ""))[:200],
+            "actionKey": (
+                action_key
+                or str(answer.get("action") or answer.get("value") or "")
+            )[:200],
             "continuation": str(continuation or "")[:2_000],
             "contractSummary": contract_summary,
             "operation": str(payload.get("operation") or "")[:500],
@@ -2597,6 +2624,73 @@ class AgentService:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
+
+    def _suspend_confirmation_review(self, live: LiveRun, run: RunRecord) -> None:
+        """把未形成确认卡的终态转换为可恢复的用户选择。"""
+        issue_id = f"confirmation-review-{run.id}"
+        snapshot = run.latest_interaction or {}
+        state = self.store.project_state(run.project_id).public()
+        recovery = {
+            "issueId": issue_id,
+            "requiredTool": CONFIRMATION_REVIEW_REQUIRED_TOOL,
+            "strategy": CONFIRMATION_REVIEW_STRATEGY,
+            "actionId": "retry_from_latest",
+            "recoveryActions": _confirmation_review_actions(),
+            "interactionId": str(snapshot.get("interactionId") or ""),
+            "projectPhase": str(state.get("phase") or ""),
+            "toolProfile": run.tool_profile,
+            "attempt": 0,
+            "maxAttempts": 1,
+            "exhausted": True,
+        }
+        live.technical_recoveries[issue_id] = recovery
+        self.store.save_technical_recovery(run.id, issue_id, recovery)
+        self.store.update_run(
+            run.id,
+            status=RUN_SUSPENDED,
+            result="",
+            error="",
+        )
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": "confirmation_review",
+            "phase": "waiting",
+            "summary": "整体复核卡未形成，待确认修改已保留",
+            "code": "CONFIRMATION_CARD_NOT_CREATED",
+            "issueId": issue_id,
+            "issueStatus": "awaiting_user",
+            "problemVisibility": "recovery",
+            "projectPhase": recovery["projectPhase"],
+            "toolProfile": recovery["toolProfile"],
+            "recoveryActions": _confirmation_review_actions(),
+        })
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_SUSPENDED,
+            "text": "整体复核卡未形成，待确认修改已保留，请选择后续处理",
+        })
+
+    @staticmethod
+    def _confirmation_review_prompt(run: RunRecord) -> str:
+        snapshot = run.latest_interaction or {}
+        facts = {
+            "question": str(snapshot.get("question") or ""),
+            "answer": snapshot.get("answer") or {},
+            "continuation": str(snapshot.get("continuation") or ""),
+            "contractSummary": str(snapshot.get("contractSummary") or ""),
+            "operation": str(snapshot.get("operation") or ""),
+        }
+        return (
+            "页面请求重新复核上一轮未形成的整体确认。不要把这当成新的用户业务问题，"
+            "也不要询问用户平台是否开放某项工具能力。先调用 get_project_state 获取最新状态，"
+            "再读取当前领域资源清单和相关资源快照，核对真实候选差异；如果候选完整，"
+            "立即调用 request_confirmation 生成整体确认卡，不能只输出文字。"
+            "只能依据当前项目事实和下面保存的最新交互继续，不得原样重放旧参数。\n"
+            f"最新交互事实：{json.dumps(facts, ensure_ascii=False)}"
+        )
 
     async def _resume(
         self,
@@ -2876,6 +2970,9 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                if context.technical_capability_claimed and result.get("result_type") == "interrupt":
+                    self._suspend_confirmation_review(live, run)
+                    return
                 if context.pending_evaluation is not None:
                     result = await self._ensure_visible_result(live, run, {
                         "result_type": "success",
@@ -2922,6 +3019,19 @@ class AgentService:
                         "text": "等待你批准当前建模计划",
                     })
                     return
+                if result.get("result_type") == "success" and context.technical_capability_claimed:
+                    capability_key = "technical_capability_claimed"
+                    used_capability_retries = live.proof_retries.get(capability_key, 0)
+                    live.required_tools.add(CONFIRMATION_REVIEW_REQUIRED_TOOL)
+                    if used_capability_retries < 2:
+                        live.proof_retries[capability_key] = used_capability_retries + 1
+                        current_query = (
+                            "你刚才把内部工具能力问题转给了用户。不要解释平台状态，也不要询问用户是否开放工具；"
+                            "立即调用 list_domain_resources 读取当前领域资源，再基于真实结果继续完成本轮复核。"
+                        )
+                        continue
+                    self._suspend_confirmation_review(live, run)
+                    return
                 missing_tools = _missing_required_tools(live)
                 if result.get("result_type") == "success" and missing_tools:
                     proof_key = "|".join(sorted(missing_tools))
@@ -2932,6 +3042,12 @@ class AgentService:
                             live, run, Runner, missing_tools,
                         )
                         continue
+                    if any(
+                        recovery.get("strategy") == CONFIRMATION_REVIEW_STRATEGY
+                        for recovery in live.technical_recoveries.values()
+                    ):
+                        self._suspend_confirmation_review(live, run)
+                        return
                     result = {
                         "result_type": "error",
                         "output": "助手没有完成这项明确要求，本轮已停止；已经确认的内容保持不变。",
@@ -2980,11 +3096,8 @@ class AgentService:
                             "立即发起整体确认；不得替专家批准，也不得只用文字询问。"
                         )
                         continue
-                    result = {
-                        "result_type": "error",
-                        "output": "助手未能形成整体确认，待确认修改仍然保留，请稍后重试复核。",
-                        "streamed": False,
-                    }
+                    self._suspend_confirmation_review(live, run)
+                    return
                 if result.get("result_type") == "interrupt" or live.restore_interaction:
                     self._settle(live, run, result)
                     return

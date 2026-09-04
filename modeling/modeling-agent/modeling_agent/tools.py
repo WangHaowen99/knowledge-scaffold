@@ -160,6 +160,7 @@ class ToolContext:
     decision_request_in_text: bool = False
     user_input_request_in_text: bool = False
     confirmation_claimed_in_text: bool = False
+    technical_capability_claimed: bool = False
     decision_card_requested: bool = False
     validation_repair: CandidateValidationRepairState = field(default_factory=lambda: CandidateValidationRepairState())
     package_contract: dict[str, Any] = field(default_factory=dict)
