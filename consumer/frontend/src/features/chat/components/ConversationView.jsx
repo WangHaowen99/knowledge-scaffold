@@ -75,7 +75,10 @@ export function UserMessage({ message }) {
     <article className="msg u" data-message-key={message.key}>
       <div className="bubwrap">
         <div className="bub">{message.content}</div>
-        {message.startedAt != null && <div className="time">{formatTime(message.startedAt)}</div>}
+        <div className="user-message-actions">
+          {message.startedAt != null && <div className="time">{formatTime(message.startedAt)}</div>}
+          <CopyButton text={message.content} label="复制问题" />
+        </div>
       </div>
     </article>
   );

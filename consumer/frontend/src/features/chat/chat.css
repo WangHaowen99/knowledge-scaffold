@@ -92,6 +92,8 @@
 .mwr .conversation-system-message span { flex: none; padding: 3px 9px; border-radius: 999px; background: var(--surface-subtle); }
 .mwr .msg .time { font-size: 11px; color: #b6b4ab; margin-top: 5px; }
 .mwr .msg.u .time { text-align: right; }
+.mwr .msg.u .user-message-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; margin-top: 3px; }
+.mwr .msg.u .user-message-actions .time { margin-top: 0; }
 .mwr .statusline { display: flex; gap: 14px; font-size: 11.5px; color: #a5a39a; margin-top: 10px; align-items: center; }
 .mwr .tdots { flex: none; display: inline-flex; align-items: center; gap: 4px; }
 .mwr .tdots span { width: 6px; height: 6px; border-radius: 50%; background: #9db4d6; display: inline-block; animation: mw-dot-heartbeat 1.2s ease-in-out infinite; will-change: transform, opacity; }
