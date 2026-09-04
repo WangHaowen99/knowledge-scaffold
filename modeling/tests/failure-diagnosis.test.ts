@@ -499,6 +499,26 @@ test('资料评估中的相关缺口进入失败诊断并阻止编造公式', as
   assert.equal(report.canProposeOptimizations, false);
 });
 
+test('连接型评测数据源不会把上传样例质量缺口当成真实数据缺失', async () => {
+  const failed = result('runtime-source', '查询记录并判断状态。', '按运行时记录判断');
+  const report = await diagnoseEvaluationFailures({
+    projectId: 'project-1',
+    results: [failed],
+    spec: {
+      id: 'demo', name: 'demo', description: 'demo', version: '1.0.0', language: 'zh-CN',
+      defaultProviderAlias: 'data', objects: [], operations: [], rules: [], metrics: [],
+    },
+    runtimeDataSource: { mode: 'connection', provider: 'neo4j', available: true },
+    runtimeDataSearch: async () => '{"result_count":3}',
+    qualityGaps: [{
+      kind: '缺数据表', target: 'records',
+      message: '上传表格仅含 2 行示例数据。', how: '不要据此判断运行时数据源。',
+    }],
+  });
+
+  assert.equal(report.diagnoses.some((item) => item.category === 'data_gap'), false);
+});
+
 test('多批次精确计算且没有脚本执行时要求生成确定性脚本', async () => {
   const failed = result(
     'complex',

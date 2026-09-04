@@ -15,16 +15,66 @@ from agent.tools.business_data.ontology_sources_store import (
     set_ontology_data_source,
 )
 from agent.tools.business_data.provider_registry import list_provider_schemas
+from agent.tools.business_data_search import handle_business_data_search_async
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource, resolve_business_data_source
+from api.auth.service_auth import modeling_service_authorized
 from api.dependencies import (
     require_workspace_id,
     require_workspace_owner_or_admin_id,
     run_in_runtime_pool,
 )
-from api.request_parsing import read_optional_json_object
+from api.request_parsing import read_json_object, read_optional_json_object
+from workspace.workspaces import resolve_workspace_id
 
 
 business_data_router = APIRouter(prefix="/agentic")
+
+
+@business_data_router.post("/internal/modeling/business-data/search")
+async def modeling_business_data_search_api(request: Request):
+    """Query the same workspace data source used by Modeling evaluation diagnosis."""
+    if not modeling_service_authorized(request):
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
+    try:
+        workspace_id = await run_in_runtime_pool(
+            request,
+            "short_io",
+            resolve_workspace_id,
+            request,
+        )
+    except (OntologyDataSourceStoreError, ValueError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    payload = await read_json_object(request)
+    ontology_id = str(payload.get("ontology_id") or "").strip()
+    entity = str(payload.get("entity") or "").strip()
+    query = str(payload.get("query") or "").strip()
+    ontology_version = str(payload.get("ontology_version") or "").strip() or None
+    if not ontology_id or not entity or not query:
+        return JSONResponse(
+            {"error": "ontology_id、entity、query 均不能为空"},
+            status_code=400,
+        )
+    if len(ontology_id) > 200 or len(entity) > 200 or len(query) > 8_000:
+        return JSONResponse({"error": "运行时数据查询参数超出长度限制"}, status_code=400)
+    try:
+        result = await handle_business_data_search_async(
+            ontology_id=ontology_id,
+            ontology_version=ontology_version,
+            entity=entity,
+            query=query,
+            workspace_id=workspace_id,
+        )
+    except Exception as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=502)
+    if str(result).lstrip().lower().startswith("error:"):
+        return JSONResponse({"detail": str(result)}, status_code=502)
+    return {
+        "success": True,
+        "ontology_id": ontology_id,
+        "entity": entity,
+        "query": query,
+        "result": str(result),
+    }
 
 
 @business_data_router.get("/business-data/provider-schemas")
