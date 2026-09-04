@@ -303,6 +303,23 @@ def _without_legacy_provider_attestations(
     }
 
 
+def _document_has_legacy_provider_attestations(document: Dict[str, Any]) -> bool:
+    """Keep migration retryable when an older marker predates field cleanup."""
+    sources = document.get("sources")
+    if not isinstance(sources, dict):
+        return False
+    for payload in sources.values():
+        if not isinstance(payload, dict):
+            continue
+        provider = normalize_provider_name(payload.get("provider"))
+        if provider not in {"neo4j", "hugegraph"}:
+            continue
+        config = payload.get("config")
+        if isinstance(config, dict) and LEGACY_PROVIDER_ATTESTATION_FIELDS.intersection(config):
+            return True
+    return False
+
+
 def _source_from_direct(ontology_id: str, payload: Dict[str, Any]) -> tuple[MigratedSource, bool]:
     provider = normalize_provider_name(payload.get("provider"))
     decrypted = decrypt_provider_config(provider, dict(payload.get("config") or {}))
@@ -443,6 +460,7 @@ def migrate_workspace(
             str(payload.get("mode") or MODE_DIRECT_PROVIDER).strip() == MODE_DIRECT_PROVIDER
             for payload in raw_sources.values()
         )
+        and not _document_has_legacy_provider_attestations(document)
         and _migration_marker_is_complete(paths)
     )
     try:

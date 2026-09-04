@@ -203,6 +203,62 @@ def test_migration_removes_legacy_deterministic_fields_from_neo4j_source(
     assert stored.config["password"] == "synthetic-password"
 
 
+def test_migration_rechecks_sources_when_old_marker_predates_field_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    from agent.tools.business_data.provider_config_codec import encrypt_provider_config
+    from migrations.ontology_data_sources_direct_v2 import migrate_legacy_ontology_data_sources
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    config = {
+        "uri": "neo4j://neo4j.example.invalid:7687",
+        "database": "neo4j",
+        "username": "reader",
+        "password": "synthetic-password",
+        "workspace_property": "d2o_workspace_id",
+        "workspace_value": "demo",
+        "ontology_property": "d2o_ontology_id",
+        "ontology_value": "demo-ontology",
+        "data_revision": "legacy-revision",
+        "snapshot_selector": "neo4j",
+    }
+    source_path = paths.workspace_dir / "ontology-data-sources.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "sources": {
+                    "demo-ontology": {
+                        "mode": "direct_provider",
+                        "provider": "neo4j",
+                        "config": encrypt_provider_config("neo4j", config),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (paths.workspace_dir / "ontology-data-sources.direct-v2.migration-complete.json").write_text(
+        json.dumps(
+            {
+                "migration_id": "ontology-data-sources-direct-v2",
+                "version": 2,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = migrate_legacy_ontology_data_sources(workspace_id="demo")
+
+    assert result["errors"] == []
+    persisted = json.loads(source_path.read_text(encoding="utf-8"))
+    assert "data_revision" not in persisted["sources"]["demo-ontology"]["config"]
+    assert "snapshot_selector" not in persisted["sources"]["demo-ontology"]["config"]
+
+
 def test_ontology_data_source_encrypts_and_publicizes_secret_fields(tmp_path, monkeypatch):
     from agent.tools.business_data.ontology_sources_store import (
         get_ontology_data_source,
