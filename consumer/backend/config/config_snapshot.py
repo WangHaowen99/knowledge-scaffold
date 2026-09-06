@@ -145,6 +145,25 @@ class ConfigSnapshotManager:
             self._next_signature_check_at = 0.0
             return self._generation
 
+    def refresh_environment(self, environment: Mapping[str, str] | None = None) -> int:
+        """Replace the environment captured by future snapshot loads.
+
+        Snapshot managers intentionally copy their environment at creation so
+        one generation cannot observe a mutable process environment midway
+        through a load.  Startup compatibility migrations may pin an
+        environment value before runtime construction; refreshing here makes
+        that change visible even when a snapshot was already primed.
+        """
+
+        with self._lock:
+            self._environment = MappingProxyType(
+                dict(os.environ if environment is None else environment)
+            )
+            self._generation += 1
+            self._snapshot = None
+            self._next_signature_check_at = 0.0
+            return self._generation
+
     def load(self) -> Any:
         started = time.perf_counter()
         result = "error"

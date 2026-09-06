@@ -108,9 +108,27 @@ MIGRATION_DOCKER_ARGS=(
     -v "${REPORT_HOST_DIR}:/migration-reports:rw"
     -v "${BACKUP_ROOT}:/migration-backups:rw"
 )
+# The system-config utility uses same-directory temporary files for an atomic
+# replacement.  A single-file bind mount cannot replace its mount point, so
+# give only that one isolated invocation a writable backend directory.  The
+# other migration containers keep the release source read-only; dry-run keeps
+# this invocation read-only as well.
+SYSTEM_CONFIG_DOCKER_ARGS=("${MIGRATION_DOCKER_ARGS[@]}")
+SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED=false
+for index in "${!SYSTEM_CONFIG_DOCKER_ARGS[@]}"; do
+    if [ "${SYSTEM_CONFIG_DOCKER_ARGS[$index]}" = "${BUNDLE_ROOT}/backend:/release/backend:ro" ]; then
+        SYSTEM_CONFIG_DOCKER_ARGS[$index]="${BUNDLE_ROOT}/backend:/release/backend:${DATA_ACCESS}"
+        SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED=true
+        break
+    fi
+done
+if [ "${SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED}" != true ]; then
+    die "System-config migration backend mount was not found"
+fi
 if [ -n "${LEGACY_BACKUP_DIR}" ]; then
     require_dir "${LEGACY_BACKUP_DIR}"
     MIGRATION_DOCKER_ARGS+=(-v "${LEGACY_BACKUP_DIR}:/legacy-backup:ro")
+    SYSTEM_CONFIG_DOCKER_ARGS+=(-v "${LEGACY_BACKUP_DIR}:/legacy-backup:ro")
 fi
 
 AUTH_ARGS=(
@@ -128,6 +146,7 @@ STORAGE_ARGS=(
 SYSTEM_CONFIG_ARGS=(
     --root /release
     --report "/migration-reports/$(basename "${SYSTEM_CONFIG_REPORT}")"
+    --backup-root /migration-backups/system-config
 )
 BACKEND_MIGRATION_ARGS=(
     --runtime-root /release/.onto-runtime
@@ -153,7 +172,7 @@ docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
     python /deploy-tools/migrate_auth_workspace.py "${AUTH_ARGS[@]}"
 docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
     python /deploy-tools/migrate_persistent_storage.py "${STORAGE_ARGS[@]}"
-docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
+docker run "${SYSTEM_CONFIG_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
     python /deploy-tools/migrate_system_config.py "${SYSTEM_CONFIG_ARGS[@]}"
 docker run "${MIGRATION_DOCKER_ARGS[@]}" \
     --env-file "${BUNDLE_ROOT}/backend/.env" \
