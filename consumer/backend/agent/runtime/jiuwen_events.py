@@ -53,6 +53,8 @@ _STATUS_ALIASES = {
     "error": "failed",
     "canceled": "cancelled",
 }
+_COALESCIBLE_EVENT_TYPES = frozenset({"token.delta", "reasoning.delta"})
+_MAX_COALESCED_TEXT_CHARS = 4096
 
 
 class RuntimeEventBufferFull(RuntimeError):
@@ -85,8 +87,11 @@ class JiuwenRuntimeEventBridge:
         self._loop = asyncio.get_running_loop()
         self._loop_thread_id = threading.get_ident()
         self._queued_event_tag = object()
+        self._coalesced_event_tag = object()
         self._buffer_lock = threading.Lock()
         self._buffered_count = 0
+        self._coalesced_events: dict[tuple[Any, ...], RuntimeEvent] = {}
+        self._coalescing_generation = 0
         self._accepting = True
         self._model_spans: set[str] = set()
         self._dedupe_lock = threading.Lock()
@@ -160,20 +165,31 @@ class JiuwenRuntimeEventBridge:
         iteration = max(1, int(payload.get("iteration") or 1))
         call_index = max(1, int((meta or {}).get("call_index") or 1))
         caller_suffix = str((meta or {}).get("caller_suffix") or "main").strip() or "main"
-        self._publish(
-            self._event(
-                "reasoning.delta" if normalized_channel == "reasoning" else "token.delta",
-                "running",
-                payload,
-                component="model",
-                span_key="llm:{}:{}:{}".format(
-                    caller_suffix,
-                    iteration,
-                    call_index,
-                ),
-                parent_key="iteration:{}:{}".format(caller_suffix, iteration),
-            )
+        event = self._event(
+            "reasoning.delta" if normalized_channel == "reasoning" else "token.delta",
+            "running",
+            payload,
+            component="model",
+            span_key="llm:{}:{}:{}".format(
+                caller_suffix,
+                iteration,
+                call_index,
+            ),
+            parent_key="iteration:{}:{}".format(caller_suffix, iteration),
         )
+        for start in range(0, len(normalized_text), _MAX_COALESCED_TEXT_CHARS):
+            self._publish(
+                event.model_copy(
+                    update={
+                        "payload": {
+                            **payload,
+                            "text": normalized_text[
+                                start : start + _MAX_COALESCED_TEXT_CHARS
+                            ],
+                        }
+                    }
+                )
+            )
 
     def protocol_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
         normalized_type = str(event_type or "").strip().lower()
@@ -285,6 +301,14 @@ class JiuwenRuntimeEventBridge:
             with self._buffer_lock:
                 self._buffered_count -= 1
             item = item[1]
+        elif (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and item[0] is self._coalesced_event_tag
+        ):
+            with self._buffer_lock:
+                item = self._coalesced_events.pop(item[1], None)
+                self._buffered_count -= 1
         self._flush_pending()
         return None if item is self._closed else item
 
@@ -306,6 +330,8 @@ class JiuwenRuntimeEventBridge:
         self._loop.call_soon_threadsafe(self._close_now)
 
     def _publish(self, event: Any) -> None:
+        coalescing_base_key = self._coalescing_key(event)
+        coalescing_key: tuple[Any, ...] | None = None
         overflow = False
         with self._buffer_lock:
             if not self._accepting:
@@ -314,12 +340,41 @@ class JiuwenRuntimeEventBridge:
                         "Jiuwen runtime event buffer is full"
                     )
                 return
+            if coalescing_base_key is not None:
+                # A non-delta event starts a new text segment. This prevents
+                # a delta emitted after tool.progress from being merged into
+                # a marker that is still waiting ahead of that progress event.
+                coalescing_key = (
+                    *coalescing_base_key,
+                    self._coalescing_generation,
+                )
+                previous = self._coalesced_events.get(coalescing_key)
+                if previous is not None:
+                    previous_text = str(previous.payload.get("text") or "")
+                    current_text = str(event.payload.get("text") or "")
+                    if (
+                        len(previous_text) + len(current_text)
+                        <= _MAX_COALESCED_TEXT_CHARS
+                    ):
+                        self._coalesced_events[coalescing_key] = (
+                            self._merge_coalesced(previous, event)
+                        )
+                        return
+                    self._coalescing_generation += 1
+                    coalescing_key = (
+                        *coalescing_base_key,
+                        self._coalescing_generation,
+                    )
+            else:
+                self._coalescing_generation += 1
             if self._buffered_count >= self.max_buffer_size:
                 self._accepting = False
                 self._overflowed = True
                 overflow = True
             else:
                 self._buffered_count += 1
+                if coalescing_key is not None:
+                    self._coalesced_events[coalescing_key] = event
 
         if overflow:
             if threading.get_ident() == self._loop_thread_id:
@@ -334,14 +389,26 @@ class JiuwenRuntimeEventBridge:
                 "Jiuwen runtime event buffer is full"
             )
         if threading.get_ident() == self._loop_thread_id:
-            self._put_reserved_nowait(event)
+            if coalescing_key is None:
+                self._put_reserved_nowait(event)
+            else:
+                self._put_reserved_coalesced_nowait(coalescing_key)
             return
         try:
-            self._loop.call_soon_threadsafe(self._put_reserved_nowait, event)
+            callback = (
+                self._put_reserved_nowait
+                if coalescing_key is None
+                else self._put_reserved_coalesced_nowait
+            )
+            callback_arg = event if coalescing_key is None else coalescing_key
+            self._loop.call_soon_threadsafe(callback, callback_arg)
         except BaseException:
             # A producer may race loop shutdown after reserving a slot. Do not
             # leave the accounting permanently full if the callback cannot be
             # handed to the loop.
+            if coalescing_key is not None:
+                with self._buffer_lock:
+                    self._coalesced_events.pop(coalescing_key, None)
             self._rollback_reserved_slot()
             raise
 
@@ -358,9 +425,53 @@ class JiuwenRuntimeEventBridge:
                 self._overflowed = True
             self._record_overflow_now()
 
+    def _put_reserved_coalesced_nowait(self, key: tuple[Any, ...]) -> None:
+        try:
+            self.queue.put_nowait((self._coalesced_event_tag, key))
+        except asyncio.QueueFull:
+            with self._buffer_lock:
+                self._coalesced_events.pop(key, None)
+            self._rollback_reserved_slot()
+            with self._buffer_lock:
+                self._accepting = False
+                self._overflowed = True
+            self._record_overflow_now()
+
     def _rollback_reserved_slot(self) -> None:
         with self._buffer_lock:
             self._buffered_count = max(0, self._buffered_count - 1)
+
+    @staticmethod
+    def _coalescing_key(event: Any) -> tuple[Any, ...] | None:
+        if not isinstance(event, RuntimeEvent):
+            return None
+        event_type = str(event.event_type)
+        if event_type not in _COALESCIBLE_EVENT_TYPES:
+            return None
+        payload = event.payload
+        return (
+            event_type,
+            event.span_key,
+            event.parent_key,
+            event.trace_id,
+            event.span_id,
+            event.parent_span_id,
+            str((event.source or {}).get("node") or ""),
+            str((event.source or {}).get("component") or ""),
+            str(payload.get("channel") or ""),
+            str(payload.get("iteration") or ""),
+            str(payload.get("call_index") or ""),
+            str(payload.get("reasoning_block_id") or ""),
+        )
+
+    @staticmethod
+    def _merge_coalesced(previous: RuntimeEvent, current: RuntimeEvent) -> RuntimeEvent:
+        payload = dict(previous.payload)
+        payload["text"] = "{}{}".format(
+            str(payload.get("text") or ""),
+            str(current.payload.get("text") or ""),
+        )
+        return previous.model_copy(update={"payload": payload})
 
     def _stop_accepting(self) -> None:
         with self._buffer_lock:

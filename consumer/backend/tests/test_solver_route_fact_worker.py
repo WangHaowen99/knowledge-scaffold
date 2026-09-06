@@ -8,6 +8,7 @@ import pytest
 from integration.solver_route_fact_worker import (
     PackageSolverContractError,
     _candidate_assignments,
+    _validate_case_consistency,
     _safety_margin,
     evaluate_payload,
 )
@@ -458,6 +459,38 @@ def test_worker_excludes_advisory_batch_load_from_safety_margin() -> None:
     )
 
     assert margin == 50
+
+
+def test_worker_rejects_monthly_load_that_does_not_match_batch_totals() -> None:
+    case = {
+        "batches": [
+            {"unit_loads": {"wax": {"input_tons": 120}}, "tank_status": {}},
+            {"unit_loads": {"wax": {"input_tons": 80}}, "tank_status": {}},
+        ],
+        "monthly_unit_load": {
+            "units": {"wax": {"monthly_input_tons": 199, "monthly_capacity_tons": 250}}
+        },
+    }
+
+    with pytest.raises(ValueError, match="monthly load is inconsistent"):
+        _validate_case_consistency(case)
+
+
+def test_worker_accepts_monthly_adjustment_ledger_when_totals_are_explained() -> None:
+    case = {
+        "batches": [
+            {"unit_loads": {"wax": {"input_tons": 120}}, "tank_status": {}},
+            {"unit_loads": {"wax": {"input_tons": 80}}, "tank_status": {}},
+        ],
+        "monthly_unit_load": {
+            "units": {"wax": {"monthly_input_tons": 199, "monthly_capacity_tons": 250}}
+        },
+        "adjustment_ledger": [
+            {"unit": "wax", "tons": -1, "reason": "planned maintenance"}
+        ],
+    }
+
+    _validate_case_consistency(case)
 
 
 def test_worker_accepts_batch_identifier_in_special_tank_status() -> None:
