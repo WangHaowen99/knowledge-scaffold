@@ -1009,13 +1009,25 @@ class _IndexedChatStore:
         self.list_calls = 0
         self.get_calls = []
 
-    def list_sessions(self):
+    def list_sessions(self, *, limit=1000):
         self.list_calls += 1
-        raise AssertionError("indexed listing must not enumerate chat sessions")
+        del limit
+        return []
 
     def get_session(self, session_id):
         self.get_calls.append(session_id)
         return _FakeSession(session_id)
+
+
+class _BoundedFallbackChatStore:
+    def __init__(self, index, sessions):
+        self.session_summary_index = index
+        self.sessions = list(sessions)
+        self.list_limits = []
+
+    def list_sessions(self, *, limit=1000):
+        self.list_limits.append(limit)
+        return self.sessions[:limit]
 
 
 class _CountingExecutionStore(_FakeExecutionStore):
@@ -1213,7 +1225,7 @@ def test_cursor_without_limit_is_rejected_even_when_summary_index_is_disabled(
     assert response.json() == {"error": "limit is required when cursor is provided"}
 
 
-def test_index_rebuild_failure_returns_explicit_error_for_legacy_full_list(
+def test_index_rebuild_failure_returns_bounded_authoritative_legacy_list(
     tmp_path,
     monkeypatch,
 ):
@@ -1228,12 +1240,15 @@ def test_index_rebuild_failure_returns_explicit_error_for_legacy_full_list(
 
     response = client.get("/agentic/sessions", headers=headers)
 
-    assert response.status_code == 503
-    assert response.json() == {"error": "session summary index unavailable"}
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
+    assert [item["id"] for item in response.json()["sessions"]] == [
+        "legacy-fallback"
+    ]
 
 
 @pytest.mark.parametrize("failure_stage", ["rebuild", "list_page"])
-def test_index_failure_returns_explicit_error_for_paginated_requests(
+def test_index_failure_returns_bounded_authoritative_page_for_paginated_requests(
     tmp_path,
     monkeypatch,
     failure_stage,
@@ -1253,8 +1268,36 @@ def test_index_failure_returns_explicit_error_for_paginated_requests(
         headers=headers,
     )
 
-    assert response.status_code == 503
-    assert response.json() == {"error": "session summary index unavailable"}
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
+    assert [item["id"] for item in response.json()["sessions"]] == [
+        "paged-session"
+    ]
+
+
+def test_index_failure_fallback_bounds_authoritative_read(tmp_path, monkeypatch):
+    sessions = [_FakeSession("fallback-{}".format(index)) for index in range(5)]
+    chat_store = _BoundedFallbackChatStore(
+        _FaultingSummaryIndex("rebuild"),
+        sessions,
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
+    )
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/agentic/sessions",
+        params={"limit": 2},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
+    assert response.json()["index_fallback_truncated"] is True
+    assert len(response.json()["sessions"]) == 2
+    assert chat_store.list_limits == [3]
 
 
 def test_index_store_construction_and_page_read_are_offloaded(tmp_path, monkeypatch):
@@ -1314,7 +1357,8 @@ def test_cold_missing_index_never_runs_full_rebuild_in_request_path(
 
     response = client.get(f"/agentic/sessions{query}", headers=headers)
 
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
     assert rebuild_threads == []
 
 

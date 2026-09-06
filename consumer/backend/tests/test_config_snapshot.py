@@ -464,6 +464,45 @@ def test_system_config_snapshot_loads_authoritatively_once_per_generation(
     assert calls["load"] == 2
 
 
+def test_public_system_config_snapshot_uses_one_generation_consistent_read(
+    tmp_path,
+    monkeypatch,
+):
+    system_config_module, config_path = _prepare_system_config(monkeypatch, tmp_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("{}", encoding="utf-8")
+
+    class SingleReadManager:
+        source_path = config_path
+        generation = 17
+
+        def __init__(self):
+            self.calls = 0
+
+        def load_with_generation(self):
+            self.calls += 1
+            return (
+                {
+                    "llm": {"model": "stable"},
+                    "llm_profiles": {"profiles": []},
+                },
+                17,
+            )
+
+    manager = SingleReadManager()
+    monkeypatch.setattr(
+        system_config_module,
+        "_get_system_config_snapshot_manager",
+        lambda: manager,
+    )
+
+    snapshot = system_config_module.get_public_system_config_snapshot()
+
+    assert manager.calls == 1
+    assert snapshot["generation"] == 17
+    assert snapshot["config"]["llm"]["model"] == "stable"
+
+
 def test_system_config_snapshot_freezes_environment_across_invalidation(
     tmp_path,
     monkeypatch,
