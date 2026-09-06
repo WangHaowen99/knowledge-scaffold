@@ -23,6 +23,23 @@ const SOLVER_PUBLIC_FIELDS = new Set([
   'retryable', 'missing', 'questions', 'tool_call_id', 'tool_name',
 ]);
 
+const RUNTIME_ERROR_PRESENTATION = Object.freeze({
+  RUNTIME_EVENT_BUFFER_FULL: {
+    message: '执行中断，当前结果不完整，请重试。',
+    incomplete: true,
+  },
+  BUSINESS_SUMMARY_INCONSISTENT: {
+    message: '结果口径不一致，当前结论未通过校验，请检查调整项后重试。',
+    incomplete: true,
+  },
+});
+
+export const friendlyRuntimeError = (code) => {
+  const normalized = String(code || '').trim().toUpperCase();
+  const presentation = RUNTIME_ERROR_PRESENTATION[normalized];
+  return presentation ? { ...presentation } : null;
+};
+
 export const publicErrorMessage = (value, fallback = '') => {
   const visited = new Set();
   const extract = (candidate, depth = 0) => {
@@ -44,7 +61,13 @@ export const publicErrorMessage = (value, fallback = '') => {
     }
     return extract(candidate.error_code ?? candidate.code, depth + 1);
   };
-  return extract(value) || (typeof fallback === 'string' ? fallback : '');
+  const extracted = extract(value);
+  const code = typeof value === 'object' && value
+    ? value.error_code ?? value.code
+    : extracted;
+  return friendlyRuntimeError(code)?.message
+    || extracted
+    || (typeof fallback === 'string' ? fallback : '');
 };
 
 const hasPublicErrorValue = (value) => (
@@ -435,6 +458,7 @@ const extractTurnFinishedOutput = (payload = {}, publicStatus = 'completed') => 
   const errorCode = typeof payload?.error === 'object' && payload.error
     ? String(payload.error.error_code ?? payload.error.code ?? '').trim()
     : '';
+  const runtimeError = friendlyRuntimeError(errorCode);
 
   if (typeof result === 'string') {
     content = result;
@@ -466,9 +490,9 @@ const extractTurnFinishedOutput = (payload = {}, publicStatus = 'completed') => 
     messageType,
     interaction,
     artifacts,
-    error: hasPublicErrorValue(payload.error)
+    error: runtimeError?.message || (hasPublicErrorValue(payload.error)
       ? publicErrorMessage(payload.error, '运行失败')
-      : null,
+      : null),
     errorCode,
     cancelReason: payload.cancel_reason || null,
   };
@@ -561,6 +585,10 @@ const finalizeTurnState = (next, publicStatus, payload, eventTs) => {
   }
   if (terminal.errorCode) {
     next.meta = { ...(next.meta || {}), error_code: terminal.errorCode };
+  }
+  const runtimeError = friendlyRuntimeError(terminal.errorCode);
+  if (runtimeError?.incomplete) {
+    next.meta = { ...(next.meta || {}), incomplete: true };
   }
   if (terminal.cancelReason) {
     next.meta = { ...(next.meta || {}), cancel_reason: terminal.cancelReason };
