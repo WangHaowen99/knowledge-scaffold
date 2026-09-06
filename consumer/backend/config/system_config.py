@@ -1304,10 +1304,21 @@ def get_system_config_generation() -> int:
         return _record_system_config_generation(manager)
 
 
-def invalidate_system_config_snapshot() -> int:
+def invalidate_system_config_snapshot(*, refresh_environment: bool = False) -> int:
+    """Invalidate the published config snapshot.
+
+    ``refresh_environment`` is used by startup compatibility migrations that
+    pin a process environment value.  The snapshot manager normally captures
+    a private copy of ``os.environ`` at construction time, so invalidating its
+    value alone would otherwise continue to serve the pre-migration value.
+    """
+
     with _CONFIG_PUBLICATION_LOCK:
         manager = _get_system_config_snapshot_manager()
-        manager.invalidate()
+        if refresh_environment:
+            manager.refresh_environment()
+        else:
+            manager.invalidate()
         return _record_system_config_generation(manager)
 
 
