@@ -34,6 +34,7 @@ from workspace.workspaces import workspace_scope
 logger = get_logger("routes.sessions")
 _PRUNE_CONVERGENCE_LOCK = threading.Lock()
 _ACTIVE_PRUNE_CONVERGENCES: set[tuple[str, str]] = set()
+_SESSION_INDEX_FALLBACK_MAX = 1000
 
 
 async def _converge_session_prune_batches(
@@ -419,6 +420,21 @@ async def _indexed_session_payloads(
     return payloads
 
 
+def _bounded_authoritative_sessions(chat_store, *, requested_limit: int | None):
+    """Read a bounded authoritative page while the summary index rebuilds."""
+
+    read_limit = _SESSION_INDEX_FALLBACK_MAX
+    if requested_limit is not None:
+        read_limit = min(_SESSION_INDEX_FALLBACK_MAX, max(1, int(requested_limit)))
+    read_limit += 1
+    list_sessions = getattr(chat_store, "list_sessions", None)
+    if not callable(list_sessions):
+        raise RuntimeError("authoritative session listing is unavailable")
+    sessions = list_sessions(limit=read_limit)
+    sessions = list(sessions or [])
+    return sessions[:read_limit - 1], len(sessions) >= read_limit
+
+
 @sessions_router.get("/sessions")
 async def list_sessions(
     request: Request,
@@ -468,9 +484,9 @@ async def list_sessions(
         except InvalidSessionCursor as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except Exception:
-            # A newly created user/workspace has no authoritative sessions yet.
-            # Publish an empty derived index immediately; non-empty cold stores
-            # still fail closed and continue rebuilding off the request path.
+            # An empty store can publish an empty index immediately. This
+            # keeps the first request fast while preserving the ready-state
+            # contract for newly created workspaces.
             has_sessions = getattr(chat_store, "has_sessions", None)
             rebuild = getattr(summary_index, "rebuild", None)
             if callable(has_sessions) and callable(rebuild):
@@ -478,15 +494,59 @@ async def list_sessions(
                     if not await runtime.short_io.run(has_sessions):
                         await runtime.short_io.run(rebuild)
                         summaries, page = await runtime.short_io.run(read_index_page)
-                    else:
-                        raise RuntimeError("session summary index is rebuilding")
+                        sessions_payload = await _indexed_session_payloads(
+                            summaries,
+                            runtime=runtime,
+                            current_user=current_user,
+                            workspace_id=workspace_id,
+                            chat_store=chat_store,
+                            execution_store=execution_store,
+                        )
+                        response = {"sessions": sessions_payload}
+                        if page is not None:
+                            response.update(
+                                {
+                                    "next_cursor": page.next_cursor,
+                                    "has_more": page.has_more,
+                                    "index_revision": page.index_revision,
+                                }
+                            )
+                        return response
                 except Exception:
-                    logger.exception("Session summary index unavailable")
-                    return JSONResponse(
-                        {"error": "session summary index unavailable"},
-                        status_code=503,
-                    )
-            else:
+                    logger.exception("Empty session summary index recovery failed")
+            # Keep the list usable while a cold, corrupt, or dirty projection
+            # rebuilds in the background. The authoritative store read is
+            # deliberately bounded so recovery cannot turn into an unbounded
+            # request-path scan.
+            try:
+                sessions, truncated = await runtime.short_io.run(
+                    _bounded_authoritative_sessions,
+                    chat_store,
+                    requested_limit=limit,
+                )
+                payloads = await _runtime_payloads_for_sessions(
+                    sessions,
+                    runtime=runtime,
+                    current_user=current_user,
+                    workspace_id=workspace_id,
+                )
+                response = {
+                    "sessions": [
+                        {
+                            **session.to_dict(),
+                            **payloads[session.id],
+                        }
+                        for session in sessions
+                    ],
+                    "index_status": "rebuilding",
+                }
+                if truncated:
+                    response["index_fallback_truncated"] = True
+                # An index cursor cannot be safely continued against a moving
+                # authoritative store. Omit pagination metadata and let the
+                # client retry once the status returns to ready.
+                return response
+            except Exception:
                 logger.exception("Session summary index unavailable")
                 return JSONResponse(
                     {"error": "session summary index unavailable"},

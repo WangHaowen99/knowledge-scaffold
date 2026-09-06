@@ -165,12 +165,20 @@ class ConfigSnapshotManager:
             return self._generation
 
     def load(self) -> Any:
+        value, _generation = self.load_with_generation()
+        return value
+
+    def load_with_generation(self) -> tuple[Any, int]:
+        """Return a defensive copy and its generation from one refresh."""
+
         started = time.perf_counter()
         result = "error"
         try:
             with self._lock:
                 snapshot, result = self._refresh_locked()
-            return snapshot.copy_value()
+                value = snapshot.copy_value()
+                generation = snapshot.generation
+            return value, generation
         finally:
             _record_system_config_access(result, started)
 

@@ -1431,8 +1431,13 @@ def get_public_system_config_snapshot() -> dict[str, Any]:
     """Return public config with opaque concurrency metadata from one snapshot."""
 
     with _CONFIG_PUBLICATION_LOCK:
-        config = load_system_config()
-        generation = get_system_config_generation()
+        if _config_snapshot_enabled():
+            manager = _get_system_config_snapshot_manager()
+            config, generation = manager.load_with_generation()
+            _record_system_config_generation(manager)
+        else:
+            config = load_system_config()
+            generation = get_system_config_generation()
         return {
             "config": {
                 section: _public_section(section, config)
