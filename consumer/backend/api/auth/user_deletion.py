@@ -23,9 +23,11 @@ from integration.mcp.token_service import revoke_all_mcp_tokens_for_user
 from config.system_config import load_system_config
 from utils.identifiers import safe_user_storage_key
 from workspace.workspaces import (
+    get_workspace_catalog_generation,
     get_system_root,
     get_workspace_paths,
     get_workspaces_root,
+    invalidate_workspace_catalog,
     remove_user_from_workspace_members,
     workspace_user_deletion_guard,
 )
@@ -329,7 +331,7 @@ def _cleanup_deleted_user_artifacts(
     steps: tuple[tuple[str, Callable[[], Any]], ...] = (
         (
             "workspace_members",
-            lambda: remove_user_from_workspace_members(username),
+            lambda: _remove_user_from_workspace_members_and_invalidate(username),
         ),
         (
             "workspace_runtime",
@@ -361,6 +363,18 @@ def _cleanup_deleted_user_artifacts(
     except Exception as exc:
         errors["archive_manifest"] = "{}: {}".format(exc.__class__.__name__, exc)
     return completed_steps, errors
+
+
+def _remove_user_from_workspace_members_and_invalidate(username: str) -> list[str]:
+    """Keep the user-deletion boundary safe if the cleanup helper evolves."""
+    generation_before = get_workspace_catalog_generation()
+    updated_workspace_ids = remove_user_from_workspace_members(username)
+    if (
+        updated_workspace_ids
+        and get_workspace_catalog_generation() == generation_before
+    ):
+        invalidate_workspace_catalog()
+    return updated_workspace_ids
 
 
 def _user_storage_keys(username: str) -> tuple[str, ...]:

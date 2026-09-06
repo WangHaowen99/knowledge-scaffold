@@ -545,6 +545,99 @@ def test_direct_router_keeps_alias_argument(monkeypatch):
     assert decision.business_arguments == {"batch_code": "BATCH123"}
 
 
+def test_direct_router_forwards_pinned_manifest_to_matcher(monkeypatch):
+    manifest = SimpleNamespace(
+        id="demo",
+        version="v1",
+        ontology_dir="synthetic-staged-root",
+    )
+    observed = []
+    monkeypatch.setattr(
+        direct_router_module,
+        "find_best_script_operation",
+        lambda **kwargs: observed.append(kwargs) or (None, None, 0.0),
+    )
+    router = OperationDirectRouter(
+        SimpleNamespace(enabled=True, selected_ontology_only=True, confidence_threshold=0.8)
+    )
+
+    decision = router.route(
+        user_request="run",
+        context={"selected_ontology_id": "demo"},
+        runtime_context=RuntimeContext(
+            session_id="session-1",
+            run_id="run-1",
+            turn_id=1,
+            workspace_id="workspace-a",
+            selected_ontology_id="demo",
+            selected_ontology_version="v1",
+        ),
+        ontology_manifest=manifest,
+    )
+
+    assert decision.route == "fallback_agent_loop"
+    assert observed[0]["ontology_manifest"] is manifest
+
+
+def test_direct_runner_uses_pinned_manifest_without_live_lookup(monkeypatch, tmp_path):
+    project_root = tmp_path / "runtime"
+    ontology_dir = project_root / ".ontology-run-staging" / "revision"
+    script = ontology_dir / "scripts" / "operation.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('pinned')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        direct_runner_module,
+        "get_ontology_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pinned direct execution must not reload the live manifest")
+        ),
+    )
+    monkeypatch.setattr(
+        direct_runner_module,
+        "_build_script_env_overrides",
+        lambda **_kwargs: {},
+    )
+    captured = {}
+    monkeypatch.setattr(
+        direct_runner_module,
+        "handle_execute_script_path",
+        lambda **kwargs: captured.update(kwargs) or "pinned result",
+    )
+    decision = RouteDecision(
+        route="direct_script",
+        reason="test",
+        confidence=1.0,
+        ontology_id="demo",
+        operation_key="run",
+        script_entry={
+            "_script_path": "scripts/operation.py",
+            "arguments": [],
+            "parameters": [],
+        },
+    )
+
+    _events, result = direct_runner_module.run_direct_script(
+        decision,
+        RuntimeContext(
+            session_id="session-1",
+            run_id="run-1",
+            turn_id=1,
+            workspace_id="workspace-a",
+            selected_ontology_id="demo",
+            selected_ontology_version="v1",
+        ),
+        project_root=str(project_root),
+        ontology_manifest=SimpleNamespace(
+            id="demo",
+            version="v1",
+            ontology_dir=str(ontology_dir),
+        ),
+    )
+
+    assert result.status == "success"
+    assert captured["ontology_dir"] == ontology_dir.resolve()
+
+
 def test_direct_router_allows_missing_optional_runtime_context(monkeypatch):
     script_entry = {
         "operation_key": "run_optional",

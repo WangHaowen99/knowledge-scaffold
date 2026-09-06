@@ -74,6 +74,10 @@ export interface SessionSummary {
   updated_at?: string;
   message_count?: number;
   metadata?: Record<string, unknown>;
+  active_run_id?: string | null;
+  active_run_status?: string;
+  last_seq?: number;
+  pending_interaction?: Record<string, unknown> | null;
 }
 
 export interface SessionMessage {
@@ -98,6 +102,12 @@ export interface SessionDetail extends SessionSummary {
 
 export interface SessionListResponse {
   sessions: SessionSummary[];
+}
+
+export interface SessionPageResponse extends SessionListResponse {
+  next_cursor: string | null;
+  has_more: boolean;
+  index_revision: number;
 }
 
 export interface SessionMessagesResponse {

@@ -1,14 +1,17 @@
 """HTTP route tests for chat session management."""
 
+import asyncio
 import json
+import threading
 from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.testing import TestApplication
 from config.workspace_llm_profiles import update_workspace_llm_profiles
-from api.routes.sessions import sessions_router
+from api.routes.sessions import _converge_session_prune_batches, sessions_router
 from auth_test_backend import AuthManager
 from persistence.chat_store import ChatStore
 from persistence.execution_store import (
@@ -16,7 +19,9 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     ExecutionStore,
 )
+from persistence.session_summary_index import SessionSummary, SessionSummaryIndex
 from utils.streaming import build_agent_event
+from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
 
 
@@ -91,6 +96,20 @@ class _InlinePool:
         return function(*args, **kwargs)
 
 
+class _GuardedPool:
+    def __init__(self):
+        self.active = False
+        self.calls = []
+
+    async def run(self, function, *args, **kwargs):
+        self.active = True
+        self.calls.append(getattr(function, "__name__", type(function).__name__))
+        try:
+            return function(*args, **kwargs)
+        finally:
+            self.active = False
+
+
 class _AvailableManager:
     async def list_runs(self, _scope):
         return []
@@ -101,6 +120,142 @@ class _AvailableManager:
 
     async def assert_session_available(self, _scope, _session_id):
         return None
+
+
+def test_background_prune_converges_across_bounded_batches():
+    calls = []
+
+    def prune(batch_size):
+        calls.append(batch_size)
+        remaining = max(0, 60 - (len(calls) - 1) * batch_size)
+        deleted = tuple(
+            f"session-{index}"
+            for index in range(min(batch_size, remaining))
+        )
+        return SimpleNamespace(
+            deleted_session_ids=deleted,
+            has_more=remaining > batch_size,
+            candidates_exhausted=remaining <= batch_size,
+            no_progress=False,
+        )
+
+    deleted = asyncio.run(
+        _converge_session_prune_batches(
+            SimpleNamespace(short_io=_InlinePool()),
+            prune,
+            batch_size=25,
+        )
+    )
+
+    assert deleted == 60
+    assert calls == [25, 25, 25]
+
+
+def test_background_prune_uses_explicit_has_more_not_deleted_batch_length():
+    calls = []
+    outcomes = [
+        SimpleNamespace(
+            deleted_session_ids=(),
+            has_more=True,
+            candidates_exhausted=False,
+            no_progress=True,
+        ),
+        SimpleNamespace(
+            deleted_session_ids=("deleted",),
+            has_more=False,
+            candidates_exhausted=True,
+            no_progress=False,
+        ),
+    ]
+
+    def prune(_batch_size):
+        calls.append(True)
+        return outcomes.pop(0)
+
+    deleted = asyncio.run(
+        _converge_session_prune_batches(
+            SimpleNamespace(short_io=_InlinePool()),
+            prune,
+            batch_size=25,
+        )
+    )
+
+    assert deleted == 1
+    assert calls == [True, True]
+
+
+def test_background_prune_stops_after_bounded_no_progress():
+    calls = []
+
+    def prune(_batch_size):
+        calls.append(True)
+        return SimpleNamespace(
+            deleted_session_ids=(),
+            has_more=True,
+            candidates_exhausted=False,
+            no_progress=True,
+        )
+
+    deleted = asyncio.run(
+        _converge_session_prune_batches(
+            SimpleNamespace(short_io=_InlinePool()),
+            prune,
+            batch_size=25,
+            deadline_seconds=1.0,
+            max_no_progress=3,
+            initial_backoff_seconds=0,
+        )
+    )
+
+    assert deleted == 0
+    assert len(calls) == 3
+
+
+def test_background_prune_is_single_flight_per_user_workspace():
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class ThreadPool:
+        async def run(self, function, *args, **kwargs):
+            return await asyncio.to_thread(function, *args, **kwargs)
+
+    def prune(_batch_size):
+        calls.append(True)
+        started.set()
+        assert release.wait(timeout=1.0)
+        return SimpleNamespace(
+            deleted_session_ids=(),
+            has_more=False,
+            candidates_exhausted=True,
+            no_progress=False,
+        )
+
+    async def scenario():
+        runtime = SimpleNamespace(short_io=ThreadPool())
+        first = asyncio.create_task(
+            _converge_session_prune_batches(
+                runtime,
+                prune,
+                convergence_key=("workspace-single-flight", "alice"),
+            )
+        )
+        while not started.is_set():
+            await asyncio.sleep(0)
+        second = asyncio.create_task(
+            _converge_session_prune_batches(
+                runtime,
+                prune,
+                convergence_key=("workspace-single-flight", "alice"),
+            )
+        )
+        assert await asyncio.wait_for(second, timeout=0.25) == 0
+        release.set()
+        assert await asyncio.wait_for(first, timeout=1.0) == 0
+
+    asyncio.run(scenario())
+
+    assert calls == [True]
 
 
 def _build_test_client(
@@ -846,3 +1001,420 @@ def test_list_sessions_does_not_attach_run_outside_async_scope(tmp_path, monkeyp
     assert session["active_run_id"] is None
     assert session["active_run_status"] == "idle"
     assert session["last_seq"] == 0
+
+
+class _IndexedChatStore:
+    def __init__(self, index):
+        self.session_summary_index = index
+        self.list_calls = 0
+        self.get_calls = []
+
+    def list_sessions(self, *, limit=1000):
+        self.list_calls += 1
+        del limit
+        return []
+
+    def get_session(self, session_id):
+        self.get_calls.append(session_id)
+        return _FakeSession(session_id)
+
+
+class _BoundedFallbackChatStore:
+    def __init__(self, index, sessions):
+        self.session_summary_index = index
+        self.sessions = list(sessions)
+        self.list_limits = []
+
+    def list_sessions(self, *, limit=1000):
+        self.list_limits.append(limit)
+        return self.sessions[:limit]
+
+
+class _CountingExecutionStore(_FakeExecutionStore):
+    def __init__(self):
+        super().__init__()
+        self.history_calls = []
+
+    def get_session_history(self, session_id):
+        self.history_calls.append(session_id)
+        return super().get_session_history(session_id)
+
+
+class _FaultingSummaryIndex:
+    def __init__(self, stage):
+        self.stage = stage
+
+    @property
+    def state(self):
+        return "degraded" if self.stage == "rebuild" else "ready"
+
+    def rebuild(self):
+        raise OSError("synthetic index rebuild failure")
+
+    def list_all(self):
+        raise AssertionError("legacy fallback must not read the failed index")
+
+    def list_page(self, **_options):
+        raise OSError("synthetic index page failure")
+
+
+def _summary_record(index, *, pending=False):
+    status = "awaiting_input" if pending else "idle"
+    interaction = (
+        {"id": "interaction-{}".format(index), "type": "input"}
+        if pending
+        else None
+    )
+    return SessionSummary.create(
+        session_id="session-{:04d}".format(index),
+        title="Synthetic {}".format(index),
+        created_at="2026-08-31T00:00:{:04d}+00:00".format(index),
+        updated_at="2026-08-31T00:00:{:04d}+00:00".format(index),
+        active_run_id="run-{:04d}".format(index) if pending else None,
+        metadata={"pinned": False},
+        last_run_status=status,
+        pending_interaction=interaction,
+    )
+
+
+def test_create_session_schedules_prune_until_retention_converges(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    chat_store = _FakeChatStore()
+    _stub_session_create_dependencies(monkeypatch, chat_store)
+    calls = []
+    scheduled = []
+
+    def prune_request_sessions_batch(*, max_sessions, batch_size):
+        del max_sessions
+        calls.append(batch_size)
+        deleted = tuple(
+            f"deleted-{index}"
+            for index in range(batch_size if len(calls) < 3 else 3)
+        )
+        return SimpleNamespace(
+            deleted_session_ids=deleted,
+            has_more=len(calls) < 3,
+            candidates_exhausted=len(calls) >= 3,
+            no_progress=False,
+        )
+
+    class Supervisor:
+        def start_derived(self, operation, *, name):
+            scheduled.append((operation, name))
+
+    monkeypatch.setattr(
+        "api.routes.prune_request_sessions_batch",
+        prune_request_sessions_batch,
+    )
+    client.app.state.runtime_container.supervisor = Supervisor()
+
+    response = client.post("/agentic/sessions", json={}, headers=headers)
+
+    assert response.status_code == 201
+    assert len(scheduled) == 1
+    asyncio.run(scheduled[0][0])
+    assert calls == [25, 25, 25]
+    assert scheduled[0][1].startswith("session-prune-convergence-")
+
+
+def test_list_sessions_uses_revisioned_index_pagination_without_detail_reads(
+    tmp_path,
+    monkeypatch,
+):
+    records = [_summary_record(index) for index in range(3)]
+    index = SessionSummaryIndex(
+        tmp_path / "session-summary-index.json",
+        rebuild_loader=lambda: records,
+    )
+    index.rebuild()
+    chat_store = _IndexedChatStore(index)
+    execution_store = _CountingExecutionStore()
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+
+    first = client.get("/agentic/sessions?limit=2", headers=headers)
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert [item["id"] for item in first_payload["sessions"]] == [
+        "session-0002",
+        "session-0001",
+    ]
+    assert first_payload["has_more"] is True
+    assert first_payload["next_cursor"]
+    assert isinstance(first_payload["index_revision"], int)
+
+    second = client.get(
+        "/agentic/sessions",
+        params={"limit": 2, "cursor": first_payload["next_cursor"]},
+        headers=headers,
+    )
+    assert second.status_code == 200
+    assert [item["id"] for item in second.json()["sessions"]] == [
+        "session-0000"
+    ]
+    assert second.json()["has_more"] is False
+    assert second.json()["next_cursor"] is None
+    assert chat_store.list_calls == 0
+    assert chat_store.get_calls == []
+    assert execution_store.history_calls == []
+
+    legacy = client.get("/agentic/sessions", headers=headers)
+    assert legacy.status_code == 200
+    assert set(legacy.json()) == {"sessions"}
+    assert len(legacy.json()["sessions"]) == 3
+
+    invalid = client.get(
+        "/agentic/sessions?limit=2&cursor=not-a-cursor",
+        headers=headers,
+    )
+    assert invalid.status_code == 400
+
+
+def test_disabled_summary_index_keeps_full_legacy_list_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("PERF_SESSION_SUMMARY_INDEX_ENABLED", "false")
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    manager = UserStoreManager("", "")
+    chat_store = manager.get_chat_store("admin", "session-test")
+    execution_store = manager.get_execution_store("admin", "session-test")
+    for index in range(3):
+        chat_store.create_session(
+            session_id="legacy-{}".format(index),
+            title="Legacy {}".format(index),
+        )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+
+    response = client.get("/agentic/sessions", headers=headers)
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"sessions"}
+    assert {item["id"] for item in response.json()["sessions"]} == {
+        "legacy-0",
+        "legacy-1",
+        "legacy-2",
+    }
+    assert manager.get_session_summary_index("admin", "session-test") is None
+
+
+def test_cursor_without_limit_is_rejected_even_when_summary_index_is_disabled(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("PERF_SESSION_SUMMARY_INDEX_ENABLED", "false")
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    manager = UserStoreManager("", "")
+    chat_store = manager.get_chat_store("admin", "session-test")
+    execution_store = manager.get_execution_store("admin", "session-test")
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+
+    response = client.get(
+        "/agentic/sessions",
+        params={"cursor": "opaque-cursor"},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"error": "limit is required when cursor is provided"}
+
+
+def test_index_rebuild_failure_returns_bounded_authoritative_legacy_list(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    chat_store = ChatStore(str(tmp_path / "legacy-fallback-chats"))
+    chat_store.create_session(session_id="legacy-fallback", title="Legacy fallback")
+    chat_store._summary_index = _FaultingSummaryIndex("rebuild")
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
+    )
+
+    response = client.get("/agentic/sessions", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
+    assert [item["id"] for item in response.json()["sessions"]] == [
+        "legacy-fallback"
+    ]
+
+
+@pytest.mark.parametrize("failure_stage", ["rebuild", "list_page"])
+def test_index_failure_returns_bounded_authoritative_page_for_paginated_requests(
+    tmp_path,
+    monkeypatch,
+    failure_stage,
+):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    chat_store = ChatStore(str(tmp_path / "paged-index-failure" / failure_stage))
+    chat_store.create_session(session_id="paged-session", title="Paged")
+    chat_store._summary_index = _FaultingSummaryIndex(failure_stage)
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
+    )
+
+    response = client.get(
+        "/agentic/sessions",
+        params={"limit": 50},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
+    assert [item["id"] for item in response.json()["sessions"]] == [
+        "paged-session"
+    ]
+
+
+def test_index_failure_fallback_bounds_authoritative_read(tmp_path, monkeypatch):
+    sessions = [_FakeSession("fallback-{}".format(index)) for index in range(5)]
+    chat_store = _BoundedFallbackChatStore(
+        _FaultingSummaryIndex("rebuild"),
+        sessions,
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
+    )
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/agentic/sessions",
+        params={"limit": 2},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
+    assert response.json()["index_fallback_truncated"] is True
+    assert len(response.json()["sessions"]) == 2
+    assert chat_store.list_limits == [3]
+
+
+def test_index_store_construction_and_page_read_are_offloaded(tmp_path, monkeypatch):
+    records = [_summary_record(index) for index in range(2)]
+    index = SessionSummaryIndex(
+        tmp_path / "session-summary-index.json",
+        rebuild_loader=lambda: records,
+    )
+    index.rebuild()
+    chat_store = _IndexedChatStore(index)
+    execution_store = _CountingExecutionStore()
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    pool = _GuardedPool()
+    client.app.state.runtime_container.short_io = pool
+
+    def guarded_stores():
+        assert pool.active is True
+        return chat_store, execution_store
+
+    monkeypatch.setattr("api.routes.sessions._get_user_stores", guarded_stores)
+    original_list_page = index.list_page
+    monkeypatch.setattr(
+        index,
+        "list_page",
+        lambda **options: (
+            original_list_page(**options)
+            if pool.active is True
+            else (_ for _ in ()).throw(AssertionError("page read blocked event loop"))
+        ),
+    )
+
+    response = client.get("/agentic/sessions?limit=1", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["sessions"][0]["id"] == "session-0001"
+    assert pool.calls
+
+
+@pytest.mark.parametrize("query", ["", "?limit=50"])
+def test_cold_missing_index_never_runs_full_rebuild_in_request_path(
+    tmp_path,
+    monkeypatch,
+    query,
+):
+    rebuild_threads = []
+    index = SessionSummaryIndex(
+        tmp_path / "missing-session-summary-index.json",
+        rebuild_loader=lambda: rebuild_threads.append(threading.current_thread().name) or [],
+    )
+    chat_store = _IndexedChatStore(index)
+    execution_store = _CountingExecutionStore()
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.get(f"/agentic/sessions{query}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["index_status"] == "rebuilding"
+    assert rebuild_threads == []
+
+
+def test_empty_authoritative_store_publishes_empty_index_on_first_request(
+    tmp_path,
+    monkeypatch,
+):
+    holder = {}
+    index = SessionSummaryIndex(
+        tmp_path / "empty-session-summary-index.json",
+        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+    )
+    chat_store = ChatStore(
+        str(tmp_path / "empty-chats"),
+        summary_index=index,
+    )
+    holder["store"] = chat_store
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
+    )
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.get("/agentic/sessions?limit=50", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["sessions"] == []
+    assert index.state == "ready"
+
+
+def test_first_page_of_1000_sessions_recovers_only_page_active_or_pending_items(
+    tmp_path,
+    monkeypatch,
+):
+    records = [
+        _summary_record(index, pending=index in {0, 999})
+        for index in range(1000)
+    ]
+    index = SessionSummaryIndex(
+        tmp_path / "session-summary-index.json",
+        rebuild_loader=lambda: records,
+    )
+    index.rebuild()
+    chat_store = _IndexedChatStore(index)
+    execution_store = _CountingExecutionStore()
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.get("/agentic/sessions?limit=50", headers=headers)
+
+    assert response.status_code == 200
+    assert len(response.json()["sessions"]) == 50
+    assert response.json()["sessions"][0]["id"] == "session-0999"
+    assert chat_store.list_calls == 0
+    assert chat_store.get_calls == ["session-0999"]
+    assert execution_store.history_calls == ["session-0999"]

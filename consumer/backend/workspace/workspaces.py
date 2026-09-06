@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import logging
 import os
 import re
 import secrets
 import shutil
+import stat
+import tempfile
 import threading
+import time
 import unicodedata
 import uuid
 from contextlib import contextmanager
@@ -17,11 +21,22 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Protocol
 from urllib.parse import unquote
 
-from config import AppConfig, LimitsConfig
-from config.model_profile_refs import model_profile_ref_to_dict, parse_model_profile_ref
+from config import LimitsConfig
+from config.model_profile_refs import (
+    ModelProfileRef,
+    model_profile_ref_to_dict,
+    parse_model_profile_ref,
+)
+from config.settings import StorageConfig
+from workspace.catalog_snapshot import (
+    WorkspaceCatalogData,
+    WorkspaceCatalogManager,
+    WorkspaceCatalogSnapshot,
+    WorkspaceSourceSignature,
+)
 
 try:
     import fcntl
@@ -44,6 +59,14 @@ _INVALID_WORKSPACE_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _workspace_var: ContextVar[Optional[str]] = ContextVar("workspace_id", default=None)
 _workspace_metadata_lock = threading.RLock()
 _workspace_endpoint_process_lock = threading.Lock()
+_workspace_catalog_manager: WorkspaceCatalogManager | None = None
+_workspace_catalog_manager_root: Path | None = None
+_workspace_catalog_last_generation = 0
+_workspace_config_generations: dict[str, int] = {}
+_TRANSIENT_WORKSPACE_CATALOG_ERRNOS = frozenset(
+    {errno.EAGAIN, errno.EINTR, errno.EBUSY, errno.ENOENT}
+)
+_IS_WINDOWS = os.name == "nt"
 
 
 class WorkspaceNotFoundError(KeyError):
@@ -85,6 +108,18 @@ class WorkspaceAuthorizationError(PermissionError):
     """Raised when a workspace metadata mutation is not authorized."""
 
 
+class WorkspaceDurabilityError(OSError):
+    """The replacement committed but directory durability is unconfirmed."""
+
+    def __init__(self, detail: str, *, committed: bool) -> None:
+        self.committed = committed
+        super().__init__(detail)
+
+
+class WorkspacePathError(ValueError):
+    """A workspace catalog path escaped its trusted on-disk layout."""
+
+
 class WorkspaceMCPEndpointError(ValueError):
     """Raised when persisted MCP endpoint identity is missing or invalid."""
 
@@ -124,7 +159,7 @@ def _utc_now() -> str:
 
 
 def get_runtime_root() -> Path:
-    return Path(AppConfig.from_env().project_root).resolve()
+    return Path(StorageConfig.from_env().project_root).resolve()
 
 
 def get_system_root() -> Path:
@@ -165,7 +200,7 @@ def _workspace_endpoint_file_lock(runtime_root: Path) -> Iterator[Path]:
 
 def _ensure_runtime_layout() -> None:
     get_runtime_root().mkdir(parents=True, exist_ok=True)
-    get_workspaces_root().mkdir(parents=True, exist_ok=True)
+    _trusted_workspaces_root(create=True)
     (get_system_root() / "skills").mkdir(parents=True, exist_ok=True)
 
 
@@ -233,28 +268,231 @@ def _with_suffix(base_id: str, suffix: str) -> str:
     return validate_workspace_id(f"{trimmed_base}{suffix_part}")
 
 
-def _read_workspace_metadata_raw(metadata_path: Path) -> Dict[str, Any]:
+def _is_link_or_junction(path: Path) -> bool:
+    candidate = Path(path)
+    if candidate.is_symlink():
+        return True
+    is_junction = getattr(candidate, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
+def _trusted_workspaces_root(
+    runtime_root: Path | None = None,
+    *,
+    create: bool = False,
+) -> Path:
+    root = _resolve_runtime_root(runtime_root)
+    workspaces_root = root / "workspaces"
+    if _is_link_or_junction(workspaces_root):
+        raise WorkspacePathError(
+            "workspaces root must not be a symlink or junction: {}".format(
+                workspaces_root
+            )
+        )
+    if create:
+        workspaces_root.mkdir(parents=True, exist_ok=True)
+    try:
+        metadata = workspaces_root.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return workspaces_root
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise WorkspacePathError(
+            "workspaces root is not a directory: {}".format(workspaces_root)
+        )
+    if workspaces_root.resolve(strict=True) != workspaces_root:
+        raise WorkspacePathError(
+            "workspaces root escaped the trusted runtime root: {}".format(
+                workspaces_root
+            )
+        )
+    return workspaces_root
+
+
+def _validate_workspace_directory_path(
+    workspace_dir: Path,
+    *,
+    workspaces_root: Path | None = None,
+) -> Path:
+    trusted_root = (
+        _trusted_workspaces_root()
+        if workspaces_root is None
+        else _trusted_workspaces_root(Path(workspaces_root).parent)
+    )
+    candidate = Path(workspace_dir)
+    if candidate.parent != trusted_root:
+        raise WorkspacePathError(
+            "workspace directory must be a direct child of the trusted "
+            "workspaces root: {}".format(candidate)
+        )
+    workspace_id = validate_workspace_id(candidate.name)
+    if workspace_id != candidate.name:
+        raise WorkspacePathError(
+            "workspace directory name is not canonical: {}".format(candidate)
+        )
+    if _is_link_or_junction(candidate):
+        raise WorkspacePathError(
+            "workspace directory must not be a symlink or junction: {}".format(
+                candidate
+            )
+        )
+    try:
+        metadata = candidate.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return candidate
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise WorkspacePathError(
+            "workspace path is not a directory: {}".format(candidate)
+        )
+    if candidate.resolve(strict=True) != trusted_root / workspace_id:
+        raise WorkspacePathError(
+            "workspace directory escaped the trusted workspaces root: {}".format(
+                candidate
+            )
+        )
+    return candidate
+
+
+def _validate_workspace_metadata_path(
+    metadata_path: Path,
+    *,
+    workspaces_root: Path | None = None,
+) -> Path:
+    candidate = Path(metadata_path)
+    if candidate.name != "workspace.json":
+        raise WorkspacePathError(
+            "workspace metadata must be named workspace.json: {}".format(candidate)
+        )
+    workspace_dir = _validate_workspace_directory_path(
+        candidate.parent,
+        workspaces_root=workspaces_root,
+    )
+    if _is_link_or_junction(candidate):
+        raise WorkspacePathError(
+            "workspace metadata must not be a symlink or junction: {}".format(
+                candidate
+            )
+        )
+    try:
+        metadata = candidate.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return candidate
+    if not stat.S_ISREG(metadata.st_mode):
+        raise WorkspacePathError(
+            "workspace metadata is not a regular file: {}".format(candidate)
+        )
+    if candidate.resolve(strict=True) != workspace_dir / "workspace.json":
+        raise WorkspacePathError(
+            "workspace metadata escaped its trusted workspace directory: {}".format(
+                candidate
+            )
+        )
+    return candidate
+
+
+def _read_workspace_metadata_raw(
+    metadata_path: Path,
+    *,
+    workspaces_root: Path | None = None,
+) -> Dict[str, Any]:
+    metadata_path = _validate_workspace_metadata_path(
+        metadata_path,
+        workspaces_root=workspaces_root,
+    )
     with metadata_path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def _write_json_atomic(path: Path, payload: Any) -> None:
-    """Write JSON with an atomic replace so interrupted writes cannot truncate state."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+def _fsync_directory(path: Path) -> None:
+    if _IS_WINDOWS:
+        return
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        0o700,
+    )
     try:
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(tmp_path, path)
+        os.fsync(descriptor)
     finally:
-        tmp_path.unlink(missing_ok=True)
+        os.close(descriptor)
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    """Durably replace one JSON document from a same-directory temporary file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    temporary_path = Path(temporary_name)
+    primary_error: BaseException | None = None
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+        try:
+            _fsync_directory(path.parent)
+        except Exception as exc:
+            raise WorkspaceDurabilityError(
+                "Workspace JSON replacement committed, but directory durability "
+                "could not be confirmed",
+                committed=True,
+            ) from exc
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup_error: BaseException | None = None
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except BaseException as exc:
+                cleanup_error = exc
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        except BaseException as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
+
+
+def _write_json_and_publish(
+    path: Path,
+    payload: Any,
+    publish: Callable[[], Any],
+) -> None:
+    try:
+        _write_json_atomic(path, payload)
+    except WorkspaceDurabilityError as exc:
+        if exc.committed:
+            try:
+                publish()
+            except BaseException as publish_error:
+                exc.add_note(
+                    "Workspace snapshot invalidation also failed: {}".format(
+                        type(publish_error).__name__
+                    )
+                )
+        raise
+    else:
+        publish()
 
 
 def _write_workspace_metadata(paths: WorkspacePaths, payload: Dict[str, Any]) -> None:
+    _validate_workspace_metadata_path(paths.metadata_path)
     paths.workspace_dir.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(paths.metadata_path, payload)
+    _validate_workspace_metadata_path(paths.metadata_path)
+    _write_json_and_publish(
+        paths.metadata_path,
+        payload,
+        lambda: invalidate_workspace_catalog(workspace_id=paths.workspace_id),
+    )
 
 
 def _read_workspace_settings() -> Dict[str, Any]:
@@ -270,18 +508,16 @@ def _read_workspace_settings() -> Dict[str, Any]:
 
 
 def _write_workspace_settings(payload: Dict[str, Any]) -> None:
-    _write_json_atomic(get_workspace_settings_path(), payload)
+    _write_json_and_publish(
+        get_workspace_settings_path(),
+        payload,
+        invalidate_workspace_catalog,
+    )
 
 
 def _list_workspace_dirs() -> List[Path]:
     _ensure_runtime_layout()
-    workspaces_root = get_workspaces_root()
-    if not workspaces_root.exists():
-        return []
-    return sorted(
-        [entry for entry in workspaces_root.iterdir() if entry.is_dir() and (entry / "workspace.json").exists()],
-        key=lambda item: item.name,
-    )
+    return _workspace_dirs_for_runtime_root(get_runtime_root())
 
 
 def _normalize_workspace_owner(owner: Optional[str]) -> Optional[str]:
@@ -334,17 +570,46 @@ def _validate_workspace_metadata_identity(
 
 
 def _workspace_dirs_for_runtime_root(runtime_root: Path) -> List[Path]:
-    workspaces_root = runtime_root / "workspaces"
+    workspaces_root = _trusted_workspaces_root(runtime_root)
     if not workspaces_root.exists():
         return []
-    return sorted(
-        [
-            entry
-            for entry in workspaces_root.iterdir()
-            if entry.is_dir() and (entry / "workspace.json").is_file()
-        ],
-        key=lambda item: item.name,
-    )
+    workspace_dirs: list[Path] = []
+    for entry in sorted(workspaces_root.iterdir(), key=lambda item: item.name):
+        if _is_link_or_junction(entry):
+            raise WorkspacePathError(
+                "workspace directory must not be a symlink or junction: {}".format(
+                    entry
+                )
+            )
+        try:
+            entry_metadata = entry.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(entry_metadata.st_mode):
+            continue
+        metadata_path = entry / "workspace.json"
+        if _is_link_or_junction(metadata_path):
+            raise WorkspacePathError(
+                "workspace metadata must not be a symlink or junction: {}".format(
+                    metadata_path
+                )
+            )
+        try:
+            metadata = metadata_path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise WorkspacePathError(
+                "workspace metadata is not a regular file: {}".format(
+                    metadata_path
+                )
+            )
+        _validate_workspace_metadata_path(
+            metadata_path,
+            workspaces_root=workspaces_root,
+        )
+        workspace_dirs.append(entry)
+    return workspace_dirs
 
 
 def _scan_workspace_mcp_endpoints(
@@ -357,7 +622,10 @@ def _scan_workspace_mcp_endpoints(
         workspace_id = workspace_dir.name
         metadata_path = workspace_dir / "workspace.json"
         try:
-            payload = _read_workspace_metadata_raw(metadata_path)
+            payload = _read_workspace_metadata_raw(
+                metadata_path,
+                workspaces_root=runtime_root / "workspaces",
+            )
             resolved_workspace_id = _validate_workspace_metadata_identity(
                 workspace_id,
                 payload,
@@ -512,6 +780,10 @@ def ensure_all_workspace_mcp_endpoint_ids(
             if not dry_run:
                 try:
                     for workspace_id, metadata_path, payload, endpoint_id in planned:
+                        _validate_workspace_metadata_path(
+                            metadata_path,
+                            workspaces_root=resolved_root / "workspaces",
+                        )
                         original_bytes = metadata_path.read_bytes()
                         backup_path = metadata_path.with_name(
                             "{}.{}".format(
@@ -521,8 +793,20 @@ def ensure_all_workspace_mcp_endpoint_ids(
                         )
                         _write_backup_once(backup_path, original_bytes)
                         payload["mcp_endpoint_id"] = endpoint_id
-                        _write_json_atomic(metadata_path, payload)
-                        persisted = _read_workspace_metadata_raw(metadata_path)
+                        if resolved_root == get_runtime_root():
+                            _write_json_and_publish(
+                                metadata_path,
+                                payload,
+                                lambda workspace_id=workspace_id: invalidate_workspace_catalog(
+                                    workspace_id=workspace_id
+                                ),
+                            )
+                        else:
+                            _write_json_atomic(metadata_path, payload)
+                        persisted = _read_workspace_metadata_raw(
+                            metadata_path,
+                            workspaces_root=resolved_root / "workspaces",
+                        )
                         _validate_workspace_metadata_identity(workspace_id, persisted)
                         if validate_mcp_endpoint_id(
                             persisted.get("mcp_endpoint_id")
@@ -601,6 +885,159 @@ def _workspace_to_public(
     }
 
 
+def _workspace_snapshot_enabled() -> bool:
+    value = os.getenv("PERF_WORKSPACE_SNAPSHOT_ENABLED", "true")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _workspace_source_signature(runtime_root: Path) -> WorkspaceSourceSignature:
+    return WorkspaceSourceSignature.from_root(runtime_root)
+
+
+def _is_security_workspace_catalog_error(exc: Exception) -> bool:
+    if isinstance(
+        exc,
+        (
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+            PermissionError,
+            TypeError,
+            ValueError,
+            KeyError,
+        ),
+    ):
+        return True
+    return isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM}
+
+
+def _is_transient_workspace_catalog_error(exc: Exception) -> bool:
+    if _is_security_workspace_catalog_error(exc):
+        return False
+    return (
+        isinstance(exc, OSError)
+        and exc.errno in _TRANSIENT_WORKSPACE_CATALOG_ERRNOS
+    )
+
+
+def _load_workspace_catalog_data(runtime_root: Path) -> WorkspaceCatalogData:
+    """Read one stable authoritative catalog for immutable publication."""
+    for _attempt in range(3):
+        before = _workspace_source_signature(runtime_root)
+        _ensure_workspace_state()
+        default_workspace_id = _get_default_workspace_id_authoritative()
+        items: list[dict[str, Any]] = []
+        for entry in _list_workspace_dirs():
+            metadata_path = entry / "workspace.json"
+            try:
+                payload = _read_workspace_metadata_raw(metadata_path)
+                _validate_workspace_metadata_identity(entry.name, payload)
+                items.append(
+                    _workspace_to_public(
+                        payload,
+                        default_workspace_id=default_workspace_id,
+                    )
+                )
+            except FileNotFoundError:
+                break
+        else:
+            items.sort(
+                key=lambda item: (
+                    0 if item.get("is_default") else 1,
+                    item["name"].lower(),
+                    item["id"],
+                )
+            )
+            after = _workspace_source_signature(runtime_root)
+            if before == after:
+                return WorkspaceCatalogData(
+                    source_signature=after,
+                    default_workspace_id=default_workspace_id,
+                    items=tuple(items),
+                )
+    raise FileNotFoundError("workspace catalog changed while it was being read")
+
+
+def _get_workspace_catalog_manager_locked() -> WorkspaceCatalogManager:
+    global _workspace_catalog_last_generation
+    global _workspace_catalog_manager
+    global _workspace_catalog_manager_root
+
+    runtime_root = get_runtime_root()
+    if (
+        _workspace_catalog_manager is not None
+        and _workspace_catalog_manager_root == runtime_root
+    ):
+        return _workspace_catalog_manager
+
+    if _workspace_catalog_manager is not None:
+        _workspace_catalog_last_generation = max(
+            _workspace_catalog_last_generation,
+            _workspace_catalog_manager.generation,
+        )
+        _workspace_catalog_last_generation += 1
+
+    root = runtime_root
+    _workspace_catalog_manager = WorkspaceCatalogManager(
+        loader=lambda: _load_workspace_catalog_data(root),
+        signature_loader=lambda: _workspace_source_signature(root),
+        initial_generation=_workspace_catalog_last_generation,
+        lock=_workspace_metadata_lock,
+        is_security_error=_is_security_workspace_catalog_error,
+        is_transient_error=_is_transient_workspace_catalog_error,
+    )
+    _workspace_catalog_manager_root = root
+    return _workspace_catalog_manager
+
+
+def get_workspace_catalog_snapshot() -> WorkspaceCatalogSnapshot:
+    with _workspace_metadata_lock:
+        manager = _get_workspace_catalog_manager_locked()
+        return manager.get_snapshot()
+
+
+def get_workspace_catalog_generation() -> int:
+    global _workspace_catalog_last_generation
+    with _workspace_metadata_lock:
+        manager = _get_workspace_catalog_manager_locked()
+        generation = manager.generation_after_drift_check()
+        _workspace_catalog_last_generation = max(
+            _workspace_catalog_last_generation,
+            generation,
+        )
+        return generation
+
+
+def get_workspace_config_generation(workspace_id: str) -> int:
+    resolved_id = validate_workspace_id(workspace_id)
+    with _workspace_metadata_lock:
+        return _workspace_config_generations.get(resolved_id, 0)
+
+
+def invalidate_workspace_catalog(
+    *,
+    workspace_id: str | None = None,
+    runtime_config: bool = False,
+) -> int:
+    """Invalidate only after the corresponding durable write has succeeded."""
+    global _workspace_catalog_last_generation
+    resolved_id = validate_workspace_id(workspace_id) if workspace_id else None
+    with _workspace_metadata_lock:
+        if runtime_config:
+            if resolved_id is None:
+                raise ValueError("workspace_id is required for runtime config invalidation")
+            generation = _workspace_config_generations.get(resolved_id, 0) + 1
+            _workspace_config_generations[resolved_id] = generation
+            return generation
+
+        manager = _get_workspace_catalog_manager_locked()
+        generation = manager.invalidate()
+        _workspace_catalog_last_generation = max(
+            _workspace_catalog_last_generation,
+            generation,
+        )
+        return generation
+
+
 def user_can_access_workspace(user: Any, workspace: Dict[str, Any], is_default: bool) -> bool:
     """Return whether a user may access a workspace under the shared ACL policy."""
     if user is None:
@@ -656,12 +1093,20 @@ def _init_workspace_layout(
 
 def get_workspace_paths(workspace_id: Optional[str] = None) -> WorkspacePaths:
     resolved_id = validate_workspace_id(workspace_id or get_current_workspace_id())
-    workspace_dir = get_workspaces_root() / resolved_id
+    workspaces_root = _trusted_workspaces_root()
+    workspace_dir = _validate_workspace_directory_path(
+        workspaces_root / resolved_id,
+        workspaces_root=workspaces_root,
+    )
+    metadata_path = _validate_workspace_metadata_path(
+        workspace_dir / "workspace.json",
+        workspaces_root=workspaces_root,
+    )
     runtime_dir = workspace_dir / "runtime"
     return WorkspacePaths(
         workspace_id=resolved_id,
         workspace_dir=workspace_dir,
-        metadata_path=workspace_dir / "workspace.json",
+        metadata_path=metadata_path,
         ontologies_dir=workspace_dir / "ontologies",
         skills_dir=workspace_dir / "skills",
         files_dir=workspace_dir / "files",
@@ -697,14 +1142,25 @@ def get_skill_roots(workspace_id: Optional[str] = None) -> List[Path]:
     ]
 
 
-def workspace_exists(workspace_id: str) -> bool:
+def _workspace_exists_authoritative(workspace_id: str) -> bool:
     return get_workspace_paths(workspace_id).metadata_path.exists()
+
+
+def workspace_exists(workspace_id: str) -> bool:
+    resolved_id = validate_workspace_id(workspace_id)
+    if not _workspace_snapshot_enabled():
+        return _workspace_catalog_bypass(
+            lambda: _workspace_exists_authoritative(resolved_id),
+            workspace_id=resolved_id,
+        )
+    return get_workspace_catalog_snapshot().contains(resolved_id)
 
 
 def _migrate_legacy_default_workspace() -> Optional[str]:
     _ensure_runtime_layout()
-    legacy_dir = get_workspaces_root() / LEGACY_DEFAULT_WORKSPACE_ID
-    legacy_metadata = legacy_dir / "workspace.json"
+    legacy_paths = get_workspace_paths(LEGACY_DEFAULT_WORKSPACE_ID)
+    legacy_dir = legacy_paths.workspace_dir
+    legacy_metadata = legacy_paths.metadata_path
     if not legacy_metadata.exists():
         return None
 
@@ -719,12 +1175,12 @@ def _do_migrate_legacy(legacy_dir: Path, raw: Dict[str, Any]) -> str:
     target_id = _slugify_workspace_name(raw.get("name") or raw.get("id") or "workspace")
     if target_id == LEGACY_DEFAULT_WORKSPACE_ID:
         target_id = validate_workspace_id(f"workspace-{uuid.uuid4().hex[:8]}")
-    while (get_workspaces_root() / target_id).exists():
-        target_id = _with_suffix(target_id, uuid.uuid4().hex[:4])
-
-    target_dir = get_workspaces_root() / target_id
-    shutil.move(str(legacy_dir), str(target_dir))
     target_paths = get_workspace_paths(target_id)
+    while target_paths.workspace_dir.exists():
+        target_id = _with_suffix(target_id, uuid.uuid4().hex[:4])
+        target_paths = get_workspace_paths(target_id)
+
+    shutil.move(str(legacy_dir), str(target_paths.workspace_dir))
     raw["id"] = target_id
     raw["updated_at"] = raw.get("updated_at") or _utc_now()
     _write_workspace_metadata(target_paths, raw)
@@ -748,10 +1204,10 @@ def _ensure_workspace_state() -> None:
             "default_workspace_id" in settings and default_workspace_id is None
         )
 
-        if default_workspace_id and workspace_exists(default_workspace_id):
+        if default_workspace_id and _workspace_exists_authoritative(default_workspace_id):
             return
 
-        if migrated_id and workspace_exists(migrated_id):
+        if migrated_id and _workspace_exists_authoritative(migrated_id):
             settings["default_workspace_id"] = migrated_id
             _write_workspace_settings(settings)
             return
@@ -768,12 +1224,12 @@ def _ensure_workspace_state() -> None:
                 _write_workspace_settings(settings)
 
 
-def get_default_workspace_id() -> Optional[str]:
+def _get_default_workspace_id_authoritative() -> Optional[str]:
     with _workspace_metadata_lock:
         _ensure_workspace_state()
         settings = _read_workspace_settings()
         default_workspace_id = settings.get("default_workspace_id")
-        if default_workspace_id and workspace_exists(default_workspace_id):
+        if default_workspace_id and _workspace_exists_authoritative(default_workspace_id):
             return validate_workspace_id(default_workspace_id)
         if "default_workspace_id" in settings and default_workspace_id is None:
             return None
@@ -784,6 +1240,12 @@ def get_default_workspace_id() -> Optional[str]:
             set_default_workspace(only_id)
             return only_id
         return None
+
+
+def get_default_workspace_id() -> Optional[str]:
+    if not _workspace_snapshot_enabled():
+        return _workspace_catalog_bypass(_get_default_workspace_id_authoritative)
+    return get_workspace_catalog_snapshot().default_workspace_id
 
 
 def set_default_workspace(workspace_id: str) -> Dict[str, str]:
@@ -808,16 +1270,24 @@ def get_current_workspace_id() -> str:
     raise ValueError("当前未配置默认工作空间")
 
 
-def list_workspaces() -> List[Dict[str, str]]:
+def get_bound_workspace_id() -> Optional[str]:
+    """Return only the request/task-bound workspace without storage fallback."""
+    current = _workspace_var.get()
+    return validate_workspace_id(current) if current else None
+
+
+def _list_workspaces_authoritative() -> List[Dict[str, Any]]:
     _ensure_workspace_state()
-    default_workspace_id = get_default_workspace_id()
-    items: List[Dict[str, str]] = []
+    default_workspace_id = _get_default_workspace_id_authoritative()
+    items: List[Dict[str, Any]] = []
     for entry in _list_workspace_dirs():
         metadata_path = entry / "workspace.json"
         try:
             payload = _read_workspace_metadata_raw(metadata_path)
             _validate_workspace_metadata_identity(entry.name, payload)
             items.append(_workspace_to_public(payload, default_workspace_id=default_workspace_id))
+        except WorkspacePathError:
+            raise
         except Exception:
             continue
 
@@ -825,7 +1295,13 @@ def list_workspaces() -> List[Dict[str, str]]:
     return items
 
 
-def get_workspace(workspace_id: str) -> Dict[str, str]:
+def list_workspaces() -> List[Dict[str, Any]]:
+    if not _workspace_snapshot_enabled():
+        return _workspace_catalog_bypass(_list_workspaces_authoritative)
+    return get_workspace_catalog_snapshot().copy_items()
+
+
+def _get_workspace_authoritative(workspace_id: str) -> Dict[str, Any]:
     _ensure_workspace_state()
     paths = get_workspace_paths(workspace_id)
     with _workspace_metadata_lock:
@@ -835,8 +1311,49 @@ def get_workspace(workspace_id: str) -> Dict[str, str]:
         _validate_workspace_metadata_identity(paths.workspace_id, payload)
         return _workspace_to_public(
             payload,
-            default_workspace_id=get_default_workspace_id(),
+            default_workspace_id=_get_default_workspace_id_authoritative(),
         )
+
+
+def get_workspace(workspace_id: str) -> Dict[str, Any]:
+    resolved_id = validate_workspace_id(workspace_id)
+    if not _workspace_snapshot_enabled():
+        return _workspace_catalog_bypass(
+            lambda: _get_workspace_authoritative(resolved_id),
+            workspace_id=resolved_id,
+        )
+    try:
+        return get_workspace_catalog_snapshot().copy_item(resolved_id)
+    except KeyError as exc:
+        raise WorkspaceNotFoundError(resolved_id) from exc
+
+
+def _workspace_catalog_bypass(
+    loader: Callable[[], Any],
+    *,
+    workspace_id: str = "",
+) -> Any:
+    started = time.perf_counter()
+    result = "error"
+    try:
+        value = loader()
+        result = "bypass"
+        return value
+    finally:
+        try:
+            from integration.observability.performance import record_cache_access
+
+            record_cache_access(
+                "workspace_catalog",
+                result,
+                max(0.0, (time.perf_counter() - started) * 1000),
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Workspace catalog bypass metric recording failed",
+                exc_info=True,
+            )
 
 
 def create_workspace(
@@ -882,11 +1399,11 @@ def create_workspace(
                 )
             if workspace_id:
                 candidate = validate_workspace_id(workspace_id)
-                if workspace_exists(candidate):
+                if _workspace_exists_authoritative(candidate):
                     raise ValueError(f"工作空间 ID '{candidate}' 已存在")
             else:
                 candidate = _slugify_workspace_name(normalized_name)
-                while workspace_exists(candidate):
+                while _workspace_exists_authoritative(candidate):
                     candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
             if not allow_reserved_id and _PERSONAL_WORKSPACE_ID_PATTERN.fullmatch(
                 candidate
@@ -998,6 +1515,8 @@ def update_workspace_authorized(
 
 def delete_workspace(workspace_id: str, *, allow_default: bool = False) -> None:
     resolved_id = validate_workspace_id(workspace_id)
+    from ontology.view_cache import invalidate_ontology_views
+
     with _workspace_metadata_lock:
         is_default = get_default_workspace_id() == resolved_id
         if is_default and not allow_default:
@@ -1005,11 +1524,20 @@ def delete_workspace(workspace_id: str, *, allow_default: bool = False) -> None:
         paths = get_workspace_paths(resolved_id)
         if not paths.metadata_path.exists():
             raise WorkspaceNotFoundError(resolved_id)
-        shutil.rmtree(paths.workspace_dir, ignore_errors=True)
+        shutil.rmtree(paths.workspace_dir)
+        if os.path.lexists(paths.workspace_dir):
+            raise OSError(
+                "workspace directory still exists after deletion: {}".format(
+                    paths.workspace_dir
+                )
+            )
         if is_default:
             settings = _read_workspace_settings()
             settings["default_workspace_id"] = None
             _write_workspace_settings(settings)
+        else:
+            invalidate_workspace_catalog(workspace_id=resolved_id)
+        invalidate_ontology_views(workspace_id=resolved_id)
 
     # Keep process caches from retaining content for a deleted workspace id.
     from ontology.ontologies import invalidate_ontology_registry
@@ -1091,7 +1619,10 @@ def evaluate_workspace_subject_access(
     if resolved_workspace_id != claimed_workspace_id:
         return WorkspaceSubjectAccessDecision(False, "workspace_metadata_invalid")
 
-    paths = get_workspace_paths(resolved_workspace_id)
+    try:
+        paths = get_workspace_paths(resolved_workspace_id)
+    except (OSError, TypeError, ValueError):
+        return WorkspaceSubjectAccessDecision(False, "workspace_metadata_invalid")
     with _workspace_metadata_lock:
         if not paths.metadata_path.is_file():
             return WorkspaceSubjectAccessDecision(False, "workspace_not_found")
@@ -1194,18 +1725,27 @@ def _abort_workspace_metadata_invalid(workspace_id: str) -> None:
 
 
 def _enforce_workspace_access(
-    workspace_id: str, *, default_workspace_id: Optional[str] = None
+    workspace_id: str,
+    *,
+    default_workspace_id: Optional[str] = None,
+    workspace: Optional[Dict[str, Any]] = None,
 ) -> str:
     user = _current_request_user()
     if user is None:
         return workspace_id
-    paths = get_workspace_paths(workspace_id)
-    try:
-        with _workspace_metadata_lock:
-            workspace = _read_workspace_metadata_raw(paths.metadata_path)
+    if workspace is None:
+        try:
+            paths = get_workspace_paths(workspace_id)
+            with _workspace_metadata_lock:
+                workspace = _read_workspace_metadata_raw(paths.metadata_path)
+                _validate_workspace_metadata_identity(workspace_id, workspace)
+        except Exception:
+            _abort_workspace_metadata_invalid(workspace_id)
+    else:
+        try:
             _validate_workspace_metadata_identity(workspace_id, workspace)
-    except Exception:
-        _abort_workspace_metadata_invalid(workspace_id)
+        except Exception:
+            _abort_workspace_metadata_invalid(workspace_id)
     if default_workspace_id is None:
         default_workspace_id = get_default_workspace_id()
     if not user_can_access_workspace(
@@ -1241,31 +1781,60 @@ def enforce_workspace_owner_or_admin(workspace_id: str) -> str:
 
 
 def resolve_workspace_id(request: WorkspaceRequest) -> str:
+    if _workspace_snapshot_enabled():
+        snapshot = get_workspace_catalog_snapshot()
+        default_workspace_id = snapshot.default_workspace_id
+        header_value = request.headers.get(WORKSPACE_HEADER)
+        if header_value:
+            workspace_id = validate_workspace_id(unquote(header_value))
+            if not snapshot.contains(workspace_id):
+                raise WorkspaceNotFoundError(workspace_id)
+            return _enforce_workspace_access(
+                workspace_id,
+                default_workspace_id=default_workspace_id,
+                workspace=snapshot.copy_item(workspace_id),
+            )
+        if default_workspace_id is not None:
+            return _enforce_workspace_access(
+                default_workspace_id,
+                default_workspace_id=default_workspace_id,
+                workspace=snapshot.copy_item(default_workspace_id),
+            )
+        if len(snapshot.ordered_ids) == 1:
+            return _enforce_workspace_access(
+                snapshot.ordered_ids[0],
+                default_workspace_id=None,
+                workspace=snapshot.copy_item(snapshot.ordered_ids[0]),
+            )
+        if not snapshot.ordered_ids:
+            raise ValueError("当前不存在任何工作空间")
+        raise ValueError("X-Workspace-Id 不能为空；当前存在多个工作空间")
+
     _ensure_workspace_state()
-    default_workspace_id = get_default_workspace_id()
+    default_workspace_id = _get_default_workspace_id_authoritative()
     header_value = request.headers.get(WORKSPACE_HEADER)
     if header_value:
         workspace_id = validate_workspace_id(unquote(header_value))
-        if not workspace_exists(workspace_id):
+        if not _workspace_exists_authoritative(workspace_id):
             raise WorkspaceNotFoundError(workspace_id)
         return _enforce_workspace_access(
             workspace_id,
             default_workspace_id=default_workspace_id,
         )
 
-    if default_workspace_id and workspace_exists(default_workspace_id):
+    if default_workspace_id and _workspace_exists_authoritative(default_workspace_id):
         return _enforce_workspace_access(
             default_workspace_id,
             default_workspace_id=default_workspace_id,
         )
 
-    workspaces = list_workspaces()
-    if len(workspaces) == 1:
+    authoritative_workspaces = _list_workspaces_authoritative()
+    if len(authoritative_workspaces) == 1:
         return _enforce_workspace_access(
-            workspaces[0]["id"],
+            authoritative_workspaces[0]["id"],
             default_workspace_id=default_workspace_id,
         )
-    if not workspaces:
+    if not authoritative_workspaces:
         raise ValueError("当前不存在任何工作空间")
     raise ValueError("X-Workspace-Id 不能为空；当前存在多个工作空间")
 
@@ -1306,6 +1875,15 @@ def _get_runtime_config_path(workspace_id: str) -> Path:
     return get_workspace_paths(workspace_id).workspace_dir / "runtime_config.json"
 
 
+@contextmanager
+def _model_profile_reference_guard() -> Iterator[None]:
+    # Imported lazily because the aggregate reader depends on workspace helpers.
+    from config.model_profile_references import model_profile_reference_guard
+
+    with model_profile_reference_guard():
+        yield
+
+
 def _migrate_legacy_runtime_llm_ref(workspace_id, config_path, saved):
     """DEPRECATED: rename legacy llm.default_profile_ref to default_main_profile_ref. Remove next release."""
     llm = saved.get("llm")
@@ -1316,7 +1894,14 @@ def _migrate_legacy_runtime_llm_ref(workspace_id, config_path, saved):
     else:
         llm.pop("default_profile_ref", None)
     try:
-        _write_json_atomic(config_path, saved)
+        _write_json_and_publish(
+            config_path,
+            saved,
+            lambda: invalidate_workspace_catalog(
+                workspace_id=workspace_id,
+                runtime_config=True,
+            ),
+        )
         logging.getLogger(__name__).warning(
             "Migrated workspace %s legacy llm.default_profile_ref to default_main_profile_ref",
             workspace_id,
@@ -1329,6 +1914,11 @@ def _migrate_legacy_runtime_llm_ref(workspace_id, config_path, saved):
 
 
 def get_workspace_runtime_config(workspace_id: str) -> dict:
+    with _model_profile_reference_guard():
+        return _get_workspace_runtime_config_locked(workspace_id)
+
+
+def _get_workspace_runtime_config_locked(workspace_id: str) -> dict:
     with _workspace_metadata_lock:
         if not workspace_exists(workspace_id):
             raise WorkspaceNotFoundError(workspace_id)
@@ -1353,12 +1943,21 @@ def get_workspace_runtime_config(workspace_id: str) -> dict:
 
 def update_workspace_runtime_config(workspace_id: str, data: dict) -> dict:
     normalized = _normalize_runtime_config_patch(data, strict=True)
-    with _workspace_metadata_lock:
-        if not workspace_exists(workspace_id):
-            raise WorkspaceNotFoundError(workspace_id)
-        current = get_workspace_runtime_config(workspace_id)
-        _deep_update_runtime_config(current, normalized)
-        _write_json_atomic(_get_runtime_config_path(workspace_id), current)
+    with _model_profile_reference_guard():
+        _validate_global_runtime_profile_refs(normalized.get("llm"))
+        with _workspace_metadata_lock:
+            if not workspace_exists(workspace_id):
+                raise WorkspaceNotFoundError(workspace_id)
+            current = _get_workspace_runtime_config_locked(workspace_id)
+            _deep_update_runtime_config(current, normalized)
+            _write_json_and_publish(
+                _get_runtime_config_path(workspace_id),
+                current,
+                lambda: invalidate_workspace_catalog(
+                    workspace_id=workspace_id,
+                    runtime_config=True,
+                ),
+            )
     return current
 
 
@@ -1372,6 +1971,35 @@ def _deep_update_runtime_config(target: dict, source: dict) -> None:
             _deep_update_runtime_config(target[key], value)
         else:
             target[key] = value
+
+
+def _validate_global_runtime_profile_refs(llm_patch: Any) -> None:
+    if not isinstance(llm_patch, Mapping):
+        return
+    requested_ids: set[str] = set()
+    for field_name in ("default_main_profile_ref", "default_task_profile_ref"):
+        raw_reference = llm_patch.get(field_name)
+        if raw_reference in (None, ""):
+            continue
+        parsed = parse_model_profile_ref(raw_reference)
+        if parsed is not None and parsed.scope == "global":
+            requested_ids.add(parsed.id)
+    if not requested_ids:
+        return
+
+    from config.system_config import load_system_config
+
+    profiles = load_system_config().get("llm_profiles", {}).get("profiles", [])
+    available_ids = {
+        str(profile.get("id") or "").strip()
+        for profile in profiles
+        if isinstance(profile, Mapping)
+    }
+    missing = sorted(requested_ids - available_ids)
+    if missing:
+        raise ValueError(
+            "global model profile {} 不存在".format(", ".join(missing))
+        )
 
 
 def _normalize_runtime_config_patch(data: dict, *, strict: bool) -> dict:
@@ -1422,11 +2050,47 @@ def _normalize_runtime_config_patch(data: dict, *, strict: bool) -> dict:
                     if llm_value in (None, ""):
                         normalized_llm[llm_key] = None
                     else:
+                        if not isinstance(
+                            llm_value,
+                            (str, Mapping, ModelProfileRef),
+                        ):
+                            raise ValueError(
+                                f"{llm_key} must be a model profile reference"
+                            )
+                        reference_value = (
+                            dict(llm_value)
+                            if isinstance(llm_value, Mapping)
+                            else llm_value
+                        )
                         try:
                             normalized_llm[llm_key] = model_profile_ref_to_dict(
-                                parse_model_profile_ref(llm_value)
+                                parse_model_profile_ref(reference_value)
                             )
                         except ValueError as exc:
                             raise ValueError(str(exc)) from exc
             normalized[key] = normalized_llm
     return normalized
+
+
+def validate_workspace_runtime_config_document(
+    data: Mapping[str, Any],
+    *,
+    allow_legacy_default_profile_ref: bool = False,
+) -> None:
+    """Strictly validate one persisted runtime-config document."""
+    if not isinstance(data, Mapping):
+        raise ValueError("Runtime config document must be an object")
+
+    candidate = copy.deepcopy(dict(data))
+    llm = candidate.get("llm")
+    if allow_legacy_default_profile_ref and isinstance(llm, Mapping):
+        normalized_llm = copy.deepcopy(dict(llm))
+        if "default_profile_ref" in normalized_llm:
+            if "default_main_profile_ref" not in normalized_llm:
+                normalized_llm["default_main_profile_ref"] = normalized_llm[
+                    "default_profile_ref"
+                ]
+            normalized_llm.pop("default_profile_ref", None)
+        candidate["llm"] = normalized_llm
+
+    _normalize_runtime_config_patch(candidate, strict=True)

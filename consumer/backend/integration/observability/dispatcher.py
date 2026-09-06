@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Iterable
 
 from utils.logging import get_logger
@@ -65,7 +66,9 @@ class RuntimeEventDispatcher:
                 logger.warning("Runtime event sink failed to reserve run", exc_info=True)
         return reserved
 
-    def close(self, timeout: float = 1.0) -> None:
+    def close(self, timeout: float = 1.0) -> bool:
+        complete = True
+        deadline = time.monotonic() + max(0.0, float(timeout))
         for sink in self._sinks:
             if not sink.close_on_close:
                 continue
@@ -73,32 +76,72 @@ class RuntimeEventDispatcher:
             if not callable(close):
                 continue
             try:
-                close(timeout=timeout)
+                result = close(timeout=max(0.0, deadline - time.monotonic()))
             except TypeError:
-                close()
+                try:
+                    result = close()
+                except Exception:
+                    complete = False
+                    logger.warning("Runtime event sink failed to close", exc_info=True)
+                    continue
+                else:
+                    complete = result is not False and complete
             except Exception:
+                complete = False
                 logger.warning("Runtime event sink failed to close", exc_info=True)
+            else:
+                complete = result is not False and complete
+        return complete
 
-    def retire(self, timeout: float = 1.0) -> None:
+    def retire(self, timeout: float = 1.0) -> bool:
+        complete = True
+        deadline = time.monotonic() + max(0.0, float(timeout))
         for sink in self._sinks:
             if not sink.close_on_close:
                 continue
             retire = getattr(sink.observer, "retire", None)
             if callable(retire):
                 try:
-                    retire(timeout=timeout)
+                    result = retire(
+                        timeout=max(0.0, deadline - time.monotonic())
+                    )
+                    complete = result is not False and complete
                     continue
                 except TypeError:
-                    retire()
+                    try:
+                        result = retire()
+                    except Exception:
+                        complete = False
+                        logger.warning(
+                            "Runtime event sink failed to retire",
+                            exc_info=True,
+                        )
+                    else:
+                        complete = result is not False and complete
                     continue
                 except Exception:
+                    complete = False
                     logger.warning("Runtime event sink failed to retire", exc_info=True)
             close = getattr(sink.observer, "close", None)
             if not callable(close):
                 continue
             try:
-                close(timeout=timeout)
+                result = close(timeout=max(0.0, deadline - time.monotonic()))
             except TypeError:
-                close()
+                try:
+                    result = close()
+                except Exception:
+                    complete = False
+                    logger.warning(
+                        "Runtime event sink failed to close during retire",
+                        exc_info=True,
+                    )
+                    continue
+                else:
+                    complete = result is not False and complete
             except Exception:
+                complete = False
                 logger.warning("Runtime event sink failed to close during retire", exc_info=True)
+            else:
+                complete = result is not False and complete
+        return complete

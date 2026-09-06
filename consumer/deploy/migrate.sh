@@ -54,21 +54,6 @@ if [ "${#POSITIONAL[@]}" -gt 2 ]; then
     die "Usage: migrate.sh [from-version] [to-version] [--dry-run|--confirm-writes-stopped]"
 fi
 
-ARGS=(
-    --root "${BUNDLE_ROOT}"
-    --backup-root "${BACKUP_ROOT}"
-    --report "${REPORT_FILE}"
-    --from-version "${FROM_VERSION}"
-    --to-version "${TO_VERSION}"
-)
-
-if [ "${DRY_RUN}" = true ]; then
-    ARGS+=(--dry-run)
-fi
-if [ "${WRITES_STOPPED}" = true ]; then
-    ARGS+=(--confirm-writes-stopped)
-fi
-
 ensure_runtime_layout
 ensure_env_files
 require_file "${BUNDLE_ROOT}/backend/.env"
@@ -79,49 +64,123 @@ BACKEND_IMAGE="$(manifest_get backend_image)"
 docker image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1 || die \
     "Backend image ${BACKEND_IMAGE} is not loaded; run deploy.sh or docker load the release image first"
 
-# Ensure the one-shot migration runtime exists before the auth migration can apply changes.
-python3 "${SCRIPT_DIR}/migrate_auth_workspace.py" "${ARGS[@]}"
+if [ "${DRY_RUN}" != true ] && [ "${WRITES_STOPPED}" != true ]; then
+    die "Apply migration requires --confirm-writes-stopped"
+fi
 
-STORAGE_ARGS=(
-    --root "${BUNDLE_ROOT}"
-    --report "${STORAGE_REPORT_FILE}"
-)
+REPORT_HOST_DIR="$(cd "$(dirname "${REPORT_FILE}")" && pwd)"
+REPORT_FILE="${REPORT_HOST_DIR}/$(basename "${REPORT_FILE}")"
+BACKEND_REPORT_FILE="${REPORT_HOST_DIR}/backend-migration-report.json"
+STORAGE_REPORT_FILE="${REPORT_HOST_DIR}/$(basename "${REPORT_FILE%.json}-persistent-storage.json")"
+SYSTEM_CONFIG_REPORT="${REPORT_HOST_DIR}/$(basename "${REPORT_FILE%.json}-system-config.json")"
+DATA_ACCESS=rw
 if [ "${DRY_RUN}" = true ]; then
-    STORAGE_ARGS+=(--dry-run)
+    DATA_ACCESS=ro
+fi
+
+case "${RESOLVED_STORAGE_MODE}" in
+    bind)
+        RUNTIME_STORAGE_SOURCE="${BUNDLE_ROOT}/.onto-runtime"
+        AUTH_STORAGE_SOURCE="${BUNDLE_ROOT}/.onto-auth"
+        ;;
+    volume)
+        docker volume inspect "${ACTIVE_RUNTIME_VOLUME}" >/dev/null 2>&1 \
+            || die "Runtime volume does not exist: ${ACTIVE_RUNTIME_VOLUME}"
+        docker volume inspect "${ACTIVE_AUTH_VOLUME}" >/dev/null 2>&1 \
+            || die "Auth volume does not exist: ${ACTIVE_AUTH_VOLUME}"
+        RUNTIME_STORAGE_SOURCE="${ACTIVE_RUNTIME_VOLUME}"
+        AUTH_STORAGE_SOURCE="${ACTIVE_AUTH_VOLUME}"
+        ;;
+esac
+
+MIGRATION_DOCKER_ARGS=(
+    --rm
+    --network=none
+    --read-only
+    --cap-drop ALL
+    --security-opt no-new-privileges
+    --user 0:0
+    --tmpfs /tmp:rw,noexec,nosuid,size=256m
+    -v "${RUNTIME_STORAGE_SOURCE}:/release/.onto-runtime:${DATA_ACCESS}"
+    -v "${AUTH_STORAGE_SOURCE}:/release/.onto-auth:${DATA_ACCESS}"
+    -v "${BUNDLE_ROOT}/backend:/release/backend:ro"
+    -v "${SCRIPT_DIR}:/deploy-tools:ro"
+    -v "${REPORT_HOST_DIR}:/migration-reports:rw"
+    -v "${BACKUP_ROOT}:/migration-backups:rw"
+)
+# The system-config utility uses same-directory temporary files for an atomic
+# replacement.  A single-file bind mount cannot replace its mount point, so
+# give only that one isolated invocation a writable backend directory.  The
+# other migration containers keep the release source read-only; dry-run keeps
+# this invocation read-only as well.
+SYSTEM_CONFIG_DOCKER_ARGS=("${MIGRATION_DOCKER_ARGS[@]}")
+SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED=false
+for index in "${!SYSTEM_CONFIG_DOCKER_ARGS[@]}"; do
+    if [ "${SYSTEM_CONFIG_DOCKER_ARGS[$index]}" = "${BUNDLE_ROOT}/backend:/release/backend:ro" ]; then
+        SYSTEM_CONFIG_DOCKER_ARGS[$index]="${BUNDLE_ROOT}/backend:/release/backend:${DATA_ACCESS}"
+        SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED=true
+        break
+    fi
+done
+if [ "${SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED}" != true ]; then
+    die "System-config migration backend mount was not found"
 fi
 if [ -n "${LEGACY_BACKUP_DIR}" ]; then
-    STORAGE_ARGS+=(--legacy-backup-dir "${LEGACY_BACKUP_DIR}")
+    require_dir "${LEGACY_BACKUP_DIR}"
+    MIGRATION_DOCKER_ARGS+=(-v "${LEGACY_BACKUP_DIR}:/legacy-backup:ro")
+    SYSTEM_CONFIG_DOCKER_ARGS+=(-v "${LEGACY_BACKUP_DIR}:/legacy-backup:ro")
 fi
-python3 "${SCRIPT_DIR}/migrate_persistent_storage.py" "${STORAGE_ARGS[@]}"
 
-SYSTEM_CONFIG_REPORT="${REPORT_FILE%.json}-system-config.json"
-SYSTEM_CONFIG_ARGS=(
-    --root "${BUNDLE_ROOT}"
-    --report "${SYSTEM_CONFIG_REPORT}"
+AUTH_ARGS=(
+    --root /release
+    --backup-root /migration-backups
+    --report "/migration-reports/$(basename "${REPORT_FILE}")"
+    --from-version "${FROM_VERSION}"
+    --to-version "${TO_VERSION}"
 )
-if [ "${DRY_RUN}" = true ]; then
-    SYSTEM_CONFIG_ARGS+=(--dry-run)
-fi
-python3 "${SCRIPT_DIR}/migrate_system_config.py" "${SYSTEM_CONFIG_ARGS[@]}"
-
+STORAGE_ARGS=(
+    --root /release
+    --report "/migration-reports/$(basename "${STORAGE_REPORT_FILE}")"
+    --storage-mode "${RESOLVED_STORAGE_MODE}"
+)
+SYSTEM_CONFIG_ARGS=(
+    --root /release
+    --report "/migration-reports/$(basename "${SYSTEM_CONFIG_REPORT}")"
+    --backup-root /migration-backups/system-config
+)
 BACKEND_MIGRATION_ARGS=(
-    --runtime-root /app/.onto-runtime
-    --report /migration-state/backend-migration-report.json
+    --runtime-root /release/.onto-runtime
+    --report "/migration-reports/$(basename "${BACKEND_REPORT_FILE}")"
     --from-version "${FROM_VERSION}"
     --to-version "${TO_VERSION}"
 )
 if [ "${DRY_RUN}" = true ]; then
+    AUTH_ARGS+=(--dry-run)
+    STORAGE_ARGS+=(--dry-run)
+    SYSTEM_CONFIG_ARGS+=(--dry-run)
     BACKEND_MIGRATION_ARGS+=(--dry-run)
 else
+    AUTH_ARGS+=(--confirm-writes-stopped)
     BACKEND_MIGRATION_ARGS+=(--confirm-writes-stopped)
 fi
+if [ -n "${LEGACY_BACKUP_DIR}" ]; then
+    STORAGE_ARGS+=(--legacy-backup-dir /legacy-backup)
+fi
 
-docker run --rm \
+# Every registered migration sees the same active bind/volume data roots.
+docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
+    python /deploy-tools/migrate_auth_workspace.py "${AUTH_ARGS[@]}"
+docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
+    python /deploy-tools/migrate_persistent_storage.py "${STORAGE_ARGS[@]}"
+docker run "${SYSTEM_CONFIG_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
+    python /deploy-tools/migrate_system_config.py "${SYSTEM_CONFIG_ARGS[@]}"
+docker run "${MIGRATION_DOCKER_ARGS[@]}" \
     --env-file "${BUNDLE_ROOT}/backend/.env" \
-    -e PROJECT_ROOT=/app/.onto-runtime \
-    -v "${BUNDLE_ROOT}/.onto-runtime:/app/.onto-runtime" \
-    -v "${STATE_DIR}:/migration-state" \
+    -e PROJECT_ROOT=/release/.onto-runtime \
     "${BACKEND_IMAGE}" \
     python -m migrations.runner "${BACKEND_MIGRATION_ARGS[@]}"
 
+require_file "${REPORT_FILE}"
+require_file "${STORAGE_REPORT_FILE}"
+require_file "${SYSTEM_CONFIG_REPORT}"
 require_file "${BACKEND_REPORT_FILE}"

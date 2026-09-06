@@ -342,10 +342,19 @@ def get_solver_tool_specs_for_context(
         return ()
     if _SOLVER_COORDINATION_SERVICE is None:
         return ()
-    capabilities = _load_public_capabilities(
+    admitted_capabilities = _admitted_public_capabilities(
         package_id=package_id,
         package_revision=revision,
         workspace_id=workspace,
+    )
+    capabilities = (
+        admitted_capabilities
+        if admitted_capabilities is not None
+        else _load_public_capabilities(
+            package_id=package_id,
+            package_revision=revision,
+            workspace_id=workspace,
+        )
     )
     if not capabilities:
         return ()
@@ -366,10 +375,19 @@ def resolve_solver_tool_binding(
     package_revision: str,
     card_name: str,
 ) -> Optional["SolverToolBinding"]:
-    capabilities = _load_public_capabilities(
+    admitted_capabilities = _admitted_public_capabilities(
         package_id=package_id,
         package_revision=package_revision,
         workspace_id=workspace_id,
+    )
+    capabilities = (
+        admitted_capabilities
+        if admitted_capabilities is not None
+        else _load_public_capabilities(
+            package_id=package_id,
+            package_revision=package_revision,
+            workspace_id=workspace_id,
+        )
     )
     try:
         specs = build_solver_tool_specs(capabilities)
@@ -377,6 +395,41 @@ def resolve_solver_tool_binding(
         return None
     matches = [spec.binding for spec in specs if spec.name == card_name]
     return matches[0] if len(matches) == 1 else None
+
+
+def _admitted_public_capabilities(
+    *,
+    package_id: str,
+    package_revision: str,
+    workspace_id: str,
+) -> tuple[Mapping[str, Any], ...] | None:
+    from agent.core.shared.tool_context import (
+        current_ontology_preflight_tool_products_for_context,
+    )
+
+    admitted = current_ontology_preflight_tool_products_for_context(
+        workspace_id=workspace_id,
+        ontology_id=package_id,
+        ontology_version=package_revision,
+    )
+    if admitted is None:
+        return None
+    capabilities = admitted.solver_capabilities
+    if not isinstance(capabilities, (list, tuple)):
+        return ()
+    public = tuple(
+        capability
+        for capability in capabilities
+        if isinstance(capability, Mapping)
+    )
+    if len(public) != len(capabilities) or any(
+        str(capability.get("package_id") or "").strip() != package_id
+        or str(capability.get("package_revision") or "").strip()
+        != package_revision
+        for capability in public
+    ):
+        return ()
+    return public
 
 
 def _load_public_capabilities(

@@ -67,6 +67,14 @@ class _MCPActiveSessionLimitError(RuntimeError):
     pass
 
 
+def _load_mcp_dotenv() -> None:
+    """Load the local MCP environment before startup migrations inspect it."""
+
+    from integration.mcp.config import _load_local_dotenv
+
+    _load_local_dotenv()
+
+
 class _WorkspaceEndpointSessionBindings:
     """Keep FastMCP transport sessions on the endpoint that created them."""
 
@@ -915,13 +923,24 @@ def _normalize_http_transports(value: str | None) -> tuple[str, ...]:
     raise ValueError("HTTP 模式不支持 transport={!r}".format(value))
 
 
-def run_server(config: MCPRuntimeConfig | None = None) -> None:
+def run_server(
+    config: MCPRuntimeConfig | None = None,
+    *,
+    _migrations_already_run: bool = False,
+) -> None:
     import uvicorn
     from migrations.runner import run_startup_migrations
     from integration.observability.otel import initialize_open_telemetry
 
+    if not _migrations_already_run:
+        _load_mcp_dotenv()
+        run_startup_migrations()
+    # Run compatibility migrations before implicit config loading.  The
+    # loader captures process environment values in the AppConfig snapshot;
+    # loading it first could retain a historical LLM_MAX_TOKENS value that the
+    # startup migration is about to pin.  Explicitly supplied configs remain
+    # untouched and are still accepted by the standalone entry point.
     cfg = config or load_mcp_runtime_config()
-    run_startup_migrations()
     initialize_open_telemetry()
     app = create_mcp_http_root_app(cfg, transport=cfg.transport)
     uvicorn.run(app, host=cfg.server_host, port=cfg.server_port)
@@ -984,6 +1003,10 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--toolset", default="all", choices=["search", "chat", "all"])
     args = parser.parse_args()
+    from migrations.runner import run_startup_migrations
+
+    _load_mcp_dotenv()
+    run_startup_migrations()
     cfg = load_mcp_runtime_config()
     if args.host or args.port or args.transport:
         cfg = MCPRuntimeConfig(
@@ -1004,7 +1027,7 @@ def main() -> None:
         kwargs = {"transport": "stdio"} if "transport" in params else {}
         run_fn(**kwargs)
         return
-    run_server(cfg)
+    run_server(cfg, _migrations_already_run=True)
 
 
 if __name__ == "__main__":
