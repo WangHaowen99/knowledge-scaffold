@@ -6,6 +6,7 @@ import type {
   SessionDetail,
   SessionListResponse,
   SessionMessagesResponse,
+  SessionPageResponse,
   SessionSummary,
 } from '../../types/agentic.js';
 
@@ -17,6 +18,33 @@ export class AgenticSessionsApi {
       signal: options.signal,
     });
     return response.sessions;
+  }
+
+  listPage(
+    options: { limit?: number; cursor?: string; signal?: AbortSignal } = {},
+  ): Promise<SessionPageResponse> {
+    const limit = options.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new RangeError('session page limit must be an integer between 1 and 100');
+    }
+    return this.http.get<SessionListResponse & Partial<SessionPageResponse>>('/agentic/sessions', {
+      query: { limit, cursor: options.cursor },
+      signal: options.signal,
+    }).then((response) => {
+      if (
+        response.next_cursor === undefined
+        && response.has_more === undefined
+        && response.index_revision === undefined
+      ) {
+        return {
+          sessions: response.sessions,
+          next_cursor: null,
+          has_more: false,
+          index_revision: 0,
+        };
+      }
+      return response as SessionPageResponse;
+    });
   }
 
   create(request: CreateSessionRequest = {}, options: { signal?: AbortSignal } = {}): Promise<SessionSummary> {

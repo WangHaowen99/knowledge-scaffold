@@ -144,6 +144,8 @@ def test_cached_registry_refreshes_after_workspace_package_changes(monkeypatch, 
         ontology_id="new-ontology",
         description="Added after registry initialization",
     )
+    # External filesystem edits are observed after the production throttle.
+    registry._next_source_check_at = 0.0
 
     refreshed = get_ontology_registry(workspace_id="workspace-a")
     ontology = refreshed.get_ontology("new-ontology")
@@ -252,6 +254,40 @@ def test_registry_refresh_retries_when_sources_change_during_discovery(monkeypat
     assert ontology is not None
     assert ontology.enabled is False
     assert registry.is_stale() is False
+
+
+def test_registry_external_signature_checks_are_throttled(monkeypatch, tmp_path):
+    _create_isolated_workspaces(monkeypatch, tmp_path)
+    _write_ontology("workspace-a", description="Throttle registry checks")
+    ontology_root = get_workspace_paths("workspace-a").ontologies_dir
+    now = [10.0]
+    registry = OntologyRegistry(
+        ontology_dirs=[ontology_root],
+        check_interval_seconds=1.5,
+        clock=lambda: now[0],
+    )
+    registry.refresh()
+    signature_reads = []
+    import ontology.ontologies as ontologies_module
+
+    original_signature = ontologies_module._build_registry_source_signature
+
+    def tracked_signature(roots):
+        signature_reads.append(now[0])
+        return original_signature(roots)
+
+    monkeypatch.setattr(
+        ontologies_module,
+        "_build_registry_source_signature",
+        tracked_signature,
+    )
+
+    assert registry.is_stale() is False
+    assert registry.is_stale() is False
+    assert signature_reads == []
+    now[0] += 1.6
+    assert registry.is_stale() is False
+    assert signature_reads == [11.6]
 
 
 def test_ontology_context_uses_tool_workspace_scope(monkeypatch, tmp_path):

@@ -28,6 +28,16 @@ function jsonResponse(data, status = 200) {
   });
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function withRenderedDataSource(fetchImpl, run) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
@@ -83,6 +93,12 @@ async function withRenderedDataSource(fetchImpl, run) {
     });
   };
 
+  const removePanel = async () => {
+    await act(async () => {
+      root.render(null);
+    });
+  };
+
   const flush = async (cycles = 4) => {
     for (let index = 0; index < cycles; index += 1) {
       await act(async () => {
@@ -105,7 +121,7 @@ async function withRenderedDataSource(fetchImpl, run) {
   };
 
   try {
-    await run({ dom, renderPanel, flush, waitFor });
+    await run({ dom, renderPanel, removePanel, flush, waitFor });
   } finally {
     await act(async () => root.unmount());
     dom.window.close();
@@ -197,5 +213,163 @@ test('cancel keeps the current data source and confirm sends the delete request'
       assert.match(document.querySelector('.tag').textContent, /未配置/);
       assert.equal(refreshCalls, 1);
     });
+  });
+});
+
+test('a successful save notifies its original scope after the user switches packages', async () => {
+  const saveResponse = deferred();
+  const getCalls = new Map();
+  let saveCalls = 0;
+  const fetchImpl = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    if (url === '/agentic/business-data/provider-schemas') {
+      return jsonResponse({
+        providers: [{
+          name: 'postgres',
+          label: 'Postgres',
+          fields: [{ name: 'dsn', label: 'DSN', type: 'text', required: true }],
+        }],
+      });
+    }
+    const match = /^\/agentic\/ontologies\/(onto-[12])\/data-source$/.exec(url);
+    if (match && method === 'GET') {
+      getCalls.set(match[1], (getCalls.get(match[1]) || 0) + 1);
+      return jsonResponse({
+        configured: true,
+        source: { provider: 'postgres', config: { dsn: `postgres://${match[1]}` } },
+      });
+    }
+    if (url === '/agentic/ontologies/onto-1/data-source' && method === 'PUT') {
+      saveCalls += 1;
+      return saveResponse.promise;
+    }
+    throw new Error(`Unexpected request: ${method} ${url}`);
+  };
+
+  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, flush, waitFor }) => {
+    const originalNotifications = [];
+    const nextNotifications = [];
+    await renderPanel({
+      ontologyId: 'onto-1',
+      onDataSourceChanged: (scope) => originalNotifications.push(scope),
+    });
+    await waitFor(() => {
+      const saveButton = document.querySelector('.foot .btn.btn-p');
+      assert.ok(saveButton);
+      assert.equal(saveButton.disabled, false);
+    });
+
+    await click(dom, document.querySelector('.foot .btn.btn-p'));
+    await waitFor(() => assert.equal(saveCalls, 1));
+
+    await renderPanel({
+      ontologyId: 'onto-2',
+      onDataSourceChanged: (scope) => nextNotifications.push(scope),
+    });
+    await waitFor(() => assert.equal(getCalls.get('onto-2'), 1));
+
+    saveResponse.resolve(jsonResponse({ configured: true }));
+    await waitFor(() => assert.equal(originalNotifications.length, 1));
+
+    assert.deepEqual(originalNotifications, [{ ontologyId: 'onto-1', workspaceId: 'ws-1' }]);
+    assert.deepEqual(nextNotifications, []);
+    assert.equal(getCalls.get('onto-1'), 1);
+    await flush();
+  });
+});
+
+test('a successful save invalidates its scope before the response body finishes parsing', async () => {
+  const responseBody = deferred();
+  const notifications = [];
+  let saveCalls = 0;
+  const fetchImpl = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    if (url === '/agentic/business-data/provider-schemas') {
+      return jsonResponse({
+        providers: [{
+          name: 'postgres',
+          label: 'Postgres',
+          fields: [{ name: 'dsn', label: 'DSN', type: 'text', required: true }],
+        }],
+      });
+    }
+    if (url === '/agentic/ontologies/onto-1/data-source' && method === 'GET') {
+      return jsonResponse({
+        configured: true,
+        source: { provider: 'postgres', config: { dsn: 'postgres://onto-1' } },
+      });
+    }
+    if (url === '/agentic/ontologies/onto-1/data-source' && method === 'PUT') {
+      saveCalls += 1;
+      return { ok: true, status: 200, json: () => responseBody.promise };
+    }
+    throw new Error(`Unexpected request: ${method} ${url}`);
+  };
+
+  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, flush, waitFor }) => {
+    await renderPanel({
+      onDataSourceChanged: (scope) => notifications.push(scope),
+    });
+    await waitFor(() => assert.equal(document.querySelector('.foot .btn.btn-p')?.disabled, false));
+
+    await click(dom, document.querySelector('.foot .btn.btn-p'));
+    await waitFor(() => assert.equal(saveCalls, 1));
+    await flush();
+    const notificationsBeforeBody = notifications.length;
+
+    responseBody.resolve({ configured: true });
+    await flush();
+    assert.equal(notificationsBeforeBody, 1);
+    assert.deepEqual(notifications[0], { ontologyId: 'onto-1', workspaceId: 'ws-1' });
+  });
+});
+
+test('a successful delete notifies its original scope after the editor unmounts', async () => {
+  const deleteResponse = deferred();
+  const notifications = [];
+  let getCalls = 0;
+  let deleteCalls = 0;
+  const fetchImpl = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    if (url === '/agentic/business-data/provider-schemas') {
+      return jsonResponse({
+        providers: [{
+          name: 'postgres',
+          label: 'Postgres',
+          fields: [{ name: 'dsn', label: 'DSN', type: 'text', required: true }],
+        }],
+      });
+    }
+    if (url === '/agentic/ontologies/onto-1/data-source' && method === 'GET') {
+      getCalls += 1;
+      return jsonResponse({
+        configured: true,
+        source: { provider: 'postgres', config: { dsn: 'postgres://onto-1' } },
+      });
+    }
+    if (url === '/agentic/ontologies/onto-1/data-source' && method === 'DELETE') {
+      deleteCalls += 1;
+      return deleteResponse.promise;
+    }
+    throw new Error(`Unexpected request: ${method} ${url}`);
+  };
+
+  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, removePanel, flush, waitFor }) => {
+    await renderPanel({
+      onDataSourceChanged: (scope) => notifications.push(scope),
+    });
+    await waitFor(() => assert.ok(document.querySelector('.btn.btn-danger')));
+
+    await click(dom, document.querySelector('.btn.btn-danger'));
+    await click(dom, document.querySelector('.ui-dialog-actions .btn-danger-solid'));
+    await waitFor(() => assert.equal(deleteCalls, 1));
+
+    await removePanel();
+    deleteResponse.resolve(jsonResponse({ configured: false, source: null }));
+    await waitFor(() => assert.equal(notifications.length, 1));
+
+    assert.deepEqual(notifications, [{ ontologyId: 'onto-1', workspaceId: 'ws-1' }]);
+    assert.equal(getCalls, 1);
+    await flush();
   });
 });

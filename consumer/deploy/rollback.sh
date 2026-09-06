@@ -3,9 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "${SCRIPT_DIR}/"*.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
+chmod +x "${SCRIPT_DIR}/"*.sh
 
 load_state
 
@@ -22,7 +22,7 @@ FAILED_JIUWENBOX_IMAGE="${CURRENT_JIUWENBOX_IMAGE:-}"
 log "Stopping failed release writes before failsafe backup"
 compose_stop "${FAILED_BACKEND_IMAGE}" "${FAILED_FRONTEND_IMAGE}" "${FAILED_AUTH_IMAGE}" "${FAILED_JIUWENBOX_IMAGE:-onto-agent-jiuwenbox:latest}"
 
-FAILSAFE_BACKUP="$("${SCRIPT_DIR}/backup.sh" "rollback-${PREVIOUS_VERSION}" "${CURRENT_FAILED_VERSION}")"
+FAILSAFE_BACKUP="$("${SCRIPT_DIR}/backup.sh" --confirm-writes-stopped "rollback-${PREVIOUS_VERSION}" "${CURRENT_FAILED_VERSION}")"
 log "Captured current state before rollback at ${FAILSAFE_BACKUP}"
 
 log "Code-only rollback keeps current runtime/auth data in place; backup restore remains an explicit manual action"

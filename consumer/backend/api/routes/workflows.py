@@ -90,6 +90,49 @@ async def _resolve_stores(runtime: Any):
     return await runtime.short_io.run(_get_stores)
 
 
+async def _reserve_session_admission(
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    *,
+    timeout_seconds: float = 5.0,
+) -> str | None:
+    """Acquire the prune-visible lease without blocking the event loop."""
+
+    reserve = getattr(execution_store, "reserve_session_admission", None)
+    if not callable(reserve):
+        return ""
+    deadline = asyncio.get_running_loop().time() + max(0.05, timeout_seconds)
+    while True:
+        token = await runtime.short_io.run(reserve, session_id)
+        if token:
+            return str(token)
+        if asyncio.get_running_loop().time() >= deadline:
+            return None
+        await asyncio.sleep(0.01)
+
+
+async def _release_session_admission(
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    reservation_id: str | None,
+) -> None:
+    if not reservation_id:
+        return
+    release = getattr(execution_store, "release_session_admission", None)
+    if not callable(release):
+        return
+    try:
+        await runtime.short_io.run(release, session_id, reservation_id)
+    except Exception:
+        logger.warning(
+            "Could not release session admission reservation session=%s",
+            session_id,
+            exc_info=True,
+        )
+
+
 def _run_scope(username: str, workspace_id: str, action: str) -> RunScope:
     required = {
         "run": "agent:run",
@@ -376,6 +419,49 @@ async def _deterministic_preflight(
     )
 
 
+async def _build_protocol_preflight_snapshot(
+    runtime: Any,
+    *,
+    user_request: str,
+    user_context: dict[str, Any],
+    arguments: dict[str, Any] | None,
+    session_id: str,
+    model_profile_id: str,
+    username: str,
+    workspace_id: str,
+):
+    """Use the optimized preflight contract with a legacy fallback."""
+
+    builder = getattr(_get_orchestrator(), "build_run_preflight_snapshot", None)
+    if callable(builder):
+        return await runtime.short_io.run(
+            builder,
+            user_request=user_request,
+            user_context=user_context,
+            arguments=arguments,
+            session_id=session_id,
+            model_profile_id=model_profile_id or None,
+            user_id=username,
+            workspace_id=workspace_id,
+        )
+    deterministic_candidate = await _deterministic_preflight(
+        runtime,
+        user_request=user_request,
+        user_context=user_context,
+        arguments=arguments,
+        session_id=session_id,
+        username=username,
+        workspace_id=workspace_id,
+    )
+    if not deterministic_candidate:
+        await _validate_model_profile(
+            runtime,
+            model_profile_id=model_profile_id,
+            workspace_id=workspace_id,
+        )
+    return None
+
+
 async def _check_rate_limit(runtime: Any) -> bool:
     limiter = getattr(_get_orchestrator(), "run_rate_limiter", None)
     try_acquire = getattr(limiter, "try_acquire", None)
@@ -547,26 +633,42 @@ async def _allocate_sync_turn(
     session_id: str,
     user_request: str,
     run_id: str,
+    admission_reservation_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     abandoned = asyncio.Event()
 
     async def allocate() -> tuple[dict[str, Any], bool]:
-        turn, created = await runtime.short_io.run(
-            execution_store.create_turn_for_run,
-            session_id=session_id,
-            user_request=user_request,
-            run_id=run_id,
-            protocol_metadata={"protocol": "agentic_sync"},
-        )
-        if abandoned.is_set() and created:
-            await _mark_sync_turn_start_failed(
-                runtime=runtime,
-                execution_store=execution_store,
-                session_id=session_id,
-                turn_id=int(turn["turn_id"]),
-                run_id=str(turn["run_id"]),
+        try:
+            create_options = {
+                "session_id": session_id,
+                "user_request": user_request,
+                "run_id": run_id,
+                "protocol_metadata": {"protocol": "agentic_sync"},
+            }
+            if admission_reservation_id:
+                create_options["admission_reservation_id"] = (
+                    admission_reservation_id
+                )
+            turn, created = await runtime.short_io.run(
+                execution_store.create_turn_for_run,
+                **create_options,
             )
-        return turn, created
+            if abandoned.is_set() and created:
+                await _mark_sync_turn_start_failed(
+                    runtime=runtime,
+                    execution_store=execution_store,
+                    session_id=session_id,
+                    turn_id=int(turn["turn_id"]),
+                    run_id=str(turn["run_id"]),
+                )
+            return turn, created
+        finally:
+            await _release_session_admission(
+                runtime,
+                execution_store,
+                session_id,
+                admission_reservation_id,
+            )
 
     allocation = asyncio.create_task(allocate())
     try:
@@ -801,6 +903,38 @@ async def create_run(
     )
 
     try:
+        session_admission_id = await _reserve_session_admission(
+            runtime,
+            execution_store,
+            session_id,
+        )
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _error(
+            "RUNTIME_CAPACITY_EXCEEDED",
+            "runtime capacity is exhausted",
+            429,
+            retriable=True,
+        )
+    if session_admission_id is None:
+        return _error(
+            "SESSION_BUSY",
+            "session admission or retention work is already in progress",
+            409,
+            retriable=True,
+        )
+
+    async def release_session_admission() -> None:
+        nonlocal session_admission_id
+        reservation = session_admission_id
+        session_admission_id = None
+        await _release_session_admission(
+            runtime,
+            execution_store,
+            session_id,
+            reservation,
+        )
+
+    try:
         existing = await _lookup_exact_retry(
             runtime=runtime,
             execution_store=execution_store,
@@ -809,6 +943,7 @@ async def create_run(
             request_fingerprint=fingerprint,
         )
         if existing is not None:
+            await release_session_admission()
             return JSONResponse(
                 await _existing_admission_payload(
                     existing,
@@ -824,6 +959,7 @@ async def create_run(
             interaction_response=interaction_response,
         )
         if repeated is not None:
+            await release_session_admission()
             return JSONResponse(
                 await _existing_admission_payload(
                     repeated,
@@ -833,10 +969,13 @@ async def create_run(
                 status_code=200,
             )
     except DurableIdempotencyConflictError as exc:
+        await release_session_admission()
         return _error("IDEMPOTENCY_CONFLICT", str(exc), 409)
     except InteractionCheckpointError as exc:
+        await release_session_admission()
         return _interaction_error(exc)
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        await release_session_admission()
         return _error(
             "RUNTIME_CAPACITY_EXCEEDED",
             "runtime capacity is exhausted",
@@ -844,9 +983,14 @@ async def create_run(
             retriable=True,
         )
     except ExecutionStoreCorruptionError as exc:
+        await release_session_admission()
         return _error("EXECUTION_STORE_CORRUPT", str(exc), 503)
+    except BaseException:
+        await release_session_admission()
+        raise
 
     if runtime.state is not RuntimeState.ACCEPTING:
+        await release_session_admission()
         return _error(
             "RUNTIME_DRAINING",
             "runtime is not accepting new runs",
@@ -855,6 +999,7 @@ async def create_run(
         )
     try:
         if not await _check_rate_limit(runtime):
+            await release_session_admission()
             return _error(
                 "RUN_RATE_LIMITED",
                 "too many run requests",
@@ -862,7 +1007,7 @@ async def create_run(
                 retriable=True,
             )
         model_profile_id = str(data.get("model_profile_id") or "").strip()
-        deterministic_candidate = await _deterministic_preflight(
+        preflight_snapshot = await _build_protocol_preflight_snapshot(
             runtime,
             user_request=user_request,
             user_context={
@@ -871,24 +1016,24 @@ async def create_run(
             },
             arguments=(dict(arguments) if arguments is not None else None),
             session_id=session_id,
+            model_profile_id=model_profile_id,
             username=current_user.username,
             workspace_id=workspace_id,
         )
-        if not deterministic_candidate:
-            await _validate_model_profile(
-                runtime,
-                model_profile_id=model_profile_id,
-                workspace_id=workspace_id,
-            )
     except SystemConfigValidationError as exc:
+        await release_session_admission()
         return _error("INVALID_ARGUMENT", str(exc), 422)
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        await release_session_admission()
         return _error(
             "RUNTIME_CAPACITY_EXCEEDED",
             "runtime capacity is exhausted",
             429,
             retriable=True,
         )
+    except BaseException:
+        await release_session_admission()
+        raise
 
     try:
         async with manager.session_guard(scope, session_id):
@@ -900,6 +1045,7 @@ async def create_run(
                 request_fingerprint=fingerprint,
             )
             if existing is not None:
+                await release_session_admission()
                 return JSONResponse(
                     await _existing_admission_payload(
                         existing,
@@ -915,6 +1061,7 @@ async def create_run(
                 interaction_response=interaction_response,
             )
             if repeated is not None:
+                await release_session_admission()
                 return JSONResponse(
                     await _existing_admission_payload(
                         repeated,
@@ -925,26 +1072,41 @@ async def create_run(
                 )
             await manager.assert_session_available(scope, session_id)
             if interaction_response is None:
+                create_options = {
+                    "session_id": session_id,
+                    "user_request": user_request,
+                    "idempotency_key_hash": idempotency_key_hash,
+                    "request_fingerprint": fingerprint,
+                }
+                if session_admission_id:
+                    create_options["admission_reservation_id"] = (
+                        session_admission_id
+                    )
                 turn, created = await runtime.short_io.run(
                     execution_store.create_turn_for_run,
-                    session_id=session_id,
-                    user_request=user_request,
-                    idempotency_key_hash=idempotency_key_hash,
-                    request_fingerprint=fingerprint,
+                    **create_options,
                 )
             else:
-                turn, created = await runtime.short_io.run(
-                    execution_store.consume_interaction_and_create_turn,
-                    session_id=session_id,
-                    interaction_id=str(
+                interaction_options = {
+                    "session_id": session_id,
+                    "interaction_id": str(
                         interaction_response.get("interaction_id") or ""
                     ).strip(),
-                    user_request=user_request,
-                    interaction_response=dict(interaction_response),
-                    idempotency_key_hash=idempotency_key_hash,
-                    request_fingerprint=fingerprint,
+                    "user_request": user_request,
+                    "interaction_response": dict(interaction_response),
+                    "idempotency_key_hash": idempotency_key_hash,
+                    "request_fingerprint": fingerprint,
+                }
+                if session_admission_id:
+                    interaction_options["admission_reservation_id"] = (
+                        session_admission_id
+                    )
+                turn, created = await runtime.short_io.run(
+                    execution_store.consume_interaction_and_create_turn,
+                    **interaction_options,
                 )
             if not created:
+                await release_session_admission()
                 return JSONResponse(
                     await _existing_admission_payload(
                         turn,
@@ -968,6 +1130,7 @@ async def create_run(
                     data.get("llm_request_mode")
                 ),
                 model_profile_id=model_profile_id or None,
+                preflight_snapshot=preflight_snapshot,
                 requested_operation_key=(
                     str(data.get("requested_operation_key") or "").strip()
                     or None
@@ -1004,20 +1167,25 @@ async def create_run(
                     session_id,
                     int(turn["turn_id"]),
                 )
+                await release_session_admission()
                 return _error(
                     "TASK_START_FAILED",
                     "run task was not uniquely registered",
                     500,
                 )
+            await release_session_admission()
             return JSONResponse(
                 _snapshot_payload(snapshot, created=True),
                 status_code=202,
             )
     except DurableIdempotencyConflictError as exc:
+        await release_session_admission()
         return _error("IDEMPOTENCY_CONFLICT", str(exc), 409)
     except InteractionCheckpointError as exc:
+        await release_session_admission()
         return _interaction_error(exc)
     except SessionBusyError as exc:
+        await release_session_admission()
         return _error(
             "SESSION_BUSY",
             str(exc),
@@ -1025,6 +1193,7 @@ async def create_run(
             run_id=exc.run_id,
         )
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        await release_session_admission()
         return _error(
             "RUNTIME_CAPACITY_EXCEEDED",
             "runtime capacity is exhausted",
@@ -1032,7 +1201,11 @@ async def create_run(
             retriable=True,
         )
     except ExecutionStoreCorruptionError as exc:
+        await release_session_admission()
         return _error("EXECUTION_STORE_CORRUPT", str(exc), 503)
+    except BaseException:
+        await release_session_admission()
+        raise
 
 
 @workflows_router.post("/runs/sync")
@@ -1095,20 +1268,53 @@ async def create_sync_run(
             session_id=session_id,
         )
 
+    _chat_store, execution_store = await _resolve_stores(runtime)
     model_profile_id = str(
         data.get("model_profile_id")
         or context_values.get("model_profile_id")
         or ""
     ).strip()
     try:
+        session_admission_id = await _reserve_session_admission(
+            runtime,
+            execution_store,
+            session_id,
+        )
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _sync_error(
+            "runtime capacity is exhausted",
+            429,
+            session_id=session_id,
+        )
+    if session_admission_id is None:
+        return _sync_error(
+            "session admission or retention work is already in progress",
+            409,
+            session_id=session_id,
+            error_code="SESSION_BUSY",
+        )
+
+    async def release_session_admission() -> None:
+        nonlocal session_admission_id
+        reservation = session_admission_id
+        session_admission_id = None
+        await _release_session_admission(
+            runtime,
+            execution_store,
+            session_id,
+            reservation,
+        )
+
+    try:
         if not await _check_rate_limit(runtime):
+            await release_session_admission()
             return _sync_error(
                 "请求过于频繁，请稍后重试",
                 429,
                 session_id=session_id,
                 limit=_run_tps_limit(_get_orchestrator()),
             )
-        deterministic_candidate = await _deterministic_preflight(
+        preflight_snapshot = await _build_protocol_preflight_snapshot(
             runtime,
             user_request=user_request,
             user_context={
@@ -1117,30 +1323,29 @@ async def create_sync_run(
             },
             arguments=(dict(arguments) if arguments is not None else None),
             session_id=session_id,
+            model_profile_id=model_profile_id,
             username=current_user.username,
             workspace_id=workspace_id,
         )
-        if not deterministic_candidate:
-            await _validate_model_profile(
-                runtime,
-                model_profile_id=model_profile_id,
-                workspace_id=workspace_id,
-            )
     except SystemConfigValidationError as exc:
+        await release_session_admission()
         return _sync_error(str(exc), 400, session_id=session_id)
     except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        await release_session_admission()
         return _sync_error(
             "runtime capacity is exhausted",
             429,
             session_id=session_id,
         )
+    except BaseException:
+        await release_session_admission()
+        raise
 
     scope = RunScope(
         username=current_user.username,
         workspace_id=workspace_id,
         scopes=("agent:run", "agent:read", "agent:cancel"),
     )
-    _chat_store, execution_store = await _resolve_stores(runtime)
     run_id = "agentic-{}".format(uuid.uuid4().hex)
     turn_id = 0
     turn_allocated = False
@@ -1153,12 +1358,15 @@ async def create_sync_run(
             await manager.assert_session_available(scope, session_id)
             try:
                 reservation_id = await event_hub.reserve_subscriber(run_id)
+                allocation_admission_id = session_admission_id
+                session_admission_id = None
                 turn, created = await _allocate_sync_turn(
                     runtime=runtime,
                     execution_store=execution_store,
                     session_id=session_id,
                     user_request=user_request,
                     run_id=run_id,
+                    admission_reservation_id=allocation_admission_id,
                 )
                 turn_id = int(turn["turn_id"])
                 if not created or str(turn["run_id"]) != run_id:
@@ -1180,6 +1388,7 @@ async def create_sync_run(
                     agent_mode=resolve_agent_mode({"agent_mode": agent_mode}),
                     llm_request_mode=normalize_llm_request_mode(llm_request_mode),
                     model_profile_id=model_profile_id or None,
+                    preflight_snapshot=preflight_snapshot,
                     requested_operation_key=(
                         str(
                             data.get("requested_operation_key")
@@ -1205,6 +1414,7 @@ async def create_sync_run(
                 if not manager_created:
                     raise RuntimeError("sync run task was not uniquely registered")
                 run_started = True
+                await release_session_admission()
             except BaseException:
                 try:
                     if turn_allocated:
@@ -1216,6 +1426,7 @@ async def create_sync_run(
                             run_id=run_id,
                         )
                 finally:
+                    await release_session_admission()
                     if reservation_id is not None:
                         await _release_sync_reservation(
                             event_hub=event_hub,
@@ -1286,6 +1497,7 @@ async def create_sync_run(
                         reason=admission_cancel_reason,
                     )
             finally:
+                await release_session_admission()
                 if reservation_id is not None:
                     await _release_sync_reservation(
                         event_hub=event_hub,
@@ -1337,6 +1549,7 @@ async def create_sync_run(
             run_id=run_id,
         )
     finally:
+        await release_session_admission()
         if reservation_id is not None:
             await _release_sync_reservation(
                 event_hub=event_hub,

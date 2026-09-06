@@ -3,9 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "${SCRIPT_DIR}/"*.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
+chmod +x "${SCRIPT_DIR}/"*.sh
 
 TARGET_VERSION="$(manifest_get app_version)"
 BACKEND_IMAGE="$(manifest_get backend_image)"
@@ -55,7 +55,7 @@ fi
 
 BACKUP_DIR=""
 if [ "${MODE}" = "upgrade" ]; then
-    BACKUP_DIR="$("${SCRIPT_DIR}/backup.sh" "${TARGET_VERSION}" "${CURRENT_VERSION}")"
+    BACKUP_DIR="$("${SCRIPT_DIR}/backup.sh" --confirm-writes-stopped "${TARGET_VERSION}" "${CURRENT_VERSION}")"
     log "Backup created after writes stopped: ${BACKUP_DIR}"
 fi
 

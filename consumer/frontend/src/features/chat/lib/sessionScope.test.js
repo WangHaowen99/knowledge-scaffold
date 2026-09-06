@@ -6,11 +6,55 @@ import {
   isCurrentSessionRead,
   isSameSessionScope,
   listResumableSessions,
+  mergeSessionPage,
   mergeSessionCollections,
+  normalizeSessionPage,
+  resolveInitialSessionSelection,
   resolveSessionRunIndicator,
   selectedSessionStorageKey,
   shouldCommitSessionSelection,
 } from './sessionScope.js';
+
+test('session page normalization is strict and preserves opaque metadata', () => {
+  assert.deepEqual(normalizeSessionPage({
+    sessions: [{ id: 'one' }],
+    next_cursor: 'opaque-cursor',
+    has_more: true,
+    index_revision: 7,
+  }), {
+    sessions: [{ id: 'one' }],
+    nextCursor: 'opaque-cursor',
+    hasMore: true,
+    indexRevision: 7,
+  });
+  assert.throws(() => normalizeSessionPage({ sessions: null }), /sessions/);
+  assert.throws(() => normalizeSessionPage({ sessions: [], has_more: true }), /cursor/);
+});
+
+test('later session pages merge without duplicates and retain selected session', () => {
+  assert.deepEqual(mergeSessionPage({
+    current: [
+      { id: 'selected', title: 'Selected' },
+      { id: 'two', title: 'Old two' },
+    ],
+    incoming: [
+      { id: 'two', title: 'Fresh two' },
+      { id: 'three', title: 'Three' },
+    ],
+    append: true,
+    selectedId: 'selected',
+  }), [
+    { id: 'selected', title: 'Selected' },
+    { id: 'two', title: 'Fresh two', metadata: {} },
+    { id: 'three', title: 'Three' },
+  ]);
+  assert.deepEqual(mergeSessionPage({
+    current: [{ id: 'selected', title: 'Selected' }, { id: 'old' }],
+    incoming: [{ id: 'new' }],
+    append: false,
+    selectedId: 'selected',
+  }), [{ id: 'new' }, { id: 'selected', title: 'Selected' }]);
+});
 
 test('workspace and selection epochs reject stale session responses', () => {
   const requestScope = createSessionScope('alpha', 2);
@@ -65,6 +109,27 @@ test('stale list responses preserve local creates and omit committed deletes', (
 test('selected-session storage is isolated by workspace', () => {
   assert.equal(selectedSessionStorageKey('alpha'), 'onto_agent_current_session_alpha');
   assert.equal(selectedSessionStorageKey('beta'), 'onto_agent_current_session_beta');
+});
+
+test('persisted selection remains authoritative when it is beyond the first page', () => {
+  assert.deepEqual(resolveInitialSessionSelection({
+    persistedId: 'session-0051',
+    currentId: null,
+    sessions: [{ id: 'session-0001' }, { id: 'session-0002' }],
+    selectLatest: false,
+  }), {
+    sessionId: 'session-0051',
+    requiresDirectHydration: true,
+  });
+  assert.deepEqual(resolveInitialSessionSelection({
+    persistedId: 'missing',
+    currentId: null,
+    sessions: [{ id: 'latest' }],
+    selectLatest: true,
+  }), {
+    sessionId: 'latest',
+    requiresDirectHydration: false,
+  });
 });
 
 test('all queued and running sessions are selected for background resume', () => {

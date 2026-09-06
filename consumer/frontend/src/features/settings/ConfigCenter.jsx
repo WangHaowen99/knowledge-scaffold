@@ -31,7 +31,15 @@ const GlobalModelsPanel = lazy(() => import('./models/ModelSettings')
 const WorkspaceModelsPanel = lazy(() => import('./models/ModelSettings')
   .then((module) => ({ default: module.WorkspaceModelsPanel })));
 
-export default function ConfigCenter({ scope, section, onNavigate }) {
+export default function ConfigCenter({
+  scope,
+  section,
+  onNavigate,
+  ontologies = [],
+  ontologiesLoading = false,
+  ontologiesError = '',
+  onRetryOntologies,
+}) {
   const {
     workspaceDataReady,
     workspaceId,
@@ -84,6 +92,10 @@ export default function ConfigCenter({ scope, section, onNavigate }) {
               workspaceAccess={workspaceAccess}
               workspaceError={workspacesError}
               onNavigate={onNavigate}
+              ontologies={ontologies}
+              ontologiesLoading={ontologiesLoading}
+              ontologiesError={ontologiesError}
+              onRetryOntologies={onRetryOntologies}
             />
           </Suspense>
         </div>
@@ -98,7 +110,17 @@ function ReadOnlyBanner({ who }) {
   );
 }
 
-function SectionBody({ scope, section, workspaceAccess, workspaceError, onNavigate }) {
+function SectionBody({
+  scope,
+  section,
+  workspaceAccess,
+  workspaceError,
+  onNavigate,
+  ontologies,
+  ontologiesLoading,
+  ontologiesError,
+  onRetryOntologies,
+}) {
   const {
     can,
     changePassword,
@@ -155,6 +177,10 @@ function SectionBody({ scope, section, workspaceAccess, workspaceError, onNaviga
           workspaceName={workspace?.name || workspaceId}
           authenticated={Boolean(user?.username)}
           canManageTokens={Boolean(user?.username && workspaceId)}
+          ontologies={ontologies}
+          ontologiesLoading={ontologiesLoading}
+          ontologiesError={ontologiesError}
+          onRetryOntologies={onRetryOntologies}
         />
       );
     }
