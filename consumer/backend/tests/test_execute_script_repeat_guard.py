@@ -68,6 +68,29 @@ def test_structured_unit_load_result_accepts_matching_monthly_total():
     assert _validate_structured_result_consistency(__import__("json").dumps(payload, ensure_ascii=False)) is None
 
 
+def test_structured_unit_load_result_allows_documented_raw_vgo_monthly_basis():
+    payload = {
+        "operation_key": "装置负荷硬约束炼化装置容量约束与超限分流",
+        "batches": [
+            {
+                "input_weight_tons": 100,
+                "vgo_load_raw_feed_tons": 90,
+                "unit_loads": {"蜡油加氢": {"input_tons": 100}},
+            },
+            {
+                "input_weight_tons": 100,
+                "vgo_load_raw_feed_tons": 90,
+                "unit_loads": {"蜡油加氢": {"input_tons": 100}},
+            },
+        ],
+        "monthly_unit_load": {
+            "units": {"蜡油加氢": {"monthly_input_tons": 180}}
+        },
+    }
+
+    assert _validate_structured_result_consistency(__import__("json").dumps(payload, ensure_ascii=False)) is None
+
+
 def test_identical_successful_script_call_is_reused_instead_of_executed_again():
     arguments = {
         "ontology_id": "demo",
