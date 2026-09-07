@@ -423,6 +423,75 @@ test('阶段轨进度端点一次给出全部门禁，且没有工作区时如�
   assert.deepEqual(single.json().blockers, byId.get('process_confirmed').blockers);
 });
 
+test('产品清单台账在 advisory 模式下可持久化并确定性复核', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品清单台账观测', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+
+  const staged = await tool(app, project.id, 'stage_product_ledger', {
+    schemaVersion: 'product-ledger-v1',
+    sourceRevision: claimed.json().baseRevision,
+    scope: 'product_catalog',
+    rawCount: 3,
+    canonicalCount: 2,
+    mergedGroupCount: 1,
+    entries: [
+      {
+        canonicalItemId: 'product-a', ruleId: 'rule-a', sourceRecordIds: ['source-a'],
+        sourceLocator: 'manual#item-a', evidenceStatus: 'complete', processingStatus: 'ready',
+      },
+      {
+        canonicalItemId: 'product-b', ruleId: 'rule-b', sourceRecordIds: ['source-b', 'source-c'],
+        sourceLocator: 'manual#item-b', mergeGroupId: 'merge-1', evidenceStatus: 'complete',
+        processingStatus: 'ready',
+      },
+    ],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().validation.pass, true);
+  assert.equal(staged.json().counts.raw, 3);
+  assert.equal(staged.json().counts.canonical, 2);
+
+  const read = await tool(app, project.id, 'get_product_ledger', {}, runId);
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(read.json().available, true);
+  assert.equal(read.json().validation.pass, true);
+
+  const gate = await tool(app, project.id, 'gate_status', {
+    gate: 'product_ledger_verified',
+  }, runId);
+  assert.equal(gate.statusCode, 200, gate.body);
+  assert.equal(gate.json().pass, true);
+});
+
+test('enforce 模式下产品台账未通过会阻断规则 Change Set', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品台账规则门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const previousMode = config.productLedger.mode;
+  t.after(() => { config.productLedger.mode = previousMode; });
+  config.productLedger.mode = 'advisory';
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const staged = await tool(app, project.id, 'stage_product_ledger', {
+    scope: 'product_catalog', rawCount: 2, canonicalCount: 1, mergedGroupCount: 1, entries: [],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().validation.pass, false);
+
+  config.productLedger.mode = 'enforce';
+  const blocked = await tool(app, project.id, 'stage_change_set', {
+    plan_id: 'plan-product-ledger', expected_revision: 'revision-synthetic',
+    mutation_id: 'product-ledger-block-1',
+    actions: [{ task_id: 'task-rule', tool: 'create_rule', arguments: {} }],
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'PRODUCT_LEDGER_GATE_BLOCKED');
+  assert.equal(blocked.json().gate, 'product_ledger_verified');
+});
+
 test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Mermaid 源码契约', runtime: 'agent' });
   const app = appFor(t);

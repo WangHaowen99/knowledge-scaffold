@@ -247,6 +247,10 @@ class LiveRun:
     technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     deferred_purpose_continuation: tuple[int, str, str] | None = None
     evaluation_launch_active: bool = False
+    # 最近一次 requiredText 答案的业务约束。它与交互恢复解耦，服务重启后
+    # 可从 RunRecord.latest_interaction 重新装载，避免只依赖框架的 tool result。
+    required_text_constraint: dict[str, Any] | None = None
+    required_text_guard_retries: int = 0
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -309,6 +313,191 @@ def _answer_requires_script_artifact(
         return False
     text = json.dumps(answer, ensure_ascii=False)
     return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(text))
+
+
+def _required_text_constraint(
+    interaction: InteractionRecord,
+    answer: dict[str, Any],
+) -> dict[str, Any] | None:
+    """将 requiredText 答案规范化为可恢复、可审计的业务约束。
+
+    选项卡的 label/value 只是 UI 选择；真正需要交给模型执行的是用户在
+    ``answer.text`` 中填写的原文。恢复卡也会在 payload 中携带同一约束，
+    允许用户选择“按原说明继续”而无需再次复制长文本。
+    """
+    existing = interaction.payload.get("requiredTextConstraint")
+    replacing = str(answer.get("value") or "").strip() == "edit_required_text"
+    if not replacing and isinstance(existing, dict) and str(existing.get("text") or "").strip():
+        inherited = dict(existing)
+    else:
+        option = _required_text_option(interaction.payload, answer)
+        text = str(answer.get("text") or "").strip()
+        if option is None or not text:
+            return None
+        value = str(option.get("value") or option.get("label") or "").strip()
+        inherited = {
+            "required": True,
+            "optionValue": value,
+            "optionLabel": str(option.get("label") or value).strip(),
+            "text": text[:8_000],
+        }
+    text = str(inherited.get("text") or "").strip()
+    if not text:
+        return None
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return {
+        **inherited,
+        "required": True,
+        "question": str(
+            inherited.get("question")
+            or interaction.payload.get("question")
+            or ""
+        )[:4_000],
+        "text": text[:8_000],
+        "textHash": str(inherited.get("textHash") or f"sha256:{digest}"),
+    }
+
+
+def _required_text_constraint_from_snapshot(
+    snapshot: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict):
+        return None
+    value = snapshot.get("requiredTextConstraint")
+    if isinstance(value, dict) and str(value.get("text") or "").strip():
+        return dict(value)
+    if snapshot.get("requiredText") is not True:
+        return None
+    answer = snapshot.get("answer")
+    text = answer.get("text") if isinstance(answer, dict) else None
+    if not str(text or "").strip():
+        return None
+    normalized = {
+        "required": True,
+        "question": str(snapshot.get("question") or "")[:4_000],
+        "optionValue": str(answer.get("value") or "").strip(),
+        "optionLabel": str(answer.get("displayText") or answer.get("value") or "").strip(),
+        "text": str(text).strip()[:8_000],
+    }
+    digest = hashlib.sha256(normalized["text"].encode("utf-8")).hexdigest()
+    normalized["textHash"] = f"sha256:{digest}"
+    return normalized
+
+
+def _required_text_prompt(constraint: dict[str, Any]) -> str:
+    text = str(constraint.get("text") or "").strip()
+    return (
+        "本轮必须遵守用户在决策卡中填写的补充说明。以下内容是用户原文，"
+        "不得丢弃、改写为模糊要求或用旧计划替代：\n"
+        f"【{text}】\n"
+        "请逐项核对并执行；最终回复必须明确说明每项已满足，或指出具体无法满足的原因。"
+        "如果当前资料或工具不足以满足任一项，必须调用 ask 生成下一张可操作的问题卡，"
+        "不能只在自然语言中写“待专家明确后继续”。"
+    )
+
+
+def _contains_any_token(value: str, tokens: tuple[str, ...] | list[str]) -> bool:
+    for token in tokens:
+        if token in value:
+            return True
+    return False
+
+
+def _contains_all_tokens(value: str, tokens: list[str]) -> bool:
+    for token in tokens:
+        if token not in value:
+            return False
+    return True
+
+
+def _required_text_response_acknowledged(
+    output: str,
+    constraint: dict[str, Any],
+) -> bool:
+    """判断最终正文是否至少明确承接了补充说明。
+
+    这里不要求模型逐字复述长文本，避免把业务说明泄漏到重复摘要中；
+    但必须出现承接/执行类措辞，且不能仅以“缺少资料”结束。
+    """
+    normalized = re.sub(r"\s+", "", str(output or ""))
+    if not normalized:
+        return False
+    if _contains_any_token(normalized, ("无法", "不能", "缺少", "不足以", "未能")):
+        return False
+    if not _contains_any_token(normalized, (
+        "已收到", "已按你的补充", "已按补充说明", "已按要求",
+        "已逐项", "已保留", "不会修改", "不修改知识包", "已核对",
+        "已根据", "已记录", "已采用", "按口述", "无需修改", "无需调整",
+        "保持当前", "补充说明已", "约束已",
+    )):
+        return False
+    # 用户给出两个以上精确数量时，至少要在回执中逐项回显这些数量，
+    # 避免“已按要求”掩盖 201/198/3 等统计没有真正执行。
+    required_numbers: list[str] = []
+    for item in re.findall(
+        r"(?<![A-Za-z0-9])\d+\s*(?:条|项|组|个|份|张|件|条目)",
+        str(constraint.get("text") or ""),
+    ):
+        required_numbers.append(re.sub(r"\D", "", item))
+    if len(required_numbers) >= 2 and not _contains_all_tokens(normalized, required_numbers):
+        return False
+    requirement_text = re.sub(r"\s+", "", str(constraint.get("text") or ""))
+    if "不修改知识包" in requirement_text and not _contains_any_token(
+        normalized,
+        ("不修改知识包", "知识包保持不变", "不改动知识包"),
+    ):
+        return False
+    return True
+
+
+def _required_text_interrupt_acknowledged(
+    result: dict[str, Any],
+    constraint: dict[str, Any],
+) -> bool:
+    interaction = result.get("interaction")
+    if not isinstance(interaction, InteractionRecord):
+        return False
+    if interaction.kind in {"confirmation", "release_confirmation"}:
+        return True
+    question = re.sub(r"\s+", "", str(interaction.payload.get("question") or ""))
+    original = re.sub(r"\s+", "", str(constraint.get("question") or ""))
+    if not question or (original and question == original):
+        return False
+    # 新卡必须明确承接约束或说明还缺什么，不能换一种说法重复原问题。
+    return _contains_any_token(question, (
+        "补充说明", "业务约束", "无法满足", "不能满足", "仍需补充",
+        "缺少", "证据", "具体原因", "按原", "调整补充", "唯一目标",
+        "明确范围", "具体目标",
+    ))
+
+
+def _required_text_interrupt_requires_review(
+    result: dict[str, Any],
+    live: LiveRun,
+    guard_mode: str,
+) -> bool:
+    if result.get("result_type") != "interrupt":
+        return False
+    constraint = live.required_text_constraint
+    if not constraint or guard_mode == "off":
+        return False
+    return not _required_text_interrupt_acknowledged(result, constraint)
+
+
+def _required_text_response_requires_review(
+    result: dict[str, Any],
+    live: LiveRun,
+    guard_mode: str,
+) -> bool:
+    if result.get("result_type") != "success":
+        return False
+    constraint = live.required_text_constraint
+    if not constraint or guard_mode == "off":
+        return False
+    return not _required_text_response_acknowledged(
+        str(result.get("output") or ""),
+        constraint,
+    )
 
 
 def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
@@ -1613,6 +1802,17 @@ class AgentService:
                 str(required_text_option.get("textPrompt") or "请补充具体说明后再提交"),
                 status=400,
             )
+        required_text_constraint = _required_text_constraint(interaction, answer)
+        if (
+            interaction.payload.get("requiredTextConstraint")
+            and str(answer.get("value") or "").strip() == "edit_required_text"
+            and not str(answer.get("text") or "").strip()
+        ):
+            raise AgentRuntimeError(
+                "INTERACTION_TEXT_REQUIRED",
+                "请补充新的业务约束后再提交",
+                status=400,
+            )
         direct_confirmation = (
             interaction.kind == "confirmation"
             and answer.get("action") != "interject"
@@ -1752,6 +1952,24 @@ class AgentService:
         required_tools = _required_tools_for_user_intent(
             f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}"
         )
+        constraint_prompt = (
+            _required_text_prompt(required_text_constraint)
+            if required_text_constraint else ""
+        )
+        if required_text_constraint:
+            self.events.publish(run.project_id, run.id, "tool", {
+                "name": "required_text_constraint",
+                "phase": "completed",
+                "summary": "补充说明已绑定到恢复任务",
+                "constraintHash": required_text_constraint.get("textHash"),
+            })
+        if required_text_constraint:
+            # 语义守卫需要在恢复时强制读取该工具结果，台账模式为 advisory 时
+            # 仍会形成确定性观测，但不会阻断普通建模流程。
+            if _PRODUCT_LEDGER_INTENT.search(
+                f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}"
+            ):
+                required_tools.add("stage_product_ledger")
         if direct_confirmation:
             approved = answer.get("approved") is True
             prompt = (
@@ -1833,6 +2051,8 @@ class AgentService:
                 "请把答复作为明确约束，从当前项目和同一会话继续主动建模。"
                 "不要重复询问已经回答的问题；下一次确实需要用户决定时再调用 ask 或 request_confirmation。"
             )
+            if constraint_prompt:
+                prompt = f"{prompt}\n\n{constraint_prompt}"
             self._persist_latest_interaction(
                 run,
                 interaction=interaction,
@@ -1847,12 +2067,13 @@ class AgentService:
                 prompt,
                 required_tools=required_tools,
                 autonomous_seed=True,
+                required_text_constraint=required_text_constraint,
             )
         self._persist_latest_interaction(
             run,
             interaction=interaction,
             answer=answer,
-            continuation="",
+            continuation=constraint_prompt,
             action_key=str(answer.get("action") or ""),
             requires_artifact=_answer_requires_script_artifact(interaction, answer),
         )
@@ -1860,6 +2081,7 @@ class AgentService:
             run,
             token,
             {interaction.tool_call_id: answer},
+            steering=constraint_prompt,
             required_tools=required_tools,
             confirmation_required=bool(interaction.payload.get("overallConfirmationRequired")),
             release_declined=(
@@ -1868,6 +2090,7 @@ class AgentService:
                 and (answer.get("approved") is not True or answer.get("coverage_confirmed") is not True)
             ),
             autonomous_seed=True,
+            required_text_constraint=required_text_constraint,
         )
 
     async def steer(
@@ -2599,6 +2822,7 @@ class AgentService:
             key: (value[:4_000] if isinstance(value, str) else value)
             for key, value in dict(answer).items()
         }
+        required_text_constraint = _required_text_constraint(interaction, answer)
         snapshot = {
             "interactionId": interaction.id,
             "kind": interaction.kind,
@@ -2611,6 +2835,8 @@ class AgentService:
             "continuation": str(continuation or "")[:2_000],
             "contractSummary": contract_summary,
             "operation": str(payload.get("operation") or "")[:500],
+            **({"requiredText": True} if required_text_constraint else {}),
+            **({"requiredTextConstraint": required_text_constraint} if required_text_constraint else {}),
             "requiresArtifact": (
                 _interaction_requires_artifact(interaction)
                 if requires_artifact is None
@@ -2626,6 +2852,57 @@ class AgentService:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
+
+    def _suspend_required_text_review(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        constraint: dict[str, Any],
+    ) -> None:
+        """模型两次都未承接 requiredText 时，落一张可操作复核卡。
+
+        这条出口不修改知识包，也不把“之后再明确”当作完成；用户可以直接
+        让助手按原说明重试，或在卡片中替换补充说明。
+        """
+        interaction_id = f"interaction_{uuid.uuid4().hex}"
+        interaction = InteractionRecord(
+            id=interaction_id,
+            project_id=run.project_id,
+            run_id=run.id,
+            tool_call_id=f"required-text-review:{run.id}",
+            kind="clarification",
+            payload={
+                "question": "助手还没有明确响应这条补充说明，请选择后继续",
+                "options": [
+                    {
+                        "label": "按原补充说明继续",
+                        "description": "重新核对并逐项响应刚才提交的要求",
+                        "value": "retry_required_text",
+                    },
+                    {
+                        "label": "调整补充说明",
+                        "description": "用新的说明替换刚才的约束",
+                        "value": "edit_required_text",
+                        "requiresText": True,
+                        "textPrompt": "请填写新的业务约束",
+                    },
+                ],
+                "allowFreeText": True,
+                "requiredTextConstraint": constraint,
+            },
+        )
+        self.store.create_interaction(interaction)
+        self.store.update_run(run.id, status=RUN_WAITING, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "interaction", interaction.public())
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_WAITING,
+            "text": "等待你确认补充说明后继续",
+        })
 
     def _suspend_confirmation_review(self, live: LiveRun, run: RunRecord) -> None:
         """把未形成确认卡的终态转换为可恢复的用户选择。"""
@@ -2710,6 +2987,7 @@ class AgentService:
         confirmation_required: bool = False,
         preserve_token_fingerprint: bool = False,
         autonomous_seed: bool = False,
+        required_text_constraint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
@@ -2729,6 +3007,10 @@ class AgentService:
         self.store.update_run(run.id, **updates)
         self._publish_state(run.project_id, run.id)
         technical_recoveries = self.store.technical_recoveries(run.id)
+        resolved_required_text_constraint = (
+            required_text_constraint
+            or _required_text_constraint_from_snapshot(run.latest_interaction)
+        )
         live = LiveRun(
             run_id=run.id,
             project_id=run.project_id,
@@ -2749,6 +3031,7 @@ class AgentService:
             package_contract=dict(claimed.get("packageContract") or {}),
             validation_repair=self._validation_repair_state(run.id),
             technical_recoveries=technical_recoveries,
+            required_text_constraint=resolved_required_text_constraint,
         )
         if steering:
             await live.steering.put(steering)
@@ -2769,6 +3052,7 @@ class AgentService:
         release_reentry_authorized: bool = False,
         confirmation_required: bool = False,
         autonomous_seed: bool = False,
+        required_text_constraint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
@@ -2782,6 +3066,10 @@ class AgentService:
         )
         self._publish_state(run.project_id, run.id)
         technical_recoveries = self.store.technical_recoveries(run.id)
+        resolved_required_text_constraint = (
+            required_text_constraint
+            or _required_text_constraint_from_snapshot(run.latest_interaction)
+        )
         live = LiveRun(
             run_id=run.id,
             project_id=run.project_id,
@@ -2800,6 +3088,7 @@ class AgentService:
             package_contract=dict(claimed.get("packageContract") or {}),
             validation_repair=self._validation_repair_state(run.id),
             technical_recoveries=technical_recoveries,
+            required_text_constraint=resolved_required_text_constraint,
         )
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
@@ -2972,6 +3261,29 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                if _required_text_interrupt_requires_review(
+                    result,
+                    live,
+                    self.settings.required_text_guard_mode,
+                ):
+                    if self.settings.required_text_guard_mode == "observe":
+                        self.events.publish(run.project_id, run.id, "tool", {
+                            "name": "required_text_guard",
+                            "phase": "completed",
+                            "summary": "模型重复了原问题卡（观测模式）",
+                            "constraintHash": live.required_text_constraint.get("textHash"),
+                        })
+                    elif live.required_text_guard_retries < 1:
+                        live.required_text_guard_retries += 1
+                        current_query = _required_text_prompt(live.required_text_constraint)
+                        continue
+                    else:
+                        self._suspend_required_text_review(
+                            live,
+                            run,
+                            live.required_text_constraint,
+                        )
+                        return
                 if context.technical_capability_claimed and result.get("result_type") == "interrupt":
                     self._suspend_confirmation_review(live, run)
                     return
@@ -3055,6 +3367,29 @@ class AgentService:
                         "output": "助手没有完成这项明确要求，本轮已停止；已经确认的内容保持不变。",
                         "streamed": False,
                     }
+                if _required_text_response_requires_review(
+                    result,
+                    live,
+                    self.settings.required_text_guard_mode,
+                ):
+                    if self.settings.required_text_guard_mode == "observe":
+                        self.events.publish(run.project_id, run.id, "tool", {
+                            "name": "required_text_guard",
+                            "phase": "completed",
+                            "summary": "补充说明已记录，但模型正文没有明确回执（观测模式）",
+                            "constraintHash": live.required_text_constraint.get("textHash"),
+                        })
+                    elif live.required_text_guard_retries < 1:
+                        live.required_text_guard_retries += 1
+                        current_query = _required_text_prompt(live.required_text_constraint)
+                        continue
+                    else:
+                        self._suspend_required_text_review(
+                            live,
+                            run,
+                            live.required_text_constraint,
+                        )
+                        return
                 if result.get("result_type") == "success" and _purpose_review_suggestions_complete(live):
                     result = await self._ensure_visible_result(live, run, result)
                     self._settle(live, run, result)
@@ -4096,6 +4431,16 @@ _PACKAGE_FUSION_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+# 明确要求逐项对账的产品/规则大清单。只有同时出现数量、逐项、去重、
+# 归并或完整性等信号时才触发产品台账工具，避免影响普通单条规则修改。
+_PRODUCT_LEDGER_INTENT = re.compile(
+    r"(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
+    r"(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)|"
+    r"规则.{0,220}(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
+    r"(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}规则",
+    re.IGNORECASE,
+)
+
 _RELEASE_REENTRY_INTENT = re.compile(
     r"增量|迭代|新版本|补充.{0,8}资料|替换.{0,8}资料|导入.{0,8}(?:知识包|来源包)|"
     r"融合|修改.{0,8}(?:知识|规则|流程|对象|指标|脚本)|修复.{0,8}(?:知识|规则|流程|对象|指标|脚本)|"
@@ -4149,6 +4494,10 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
         required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
+    if _PRODUCT_LEDGER_INTENT.search(value):
+        # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
+        # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
+        required.add("stage_product_ledger")
     return required
 
 
