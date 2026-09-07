@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { isDeepStrictEqual } from 'node:util';
 
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
@@ -48,8 +47,6 @@ import { projectEvaluationDatabaseName } from '../evaluation/project-evaluation-
 import { advanceStage, getProject } from '../projects/repo.js';
 import type {
   DataDictTable,
-  AnalysisResult,
-  ArtifactCandidate,
   PackageSpec,
   Project,
   SpecField,
@@ -476,79 +473,6 @@ export class AgentCoreService {
     }
   }
 
-  previewWorkbenchChangePlanDiscard(project: Project, planId: string) {
-    try {
-      const preview = this.changeControl.previewPlanDiscard(
-        project.id,
-        planId,
-        new Set([RUNTIME_GROUP, LEGACY_RUNTIME_GROUP]),
-      );
-      const pathCounts = preview.paths.reduce<Record<string, number>>((counts, path) => {
-        const category = ({
-          objects: '对象',
-          operations: '操作',
-          rules: '规则',
-          metrics: '指标',
-          scripts: '脚本',
-          mappings: '数据映射',
-          '.modeling': '结构化规格',
-        } as Record<string, string>)[path.split('/', 1)[0] ?? ''] ?? '其他';
-        counts[category] = (counts[category] ?? 0) + 1;
-        return counts;
-      }, {});
-      return {
-        plan_id: preview.planId,
-        plan_version: preview.planVersion,
-        candidate_fingerprint: preview.candidateFingerprint,
-        discard_count: preview.paths.length,
-        path_counts: pathCounts,
-        paths: preview.paths.slice(0, 100),
-        display: {
-          text: preview.paths.length
-            ? `放弃计划将删除 ${preview.paths.length} 项尚未确认的候选修改`
-            : '当前计划没有尚未确认的候选修改，放弃后只会结束计划',
-        },
-      };
-    } catch (error) {
-      throw normalizeChangeControlError(error);
-    }
-  }
-
-  async discardWorkbenchChangePlan(
-    project: Project,
-    username: string,
-    planId: string,
-    input: Record<string, unknown>,
-  ) {
-    try {
-      return await runProjectWriteExclusive(project.id, async () => {
-        const result = this.changeControl.discardPlanByUser({
-          projectId: project.id,
-          planId,
-          expectedVersion: input.expected_version,
-          expectedCandidateFingerprint: input.expected_candidate_fingerprint,
-          requestId: input.request_id,
-          actor: username,
-          reason: input.reason,
-          preservedGroupIds: new Set([RUNTIME_GROUP, LEGACY_RUNTIME_GROUP]),
-        });
-        return {
-          decision_id: result.decisionId,
-          replayed: result.replayed,
-          discarded_count: result.discardedCount,
-          discarded_paths: result.discardedPaths.slice(0, 100),
-          discarded_paths_truncated: result.discardedPaths.length > 100,
-          plan: result.plan,
-          display: { text: result.replayed
-            ? '这次放弃操作已经完成'
-            : `已按你的确认放弃计划及 ${result.discardedCount} 项候选修改` },
-        };
-      });
-    } catch (error) {
-      throw normalizeChangeControlError(error);
-    }
-  }
-
   safeTerminateChangePlan(project: Project, username: string, planId: string) {
     try {
       const terminated = this.changeControl.safeTerminatePlan({
@@ -770,7 +694,6 @@ export class AgentCoreService {
       case 'list_domain_resources': return this.listDomainResources(context, args);
       case 'get_domain_resource': return this.getDomainResource(context, args);
       case 'get_schema_semantics': return this.getSchemaSemantics(context, args);
-      case 'get_material_candidates': return this.getMaterialCandidates(context.project.id, args);
       case 'preview_domain_delete': return this.previewDomainDelete(context, args);
       case 'get_script_contract': return this.getScriptContract(context, args);
       case 'get_script_edit_context': return this.getScriptEditContext(context, args);
@@ -818,14 +741,14 @@ export class AgentCoreService {
         context,
         tool,
         args,
-        '__schema_semantics__',
+        '__schema__',
         () => this.stageSchemaSemanticChanges(workspace, context, args),
       );
       case 'confirm_schema_semantics': return this.runPlannedDirectTask(
         context,
         tool,
         args,
-        '__schema_semantics__',
+        '__schema__',
         () => this.confirmSchemaSemantics(context, args),
       );
       case 'suggest_object_relations': return this.suggestObjectRelations(workspace, context, args);
@@ -870,10 +793,7 @@ export class AgentCoreService {
       case 'bind_object_sources': return this.bindObjectSources(workspace, context, args);
       case 'write_file': return this.writeFile(workspace, context, args);
       case 'delete_file': return this.deleteFile(workspace, context, args);
-      case 'discard_rejected_candidate_changes': return this.discardRejectedCandidateChangesForAgent(
-        workspace,
-        context,
-      );
+      case 'discard_rejected_candidate_changes': return this.discardRejectedCandidateChanges(workspace);
       case 'prepare_confirmation_groups': return this.prepareConfirmationGroups(workspace);
       case 'regroup_changes': return this.regroupChanges(workspace, context, args);
       case 'grep_package': return this.grepPackage(workspace, args);
@@ -1095,80 +1015,6 @@ export class AgentCoreService {
     };
   }
 
-  private latestMaterialCandidates(projectId: string): ArtifactCandidate[] {
-    // New Map-Reduce analysis stores the canonical result in material_analysis_runs;
-    // retain wf_nodes as a read-only fallback for legacy projects.
-    let analysisRows: Array<{ result_json: string | null }> = [];
-    try {
-      analysisRows = this.db.prepare(`SELECT result_json FROM material_analysis_runs
-        WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
-        ORDER BY completed_at DESC, updated_at DESC, created_at DESC LIMIT 20`).all(projectId) as
-        Array<{ result_json: string | null }>;
-    } catch {
-      // Older databases may not have the Map-Reduce table yet.
-    }
-    for (const row of analysisRows) {
-      try {
-        const analysis = JSON.parse(row.result_json ?? '') as AnalysisResult;
-        if (Array.isArray(analysis.candidateArtifacts)) return analysis.candidateArtifacts;
-      } catch { /* Ignore damaged results and try an older completed analysis. */ }
-    }
-
-    const legacyRows = this.db.prepare(`SELECT output_json FROM wf_nodes
-      WHERE project_id = ? AND type = 'analyze' AND status IN ('done', 'stale')
-        AND output_json IS NOT NULL
-      ORDER BY ordinal DESC, rowid DESC LIMIT 20`).all(projectId) as Array<{ output_json: string }>;
-    for (const row of legacyRows) {
-      try {
-        const analysis = JSON.parse(row.output_json) as AnalysisResult;
-        if (Array.isArray(analysis.candidateArtifacts)) return analysis.candidateArtifacts;
-      } catch { /* Ignore legacy or damaged analysis rows and try the previous result. */ }
-    }
-    return [];
-  }
-
-  private getMaterialCandidates(projectId: string, args: Record<string, unknown>) {
-    const kind = String(args.kind ?? '').trim();
-    const readiness = String(args.readiness ?? '').trim();
-    if (kind && !['object', 'rule', 'operation', 'metric'].includes(kind)) {
-      throw new AgentCoreError('INVALID_INPUT', `不支持的候选类型：${kind}`, [], 400);
-    }
-    if (readiness && !['extractable', 'needs_clarification'].includes(readiness)) {
-      throw new AgentCoreError('INVALID_INPUT', `不支持的候选状态：${readiness}`, [], 400);
-    }
-    const offset = boundedInteger(args.offset, 0, 100_000, 0);
-    const limit = boundedInteger(args.limit, 1, 100, 50);
-    const all = this.latestMaterialCandidates(projectId);
-    const filtered = all.filter((candidate) => (
-      (!kind || candidate.kind === kind) && (!readiness || candidate.readiness === readiness)
-    ));
-    const items = filtered.slice(offset, offset + limit).map((candidate) => ({
-      id: materialCandidateId(candidate),
-      kind: candidate.kind,
-      name: candidate.name,
-      rationale: candidate.rationale,
-      sources: candidate.sources,
-      evidence: candidate.evidence ?? '',
-      readiness: candidate.readiness,
-    }));
-    const nextOffset = offset + items.length;
-    const counts = (['object', 'rule', 'operation', 'metric'] as const).map((candidateKind) => ({
-      kind: candidateKind,
-      total: all.filter((candidate) => candidate.kind === candidateKind).length,
-      extractable: all.filter((candidate) => (
-        candidate.kind === candidateKind && candidate.readiness === 'extractable'
-      )).length,
-    }));
-    return {
-      items,
-      total: filtered.length,
-      offset,
-      next_offset: nextOffset < filtered.length ? nextOffset : null,
-      counts,
-      display: { text: `已返回 ${items.length}/${filtered.length} 项资料建模候选` },
-    };
-  }
-
   private async schemaSemanticStatus(context: AgentToolContext) {
     const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
     const projectTables = this.tables(context.project.id);
@@ -1180,13 +1026,19 @@ export class AgentCoreService {
         name: field.name,
         sourceColumn: field.sourceColumn ?? '',
         note: field.note ?? '',
+        required: field.required ?? null,
+        nullable: field.nullable ?? null,
+        primaryKey: field.primaryKey ?? null,
         inferredType: field.inferredType,
       })),
+      constraintSource: table.constraintSource ?? null,
+      primaryKey: table.primaryKey ?? [],
+      rowsDigest: createHash('sha256').update(JSON.stringify(table.rows ?? [])).digest('hex'),
     })))).digest('hex');
     const cacheKey = `${context.project.id}:${workingPackage.workingRevision}:${tableFingerprint}`;
     let status = this.schemaSemanticStatusCache.get(cacheKey);
     if (!status) {
-      status = analyzeSchemaSemantics(parseWorkingPackageSpec(workingPackage.files), tables);
+      status = analyzeSchemaSemantics(parseWorkingPackageSpec(workingPackage.files), projectTables);
       for (const key of this.schemaSemanticStatusCache.keys()) {
         if (key.startsWith(`${context.project.id}:`)) this.schemaSemanticStatusCache.delete(key);
       }
@@ -1286,22 +1138,12 @@ export class AgentCoreService {
     try {
       const working = await this.workbenchStudioFiles(context.project, context.username);
       const workingSpec = parseWorkingPackageSpec(working.files);
-      const candidatePolicy = this.normalizeMaterialCandidatePlan(
-        context.project.id,
-        args.mode,
-        args.tasks,
-      );
       const sourcePolicy = this.normalizeObjectSourcePlan(
         context.project.id,
         args.mode,
-        candidatePolicy.tasks,
+        args.tasks,
         workingSpec,
         working.files,
-      );
-      this.assertExecutablePlanTargets(
-        context.project.id,
-        sourcePolicy.tasks,
-        workingSpec,
       );
       const plan = this.changeControl.createPlan({
         projectId: context.project.id,
@@ -1311,11 +1153,7 @@ export class AgentCoreService {
         expectedRevision: args.expected_revision,
         currentRevision: working.workingRevision,
         tasks: sourcePolicy.tasks,
-        allowEmpty: Array.isArray(sourcePolicy.tasks) && sourcePolicy.tasks.length === 0,
       });
-      if (plan.mode === 'generation' && plan.task_count > 0) {
-        this.invalidateSchemaRelationSuggestion(context.project.id);
-      }
       const relationSuggestionRequired = plan.mode === 'generation'
         && this.relationSuggestionRequiredForSpec(context.project.id, workingSpec);
       return {
@@ -1331,66 +1169,17 @@ export class AgentCoreService {
           reused_schema_sync: sourcePolicy.mode === 'schema' && !sourcePolicy.schemaSyncRequired,
           reused_schema_semantics: sourcePolicy.mode === 'schema' && !sourcePolicy.schemaSemanticsRequired,
         },
-        material_candidate_coverage: candidatePolicy.coverage,
         relation_suggestion_required: relationSuggestionRequired,
         ...(relationSuggestionRequired ? {
           next: ['当前计划没有待生成资源；在完整校验前调用 suggest_object_relations 生成最终关系候选'],
         } : {}),
-        display: { text: plan.status === 'completed'
-          ? relationSuggestionRequired
-            ? '当前资源已经生成完成，完整校验前需要生成最终对象关系候选'
-            : '当前 Schema 对象与已确认业务语义没有变化，无需重复执行或创建候选'
-          : plan.approval_status === 'pending'
+        display: { text: plan.approval_status === 'pending'
           ? `已建立 ${plan.task_count} 项受控建模计划，等待你批准后再写入`
           : `已建立 ${plan.task_count} 项受控建模计划，写入前会逐项核对范围` },
       };
     } catch (error) {
       throw normalizeChangeControlError(error);
     }
-  }
-
-  private normalizeMaterialCandidatePlan(projectId: string, rawMode: unknown, rawTasks: unknown) {
-    const candidates = this.latestMaterialCandidates(projectId)
-      .filter((candidate) => candidate.readiness === 'extractable');
-    const coverage = (['rule', 'operation', 'metric'] as const).map((kind) => ({
-      kind,
-      extractable_count: candidates.filter((candidate) => candidate.kind === kind).length,
-    }));
-    if (String(rawMode ?? 'expert_edit') !== 'generation' || !Array.isArray(rawTasks)) {
-      return { tasks: rawTasks, coverage };
-    }
-    const tasks = rawTasks.map((task) => (
-      task && typeof task === 'object' && !Array.isArray(task)
-        ? { ...(task as Record<string, unknown>) }
-        : task
-    ));
-    const missingKinds = coverage.filter((item) => (
-      item.extractable_count > 0
-      && !tasks.some((task) => task && typeof task === 'object' && !Array.isArray(task)
-        && String((task as Record<string, unknown>).resource_kind ?? '') === item.kind)
-    ));
-    if (missingKinds.length) {
-      throw new AgentCoreError(
-        'CHANGE_PLAN_CANDIDATE_COVERAGE_INCOMPLETE',
-        `建模计划遗漏了资料中可提取的${missingKinds.map((item) => domainKindLabel(item.kind)).join('、')}候选`,
-        ['调用 get_material_candidates 分页读取对应候选，并把生成、合并或澄清任务纳入计划'],
-        409,
-        { retryable: false, missing_kinds: missingKinds, coverage },
-      );
-    }
-    const requiredKinds = new Set(coverage
-      .filter((item) => item.extractable_count > 0)
-      .map((item) => item.kind));
-    return {
-      tasks: tasks.map((task) => {
-        if (!task || typeof task !== 'object' || Array.isArray(task)) return task;
-        const record = task as Record<string, unknown>;
-        return requiredKinds.has(String(record.resource_kind) as 'rule' | 'operation' | 'metric')
-          ? { ...record, required: true }
-          : record;
-      }),
-      coverage,
-    };
   }
 
   private normalizeObjectSourcePlan(
@@ -1469,14 +1258,13 @@ export class AgentCoreService {
       ));
     const physicalSatisfied = schemaObjectPolicyIssues(workingSpec, workingFiles, projectTables).length === 0
       && projectionMatches;
-    const semanticStatus = analyzeSchemaSemantics(workingSpec, physicalTables);
+    const semanticStatus = analyzeSchemaSemantics(workingSpec, projectTables);
     const semanticsSatisfied = physicalSatisfied
       && this.schemaSemanticConfirmationMatches(projectId, semanticStatus);
     const schemaSyncRequired = !physicalSatisfied;
     const schemaSemanticsRequired = !semanticsSatisfied;
 
     const replacedKeys = new Set<string>();
-    const semanticTaskKey = 'schema_semantics_confirmation';
     const retained = tasks.filter((task) => {
       const tools = toolsFor(task);
       const replaced = tools.some((tool) => (
@@ -1492,9 +1280,7 @@ export class AgentCoreService {
       return !replaced;
     });
     const schemaTaskKey = 'schema_object_sync';
-    const prerequisiteTaskKey = schemaSemanticsRequired
-      ? semanticTaskKey
-      : schemaSyncRequired ? schemaTaskKey : '';
+    const prerequisiteTaskKey = schemaSyncRequired || schemaSemanticsRequired ? schemaTaskKey : '';
     const normalized = retained.map((task) => {
       if (!task || typeof task !== 'object' || Array.isArray(task)) return task;
       const record = task as Record<string, unknown>;
@@ -1508,24 +1294,19 @@ export class AgentCoreService {
       };
     });
     const prerequisiteTasks: Array<Record<string, unknown>> = [];
-    if (schemaSyncRequired) prerequisiteTasks.push({
+    if (schemaSyncRequired || schemaSemanticsRequired) prerequisiteTasks.push({
       client_key: schemaTaskKey,
       title: `按 ${physicalTables.length} 张 Schema Sheet 同步物理对象`,
       resource_kind: 'binding',
       target_key: '__schema__',
-      allowed_tools: ['sync_schema_objects'],
+      allowed_tools: [
+        ...(schemaSyncRequired ? ['sync_schema_objects'] : []),
+        ...(schemaSemanticsRequired ? ['stage_schema_semantic_changes', 'confirm_schema_semantics'] : []),
+      ],
       depends_on: [],
-      acceptance: '每张 Schema Sheet 恰好对应一个对象，字段、主键、物理来源和 mapping 全部由平台确定性生成',
-      required: true,
-    });
-    if (schemaSemanticsRequired) prerequisiteTasks.push({
-      client_key: semanticTaskKey,
-      title: '补全并确认 Schema 对象业务语义',
-      resource_kind: 'other',
-      target_key: '__schema_semantics__',
-      allowed_tools: ['stage_schema_semantic_changes', 'confirm_schema_semantics'],
-      depends_on: schemaSyncRequired ? [schemaTaskKey] : [],
-      acceptance: '对象标题和说明、字段中文名具备业务含义，字段必填标志已按二态规则归一化；字段业务说明允许为空',
+      acceptance: schemaSemanticsRequired
+        ? '每张 Schema Sheet 恰好对应一个对象，并在同一计划任务末尾完成对象标题、说明、字段中文名和必填二态语义确认；字段业务说明允许为空'
+        : '每张 Schema Sheet 恰好对应一个对象，字段、主键、物理来源和 mapping 全部由平台确定性生成',
       required: true,
     });
     return {
@@ -1535,88 +1316,6 @@ export class AgentCoreService {
       schemaSemanticsRequired,
       tasks: [...prerequisiteTasks, ...normalized],
     };
-  }
-
-  private assertExecutablePlanTargets(
-    projectId: string,
-    rawTasks: unknown,
-    workingSpec: PackageSpec,
-  ): void {
-    if (!Array.isArray(rawTasks)) return;
-    const available = {
-      object: new Set([
-        ...workingSpec.objects.map((item) => item.key),
-        ...expectedSchemaObjects(this.tables(projectId)).map((item) => item.object.key),
-      ]),
-      rule: new Set((workingSpec.rules ?? []).map((item) => item.key)),
-      operation: new Set(workingSpec.operations.map((item) => item.key)),
-      metric: new Set((workingSpec.metrics ?? []).map((item) => item.key)),
-    };
-    const declaredCreates = {
-      object: new Set<string>(), rule: new Set<string>(), operation: new Set<string>(), metric: new Set<string>(),
-    };
-    for (const raw of rawTasks) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const task = raw as Record<string, unknown>;
-      const kind = String(task.resource_kind ?? '') as keyof typeof declaredCreates;
-      const target = String(task.target_key ?? '').trim();
-      const tools = Array.isArray(task.allowed_tools) ? task.allowed_tools.map(String) : [];
-      if (Object.hasOwn(declaredCreates, kind) && tools.includes(`create_${kind}`)) {
-        declaredCreates[kind].add(target);
-      }
-    }
-    for (let index = 0; index < rawTasks.length; index += 1) {
-      const raw = rawTasks[index];
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const task = raw as Record<string, unknown>;
-      const kind = String(task.resource_kind ?? '') as keyof typeof available;
-      const target = String(task.target_key ?? '').trim();
-      const tools = Array.isArray(task.allowed_tools) ? task.allowed_tools.map(String) : [];
-      const domainTools = tools.filter((tool) => /^(?:create|patch)_(?:object|rule|operation|metric)$/u.test(tool));
-      if (!domainTools.length) continue;
-      try {
-        validateKey(target, '计划目标');
-      } catch (error) {
-        throw new AgentCoreError(
-          'CHANGE_PLAN_TARGET_INVALID',
-          error instanceof Error ? error.message : `计划任务 ${index + 1} 的目标 key 不合法`,
-          ['每项任务使用一个具体资源的稳定 key'],
-          400,
-          { task_index: index, target_key: target, retryable: false },
-        );
-      }
-      for (const tool of domainTools) {
-        const [operation, toolKind] = tool.split('_') as ['create' | 'patch', keyof typeof available];
-        if (toolKind !== kind) {
-          throw new AgentCoreError(
-            'CHANGE_PLAN_TARGET_KIND_MISMATCH',
-            `计划任务 ${index + 1} 的资源类型与工具 ${tool} 不一致`,
-            ['让 resource_kind、allowed_tools 和 target_key 指向同一个具体资源'],
-            400,
-            { task_index: index, target_key: target, retryable: false },
-          );
-        }
-        if (operation === 'patch' && !available[toolKind].has(target)
-          && !declaredCreates[toolKind].has(target)) {
-          throw new AgentCoreError(
-            'CHANGE_PLAN_TARGET_NOT_FOUND',
-            `计划任务“${String(task.title ?? target)}”没有对应的具体${domainKindLabel(toolKind)}资源：${target}`,
-            ['按实际资源 key 拆分任务；不能使用目录、类别、通配符或多个资源的概括'],
-            409,
-            { task_index: index, target_key: target, resource_kind: toolKind, retryable: false },
-          );
-        }
-        if (operation === 'create' && available[toolKind].has(target)) {
-          throw new AgentCoreError(
-            'CHANGE_PLAN_TARGET_ALREADY_EXISTS',
-            `计划任务“${String(task.title ?? target)}”要创建的${domainKindLabel(toolKind)}已经存在：${target}`,
-            [`改用 patch_${toolKind} 更新现有资源，或使用新的具体 key`],
-            409,
-            { task_index: index, target_key: target, resource_kind: toolKind, retryable: false },
-          );
-        }
-      }
-    }
   }
 
   private assertObjectSourceToolMode(
@@ -1657,13 +1356,9 @@ export class AgentCoreService {
       return {
         plan,
         display: {
-          text: plan.pending_execution_count
-            ? `建模计划还有 ${plan.pending_execution_count} 项任务尚未执行`
-            : plan.awaiting_settlement_count
-              ? `${plan.awaiting_settlement_count} 项任务已执行，正在等待整包校验或确认`
-              : plan.remaining_count
-                ? `建模计划还有 ${plan.remaining_count} 项任务尚未最终结算`
-            : '建模计划的全部任务已经完成或明确跳过',
+          text: plan.remaining_count
+            ? `建模计划还有 ${plan.remaining_count} 项必选任务待完成`
+            : '建模计划的必选任务已经全部形成可校验结果',
         },
       };
     } catch (error) {
@@ -1671,13 +1366,11 @@ export class AgentCoreService {
     }
   }
 
-  private async reviseChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
+  private reviseChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
     try {
       const active = this.changeControl.activePlan(context.project.id, context.runId);
       const additions = Array.isArray(args.add_tasks) ? args.add_tasks : [];
-      const replacements = Array.isArray(args.replace_tasks) ? args.replace_tasks : [];
-      const revisedTasks = [...additions, ...replacements];
-      const addedTools = revisedTasks.flatMap((task) => (
+      const addedTools = additions.flatMap((task) => (
         task && typeof task === 'object' && !Array.isArray(task)
           && Array.isArray((task as Record<string, unknown>).allowed_tools)
           ? ((task as Record<string, unknown>).allowed_tools as unknown[]).map(String)
@@ -1700,12 +1393,6 @@ export class AgentCoreService {
           { retryable: false, object_source_mode: hasSchema ? 'schema' : 'virtual' },
         );
       }
-      const working = await this.workbenchStudioFiles(context.project, context.username);
-      this.assertExecutablePlanTargets(
-        context.project.id,
-        revisedTasks,
-        parseWorkingPackageSpec(working.files),
-      );
       const plan = this.changeControl.revisePlan({
         projectId: context.project.id,
         runId: context.runId,
@@ -1713,12 +1400,12 @@ export class AgentCoreService {
         expectedVersion: args.expected_version,
         reason: args.reason,
         addTasks: args.add_tasks,
-        replaceTasks: args.replace_tasks,
         skipTaskIds: args.skip_task_ids,
+        scopeApproved: args.scope_approved,
       });
       return {
         plan,
-        display: { text: `建模计划已更新为第 ${plan.version} 版，共 ${plan.task_count} 项任务，等待页面重新批准` },
+        display: { text: `建模计划已更新为第 ${plan.version} 版，共 ${plan.task_count} 项任务` },
       };
     } catch (error) {
       throw normalizeChangeControlError(error);
@@ -1778,6 +1465,12 @@ export class AgentCoreService {
       const generatesDownstreamResources = actions.some((action) => (
         ['rule', 'operation', 'metric'].includes(action.tool.split('_').at(-1) ?? '')
       ));
+      if (activePlan?.id === planId && activePlan.mode === 'generation'
+        && actions.some((action) => action.tool !== 'sync_schema_objects')
+        && this.schemaSemanticEnforcementEnabled(context.project.id)) {
+        const planWorkspace = this.workspace(context.project.id);
+        if (planWorkspace) this.assertSchemaSemantics(planWorkspace, await this.overlay(planWorkspace));
+      }
       if (activePlan?.id === planId && activePlan.mode === 'generation' && generatesDownstreamResources) {
         this.assertSchemaRelationSuggestion(
           context.project.id,
@@ -1832,40 +1525,37 @@ export class AgentCoreService {
     action: () => Promise<Record<string, unknown>>,
   ) {
     if (!CHANGE_PLAN_DIRECT_TOOLS.has(tool)) return action();
-    return runProjectWriteExclusive(context.project.id, async () => {
-      const active = this.changeControl.activePlan(context.project.id, context.runId);
-      if (!active) return action();
-      const taskId = text(args.plan_task_id, 'plan_task_id');
-      try {
-        this.changeControl.authorizeDirectTask({
-          projectId: context.project.id,
-          runId: context.runId,
-          taskId,
-          tool,
-          targetKey,
-          receiptId: String(args.mutation_id ?? ''),
-        });
-        const result = await action();
-        if (result.replayed === true) {
-          return {
-            ...result,
-            plan: this.changeControl.snapshot(context.project.id, context.runId, active.id),
-          };
-        }
-        const plan = this.changeControl.completeDirectTask({
-          projectId: context.project.id,
-          runId: context.runId,
-          taskId,
-          tool,
-          receiptId: text(args.mutation_id, 'mutation_id'),
-          resultingRevision: String(result.working_revision ?? ''),
-        });
-        return { ...result, plan };
-      } catch (error) {
-        if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
-        throw error;
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (!active) return action();
+    const taskId = text(args.plan_task_id, 'plan_task_id');
+    try {
+      this.changeControl.authorizeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        targetKey,
+      });
+      const result = await action();
+      if (result.replayed === true) {
+        return {
+          ...result,
+          plan: this.changeControl.snapshot(context.project.id, context.runId, active.id),
+        };
       }
-    });
+      const plan = this.changeControl.completeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        receiptId: text(args.mutation_id, 'mutation_id'),
+        resultingRevision: String(result.working_revision ?? ''),
+      });
+      return { ...result, plan };
+    } catch (error) {
+      if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
+      throw error;
+    }
   }
 
   private async runPlannedProgressTask(
@@ -1875,37 +1565,34 @@ export class AgentCoreService {
     targetKey: string,
     action: () => Promise<Record<string, unknown>>,
   ) {
-    return runProjectWriteExclusive(context.project.id, async () => {
-      const active = this.changeControl.activePlan(context.project.id, context.runId);
-      if (!active) {
-        throw new AgentCoreError(
-          'CHANGE_PLAN_REQUIRED',
-          'Schema 业务语义修改必须属于当前受控建模计划',
-          ['先建立包含 Schema 业务语义确认任务的 generation 计划'],
-          409,
-          { retryable: false },
-        );
-      }
-      const taskId = text(args.plan_task_id, 'plan_task_id');
-      try {
-        this.changeControl.authorizeDirectTask({
-          projectId: context.project.id,
-          runId: context.runId,
-          taskId,
-          tool,
-          targetKey,
-          receiptId: String(args.mutation_id ?? ''),
-        });
-        const result = await action();
-        return {
-          ...result,
-          plan: this.changeControl.snapshot(context.project.id, context.runId, active.id),
-        };
-      } catch (error) {
-        if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
-        throw error;
-      }
-    });
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (!active) {
+      throw new AgentCoreError(
+        'CHANGE_PLAN_REQUIRED',
+        'Schema 业务语义修改必须属于当前受控建模计划',
+        ['先建立包含 Schema 同步及其末尾语义阶段的 generation 计划'],
+        409,
+        { retryable: false },
+      );
+    }
+    const taskId = text(args.plan_task_id, 'plan_task_id');
+    try {
+      this.changeControl.authorizeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        targetKey,
+      });
+      const result = await action();
+      return {
+        ...result,
+        plan: this.changeControl.snapshot(context.project.id, context.runId, active.id),
+      };
+    } catch (error) {
+      if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
+      throw error;
+    }
   }
 
   private compileChangeSetBatch(
@@ -2023,16 +1710,8 @@ export class AgentCoreService {
       const planId = text(args.plan_id, 'plan_id');
       const current = await this.overlay(workspace);
       this.changeControl.readyForValidation(context.project.id, context.runId, planId);
+      this.assertSchemaSemantics(workspace, current);
       this.assertSchemaRelationSuggestion(context.project.id, current.spec);
-      const effective = await this.effectiveChanges(workspace);
-      if (!effective.length && !workspace.candidate_id) {
-        const plan = this.changeControl.completeNoopPlan(context.project.id, context.runId, planId);
-        return {
-          plan,
-          validation: { no_changes: true, candidate_revision: null },
-          display: { text: '计划结果与当前知识包一致，无需生成候选或新版本' },
-        };
-      }
       const prepared = await this.prepareConfirmationGroups(workspace);
       const result = await this.preflight(workspace, context, {
         summary: String(args.summary ?? '核对完整建模计划'),
@@ -2059,6 +1738,7 @@ export class AgentCoreService {
     if (active) {
       const current = await this.overlay(workspace);
       this.changeControl.readyForValidation(context.project.id, context.runId, active.id);
+      this.assertSchemaSemantics(workspace, current);
       this.assertSchemaRelationSuggestion(context.project.id, current.spec);
     }
     const result = await this.preflight(workspace, context, args);
@@ -2081,16 +1761,6 @@ export class AgentCoreService {
       const planId = text(args.plan_id, 'plan_id');
       if (workspace.candidate_id) {
         throw new AgentCoreError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在页面退回', [], 409);
-      }
-      const plan = this.changeControl.snapshot(context.project.id, context.runId, planId);
-      if (plan.mode === 'generation' && plan.approval_status === 'approved') {
-        throw new AgentCoreError(
-          'CHANGE_PLAN_DISCARD_USER_ACTION_REQUIRED',
-          '已批准的生成计划不能由助手放弃，请在计划卡中查看影响并由用户直接操作',
-          ['计划目标有误时使用 replace_tasks 原位替换，不要删除已有候选'],
-          409,
-          { retryable: false, requires_user_decision: true, plan_id: planId },
-        );
       }
       const result = this.discardRejectedCandidateChanges(workspace);
       this.changeControl.discardPlan(context.project.id, context.runId, planId);
@@ -2558,9 +2228,7 @@ export class AgentCoreService {
       throw error;
     }
 
-    const effective = await this.effectiveChanges(workspace);
     const nextWorking = await this.workbenchStudioFiles(context.project, context.username);
-    const hasChanges = effective.length > 0;
     const response = {
       ok: true,
       deterministic: true,
@@ -2580,11 +2248,8 @@ export class AgentCoreService {
         primary_key: object.primaryKey ?? [],
       })),
       rendered_paths: [...objectPaths, 'objects/index.md', OBJECT_DATA_MAPPING_PATH],
-      candidate: hasChanges,
-      no_changes: !hasChanges,
-      display: { text: hasChanges
-        ? `已按 ${tables.length} 张 Schema Sheet 确定性同步 ${physical.length} 个物理对象及 mapping`
-        : `已核对 ${tables.length} 张 Schema Sheet，物理对象、业务语义和 mapping 均无变化` },
+      candidate: true,
+      display: { text: `已按 ${tables.length} 张 Schema Sheet 确定性同步 ${physical.length} 个物理对象及 mapping` },
     };
     this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
     return response;
@@ -2708,7 +2373,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'CHANGE_PLAN_REQUIRED',
         'Schema 业务语义确认必须属于当前受控建模计划',
-        ['先建立包含 Schema 业务语义确认任务的 generation 计划'],
+        ['先建立包含 Schema 同步及其末尾语义阶段的 generation 计划'],
         409,
         { retryable: false },
       );
@@ -2781,10 +2446,11 @@ export class AgentCoreService {
     const requestedRevision = String(args.working_revision ?? args.workingRevision ?? args.expected_revision ?? '').trim();
     if (requestedRevision) new StudioReadService(workingPackage).assertRevision(requestedRevision);
     const current = await this.overlay(workspace);
-    const tables = schemaTables(this.tables(context.project.id));
+    const projectTables = this.tables(context.project.id);
+    const tables = schemaTables(projectTables);
     const cursor = optionalInputText(args.cursor);
     const scope = optionalSuggestionScope(args.scope);
-    const semanticStatus = analyzeSchemaSemantics(current.spec, tables);
+    const semanticStatus = analyzeSchemaSemantics(current.spec, projectTables);
     const relationSuggestionPending = this.schemaSemanticEnforcementEnabled(context.project.id)
       && this.schemaSemanticConfirmationMatches(context.project.id, semanticStatus)
       && !this.schemaRelationSuggestionMatches(context.project.id, semanticStatus.fingerprint);
@@ -4206,7 +3872,6 @@ export class AgentCoreService {
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
         packageContract: packageGenerationContract(),
         packageDataSource: { dataSourceType: workspace.package_data_source_type },
-        relationSuggestionRequired: false,
         display: { text: '知识包版本已变化，已按当前内容重新准备修改' },
       };
     }
@@ -4219,7 +3884,6 @@ export class AgentCoreService {
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
         packageContract: packageGenerationContract(),
         packageDataSource: { dataSourceType: workspace.package_data_source_type },
-        relationSuggestionRequired: false,
         display: { text: existing ? '已继续上次未完成的修改' : '已准备本次修改' },
       };
     }
@@ -4264,7 +3928,6 @@ export class AgentCoreService {
       runCredential: issueAgentRunCredential(context.project.id, context.runId, context.username),
       packageContract: packageGenerationContract(),
       packageDataSource: { dataSourceType: this.workspace(context.project.id)?.package_data_source_type ?? 'neo4j' },
-      relationSuggestionRequired: false,
       display: { text: '已继续上次未完成的修改' },
     };
   }
@@ -6322,10 +5985,8 @@ export class AgentCoreService {
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
     const noOpPaths = changes.filter((change) => (
       change.kind === 'write'
-        ? (change.path === INTERNAL_SPEC_CHANGE_PATH
-          ? sameCompiledPackageSpec(base.spec, change.content)
-          : base.files[change.path] === change.content)
-        : change.path === INTERNAL_SPEC_CHANGE_PATH || !Object.hasOwn(base.files, change.path)
+        ? base.files[change.path] === change.content
+        : !Object.hasOwn(base.files, change.path)
     )).map((change) => change.path);
     if (!noOpPaths.length) return changes;
 
@@ -7099,7 +6760,8 @@ export class AgentCoreService {
       FROM agent_change_plan_tasks task
       JOIN agent_change_plans plan ON plan.id = task.plan_id
       WHERE plan.project_id = ? AND plan.status <> 'cancelled'
-        AND task.target_key = '__schema_semantics__'
+        AND instr(task.allowed_tools_json, 'stage_schema_semantic_changes') > 0
+        AND instr(task.allowed_tools_json, 'confirm_schema_semantics') > 0
       LIMIT 1`).get(projectId));
   }
 
@@ -7122,7 +6784,7 @@ export class AgentCoreService {
 
   private relationSuggestionRequiredForSpec(projectId: string, spec: PackageSpec): boolean {
     if (!this.schemaSemanticEnforcementEnabled(projectId)) return false;
-    const status = analyzeSchemaSemantics(spec, schemaTables(this.tables(projectId)));
+    const status = analyzeSchemaSemantics(spec, this.tables(projectId));
     if (!status.available || !this.schemaSemanticConfirmationMatches(projectId, status)) return false;
     if (this.schemaRelationSuggestionMatches(projectId, status.fingerprint)) return false;
     this.markSchemaRelationSuggestionRequired(projectId, status.fingerprint);
@@ -7154,10 +6816,6 @@ export class AgentCoreService {
       completed_at = NULL,
       updated_at = excluded.updated_at`).run(projectId, semanticFingerprint, nowIso());
     return true;
-  }
-
-  private invalidateSchemaRelationSuggestion(projectId: string): void {
-    this.db.prepare('DELETE FROM agent_schema_relation_suggestions WHERE project_id = ?').run(projectId);
   }
 
   private schemaRelationSuggestionProgress(projectId: string, semanticFingerprint: string) {
@@ -7242,7 +6900,7 @@ export class AgentCoreService {
     if (!this.schemaSemanticEnforcementEnabled(projectId)) return;
     const status = analyzeSchemaSemantics(
       spec,
-      schemaTables(this.tables(projectId)),
+      this.tables(projectId),
     );
     // 语义未确认时由原有 Schema 语义门禁返回更精确的问题。
     if (!this.schemaSemanticConfirmationMatches(projectId, status)) return;
@@ -7264,13 +6922,13 @@ export class AgentCoreService {
   }
 
   private assertSchemaSemantics(
-    workspace: WorkspaceRow,
+    workspace: Pick<WorkspaceRow, 'project_id'>,
     candidate: Pick<PackageArtifactFiles, 'spec' | 'files'>,
   ): void {
     if (!this.schemaSemanticEnforcementEnabled(workspace.project_id)) return;
     const status = analyzeSchemaSemantics(
       candidate.spec,
-      schemaTables(this.tables(workspace.project_id)),
+      this.tables(workspace.project_id),
     );
     if (this.schemaSemanticConfirmationMatches(workspace.project_id, status)) return;
     throw new AgentCoreError(
@@ -7649,23 +7307,6 @@ export class AgentCoreService {
     };
   }
 
-  private discardRejectedCandidateChangesForAgent(
-    workspace: WorkspaceRow,
-    context: AgentToolContext,
-  ) {
-    const plan = this.changeControl.activePlan(context.project.id, context.runId);
-    if (plan?.mode === 'generation' && plan.approval_status === 'approved') {
-      throw new AgentCoreError(
-        'CHANGE_PLAN_DISCARD_USER_ACTION_REQUIRED',
-        '活动中的已批准生成计划不能由助手清空候选',
-        ['目标错误时原位替换任务；用户确需整批放弃时使用计划卡操作'],
-        409,
-        { retryable: false, requires_user_decision: true, plan_id: plan.id },
-      );
-    }
-    return this.discardRejectedCandidateChanges(workspace);
-  }
-
   private discardRejectedCandidateChanges(workspace: WorkspaceRow) {
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -7845,7 +7486,7 @@ export class AgentCoreService {
         && knowledgePaths.every((path) => confirmedPaths.has(path))));
     const schemaSemantics = analyzeSchemaSemantics(
       workingSpec,
-      schemaTables(this.tables(workspace.project_id)),
+      this.tables(workspace.project_id),
     );
     const schemaSemanticsEnforced = this.schemaSemanticEnforcementEnabled(workspace.project_id);
     const schemaSemanticsConfirmed = !schemaSemanticsEnforced
@@ -7924,7 +7565,6 @@ export class AgentCoreService {
             '对当前全部 Schema 对象调用 suggest_object_relations 并读取全部分页，再生成规则、操作和指标',
           ]),
         ],
-        warnings: [],
       },
       modeling_complete: {
         pass: pendingBusiness === 0 && pendingCandidates === 0,
@@ -9601,16 +9241,6 @@ function boundedInteger(
   return parsed;
 }
 
-function materialCandidateId(candidate: ArtifactCandidate): string {
-  const digest = createHash('sha256').update(JSON.stringify({
-    kind: candidate.kind,
-    name: candidate.name,
-    sources: candidate.sources,
-    rationale: candidate.rationale,
-  })).digest('hex').slice(0, 20);
-  return `mac_${digest}`;
-}
-
 function schemaSemanticSummary(status: SchemaSemanticStatus) {
   return {
     available: status.available,
@@ -9622,18 +9252,6 @@ function schemaSemanticSummary(status: SchemaSemanticStatus) {
     error_count: status.errorCount,
     warning_count: status.warningCount,
   };
-}
-
-function sameCompiledPackageSpec(base: PackageSpec, content: string | null): boolean {
-  if (content === null) return false;
-  try {
-    return isDeepStrictEqual(
-      canonicalizePackageSpec(structuredClone(base)),
-      canonicalizePackageSpec(JSON.parse(content) as PackageSpec),
-    );
-  } catch {
-    return false;
-  }
 }
 
 function assertSchemaSemanticPatchActions(value: unknown, objectIndex: number): void {

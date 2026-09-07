@@ -81,18 +81,3 @@ test('operation 流程步骤在规格边界移除模型重复写入的序号', (
   assert.match(markdown, /# 流程\n\n1\. 接收计划数据\n2\. 校验计划数据/u);
   assert.doesNotMatch(markdown, /^\d+\.\s+\d+[.)、]\s+/mu);
 });
-
-test('对象字段 required 在规格边界归一为必填或非必填二态', () => {
-  const spec = {
-    id: 'required-binary', name: '必填二态', description: '合成规格', version: '1.0.0',
-    language: 'zh-CN', defaultProviderAlias: 'data', operations: [],
-    objects: [{
-      key: 'record', title: '记录', description: '合成记录',
-      fields: [{ key: 'record_id', type: 'string', required: true }, { key: 'note', type: 'string' }],
-    }],
-  } as PackageSpec;
-
-  const canonical = canonicalizePackageSpec(spec);
-  assert.deepEqual(canonical.objects[0].fields.map((field) => field.required), [true, false]);
-  assert.equal(spec.objects[0].fields[1].required, undefined);
-});

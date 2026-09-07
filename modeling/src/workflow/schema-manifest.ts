@@ -375,7 +375,11 @@ function matchingPreviousObject(
   const sameRevision = sameSource.find((object) => object.sourceRefs?.some((source) => (
     source.kind === 'table' && source.table === table.name && source.documentId === table.documentId
   )));
-  return sameRevision ?? (sameSource.length === 1 ? sameSource[0] : undefined);
+  if (sameRevision) return sameRevision;
+  // A document-qualified table must never inherit semantics from a same-name
+  // table in another document; only unqualified legacy sources can use the
+  // single-match fallback.
+  return table.documentId ? undefined : (sameSource.length === 1 ? sameSource[0] : undefined);
 }
 
 function mergeFieldSemantics(
