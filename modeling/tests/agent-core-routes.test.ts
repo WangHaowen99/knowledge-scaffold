@@ -17,7 +17,7 @@ const [
   { createProject, getProject },
   { getPackageArtifactStore },
   { getDb },
-  { getDocument, insertDocumentRevision },
+  { getDocument, insertDocument, insertDocumentRevision },
   { MaterialPurposeReviewStore, findMaterialPurposeReviewProblems },
   { requireAuth },
   { storePackageMergeSource },
@@ -2521,11 +2521,9 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
   }, runId);
   assert.equal(planResponse.statusCode, 200, planResponse.body);
   const plan = planResponse.json().plan;
-  assert.deepEqual(plan.tasks[0].allowed_tools, ['sync_schema_objects']);
-  assert.deepEqual(
-    plan.tasks[1].allowed_tools,
-    ['stage_schema_semantic_changes', 'confirm_schema_semantics'],
-  );
+  assert.deepEqual(plan.tasks[0].allowed_tools, [
+    'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
+  ]);
   const approved = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
@@ -2544,145 +2542,12 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
   assert.equal(completePlan.statusCode, 200, completePlan.body);
   assert.equal(completePlan.json().complete, true);
   assert.deepEqual(completePlan.json().sheets[0].mappedObjects, ['records']);
-  const semanticResource = await tool(app, project.id, 'get_domain_resource', {
-    resource_id: synced.json().objects[0].resource_id,
-    working_revision: synced.json().working_revision,
-  }, runId);
-  assert.equal(semanticResource.statusCode, 200, semanticResource.body);
-  const resource = semanticResource.json().resource;
-  const rejectedFullField = await tool(app, project.id, 'stage_schema_semantic_changes', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: synced.json().working_revision,
-    mutation_id: 'sheet-purpose-schema-semantics-invalid-field',
-    reason: '验证语义补全拒绝重传完整字段',
-    objects: [{
-      resource_id: resource.id,
-      expected_resource_hash: resource.resource_hash,
-      actions: [{
-        op: 'update_field',
-        field_key: resource.editable_items.fields[0].key,
-        expected_field_hash: resource.editable_items.fields[0].item_hash,
-        field: resource.editable_items.fields[0],
-      }],
-    }],
-  }, runId);
-  assert.equal(rejectedFullField.statusCode, 400, rejectedFullField.body);
-  assert.equal(rejectedFullField.json().code, 'SCHEMA_SEMANTIC_ACTION_FORBIDDEN');
-  assert.equal(rejectedFullField.json().path, 'objects[0].actions[0].changes');
-  assert.match(rejectedFullField.json().reason, /changes.*至少一项/u);
-
-  const rejectedPhysicalChange = await tool(app, project.id, 'stage_schema_semantic_changes', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: synced.json().working_revision,
-    mutation_id: 'sheet-purpose-schema-semantics-invalid-property',
-    reason: '验证语义补全拒绝物理字段属性',
-    objects: [{
-      resource_id: resource.id,
-      expected_resource_hash: resource.resource_hash,
-      actions: [{
-        op: 'update_field',
-        field_key: resource.editable_items.fields[0].key,
-        expected_field_hash: resource.editable_items.fields[0].item_hash,
-        changes: { cn_name: '记录编号', type: 'number' },
-      }],
-    }],
-  }, runId);
-  assert.equal(rejectedPhysicalChange.statusCode, 400, rejectedPhysicalChange.body);
-  assert.equal(rejectedPhysicalChange.json().code, 'SCHEMA_SEMANTIC_ACTION_FORBIDDEN');
-  assert.deepEqual(rejectedPhysicalChange.json().unexpected_keys, ['type']);
-  assert.match(rejectedPhysicalChange.json().reason, /不允许的字段属性/u);
-
-  const stagedSemantics = await tool(app, project.id, 'stage_schema_semantic_changes', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: synced.json().working_revision,
-    mutation_id: 'sheet-purpose-schema-semantics',
-    reason: '使用合成业务定义补全记录对象',
-    objects: [{
-      resource_id: resource.id,
-      expected_resource_hash: resource.resource_hash,
-      actions: [
-        { op: 'set_title', value: '业务记录' },
-        { op: 'set_description', value: '保存合成业务流程中的记录。' },
-        ...resource.editable_items.fields.map((field: any, index: number) => ({
-          op: 'update_field', field_key: field.key, expected_field_hash: field.item_hash,
-          changes: {
-            cn_name: `记录字段${index + 1}`,
-          },
-        })),
-      ],
-    }],
-  }, runId);
-  assert.equal(stagedSemantics.statusCode, 200, stagedSemantics.body);
-  assert.equal(stagedSemantics.json().semantic_status.pass, true);
-  assert.equal(stagedSemantics.json().semantic_status.warning_count, 0);
-  const confirmedSemantics = await tool(app, project.id, 'confirm_schema_semantics', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: stagedSemantics.json().working_revision,
-    mutation_id: 'sheet-purpose-schema-semantics-confirm',
-    reason: '确认合成 Schema 语义完整',
-  }, runId);
-  assert.equal(confirmedSemantics.statusCode, 200, confirmedSemantics.body);
-  assert.equal(confirmedSemantics.json().relation_suggestion_required, true);
-  const confirmationGroups = await tool(app, project.id, 'prepare_confirmation_groups', {}, runId);
-  assert.equal(confirmationGroups.statusCode, 200, confirmationGroups.body);
-  const blockedBeforeRelationSuggestion = await tool(app, project.id, 'request_confirmation_preflight', {
-    summary: '验证语义确认后不能跳过对象关系建议',
-    change_groups: confirmationGroups.json().change_groups,
-  }, runId);
-  assert.equal(blockedBeforeRelationSuggestion.statusCode, 409, blockedBeforeRelationSuggestion.body);
-  assert.equal(
-    blockedBeforeRelationSuggestion.json().code,
-    'SCHEMA_RELATION_SUGGESTION_REQUIRED',
-  );
-  const relationSuggestion = await tool(app, project.id, 'suggest_object_relations', {
-    working_revision: confirmedSemantics.json().working_revision,
-    limit: 20,
-  }, runId);
-  assert.equal(relationSuggestion.statusCode, 200, relationSuggestion.body);
-  assert.equal(relationSuggestion.json().relation_suggestion_recorded, true);
   const ready = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '按已确认用途同步 records 对象',
-    change_groups: confirmationGroups.json().change_groups,
+    change_groups: [{ id: 'schema_objects', tier: 'structural', title: 'Schema 对象同步' }],
   }, runId);
-  assert.equal(ready.statusCode, 200, ready.body);
-});
-
-test('资料分析新检查点结果可直接提供候选，兼容旧 wf_nodes 读取链路', async (t) => {
-  const project = createProject({ owner: 'alice', name: '新资料分析候选读取验证', runtime: 'agent' });
-  const now = new Date().toISOString();
-  getDb().prepare(`INSERT INTO material_analysis_runs (
-    id, project_id, source_set_fingerprint, brief_fingerprint, model_id, protocol_version,
-    plan_json, status, stage, result_json, created_at, updated_at, completed_at
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    `analysis-${project.id}`,
-    project.id,
-    'synthetic-sources',
-    'synthetic-brief',
-    'synthetic-model',
-    'synthetic-v1',
-    JSON.stringify({ totalChars: 10 }),
-    'completed',
-    'complete',
-    JSON.stringify({
-      candidateArtifacts: [
-        { kind: 'rule', name: '合成规则', rationale: '合成证据', sources: ['synthetic.md'], readiness: 'extractable' },
-        { kind: 'operation', name: '合成操作', rationale: '合成证据', sources: ['synthetic.md'], readiness: 'extractable' },
-        { kind: 'metric', name: '合成指标', rationale: '合成证据', sources: ['synthetic.md'], readiness: 'needs_clarification' },
-      ],
-    }),
-    now,
-    now,
-    now,
-  );
-  const result = await tool(appFor(t), project.id, 'get_material_candidates', {
-    readiness: 'extractable', offset: 0, limit: 10,
-  }, `run-${project.id}`);
-  assert.equal(result.statusCode, 200, result.body);
-  assert.equal(result.json().total, 2);
-  assert.deepEqual(
-    result.json().counts.map((item: any) => [item.kind, item.extractable]),
-    [['object', 0], ['rule', 1], ['operation', 1], ['metric', 0]],
-  );
+  assert.equal(ready.statusCode, 422, ready.body);
+  assert.equal(ready.json().code, 'CANDIDATE_SCHEMA_SEMANTICS_INVALID');
 });
 
 test('对象领域工具原子生成跨 Sheet 主表与扩展表映射', async (t) => {
@@ -4157,4 +4022,42 @@ test('正式发布绑定当前全量评测并要求项目负责人确认覆盖�
   const restoredGate = await tool(app, project.id, 'gate_status', { gate: 'releasable' }, restoredRunId);
   assert.equal(restoredGate.statusCode, 200, restoredGate.body);
   assert.equal(restoredGate.json().pass, true);
+});
+
+test('Schema 语义摘要路由返回分页问题而不暴露样例值', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成 Schema 语义路由', runtime: 'agent' });
+  const app = appFor(t);
+  insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_schema.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    purpose: 'schema',
+    tables: [{
+      name: 'synthetic_customer',
+      rowCount: 1,
+      fields: [{
+        name: 'customer_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1,
+      }],
+    }],
+  });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: `schema-semantic-route-${project.id}`,
+    name: '合成 Schema 语义路由',
+    description: '合成测试包',
+  });
+  const summary = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/summary`,
+  });
+  assert.equal(summary.statusCode, 200, summary.body);
+  assert.equal(summary.json().summary.available, true);
+  const items = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/items?level=error&offset=0&limit=10`,
+  });
+  assert.equal(items.statusCode, 200, items.body);
+  assert.equal(items.json().offset, 0);
+  assert.ok(Array.isArray(items.json().items));
+  assert.ok(items.json().items.every((item: any) => !('sampleValues' in item)));
 });

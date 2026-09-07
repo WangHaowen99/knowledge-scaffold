@@ -77,9 +77,6 @@ export default function RightPane() {
   const streamTail = messages.map((message) => {
     const blocks = (message.blocks || []).map((block) => (
       `${block.type}:${block.streaming ? 1 : 0}:${block.text?.length || 0}`
-      + (block.type === 'plan'
-        ? `:${block.plan?.version ?? ''}:${block.plan?.approval_status || ''}:${block.plan?.tasks?.length || 0}`
-        : '')
     )).join(',');
     return `${message.id}:${message.streaming ? 1 : 0}:${blocks}`;
   }).join('|');

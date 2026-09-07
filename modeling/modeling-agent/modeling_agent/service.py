@@ -2298,11 +2298,6 @@ class AgentService:
         arguments: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        if name == "revise_change_plan":
-            plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
-            if plan.get("approval_status") == "pending":
-                live.plan_approval_required = True
-            return
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
             fault: dict[str, Any] = {}

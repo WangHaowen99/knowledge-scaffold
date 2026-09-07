@@ -289,13 +289,11 @@ function optionalCell(value: string): string | undefined {
   return value && value !== '未声明' && value !== '—' ? value : undefined;
 }
 
-function requiredFlag(path: string, value: string, allowLegacyUnspecified: boolean): boolean {
+function requiredFlag(path: string, value: string, allowUnspecified: boolean): boolean | undefined {
   if (value === '是') return true;
   if (value === '否') return false;
-  if (allowLegacyUnspecified && value === '未声明') return false;
-  fail(path, allowLegacyUnspecified
-    ? '必填列只允许「是」「否」；历史值「未声明」会按「否」处理'
-    : '必填列只允许「是」「否」');
+  if (allowUnspecified && value === '未声明') return undefined;
+  fail(path, `必填列只允许「是」「否」${allowUnspecified ? '或「未声明」' : ''}`);
 }
 
 function bulletList(path: string, lines: string[], label: string): string[] {
@@ -389,7 +387,7 @@ function parseOperation(path: string, content: string, base: SpecOperation, base
     if (!row[0] || !row[2]) fail(path, '输入参数 key 和类型不能为空');
     return {
       param: row[0], cnName: optionalCell(row[1]), type: row[2],
-      required: requiredFlag(path, row[3], false), note: optionalCell(row[4]),
+      required: requiredFlag(path, row[3], false)!, note: optionalCell(row[4]),
     };
   });
   const outputs = tableRows(path, sectionLines(path, parsed, '输出'), [

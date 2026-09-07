@@ -208,13 +208,7 @@ test('ZIP 中带结构化规格时优先使用规格且保留包文件', () => {
 
   const imported = parsePackageArchive(zipSync(entries));
 
-  assert.deepEqual(imported.spec, {
-    ...spec,
-    objects: spec.objects.map((object) => ({
-      ...object,
-      fields: object.fields.map((field) => ({ ...field, required: field.required === true })),
-    })),
-  });
+  assert.deepEqual(imported.spec, spec);
   assert.deepEqual(imported.coverage, { covered: [], uncovered: ['待补问题'] });
   assert.ok(!Object.hasOwn(imported.files, 'model/package-spec.json'));
 });

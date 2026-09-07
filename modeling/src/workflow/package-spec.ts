@@ -17,13 +17,7 @@ export function normalizeOperationFlowStep(value: string): string {
 export function canonicalizePackageSpec(spec: PackageSpec): PackageSpec {
   return {
     ...spec,
-    objects: spec.objects.map((object) => normalizeObjectFieldAliases({
-      ...object,
-      fields: object.fields.map((field) => ({
-        ...field,
-        required: field.required === true,
-      })),
-    })),
+    objects: spec.objects.map(normalizeObjectFieldAliases),
     operations: spec.operations.map((operation) => ({
       ...operation,
       flow: (operation.flow ?? []).map(normalizeOperationFlowStep),

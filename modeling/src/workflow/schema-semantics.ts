@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { DataDictTable, PackageSpec, SpecField, SpecObject } from '../types.js';
 import { expectedSchemaObjects, schemaTables } from './schema-object-policy.js';
 import { isSchemaFallbackDescription } from './schema-semantic-shared.js';
+import { tableSourceFor } from './source-references.js';
 
 export const SCHEMA_SEMANTICS_VALIDATOR_VERSION = 'schema-semantics-v3';
 
@@ -94,14 +95,17 @@ export function analyzeSchemaSemantics(spec: PackageSpec, tables: DataDictTable[
     };
   }
 
-  const expected = expectedSchemaObjects(physicalTables);
+  // Keep dictionary/constraint tables in the input so the expected physical
+  // projection uses the same authoritative metadata as Schema synchronization.
+  const expected = expectedSchemaObjects(tables);
   const actualByKey = new Map(spec.objects.map((object) => [object.key, object]));
   const actualBySourceTable = new Map<string, SpecObject[]>();
   for (const object of spec.objects) {
-    if (!object.sourceTable) continue;
-    const matches = actualBySourceTable.get(object.sourceTable);
+    const sourceTable = object.sourceTable ?? tableSourceFor(object)?.table;
+    if (!sourceTable) continue;
+    const matches = actualBySourceTable.get(sourceTable);
     if (matches) matches.push(object);
-    else actualBySourceTable.set(object.sourceTable, [object]);
+    else actualBySourceTable.set(sourceTable, [object]);
   }
   const resolved = expected.map(({ table, object: expectedObject }) => {
     const exact = actualByKey.get(expectedObject.key);

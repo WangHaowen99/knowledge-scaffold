@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from types import SimpleNamespace
 
 import pytest
+
+import json
 
 import modeling_agent.tools as tools_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
@@ -38,20 +39,6 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 
 
 pytestmark = pytest.mark.asyncio
-
-
-async def test_revised_generation_plan_pending_approval_suspends_writes() -> None:
-    live = SimpleNamespace(plan_approval_required=False)
-
-    await AgentService._after_core_tool(  # noqa: SLF001
-        None,
-        live,
-        "revise_change_plan",
-        {},
-        {"plan": {"approval_status": "pending"}},
-    )
-
-    assert live.plan_approval_required is True
 
 
 async def test_schema_semantic_confirmation_requires_relation_suggestion_before_downstream() -> None:
@@ -494,16 +481,10 @@ async def test_full_document_read_declares_long_running_timeout() -> None:
 
 async def test_change_set_tools_explain_one_task_per_resource_contract() -> None:
     create_plan = next(item for item in CORE_TOOL_SPECS if item.name == "create_change_plan")
-    revise_plan = next(item for item in CORE_TOOL_SPECS if item.name == "revise_change_plan")
     stage_change_set = next(item for item in CORE_TOOL_SPECS if item.name == "stage_change_set")
-    discard_change_set = next(item for item in CORE_TOOL_SPECS if item.name == "discard_change_set")
 
     assert "每项任务只能对应一个具体目标资源" in create_plan.description
     assert "一个且仅一个目标资源" in create_plan.properties["tasks"]["items"]["properties"]["target_key"]["description"]
-    assert "replace_tasks" in revise_plan.properties
-    assert "scope_approved" not in revise_plan.properties
-    assert "scope_approved" not in discard_change_set.properties
-    assert "计划卡" in discard_change_set.description
     assert "每个 action 只对应一个计划任务和一个目标资源" in stage_change_set.description
     assert stage_change_set.properties["actions"]["maxItems"] == 4
     variants = stage_change_set.properties["actions"]["items"]["oneOf"]

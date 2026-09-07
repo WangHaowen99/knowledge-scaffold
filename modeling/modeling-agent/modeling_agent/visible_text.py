@@ -88,7 +88,6 @@ _TOKEN_LABELS = {
     "bind_object_sources": "绑定跨 Sheet 对象来源",
     "get_schema_mapping_plan": "核对数据 Schema 映射计划",
     "get_schema_semantics": "检查 Schema 对象业务语义",
-    "get_material_candidates": "读取资料建模候选",
     "stage_schema_semantic_changes": "批量补全 Schema 对象业务语义",
     "confirm_schema_semantics": "确认 Schema 对象业务语义",
     "get_validation_summary": "查看校验摘要",

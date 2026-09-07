@@ -1,9 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { nowIso } from '../db/index.js';
 
-export const CHANGE_PLAN_CONTRACT_VERSION = 'change-plan-v2';
+export const CHANGE_PLAN_CONTRACT_VERSION = 'change-plan-v1';
 export const CHANGE_SET_CONTRACT_VERSION = 'change-set-v1';
 
 const PLAN_MODES = new Set(['expert_edit', 'generation']);
@@ -106,24 +106,6 @@ interface TaskInput {
   required: boolean;
 }
 
-interface TaskReplacementInput {
-  taskId: string;
-  title: string;
-  resourceKind: string;
-  targetKey: string;
-  allowedTools: string[];
-  dependsOnTaskIds: string[];
-  acceptance: string;
-}
-
-interface CandidateChangeRow {
-  path: string;
-  kind: 'write' | 'delete';
-  content: string | null;
-  group_id: string;
-  updated_at: string;
-}
-
 export class ChangeControlError extends Error {
   constructor(
     public readonly code: string,
@@ -147,7 +129,6 @@ export class ChangeControlStore {
     expectedRevision: unknown;
     currentRevision: string;
     tasks: unknown;
-    allowEmpty?: boolean;
   }) {
     const existing = this.activePlan(input.projectId, input.runId);
     if (existing) {
@@ -169,21 +150,20 @@ export class ChangeControlStore {
         retryable: false,
       });
     }
-    const tasks = parseTasks(input.tasks, input.allowEmpty === true);
+    const tasks = parseTasks(input.tasks);
     const planId = `cp_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
     const idsByClientKey = new Map(tasks.map((task, index) => [task.clientKey, `${planId}_t${index + 1}`]));
     const timestamp = nowIso();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const noTasks = tasks.length === 0;
-      const approvalStatus = noTasks ? 'approved' : mode === 'generation' ? 'pending' : 'approved';
+      const approvalStatus = mode === 'generation' ? 'pending' : 'approved';
       this.db.prepare(`INSERT INTO agent_change_plans (
         id, project_id, run_id, goal, mode, status, approval_status, approved_by, approved_at,
         version, expected_revision, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?)`).run(
-        planId, input.projectId, input.runId, goal, mode, noTasks ? 'completed' : 'active', approvalStatus,
-        noTasks ? 'core_reuse' : mode === 'generation' ? null : 'user_request',
-        noTasks ? timestamp : mode === 'generation' ? null : timestamp,
+      ) VALUES (?,?,?,?,?,'active',?,?,?,1,?,?,?)`).run(
+        planId, input.projectId, input.runId, goal, mode, approvalStatus,
+        mode === 'generation' ? null : 'user_request',
+        mode === 'generation' ? null : timestamp,
         expectedRevision, timestamp, timestamp,
       );
       const insert = this.db.prepare(`INSERT INTO agent_change_plan_tasks (
@@ -204,9 +184,7 @@ export class ChangeControlStore {
         task.required ? 1 : 0,
         timestamp,
       ));
-      this.event(input.projectId, input.runId, planId, null,
-        noTasks ? 'plan.noop_completed' : 'plan.created',
-        noTasks ? '当前建模前置条件已经满足，无需重复执行' : '已建立受控建模计划', {
+      this.event(input.projectId, input.runId, planId, null, 'plan.created', '已建立受控建模计划', {
         taskCount: tasks.length, mode, approvalStatus,
       });
       this.db.exec('COMMIT');
@@ -224,8 +202,8 @@ export class ChangeControlStore {
     expectedVersion: unknown;
     reason: unknown;
     addTasks: unknown;
-    replaceTasks: unknown;
     skipTaskIds: unknown;
+    scopeApproved: unknown;
   }) {
     const plan = this.requirePlan(input.projectId, input.runId, String(input.planId ?? ''));
     if (plan.status !== 'active') throw new ChangeControlError('CHANGE_PLAN_CLOSED', '这份建模计划已经结束', 409);
@@ -238,15 +216,17 @@ export class ChangeControlStore {
     }
     const reason = requiredText(input.reason, 'reason', 1_000);
     const additions = input.addTasks === undefined ? [] : parseTasks(input.addTasks, true);
-    const replacements = input.replaceTasks === undefined
-      || (Array.isArray(input.replaceTasks) && input.replaceTasks.length === 0)
-      ? []
-      : parseTaskReplacements(input.replaceTasks);
     const skipIds = stringArray(input.skipTaskIds, 'skip_task_ids', 100);
-    if (!additions.length && !replacements.length && !skipIds.length) {
-      throw invalid('revision', '至少新增、替换或跳过一项任务');
-    }
+    if (!additions.length && !skipIds.length) throw invalid('revision', '至少新增一项任务或跳过一项可选任务');
     const currentTasks = this.taskRows(plan.id);
+    if (additions.length && currentTasks.some((task) => task.status !== 'pending') && input.scopeApproved !== true) {
+      throw new ChangeControlError(
+        'CHANGE_PLAN_SCOPE_APPROVAL_REQUIRED',
+        '执行开始后扩大修改范围需要先由用户明确确认',
+        409,
+        { retryable: false, requires_user_decision: true },
+      );
+    }
     const existingKeys = new Set(currentTasks.map((task) => task.client_key));
     for (const task of additions) {
       if (existingKeys.has(task.clientKey)) throw invalid('add_tasks.client_key', `任务标识重复：${task.clientKey}`);
@@ -256,30 +236,6 @@ export class ChangeControlStore {
         }
       }
       existingKeys.add(task.clientKey);
-    }
-    const replacementTaskIds = new Set<string>();
-    for (const replacement of replacements) {
-      if (replacementTaskIds.has(replacement.taskId)) {
-        throw invalid('replace_tasks.task_id', `同一任务不能重复替换：${replacement.taskId}`);
-      }
-      replacementTaskIds.add(replacement.taskId);
-      const task = currentTasks.find((item) => item.id === replacement.taskId);
-      if (!task) throw invalid('replace_tasks.task_id', `任务不属于当前计划：${replacement.taskId}`);
-      if (task.status !== 'pending') {
-        throw invalid('replace_tasks.task_id', `只有尚未执行的任务可以替换：${task.title}`);
-      }
-      if (replacement.dependsOnTaskIds.includes(task.id)) {
-        throw invalid('replace_tasks.depends_on_task_ids', '任务不能依赖自己');
-      }
-      for (const dependencyId of replacement.dependsOnTaskIds) {
-        if (!currentTasks.some((item) => item.id === dependencyId)) {
-          throw invalid('replace_tasks.depends_on_task_ids', `依赖任务不存在：${dependencyId}`);
-        }
-      }
-    }
-    const overlapping = skipIds.find((taskId) => replacementTaskIds.has(taskId));
-    if (overlapping) {
-      throw invalid('revision', `同一任务不能同时替换和跳过：${overlapping}`);
     }
     const timestamp = nowIso();
     this.db.exec('BEGIN IMMEDIATE');
@@ -291,24 +247,6 @@ export class ChangeControlStore {
         if (task.status !== 'pending') throw invalid('skip_task_ids', `只有尚未执行的任务可以跳过：${task.title}`);
         this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'skipped', updated_at = ? WHERE id = ?`)
           .run(timestamp, task.id);
-      }
-      for (const replacement of replacements) {
-        const task = currentTasks.find((item) => item.id === replacement.taskId)!;
-        this.db.prepare(`UPDATE agent_change_plan_tasks SET
-          title = ?, resource_kind = ?, target_key = ?, allowed_tools_json = ?,
-          depends_on_json = ?, acceptance = ?, required = ?, updated_at = ?
-          WHERE id = ? AND plan_id = ? AND status = 'pending'`).run(
-          replacement.title,
-          replacement.resourceKind,
-          replacement.targetKey,
-          JSON.stringify(replacement.allowedTools),
-          JSON.stringify(replacement.dependsOnTaskIds),
-          replacement.acceptance,
-          task.required,
-          timestamp,
-          task.id,
-          plan.id,
-        );
       }
       const allTasks = this.taskRows(plan.id);
       const idByKey = new Map(allTasks.map((task) => [task.client_key, task.id]));
@@ -326,13 +264,14 @@ export class ChangeControlStore {
         JSON.stringify(task.dependsOn.map((key) => idByKey.get(key)!)), task.acceptance,
         task.required ? 1 : 0, timestamp,
       ));
-      assertTaskRowsAcyclic(this.taskRows(plan.id));
       this.db.prepare(`UPDATE agent_change_plans SET version = version + 1,
-        approval_status = 'pending', approved_by = NULL, approved_at = NULL,
+        approval_status = CASE WHEN ? > 0 THEN 'pending' ELSE approval_status END,
+        approved_by = CASE WHEN ? > 0 THEN NULL ELSE approved_by END,
+        approved_at = CASE WHEN ? > 0 THEN NULL ELSE approved_at END,
         updated_at = ? WHERE id = ?`)
-        .run(timestamp, plan.id);
+        .run(additions.length, additions.length, additions.length, timestamp, plan.id);
       this.event(plan.project_id, plan.run_id, plan.id, null, 'plan.revised', '已记录建模计划调整', {
-        reason, added: additions.length, replaced: replacements.length, skipped: skipIds.length,
+        reason, added: additions.length, skipped: skipIds.length,
       });
       this.db.exec('COMMIT');
     } catch (error) {
@@ -373,7 +312,6 @@ export class ChangeControlStore {
     taskId: string;
     tool: string;
     targetKey: string;
-    receiptId?: string;
   }) {
     const plan = this.activePlan(input.projectId, input.runId);
     if (!plan) return null;
@@ -387,17 +325,23 @@ export class ChangeControlStore {
     }
     const task = this.taskRows(plan.id).find((item) => item.id === input.taskId);
     if (!task) throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', '修改动作不属于当前计划', 409);
-    const idempotentReplay = task.status === 'staged'
-      && Boolean(input.receiptId)
-      && task.change_set_id === `direct:${input.receiptId}`;
-    const repeatableStagedTool = task.status === 'staged'
-      && ['stage_script_source', 'stage_script_patch'].includes(input.tool);
-    if (task.status !== 'pending' && !idempotentReplay && !repeatableStagedTool) {
+    const allowedTools = parseStringArray(task.allowed_tools_json);
+    if (task.status === 'pending'
+      && ['stage_schema_semantic_changes', 'confirm_schema_semantics'].includes(input.tool)
+      && allowedTools.includes('sync_schema_objects')) {
+      throw new ChangeControlError(
+        'CHANGE_SET_DEPENDENCY_MISSING',
+        'Schema 物理对象尚未同步，不能提前进入末尾业务语义阶段',
+        409,
+        { task_id: task.id, required_tool: 'sync_schema_objects', retryable: false },
+      );
+    }
+    if (!['pending', 'staged'].includes(task.status)) {
       throw new ChangeControlError('CHANGE_PLAN_TASK_ALREADY_SETTLED', `计划任务已经处理：${task.title}`, 409, {
         task_id: task.id, status: task.status,
       });
     }
-    if (!parseStringArray(task.allowed_tools_json).includes(input.tool)) {
+    if (!allowedTools.includes(input.tool)) {
       throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', `计划未授权这项修改：${task.title}`, 409, {
         task_id: task.id, tool: input.tool,
       });
@@ -497,7 +441,11 @@ export class ChangeControlStore {
       expected_revision = CASE WHEN ? <> '' THEN ? ELSE expected_revision END,
       updated_at = ? WHERE id = ?`)
       .run(input.resultingRevision ?? '', input.resultingRevision ?? '', timestamp, plan.id);
-    this.event(input.projectId, input.runId, plan.id, null, 'plan.direct_task_staged', '受控独立任务已形成待确认修改', {
+    const summary = ['sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics']
+      .includes(input.tool)
+      ? 'Schema 同步计划任务已推进'
+      : '受控独立任务已形成待确认修改';
+    this.event(input.projectId, input.runId, plan.id, null, 'plan.direct_task_staged', summary, {
       taskId: input.taskId, tool: input.tool, receiptId: input.receiptId,
     });
     return this.snapshot(input.projectId, input.runId, plan.id);
@@ -573,13 +521,6 @@ export class ChangeControlStore {
       change_set_id: task.change_set_id,
     }));
     const completed = tasks.filter((task) => ['accepted', 'skipped'].includes(task.status)).length;
-    const pendingExecution = tasks.filter((task) => ['pending', 'failed'].includes(task.status)).length;
-    const executed = tasks.filter((task) => (
-      ['staged', 'validated', 'waiting_user', 'accepted'].includes(task.status)
-    )).length;
-    const awaitingSettlement = tasks.filter((task) => (
-      ['staged', 'validated', 'waiting_user'].includes(task.status)
-    )).length;
     return {
       id: plan.id,
       contract_version: CHANGE_PLAN_CONTRACT_VERSION,
@@ -593,10 +534,7 @@ export class ChangeControlStore {
       expected_revision: plan.expected_revision,
       task_count: tasks.length,
       completed_count: completed,
-      executed_count: executed,
-      pending_execution_count: pendingExecution,
-      awaiting_settlement_count: awaitingSettlement,
-      remaining_count: tasks.filter((task) => !['accepted', 'skipped'].includes(task.status)).length,
+      remaining_count: tasks.filter((task) => task.required && !['accepted', 'skipped'].includes(task.status)).length,
       tasks,
       created_at: plan.created_at,
       updated_at: plan.updated_at,
@@ -743,26 +681,12 @@ export class ChangeControlStore {
 
   readyForValidation(projectId: string, runId: string, planId: string) {
     const plan = this.requirePlan(projectId, runId, planId);
-    if (plan.approval_status !== 'approved') {
-      throw new ChangeControlError(
-        'CHANGE_PLAN_APPROVAL_REQUIRED',
-        '修订后的建模计划尚未由用户批准，不能进入完整校验',
-        409,
-        { retryable: false, requires_user_decision: true, plan_id: plan.id },
-      );
-    }
     const tasks = this.taskRows(plan.id);
-    const incomplete = tasks.filter((task) => (
-      !['staged', 'validated', 'waiting_user', 'accepted', 'skipped'].includes(task.status)
-    ));
+    const incomplete = tasks.filter((task) => task.required
+      && !['staged', 'validated', 'waiting_user', 'accepted'].includes(task.status));
     if (incomplete.length) {
-      throw new ChangeControlError('CHANGE_PLAN_INCOMPLETE', `还有 ${incomplete.length} 项计划任务未执行或未明确跳过`, 409, {
-        incomplete_tasks: incomplete.map((task) => ({
-          id: task.id,
-          title: task.title,
-          required: Boolean(task.required),
-          status: task.status,
-        })),
+      throw new ChangeControlError('CHANGE_PLAN_INCOMPLETE', `还有 ${incomplete.length} 项必选任务没有形成候选`, 409, {
+        incomplete_tasks: incomplete.map((task) => ({ id: task.id, title: task.title, status: task.status })),
         retryable: false,
       });
     }
@@ -782,24 +706,6 @@ export class ChangeControlStore {
       this.event(projectId, runId, plan.id, null, 'plan.validated', '完整建模计划已通过候选校验', {
         candidateRevision,
       });
-      this.db.exec('COMMIT');
-    } catch (error) {
-      if (this.db.isTransaction) this.db.exec('ROLLBACK');
-      throw error;
-    }
-    return this.snapshot(projectId, runId, plan.id);
-  }
-
-  completeNoopPlan(projectId: string, runId: string, planId: string) {
-    const plan = this.readyForValidation(projectId, runId, planId);
-    const timestamp = nowIso();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'accepted', updated_at = ?
-        WHERE plan_id = ? AND status IN ('staged', 'validated', 'waiting_user')`).run(timestamp, plan.id);
-      this.db.prepare(`UPDATE agent_change_plans SET status = 'completed', version = version + 1,
-        updated_at = ? WHERE id = ?`).run(timestamp, plan.id);
-      this.event(projectId, runId, plan.id, null, 'plan.noop_completed', '计划结果与当前版本一致，无需生成候选', {});
       this.db.exec('COMMIT');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
@@ -843,185 +749,8 @@ export class ChangeControlStore {
     }
   }
 
-  previewPlanDiscard(
-    projectId: string,
-    planId: string,
-    preservedGroupIds: ReadonlySet<string> = new Set(),
-  ) {
-    const plan = this.requireProjectPlan(projectId, planId);
-    if (plan.status !== 'active') {
-      throw new ChangeControlError('CHANGE_PLAN_CLOSED', '这份建模计划已经结束，无需放弃', 409);
-    }
-    if (plan.mode !== 'generation' || plan.approval_status !== 'approved') {
-      throw new ChangeControlError(
-        'CHANGE_PLAN_DISCARD_NOT_APPLICABLE',
-        '只有已经批准并开始执行的生成计划需要单独确认整批放弃',
-        409,
-      );
-    }
-    const workspace = this.db.prepare(`SELECT candidate_id FROM agent_candidate_workspaces
-      WHERE project_id = ? AND run_id = ?`).get(projectId, plan.run_id) as
-      | { candidate_id: string | null }
-      | undefined;
-    if (workspace?.candidate_id) {
-      throw new ChangeControlError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在候选确认卡中退回', 409);
-    }
-    const changes = (this.db.prepare(`SELECT path, kind, content, group_id, updated_at
-      FROM agent_candidate_changes WHERE project_id = ? AND run_id = ? ORDER BY path`)
-      .all(projectId, plan.run_id) as unknown as CandidateChangeRow[])
-      .filter((change) => !preservedGroupIds.has(change.group_id));
-    return {
-      planId: plan.id,
-      runId: plan.run_id,
-      planVersion: plan.version,
-      candidateFingerprint: candidateChangesFingerprint(changes),
-      paths: changes.map((change) => change.path),
-    };
-  }
-
-  discardPlanByUser(input: {
-    projectId: string;
-    planId: string;
-    expectedVersion: unknown;
-    expectedCandidateFingerprint: unknown;
-    requestId: unknown;
-    actor: string;
-    reason: unknown;
-    preservedGroupIds?: ReadonlySet<string>;
-  }) {
-    const requestId = requiredText(input.requestId, 'request_id', 128);
-    if (!MUTATION_ID.test(requestId)) throw invalid('request_id', '请求标识格式无效');
-    const replay = this.db.prepare(`SELECT id, plan_id FROM agent_plan_scope_decisions
-      WHERE project_id = ? AND request_id = ?`).get(input.projectId, requestId) as
-      | { id: string; plan_id: string }
-      | undefined;
-    if (replay) {
-      if (replay.plan_id !== input.planId) {
-        throw new ChangeControlError('MUTATION_ID_REUSED', '这个请求标识已经用于另一份计划', 409);
-      }
-      const plan = this.requireProjectPlan(input.projectId, input.planId);
-      return {
-        decisionId: replay.id,
-        replayed: true,
-        discardedCount: 0,
-        discardedPaths: [] as string[],
-        plan: this.snapshot(input.projectId, plan.run_id, plan.id),
-      };
-    }
-    const preview = this.previewPlanDiscard(
-      input.projectId,
-      input.planId,
-      input.preservedGroupIds,
-    );
-    const expectedVersion = Number(input.expectedVersion);
-    if (!Number.isInteger(expectedVersion) || expectedVersion !== preview.planVersion) {
-      throw new ChangeControlError('CHANGE_PLAN_VERSION_CONFLICT', '建模计划已经变化，请重新预览后再决定', 409, {
-        expected_version: expectedVersion,
-        current_version: preview.planVersion,
-      });
-    }
-    const expectedFingerprint = requiredText(
-      input.expectedCandidateFingerprint,
-      'expected_candidate_fingerprint',
-      100,
-    );
-    if (expectedFingerprint !== preview.candidateFingerprint) {
-      throw new ChangeControlError(
-        'CHANGE_PLAN_DISCARD_PREVIEW_STALE',
-        '待放弃内容已经变化，请重新查看影响后再确认',
-        409,
-        { current_candidate_fingerprint: preview.candidateFingerprint },
-      );
-    }
-    const reason = requiredText(input.reason, 'reason', 1_000);
-    const timestamp = nowIso();
-    const decisionId = `psd_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const current = this.requireProjectPlan(input.projectId, input.planId);
-      if (current.status !== 'active' || current.version !== preview.planVersion) {
-        throw new ChangeControlError('CHANGE_PLAN_VERSION_CONFLICT', '建模计划已经变化，请重新预览后再决定', 409);
-      }
-      const latestPreview = this.previewPlanDiscard(
-        input.projectId,
-        input.planId,
-        input.preservedGroupIds,
-      );
-      if (latestPreview.candidateFingerprint !== preview.candidateFingerprint) {
-        throw new ChangeControlError(
-          'CHANGE_PLAN_DISCARD_PREVIEW_STALE',
-          '待放弃内容已经变化，请重新查看影响后再确认',
-          409,
-        );
-      }
-      this.db.prepare(`INSERT INTO agent_plan_scope_decisions (
-        id, project_id, plan_id, run_id, request_id, plan_version, action,
-        candidate_fingerprint, actor, reason, status, created_at, consumed_at
-      ) VALUES (?,?,?,?,?,?,'discard',?,?,?,'consumed',?,?)`).run(
-        decisionId,
-        input.projectId,
-        input.planId,
-        preview.runId,
-        requestId,
-        preview.planVersion,
-        preview.candidateFingerprint,
-        input.actor,
-        reason,
-        timestamp,
-        timestamp,
-      );
-      const preservedGroups = [...(input.preservedGroupIds ?? [])];
-      if (preservedGroups.length) {
-        const placeholders = preservedGroups.map(() => '?').join(',');
-        this.db.prepare(`DELETE FROM agent_candidate_changes
-          WHERE project_id = ? AND run_id = ? AND group_id NOT IN (${placeholders})`).run(
-          input.projectId,
-          preview.runId,
-          ...preservedGroups,
-        );
-      } else {
-        this.db.prepare(`DELETE FROM agent_candidate_changes
-          WHERE project_id = ? AND run_id = ?`).run(input.projectId, preview.runId);
-      }
-      this.db.prepare(`UPDATE agent_candidate_workspaces SET updated_at = ?
-        WHERE project_id = ? AND run_id = ?`).run(timestamp, input.projectId, preview.runId);
-      this.db.prepare(`UPDATE agent_change_sets SET status = 'discarded', updated_at = ?
-        WHERE plan_id = ? AND status IN ('staging', 'staged', 'failed')`).run(timestamp, input.planId);
-      this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'cancelled', updated_at = ?
-        WHERE plan_id = ? AND status NOT IN ('accepted', 'skipped')`).run(timestamp, input.planId);
-      this.db.prepare(`UPDATE agent_change_plans SET status = 'cancelled', version = version + 1,
-        updated_at = ? WHERE id = ?`).run(timestamp, input.planId);
-      this.event(input.projectId, preview.runId, input.planId, null,
-        'plan.user_discarded', '用户已确认放弃整份建模计划', {
-          actor: input.actor,
-          decisionId,
-          discardedCount: preview.paths.length,
-          candidateFingerprint: preview.candidateFingerprint,
-        });
-      this.db.exec('COMMIT');
-    } catch (error) {
-      if (this.db.isTransaction) this.db.exec('ROLLBACK');
-      throw error;
-    }
-    return {
-      decisionId,
-      replayed: false,
-      discardedCount: preview.paths.length,
-      discardedPaths: preview.paths,
-      plan: this.snapshot(input.projectId, preview.runId, input.planId),
-    };
-  }
-
   discardPlan(projectId: string, runId: string, planId: string) {
     const plan = this.requirePlan(projectId, runId, planId);
-    if (plan.mode === 'generation' && plan.approval_status === 'approved') {
-      throw new ChangeControlError(
-        'CHANGE_PLAN_DISCARD_USER_ACTION_REQUIRED',
-        '已批准的生成计划只能由用户在计划卡中查看影响后放弃',
-        409,
-        { retryable: false, requires_user_decision: true, plan_id: plan.id },
-      );
-    }
     const sets = this.db.prepare(`SELECT * FROM agent_change_sets WHERE plan_id = ? ORDER BY created_at`)
       .all(plan.id) as unknown as ChangeSetRow[];
     if (sets.some((item) => ['validated', 'waiting_user', 'accepted'].includes(item.status))) {
@@ -1145,13 +874,6 @@ export class ChangeControlStore {
       .all(planId) as unknown as TaskRow[];
   }
 
-  private requireProjectPlan(projectId: string, planId: string): PlanRow {
-    const row = this.db.prepare(`SELECT * FROM agent_change_plans
-      WHERE id = ? AND project_id = ?`).get(planId, projectId) as PlanRow | undefined;
-    if (!row) throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '建模计划不存在', 404);
-    return row;
-  }
-
   private requireChangeSet(changeSetId: string): ChangeSetRow {
     const row = this.db.prepare(`SELECT * FROM agent_change_sets WHERE id = ?`).get(changeSetId) as ChangeSetRow | undefined;
     if (!row) throw new ChangeControlError('CHANGE_SET_NOT_FOUND', '没有找到这批修改', 404);
@@ -1230,64 +952,6 @@ function parseTasks(value: unknown, allowEmpty = false): TaskInput[] {
   }
   assertAcyclic(tasks);
   return tasks;
-}
-
-function parseTaskReplacements(value: unknown): TaskReplacementInput[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
-    throw invalid('replace_tasks', '替换任务必须包含 1 到 100 项');
-  }
-  return value.map((raw, index) => {
-    if (!isRecord(raw)) throw invalid(`replace_tasks[${index}]`, '替换任务必须是对象');
-    const resourceKind = requiredText(raw.resource_kind, `replace_tasks[${index}].resource_kind`, 30);
-    if (!RESOURCE_KINDS.has(resourceKind)) {
-      throw invalid(`replace_tasks[${index}].resource_kind`, '资源类型无效');
-    }
-    const allowedTools = stringArray(raw.allowed_tools, `replace_tasks[${index}].allowed_tools`, 20);
-    if (!allowedTools.length || allowedTools.some((tool) => !CHANGE_PLAN_ALLOWED_TOOLS.has(tool))) {
-      throw invalid(`replace_tasks[${index}].allowed_tools`, '替换任务必须声明受支持的领域工具');
-    }
-    return {
-      taskId: requiredText(raw.task_id, `replace_tasks[${index}].task_id`, 160),
-      title: requiredText(raw.title, `replace_tasks[${index}].title`, 300),
-      resourceKind,
-      targetKey: requiredText(raw.target_key, `replace_tasks[${index}].target_key`, 160),
-      allowedTools: [...new Set(allowedTools)],
-      dependsOnTaskIds: stringArray(
-        raw.depends_on_task_ids,
-        `replace_tasks[${index}].depends_on_task_ids`,
-        100,
-      ),
-      acceptance: requiredText(raw.acceptance, `replace_tasks[${index}].acceptance`, 1_000),
-    };
-  });
-}
-
-function assertTaskRowsAcyclic(tasks: TaskRow[]): void {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (id: string) => {
-    if (visiting.has(id)) throw invalid('replace_tasks.depends_on_task_ids', `任务依赖形成循环：${id}`);
-    if (visited.has(id)) return;
-    visiting.add(id);
-    for (const dependency of parseStringArray(byId.get(id)?.depends_on_json ?? '[]')) visit(dependency);
-    visiting.delete(id);
-    visited.add(id);
-  };
-  for (const task of tasks) visit(task.id);
-}
-
-function candidateChangesFingerprint(changes: CandidateChangeRow[]): string {
-  const digest = createHash('sha256');
-  for (const change of changes) {
-    for (const value of [change.path, change.kind, change.group_id, change.updated_at, change.content ?? '']) {
-      digest.update(String(Buffer.byteLength(value)));
-      digest.update(':');
-      digest.update(value);
-      digest.update('\0');
-    }
-  }
-  return `sha256:${digest.digest('hex')}`;
 }
 
 function assertAcyclic(tasks: TaskInput[]) {

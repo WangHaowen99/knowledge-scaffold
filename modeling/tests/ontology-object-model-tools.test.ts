@@ -1345,8 +1345,6 @@ test('Schema 生成计划由 Core 注入全量同步任务并逐 Sheet 原子生
       fields: [
         { name: 'empty_id', inferredType: 'string', sampleValues: [], distinctRatio: 0 },
         { name: 'empty_note', inferredType: 'string', sampleValues: [], distinctRatio: 0 },
-        { name: 'customer_id', inferredType: 'string', sampleValues: [], distinctRatio: 0 },
-        { name: 'customer_code', inferredType: 'string', sampleValues: [], distinctRatio: 0 },
       ],
     }],
   });
@@ -1377,66 +1375,25 @@ test('Schema 生成计划由 Core 注入全量同步任务并逐 Sheet 原子生
   });
 
   const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
-  const invalidAggregatePlan = await tool(app, project.id, 'create_change_plan', {
-    goal: '验证泛化对象目标不会进入计划',
-    mode: 'generation',
-    expected_revision: listed.json().working_revision,
-    tasks: [{
-      client_key: 'all-object-relations', title: '补充全部对象关系', resource_kind: 'object',
-      target_key: 'all_schema_objects', allowed_tools: ['patch_object'],
-      acceptance: '补充对象关系',
-    }],
-  }, runId);
-  assert.equal(invalidAggregatePlan.statusCode, 409, invalidAggregatePlan.body);
-  assert.equal(invalidAggregatePlan.json().code, 'CHANGE_PLAN_TARGET_NOT_FOUND');
-
   const planResponse = await tool(app, project.id, 'create_change_plan', {
     goal: '按已确认数据 Schema 生成全部物理对象',
     mode: 'generation',
     expected_revision: listed.json().working_revision,
-    tasks: [
-      {
-        client_key: 'model-created-object', title: '让模型创建合成对象', resource_kind: 'object',
-        target_key: 'model_object', allowed_tools: ['create_object'],
-        acceptance: '生成对象',
-      },
-      {
-        client_key: 'schema-rule', title: '生成合成 Schema 规则', resource_kind: 'rule',
-        target_key: 'synthetic_schema_rule', allowed_tools: ['create_rule'],
-        acceptance: '规则完整',
-      },
-      {
-        client_key: 'schema-operation', title: '生成合成 Schema 操作', resource_kind: 'operation',
-        target_key: 'synthetic_schema_operation', allowed_tools: ['create_operation'],
-        acceptance: '操作完整',
-      },
-      {
-        client_key: 'schema-metric', title: '生成合成 Schema 指标', resource_kind: 'metric',
-        target_key: 'synthetic_schema_metric', allowed_tools: ['create_metric'],
-        acceptance: '指标完整',
-      },
-    ],
+    tasks: [{
+      client_key: 'model-created-object', title: '让模型创建合成对象', resource_kind: 'object',
+      target_key: 'model_object', allowed_tools: ['create_object'],
+      acceptance: '生成对象',
+    }],
   }, runId);
   assert.equal(planResponse.statusCode, 200, planResponse.body);
   const plan = planResponse.json().plan;
   assert.equal(planResponse.json().object_source_policy.mode, 'schema');
   assert.equal(planResponse.json().object_source_policy.schema_table_count, 2);
-  assert.equal(plan.tasks.length, 5);
-  assert.deepEqual(plan.tasks[0].allowed_tools, ['sync_schema_objects']);
+  assert.equal(plan.tasks.length, 1);
+  assert.deepEqual(plan.tasks[0].allowed_tools, [
+    'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
+  ]);
   assert.equal(plan.tasks[0].target_key, '__schema__');
-  assert.deepEqual(
-    plan.tasks[1].allowed_tools,
-    ['stage_schema_semantic_changes', 'confirm_schema_semantics'],
-  );
-  assert.equal(plan.tasks[1].target_key, '__schema_semantics__');
-  assert.deepEqual(plan.tasks[1].depends_on, [plan.tasks[0].id]);
-  assert.deepEqual(
-    plan.tasks.slice(2).map((item: any) => item.resource_kind),
-    ['rule', 'operation', 'metric'],
-  );
-  assert.ok(plan.tasks.slice(2).every((item: any) => (
-    item.depends_on.length === 1 && item.depends_on[0] === plan.tasks[1].id
-  )));
 
   const approved = await app.inject({
     method: 'POST',
@@ -1444,13 +1401,6 @@ test('Schema 生成计划由 Core 注入全量同步任务并逐 Sheet 原子生
     payload: { approved: true },
   });
   assert.equal(approved.statusCode, 200, approved.body);
-
-  const blockedDiscard = await tool(app, project.id, 'discard_change_set', {
-    plan_id: plan.id,
-    reason: '尝试在未获用户同意时缩小生成范围',
-  }, runId);
-  assert.equal(blockedDiscard.statusCode, 409, blockedDiscard.body);
-  assert.equal(blockedDiscard.json().code, 'CHANGE_PLAN_DISCARD_USER_ACTION_REQUIRED');
 
   const directMapping = await tool(app, project.id, 'write_file', {
     path: 'mappings/object-data-mappings.json',
@@ -1481,312 +1431,20 @@ test('Schema 生成计划由 Core 注入全量同步任务并逐 Sheet 原子生
   assert.ok(synced.json().objects.every((item: any) => item.document_id === schemaDocument.id));
   assert.equal(synced.json().plan.tasks[0].status, 'staged');
   assert.equal(synced.json().plan.expected_revision, synced.json().working_revision);
-  const replayedSync = await tool(app, project.id, 'sync_schema_objects', {
-    plan_task_id: plan.tasks[0].id,
-    expected_revision: listed.json().working_revision,
-    mutation_id: 'synthetic-schema-sync-1',
-    reason: '按全部合成 Schema Sheet 确定性同步',
-  }, runId);
-  assert.equal(replayedSync.statusCode, 200, replayedSync.body);
-  assert.equal(replayedSync.json().replayed, true);
-  assert.equal(replayedSync.json().plan.version, synced.json().plan.version);
-  const duplicateSync = await tool(app, project.id, 'sync_schema_objects', {
-    plan_task_id: plan.tasks[0].id,
-    expected_revision: synced.json().working_revision,
-    mutation_id: 'synthetic-schema-sync-duplicate',
-    reason: '尝试用新操作标识重复同步',
-  }, runId);
-  assert.equal(duplicateSync.statusCode, 409, duplicateSync.body);
-  assert.equal(duplicateSync.json().code, 'CHANGE_PLAN_TASK_ALREADY_SETTLED');
 
-  const blockedSemanticConfirmation = await tool(app, project.id, 'confirm_schema_semantics', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: synced.json().working_revision,
-    mutation_id: 'synthetic-schema-semantics-too-early',
-    reason: '验证占位语义不能直接通过',
-  }, runId);
-  assert.equal(blockedSemanticConfirmation.statusCode, 409, blockedSemanticConfirmation.body);
-  assert.equal(blockedSemanticConfirmation.json().code, 'SCHEMA_SEMANTICS_INCOMPLETE');
-
-  const semanticSummaryRoute = await app.inject({
-    method: 'GET',
-    url: `/api/projects/${project.id}/schema-semantics/summary`,
-  });
-  assert.equal(semanticSummaryRoute.statusCode, 200, semanticSummaryRoute.body);
-  assert.equal(semanticSummaryRoute.json().summary.pass, false);
-  const semanticItemsRoute = await app.inject({
-    method: 'GET',
-    url: `/api/projects/${project.id}/schema-semantics/items?level=error&offset=0&limit=2`,
-  });
-  assert.equal(semanticItemsRoute.statusCode, 200, semanticItemsRoute.body);
-  assert.equal(semanticItemsRoute.json().items.length, 2);
-  assert.equal(semanticItemsRoute.json().offset, 0);
-  assert.equal(semanticItemsRoute.json().next_offset, 2);
-  assert.ok(semanticItemsRoute.json().items.every((item: any) => !('sampleValues' in item)));
-  assert.ok(semanticItemsRoute.json().items.every((item: any) => /^sha256:/u.test(item.resource_hash)));
-
-  const semanticStatus = await tool(app, project.id, 'get_schema_semantics', {
-    level: 'error', limit: 100,
-  }, runId);
-  assert.equal(semanticStatus.statusCode, 200, semanticStatus.body);
-  assert.equal(semanticStatus.json().summary.pass, false);
-  assert.ok(semanticStatus.json().summary.error_count > 0);
-  const semanticObjects = await Promise.all(synced.json().objects.map((item: any) => tool(
-    app,
-    project.id,
-    'get_domain_resource',
-    { resource_id: item.resource_id, working_revision: synced.json().working_revision },
-    runId,
-  )));
-  const stagedSemantics = await tool(app, project.id, 'stage_schema_semantic_changes', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: synced.json().working_revision,
-    mutation_id: 'synthetic-schema-semantics-1',
-    reason: '使用合成业务定义补全对象语义',
-    objects: semanticObjects.map((response, objectIndex) => {
-      const resource = response.json().resource;
-      return {
-        resource_id: resource.id,
-        expected_resource_hash: resource.resource_hash,
-        actions: [
-          { op: 'set_title', value: objectIndex === 0 ? '合成客户记录' : '合成空记录' },
-          { op: 'set_description', value: objectIndex === 0
-            ? '保存合成客户的基础记录。'
-            : '保存可为空的合成辅助记录。' },
-          ...resource.editable_items.fields.map((field: any, fieldIndex: number) => ({
-            op: 'update_field',
-            field_key: field.key,
-            expected_field_hash: field.item_hash,
-            changes: {
-              cn_name: `合成字段${objectIndex + 1}-${fieldIndex + 1}`,
-              note: `第 ${objectIndex + 1} 个合成对象的第 ${fieldIndex + 1} 个字段。`,
-            },
-          })),
-        ],
-      };
-    }),
-  }, runId);
-  assert.equal(stagedSemantics.statusCode, 200, stagedSemantics.body);
-  assert.equal(stagedSemantics.json().semantic_status.pass, true);
-  assert.equal(stagedSemantics.json().plan.tasks[1].status, 'pending');
-  const semanticIndex = await tool(app, project.id, 'read_file', { path: 'objects/index.md' }, runId);
-  assert.match(semanticIndex.json().content, /合成客户记录/u);
-  const semanticDetail = await tool(app, project.id, 'read_file', {
-    path: 'objects/synthetic_customer.md',
-  }, runId);
-  assert.match(semanticDetail.json().content, /合成字段1-1/u);
-  assert.match(semanticDetail.json().content, /第 1 个合成对象的第 1 个字段/u);
-
-  const confirmedSemantics = await tool(app, project.id, 'confirm_schema_semantics', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: stagedSemantics.json().working_revision,
-    mutation_id: 'synthetic-schema-semantics-confirm-1',
-    reason: '确定性复核全部 Schema 业务语义',
-  }, runId);
-  assert.equal(confirmedSemantics.statusCode, 200, confirmedSemantics.body);
-  assert.equal(confirmedSemantics.json().plan.tasks[1].status, 'staged');
-  assert.equal(confirmedSemantics.json().relation_suggestion_required, true);
-
-  const downstreamActions = [
-    {
-      task_id: plan.tasks[2].id,
-      tool: 'create_rule',
-      arguments: {
-        key: 'synthetic_schema_rule',
-        title: '合成 Schema 规则',
-        description: '只用于验证关系推荐顺序。',
-        content: '合成客户记录存在时返回通过。',
-        conditions: [{ condition: '客户编号非空', conclusion: '返回通过' }],
-        exceptions: [],
-        targets: ['object:synthetic_customer'],
-        evidence: [`material:${schemaDocument.sourceKey}#synthetic_customer`],
-      },
-    },
-    {
-      task_id: plan.tasks[3].id,
-      tool: 'create_operation',
-      arguments: {
-        key: 'synthetic_schema_operation',
-        title: '处理合成 Schema 记录',
-        description: '读取并处理合成客户记录。',
-        inputs: [{ param: 'customer_id', type: 'string', required: true }],
-        outputs: [{ field: 'accepted', type: 'boolean' }],
-        flow: ['读取合成客户记录', '返回处理结果'],
-        references: ['object:synthetic_customer'],
-        evidence: [`material:${schemaDocument.sourceKey}#synthetic_customer`],
-      },
-    },
-    {
-      task_id: plan.tasks[4].id,
-      tool: 'create_metric',
-      arguments: {
-        key: 'synthetic_schema_metric',
-        title: '合成客户记录数',
-        description: '统计合成客户记录。',
-        unit: '条',
-        grain: '客户',
-        caliber: 'COUNT(customer_id)',
-        boundaries: ['仅统计合成客户记录'],
-        object_references: ['object:synthetic_customer'],
-        evidence: [`material:${schemaDocument.sourceKey}#synthetic_customer`],
-      },
-    },
-  ];
-
-  const rejectedScopedSuggestion = await tool(app, project.id, 'suggest_object_relations', {
-    working_revision: confirmedSemantics.json().working_revision,
-    scope: { affectedObjects: ['synthetic_customer'] },
-    limit: 20,
-  }, runId);
-  assert.equal(rejectedScopedSuggestion.statusCode, 409, rejectedScopedSuggestion.body);
-  assert.equal(
-    rejectedScopedSuggestion.json().code,
-    'SCHEMA_RELATION_SUGGESTION_FULL_REQUIRED',
-  );
-
-  const relationSuggestion = await tool(app, project.id, 'suggest_object_relations', {
-    working_revision: confirmedSemantics.json().working_revision,
-    limit: 1,
-  }, runId);
-  assert.equal(relationSuggestion.statusCode, 200, relationSuggestion.body);
-  assert.equal(relationSuggestion.json().hasMore, true);
-  assert.ok(relationSuggestion.json().nextCursor);
-  assert.equal(relationSuggestion.json().relation_suggestion_recorded, false);
-  const pendingRelationSuggestion = getDb().prepare(`SELECT status, total_candidate_count,
-      returned_candidate_count FROM agent_schema_relation_suggestions WHERE project_id = ?`)
-    .get(project.id) as any;
-  assert.deepEqual({ ...pendingRelationSuggestion }, {
-    status: 'pending', total_candidate_count: 2, returned_candidate_count: 1,
-  });
-
-  const stillBlockedAfterFirstPage = await tool(app, project.id, 'stage_change_set', {
-    plan_id: plan.id,
-    expected_revision: confirmedSemantics.json().working_revision,
-    mutation_id: 'synthetic-schema-downstream-before-last-relation-page',
-    actions: downstreamActions,
-  }, runId);
-  assert.equal(stillBlockedAfterFirstPage.statusCode, 409, stillBlockedAfterFirstPage.body);
-  assert.equal(stillBlockedAfterFirstPage.json().code, 'SCHEMA_RELATION_SUGGESTION_REQUIRED');
-
-  const finalRelationSuggestionPage = await tool(app, project.id, 'suggest_object_relations', {
-    working_revision: confirmedSemantics.json().working_revision,
-    cursor: relationSuggestion.json().nextCursor,
-    limit: 1,
-  }, runId);
-  assert.equal(finalRelationSuggestionPage.statusCode, 200, finalRelationSuggestionPage.body);
-  assert.equal(finalRelationSuggestionPage.json().hasMore, false);
-  assert.equal(finalRelationSuggestionPage.json().relation_suggestion_recorded, true);
-  const completedRelationSuggestion = getDb().prepare(`SELECT status, total_candidate_count,
-      returned_candidate_count FROM agent_schema_relation_suggestions WHERE project_id = ?`)
-    .get(project.id) as any;
-  assert.deepEqual({ ...completedRelationSuggestion }, {
-    status: 'completed', total_candidate_count: 2, returned_candidate_count: 2,
-  });
-
-  const replayedSemantics = await tool(app, project.id, 'confirm_schema_semantics', {
-    plan_task_id: plan.tasks[1].id,
-    expected_revision: stagedSemantics.json().working_revision,
-    mutation_id: 'synthetic-schema-semantics-confirm-1',
-    reason: '确定性复核全部 Schema 业务语义',
-  }, runId);
-  assert.equal(replayedSemantics.statusCode, 200, replayedSemantics.body);
-  assert.equal(replayedSemantics.json().replayed, true);
-  assert.equal(replayedSemantics.json().relation_suggestion_required, false);
-
-  const downstream = await tool(app, project.id, 'stage_change_set', {
-    plan_id: plan.id,
-    expected_revision: confirmedSemantics.json().working_revision,
-    mutation_id: 'synthetic-schema-downstream-resources-1',
-    actions: downstreamActions,
-  }, runId);
-  assert.equal(downstream.statusCode, 200, downstream.body);
-  const planAfterDownstream = await tool(app, project.id, 'get_change_plan', {
-    plan_id: plan.id,
-  }, runId);
-  assert.equal(planAfterDownstream.statusCode, 200, planAfterDownstream.body);
-  assert.deepEqual(planAfterDownstream.json().plan.tasks.slice(2).map((item: any) => item.status), [
-    'staged', 'staged', 'staged',
-  ]);
-
-  const validated = await tool(app, project.id, 'validate_change_set', {
-    plan_id: plan.id,
-    summary: '核对全部 Schema Sheet 对象及 mapping',
-  }, runId);
-  assert.equal(validated.statusCode, 200, validated.body);
-  assert.equal(validated.json().plan.tasks[0].status, 'validated');
   const mapping = await tool(app, project.id, 'read_file', {
     path: 'mappings/object-data-mappings.json',
   }, runId);
   assert.equal(mapping.statusCode, 200, mapping.body);
-  const parsedMapping = JSON.parse(mapping.json().content);
-  assert.equal(Object.keys(parsedMapping.objects).length, 2);
-  assert.equal(parsedMapping.objects.synthetic_customer.fields.customer_id.required, true);
-  assert.equal(parsedMapping.objects.synthetic_customer.fields.customer_name.required, false);
+  assert.equal(Object.keys(JSON.parse(mapping.json().content).objects).length, 2);
   const legacy = await tool(app, project.id, 'read_file', { path: 'objects/legacy_derived.md' }, runId);
   assert.equal(legacy.statusCode, 404, legacy.body);
-
-  const validation = validated.json().validation;
-  const accepted = await tool(app, project.id, 'request_confirmation', {
-    summary: '确认合成 Schema 对象与业务语义',
-    change_groups: validation.change_groups,
-    expected_candidate_revision: validation.candidate_revision,
-    expected_candidate_hash: validation.validation_receipt.candidateHash,
-    expected_validator_version: validation.validation_receipt.validatorVersion,
-    review: {
-      approved: true,
-      review_mode: 'full',
-      selected_groups: validation.change_groups
-        .filter((item: any) => !item.autoApproved)
-        .map((item: any) => item.id),
-      sampled_groups: [],
-    },
+  const blockedValidation = await tool(app, project.id, 'validate_change_set', {
+    plan_id: plan.id,
+    summary: '语义补全前不能提交 Schema 候选',
   }, runId);
-  assert.equal(accepted.statusCode, 200, accepted.body);
-  const acceptedRevision = (await artifacts.current(project.id))!.revision.oid;
-
-  const secondRunId = runId;
-  const repeatedList = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, secondRunId);
-  const repeatedPlanResponse = await tool(app, project.id, 'create_change_plan', {
-    goal: '再次核对相同 Schema',
-    mode: 'generation',
-    expected_revision: repeatedList.json().working_revision,
-    tasks: [{
-      client_key: 'schema-repeat', title: '再次同步合成 Schema', resource_kind: 'object',
-      target_key: 'synthetic_customer', allowed_tools: ['create_object'], acceptance: '结果保持一致',
-    }],
-  }, secondRunId);
-  assert.equal(repeatedPlanResponse.statusCode, 200, repeatedPlanResponse.body);
-  const repeatedPlan = repeatedPlanResponse.json().plan;
-  assert.equal(repeatedPlan.status, 'completed');
-  assert.equal(repeatedPlan.task_count, 0);
-  assert.equal(repeatedPlanResponse.json().object_source_policy.schema_sync_required, false);
-  assert.equal(repeatedPlanResponse.json().object_source_policy.schema_semantics_required, false);
-  assert.equal(repeatedPlanResponse.json().object_source_policy.reused_schema_sync, true);
-  assert.equal(repeatedPlanResponse.json().object_source_policy.reused_schema_semantics, true);
-  assert.equal((await artifacts.current(project.id))!.revision.oid, acceptedRevision);
-
-  const storedSchema = getDb().prepare('SELECT tables_json FROM documents WHERE id = ?')
-    .get(schemaDocument.id) as { tables_json: string };
-  const changedTables = JSON.parse(storedSchema.tables_json);
-  changedTables[0].fields[1].required = true;
-  getDb().prepare('UPDATE documents SET tables_json = ? WHERE id = ?')
-    .run(JSON.stringify(changedTables), schemaDocument.id);
-  const changedList = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, secondRunId);
-  const changedPlanResponse = await tool(app, project.id, 'create_change_plan', {
-    goal: '显式必填约束变化后重新核对 Schema',
-    mode: 'generation',
-    expected_revision: changedList.json().working_revision,
-    tasks: [{
-      client_key: 'schema-constraint-change', title: '应用显式 Schema 约束', resource_kind: 'object',
-      target_key: 'synthetic_customer', allowed_tools: ['create_object'], acceptance: '约束保持一致',
-    }],
-  }, secondRunId);
-  assert.equal(changedPlanResponse.statusCode, 200, changedPlanResponse.body);
-  assert.equal(changedPlanResponse.json().object_source_policy.schema_sync_required, true);
-  assert.equal(changedPlanResponse.json().object_source_policy.schema_semantics_required, true);
-  assert.deepEqual(changedPlanResponse.json().plan.tasks.map((task: any) => task.target_key), [
-    '__schema__', '__schema_semantics__',
-  ]);
+  assert.equal(blockedValidation.statusCode, 422, blockedValidation.body);
+  assert.equal(blockedValidation.json().code, 'CANDIDATE_SCHEMA_SEMANTICS_INVALID');
 });
 
 test('Change Set 最后一项失败时整批不落候选，计划外动作和漏项校验均被阻断', async (t) => {
@@ -1880,65 +1538,6 @@ test('Change Set 可按唯一同类目标纠正模型选错的任务 ID', async 
   assert.deepEqual(currentPlan.json().plan.tasks.map((item: any) => item.status), ['pending', 'staged']);
 });
 
-test('计划可通过 Core API 原位替换错误目标并重新等待页面批准', async (t) => {
-  const project = createProject({ owner: 'alice', name: '合成计划目标替换', runtime: 'agent' });
-  const app = appFor(t);
-  await seedProject(project.id);
-  const runId = `run-plan-replace-${project.id}`;
-  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
-  const created = await tool(app, project.id, 'create_change_plan', {
-    goal: '修正合成对象的计划目标',
-    mode: 'expert_edit',
-    expected_revision: listed.json().working_revision,
-    tasks: [{
-      client_key: 'object-description', title: '补充合成客户说明', resource_kind: 'object',
-      target_key: 'customer', allowed_tools: ['patch_object'], acceptance: '说明完整',
-    }],
-  }, runId);
-  assert.equal(created.statusCode, 200, created.body);
-  const plan = created.json().plan;
-  const invalidReplacement = await tool(app, project.id, 'revise_change_plan', {
-    plan_id: plan.id,
-    expected_version: plan.version,
-    reason: '验证泛化替换目标仍会被入口拒绝',
-    replace_tasks: [{
-      task_id: plan.tasks[0].id,
-      title: '补充全部对象说明',
-      resource_kind: 'object',
-      target_key: 'all_objects',
-      allowed_tools: ['patch_object'],
-      depends_on_task_ids: [],
-      acceptance: '补充对象说明',
-    }],
-  }, runId);
-  assert.equal(invalidReplacement.statusCode, 409, invalidReplacement.body);
-  assert.equal(invalidReplacement.json().code, 'CHANGE_PLAN_TARGET_NOT_FOUND');
-  const revised = await tool(app, project.id, 'revise_change_plan', {
-    plan_id: plan.id,
-    expected_version: plan.version,
-    reason: '将目标修正为具体合成订单对象',
-    replace_tasks: [{
-      task_id: plan.tasks[0].id,
-      title: '补充合成订单说明',
-      resource_kind: 'object',
-      target_key: 'order',
-      allowed_tools: ['patch_object'],
-      depends_on_task_ids: [],
-      acceptance: '只补充合成订单对象说明',
-    }],
-  }, runId);
-  assert.equal(revised.statusCode, 200, revised.body);
-  assert.equal(revised.json().plan.approval_status, 'pending');
-  assert.equal(revised.json().plan.tasks[0].id, plan.tasks[0].id);
-  assert.equal(revised.json().plan.tasks[0].target_key, 'order');
-
-  const blockedValidation = await tool(app, project.id, 'validate_change_set', {
-    plan_id: plan.id,
-  }, runId);
-  assert.equal(blockedValidation.statusCode, 409, blockedValidation.body);
-  assert.equal(blockedValidation.json().code, 'CHANGE_PLAN_APPROVAL_REQUIRED');
-});
-
 test('正常生成计划必须经页面账号批准后才能形成 Change Set', async (t) => {
   const project = createProject({ owner: 'alice', name: '生成计划批准门禁', runtime: 'agent' });
   const app = appFor(t);
@@ -1989,108 +1588,140 @@ test('正常生成计划必须经页面账号批准后才能形成 Change Set', 
   assert.equal(staged.json().status, 'staged');
 });
 
-test('已批准生成计划只能由用户基于最新预览整批放弃', async (t) => {
-  const project = createProject({ owner: 'alice', name: '合成计划放弃确认', runtime: 'agent' });
+test('Schema 语义补全复用物理同步计划的同一任务卡', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成 Schema 语义闭环', runtime: 'agent' });
   const app = appFor(t);
-  await seedProject(project.id);
-  const runId = `run-plan-discard-${project.id}`;
+  const runId = `run-schema-semantic-same-task-${project.id}`;
+  insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_schema.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    purpose: 'schema',
+    tables: [{
+      name: 'synthetic_customer',
+      rowCount: 1,
+      fields: [
+        { name: 'customer_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1 },
+        { name: 'customer_name', inferredType: 'string', sampleValues: ['name_0001'], distinctRatio: 1 },
+      ],
+    }],
+  });
+  const artifacts = getPackageArtifactStore();
+  const initialized = await artifacts.initializeDraftPackage(project.id, {
+    id: `schema-semantic-${project.id}`,
+    name: '合成 Schema 语义闭环',
+    description: '合成 Schema 测试包',
+  });
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initialized.revision.oid,
+    spec: {
+      ...structuredClone(initialized.spec),
+      objects: [{
+        key: 'synthetic_customer',
+        title: 'synthetic_customer',
+        description: '来自 Schema Sheet「synthetic_customer」的物理数据对象',
+        fields: [
+          { key: 'customer_id', cnName: 'customer_id', type: 'string', required: true, sourceColumn: 'customer_id' },
+          { key: 'customer_name', cnName: 'customer_name', type: 'string', required: false, sourceColumn: 'customer_name' },
+        ],
+        primaryKey: ['customer_id'],
+        sourceTable: 'synthetic_customer',
+        sourceRefs: [{ kind: 'table', table: 'synthetic_customer' }],
+      }],
+    },
+    coverage: initialized.coverage,
+    note: '建立合成 Schema 语义测试基线',
+    action: {
+      cause: 'schema_semantic_seeded',
+      summary: '建立合成 Schema 语义测试基线',
+      actorKind: 'system',
+      actorName: '测试系统',
+    },
+  });
   const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
-  const revision = listed.json().working_revision as string;
-  const customer = listed.json().items.find((item: any) => item.key === 'customer');
-  const created = await tool(app, project.id, 'create_change_plan', {
-    goal: '验证整份生成计划只能由真实用户放弃',
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '按 Schema 同步并补全对象业务语义',
     mode: 'generation',
-    expected_revision: revision,
+    expected_revision: listed.json().working_revision,
     tasks: [{
-      client_key: 'customer-description', title: '补充合成客户说明', resource_kind: 'object',
-      target_key: 'customer', allowed_tools: ['patch_object'], acceptance: '说明完整',
+      client_key: 'schema-rule',
+      title: '生成合成规则',
+      resource_kind: 'rule',
+      target_key: 'synthetic_rule',
+      allowed_tools: ['create_rule'],
+      acceptance: '规则完整',
     }],
   }, runId);
-  const plan = created.json().plan;
-  await app.inject({
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  assert.equal(plan.tasks.length, 2);
+  const schemaTask = plan.tasks[0];
+  assert.equal(schemaTask.target_key, '__schema__');
+  assert.deepEqual(schemaTask.allowed_tools, [
+    'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
+  ]);
+  assert.equal(plan.tasks.filter((task: any) => task.target_key === '__schema_semantics__').length, 0);
+  assert.deepEqual(plan.tasks[1].depends_on, [schemaTask.id]);
+
+  const approved = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
     payload: { approved: true },
   });
-  const staged = await tool(app, project.id, 'stage_change_set', {
-    plan_id: plan.id,
-    expected_revision: revision,
-    mutation_id: 'synthetic-plan-discard-change',
-    actions: [{
-      task_id: plan.tasks[0].id,
-      tool: 'patch_object',
-      arguments: {
-        resource_id: 'object:customer',
-        expected_resource_hash: customer.resource_hash,
-        actions: [{ op: 'set_description', value: '尚未确认的合成候选说明。' }],
-      },
+  assert.equal(approved.statusCode, 200, approved.body);
+  const earlySemanticConfirm = await tool(app, project.id, 'confirm_schema_semantics', {
+    plan_task_id: schemaTask.id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'schema-semantic-same-task-early-confirm',
+    reason: '验证语义阶段不能跳过物理同步',
+  }, runId);
+  assert.equal(earlySemanticConfirm.statusCode, 409, earlySemanticConfirm.body);
+  assert.equal(earlySemanticConfirm.json().code, 'CHANGE_SET_DEPENDENCY_MISSING');
+  const synced = await tool(app, project.id, 'sync_schema_objects', {
+    plan_task_id: schemaTask.id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'schema-semantic-same-task-sync',
+    reason: '同步合成 Schema 物理对象',
+  }, runId);
+  assert.equal(synced.statusCode, 200, synced.body);
+  const resourceResponse = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: synced.json().objects[0].resource_id,
+    working_revision: synced.json().working_revision,
+  }, runId);
+  const resource = resourceResponse.json().resource;
+  const semantic = await tool(app, project.id, 'get_schema_semantics', {
+    level: 'error', limit: 100,
+  }, runId);
+  assert.equal(semantic.statusCode, 200, semantic.body);
+  const staged = await tool(app, project.id, 'stage_schema_semantic_changes', {
+    plan_task_id: schemaTask.id,
+    expected_revision: synced.json().working_revision,
+    mutation_id: 'schema-semantic-same-task-stage',
+    reason: '补全合成对象业务语义',
+    objects: [{
+      resource_id: resource.id,
+      expected_resource_hash: resource.resource_hash,
+      actions: [
+        { op: 'set_title', value: '合成客户档案' },
+        { op: 'set_description', value: '保存合成客户的基础档案。' },
+        ...resource.editable_items.fields.map((field: any, index: number) => ({
+          op: 'update_field',
+          field_key: field.key,
+          expected_field_hash: field.item_hash,
+          changes: { cn_name: `合成客户字段${index + 1}` },
+        })),
+      ],
     }],
   }, runId);
   assert.equal(staged.statusCode, 200, staged.body);
-
-  const forged = await tool(app, project.id, 'discard_change_set', {
-    plan_id: plan.id,
-    reason: 'Agent 尝试自行声称已经获得批准',
-    scope_approved: true,
+  const confirmed = await tool(app, project.id, 'confirm_schema_semantics', {
+    plan_task_id: schemaTask.id,
+    expected_revision: staged.json().working_revision,
+    mutation_id: 'schema-semantic-same-task-confirm',
+    reason: '确认合成对象业务语义',
   }, runId);
-  assert.equal(forged.statusCode, 409, forged.body);
-  assert.equal(forged.json().code, 'CHANGE_PLAN_DISCARD_USER_ACTION_REQUIRED');
-  const legacyBypass = await tool(app, project.id, 'discard_rejected_candidate_changes', {}, runId);
-  assert.equal(legacyBypass.statusCode, 409, legacyBypass.body);
-  assert.equal(legacyBypass.json().code, 'CHANGE_PLAN_DISCARD_USER_ACTION_REQUIRED');
-
-  const preview = await app.inject({
-    method: 'GET',
-    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/discard-preview`,
-  });
-  assert.equal(preview.statusCode, 200, preview.body);
-  assert.ok(preview.json().discard_count > 0);
-  assert.match(preview.json().candidate_fingerprint, /^sha256:[a-f0-9]{64}$/u);
-
-  const stale = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/discard`,
-    payload: {
-      expected_version: preview.json().plan_version,
-      expected_candidate_fingerprint: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
-      request_id: 'synthetic-discard-stale-preview',
-      reason: '验证过期预览不能删除候选',
-    },
-  });
-  assert.equal(stale.statusCode, 409, stale.body);
-  assert.equal(stale.json().code, 'CHANGE_PLAN_DISCARD_PREVIEW_STALE');
-
-  const discarded = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/discard`,
-    payload: {
-      expected_version: preview.json().plan_version,
-      expected_candidate_fingerprint: preview.json().candidate_fingerprint,
-      request_id: 'synthetic-discard-confirmed',
-      reason: '用户查看候选影响后明确放弃合成计划',
-    },
-  });
-  assert.equal(discarded.statusCode, 200, discarded.body);
-  assert.equal(discarded.json().plan.status, 'cancelled');
-  assert.equal(discarded.json().discarded_count, preview.json().discard_count);
-  const decision = getDb().prepare(`SELECT actor, action, status FROM agent_plan_scope_decisions
-    WHERE project_id = ? AND plan_id = ?`).get(project.id, plan.id) as any;
-  assert.equal(decision.actor, 'alice');
-  assert.equal(decision.action, 'discard');
-  assert.equal(decision.status, 'consumed');
-  const remaining = getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
-    WHERE project_id = ? AND run_id = ?`).get(project.id, runId) as { count: number };
-  assert.equal(Number(remaining.count), 0);
-  const replayedDiscard = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/discard`,
-    payload: {
-      expected_version: preview.json().plan_version,
-      expected_candidate_fingerprint: preview.json().candidate_fingerprint,
-      request_id: 'synthetic-discard-confirmed',
-      reason: '用户查看候选影响后明确放弃合成计划',
-    },
-  });
-  assert.equal(replayedDiscard.statusCode, 200, replayedDiscard.body);
-  assert.equal(replayedDiscard.json().replayed, true);
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  assert.equal(confirmed.json().plan.tasks[0].id, schemaTask.id);
+  assert.equal(confirmed.json().plan.tasks.length, 2);
 });

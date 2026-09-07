@@ -760,27 +760,6 @@ CREATE TABLE IF NOT EXISTS agent_change_control_events (
 CREATE INDEX IF NOT EXISTS idx_agent_change_control_events_plan
   ON agent_change_control_events(plan_id, created_at);
 
--- 已批准 generation 计划的整批放弃只能由浏览器中的真实用户操作产生。
--- 决定与计划版本及候选指纹绑定，并在同一事务中立即消费，Agent 参数不能代替此事实。
-CREATE TABLE IF NOT EXISTS agent_plan_scope_decisions (
-  id                    TEXT PRIMARY KEY,
-  project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  plan_id               TEXT NOT NULL REFERENCES agent_change_plans(id) ON DELETE CASCADE,
-  run_id                TEXT NOT NULL,
-  request_id            TEXT NOT NULL,
-  plan_version          INTEGER NOT NULL,
-  action                TEXT NOT NULL CHECK (action IN ('discard')),
-  candidate_fingerprint TEXT NOT NULL,
-  actor                 TEXT NOT NULL,
-  reason                TEXT NOT NULL,
-  status                TEXT NOT NULL CHECK (status IN ('consumed')),
-  created_at            TEXT NOT NULL,
-  consumed_at           TEXT NOT NULL,
-  UNIQUE (project_id, request_id)
-);
-CREATE INDEX IF NOT EXISTS idx_agent_plan_scope_decisions_plan
-  ON agent_plan_scope_decisions(plan_id, created_at);
-
 -- 浏览器黑盒验收专用的一次性故障开关。仅在显式验收模式下由可见页面读写，
 -- 不保存任意代码、地址或请求内容，也不会在生产模式下提供路由。
 CREATE TABLE IF NOT EXISTS acceptance_faults (

@@ -31,13 +31,6 @@ export const respondChangePlan = (id, planId, approved) => api(
   `${P(id)}/agent/change-plans/${encodeURIComponent(planId)}/respond`,
   { method: 'POST', body: JSON.stringify({ approved }) },
 );
-export const previewChangePlanDiscard = (id, planId) => api(
-  `${P(id)}/agent/change-plans/${encodeURIComponent(planId)}/discard-preview`,
-);
-export const discardChangePlan = (id, planId, input) => api(
-  `${P(id)}/agent/change-plans/${encodeURIComponent(planId)}/discard`,
-  { method: 'POST', body: JSON.stringify(input) },
-);
 export const listRevisions = (id) => api(`${P(id)}/revisions`);
 export const getRevisionDiff = (id, from, to) => api(
   `${P(id)}/revisions/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
