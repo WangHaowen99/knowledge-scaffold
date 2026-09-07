@@ -1610,7 +1610,7 @@ store.set({
   materials: [{ id: 'doc-synthetic', filename: '合成资料说明.docx' }],
   candidateDiff: [{
     path: '.modeling/goal.md', before: '',
-    after: '# 目标\n\n资料：material:doc-synthetic#前言（合成资料说明，提供业务背景）',
+    after: '# 目标\n\n资料：`material:doc-synthetic#前言`（合成资料说明，提供业务背景）',
     additions: 3, deletions: 0,
   }],
 });

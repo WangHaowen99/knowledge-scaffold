@@ -14,6 +14,7 @@ export const CHANGE_SET_DOMAIN_TOOLS = new Set([
 ]);
 export const CHANGE_PLAN_DIRECT_TOOLS = new Set([
   'sync_schema_objects', 'patch_object_source_binding', 'delete_domain_resource',
+  'stage_schema_semantic_changes', 'confirm_schema_semantics',
   'stage_script_source', 'stage_script_patch',
 ]);
 const CHANGE_PLAN_ALLOWED_TOOLS = new Set([
@@ -324,12 +325,23 @@ export class ChangeControlStore {
     }
     const task = this.taskRows(plan.id).find((item) => item.id === input.taskId);
     if (!task) throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', '修改动作不属于当前计划', 409);
+    const allowedTools = parseStringArray(task.allowed_tools_json);
+    if (task.status === 'pending'
+      && ['stage_schema_semantic_changes', 'confirm_schema_semantics'].includes(input.tool)
+      && allowedTools.includes('sync_schema_objects')) {
+      throw new ChangeControlError(
+        'CHANGE_SET_DEPENDENCY_MISSING',
+        'Schema 物理对象尚未同步，不能提前进入末尾业务语义阶段',
+        409,
+        { task_id: task.id, required_tool: 'sync_schema_objects', retryable: false },
+      );
+    }
     if (!['pending', 'staged'].includes(task.status)) {
       throw new ChangeControlError('CHANGE_PLAN_TASK_ALREADY_SETTLED', `计划任务已经处理：${task.title}`, 409, {
         task_id: task.id, status: task.status,
       });
     }
-    if (!parseStringArray(task.allowed_tools_json).includes(input.tool)) {
+    if (!allowedTools.includes(input.tool)) {
       throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', `计划未授权这项修改：${task.title}`, 409, {
         task_id: task.id, tool: input.tool,
       });
@@ -429,7 +441,11 @@ export class ChangeControlStore {
       expected_revision = CASE WHEN ? <> '' THEN ? ELSE expected_revision END,
       updated_at = ? WHERE id = ?`)
       .run(input.resultingRevision ?? '', input.resultingRevision ?? '', timestamp, plan.id);
-    this.event(input.projectId, input.runId, plan.id, null, 'plan.direct_task_staged', '受控独立任务已形成待确认修改', {
+    const summary = ['sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics']
+      .includes(input.tool)
+      ? 'Schema 同步计划任务已推进'
+      : '受控独立任务已形成待确认修改';
+    this.event(input.projectId, input.runId, plan.id, null, 'plan.direct_task_staged', summary, {
       taskId: input.taskId, tool: input.tool, receiptId: input.receiptId,
     });
     return this.snapshot(input.projectId, input.runId, plan.id);
