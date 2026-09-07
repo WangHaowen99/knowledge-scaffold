@@ -813,8 +813,7 @@ CREATE TABLE IF NOT EXISTS agent_structured_mutation_receipts (
   PRIMARY KEY (project_id, mutation_id)
 );
 
--- Schema 对象业务语义确认后的对象关系推荐是只读必经步骤，不属于需要审批的 Change Plan。
--- 这里只保存确认指纹与聚合结果，用于阻止 Agent 跳过推荐；不持久化候选正文。
+-- 兼容旧版本的可选关系推荐进度结构；当前版本不以它作为建模门禁，也不要求写入。
 CREATE TABLE IF NOT EXISTS agent_schema_relation_suggestions (
   project_id              TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
   semantic_fingerprint    TEXT NOT NULL,

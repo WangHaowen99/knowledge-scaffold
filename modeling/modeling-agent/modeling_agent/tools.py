@@ -1183,7 +1183,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "suggest_object_relations",
-        "Return deterministic object relation candidates from current objects, fields, primary keys, sources, existing relations and operation references. This tool never writes the package or mapping. Use scope to keep increment runs focused; do not show the full candidate list to experts. High-confidence candidates may be drafted into a Change Set summary, while ambiguous candidates should become only a few concrete business questions.",
+        "仅在需要补齐对象间语义关系时调用，返回基于当前对象、字段、主键、来源、已有关系和操作引用的确定性只读候选；不需要补齐时无需调用。该工具不写知识包或 mapping。调用时可用 scope 收敛增量范围；不要把完整候选列表展示给专家。高置信候选可起草进 Change Set 摘要确认，方向不清的候选只转成少量具体业务问题。",
         {
             "working_revision": WORKING_REVISION,
             "expected_revision": WORKING_REVISION,

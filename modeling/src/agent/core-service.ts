@@ -85,7 +85,6 @@ import {
 } from '../workflow/schema-semantics.js';
 import {
   collectPreviousObjectRelations,
-  objectRelationSuggestionCursorOffset,
   suggestObjectRelations as suggestObjectRelationsFromSpec,
   type PreviousObjectRelation,
 } from '../workflow/object-relation-suggestions.js';
@@ -1154,8 +1153,6 @@ export class AgentCoreService {
         currentRevision: working.workingRevision,
         tasks: sourcePolicy.tasks,
       });
-      const relationSuggestionRequired = plan.mode === 'generation'
-        && this.relationSuggestionRequiredForSpec(context.project.id, workingSpec);
       return {
         plan,
         object_source_policy: {
@@ -1169,10 +1166,6 @@ export class AgentCoreService {
           reused_schema_sync: sourcePolicy.mode === 'schema' && !sourcePolicy.schemaSyncRequired,
           reused_schema_semantics: sourcePolicy.mode === 'schema' && !sourcePolicy.schemaSemanticsRequired,
         },
-        relation_suggestion_required: relationSuggestionRequired,
-        ...(relationSuggestionRequired ? {
-          next: ['当前计划没有待生成资源；在完整校验前调用 suggest_object_relations 生成最终关系候选'],
-        } : {}),
         display: { text: plan.approval_status === 'pending'
           ? `已建立 ${plan.task_count} 项受控建模计划，等待你批准后再写入`
           : `已建立 ${plan.task_count} 项受控建模计划，写入前会逐项核对范围` },
@@ -1462,20 +1455,11 @@ export class AgentCoreService {
         );
       }
       const activePlan = this.changeControl.activePlan(context.project.id, context.runId);
-      const generatesDownstreamResources = actions.some((action) => (
-        ['rule', 'operation', 'metric'].includes(action.tool.split('_').at(-1) ?? '')
-      ));
       if (activePlan?.id === planId && activePlan.mode === 'generation'
         && actions.some((action) => action.tool !== 'sync_schema_objects')
         && this.schemaSemanticEnforcementEnabled(context.project.id)) {
         const planWorkspace = this.workspace(context.project.id);
         if (planWorkspace) this.assertSchemaSemantics(planWorkspace, await this.overlay(planWorkspace));
-      }
-      if (activePlan?.id === planId && activePlan.mode === 'generation' && generatesDownstreamResources) {
-        this.assertSchemaRelationSuggestion(
-          context.project.id,
-          parseWorkingPackageSpec(working.files),
-        );
       }
       const batch = this.compileChangeSetBatch(context, working, actions);
       const response = await this.studioWrites.batchDomainModel(
@@ -1711,7 +1695,6 @@ export class AgentCoreService {
       const current = await this.overlay(workspace);
       this.changeControl.readyForValidation(context.project.id, context.runId, planId);
       this.assertSchemaSemantics(workspace, current);
-      this.assertSchemaRelationSuggestion(context.project.id, current.spec);
       const prepared = await this.prepareConfirmationGroups(workspace);
       const result = await this.preflight(workspace, context, {
         summary: String(args.summary ?? '核对完整建模计划'),
@@ -1739,7 +1722,6 @@ export class AgentCoreService {
       const current = await this.overlay(workspace);
       this.changeControl.readyForValidation(context.project.id, context.runId, active.id);
       this.assertSchemaSemantics(workspace, current);
-      this.assertSchemaRelationSuggestion(context.project.id, current.spec);
     }
     const result = await this.preflight(workspace, context, args);
     if (active) {
@@ -2381,19 +2363,7 @@ export class AgentCoreService {
     const mutationId = text(args.mutation_id, 'mutation_id');
     const requestHash = domainMutationRequestHash(tool, args);
     const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
-    if (replay) {
-      const fingerprint = String(object(replay.semantic_status).fingerprint ?? '');
-      const relationSuggestionRequired = fingerprint
-        ? this.markSchemaRelationSuggestionRequired(context.project.id, fingerprint)
-        : false;
-      return {
-        ...replay,
-        relation_suggestion_required: relationSuggestionRequired,
-        next: relationSuggestionRequired
-          ? ['调用 suggest_object_relations 读取全部关系候选分页，再继续规则、操作和指标任务']
-          : [],
-      };
-    }
+    if (replay) return replay;
     const { workingPackage, status } = await this.schemaSemanticStatus(context);
     new StudioReadService(workingPackage).assertRevision(text(args.expected_revision, 'expected_revision'));
     if (!status.available) {
@@ -2418,19 +2388,11 @@ export class AgentCoreService {
         },
       );
     }
-    const relationSuggestionRequired = this.markSchemaRelationSuggestionRequired(
-      context.project.id,
-      status.fingerprint,
-    );
     const result = {
       ok: true,
       mutation_id: mutationId,
       working_revision: workingPackage.workingRevision,
       semantic_status: schemaSemanticSummary(status),
-      relation_suggestion_required: relationSuggestionRequired,
-      next: relationSuggestionRequired
-        ? ['调用 suggest_object_relations 读取全部关系候选分页，再继续规则、操作和指标任务']
-        : [],
       display: { text: `已确认 ${status.objectCount} 个 Schema 对象、${status.fieldCount} 个字段的业务语义` },
     };
     this.saveStructuredMutation(context, tool, mutationId, requestHash, result);
@@ -2446,88 +2408,23 @@ export class AgentCoreService {
     const requestedRevision = String(args.working_revision ?? args.workingRevision ?? args.expected_revision ?? '').trim();
     if (requestedRevision) new StudioReadService(workingPackage).assertRevision(requestedRevision);
     const current = await this.overlay(workspace);
-    const projectTables = this.tables(context.project.id);
-    const tables = schemaTables(projectTables);
-    const cursor = optionalInputText(args.cursor);
-    const scope = optionalSuggestionScope(args.scope);
-    const semanticStatus = analyzeSchemaSemantics(current.spec, projectTables);
-    const relationSuggestionPending = this.schemaSemanticEnforcementEnabled(context.project.id)
-      && this.schemaSemanticConfirmationMatches(context.project.id, semanticStatus)
-      && !this.schemaRelationSuggestionMatches(context.project.id, semanticStatus.fingerprint);
-    const relationSuggestionProgress = this.schemaRelationSuggestionProgress(
-      context.project.id,
-      semanticStatus.fingerprint,
-    );
-    if (relationSuggestionPending && scope) {
-      throw new AgentCoreError(
-        'SCHEMA_RELATION_SUGGESTION_FULL_REQUIRED',
-        '当前 Schema 语义确认后首次关系推荐必须覆盖全部对象',
-        ['不传 scope 和 cursor 重新调用 suggest_object_relations；完成全量推荐后再进行增量诊断'],
-        409,
-        {
-          retryable: false,
-          requiredAction: 'redirect_tool',
-          requiredTool: 'suggest_object_relations',
-          targetKind: 'object_relations',
-          issueId: stableAgentIssueId('schema-relation-suggestion-full', semanticStatus.fingerprint),
-        },
-      );
-    }
-    if (relationSuggestionPending && cursor && (
-      relationSuggestionProgress?.status !== 'pending'
-      || !relationSuggestionProgress.schemaInputHash
-    )) {
-      throw new AgentCoreError(
-        'SCHEMA_RELATION_SUGGESTION_CURSOR_INVALID',
-        '当前没有可继续的对象关系推荐分页进度',
-        ['不传 scope 和 cursor 重新读取第一页；随后只使用返回的 nextCursor 继续'],
-        409,
-        { retryable: false },
-      );
-    }
     const result = suggestObjectRelationsFromSpec(
       current.spec,
-      tables,
+      schemaTables(this.tables(context.project.id)),
       {
         limit: integer(args.limit, 10, 1, 20),
-        cursor,
+        cursor: optionalInputText(args.cursor),
         includeLowConfidence: args.includeLowConfidence === true || args.include_low_confidence === true,
         previousRelations: optionalPreviousObjectRelations(args.previousRelations ?? args.previous_relations),
         rejectedFingerprints: optionalStringArray(args.rejectedFingerprints ?? args.rejected_fingerprints),
-        scope,
+        scope: optionalSuggestionScope(args.scope),
       },
     );
-    if (relationSuggestionPending && cursor) {
-      const cursorOffset = objectRelationSuggestionCursorOffset(cursor, result.schemaInputHash);
-      if (relationSuggestionProgress?.schemaInputHash !== result.schemaInputHash
-        || relationSuggestionProgress.totalCandidateCount !== result.totalCandidateCount
-        || cursorOffset !== relationSuggestionProgress.returnedCandidateCount) {
-        throw new AgentCoreError(
-          'SCHEMA_RELATION_SUGGESTION_CURSOR_INVALID',
-          '对象关系推荐分页已失效或不是上一页的直接续页',
-          ['不传 scope 和 cursor 重新读取第一页；随后只使用返回的 nextCursor 继续'],
-          409,
-          { retryable: false },
-        );
-      }
-    }
-    const relationSuggestionRecorded = relationSuggestionPending
-      && !scope
-      && this.recordSchemaRelationSuggestionPage(
-        context.project.id,
-        semanticStatus.fingerprint,
-        result.schemaInputHash,
-        result.totalCandidateCount,
-        cursor ? relationSuggestionProgress!.returnedCandidateCount : 0,
-        result.returnedCount,
-        result.hasMore,
-      );
     return {
       ok: true,
       deterministic: true,
       working_revision: workingPackage.workingRevision,
       ...result,
-      relation_suggestion_recorded: relationSuggestionRecorded,
       candidate: false,
       display: {
         text: `Suggested ${result.returnedCount} object relation candidate(s); ${result.totalCandidateCount} candidate(s) after filters.`,
@@ -6686,7 +6583,6 @@ export class AgentCoreService {
     );
     this.assertObjectSourcePolicy(workspace, candidate, changes.map((change) => change.path));
     this.assertSchemaSemantics(workspace, candidate);
-    this.assertSchemaRelationSuggestion(workspace.project_id, candidate.spec);
     this.assertPackageFilesValid(base, candidate);
     return materialReview;
   }
@@ -6715,7 +6611,6 @@ export class AgentCoreService {
       candidatePaths,
     );
     this.assertSchemaSemantics(workspace, preview);
-    this.assertSchemaRelationSuggestion(workspace.project_id, preview.spec);
     this.assertPackageFilesValid(base, preview);
     return materialReview;
   }
@@ -6780,145 +6675,6 @@ export class AgentCoreService {
         return false;
       }
     });
-  }
-
-  private relationSuggestionRequiredForSpec(projectId: string, spec: PackageSpec): boolean {
-    if (!this.schemaSemanticEnforcementEnabled(projectId)) return false;
-    const status = analyzeSchemaSemantics(spec, this.tables(projectId));
-    if (!status.available || !this.schemaSemanticConfirmationMatches(projectId, status)) return false;
-    if (this.schemaRelationSuggestionMatches(projectId, status.fingerprint)) return false;
-    this.markSchemaRelationSuggestionRequired(projectId, status.fingerprint);
-    return true;
-  }
-
-  private markSchemaRelationSuggestionRequired(projectId: string, semanticFingerprint: string): boolean {
-    if (!semanticFingerprint) return true;
-    const current = this.db.prepare(`SELECT semantic_fingerprint, status
-      FROM agent_schema_relation_suggestions WHERE project_id = ?`).get(projectId) as
-      | { semantic_fingerprint: string; status: string }
-      | undefined;
-    if (current?.semantic_fingerprint === semanticFingerprint && current.status === 'completed') {
-      return false;
-    }
-    if (current?.semantic_fingerprint === semanticFingerprint && current.status === 'pending') {
-      return true;
-    }
-    this.db.prepare(`INSERT INTO agent_schema_relation_suggestions (
-      project_id, semantic_fingerprint, status, schema_input_hash,
-      total_candidate_count, returned_candidate_count, completed_at, updated_at
-    ) VALUES (?,?,'pending','',0,0,NULL,?)
-    ON CONFLICT(project_id) DO UPDATE SET
-      semantic_fingerprint = excluded.semantic_fingerprint,
-      status = 'pending',
-      schema_input_hash = '',
-      total_candidate_count = 0,
-      returned_candidate_count = 0,
-      completed_at = NULL,
-      updated_at = excluded.updated_at`).run(projectId, semanticFingerprint, nowIso());
-    return true;
-  }
-
-  private schemaRelationSuggestionProgress(projectId: string, semanticFingerprint: string) {
-    if (!semanticFingerprint) return null;
-    const row = this.db.prepare(`SELECT semantic_fingerprint, status, schema_input_hash,
-        total_candidate_count, returned_candidate_count
-      FROM agent_schema_relation_suggestions WHERE project_id = ?`).get(projectId) as
-      | {
-        semantic_fingerprint: string;
-        status: 'pending' | 'completed';
-        schema_input_hash: string;
-        total_candidate_count: number;
-        returned_candidate_count: number;
-      }
-      | undefined;
-    if (!row || row.semantic_fingerprint !== semanticFingerprint) return null;
-    return {
-      status: row.status,
-      schemaInputHash: row.schema_input_hash,
-      totalCandidateCount: Number(row.total_candidate_count),
-      returnedCandidateCount: Number(row.returned_candidate_count),
-    };
-  }
-
-  private recordSchemaRelationSuggestionPage(
-    projectId: string,
-    semanticFingerprint: string,
-    schemaInputHash: string,
-    totalCandidateCount: number,
-    previousReturnedCandidateCount: number,
-    pageReturnedCandidateCount: number,
-    hasMore: boolean,
-  ): boolean {
-    if (!semanticFingerprint || !schemaInputHash) return false;
-    const returnedCandidateCount = Math.max(0, previousReturnedCandidateCount)
-      + Math.max(0, pageReturnedCandidateCount);
-    const completed = !hasMore && returnedCandidateCount === Math.max(0, totalCandidateCount);
-    if (!hasMore && !completed) {
-      throw new AgentCoreError(
-        'SCHEMA_RELATION_SUGGESTION_PROGRESS_INVALID',
-        '对象关系推荐分页计数不完整，不能标记为完成',
-        ['不传 scope 和 cursor 重新读取第一页'],
-        500,
-        { retryable: false },
-      );
-    }
-    const timestamp = nowIso();
-    this.db.prepare(`INSERT INTO agent_schema_relation_suggestions (
-      project_id, semantic_fingerprint, status, schema_input_hash,
-      total_candidate_count, returned_candidate_count, completed_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?)
-    ON CONFLICT(project_id) DO UPDATE SET
-      semantic_fingerprint = excluded.semantic_fingerprint,
-      status = excluded.status,
-      schema_input_hash = excluded.schema_input_hash,
-      total_candidate_count = excluded.total_candidate_count,
-      returned_candidate_count = excluded.returned_candidate_count,
-      completed_at = excluded.completed_at,
-      updated_at = excluded.updated_at`).run(
-      projectId,
-      semanticFingerprint,
-      completed ? 'completed' : 'pending',
-      schemaInputHash,
-      Math.max(0, totalCandidateCount),
-      returnedCandidateCount,
-      completed ? timestamp : null,
-      timestamp,
-    );
-    return completed;
-  }
-
-  private schemaRelationSuggestionMatches(projectId: string, semanticFingerprint: string): boolean {
-    if (!semanticFingerprint) return false;
-    const row = this.db.prepare(`SELECT semantic_fingerprint, status
-      FROM agent_schema_relation_suggestions WHERE project_id = ?`).get(projectId) as
-      | { semantic_fingerprint: string; status: string }
-      | undefined;
-    return row?.status === 'completed' && row.semantic_fingerprint === semanticFingerprint;
-  }
-
-  private assertSchemaRelationSuggestion(projectId: string, spec: PackageSpec): void {
-    if (!this.schemaSemanticEnforcementEnabled(projectId)) return;
-    const status = analyzeSchemaSemantics(
-      spec,
-      this.tables(projectId),
-    );
-    // 语义未确认时由原有 Schema 语义门禁返回更精确的问题。
-    if (!this.schemaSemanticConfirmationMatches(projectId, status)) return;
-    if (this.schemaRelationSuggestionMatches(projectId, status.fingerprint)) return;
-    this.markSchemaRelationSuggestionRequired(projectId, status.fingerprint);
-    throw new AgentCoreError(
-      'SCHEMA_RELATION_SUGGESTION_REQUIRED',
-      'Schema 对象业务语义已确认，但尚未对当前全部对象生成关系建议',
-      ['立即调用 suggest_object_relations，首次不传 scope 和 cursor，并按 nextCursor 读取全部分页后再继续后续资源任务'],
-      409,
-      {
-        retryable: false,
-        requiredAction: 'redirect_tool',
-        requiredTool: 'suggest_object_relations',
-        targetKind: 'object_relations',
-        issueId: stableAgentIssueId('schema-relation-suggestion', status.fingerprint),
-      },
-    );
   }
 
   private assertSchemaSemantics(
@@ -7214,7 +6970,6 @@ export class AgentCoreService {
       selected,
     );
     const base = await this.artifacts.readPackageFiles(workspace.project_id, candidate.baseRevision);
-    this.assertSchemaRelationSuggestion(workspace.project_id, selectedPreview.spec);
     this.assertPackageFilesValid(base, selectedPreview);
     const selectedChanges = candidate.groups
       .filter((group) => selectedIds.has(group.id))
@@ -7491,15 +7246,8 @@ export class AgentCoreService {
     const schemaSemanticsEnforced = this.schemaSemanticEnforcementEnabled(workspace.project_id);
     const schemaSemanticsConfirmed = !schemaSemanticsEnforced
       || this.schemaSemanticConfirmationMatches(workspace.project_id, schemaSemantics);
-    const schemaRelationSuggestionCompleted = !schemaSemanticsEnforced
-      || !schemaSemantics.available
-      || (schemaSemanticsConfirmed && this.schemaRelationSuggestionMatches(
-        workspace.project_id,
-        schemaSemantics.fingerprint,
-      ));
     const knowledgeConfirmed = knowledgeFilesConfirmed
-      && schemaSemanticsConfirmed
-      && schemaRelationSuggestionCompleted;
+      && schemaSemanticsConfirmed;
     const pendingBusiness = workspaceChanges.filter((item) => (
       item.group_id !== RUNTIME_GROUP && item.group_id !== LEGACY_RUNTIME_GROUP
     )).length;
@@ -7560,9 +7308,6 @@ export class AgentCoreService {
             : ['形成并确认对象、操作或规则知识']),
           ...(schemaSemanticsConfirmed ? [] : [
             `补全并确认 Schema 对象业务语义（${schemaSemantics.errorCount} 项阻断问题）`,
-          ]),
-          ...(!schemaSemanticsConfirmed || schemaRelationSuggestionCompleted ? [] : [
-            '对当前全部 Schema 对象调用 suggest_object_relations 并读取全部分页，再生成规则、操作和指标',
           ]),
         ],
       },
