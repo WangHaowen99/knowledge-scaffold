@@ -2074,14 +2074,23 @@ def _validate_structured_result_consistency(content: str) -> Optional[str]:
         loads = batch.get("unit_loads")
         if not isinstance(loads, Mapping):
             continue
-        for unit_name, status in loads.items():
-            if not isinstance(status, Mapping):
-                continue
+        # The package deliberately uses different bases: diesel and the
+        # atmospheric unit are effective/load values, while the monthly VGO
+        # capacity check is defined on raw HC feed. Compare like with like.
+        basis_values = {
+            "2#常减压塔": batch.get("input_weight_tons"),
+            "2#柴油加氢": batch.get("diesel_load_effective_input_tons"),
+            "蜡油加氢": batch.get("vgo_load_raw_feed_tons"),
+        }
+        for unit_name, value in basis_values.items():
+            if value is None:
+                status = loads.get(unit_name)
+                value = status.get("input_tons") if isinstance(status, Mapping) else None
             try:
-                value = float(status.get("input_tons"))
+                numeric = float(value)
             except (TypeError, ValueError):
                 continue
-            totals[str(unit_name)] = totals.get(str(unit_name), 0.0) + value
+            totals[unit_name] = totals.get(unit_name, 0.0) + numeric
     aliases = {"柴油加氢": "2#柴油加氢"}
     for monthly_name, status in units.items():
         if not isinstance(status, Mapping):
