@@ -14,6 +14,7 @@ def test_native_async_runtime_config_has_bounded_pool_defaults(monkeypatch):
         "AGENTIC_EXTERNAL_IO_MAX_PENDING",
         "AGENTIC_TOOL_IO_WORKERS",
         "AGENTIC_TOOL_IO_MAX_PENDING",
+        "AGENTIC_RUNTIME_EVENT_BUFFER_SIZE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -24,6 +25,15 @@ def test_native_async_runtime_config_has_bounded_pool_defaults(monkeypatch):
     assert (config.external_io_workers, config.external_io_max_pending) == (16, 16)
     assert (config.tool_io_workers, config.tool_io_max_pending) == (8, 16)
     assert config.tool_io_operation_timeout_seconds == 600
+    assert config.runtime_event_buffer_size == 4096
+
+
+def test_native_async_runtime_config_reads_runtime_event_buffer_size(monkeypatch):
+    monkeypatch.setenv("AGENTIC_RUNTIME_EVENT_BUFFER_SIZE", "8192")
+
+    config = NativeAsyncRuntimeConfig.from_env()
+
+    assert config.runtime_event_buffer_size == 8192
 
 
 def test_native_async_runtime_config_uses_agent_tool_timeout(monkeypatch):

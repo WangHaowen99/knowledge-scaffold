@@ -6,6 +6,7 @@ import { parseExcel } from '../src/documents/parser.js';
 import {
   importEvaluationDatabaseExcel,
   importEvaluationDatabaseTables,
+  mergeEvaluationDatabaseExcelFiles,
   type EvaluationDatabaseClient,
 } from '../src/evaluation/eval-db.js';
 import { importEvaluationDatabaseExcelInWorker } from '../src/evaluation/eval-db-import-worker-client.js';
@@ -210,6 +211,54 @@ test('评测库导入：Excel 超过既有行数阈值时仍全量分批写入',
   assert.equal(inserts.length, Math.ceil(rowCount / 200));
   assert.equal(inserts.reduce((total, call) => total + (call.values?.length ?? 0), 0), rowCount * 2);
   assert.deepEqual(inserts.at(-1)?.values?.slice(-2), [String(rowCount), `row-${rowCount}`]);
+});
+
+test('评测库导入：支持多个 Excel 合并 Sheet 后写入 MySQL', async () => {
+  const first = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(first, XLSX.utils.aoa_to_sheet([
+    ['id', 'name'],
+    [1, 'alpha'],
+  ]), 'orders');
+  const second = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(second, XLSX.utils.aoa_to_sheet([
+    ['code', 'label'],
+    ['A', '启用'],
+  ]), 'status_terms');
+
+  const merged = mergeEvaluationDatabaseExcelFiles([
+    { filename: 'business.xlsx', buffer: Buffer.from(XLSX.write(first, { type: 'buffer', bookType: 'xlsx' })) },
+    { filename: 'terms.xlsx', buffer: Buffer.from(XLSX.write(second, { type: 'buffer', bookType: 'xlsx' })) },
+  ]);
+  const recorder = recordingClient();
+  const result = await importEvaluationDatabaseExcel({
+    ...merged,
+    target: databaseTarget(),
+  }, { connect: async () => recorder.client });
+
+  assert.equal(merged.filename, 'business.xlsx + terms.xlsx');
+  assert.deepEqual(result.tables, [
+    { name: 'orders', rowCount: 1 },
+    { name: 'status_terms', rowCount: 1 },
+  ]);
+  const sql = recorder.calls.map((call) => call.sql).join('\n');
+  assert.match(sql, /`__mv_stg_[^`]+` TO `orders`/);
+  assert.match(sql, /`__mv_stg_[^`]+` TO `status_terms`/);
+});
+
+test('评测库导入：多个 Excel 存在重复 Sheet 时拒绝导入', () => {
+  const makeWorkbook = (sheetName: string) => {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      ['id'],
+      [1],
+    ]), sheetName);
+    return Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+  };
+
+  assert.throws(() => mergeEvaluationDatabaseExcelFiles([
+    { filename: 'a.xlsx', buffer: makeWorkbook('records') },
+    { filename: 'b.xlsx', buffer: makeWorkbook('records') },
+  ]), /多个 Excel 中存在重复 Sheet「records」：a\.xlsx、b\.xlsx/);
 });
 
 test('评测库导入：DATETIME 列保留日期、非零时间和零点时间', async () => {

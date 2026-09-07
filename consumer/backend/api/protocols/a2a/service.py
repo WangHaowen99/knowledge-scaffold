@@ -20,6 +20,7 @@ from api.protocols.a2a.models import (
     A2ATaskSnapshot,
     A2ATaskState,
 )
+from api.protocols.preflight import build_protocol_preflight_snapshot
 from llm.llm_request_mode import normalize_llm_request_mode
 from utils.identifiers import validate_session_id
 
@@ -76,18 +77,60 @@ class A2ATaskService:
             raise RunConflictError("task_id already exists")
 
         async with self.manager.session_guard(self.scope, session_id):
-            if await self._find_turn(external_task_id) is not None:
-                raise RunConflictError("task_id already exists")
-            await self.manager.assert_session_available(self.scope, session_id)
-            turn, created = await self.runtime.short_io.run(
-                self.execution_store.create_turn_for_run,
-                session_id=session_id,
-                user_request=request.message,
-                protocol_metadata={
-                    "protocol": _PROTOCOL,
-                    "external_run_id": external_task_id,
-                },
+            reservation_id = await self.runtime.short_io.run(
+                self.execution_store.reserve_protocol_run_id,
+                _PROTOCOL,
+                external_task_id,
             )
+            if reservation_id is None:
+                raise RunConflictError("task_id already exists")
+            try:
+                await self.manager.assert_session_available(self.scope, session_id)
+                model_profile_id = (
+                    str(context_values.get("model_profile_id") or "").strip()
+                    or None
+                )
+                requested_operation_key = (
+                    str(context_values.get("requested_operation_key") or "").strip()
+                    or None
+                )
+                if requested_operation_key is None:
+                    context_values.pop("requested_operation_key", None)
+                else:
+                    context_values["requested_operation_key"] = (
+                        requested_operation_key
+                    )
+                preflight_snapshot = await build_protocol_preflight_snapshot(
+                    self.runtime,
+                    user_request=request.message,
+                    user_context=context_values,
+                    arguments=(
+                        dict(raw_arguments)
+                        if isinstance(raw_arguments, dict)
+                        else None
+                    ),
+                    session_id=session_id,
+                    model_profile_id=model_profile_id,
+                    user_id=self.username,
+                    workspace_id=self.workspace_id,
+                )
+                turn, created = await self.runtime.short_io.run(
+                    self.execution_store.create_turn_for_reserved_protocol_run,
+                    protocol=_PROTOCOL,
+                    external_run_id=external_task_id,
+                    reservation_id=reservation_id,
+                    session_id=session_id,
+                    user_request=request.message,
+                )
+                reservation_id = None
+            finally:
+                if reservation_id is not None:
+                    await self.runtime.short_io.run(
+                        self.execution_store.release_protocol_run_id,
+                        _PROTOCOL,
+                        external_task_id,
+                        reservation_id,
+                    )
             if not created:
                 raise RunConflictError("task_id already exists")
             context = RuntimeInvocationContext(
@@ -101,10 +144,9 @@ class A2ATaskService:
                 llm_request_mode=normalize_llm_request_mode(
                     context_values.get("llm_request_mode")
                 ),
-                model_profile_id=(
-                    str(context_values.get("model_profile_id") or "").strip()
-                    or None
-                ),
+                model_profile_id=model_profile_id,
+                preflight_snapshot=preflight_snapshot,
+                requested_operation_key=requested_operation_key,
                 arguments=(dict(raw_arguments) if raw_arguments is not None else None),
                 include_trace=False,
                 supports_user_interaction=False,

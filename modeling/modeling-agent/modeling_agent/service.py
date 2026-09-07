@@ -154,6 +154,8 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "patch_operation",
     "patch_metric",
     "sync_schema_objects",
+    "stage_schema_semantic_changes",
+    "confirm_schema_semantics",
     "patch_object_source_binding",
     "delete_domain_resource",
     "confirm_deterministic_scope",

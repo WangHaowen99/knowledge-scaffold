@@ -14,10 +14,12 @@ const [
   { registerAgentCoreRoutes },
   { createProject },
   { getDb },
+  { ChangeControlStore },
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/projects/repo.js'),
   import('../src/db/index.js'),
+  import('../src/agent/change-control.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -130,6 +132,32 @@ test('计划挂在旧 run 时返回可恢复诊断而不是裸 404，安全终�
   const closed = await tool(app, project.id, 'get_change_plan', { plan_id: planId }, staleRunId);
   assert.equal(closed.statusCode, 200, closed.body);
   assert.equal(closed.json().plan.status, 'cancelled');
+
+  const replanned = await tool(app, project.id, 'create_change_plan', planArgs(revision), nextRunId);
+  assert.equal(replanned.statusCode, 200, replanned.body);
+  assert.notEqual(replanned.json().plan.id, planId);
+});
+
+test('Python stale-run 终止后 Node 活动计划一并取消，新 run 可重新规划', async (t) => {
+  const project = createProject({ owner: 'alice', name: '幽灵计划双向清理' });
+  const app = appFor(t);
+  const firstRunId = `run-${project.id}`;
+  const revision = await currentRevision(app, project.id, firstRunId);
+  const created = await tool(app, project.id, 'create_change_plan', planArgs(revision), firstRunId);
+  assert.equal(created.statusCode, 200, created.body);
+  const planId = created.json().plan.id;
+
+  // Python 侧 safe_terminate_stale 只清 Python 状态；Node 侧必须同步取消活动计划。
+  const cancelled = new ChangeControlStore(getDb()).safeTerminateActivePlansForProject({
+    projectId: project.id,
+    actor: 'alice',
+  });
+  assert.equal(cancelled.terminated, 1);
+  assert.deepEqual(cancelled.planIds, [planId]);
+
+  const nextRunId = `run-${project.id}-next`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, nextRunId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
 
   const replanned = await tool(app, project.id, 'create_change_plan', planArgs(revision), nextRunId);
   assert.equal(replanned.statusCode, 200, replanned.body);

@@ -95,6 +95,11 @@ export interface DataDictField {
   name: string;
   sourceColumn?: string;
   note?: string;
+  /** Explicit field constraint; absence only permits the table-level inferred-primary-key fallback. */
+  required?: boolean;
+  nullable?: boolean;
+  /** Explicit database or data-dictionary primary-key declaration. */
+  primaryKey?: boolean;
   inferredType: 'string' | 'number' | 'boolean' | 'date' | 'unknown';
   sampleValues: string[];
   distinctRatio: number; // 唯一值比例，接近 1 提示可能是主键
@@ -115,6 +120,10 @@ export interface DataDictTable {
   name: string; // sheet 名 = 表名
   documentId?: string; // 来源资料修订 ID；用于精确追踪知识证据
   materialPurpose?: DocumentRecord['purpose']; // 上传资料用途；术语表导入依赖该标记区分普通业务表
+  /** Identifies authoritative constraint metadata even when every field is nullable/non-primary. */
+  constraintSource?: 'database' | 'dictionary';
+  /** Ordered primary-key source columns returned by database metadata. */
+  primaryKey?: string[];
   fields: DataDictField[];
   rowCount: number;
   // 数据行（按 fields 顺序的字符串矩阵）；保留数量由具体解析场景决定。

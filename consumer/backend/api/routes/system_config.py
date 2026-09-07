@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import json
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 
+from config.model_profile_references import (
+    InvalidModelProfileFilterError,
+    get_model_profile_references,
+)
 from config.system_config import (
+    ModelProfilePreconditionError,
     SystemConfigReadError,
     SystemConfigValidationError,
-    get_public_system_config,
+    get_public_system_config_snapshot,
     get_system_config_readiness,
     get_system_config_template,
     import_system_config,
@@ -27,6 +33,31 @@ logger = get_logger("routes.system_config")
 system_config_router = APIRouter(prefix="/api")
 
 
+@system_config_router.get(
+    "/model-profile-references",
+    dependencies=[Depends(require_admin_user)],
+)
+async def get_model_profile_references_api(
+    request: Request,
+    profile_id: Annotated[
+        str | None,
+        Query(min_length=1, max_length=90, pattern=r"^\S+$"),
+    ] = None,
+):
+    try:
+        return await run_in_runtime_pool(
+            request,
+            "short_io",
+            get_model_profile_references,
+            profile_id,
+        )
+    except InvalidModelProfileFilterError:
+        return JSONResponse(
+            {"detail": "profile_id is invalid"},
+            status_code=422,
+        )
+
+
 def _system_config_read_error_response(exc: SystemConfigReadError):
     return JSONResponse(
         {"code": exc.code, "detail": str(exc)},
@@ -40,10 +71,17 @@ def _system_config_read_error_response(exc: SystemConfigReadError):
 )
 async def get_system_config_api(request: Request):
     try:
-        return await run_in_runtime_pool(
+        snapshot = await run_in_runtime_pool(
             request,
             "short_io",
-            get_public_system_config,
+            get_public_system_config_snapshot,
+        )
+        return JSONResponse(
+            content=snapshot["config"],
+            headers={
+                "X-System-Config-Generation": str(snapshot["generation"]),
+                "X-LLM-Profiles-Fingerprint": snapshot["llm_profiles_fingerprint"],
+            },
         )
     except SystemConfigReadError as exc:
         return _system_config_read_error_response(exc)
@@ -90,8 +128,12 @@ def _refresh_runtime_services(request: Request) -> None:
         refresh_runtime(request.app)
 
 
-def _update_and_refresh_system_config(request: Request, section, data):
-    updated_section = update_system_config_section(section, data)
+def _update_and_refresh_system_config(request: Request, section, data, precondition=None):
+    updated_section = update_system_config_section(
+        section,
+        data,
+        precondition=precondition,
+    )
     _refresh_runtime_services(request)
     return updated_section
 
@@ -105,6 +147,7 @@ async def update_system_config_api(request: Request):
     try:
         section = payload.get("section")
         data = payload.get("data", {})
+        precondition = payload.get("precondition")
         updated_section = await run_in_runtime_pool(
             request,
             "short_io",
@@ -112,11 +155,17 @@ async def update_system_config_api(request: Request):
             request,
             section,
             data,
+            precondition,
         )
     except SystemConfigReadError as exc:
         return _system_config_read_error_response(exc)
     except SystemConfigValidationError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
+    except ModelProfilePreconditionError as exc:
+        return JSONResponse(
+            {"code": exc.code, "detail": str(exc)},
+            status_code=409,
+        )
     except Exception:
         logger.exception("Failed to refresh runtime services after config update")
         return JSONResponse(
@@ -151,6 +200,11 @@ async def import_system_config_api(request: Request):
         return _system_config_read_error_response(exc)
     except SystemConfigValidationError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
+    except ModelProfilePreconditionError as exc:
+        return JSONResponse(
+            {"code": exc.code, "detail": str(exc)},
+            status_code=409,
+        )
     except Exception:
         logger.exception("Failed to refresh runtime services after config import")
         return JSONResponse(

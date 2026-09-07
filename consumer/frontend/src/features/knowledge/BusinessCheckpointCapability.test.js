@@ -40,6 +40,6 @@ test('CheckPoint cannot be enabled without an enabled package and readable templ
 test('CheckPoint revision conflicts refresh package state before retry', () => {
   assert.match(
     checkpointToggleSource,
-    /res\.status === 409[\s\S]*await loadPackages\(\)[\s\S]*setOpNotice/,
+    /res\.status === 409[\s\S]*await refreshPackageList\(\)[\s\S]*setOpNotice/,
   );
 });

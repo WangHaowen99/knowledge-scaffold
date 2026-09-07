@@ -62,8 +62,8 @@ chmod +x ./deploy/*.sh
 dist/onto-agent-<版本号>-linux-<架构>.tar.gz
 ```
 
-发布包内已包含所有部署、升级、回滚、重启脚本，无需额外文件。
-发布包**不包含** `.onto-runtime`；部署和升级时会保留目标机器现有的 `.onto-runtime` 目录，如不存在则创建空目录。聊天会话、执行记录和 awaiting-input checkpoint 的 release 默认兜底目录也固定落在 `.onto-runtime/data/` 下。
+发布包内已包含部署、升级、备份、恢复、存储迁移、回滚和重启脚本，无需额外文件。
+发布包**不包含**客户运行数据。bind 模式使用安装目录下的 `.onto-runtime` 和 `.onto-auth`；volume 模式使用 Docker named volume。聊天会话、执行记录和 awaiting-input checkpoint 在容器内始终位于 `/app/.onto-runtime/data/`，存储模式不会改变应用内路径。
 
 求解器是可选的独立部署单元。普通 Consumer 启动不需要求解器 secrets；启用
 求解器时必须显式叠加 `docker-compose.solver.release.yml` 并启用
@@ -119,6 +119,59 @@ cp backend/.env.example backend/.env
 
 部署成功后，通过系统设置页面配置 LLM、MindsDB 等对接参数即可。若需要对外提供 MCP 客户端接入，请在 `backend/.env` 中设置 `MCP_PUBLIC_BASE_URL` 为经过审批、可从客户端访问的 HTTPS 域名，例如 `https://mcp.example.com`。
 
+## 存储模式与数据生命周期
+
+默认 `bind` 模式适用于数据目录位于 ext4/xfs 的原生 Linux 部署。Windows 宿主通过 Docker Desktop 运行时，推荐首次部署就选择 named volume，避免高频小文件跨 Windows 文件系统边界：
+
+```bash
+STORAGE_MODE=volume ./deploy/deploy.sh
+```
+
+默认 volume 名为 `consumer-runtime-data` 和 `consumer-auth-data`。模式及实际 active volume 名持久化在 `deploy/state/`；部署后不能只改 `STORAGE_MODE` 静默切换，必须执行下述迁移脚本。volume 操作默认复用发布包内 `storage_utility_image`，即与当前发布版本相同且已随包校验的 Backend 镜像；如需覆盖，`STORAGE_UTILITY_IMAGE` 必须使用非 `latest` 版本标签或 `@sha256:` digest。
+
+### 备份
+
+先停止业务写入，或在已停写的升级事务中执行：
+
+```bash
+./deploy/backup.sh --confirm-writes-stopped
+```
+
+bind 和 volume 模式都会在 `deploy/backups/<timestamp>_.../` 生成同一格式的：
+
+- `storage-data.tar.gz`：包含 runtime/auth 的完整目录层级和文件内容。
+- `storage-manifest.json`：使用规范 `/` 相对路径，记录每个文件的大小、SHA256、权限，以及汇总 `file_count`、`bytes`、`tree_sha256`。
+- `storage-checksums.sha256`：保护归档和 manifest 本身；脚本生成后立即回读校验。
+
+volume 源以只读方式挂载到受限的一次性 utility 容器，备份目录为唯一读写挂载。发现符号链接、特殊文件、非法路径、损坏归档或清单不一致时操作失败。
+
+### 恢复
+
+恢复不会原地覆盖 active 数据。脚本先完整验证备份，再停写并提取到临时目录或版本化临时 volume，目标清单完全一致后才切换；验证失败不改变 active pointer：
+
+```bash
+./deploy/restore.sh <backup-dir> --target-mode bind
+./deploy/restore.sh <backup-dir> --target-mode volume
+```
+
+相同备份重复执行会先比较 active 数据，已一致时直接成功返回。旧 bind 目录或旧 named volume 保留为回滚材料；新目标健康检查失败时，脚本恢复旧 pointer 并尝试重启旧数据面。
+
+### bind 与 volume 双向迁移
+
+先执行只读预检，再执行迁移：
+
+```bash
+./deploy/migrate_storage.sh --to volume --dry-run
+./deploy/migrate_storage.sh --to volume
+
+./deploy/migrate_storage.sh --to bind --dry-run
+./deploy/migrate_storage.sh --to bind
+```
+
+正式迁移顺序固定为：停止写入、以只读源生成规范归档、写入独立临时目标、比较源/目标完整清单、持久化模式与 active pointer、启动并健康检查。只有验证成功后才切换；源目录或源 volume 不删除，至少保留一个验收周期。重复执行到已生效的目标模式是幂等操作。
+
+`rollback.sh` 始终是 **code-only**：只回退代码和镜像，保留当前数据。数据恢复必须显式执行 `restore.sh`，不得把代码回滚与数据恢复绑定为一个隐式动作。
+
 ## 升级
 
 假设当前安装目录为 `/opt/onto-agent`（默认），从 v1.0.0 升级到 v1.1.0：
@@ -144,10 +197,12 @@ tar -xzf onto-agent-<版本号>-linux-<架构>.tar.gz
 
 `upgrade.sh` 会自动完成以下操作：
 
-- **解压前备份**：保留覆盖前快照；正式一致性备份仍由 `deploy.sh` 在停止旧写入后创建
+- **解压前备份**：保留覆盖前代码与配置快照；bind 模式同时保护宿主数据目录，volume 模式的数据不复制到该快照
 - **覆盖新文件**：将新版本的镜像、脚本等文件覆盖到安装目录
-- **恢复保护文件**：从备份中恢复配置、数据和运行时文件，防止被覆盖
+- **恢复保护文件**：从快照恢复配置和 bind 保护目录；volume active pointer 保持不变
 - **执行部署**：调用 `deploy.sh` 完成升级（镜像加载、迁移、容器更新、健康检查）
+
+正式一致性备份始终由 `deploy.sh` 在停止旧版本写入后调用模式感知的 `backup.sh` 创建；解压前快照不能代替该备份。
 
 ## 回滚
 
@@ -207,8 +262,8 @@ SMTP / 邮件相关变量；不允许自行建号时显式设置 `AUTH_ENABLE_RE
 auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、`keys/` 签名私钥）。
 该目录已纳入：
 
-- `backup.sh`：打包为 `onto-auth.tar.gz`，auth 镜像同时 `docker save`
-- `upgrade.sh`：升级覆盖文件时列入保护清单，不会被新发布包覆盖
+- `backup.sh`：bind/volume 都纳入统一 `storage-data.tar.gz` 与规范 SHA256 manifest；bind 模式额外保留兼容用 `onto-auth.tar.gz`
+- `upgrade.sh`：bind 模式将目录列入解压前保护清单；volume 模式保留 active volume pointer，并在停写后执行正式备份
 - `rollback.sh`：执行 code-only rollback，不会自动覆盖 `.onto-runtime`、`.onto-auth` 或会话数据；如需恢复备份，必须显式人工操作
 
 ### 存量用户、workspace 与本体数据源迁移
@@ -261,12 +316,19 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 ## 运行目录
 
-发布包保持与当前项目一致的挂载目录：
+bind 模式使用安装目录：
 
 - `./.onto-runtime`（包含 `config/system_config.json`）
 - `./backend/logs`
 - `./frontend/logs/nginx`
-- `./.onto-auth`（始终创建，auth-server 用户数据）
+- `./.onto-auth`（auth-server 用户数据）
+
+volume 模式使用：
+
+- `consumer-runtime-data`（Backend/MCP 读写，JiuwenBox 只读）
+- `consumer-auth-data`（auth-server 读写）
+
+恢复或迁移成功后 active 名可能变为带 manifest digest 的版本化 volume；实际名称以 `deploy/state/storage-mode.env` 为准，不要直接删除默认名或版本化名。
 
 ## MCP 服务
 

@@ -1,7 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+import threading
 
 import pytest
 
+import persistence.execution_store as execution_store_module
+import persistence.session_summary_index as summary_index_module
 from persistence.chat_store import ChatStore
 from persistence.deterministic_terminal import (
     persist_deterministic_terminal,
@@ -16,6 +20,383 @@ from persistence.execution_store import (
     SolverCheckpointError,
     TurnOwnershipError,
 )
+from persistence.session_summary_index import (
+    SessionSummary,
+    SessionSummaryIndex,
+    SessionSummaryIndexWriteError,
+)
+
+
+def _create_reserved_protocol_turn(
+    store: ExecutionStore,
+    *,
+    session_id: str,
+    external_run_id: str,
+):
+    reservation_id = store.reserve_protocol_run_id("a2a", external_run_id)
+    if reservation_id is None:
+        return None, False
+    return store.create_turn_for_reserved_protocol_run(
+        protocol="a2a",
+        external_run_id=external_run_id,
+        reservation_id=reservation_id,
+        session_id=session_id,
+        user_request="synthetic request",
+    )
+
+
+def test_session_admission_reservation_is_shared_and_consumed_atomically(tmp_path):
+    storage = tmp_path / "executions"
+    first = ExecutionStore(str(storage))
+    second = ExecutionStore(str(storage))
+    token = first.reserve_session_admission("reserved-session")
+
+    assert token
+    assert second.reserve_session_admission("reserved-session") is None
+    with second.session_prune_guard("reserved-session") as prune_allowed:
+        assert prune_allowed is False
+
+    turn, created = second.create_turn_for_run(
+        session_id="reserved-session",
+        user_request="synthetic request",
+        admission_reservation_id=token,
+    )
+
+    assert created is True
+    assert turn["turn_id"] == 1
+    next_token = first.reserve_session_admission("reserved-session")
+    assert next_token
+    assert first.release_session_admission("reserved-session", next_token) is True
+
+
+def _seed_session_summary(index: SessionSummaryIndex, session_id: str) -> None:
+    index.upsert(
+        SessionSummary.create(
+            session_id=session_id,
+            title="Synthetic session",
+            created_at="2026-08-31T00:00:00+00:00",
+            updated_at="2026-08-31T00:00:00+00:00",
+            metadata={},
+        )
+    )
+
+
+def _summary(index: SessionSummaryIndex, session_id: str):
+    return next(
+        item
+        for item in index.list_page(limit=100).items
+        if item.session_id == session_id
+    )
+
+
+def test_execution_store_projects_active_interaction_and_terminal_runtime(tmp_path):
+    index = SessionSummaryIndex(tmp_path / "session-summary-index.json")
+    _seed_session_summary(index, "summary-execution")
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+
+    turn, created = store.create_turn_for_run(
+        session_id="summary-execution",
+        user_request="synthetic request",
+        run_id="run-summary-1",
+    )
+    assert created is True
+    running = _summary(index, "summary-execution")
+    assert running.active_run_id == "run-summary-1"
+    assert running.last_run_status == "running"
+    assert running.pending_interaction is None
+    assert running.turn_count == 1
+
+    interaction = {
+        "id": "interaction-summary",
+        "type": "input",
+        "prompt": "Synthetic input",
+    }
+    store.await_turn(
+        "summary-execution",
+        turn["turn_id"],
+        final_output={"interaction": interaction},
+        run_id="run-summary-1",
+    )
+    waiting = _summary(index, "summary-execution")
+    assert waiting.active_run_id == "run-summary-1"
+    assert waiting.last_run_status == "awaiting_input"
+    assert dict(waiting.pending_interaction or {}) == interaction
+
+    resumed, resumed_created = store.consume_interaction_and_create_turn(
+        session_id="summary-execution",
+        interaction_id="interaction-summary",
+        user_request="synthetic answer",
+        interaction_response={
+            "interaction_id": "interaction-summary",
+            "type": "input",
+            "value": "approved",
+        },
+    )
+    assert resumed_created is True
+    resumed_summary = _summary(index, "summary-execution")
+    assert resumed_summary.active_run_id == resumed["run_id"]
+    assert resumed_summary.last_run_status == "running"
+    assert resumed_summary.pending_interaction is None
+    assert resumed_summary.turn_count == 2
+
+    store.complete_turn(
+        "summary-execution",
+        resumed["turn_id"],
+        {"answer": "synthetic"},
+        "done",
+        run_id=resumed["run_id"],
+    )
+    completed = _summary(index, "summary-execution")
+    assert completed.active_run_id is None
+    assert completed.last_run_status == "completed"
+    assert completed.pending_interaction is None
+    assert completed.turn_count == 2
+
+
+def test_get_turn_count_reads_ready_summary_without_loading_execution_history(
+    tmp_path,
+    monkeypatch,
+):
+    index = SessionSummaryIndex(tmp_path / "session-summary-index.json")
+    _seed_session_summary(index, "ready-count")
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+    store.start_turn(
+        "ready-count",
+        1,
+        "run-ready-count",
+        "synthetic request",
+    )
+    monkeypatch.setattr(
+        store,
+        "_load_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ready summary count must avoid history loading")
+        ),
+    )
+
+    assert store.get_turn_count("ready-count") == 1
+
+
+def test_get_turn_count_treats_missing_session_in_ready_index_as_new(
+    tmp_path,
+    monkeypatch,
+):
+    index = SessionSummaryIndex(
+        tmp_path / "session-summary-index.json",
+        rebuild_loader=lambda: (),
+    )
+    index.rebuild()
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+    monkeypatch.setattr(
+        store,
+        "_load_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("new session count must avoid history loading")
+        ),
+    )
+
+    assert store.get_turn_count("new-session") == 0
+
+
+def test_get_turn_count_falls_back_to_execution_fact_when_summary_is_cold(
+    tmp_path,
+    monkeypatch,
+):
+    storage_dir = tmp_path / "executions"
+    writer = ExecutionStore(str(storage_dir))
+    writer.start_turn(
+        "cold-count",
+        1,
+        "run-cold-count",
+        "synthetic request",
+    )
+    index = SessionSummaryIndex(
+        tmp_path / "missing-summary-index.json",
+        rebuild_loader=lambda: (),
+    )
+    reader = ExecutionStore(str(storage_dir), summary_index=index)
+    monkeypatch.setattr(
+        index,
+        "get_summary",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cold index must not be read as ready")
+        ),
+        raising=False,
+    )
+
+    assert reader.get_turn_count("cold-count") == 1
+
+
+def test_execution_store_summary_failure_does_not_rollback_turn(tmp_path):
+    class FailingIndex:
+        def __init__(self):
+            self.degraded_reason = None
+
+        def update_runtime(self, _session_id, **_fields):
+            raise OSError("synthetic index failure")
+
+        def mark_degraded(self, reason):
+            self.degraded_reason = reason
+
+    index = FailingIndex()
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+
+    turn, created = store.create_turn_for_run(
+        session_id="summary-write-survives",
+        user_request="synthetic request",
+        run_id="run-write-survives",
+    )
+
+    assert created is True
+    assert store.get_turn("summary-write-survives", turn["turn_id"]) is not None
+    assert index.degraded_reason == "execution_projection_failed"
+
+
+def test_execution_projection_crash_marker_repairs_runtime_after_restart(tmp_path, monkeypatch):
+    path = tmp_path / "session-summary-index.json"
+    index = SessionSummaryIndex(path)
+    _seed_session_summary(index, "runtime-after-crash")
+    base_summary = _summary(index, "runtime-after-crash")
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+    monkeypatch.setattr(
+        index,
+        "update_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic process exit before runtime projection")
+        ),
+    )
+
+    store.create_turn_for_run(
+        session_id="runtime-after-crash",
+        user_request="synthetic request",
+        run_id="run-after-crash",
+    )
+
+    restarted = SessionSummaryIndex(
+        path,
+        rebuild_loader=lambda: [
+            replace(
+                base_summary,
+                **store.try_get_session_summary_runtime("runtime-after-crash"),
+            )
+        ],
+    )
+    repaired = _summary(restarted, "runtime-after-crash")
+    assert repaired.active_run_id == "run-after-crash"
+    assert repaired.last_run_status == "running"
+
+
+def test_execution_projection_failure_rebuilds_runtime_in_same_process(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "session-summary-index.json"
+    index = SessionSummaryIndex(path)
+    _seed_session_summary(index, "runtime-same-process")
+    base_summary = _summary(index, "runtime-same-process")
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+    index._rebuild_loader = lambda: [
+        replace(
+            base_summary,
+            **store.try_get_session_summary_runtime("runtime-same-process"),
+        )
+    ]
+    monkeypatch.setattr(
+        index,
+        "update_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic runtime projection failure")
+        ),
+    )
+
+    store.create_turn_for_run(
+        session_id="runtime-same-process",
+        user_request="synthetic request",
+        run_id="run-same-process",
+    )
+
+    repaired = _summary(index, "runtime-same-process")
+    assert repaired.active_run_id == "run-same-process"
+    assert repaired.last_run_status == "running"
+    assert index._dirty_path.exists() is False
+
+
+def test_execution_source_failure_abandons_projection_for_rebuild(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "session-summary-index.json"
+    index = SessionSummaryIndex(path)
+    _seed_session_summary(index, "runtime-write-failure")
+    base_summary = _summary(index, "runtime-write-failure")
+    index._rebuild_loader = lambda: [base_summary]
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+    original_replace = execution_store_module.os.replace
+
+    def fail_execution_replace(source, target):
+        if str(target).endswith("execution.json"):
+            raise OSError("synthetic execution source failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(execution_store_module.os, "replace", fail_execution_replace)
+
+    with pytest.raises(OSError, match="source failure"):
+        store.create_turn_for_run(
+            session_id="runtime-write-failure",
+            user_request="synthetic request",
+            run_id="run-write-failure",
+        )
+
+    assert _summary(index, "runtime-write-failure").last_run_status == "idle"
+    assert index._dirty_path.exists() is False
+
+
+def test_execution_marker_failure_does_not_abort_durable_turn(tmp_path, monkeypatch):
+    path = tmp_path / "session-summary-index.json"
+    index = SessionSummaryIndex(path)
+    _seed_session_summary(index, "execution-marker-failure")
+    base_summary = _summary(index, "execution-marker-failure")
+    store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
+    original_write = summary_index_module._write_atomic_json
+
+    def fail_dirty_marker(target, document):
+        if str(target).endswith(".dirty"):
+            raise SessionSummaryIndexWriteError(
+                "synthetic execution marker failure",
+                committed=False,
+            )
+        return original_write(target, document)
+
+    monkeypatch.setattr(summary_index_module, "_write_atomic_json", fail_dirty_marker)
+
+    turn, created = store.create_turn_for_run(
+        session_id="execution-marker-failure",
+        user_request="must commit",
+        run_id="run-must-commit",
+    )
+
+    assert created is True
+    assert store.get_turn("execution-marker-failure", turn["turn_id"]) is not None
+    execution_path = (
+        tmp_path
+        / "executions"
+        / "execution-marker-failure"
+        / "execution.json"
+    )
+    assert execution_path.exists() is True
+
+    restarted = SessionSummaryIndex(
+        path,
+        rebuild_loader=lambda: [
+            replace(
+                base_summary,
+                **store.get_session_summary_runtime("execution-marker-failure"),
+            )
+        ],
+    )
+    repaired = _summary(restarted, "execution-marker-failure")
+    assert repaired.active_run_id == "run-must-commit"
+    assert repaired.turn_count == 1
 
 
 def _seed_choice_checkpoint(store: ExecutionStore, session_id: str = "sess-choice") -> dict:
@@ -744,6 +1125,145 @@ def test_start_next_turn_allocates_unique_ids_atomically(tmp_path):
 
     assert sorted(turn["turn_id"] for turn in turns) == list(range(1, 17))
     assert len({turn["run_id"] for turn in turns}) == 16
+
+
+@pytest.mark.parametrize(
+    "session_ids",
+    [
+        ("protocol-session", "protocol-session"),
+        ("protocol-session-a", "protocol-session-b"),
+    ],
+)
+def test_protocol_run_id_is_atomic_across_concurrent_sessions(
+    tmp_path,
+    session_ids,
+):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    ready = threading.Barrier(2)
+
+    def submit(session_id):
+        ready.wait(timeout=5)
+        return _create_reserved_protocol_turn(
+            store,
+            session_id=session_id,
+            external_run_id="external-task-shared",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        admissions = list(executor.map(submit, session_ids))
+
+    assert sum(int(created) for _turn, created in admissions) == 1
+    turns = store.list_turns_by_protocol("a2a")
+    assert len(turns) == 1
+    assert turns[0]["protocol_metadata"]["external_run_id"] == (
+        "external-task-shared"
+    )
+
+
+def test_protocol_run_id_reservation_recognizes_durable_turn_after_reload(tmp_path):
+    storage_dir = tmp_path / "executions"
+    first = ExecutionStore(str(storage_dir))
+    turn, created = _create_reserved_protocol_turn(
+        first,
+        session_id="protocol-session-a",
+        external_run_id="external-task-reload",
+    )
+    assert created is True
+
+    reloaded = ExecutionStore(str(storage_dir))
+
+    assert reloaded.reserve_protocol_run_id("a2a", "external-task-reload") is None
+    session_id, persisted = reloaded.find_turn_by_protocol_id(
+        "a2a",
+        "external-task-reload",
+    )
+    assert session_id == "protocol-session-a"
+    assert persisted["run_id"] == turn["run_id"]
+
+
+def test_protocol_run_id_is_atomic_across_store_instances(tmp_path):
+    storage_dir = tmp_path / "executions"
+    stores = (ExecutionStore(str(storage_dir)), ExecutionStore(str(storage_dir)))
+    ready = threading.Barrier(2)
+    reservations_ready = threading.Barrier(2)
+
+    def submit(index):
+        ready.wait(timeout=5)
+        reservation_id = stores[index].reserve_protocol_run_id(
+            "a2a",
+            "external-task-shared-store",
+        )
+        reservations_ready.wait(timeout=5)
+        if reservation_id is None:
+            return None, False
+        return stores[index].create_turn_for_reserved_protocol_run(
+            protocol="a2a",
+            external_run_id="external-task-shared-store",
+            reservation_id=reservation_id,
+            session_id=f"protocol-store-session-{index}",
+            user_request="synthetic request",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        admissions = list(executor.map(submit, range(2)))
+
+    assert sum(int(created) for _turn, created in admissions) == 1
+    reloaded = ExecutionStore(str(storage_dir))
+    assert len(reloaded.list_turns_by_protocol("a2a")) == 1
+
+
+def test_protocol_run_id_durable_scan_ignores_stale_store_cache(tmp_path):
+    storage_dir = tmp_path / "executions"
+    writer = ExecutionStore(str(storage_dir))
+    stale_reader = ExecutionStore(str(storage_dir))
+    stale_reader.create_turn_for_run(
+        session_id="protocol-stale-session",
+        user_request="unrelated request",
+    )
+
+    _turn, created = _create_reserved_protocol_turn(
+        writer,
+        session_id="protocol-stale-session",
+        external_run_id="external-task-stale-cache",
+    )
+    assert created is True
+
+    assert (
+        stale_reader.reserve_protocol_run_id("a2a", "external-task-stale-cache")
+        is None
+    )
+
+
+def test_protocol_run_id_reservation_is_released_when_durable_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    reservation_id = store.reserve_protocol_run_id("a2a", "external-task-retry")
+    assert reservation_id is not None
+    save_session = store._save_session
+
+    def fail_save(*_args, **_kwargs):
+        raise OSError("synthetic durable write failure")
+
+    monkeypatch.setattr(store, "_save_session", fail_save)
+    with pytest.raises(OSError, match="synthetic durable write failure"):
+        store.create_turn_for_reserved_protocol_run(
+            protocol="a2a",
+            external_run_id="external-task-retry",
+            reservation_id=reservation_id,
+            session_id="protocol-session-a",
+            user_request="synthetic request",
+        )
+
+    monkeypatch.setattr(store, "_save_session", save_session)
+    retried, retried_created = _create_reserved_protocol_turn(
+        store,
+        session_id="protocol-session-b",
+        external_run_id="external-task-retry",
+    )
+    assert retried_created is True
+    assert retried["session_id"] == "protocol-session-b"
 
 
 @pytest.mark.parametrize(

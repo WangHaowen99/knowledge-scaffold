@@ -55,6 +55,8 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "patch_operation",
     "patch_metric",
     "sync_schema_objects",
+    "stage_schema_semantic_changes",
+    "confirm_schema_semantics",
     "patch_object_source_binding",
     "delete_domain_resource",
     "stage_script_source",
@@ -82,6 +84,8 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "patch_operation",
     "patch_metric",
     "sync_schema_objects",
+    "stage_schema_semantic_changes",
+    "confirm_schema_semantics",
     "patch_object_source_binding",
     "delete_domain_resource",
     "stage_script_source",
@@ -798,6 +802,50 @@ def domain_action_schema(operations: list[str]) -> dict[str, Any]:
     }
 
 
+SCHEMA_SEMANTIC_ACTIONS = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 500,
+    "items": {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {"op": {"type": "string", "enum": ["set_title", "set_description"]}, "value": STRING},
+                "required": ["op", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {"op": {"type": "string", "enum": ["set_aliases"]}, "value": {"type": "array", "items": STRING, "maxItems": 500}},
+                "required": ["op", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["update_field"]},
+                    "field_key": STRING,
+                    "expected_field_hash": RESOURCE_HASH,
+                    "changes": {
+                        "type": "object",
+                        "properties": {
+                            "cn_name": STRING,
+                            "note": STRING,
+                            "alias": STRING,
+                            "required": {"type": "boolean"},
+                        },
+                        "minProperties": 1,
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["op", "field_key", "expected_field_hash", "changes"],
+                "additionalProperties": False,
+            },
+        ],
+    },
+}
+
+
 DOMAIN_MUTATION_ENVELOPE = {
     "expected_revision": WORKING_REVISION,
     "mutation_id": MUTATION_ID,
@@ -840,14 +888,15 @@ CHANGE_PLAN_TASK = {
         },
         "target_key": {
             "type": "string", "minLength": 1, "maxLength": 160,
-            "description": "一个且仅一个目标资源的稳定 key；不能填写目录、类别、通配符或多个资源的概括。",
+            "description": "普通任务填写一个且仅一个目标资源的稳定 key；Core 注入的 Schema 同步任务使用保留目标 __schema__ 并承载末尾语义阶段。",
         },
         "allowed_tools": {
             "type": "array", "minItems": 1, "maxItems": 20,
             "items": {"type": "string", "enum": [
                 "create_object", "create_rule", "create_operation", "create_metric",
                 "patch_object", "patch_rule", "patch_operation", "patch_metric",
-                "sync_schema_objects", "patch_object_source_binding", "delete_domain_resource", "stage_script_patch",
+                "sync_schema_objects", "stage_schema_semantic_changes", "confirm_schema_semantics",
+                "patch_object_source_binding", "delete_domain_resource", "stage_script_patch",
             ]},
         },
         "depends_on": {"type": "array", "maxItems": 100, "items": STRING},
@@ -1070,7 +1119,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "create_change_plan",
-        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
+        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；Schema 模式的物理同步及其末尾业务语义阶段由 Core 合并为同一项 Schema 任务。要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
         {
             "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
             "mode": {"type": "string", "enum": ["expert_edit", "generation"]},
@@ -1162,8 +1211,20 @@ CORE_TOOL_SPECS = (
         display="正在读取资源快照",
     ),
     ToolSpec(
+        "get_schema_semantics",
+        "分页读取当前 Schema 对象业务语义阻断项；字段业务说明允许为空，required 已由 Schema 同步归一为布尔值。",
+        {
+            "level": {"type": "string", "enum": ["error", "warning"]},
+            "code": STRING,
+            "object_key": STRING,
+            "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        display="正在检查 Schema 对象业务语义",
+    ),
+    ToolSpec(
         "suggest_object_relations",
-        "Return deterministic object relation candidates from current objects, fields, primary keys, sources, existing relations and operation references. This tool never writes the package or mapping. Use scope to keep increment runs focused; do not show the full candidate list to experts. High-confidence candidates may be drafted into a Change Set summary, while ambiguous candidates should become only a few concrete business questions.",
+        "仅在需要补齐对象间语义关系时调用，返回基于当前对象、字段、主键、来源、已有关系和操作引用的确定性只读候选；不需要补齐时无需调用。该工具不写知识包或 mapping。调用时可用 scope 收敛增量范围；不要把完整候选列表展示给专家。高置信候选可起草进 Change Set 摘要确认，方向不清的候选只转成少量具体业务问题。",
         {
             "working_revision": WORKING_REVISION,
             "expected_revision": WORKING_REVISION,
@@ -1183,7 +1244,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "sync_schema_objects",
-        "按所有 purpose=schema 的已解析 Sheet 确定性同步物理对象。每张 Sheet 恰好生成一个对象，字段、主键、来源和 mapping 由 Core 生成；模型不得传对象正文或字段映射。",
+        "按所有 purpose=schema 的已解析 Sheet 确定性同步物理对象。每张 Sheet 恰好生成一个对象，字段、主键、来源和 mapping 由 Core 生成；required 由显式约束和确定性规则归一，模型不得传对象正文或字段映射。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "plan_task_id": PLAN_TASK_ID,
@@ -1191,6 +1252,41 @@ CORE_TOOL_SPECS = (
         ("plan_task_id", "expected_revision", "mutation_id", "reason"),
         False,
         "正在按数据 Schema 同步全部物理对象",
+    ),
+    ToolSpec(
+        "stage_schema_semantic_changes",
+        "在同一 Schema 同步计划任务中批量形成对象业务语义候选。只允许修改对象标题、说明、别名，以及字段中文名、可选说明、别名和 required；禁止修改物理身份。单批最多 20 个对象、400 个字段。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
+            "objects": {
+                "type": "array", "minItems": 1, "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "resource_id": RESOURCE_ID,
+                        "expected_resource_hash": RESOURCE_HASH,
+                        "actions": SCHEMA_SEMANTIC_ACTIONS,
+                    },
+                    "required": ["resource_id", "expected_resource_hash", "actions"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        ("plan_task_id", "expected_revision", "mutation_id", "reason", "objects"),
+        False,
+        "正在批量补全 Schema 对象业务语义",
+    ),
+    ToolSpec(
+        "confirm_schema_semantics",
+        "在同一 Schema 同步计划任务的最后确认所有 Schema 对象业务语义；所有 error 清零后才能继续后续任务。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
+        },
+        ("plan_task_id", "expected_revision", "mutation_id", "reason"),
+        False,
+        "正在确认 Schema 对象业务语义",
     ),
     ToolSpec(
         "create_object",
@@ -2715,13 +2811,19 @@ DOMAIN_PHASE_TOOLS = frozenset({
     "list_domain_resources", "get_domain_resource",
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",
-    "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
+    "sync_schema_objects", "get_schema_semantics", "stage_schema_semantic_changes",
+    "confirm_schema_semantics", "suggest_object_relations", "patch_object_source_binding",
     "preview_domain_delete", "delete_domain_resource",
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
     "get_product_ledger", "stage_product_ledger",
 })
-DOMAIN_READ_TOOLS = frozenset({"list_domain_resources", "get_domain_resource", "get_product_ledger"})
+DOMAIN_READ_TOOLS = frozenset({
+    "list_domain_resources",
+    "get_domain_resource",
+    "get_product_ledger",
+    "get_schema_semantics",
+})
 FUSION_PHASE_TOOLS = frozenset({
     "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",
     "get_package_fusion_plan", "create_package_fusion_plan", "update_package_fusion_plan",

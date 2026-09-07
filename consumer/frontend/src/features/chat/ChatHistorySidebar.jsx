@@ -12,7 +12,17 @@ const RUN_STATUS_PRESENTATION = {
 
 // 侧边栏历史对话工作区：标题与搜索固定，列表使用侧栏的剩余高度独立滚动。
 export default function ChatHistorySidebar({ chat, onOpen }) {
-  const { sessions, currentChatId, deleteChat, loadingSessions, setPinned, streamStates } = chat;
+  const {
+    sessions,
+    currentChatId,
+    deleteChat,
+    loadingSessions,
+    loadingMoreSessions,
+    hasMoreSessions,
+    loadMoreSessions,
+    setPinned,
+    streamStates,
+  } = chat;
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -73,6 +83,17 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
             })}
           </div>
         ))}
+        {!loadingSessions && hasMoreSessions && (
+          <button
+            type="button"
+            className="ch-load-more"
+            disabled={loadingMoreSessions}
+            onClick={loadMoreSessions}
+          >
+            {loadingMoreSessions && <Loader2 size={13} className="spin" aria-hidden="true" />}
+            <span>{loadingMoreSessions ? '正在加载' : '加载更多'}</span>
+          </button>
+        )}
       </div>
       {deleteError && <div className="form-error" role="alert">{deleteError}</div>}
       <ConfirmDialog open={Boolean(deleteId)} title="删除对话" description="删除后将无法恢复这条对话及其运行记录。"

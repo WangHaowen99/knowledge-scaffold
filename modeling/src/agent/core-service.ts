@@ -70,7 +70,7 @@ import {
   packageGenerationContract,
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
-import { renderPackage } from '../workflow/package-render.js';
+import { renderObjectProjection, renderPackage } from '../workflow/package-render.js';
 import {
   expectedSchemaObjects,
   OBJECT_DATA_MAPPING_PATH,
@@ -78,6 +78,11 @@ import {
   schemaObjectPolicyIssues,
   schemaTables,
 } from '../workflow/schema-object-policy.js';
+import { preservePhysicalSchemaSemantics } from '../workflow/schema-manifest.js';
+import {
+  analyzeSchemaSemantics,
+  type SchemaSemanticStatus,
+} from '../workflow/schema-semantics.js';
 import {
   collectPreviousObjectRelations,
   suggestObjectRelations as suggestObjectRelationsFromSpec,
@@ -190,7 +195,7 @@ const DOMAIN_TOOL_NAMES = new Set([
   'list_domain_resources', 'get_domain_resource',
   'create_object', 'create_rule', 'create_operation', 'create_metric',
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
-  'sync_schema_objects',
+  'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
   'suggest_object_relations',
   'patch_object_source_binding',
   'preview_domain_delete', 'delete_domain_resource',
@@ -323,6 +328,7 @@ export class AgentCoreService {
   private readonly studioReviews: StudioReviewService;
   private readonly changeControl: ChangeControlStore;
   private readonly materialPurposeReviews: MaterialPurposeReviewStore;
+  private readonly schemaSemanticStatusCache = new Map<string, SchemaSemanticStatus>();
 
   constructor(
     db: DatabaseSync = getDb(),
@@ -394,6 +400,19 @@ export class AgentCoreService {
         warnings: gate.warnings ?? [],
       })),
     };
+  }
+
+  async workbenchSchemaSemantics(
+    project: Project,
+    username: string,
+    args: Record<string, unknown> = {},
+  ) {
+    await this.artifacts.ensureProject(project.id);
+    return this.getSchemaSemantics({
+      project,
+      username,
+      runId: this.workspace(project.id)?.run_id ?? 'schema-semantics-read',
+    }, args);
   }
 
   async workbenchStudioFiles(project: Project, username: string) {
@@ -679,6 +698,7 @@ export class AgentCoreService {
       case 'get_change_set_receipt': return this.getChangeSetReceipt(context, args);
       case 'list_domain_resources': return this.listDomainResources(context, args);
       case 'get_domain_resource': return this.getDomainResource(context, args);
+      case 'get_schema_semantics': return this.getSchemaSemantics(context, args);
       case 'preview_domain_delete': return this.previewDomainDelete(context, args);
       case 'get_script_contract': return this.getScriptContract(context, args);
       case 'get_script_edit_context': return this.getScriptEditContext(context, args);
@@ -723,6 +743,20 @@ export class AgentCoreService {
         args,
         '__schema__',
         () => this.syncSchemaObjects(workspace, context, args),
+      );
+      case 'stage_schema_semantic_changes': return this.runPlannedProgressTask(
+        context,
+        tool,
+        args,
+        '__schema__',
+        () => this.stageSchemaSemanticChanges(workspace, context, args),
+      );
+      case 'confirm_schema_semantics': return this.runPlannedDirectTask(
+        context,
+        tool,
+        args,
+        '__schema__',
+        () => this.confirmSchemaSemantics(context, args),
       );
       case 'suggest_object_relations': return this.suggestObjectRelations(workspace, context, args);
       case 'delete_domain_resource': return this.runPlannedDirectTask(
@@ -988,6 +1022,104 @@ export class AgentCoreService {
     };
   }
 
+  private async schemaSemanticStatus(context: AgentToolContext) {
+    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+    const projectTables = this.tables(context.project.id);
+    const tables = schemaTables(projectTables);
+    const tableFingerprint = createHash('sha256').update(JSON.stringify(projectTables.map((table) => ({
+      documentId: table.documentId ?? '',
+      name: table.name,
+      fields: table.fields.map((field) => ({
+        name: field.name,
+        sourceColumn: field.sourceColumn ?? '',
+        note: field.note ?? '',
+        required: field.required ?? null,
+        nullable: field.nullable ?? null,
+        primaryKey: field.primaryKey ?? null,
+        inferredType: field.inferredType,
+      })),
+      constraintSource: table.constraintSource ?? null,
+      primaryKey: table.primaryKey ?? [],
+      rowsDigest: createHash('sha256').update(JSON.stringify(table.rows ?? [])).digest('hex'),
+    })))).digest('hex');
+    const cacheKey = `${context.project.id}:${workingPackage.workingRevision}:${tableFingerprint}`;
+    let status = this.schemaSemanticStatusCache.get(cacheKey);
+    if (!status) {
+      status = analyzeSchemaSemantics(parseWorkingPackageSpec(workingPackage.files), projectTables);
+      for (const key of this.schemaSemanticStatusCache.keys()) {
+        if (key.startsWith(`${context.project.id}:`)) this.schemaSemanticStatusCache.delete(key);
+      }
+      this.schemaSemanticStatusCache.set(cacheKey, status);
+      const cacheLimit = status.issues.length > 10_000 ? 2 : 8;
+      while (this.schemaSemanticStatusCache.size > cacheLimit) {
+        this.schemaSemanticStatusCache.delete(this.schemaSemanticStatusCache.keys().next().value!);
+      }
+    }
+    return { workingPackage, status };
+  }
+
+  private async getSchemaSemantics(context: AgentToolContext, args: Record<string, unknown>) {
+    const { workingPackage, status } = await this.schemaSemanticStatus(context);
+    const level = String(args.level ?? '').trim();
+    const code = String(args.code ?? '').trim();
+    const objectKey = String(args.object_key ?? '').trim();
+    if (level && !['error', 'warning'].includes(level)) {
+      throw new AgentCoreError('INVALID_INPUT', `不支持的语义问题级别：${level}`, [], 400);
+    }
+    const offset = boundedInteger(args.offset, 0, 100_000, 0);
+    const limit = boundedInteger(args.limit, 1, 100, 50);
+    const filtered = status.issues.filter((item) => (
+      (!level || item.level === level)
+      && (!code || item.code === code)
+      && (!objectKey || item.objectKey === objectKey)
+    ));
+    const page = filtered.slice(offset, offset + limit);
+    const studio = new StudioReadService(workingPackage);
+    const resourceCache = new Map<string, ReturnType<typeof domainResourcePayload>>();
+    const items = page.map((item) => {
+      const resourceId = `object:${item.objectKey}`;
+      let resource = resourceCache.get(resourceId);
+      if (!resource) {
+        try {
+          resource = domainResourcePayload(studio.detail(resourceId).element);
+          resourceCache.set(resourceId, resource);
+        } catch { /* Physical object validation reports missing resources separately. */ }
+      }
+      const field = item.fieldKey
+        ? (resource?.editable_items.fields as Array<Record<string, unknown>> | undefined)
+          ?.find((candidate) => candidate.key === item.fieldKey)
+        : undefined;
+      return {
+        ...item,
+        resource_id: resourceId,
+        ...(resource?.resource_hash ? { resource_hash: resource.resource_hash } : {}),
+        ...(field?.item_hash ? { field_hash: field.item_hash } : {}),
+        current: item.fieldKey ? {
+          cn_name: field?.cnName ?? null,
+          note: field?.note ?? null,
+          alias: field?.alias ?? null,
+          required: field?.required === true,
+        } : {
+          title: resource?.title ?? '',
+          description: resource?.description ?? '',
+          aliases: resource?.values.aliases ?? [],
+        },
+      };
+    });
+    const nextOffset = offset + items.length;
+    return {
+      working_revision: workingPackage.workingRevision,
+      summary: schemaSemanticSummary(status),
+      items,
+      total: filtered.length,
+      offset,
+      next_offset: nextOffset < filtered.length ? nextOffset : null,
+      display: { text: status.available
+        ? `Schema 业务语义${status.pass ? '已满足门禁' : `还有 ${status.errorCount} 项阻断问题`}`
+        : '当前项目没有需要补全的物理 Schema 对象' },
+    };
+  }
+
   private adoptDomainToolContract(context: AgentToolContext): void {
     this.db.prepare(`INSERT INTO agent_domain_tool_adoptions (
       project_id, run_id, contract_version, adopted_at
@@ -1012,10 +1144,13 @@ export class AgentCoreService {
   private async createChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
     try {
       const working = await this.workbenchStudioFiles(context.project, context.username);
+      const workingSpec = parseWorkingPackageSpec(working.files);
       const sourcePolicy = this.normalizeObjectSourcePlan(
         context.project.id,
         args.mode,
         args.tasks,
+        workingSpec,
+        working.files,
       );
       const plan = this.changeControl.createPlan({
         projectId: context.project.id,
@@ -1034,6 +1169,10 @@ export class AgentCoreService {
           object_generation: sourcePolicy.mode === 'schema'
             ? 'deterministic_schema_sync'
             : 'virtual_objects_only',
+          schema_sync_required: sourcePolicy.schemaSyncRequired,
+          schema_semantics_required: sourcePolicy.schemaSemanticsRequired,
+          reused_schema_sync: sourcePolicy.mode === 'schema' && !sourcePolicy.schemaSyncRequired,
+          reused_schema_semantics: sourcePolicy.mode === 'schema' && !sourcePolicy.schemaSemanticsRequired,
         },
         display: { text: plan.approval_status === 'pending'
           ? `已建立 ${plan.task_count} 项受控建模计划，等待你批准后再写入`
@@ -1044,12 +1183,20 @@ export class AgentCoreService {
     }
   }
 
-  private normalizeObjectSourcePlan(projectId: string, rawMode: unknown, rawTasks: unknown) {
+  private normalizeObjectSourcePlan(
+    projectId: string,
+    rawMode: unknown,
+    rawTasks: unknown,
+    workingSpec: PackageSpec,
+    workingFiles: Record<string, string>,
+  ) {
     const mode = String(rawMode ?? 'expert_edit');
-    const physicalTables = schemaTables(this.tables(projectId));
+    const projectTables = this.tables(projectId);
+    const physicalTables = schemaTables(projectTables);
     const sourceMode = physicalTables.length ? 'schema' : 'virtual';
+    const emptyRequirements = { schemaSyncRequired: false, schemaSemanticsRequired: false };
     if (!Array.isArray(rawTasks)) {
-      return { tasks: rawTasks, mode: sourceMode, schemaTableCount: physicalTables.length };
+      return { tasks: rawTasks, mode: sourceMode, schemaTableCount: physicalTables.length, ...emptyRequirements };
     }
     const tasks = rawTasks.map((task) => (
       task && typeof task === 'object' && !Array.isArray(task)
@@ -1076,7 +1223,7 @@ export class AgentCoreService {
           { retryable: false, object_source_mode: 'virtual' },
         );
       }
-      return { tasks, mode: sourceMode, schemaTableCount: 0 };
+      return { tasks, mode: sourceMode, schemaTableCount: 0, ...emptyRequirements };
     }
 
     const createsPhysicalObject = (task: unknown) => toolsFor(task).includes('create_object');
@@ -1090,14 +1237,43 @@ export class AgentCoreService {
       );
     }
     if (mode !== 'generation') {
-      return { tasks, mode: sourceMode, schemaTableCount: physicalTables.length };
+      return { tasks, mode: sourceMode, schemaTableCount: physicalTables.length, ...emptyRequirements };
     }
+
+    const expectedObjects = preservePhysicalSchemaSemantics(
+      expectedSchemaObjects(projectTables),
+      workingSpec.objects,
+    ).map((item) => item.object);
+    const expectedSpec = canonicalizePackageSpec({
+      ...structuredClone(workingSpec),
+      objects: expectedObjects,
+    });
+    const expectedFiles = renderObjectProjection(expectedSpec);
+    const expectedObjectPaths = new Set(expectedObjects.map((object) => `objects/${object.key}.md`));
+    const projectionPaths = [...expectedObjectPaths, 'objects/index.md', OBJECT_DATA_MAPPING_PATH];
+    const projectionMatches = projectionPaths.every((path) => workingFiles[path] === expectedFiles[path])
+      && !Object.keys(workingFiles).some((path) => (
+        /^objects\/[^/]+\.md$/u.test(path)
+        && path !== 'objects/index.md'
+        && !expectedObjectPaths.has(path)
+      ));
+    const physicalSatisfied = schemaObjectPolicyIssues(workingSpec, workingFiles, projectTables).length === 0
+      && projectionMatches;
+    const semanticStatus = analyzeSchemaSemantics(workingSpec, projectTables);
+    const semanticsSatisfied = physicalSatisfied
+      && this.schemaSemanticConfirmationMatches(projectId, semanticStatus);
+    const schemaSyncRequired = !physicalSatisfied;
+    const schemaSemanticsRequired = !semanticsSatisfied;
 
     const replacedKeys = new Set<string>();
     const retained = tasks.filter((task) => {
       const tools = toolsFor(task);
       const replaced = tools.some((tool) => (
-        tool === 'create_object' || tool === 'patch_object_source_binding' || tool === 'sync_schema_objects'
+        tool === 'create_object'
+        || tool === 'patch_object_source_binding'
+        || tool === 'sync_schema_objects'
+        || tool === 'stage_schema_semantic_changes'
+        || tool === 'confirm_schema_semantics'
       ));
       if (replaced && task && typeof task === 'object' && !Array.isArray(task)) {
         replacedKeys.add(String((task as Record<string, unknown>).client_key ?? ''));
@@ -1105,6 +1281,7 @@ export class AgentCoreService {
       return !replaced;
     });
     const schemaTaskKey = 'schema_object_sync';
+    const prerequisiteTaskKey = schemaSyncRequired || schemaSemanticsRequired ? schemaTaskKey : '';
     const normalized = retained.map((task) => {
       if (!task || typeof task !== 'object' || Array.isArray(task)) return task;
       const record = task as Record<string, unknown>;
@@ -1112,24 +1289,33 @@ export class AgentCoreService {
       return {
         ...record,
         depends_on: [...new Set([
-          schemaTaskKey,
+          ...(prerequisiteTaskKey ? [prerequisiteTaskKey] : []),
           ...dependencies.filter((dependency) => !replacedKeys.has(dependency)),
         ])],
       };
     });
+    const prerequisiteTasks: Array<Record<string, unknown>> = [];
+    if (schemaSyncRequired || schemaSemanticsRequired) prerequisiteTasks.push({
+      client_key: schemaTaskKey,
+      title: `按 ${physicalTables.length} 张 Schema Sheet 同步物理对象`,
+      resource_kind: 'binding',
+      target_key: '__schema__',
+      allowed_tools: [
+        ...(schemaSyncRequired ? ['sync_schema_objects'] : []),
+        ...(schemaSemanticsRequired ? ['stage_schema_semantic_changes', 'confirm_schema_semantics'] : []),
+      ],
+      depends_on: [],
+      acceptance: schemaSemanticsRequired
+        ? '每张 Schema Sheet 恰好对应一个对象，并在同一计划任务末尾完成对象标题、说明、字段中文名和必填二态语义确认；字段业务说明允许为空'
+        : '每张 Schema Sheet 恰好对应一个对象，字段、主键、物理来源和 mapping 全部由平台确定性生成',
+      required: true,
+    });
     return {
       mode: sourceMode,
       schemaTableCount: physicalTables.length,
-      tasks: [{
-        client_key: schemaTaskKey,
-        title: `按 ${physicalTables.length} 张 Schema Sheet 同步物理对象`,
-        resource_kind: 'binding',
-        target_key: '__schema__',
-        allowed_tools: ['sync_schema_objects'],
-        depends_on: [],
-        acceptance: '每张 Schema Sheet 恰好对应一个对象，字段、主键、物理来源和 mapping 全部由平台确定性生成',
-        required: true,
-      }, ...normalized],
+      schemaSyncRequired,
+      schemaSemanticsRequired,
+      tasks: [...prerequisiteTasks, ...normalized],
     };
   }
 
@@ -1277,6 +1463,13 @@ export class AgentCoreService {
           },
         );
       }
+      const activePlan = this.changeControl.activePlan(context.project.id, context.runId);
+      if (activePlan?.id === planId && activePlan.mode === 'generation'
+        && actions.some((action) => action.tool !== 'sync_schema_objects')
+        && this.schemaSemanticEnforcementEnabled(context.project.id)) {
+        const planWorkspace = this.workspace(context.project.id);
+        if (planWorkspace) this.assertSchemaSemantics(planWorkspace, await this.overlay(planWorkspace));
+      }
       const batch = this.compileChangeSetBatch(context, working, actions);
       const response = await this.studioWrites.batchDomainModel(
         context.project,
@@ -1390,6 +1583,12 @@ export class AgentCoreService {
         targetKey,
       });
       const result = await action();
+      if (result.replayed === true) {
+        return {
+          ...result,
+          plan: this.changeControl.snapshot(context.project.id, context.runId, active.id),
+        };
+      }
       const plan = this.changeControl.completeDirectTask({
         projectId: context.project.id,
         runId: context.runId,
@@ -1399,6 +1598,43 @@ export class AgentCoreService {
         resultingRevision: String(result.working_revision ?? ''),
       });
       return { ...result, plan };
+    } catch (error) {
+      if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
+      throw error;
+    }
+  }
+
+  private async runPlannedProgressTask(
+    context: AgentToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+    targetKey: string,
+    action: () => Promise<Record<string, unknown>>,
+  ) {
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (!active) {
+      throw new AgentCoreError(
+        'CHANGE_PLAN_REQUIRED',
+        'Schema 业务语义修改必须属于当前受控建模计划',
+        ['先建立包含 Schema 同步及其末尾语义阶段的 generation 计划'],
+        409,
+        { retryable: false },
+      );
+    }
+    const taskId = text(args.plan_task_id, 'plan_task_id');
+    try {
+      this.changeControl.authorizeDirectTask({
+        projectId: context.project.id,
+        runId: context.runId,
+        taskId,
+        tool,
+        targetKey,
+      });
+      const result = await action();
+      return {
+        ...result,
+        plan: this.changeControl.snapshot(context.project.id, context.runId, active.id),
+      };
     } catch (error) {
       if (error instanceof ChangeControlError) throw normalizeChangeControlError(error);
       throw error;
@@ -1518,7 +1754,9 @@ export class AgentCoreService {
   ) {
     try {
       const planId = text(args.plan_id, 'plan_id');
+      const current = await this.overlay(workspace);
       this.changeControl.readyForValidation(context.project.id, context.runId, planId);
+      this.assertSchemaSemantics(workspace, current);
       const prepared = await this.prepareConfirmationGroups(workspace);
       const result = await this.preflight(workspace, context, {
         summary: String(args.summary ?? '核对完整建模计划'),
@@ -1542,7 +1780,11 @@ export class AgentCoreService {
     args: Record<string, unknown>,
   ) {
     const active = this.changeControl.activePlan(context.project.id, context.runId);
-    if (active) this.changeControl.readyForValidation(context.project.id, context.runId, active.id);
+    if (active) {
+      const current = await this.overlay(workspace);
+      this.changeControl.readyForValidation(context.project.id, context.runId, active.id);
+      this.assertSchemaSemantics(workspace, current);
+    }
     const result = await this.preflight(workspace, context, args);
     if (active) {
       this.changeControl.markWaitingUser(
@@ -1937,7 +2179,8 @@ export class AgentCoreService {
 
     const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
     new StudioReadService(workingPackage).assertRevision(text(args.expected_revision, 'expected_revision'));
-    const tables = schemaTables(this.tables(context.project.id));
+    const projectTables = this.tables(context.project.id);
+    const tables = schemaTables(projectTables);
     if (!tables.length) {
       throw new AgentCoreError(
         'PHYSICAL_SCHEMA_REQUIRED',
@@ -1949,7 +2192,10 @@ export class AgentCoreService {
     }
 
     const current = await this.overlay(workspace);
-    const physical = expectedSchemaObjects(tables);
+    const physical = preservePhysicalSchemaSemantics(
+      expectedSchemaObjects(projectTables),
+      current.spec.objects ?? [],
+    );
     const previousRelations = collectPreviousObjectRelations(
       current.spec.objects ?? [],
       physical.map((item) => item.object),
@@ -2051,6 +2297,168 @@ export class AgentCoreService {
     };
     this.saveStructuredMutation(context, tool, mutationId, requestHash, response);
     return response;
+  }
+
+  private async stageSchemaSemanticChanges(
+    workspace: WorkspaceRow,
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const tool = 'stage_schema_semantic_changes';
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+    try {
+      const requested = requiredObjectArray(args.objects, 'objects');
+      if (requested.length < 1 || requested.length > 20) {
+        throw new AgentCoreError(
+          'INVALID_DOMAIN_PAYLOAD',
+          '单批 Schema 语义修改必须包含 1 到 20 个对象',
+          [],
+          400,
+        );
+      }
+      const fieldActionCount = requested.reduce((count, item) => (
+        count + (Array.isArray(item.actions)
+          ? item.actions.filter((action) => object(action).op === 'update_field').length
+          : 0)
+      ), 0);
+      if (fieldActionCount > 400) {
+        throw new AgentCoreError(
+          'INVALID_DOMAIN_PAYLOAD',
+          '单批 Schema 语义修改最多处理 400 个字段',
+          [],
+          400,
+        );
+      }
+
+      const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
+      const studio = new StudioReadService(workingPackage);
+      studio.assertRevision(text(args.expected_revision, 'expected_revision'));
+      const resourceIds = requested.map((item) => domainResourceIdArg(item.resource_id));
+      if (new Set(resourceIds).size !== resourceIds.length) {
+        throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '同一批不能重复修改同一个 Schema 对象', [], 400);
+      }
+      let previewSpec = parseWorkingPackageSpec(workingPackage.files);
+      const beforeMapping = renderPackage(previewSpec)[OBJECT_DATA_MAPPING_PATH] ?? '';
+      const patches: Array<{ elementId: string; changes: Record<string, unknown> }> = [];
+      const operations: string[] = [];
+      let actionCount = 0;
+      for (let index = 0; index < requested.length; index += 1) {
+        const item = requested[index];
+        const resourceId = resourceIds[index];
+        const element = studio.detail(resourceId).element;
+        if (element.kind !== 'object') {
+          throw new AgentCoreError('DOMAIN_KIND_MISMATCH', 'Schema 语义修改只接受对象资源', [], 400, {
+            resource_id: resourceId,
+          });
+        }
+        assertDomainResourceHash(element, item.expected_resource_hash, workingPackage.workingRevision);
+        assertSchemaSemanticPatchActions(item.actions, index);
+        const compiled = compileObjectPatchActions(element, item.actions);
+        const preview = previewOntologyObjectMutation(
+          previewSpec,
+          element.key,
+          { metadata: compiled.metadata, field_ops: compiled.field_ops },
+          { tables: this.projectTables(context.project.id) },
+        );
+        if (!preview.ok || !preview.nextSpec) {
+          throw new AgentCoreError(
+            'DOMAIN_PATCH_INVALID',
+            `对象 ${element.key} 的语义修改未通过确定性校验`,
+            ['只修正返回的字段问题，不要修改对象 key、字段 key、来源列、类型或主键'],
+            422,
+            { fieldErrors: preview.fieldErrors, errors: preview.issues, warnings: preview.warnings },
+          );
+        }
+        previewSpec = preview.nextSpec;
+        patches.push({ elementId: resourceId, changes: preview.patchChanges });
+        actionCount += compiled.summary.actionCount;
+        operations.push(...compiled.summary.operations);
+      }
+      const afterMapping = renderPackage(previewSpec)[OBJECT_DATA_MAPPING_PATH] ?? '';
+      assertOnlyRequiredMappingChanged(beforeMapping, afterMapping);
+      const response = await this.studioWrites.batchDomainModel(
+        context.project,
+        context.username,
+        {
+          expectedRevision: workingPackage.workingRevision,
+          clientMutationId: mutationId,
+          editSessionId: mutationId,
+          creates: [],
+          patches,
+        },
+        requestHash,
+      );
+      const nextStatus = await this.schemaSemanticStatus(context);
+      const result = {
+        ...domainMutationResponse(response, { action_count: actionCount, operations }),
+        mutation_id: mutationId,
+        semantic_status: schemaSemanticSummary(nextStatus.status),
+        candidate: true,
+        display: {
+          text: `已形成 ${requested.length} 个对象的语义候选，仍有 ${nextStatus.status.errorCount} 项阻断问题`,
+        },
+      };
+      this.saveStructuredMutation(context, tool, mutationId, requestHash, result);
+      return result;
+    } catch (error) {
+      throw normalizeDomainAgentError(error);
+    }
+  }
+
+  private async confirmSchemaSemantics(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const tool = 'confirm_schema_semantics';
+    if (!this.changeControl.activePlan(context.project.id, context.runId)) {
+      throw new AgentCoreError(
+        'CHANGE_PLAN_REQUIRED',
+        'Schema 业务语义确认必须属于当前受控建模计划',
+        ['先建立包含 Schema 同步及其末尾语义阶段的 generation 计划'],
+        409,
+        { retryable: false },
+      );
+    }
+    const mutationId = text(args.mutation_id, 'mutation_id');
+    const requestHash = domainMutationRequestHash(tool, args);
+    const replay = this.replayStructuredMutation(context, tool, mutationId, requestHash);
+    if (replay) return replay;
+    const { workingPackage, status } = await this.schemaSemanticStatus(context);
+    new StudioReadService(workingPackage).assertRevision(text(args.expected_revision, 'expected_revision'));
+    if (!status.available) {
+      throw new AgentCoreError(
+        'PHYSICAL_SCHEMA_REQUIRED',
+        '当前项目没有可确认的物理 Schema 对象',
+        [],
+        409,
+        { retryable: false },
+      );
+    }
+    if (!status.pass) {
+      throw new AgentCoreError(
+        'SCHEMA_SEMANTICS_INCOMPLETE',
+        `Schema 对象业务语义仍有 ${status.errorCount} 项阻断问题`,
+        ['调用 get_schema_semantics 分页读取问题；只处理对象标题、对象说明、字段中文名和 required 归一化问题'],
+        409,
+        {
+          retryable: false,
+          ...schemaSemanticSummary(status),
+          findings: status.issues.filter((item) => item.level === 'error').slice(0, 100),
+        },
+      );
+    }
+    const result = {
+      ok: true,
+      mutation_id: mutationId,
+      working_revision: workingPackage.workingRevision,
+      semantic_status: schemaSemanticSummary(status),
+      display: { text: `已确认 ${status.objectCount} 个 Schema 对象、${status.fieldCount} 个字段的业务语义` },
+    };
+    this.saveStructuredMutation(context, tool, mutationId, requestHash, result);
+    return result;
   }
 
   private async suggestObjectRelations(
@@ -6372,6 +6780,7 @@ export class AgentCoreService {
       },
     );
     this.assertObjectSourcePolicy(workspace, candidate, changes.map((change) => change.path));
+    this.assertSchemaSemantics(workspace, candidate);
     this.assertPackageFilesValid(base, candidate);
     return materialReview;
   }
@@ -6399,6 +6808,7 @@ export class AgentCoreService {
       preview,
       candidatePaths,
     );
+    this.assertSchemaSemantics(workspace, preview);
     this.assertPackageFilesValid(base, preview);
     return materialReview;
   }
@@ -6434,6 +6844,60 @@ export class AgentCoreService {
         findingCount: issues.length,
         findings: issues,
 
+      },
+    );
+  }
+
+  private schemaSemanticEnforcementEnabled(projectId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1
+      FROM agent_change_plan_tasks task
+      JOIN agent_change_plans plan ON plan.id = task.plan_id
+      WHERE plan.project_id = ? AND plan.status <> 'cancelled'
+        AND instr(task.allowed_tools_json, 'stage_schema_semantic_changes') > 0
+        AND instr(task.allowed_tools_json, 'confirm_schema_semantics') > 0
+      LIMIT 1`).get(projectId));
+  }
+
+  private schemaSemanticConfirmationMatches(projectId: string, status: SchemaSemanticStatus): boolean {
+    if (!status.available) return true;
+    if (!status.pass) return false;
+    const rows = this.db.prepare(`SELECT response_json FROM agent_structured_mutation_receipts
+      WHERE project_id = ? AND tool = 'confirm_schema_semantics'
+      ORDER BY created_at DESC LIMIT 20`).all(projectId) as Array<{ response_json: string }>;
+    return rows.some((row) => {
+      try {
+        const response = JSON.parse(row.response_json) as Record<string, any>;
+        const confirmed = object(response.semantic_status);
+        return String(confirmed.fingerprint ?? '') === status.fingerprint;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  private assertSchemaSemantics(
+    workspace: Pick<WorkspaceRow, 'project_id'>,
+    candidate: Pick<PackageArtifactFiles, 'spec' | 'files'>,
+  ): void {
+    if (!this.schemaSemanticEnforcementEnabled(workspace.project_id)) return;
+    const status = analyzeSchemaSemantics(
+      candidate.spec,
+      this.tables(workspace.project_id),
+    );
+    if (this.schemaSemanticConfirmationMatches(workspace.project_id, status)) return;
+    throw new AgentCoreError(
+      'CANDIDATE_SCHEMA_SEMANTICS_INVALID',
+      status.errorCount
+        ? `Schema 对象业务语义校验未通过：还有 ${status.errorCount} 项阻断问题`
+        : 'Schema 对象业务语义已变化，当前确认记录不再匹配',
+      ['调用 get_schema_semantics 分页读取问题，补全或重新确认当前语义后再预检'],
+      422,
+      {
+        retryable: false,
+        ...schemaSemanticSummary(status),
+        findingCount: status.errorCount,
+        findings: status.issues.filter((item) => item.level === 'error').slice(0, 100),
+        confirmation_current: false,
       },
     );
   }
@@ -6970,9 +7434,18 @@ export class AgentCoreService {
     const processConfirmed = ![...pendingPaths].some((path) => path.startsWith('diagrams/'))
       && (trustedProcessBaseline || (goalConfirmed && diagramPaths.length > 0
         && diagramPaths.every((path) => confirmedPaths.has(path))));
-    const knowledgeConfirmed = ![...pendingPaths].some((path) => /^(objects|operations|rules|metrics)\//u.test(path))
+    const knowledgeFilesConfirmed = ![...pendingPaths].some((path) => /^(objects|operations|rules|metrics)\//u.test(path))
       && (trustedProcessBaseline || (processConfirmed && knowledgePaths.length > 0
         && knowledgePaths.every((path) => confirmedPaths.has(path))));
+    const schemaSemantics = analyzeSchemaSemantics(
+      workingSpec,
+      this.tables(workspace.project_id),
+    );
+    const schemaSemanticsEnforced = this.schemaSemanticEnforcementEnabled(workspace.project_id);
+    const schemaSemanticsConfirmed = !schemaSemanticsEnforced
+      || this.schemaSemanticConfirmationMatches(workspace.project_id, schemaSemantics);
+    const knowledgeConfirmed = knowledgeFilesConfirmed
+      && schemaSemanticsConfirmed;
     const pendingBusiness = workspaceChanges.filter((item) => (
       item.group_id !== RUNTIME_GROUP && item.group_id !== LEGACY_RUNTIME_GROUP
     )).length;
@@ -7030,10 +7503,15 @@ export class AgentCoreService {
       },
       knowledge_confirmed: {
         pass: knowledgeConfirmed,
-        blockers: knowledgeConfirmed ? [] : knowledgePaths.length
-          ? knowledgePaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
-            .map((path) => `确认知识条目 ${path}`)
-          : ['形成并确认对象、操作或规则知识'],
+        blockers: [
+          ...(knowledgeFilesConfirmed ? [] : knowledgePaths.length
+            ? knowledgePaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
+              .map((path) => `确认知识条目 ${path}`)
+            : ['形成并确认对象、操作或规则知识']),
+          ...(schemaSemanticsConfirmed ? [] : [
+            `补全并确认 Schema 对象业务语义（${schemaSemantics.errorCount} 项阻断问题）`,
+          ]),
+        ],
       },
       modeling_complete: {
         pass: pendingBusiness === 0 && pendingCandidates === 0,
@@ -8708,6 +9186,120 @@ function requiredObjectArray(value: unknown, field: string): Array<Record<string
     throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是对象数组`, [], 400);
   }
   return value as Array<Record<string, any>>;
+}
+
+function boundedInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new AgentCoreError(
+      'INVALID_INPUT',
+      `分页参数必须是 ${minimum} 到 ${maximum} 之间的整数`,
+      [],
+      400,
+    );
+  }
+  return parsed;
+}
+
+function schemaSemanticSummary(status: SchemaSemanticStatus) {
+  return {
+    available: status.available,
+    pass: status.pass,
+    validator_version: status.validatorVersion,
+    fingerprint: status.fingerprint,
+    object_count: status.objectCount,
+    field_count: status.fieldCount,
+    error_count: status.errorCount,
+    warning_count: status.warningCount,
+  };
+}
+
+function assertSchemaSemanticPatchActions(value: unknown, objectIndex: number): void {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 500) {
+    throw new AgentCoreError(
+      'INVALID_DOMAIN_PAYLOAD',
+      `objects[${objectIndex}].actions 必须包含 1 到 500 项语义修改`,
+      [],
+      400,
+    );
+  }
+  const allowed = new Set(['set_title', 'set_description', 'set_aliases', 'update_field']);
+  value.forEach((rawAction, actionIndex) => {
+    const action = object(rawAction);
+    const op = String(action.op ?? '').trim();
+    const path = `objects[${objectIndex}].actions[${actionIndex}]`;
+    if (!allowed.has(op)) {
+      throw new AgentCoreError(
+        'SCHEMA_SEMANTIC_ACTION_FORBIDDEN',
+        `${path} 只能修改对象与字段的业务语义`,
+        ['仅使用 set_title、set_description、set_aliases 或 update_field'],
+        400,
+        { path, op, retryable: false },
+      );
+    }
+    if (op !== 'update_field') return;
+    const changes = object(action.changes);
+    const keys = Object.keys(changes);
+    const allowedChanges = new Set(['cn_name', 'cnName', 'note', 'alias', 'required']);
+    if (!keys.length) {
+      throw new AgentCoreError(
+        'SCHEMA_SEMANTIC_ACTION_FORBIDDEN',
+        `${path}.changes 必须包含至少一项中文名、业务说明、别名或必填决定`,
+        ['update_field 使用 field_key、expected_field_hash 和 changes；不要使用 field 重传完整字段'],
+        400,
+        { path: `${path}.changes`, retryable: false },
+      );
+    }
+    const unexpectedKeys = keys.filter((key) => !allowedChanges.has(key));
+    if (unexpectedKeys.length) {
+      throw new AgentCoreError(
+        'SCHEMA_SEMANTIC_ACTION_FORBIDDEN',
+        `${path}.changes 包含不允许的字段属性`,
+        ['changes 只能包含 cn_name、note、alias 或 required；不要修改字段 key、来源列或类型'],
+        400,
+        { path: `${path}.changes`, unexpected_keys: unexpectedKeys, retryable: false },
+      );
+    }
+    if ('required' in changes && typeof changes.required !== 'boolean') {
+      throw new AgentCoreError(
+        'INVALID_DOMAIN_PAYLOAD',
+        `${path}.changes.required 必须明确选择 true 或 false`,
+        [],
+        400,
+      );
+    }
+  });
+}
+
+function mappingWithoutRequired(value: string): unknown {
+  if (!value.trim()) return null;
+  const parsed = JSON.parse(value) as Record<string, any>;
+  const clone = structuredClone(parsed);
+  for (const objectMapping of Object.values<Record<string, any>>(clone.objects ?? {})) {
+    for (const fieldMapping of Object.values<Record<string, any>>(objectMapping.fields ?? {})) {
+      delete fieldMapping.required;
+    }
+  }
+  return clone;
+}
+
+function assertOnlyRequiredMappingChanged(before: string, after: string): void {
+  try {
+    if (JSON.stringify(mappingWithoutRequired(before)) === JSON.stringify(mappingWithoutRequired(after))) return;
+  } catch { /* The normal package compiler always produces JSON; report a controlled invariant error below. */ }
+  throw new AgentCoreError(
+    'SCHEMA_SEMANTIC_MAPPING_DRIFT',
+    '业务语义修改意外改变了字段身份、来源、类型或其他数据映射内容',
+    ['放弃本批修改并检查 Schema 语义 Patch 编译器'],
+    500,
+    { retryable: false },
+  );
 }
 
 function optionalStringArray(value: unknown): string[] | undefined {

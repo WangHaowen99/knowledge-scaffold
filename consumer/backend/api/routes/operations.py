@@ -57,6 +57,7 @@ from ontology.mutations import (
     PreparedOntologyMutation,
 )
 from ontology.ontologies import get_ontology_version_dir
+from ontology.view_cache import invalidate_ontology_views
 from workspace.workspaces import get_workspace_paths
 from utils.logging import get_logger
 
@@ -606,6 +607,10 @@ def apply_staged(
             )
         )
         mutation_revision = mutation_result.mutation_revision
+        invalidate_ontology_views(
+            workspace_id=workspace_id,
+            ontology_id=ontology_id,
+        )
     except OntologyMutationConflictError as exc:
         if archived_to is not None:
             archived_to.unlink(missing_ok=True)

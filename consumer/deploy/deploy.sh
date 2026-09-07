@@ -3,9 +3,36 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "${SCRIPT_DIR}/"*.sh
+
+# A standalone consumer release is often unpacked into a staging directory and
+# invoked directly. Route it through the existing installation's upgrade flow
+# before common.sh binds BUNDLE_ROOT to the staging directory.
+INSTALL_DIR="${ONTO_AGENT_INSTALL_DIR:-/opt/onto-agent}"
+BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}" ]; then
+    EXISTING_INSTALL=false
+    for marker in \
+        "${INSTALL_DIR}/VERSION" \
+        "${INSTALL_DIR}/deploy/state/current.env" \
+        "${INSTALL_DIR}/backend/.env"; do
+        if [ -e "${marker}" ]; then
+            EXISTING_INSTALL=true
+            break
+        fi
+    done
+    if [ "${EXISTING_INSTALL}" = true ]; then
+        [ -f "${SCRIPT_DIR}/upgrade.sh" ] || {
+            printf '[deploy][error] Existing installation detected but upgrade.sh is missing\n' >&2
+            exit 1
+        }
+        printf '[deploy] Existing installation detected at %s; dispatching upgrade flow\n' "${INSTALL_DIR}"
+        exec bash "${SCRIPT_DIR}/upgrade.sh" "${INSTALL_DIR}"
+    fi
+fi
+
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
+chmod +x "${SCRIPT_DIR}/"*.sh
 
 TARGET_VERSION="$(manifest_get app_version)"
 BACKEND_IMAGE="$(manifest_get backend_image)"
@@ -25,6 +52,7 @@ JIUWENBOX_TAR_REL="$(manifest_get jiuwenbox_image_tar)"
 
 "${SCRIPT_DIR}/preflight.sh" --pre-migration
 load_state
+assert_no_existing_install_for_install
 
 MODE="install"
 if [ -n "${CURRENT_VERSION:-}" ]; then
@@ -55,7 +83,7 @@ fi
 
 BACKUP_DIR=""
 if [ "${MODE}" = "upgrade" ]; then
-    BACKUP_DIR="$("${SCRIPT_DIR}/backup.sh" "${TARGET_VERSION}" "${CURRENT_VERSION}")"
+    BACKUP_DIR="$("${SCRIPT_DIR}/backup.sh" --confirm-writes-stopped "${TARGET_VERSION}" "${CURRENT_VERSION}")"
     log "Backup created after writes stopped: ${BACKUP_DIR}"
 fi
 

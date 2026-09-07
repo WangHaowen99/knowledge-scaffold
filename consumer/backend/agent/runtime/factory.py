@@ -37,7 +37,7 @@ def components_factory(
             agent_config=orchestrator.agent_config,
             memory_manager_provider=session_adapter.memory_manager,
             allowed_lifecycle_modes=("async",),
-            max_event_buffer_size=4096,
+            max_event_buffer_size=container.config.runtime_event_buffer_size,
         )
         service = AsyncExecutionService(
             runtime,

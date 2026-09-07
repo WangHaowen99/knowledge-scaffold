@@ -316,11 +316,17 @@ def test_over_limit_profiles_remain_manageable_but_cannot_grow(
         },
         headers=headers,
     )
+    reduction_precondition = _destructive_precondition(
+        client,
+        headers,
+        removed=["profile-10"],
+    )
     reduction_update = client.patch(
         "/api/system-config",
         json={
             "section": "llm_profiles",
             "data": {"profiles": same_count_profiles[:10]},
+            "precondition": reduction_precondition,
         },
         headers=headers,
     )
@@ -636,6 +642,116 @@ def test_user_can_view_but_cannot_modify_system_config(tmp_path, monkeypatch):
     assert patch_response.status_code == 403
 
 
+def test_model_profile_references_endpoint_is_admin_only(tmp_path, monkeypatch):
+    import api.routes.system_config as system_config_routes
+
+    client, admin_headers = _build_client(tmp_path, monkeypatch)
+    calls = []
+    inventory = {
+        "complete": True,
+        "entries": [],
+        "generation": "sha256:synthetic",
+    }
+
+    def load_references(profile_id=None):
+        calls.append(profile_id)
+        return inventory
+
+    monkeypatch.setattr(
+        system_config_routes,
+        "get_model_profile_references",
+        load_references,
+        raising=False,
+    )
+
+    response = client.get(
+        "/api/model-profile-references",
+        params={"profile_id": "global:target"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == inventory
+    assert calls == ["global:target"]
+
+    user_token = _issue_token(tmp_path, "reference-user", "user")
+    user_response = client.get(
+        "/api/model-profile-references",
+        headers={"Authorization": f"Bearer {user_token}"},
+    )
+    anonymous_response = client.get("/api/model-profile-references")
+
+    assert user_response.status_code == 403
+    assert anonymous_response.status_code == 401
+    assert calls == ["global:target"]
+
+
+def test_model_profile_references_endpoint_preserves_fail_closed_inventory(
+    tmp_path,
+    monkeypatch,
+):
+    import api.routes.system_config as system_config_routes
+
+    client, admin_headers = _build_client(tmp_path, monkeypatch)
+    inventory = {
+        "complete": False,
+        "entries": [
+            {
+                "workspace_id": "alpha",
+                "workspace_name": "Alpha",
+                "config_generation": 0,
+                "references": [],
+                "diagnostic": {
+                    "code": "runtime_config_invalid",
+                    "message": "Runtime model references could not be verified.",
+                },
+            }
+        ],
+        "generation": "sha256:synthetic",
+    }
+    monkeypatch.setattr(
+        system_config_routes,
+        "get_model_profile_references",
+        lambda _profile_id=None: inventory,
+    )
+
+    response = client.get(
+        "/api/model-profile-references",
+        params={"profile_id": "global:target"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == inventory
+
+
+@pytest.mark.parametrize("profile_id", ["   ", "x" * 91])
+def test_model_profile_references_endpoint_validates_profile_filter(
+    tmp_path,
+    monkeypatch,
+    profile_id,
+):
+    import api.routes.system_config as system_config_routes
+
+    client, admin_headers = _build_client(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        system_config_routes,
+        "get_model_profile_references",
+        lambda value=None: calls.append(value) or {},
+        raising=False,
+    )
+
+    response = client.get(
+        "/api/model-profile-references",
+        params={"profile_id": profile_id},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
+    assert calls == []
+
+
 def test_new_llm_profile_does_not_inherit_legacy_or_other_profile_api_key(tmp_path, monkeypatch):
     client, headers = _build_client(tmp_path, monkeypatch)
 
@@ -723,3 +839,384 @@ def test_new_llm_profile_does_not_inherit_legacy_or_other_profile_api_key(tmp_pa
     assert profile_map["p1"]["has_api_key"] is True
     # 新增且未传 api_key 的 profile 不应继承 legacy 或其他 profile 的密钥。
     assert profile_map["p2"]["has_api_key"] is False
+
+
+def _global_profile(profile_id, *, api_key=None):
+    profile = {
+        "id": profile_id,
+        "name": "Model {}".format(profile_id),
+        "provider": "openai_compatible",
+        "base_url": "https://{}.example/v1".format(profile_id),
+        "model": "{}-model".format(profile_id),
+        "timeout": 600,
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "enabled": True,
+    }
+    if api_key is not None:
+        profile["api_key"] = api_key
+    return profile
+
+
+def _destructive_precondition(client, headers, *, removed, renames=()):
+    config_response = client.get("/api/system-config", headers=headers)
+    assert config_response.status_code == 200
+    inventory_response = client.get("/api/model-profile-references", headers=headers)
+    assert inventory_response.status_code == 200
+    return {
+        "config_generation": int(config_response.headers["x-system-config-generation"]),
+        "config_fingerprint": config_response.headers["x-llm-profiles-fingerprint"],
+        "reference_generation": inventory_response.json()["generation"],
+        "removed_profile_ids": list(removed),
+        "renames": list(renames),
+    }
+
+
+def test_global_profile_rename_atomically_preserves_secret_and_rebinds_default(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+
+    client, headers = _build_client(tmp_path, monkeypatch)
+    initial = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": {
+                "profiles": [
+                    _global_profile("old", api_key="old-secret"),
+                    _global_profile("stable", api_key="stable-secret"),
+                ],
+                "default_main_profile_ref": {"scope": "global", "id": "old"},
+                "default_task_profile_ref": {"scope": "global", "id": "old"},
+            },
+        },
+        headers=headers,
+    )
+    assert initial.status_code == 200
+    precondition = _destructive_precondition(
+        client,
+        headers,
+        removed=["old"],
+        renames=[{"original_id": "old", "new_id": "renamed"}],
+    )
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": {
+                "profiles": [
+                    _global_profile("renamed"),
+                    _global_profile("stable"),
+                ],
+                "default_main_profile_ref": {"scope": "global", "id": "renamed"},
+                "default_task_profile_ref": {"scope": "global", "id": "renamed"},
+            },
+            "precondition": precondition,
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    profile_map = {
+        profile["id"]: profile
+        for profile in system_config_module.load_system_config()["llm_profiles"]["profiles"]
+    }
+    assert profile_map["renamed"]["api_key"] == "old-secret"
+    assert response.json()["config"]["default_main_profile_ref"] == {
+        "scope": "global",
+        "id": "renamed",
+    }
+    assert response.json()["config"]["default_task_profile_ref"] == {
+        "scope": "global",
+        "id": "renamed",
+    }
+
+
+def test_legacy_global_profile_rename_preserves_the_legacy_secret(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+
+    client, headers = _build_client(tmp_path, monkeypatch)
+    legacy = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm",
+            "data": {
+                "base_url": "https://legacy.example/v1",
+                "model": "legacy-model",
+                "api_key": "legacy-secret",
+            },
+        },
+        headers=headers,
+    )
+    assert legacy.status_code == 200
+    current = client.get("/api/system-config", headers=headers).json()["llm_profiles"]
+    original_id = current["profiles"][0]["id"]
+    precondition = _destructive_precondition(
+        client,
+        headers,
+        removed=[original_id],
+        renames=[{"original_id": original_id, "new_id": "renamed-legacy"}],
+    )
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": {
+                "profiles": [_global_profile("renamed-legacy")],
+                "default_main_profile_ref": {
+                    "scope": "global",
+                    "id": "renamed-legacy",
+                },
+                "default_task_profile_ref": None,
+            },
+            "precondition": precondition,
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    profiles = system_config_module.load_system_config()["llm_profiles"]["profiles"]
+    assert profiles[0]["id"] == "renamed-legacy"
+    assert profiles[0]["api_key"] == "legacy-secret"
+
+
+def test_destructive_global_profile_patch_rejects_missing_or_stale_config_precondition(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_client(tmp_path, monkeypatch)
+    initial_data = {
+        "profiles": [_global_profile("old"), _global_profile("stable")],
+        "default_main_profile_ref": {"scope": "global", "id": "stable"},
+        "default_task_profile_ref": None,
+    }
+    assert client.patch(
+        "/api/system-config",
+        json={"section": "llm_profiles", "data": initial_data},
+        headers=headers,
+    ).status_code == 200
+    candidate = {
+        "profiles": [_global_profile("stable")],
+        "default_main_profile_ref": {"scope": "global", "id": "stable"},
+        "default_task_profile_ref": None,
+    }
+
+    missing = client.patch(
+        "/api/system-config",
+        json={"section": "llm_profiles", "data": candidate},
+        headers=headers,
+    )
+    assert missing.status_code == 409
+    assert missing.json()["code"] == "MODEL_PROFILE_PRECONDITION_REQUIRED"
+
+    precondition = _destructive_precondition(client, headers, removed=["old"])
+    assert client.patch(
+        "/api/system-config",
+        json={
+            "section": "web_search",
+            "data": {"enabled": True},
+        },
+        headers=headers,
+    ).status_code == 200
+    stale = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": candidate,
+            "precondition": precondition,
+        },
+        headers=headers,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "MODEL_PROFILE_CONFIG_CHANGED"
+
+    fingerprint_precondition = _destructive_precondition(
+        client,
+        headers,
+        removed=["old"],
+    )
+    fingerprint_precondition["config_fingerprint"] = "sha256:" + "0" * 64
+    stale_fingerprint = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": candidate,
+            "precondition": fingerprint_precondition,
+        },
+        headers=headers,
+    )
+    assert stale_fingerprint.status_code == 409
+    assert stale_fingerprint.json()["code"] == "MODEL_PROFILE_CONFIG_CHANGED"
+
+
+def test_destructive_global_profile_patch_rejects_changed_references_and_active_usage(
+    tmp_path,
+    monkeypatch,
+):
+    from workspace.workspaces import create_workspace, update_workspace_runtime_config
+
+    client, headers = _build_client(tmp_path, monkeypatch)
+    data = {
+        "profiles": [_global_profile("old"), _global_profile("stable")],
+        "default_main_profile_ref": {"scope": "global", "id": "stable"},
+        "default_task_profile_ref": None,
+    }
+    assert client.patch(
+        "/api/system-config",
+        json={"section": "llm_profiles", "data": data},
+        headers=headers,
+    ).status_code == 200
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    stale_precondition = _destructive_precondition(client, headers, removed=["old"])
+    update_workspace_runtime_config(
+        "alpha",
+        {"llm": {"default_main_profile_ref": "global:stable"}},
+    )
+    candidate = {
+        "profiles": [_global_profile("stable")],
+        "default_main_profile_ref": {"scope": "global", "id": "stable"},
+        "default_task_profile_ref": None,
+    }
+
+    stale = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": candidate,
+            "precondition": stale_precondition,
+        },
+        headers=headers,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "MODEL_PROFILE_REFERENCES_CHANGED"
+
+    update_workspace_runtime_config(
+        "alpha",
+        {"llm": {"default_main_profile_ref": "global:old"}},
+    )
+    referenced_precondition = _destructive_precondition(client, headers, removed=["old"])
+    referenced = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": candidate,
+            "precondition": referenced_precondition,
+        },
+        headers=headers,
+    )
+    assert referenced.status_code == 409
+    assert referenced.json()["code"] == "MODEL_PROFILE_REFERENCED"
+
+
+def test_import_rejects_referenced_global_profile_removal_without_partial_write(
+    tmp_path,
+    monkeypatch,
+):
+    from workspace.workspaces import create_workspace, update_workspace_runtime_config
+
+    client, headers = _build_client(tmp_path, monkeypatch)
+    initial = {
+        "profiles": [_global_profile("old"), _global_profile("stable")],
+        "default_main_profile_ref": {"scope": "global", "id": "stable"},
+        "default_task_profile_ref": None,
+    }
+    assert client.patch(
+        "/api/system-config",
+        json={"section": "llm_profiles", "data": initial},
+        headers=headers,
+    ).status_code == 200
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    update_workspace_runtime_config(
+        "alpha",
+        {"llm": {"default_main_profile_ref": "global:old"}},
+    )
+    config_path = tmp_path / "config" / "system_config.json"
+    before = config_path.read_bytes()
+
+    response = client.post(
+        "/api/system-config/import",
+        json={
+            "config": {
+                "agent": {"main_agent_max_iterations": 77},
+                "llm_profiles": {
+                    "profiles": [_global_profile("stable")],
+                    "default_main_profile_ref": {
+                        "scope": "global",
+                        "id": "stable",
+                    },
+                    "default_task_profile_ref": None,
+                },
+            }
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "MODEL_PROFILE_REFERENCED"
+    assert config_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "renames",
+    [
+        [
+            {"original_id": "old", "new_id": "new-a"},
+            {"original_id": "old", "new_id": "new-b"},
+        ],
+        [
+            {"original_id": "old", "new_id": "new"},
+            {"original_id": "stable", "new_id": "new"},
+        ],
+        [{"original_id": "missing", "new_id": "new"}],
+        [{"original_id": "old", "new_id": "stable"}],
+        [
+            {"original_id": "old", "new_id": "stable"},
+            {"original_id": "stable", "new_id": "old"},
+        ],
+    ],
+)
+def test_global_profile_rename_rejects_ambiguous_or_unverified_mapping(
+    tmp_path,
+    monkeypatch,
+    renames,
+):
+    client, headers = _build_client(tmp_path, monkeypatch)
+    data = {
+        "profiles": [_global_profile("old"), _global_profile("stable")],
+        "default_main_profile_ref": {"scope": "global", "id": "stable"},
+        "default_task_profile_ref": None,
+    }
+    assert client.patch(
+        "/api/system-config",
+        json={"section": "llm_profiles", "data": data},
+        headers=headers,
+    ).status_code == 200
+    precondition = _destructive_precondition(
+        client,
+        headers,
+        removed=["old"],
+        renames=renames,
+    )
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": {
+                "profiles": [_global_profile("new"), _global_profile("stable")],
+                "default_main_profile_ref": {"scope": "global", "id": "stable"},
+                "default_task_profile_ref": None,
+            },
+            "precondition": precondition,
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 400
