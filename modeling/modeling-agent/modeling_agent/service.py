@@ -453,6 +453,35 @@ def _required_text_interrupt_acknowledged(
     ))
 
 
+def _required_text_interrupt_requires_review(
+    result: dict[str, Any],
+    live: LiveRun,
+    guard_mode: str,
+) -> bool:
+    if result.get("result_type") != "interrupt":
+        return False
+    constraint = live.required_text_constraint
+    if not constraint or guard_mode == "off":
+        return False
+    return not _required_text_interrupt_acknowledged(result, constraint)
+
+
+def _required_text_response_requires_review(
+    result: dict[str, Any],
+    live: LiveRun,
+    guard_mode: str,
+) -> bool:
+    if result.get("result_type") != "success":
+        return False
+    constraint = live.required_text_constraint
+    if not constraint or guard_mode == "off":
+        return False
+    return not _required_text_response_acknowledged(
+        str(result.get("output") or ""),
+        constraint,
+    )
+
+
 def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
     return (
         bool(live.required_material_directives)
@@ -3214,14 +3243,10 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
-                if (
-                    result.get("result_type") == "interrupt"
-                    and live.required_text_constraint
-                    and self.settings.required_text_guard_mode != "off"
-                    and not _required_text_interrupt_acknowledged(
-                        result,
-                        live.required_text_constraint,
-                    )
+                if _required_text_interrupt_requires_review(
+                    result,
+                    live,
+                    self.settings.required_text_guard_mode,
                 ):
                     if self.settings.required_text_guard_mode == "observe":
                         self.events.publish(run.project_id, run.id, "tool", {
@@ -3324,14 +3349,10 @@ class AgentService:
                         "output": "助手没有完成这项明确要求，本轮已停止；已经确认的内容保持不变。",
                         "streamed": False,
                     }
-                if (
-                    result.get("result_type") == "success"
-                    and live.required_text_constraint
-                    and self.settings.required_text_guard_mode != "off"
-                    and not _required_text_response_acknowledged(
-                        str(result.get("output") or ""),
-                        live.required_text_constraint,
-                    )
+                if _required_text_response_requires_review(
+                    result,
+                    live,
+                    self.settings.required_text_guard_mode,
                 ):
                     if self.settings.required_text_guard_mode == "observe":
                         self.events.publish(run.project_id, run.id, "tool", {
