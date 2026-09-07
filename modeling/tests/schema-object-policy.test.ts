@@ -42,6 +42,40 @@ test('Schema 模式逐 Sheet 生成对象并包含只有表头的空 Sheet', () 
   assert.deepEqual(schemaObjectPolicyIssues(packageSpec, renderPackage(packageSpec), tables), []);
 });
 
+test('Schema 物理策略允许业务语义和明确必填决定独立演进', () => {
+  const tables = [schemaTable('record_sheet', ['record_id', 'status_code'])];
+  const object = expectedSchemaObjects(tables)[0].object;
+  object.title = '业务记录';
+  object.description = '合成业务记录对象。';
+  object.fields = object.fields.map((field) => ({
+    ...field,
+    cnName: field.key === 'record_id' ? '记录编号' : '状态代码',
+    note: '合成字段说明。',
+    required: field.key === 'record_id',
+  }));
+  const packageSpec = spec([object]);
+
+  assert.deepEqual(schemaObjectPolicyIssues(packageSpec, renderPackage(packageSpec), tables), []);
+});
+
+test('Schema 策略要求对象字段和 mapping 使用一致的布尔必填标志', () => {
+  const tables = [schemaTable('record_sheet', ['record_id', 'status_code'])];
+  const object = expectedSchemaObjects(tables)[0].object;
+  const invalidObject = structuredClone(object);
+  delete invalidObject.fields[0].required;
+  const invalidSpec = spec([invalidObject]);
+  assert.ok(schemaObjectPolicyIssues(invalidSpec, renderPackage(invalidSpec), tables)
+    .some((issue) => issue.code === 'FIELD_REQUIRED_INVALID' && issue.fieldKey === 'record_id'));
+
+  const validSpec = spec([object]);
+  const files = renderPackage(validSpec);
+  const mapping = JSON.parse(files['mappings/object-data-mappings.json']);
+  mapping.objects.record_sheet.fields.record_id.required = !object.fields[0].required;
+  files['mappings/object-data-mappings.json'] = `${JSON.stringify(mapping, null, 2)}\n`;
+  assert.ok(schemaObjectPolicyIssues(validSpec, files, tables)
+    .some((issue) => issue.code === 'FIELD_REQUIRED_MAPPING_MISMATCH' && issue.fieldKey === 'record_id'));
+});
+
 test('Schema 模式拒绝漏 Sheet、额外派生对象和缺失 mapping', () => {
   const tables = [schemaTable('customer_sheet', ['customer_id']), schemaTable('order_sheet', ['order_id'])];
   const physical = expectedSchemaObjects(tables)[0].object;

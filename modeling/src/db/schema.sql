@@ -813,6 +813,19 @@ CREATE TABLE IF NOT EXISTS agent_structured_mutation_receipts (
   PRIMARY KEY (project_id, mutation_id)
 );
 
+-- 兼容旧版本的可选关系推荐进度结构；当前版本不以它作为建模门禁，也不要求写入。
+CREATE TABLE IF NOT EXISTS agent_schema_relation_suggestions (
+  project_id              TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  semantic_fingerprint    TEXT NOT NULL,
+  status                  TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending', 'completed')),
+  schema_input_hash       TEXT NOT NULL DEFAULT '',
+  total_candidate_count   INTEGER NOT NULL DEFAULT 0 CHECK (total_candidate_count >= 0),
+  returned_candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (returned_candidate_count >= 0),
+  completed_at            TEXT,
+  updated_at              TEXT NOT NULL
+);
+
 -- artifact candidate 的 groups_json 保持通用格式；工作台所需的分诊层级与影响提示
 -- 单独保存，避免把 Agent UI 语义耦合进底层 Git 仓库。
 CREATE TABLE IF NOT EXISTS agent_candidate_group_metadata (

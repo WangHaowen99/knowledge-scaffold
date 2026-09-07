@@ -7,7 +7,7 @@ import { actions, store } from '../lib/appStore.js';
 import {
   displayEvidenceReferences,
   evidenceReferenceFromHref,
-  linkEvidenceReferences,
+  remarkEvidenceLinks,
 } from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
 import { EvidenceLink } from './EvidenceLinks.jsx';
@@ -40,10 +40,7 @@ export default function FileView({ path }) {
   const files = useStore(store, (state) => state.files);
   const content = demo ? SAMPLE : fileContents[path];
   const normalizedPath = String(path || '');
-  const readableContent = linkEvidenceReferences(
-    normalizedPath.endsWith('.md') ? stripFrontmatter(content) : content,
-    demo ? [] : materials,
-  );
+  const readableContent = normalizedPath.endsWith('.md') ? stripFrontmatter(content) : content;
   const readableSource = displayEvidenceReferences(content, demo ? [] : materials);
   const type = fileType(normalizedPath);
   const renderable = ['markdown', 'yaml', 'json'].includes(type);
@@ -70,7 +67,8 @@ export default function FileView({ path }) {
             </div>
           : <div className="empty">正在读取文件…</div>
         : mode === 'rendered' && type === 'markdown'
-          ? <article className="wb-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
+          ? <article className="wb-markdown"><Markdown
+            remarkPlugins={[remarkGfm, remarkEvidenceLinks(demo ? [] : materials)]} components={{
               a: ({ node: _node, href, children, ...props }) => (
                 <PackageLink path={normalizedPath} href={href} files={files} {...props}>{children}</PackageLink>
               ),

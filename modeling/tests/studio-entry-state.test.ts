@@ -203,6 +203,8 @@ test('StudioView 接线字段纠错、NO_CHANGES 同步和完整资源删除文�
   assert.match(source, /不调用建模助手/);
   assert.match(source, /studioHasPendingLocalEdits\(sessionRef\.current\)/);
   assert.match(source, /disabled=\{state\.phase === 'saving' \|\| blocked\}/);
+  assert.match(source, /\{ key: 'required', label: '必填', type: 'boolean' \}/);
+  assert.doesNotMatch(source, /required-decision|<option value="unresolved">未确认/);
 
   const centerPane = readFileSync(
     new URL('../frontend/src/workbench/center/CenterPane.jsx', import.meta.url),

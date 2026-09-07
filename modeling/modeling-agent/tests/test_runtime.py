@@ -22,7 +22,7 @@ from modeling_agent.rails import (
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
-from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
+from modeling_agent.service import AgentService, LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -39,6 +39,51 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_schema_semantic_confirmation_does_not_require_relation_suggestion() -> None:
+    live = SimpleNamespace(
+        required_tools=set(),
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+    )
+    result = {"ok": True}
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "confirm_schema_semantics",
+        {},
+        result,
+    )
+
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
+
+
+async def test_explicit_relation_suggestion_does_not_become_required() -> None:
+    live = SimpleNamespace(
+        required_tools=set(),
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+    )
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "suggest_object_relations",
+        {},
+        {"ok": True, "hasMore": True, "nextCursor": "synthetic-next-page"},
+    )
+
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
 
 
 async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: float = 15) -> dict:
@@ -110,6 +155,39 @@ async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypa
     assert case_schema["additionalProperties"] is False
     assert "argv" not in case_schema["properties"]
     assert "function" not in case_schema["properties"]
+
+
+async def test_schema_semantic_tool_uses_dedicated_field_update_contract() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    actions = specs["stage_schema_semantic_changes"].properties[
+        "objects"
+    ]["items"]["properties"]["actions"]
+    assert actions["maxItems"] == 500
+
+    variants = actions["items"]["oneOf"]
+    update = next(
+        variant for variant in variants
+        if variant["properties"]["op"]["enum"] == ["update_field"]
+    )
+    assert update["required"] == [
+        "op", "field_key", "expected_field_hash", "changes",
+    ]
+    assert set(update["properties"]) == {
+        "op", "field_key", "expected_field_hash", "changes",
+    }
+    assert update["additionalProperties"] is False
+    assert update["properties"]["changes"] == {
+        "type": "object",
+        "properties": {
+            "cn_name": tools_module.STRING,
+            "note": tools_module.STRING,
+            "alias": tools_module.STRING,
+            "required": {"type": "boolean"},
+        },
+        "minProperties": 1,
+        "additionalProperties": False,
+    }
+    assert "deferred_warnings" not in specs["confirm_schema_semantics"].properties
 
 
 async def test_phase_transition_forces_model_boundary_before_using_stale_tools() -> None:
