@@ -23,13 +23,13 @@ pandas>=2.2.0
 pyarrow>=17.0.0
 polars>=1.0.0
 python-dotenv>=1.2.2
-openjiuwen==0.1.14
+openjiuwen==0.1.17
 jsonschema-path>=0.3.4
 referencing>=0.28.4
 packaging>=23.0
 PyJWT>=2.12.0
-# openjiuwen 0.1.14 currently constrains FastMCP to <3.0.
-# Upgrading FastMCP beyond this range requires an openjiuwen upgrade first.
+# openjiuwen 0.1.17 constrains FastMCP to <3.0.
+# FastMCP 3 remains outside this compatibility-only upgrade.
 fastmcp>=2.14.2,<3.0
 opentelemetry-api>=1.30.0
 opentelemetry-sdk>=1.30.0
