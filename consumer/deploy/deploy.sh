@@ -25,6 +25,7 @@ JIUWENBOX_TAR_REL="$(manifest_get jiuwenbox_image_tar)"
 
 "${SCRIPT_DIR}/preflight.sh" --pre-migration
 load_state
+assert_no_existing_install_for_install
 
 MODE="install"
 if [ -n "${CURRENT_VERSION:-}" ]; then

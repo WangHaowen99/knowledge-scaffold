@@ -1228,6 +1228,31 @@ load_state() {
     CURRENT_STORAGE_MODE="${CURRENT_STORAGE_MODE:-}"
 }
 
+assert_no_existing_install_for_install() {
+    if [ -n "${CURRENT_VERSION:-}" ]; then
+        return 0
+    fi
+
+    local evidence=""
+    for marker in \
+        "${BUNDLE_ROOT}/backend/.env" \
+        "${BUNDLE_ROOT}/.onto-runtime" \
+        "${BUNDLE_ROOT}/.onto-auth"; do
+        if [ "${marker}" = "${BUNDLE_ROOT}/backend/.env" ] && [ -e "${marker}" ]; then
+            evidence="${marker}"
+            break
+        fi
+        if [ -d "${marker}" ] && find "${marker}" -mindepth 1 \( -type f -o -type l \) -print -quit | grep -q .; then
+            evidence="${marker}"
+            break
+        fi
+    done
+
+    if [ -n "${evidence}" ]; then
+        die "Existing installation detected without deployment state (${evidence}); use upgrade.sh or restore the deployment state before installing"
+    fi
+}
+
 write_state() {
     local current_version="$1"
     local previous_version="$2"
