@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Mapping
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from integration.observability.identity import resolve_runtime_identity
 
@@ -57,6 +57,23 @@ _COALESCIBLE_EVENT_TYPES = frozenset({"token.delta", "reasoning.delta"})
 _MAX_COALESCED_TEXT_CHARS = 4096
 
 
+class _RuntimeEventCoalescingKey(NamedTuple):
+    """Stable, hashable identity for coalescing adjacent runtime deltas."""
+
+    event_type: str
+    span_key: str | None
+    parent_key: str | None
+    trace_id: str | None
+    span_id: str | None
+    parent_span_id: str | None
+    source_node: str
+    source_component: str
+    channel: str
+    iteration: str
+    call_index: str
+    reasoning_block_id: str
+
+
 class RuntimeEventBufferFull(RuntimeError):
     """Raised when internal producers outrun the bounded runtime consumer."""
 
@@ -90,7 +107,7 @@ class JiuwenRuntimeEventBridge:
         self._coalesced_event_tag = object()
         self._buffer_lock = threading.Lock()
         self._buffered_count = 0
-        self._coalesced_events: dict[tuple[Any, ...], RuntimeEvent] = {}
+        self._coalesced_events: dict[_RuntimeEventCoalescingKey, RuntimeEvent] = {}
         self._coalescing_generation = 0
         self._accepting = True
         self._model_spans: set[str] = set()
@@ -331,7 +348,7 @@ class JiuwenRuntimeEventBridge:
 
     def _publish(self, event: Any) -> None:
         coalescing_base_key = self._coalescing_key(event)
-        coalescing_key: tuple[Any, ...] | None = None
+        coalescing_key: _RuntimeEventCoalescingKey | None = None
         overflow = False
         with self._buffer_lock:
             if not self._accepting:
@@ -425,7 +442,10 @@ class JiuwenRuntimeEventBridge:
                 self._overflowed = True
             self._record_overflow_now()
 
-    def _put_reserved_coalesced_nowait(self, key: tuple[Any, ...]) -> None:
+    def _put_reserved_coalesced_nowait(
+        self,
+        key: _RuntimeEventCoalescingKey,
+    ) -> None:
         try:
             self.queue.put_nowait((self._coalesced_event_tag, key))
         except asyncio.QueueFull:
@@ -442,26 +462,26 @@ class JiuwenRuntimeEventBridge:
             self._buffered_count = max(0, self._buffered_count - 1)
 
     @staticmethod
-    def _coalescing_key(event: Any) -> tuple[Any, ...] | None:
+    def _coalescing_key(event: Any) -> _RuntimeEventCoalescingKey | None:
         if not isinstance(event, RuntimeEvent):
             return None
         event_type = str(event.event_type)
         if event_type not in _COALESCIBLE_EVENT_TYPES:
             return None
         payload = event.payload
-        return (
-            event_type,
-            event.span_key,
-            event.parent_key,
-            event.trace_id,
-            event.span_id,
-            event.parent_span_id,
-            str((event.source or {}).get("node") or ""),
-            str((event.source or {}).get("component") or ""),
-            str(payload.get("channel") or ""),
-            str(payload.get("iteration") or ""),
-            str(payload.get("call_index") or ""),
-            str(payload.get("reasoning_block_id") or ""),
+        return _RuntimeEventCoalescingKey(
+            event_type=event_type,
+            span_key=event.span_key,
+            parent_key=event.parent_key,
+            trace_id=event.trace_id,
+            span_id=event.span_id,
+            parent_span_id=event.parent_span_id,
+            source_node=str((event.source or {}).get("node") or ""),
+            source_component=str((event.source or {}).get("component") or ""),
+            channel=str(payload.get("channel") or ""),
+            iteration=str(payload.get("iteration") or ""),
+            call_index=str(payload.get("call_index") or ""),
+            reasoning_block_id=str(payload.get("reasoning_block_id") or ""),
         )
 
     @staticmethod
