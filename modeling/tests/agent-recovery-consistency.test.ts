@@ -65,7 +65,7 @@ function planArgs(workingRevision: string) {
         title: '确认库存口径',
         resource_kind: 'rule',
         target_key: 'StockRule',
-        allowed_tools: ['patch_rule'],
+        allowed_tools: ['create_rule'],
         depends_on: [],
         acceptance: '库存口径确认完成',
         required: true,

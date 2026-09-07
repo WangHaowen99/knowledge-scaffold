@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 
 import pytest
-
-import json
 
 import modeling_agent.tools as tools_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
@@ -22,7 +21,7 @@ from modeling_agent.rails import (
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
-from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
+from modeling_agent.service import AgentService, LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -39,6 +38,66 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_revised_generation_plan_pending_approval_suspends_writes() -> None:
+    live = SimpleNamespace(plan_approval_required=False)
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "revise_change_plan",
+        {},
+        {"plan": {"approval_status": "pending"}},
+    )
+
+    assert live.plan_approval_required is True
+
+
+async def test_schema_semantic_confirmation_requires_relation_suggestion_before_downstream() -> None:
+    live = SimpleNamespace(
+        required_tools=set(),
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+    )
+    result = {"ok": True, "relation_suggestion_required": True}
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "confirm_schema_semantics",
+        {},
+        result,
+    )
+
+    assert live.required_tools == {"suggest_object_relations"}
+    assert live.attempted_tools == set()
+    assert live.observed_tools == set()
+    assert live.stable_read_cache == {}
+    assert result["relation_suggestion_required"] is True
+
+
+async def test_relation_suggestion_first_page_keeps_tool_required() -> None:
+    live = SimpleNamespace(
+        required_tools={"suggest_object_relations"},
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+    )
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "suggest_object_relations",
+        {},
+        {"ok": True, "hasMore": True, "nextCursor": "synthetic-next-page"},
+    )
+
+    assert live.required_tools == {"suggest_object_relations"}
+    assert live.attempted_tools == set()
+    assert live.observed_tools == set()
+    assert live.stable_read_cache == {}
 
 
 async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: float = 15) -> dict:
@@ -110,6 +169,39 @@ async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypa
     assert case_schema["additionalProperties"] is False
     assert "argv" not in case_schema["properties"]
     assert "function" not in case_schema["properties"]
+
+
+async def test_schema_semantic_tool_uses_dedicated_field_update_contract() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    actions = specs["stage_schema_semantic_changes"].properties[
+        "objects"
+    ]["items"]["properties"]["actions"]
+    assert actions["maxItems"] == 500
+
+    variants = actions["items"]["oneOf"]
+    update = next(
+        variant for variant in variants
+        if variant["properties"]["op"]["enum"] == ["update_field"]
+    )
+    assert update["required"] == [
+        "op", "field_key", "expected_field_hash", "changes",
+    ]
+    assert set(update["properties"]) == {
+        "op", "field_key", "expected_field_hash", "changes",
+    }
+    assert update["additionalProperties"] is False
+    assert update["properties"]["changes"] == {
+        "type": "object",
+        "properties": {
+            "cn_name": tools_module.STRING,
+            "note": tools_module.STRING,
+            "alias": tools_module.STRING,
+            "required": {"type": "boolean"},
+        },
+        "minProperties": 1,
+        "additionalProperties": False,
+    }
+    assert "deferred_warnings" not in specs["confirm_schema_semantics"].properties
 
 
 async def test_phase_transition_forces_model_boundary_before_using_stale_tools() -> None:
@@ -402,10 +494,16 @@ async def test_full_document_read_declares_long_running_timeout() -> None:
 
 async def test_change_set_tools_explain_one_task_per_resource_contract() -> None:
     create_plan = next(item for item in CORE_TOOL_SPECS if item.name == "create_change_plan")
+    revise_plan = next(item for item in CORE_TOOL_SPECS if item.name == "revise_change_plan")
     stage_change_set = next(item for item in CORE_TOOL_SPECS if item.name == "stage_change_set")
+    discard_change_set = next(item for item in CORE_TOOL_SPECS if item.name == "discard_change_set")
 
     assert "每项任务只能对应一个具体目标资源" in create_plan.description
     assert "一个且仅一个目标资源" in create_plan.properties["tasks"]["items"]["properties"]["target_key"]["description"]
+    assert "replace_tasks" in revise_plan.properties
+    assert "scope_approved" not in revise_plan.properties
+    assert "scope_approved" not in discard_change_set.properties
+    assert "计划卡" in discard_change_set.description
     assert "每个 action 只对应一个计划任务和一个目标资源" in stage_change_set.description
     assert stage_change_set.properties["actions"]["maxItems"] == 4
     variants = stage_change_set.properties["actions"]["items"]["oneOf"]

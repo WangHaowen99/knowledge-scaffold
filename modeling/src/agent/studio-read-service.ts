@@ -397,7 +397,7 @@ function valuesOf(seed: ElementSeed): Record<string, unknown> {
       title: item.title,
       description: item.description,
       aliases: item.aliases ?? [],
-      fields: item.fields,
+      fields: item.fields.map((field) => ({ ...field, required: field.required === true })),
       queryBoundary: item.queryBoundary ?? '',
       sources: item.sourceRefs ?? [],
     };

@@ -113,6 +113,8 @@ function AnsweredInteraction({ interaction }) {
 /* ---------- 计划：渲染 .modeling/plan.md，因此天然有版本和回退 ---------- */
 function PlanBlock({ b }) {
   const [busy, setBusy] = useState('');
+  const [discardPreview, setDiscardPreview] = useState(null);
+  const [discardReason, setDiscardReason] = useState('');
   const recovery = useStore(store, (s) => s.recovery);
   const plan = b.plan || {};
   const items = b.items || [];
@@ -127,10 +129,36 @@ function PlanBlock({ b }) {
     setBusy('safe-terminate');
     try { await actions.safeTerminateChangePlan(plan.id); } finally { setBusy(''); }
   };
+  const previewDiscard = async () => {
+    if (!plan.id || busy) return;
+    setBusy('discard-preview');
+    try {
+      const preview = await actions.previewChangePlanDiscard(plan.id);
+      if (preview) {
+        setDiscardPreview(preview);
+        setDiscardReason('');
+      }
+    } finally {
+      setBusy('');
+    }
+  };
+  const confirmDiscard = async () => {
+    if (!plan.id || !discardPreview || !discardReason.trim() || busy) return;
+    setBusy('discard');
+    try {
+      const result = await actions.discardChangePlan(plan.id, discardPreview, discardReason.trim());
+      if (result) setDiscardPreview(null);
+    } finally {
+      setBusy('');
+    }
+  };
   return (
-    <div className="card">
+    <div className="card" data-change-plan-id={plan.id || undefined}
+      data-change-plan-version={plan.version ?? undefined}>
       <div className="card-h">当前计划<span className="spacer" />
-        {plan.approval_status === 'pending' ? '等待批准'
+        {plan.status === 'completed' ? '已完成'
+          : plan.status === 'cancelled' ? '已结束'
+          : plan.approval_status === 'pending' ? '等待批准'
           : plan.approval_status === 'rejected' ? '已拒绝' : plan.id ? '已批准' : ''}
       </div>
       <div className="card-b">
@@ -159,6 +187,32 @@ function PlanBlock({ b }) {
                 onClick={() => void decide(true)}>{busy === 'approve' ? '批准中…' : '批准并开始'}</button>
               <button type="button" className="btn btn-sm" disabled={Boolean(busy)}
                 onClick={() => void decide(false)}>{busy === 'reject' ? '拒绝中…' : '拒绝计划'}</button>
+            </div>
+          </>}
+        </div>}
+        {plan.status === 'active' && plan.mode === 'generation'
+          && plan.approval_status === 'approved' && <div className="wb-plan-approval">
+          {!discardPreview ? <div className="btn-row">
+            <button type="button" className="btn btn-danger btn-sm" disabled={Boolean(busy)}
+              onClick={() => void previewDiscard()}>
+              {busy === 'discard-preview' ? '正在核对影响…' : '停止并放弃整份计划'}
+            </button>
+          </div> : <>
+            <span>{discardPreview.display?.text || `将删除 ${discardPreview.discard_count || 0} 项候选修改。`}</span>
+            {Object.keys(discardPreview.path_counts || {}).length > 0 && <span>
+              {Object.entries(discardPreview.path_counts).map(([key, count]) => `${key} ${count} 项`).join('；')}
+            </span>}
+            <textarea className="input" rows={2} maxLength={1000} value={discardReason}
+              placeholder="填写放弃整份计划的原因"
+              onChange={(event) => setDiscardReason(event.target.value)} />
+            <div className="btn-row">
+              <button type="button" className="btn btn-danger btn-sm"
+                disabled={Boolean(busy) || !discardReason.trim()}
+                onClick={() => void confirmDiscard()}>
+                {busy === 'discard' ? '正在停止并放弃…' : '确认放弃这些候选'}
+              </button>
+              <button type="button" className="btn btn-sm" disabled={Boolean(busy)}
+                onClick={() => { setDiscardPreview(null); setDiscardReason(''); }}>保留当前计划</button>
             </div>
           </>}
         </div>}

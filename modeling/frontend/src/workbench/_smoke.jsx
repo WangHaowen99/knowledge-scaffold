@@ -1610,7 +1610,7 @@ store.set({
   materials: [{ id: 'doc-synthetic', filename: '合成资料说明.docx' }],
   candidateDiff: [{
     path: '.modeling/goal.md', before: '',
-    after: '# 目标\n\n资料：material:doc-synthetic#前言（合成资料说明，提供业务背景）',
+    after: '# 目标\n\n资料：`material:doc-synthetic#前言`（合成资料说明，提供业务背景）',
     additions: 3, deletions: 0,
   }],
 });
@@ -2265,6 +2265,58 @@ try {
   }
   console.log('✓ 助手提供文件级资料用途批量确认卡');
 } catch (e) { console.log('✗ 资料用途批量确认卡:', e.message); bad++; }
+
+try {
+  for (const replayUntilSeq of [0, 5]) {
+    store.set({ messages: [], changePlan: null, lastSeq: 0, replayUntilSeq });
+    const initialPlan = {
+      id: 'cp-dynamic-task', version: 2, status: 'active', approval_status: 'approved',
+      tasks: [{ id: 'task-a', title: '生成合成对象', status: 'accepted' }],
+    };
+    const revisedPlan = {
+      ...initialPlan,
+      version: 3,
+      approval_status: 'pending',
+      tasks: [...initialPlan.tasks, { id: 'task-b', title: '补充合成规则', status: 'pending' }],
+    };
+    actions.handleEvent({
+      eventType: 'change_plan', seq: 1, createdAt: '2026-01-01T00:00:00Z', plan: initialPlan,
+    });
+    actions.handleEvent({
+      eventType: 'message', seq: 2, role: 'assistant', createdAt: '2026-01-01T00:00:01Z',
+      blocks: [{ type: 'text', text: '发现需要补充一项任务。' }],
+    });
+    actions.handleEvent({
+      eventType: 'change_plan', seq: 3, createdAt: '2026-01-01T00:00:02Z', plan: revisedPlan,
+    });
+    actions.handleEvent({
+      eventType: 'message', seq: 4, role: 'assistant', createdAt: '2026-01-01T00:00:03Z',
+      blocks: [{ type: 'text', text: '计划已调整，等待批准。' }],
+    });
+    actions.handleEvent({
+      eventType: 'change_plan', seq: 5, createdAt: '2026-01-01T00:00:04Z', plan: revisedPlan,
+    });
+    const messages = store.get().messages;
+    const planIndexes = messages.flatMap((message, index) => (
+      message.blocks?.some((block) => block.type === 'plan') ? [index] : []
+    ));
+    if (planIndexes.length !== 1
+      || planIndexes[0] !== 1
+      || messages[0]?.blocks?.[0]?.text !== '发现需要补充一项任务。'
+      || messages[2]?.blocks?.[0]?.text !== '计划已调整，等待批准。'
+      || messages[planIndexes[0]]?.blocks?.[0]?.plan?.version !== 3) {
+      throw new Error('动态修订计划没有移动到修订消息附近，或重复事件再次移动了卡片');
+    }
+    const html = renderToString(<RightPane />);
+    const leadIndex = html.indexOf('发现需要补充一项任务');
+    const planIndex = html.indexOf('data-change-plan-id="cp-dynamic-task"');
+    const followIndex = html.indexOf('计划已调整，等待批准');
+    if (leadIndex < 0 || planIndex <= leadIndex || followIndex <= planIndex) {
+      throw new Error('动态计划卡的页面渲染顺序没有贴近最新助手消息');
+    }
+  }
+  console.log('✓ 动态新增任务的批准计划卡随新版本移动到最新消息附近');
+} catch (e) { console.log('✗ 动态计划卡时间线位置:', e.message); bad++; }
 
 
 try {
