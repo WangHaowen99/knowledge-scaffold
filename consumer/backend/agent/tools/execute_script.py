@@ -2078,14 +2078,19 @@ def _validate_structured_result_consistency(content: str) -> Optional[str]:
         # atmospheric unit are effective/load values, while the monthly VGO
         # capacity check is defined on raw HC feed. Compare like with like.
         basis_values = {
-            "2#常减压塔": batch.get("input_weight_tons"),
-            "2#柴油加氢": batch.get("diesel_load_effective_input_tons"),
-            "蜡油加氢": batch.get("vgo_load_raw_feed_tons"),
+            "2#常减压塔": (batch.get("input_weight_tons"), True),
+            "2#柴油加氢": (batch.get("diesel_load_effective_input_tons"), True),
+            # The package's monthly VGO load is RAW HC feed, while
+            # unit_loads[].input_tons is corrected effective feed. Do not
+            # compare them unless the script explicitly returns the RAW basis.
+            "蜡油加氢": (batch.get("vgo_load_raw_feed_tons"), False),
         }
-        for unit_name, value in basis_values.items():
-            if value is None:
+        for unit_name, (value, allow_status_fallback) in basis_values.items():
+            if value is None and allow_status_fallback:
                 status = loads.get(unit_name)
                 value = status.get("input_tons") if isinstance(status, Mapping) else None
+            if value is None:
+                continue
             try:
                 numeric = float(value)
             except (TypeError, ValueError):
