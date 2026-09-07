@@ -2328,25 +2328,6 @@ class AgentService:
             plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
             if plan.get("approval_status") == "pending":
                 live.plan_approval_required = True
-            if result.get("relation_suggestion_required") is True:
-                live.required_tools.add("suggest_object_relations")
-                live.observed_tools.discard("suggest_object_relations")
-                live.attempted_tools.discard("suggest_object_relations")
-                live.stable_read_cache.clear()
-            return
-        if name == "confirm_schema_semantics":
-            if result.get("relation_suggestion_required") is True:
-                live.required_tools.add("suggest_object_relations")
-                live.observed_tools.discard("suggest_object_relations")
-                live.attempted_tools.discard("suggest_object_relations")
-                live.stable_read_cache.clear()
-            return
-        if name == "suggest_object_relations":
-            if result.get("hasMore") is True:
-                live.required_tools.add("suggest_object_relations")
-                live.observed_tools.discard("suggest_object_relations")
-                live.attempted_tools.discard("suggest_object_relations")
-                live.stable_read_cache.clear()
             return
         if name == "set_material_directive":
             document = result.get("document") if isinstance(result.get("document"), dict) else {}

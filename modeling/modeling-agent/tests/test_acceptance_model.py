@@ -198,7 +198,7 @@ def test_schema_generation_executes_core_injected_sync_task() -> None:
     }
 
 
-def test_schema_generation_recommends_relations_after_semantic_confirmation() -> None:
+def test_schema_generation_does_not_require_relations_after_semantic_confirmation() -> None:
     messages = [{"role": "user", "content": "按合成数据 Schema 生成全部对象。"}]
     state_ready(messages)
     completed(messages, "create_change_plan", {}, {"plan": {
@@ -233,37 +233,10 @@ def test_schema_generation_recommends_relations_after_semantic_confirmation() ->
     completed(messages, "confirm_schema_semantics", confirm_turn.arguments or {}, {
         "ok": True,
         "working_revision": "rev-schema-synced",
-        "relation_suggestion_required": True,
     })
-    relation_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
-    assert relation_turn.name == "suggest_object_relations"
-    assert relation_turn.arguments == {
-        "working_revision": "rev-schema-synced",
-        "limit": 20,
-    }
-    completed(messages, relation_turn.name, relation_turn.arguments or {}, {
-        "ok": True,
-        "working_revision": "rev-schema-synced",
-        "relation_suggestion_recorded": False,
-        "hasMore": True,
-        "nextCursor": "next-page",
-    })
-    next_page = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
-    assert next_page.name == "suggest_object_relations"
-    assert next_page.arguments == {
-        "working_revision": "rev-schema-synced",
-        "cursor": "next-page",
-        "limit": 20,
-    }
-    completed(messages, next_page.name, next_page.arguments or {}, {
-        "ok": True,
-        "working_revision": "rev-schema-synced",
-        "relation_suggestion_recorded": True,
-        "hasMore": False,
-    })
-    post_relation_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
-    assert post_relation_turn.name == "list_domain_resources"
-    completed(messages, post_relation_turn.name, post_relation_turn.arguments or {}, {
+    next_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert next_turn.name == "list_domain_resources"
+    completed(messages, next_turn.name, next_turn.arguments or {}, {
         "working_revision": "rev-schema-synced",
         "kind": "object",
         "items": [],

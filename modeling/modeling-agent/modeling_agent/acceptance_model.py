@@ -218,10 +218,6 @@ def _domain_turn(
     if semantic_turn is not None:
         return semantic_turn
 
-    relation_suggestion_turn = _schema_relation_suggestion_turn(calls, plan_boundary, available)
-    if relation_suggestion_turn is not None:
-        return relation_suggestion_turn
-
     for kind in targets:
         if not _has_resource_list(calls, kind):
             return _tool("list_domain_resources", {"kind": kind}, available)
@@ -274,14 +270,7 @@ def _domain_turn(
         return _tool("stage_change_set", _change_set_arguments(effective_prompt, plan, calls, generation), available)
 
     validated = [call for call in calls if call.name == "validate_change_set"]
-    relation_suggestions: list[CompletedCall] = []
-    for call in calls:
-        if call.name != "suggest_object_relations" or call.index <= plan_boundary:
-            continue
-        if call.result.get("error"):
-            continue
-        relation_suggestions.append(call)
-    validation_boundary = max([staged_boundary, *(call.index for call in relation_suggestions)])
+    validation_boundary = staged_boundary
     if not validated or validated[-1].index < validation_boundary:
         return _tool("validate_change_set", {
             "plan_id": plan.get("id", ""),
@@ -435,41 +424,6 @@ def _schema_semantic_turn(
         "reason": "使用合成业务定义批量补全 Schema 对象",
         "objects": changes,
     }, available)
-
-
-def _schema_relation_suggestion_turn(
-    calls: list[CompletedCall],
-    plan_boundary: int,
-    available: set[str],
-) -> PlannedTurn | None:
-    requirements = [
-        call for call in calls
-        if call.index > plan_boundary and call.result.get("relation_suggestion_required") is True
-    ]
-    if not requirements:
-        return None
-    requirement = requirements[-1]
-    suggestions: list[CompletedCall] = []
-    for call in calls:
-        if call.name != "suggest_object_relations" or call.index <= requirement.index:
-            continue
-        if call.result.get("error"):
-            continue
-        suggestions.append(call)
-    if not suggestions:
-        return _tool("suggest_object_relations", {
-            "working_revision": _working_revision(calls),
-            "limit": 20,
-        }, available)
-    latest = suggestions[-1]
-    next_cursor = str(latest.result.get("nextCursor") or "").strip()
-    if latest.result.get("hasMore") is True and next_cursor:
-        return _tool("suggest_object_relations", {
-            "working_revision": str(latest.result.get("working_revision") or _working_revision(calls)),
-            "cursor": next_cursor,
-            "limit": 20,
-        }, available)
-    return None
 
 
 def _binding_turn(prompt: str, calls: list[CompletedCall], available: set[str]) -> PlannedTurn:
@@ -655,11 +609,6 @@ def _recover_from_error(
             and required_tool in available
         ):
             return _tool(required_tool, dict(latest.arguments), available)
-    if code == "SCHEMA_RELATION_SUGGESTION_REQUIRED":
-        return _tool("suggest_object_relations", {
-            "working_revision": _working_revision(calls),
-            "limit": 20,
-        }, available)
     return None
 
 

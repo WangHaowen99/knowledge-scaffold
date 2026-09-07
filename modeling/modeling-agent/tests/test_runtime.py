@@ -41,14 +41,14 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 pytestmark = pytest.mark.asyncio
 
 
-async def test_schema_semantic_confirmation_requires_relation_suggestion_before_downstream() -> None:
+async def test_schema_semantic_confirmation_does_not_require_relation_suggestion() -> None:
     live = SimpleNamespace(
         required_tools=set(),
         attempted_tools={"suggest_object_relations"},
         observed_tools={"suggest_object_relations"},
         stable_read_cache={"stale": {"ok": True}},
     )
-    result = {"ok": True, "relation_suggestion_required": True}
+    result = {"ok": True}
 
     await AgentService._after_core_tool(  # noqa: SLF001
         None,
@@ -58,16 +58,15 @@ async def test_schema_semantic_confirmation_requires_relation_suggestion_before_
         result,
     )
 
-    assert live.required_tools == {"suggest_object_relations"}
-    assert live.attempted_tools == set()
-    assert live.observed_tools == set()
-    assert live.stable_read_cache == {}
-    assert result["relation_suggestion_required"] is True
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
 
 
-async def test_relation_suggestion_first_page_keeps_tool_required() -> None:
+async def test_explicit_relation_suggestion_does_not_become_required() -> None:
     live = SimpleNamespace(
-        required_tools={"suggest_object_relations"},
+        required_tools=set(),
         attempted_tools={"suggest_object_relations"},
         observed_tools={"suggest_object_relations"},
         stable_read_cache={"stale": {"ok": True}},
@@ -81,10 +80,10 @@ async def test_relation_suggestion_first_page_keeps_tool_required() -> None:
         {"ok": True, "hasMore": True, "nextCursor": "synthetic-next-page"},
     )
 
-    assert live.required_tools == {"suggest_object_relations"}
-    assert live.attempted_tools == set()
-    assert live.observed_tools == set()
-    assert live.stable_read_cache == {}
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
 
 
 async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: float = 15) -> dict:
