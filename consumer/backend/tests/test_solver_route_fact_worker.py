@@ -493,6 +493,28 @@ def test_worker_accepts_monthly_adjustment_ledger_when_totals_are_explained() ->
     _validate_case_consistency(case)
 
 
+def test_worker_does_not_compare_effective_vgo_batch_load_with_raw_monthly_load() -> None:
+    case = {
+        "batches": [
+            {
+                "vgo_load_raw_feed_tons": 90,
+                "unit_loads": {"蜡油加氢": {"input_tons": 100}},
+                "tank_status": {},
+            },
+            {
+                "vgo_load_raw_feed_tons": 90,
+                "unit_loads": {"蜡油加氢": {"input_tons": 100}},
+                "tank_status": {},
+            },
+        ],
+        "monthly_unit_load": {
+            "units": {"蜡油加氢": {"monthly_input_tons": 180}}
+        },
+    }
+
+    _validate_case_consistency(case)
+
+
 def test_worker_accepts_batch_identifier_in_special_tank_status() -> None:
     margin = _safety_margin(
         {
