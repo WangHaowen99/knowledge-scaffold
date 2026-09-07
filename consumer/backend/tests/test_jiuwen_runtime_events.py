@@ -195,6 +195,30 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(error.source, "model")
                 self.assertTrue(error.retriable)
 
+    def test_coalescing_key_is_named_and_hashable(self):
+        from agent.runtime.jiuwen_events import JiuwenRuntimeEventBridge
+
+        event = RuntimeEvent(
+            event_type="token.delta",
+            status="running",
+            run_id="run-coalescing-key",
+            payload={"channel": "content", "iteration": 2, "call_index": 3},
+            source={"node": "node-a", "component": "component-a"},
+            span_key="span-key",
+            parent_key="parent-key",
+            trace_id="trace-id",
+            span_id="span-id",
+            parent_span_id="parent-span-id",
+        )
+
+        key = JiuwenRuntimeEventBridge._coalescing_key(event)
+
+        self.assertIsNotNone(key)
+        self.assertIsInstance(key, tuple)
+        self.assertEqual(key.event_type, "token.delta")
+        self.assertEqual(key.channel, "content")
+        self.assertEqual(len({key, key}), 1)
+
     def test_runtime_error_classification_walks_wrapped_causes(self):
         try:
             try:
