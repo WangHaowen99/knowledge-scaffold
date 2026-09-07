@@ -400,6 +400,78 @@ def _scan_workspace_mcp_endpoints(
     return workspaces, endpoint_owners, errors
 
 
+def _owned_workspace_count(
+    workspaces: list[tuple[str, Path, Dict[str, Any]]],
+    owner: Optional[str],
+    *,
+    exclude_workspace_id: Optional[str] = None,
+) -> int:
+    """Count workspaces assigned to one owner from a locked metadata scan."""
+    if owner is None:
+        return 0
+    return sum(
+        1
+        for workspace_id, _metadata_path, payload in workspaces
+        if workspace_id != exclude_workspace_id and payload.get("owner") == owner
+    )
+
+
+def _enforce_workspace_owner_limit(
+    workspaces: list[tuple[str, Path, Dict[str, Any]]],
+    owner: Optional[str],
+    *,
+    exclude_workspace_id: Optional[str] = None,
+) -> None:
+    """Enforce the configured per-owner workspace limit."""
+    if owner is None:
+        return
+    max_owned_workspaces = LimitsConfig.from_env().workspace_max_count
+    if _owned_workspace_count(
+        workspaces,
+        owner,
+        exclude_workspace_id=exclude_workspace_id,
+    ) >= max_owned_workspaces:
+        raise ValueError("工作空间数量已达上限: {}".format(max_owned_workspaces))
+
+
+def _workspace_metadata_snapshot_for_limit(
+    runtime_root: Path,
+) -> list[tuple[str, Path, Dict[str, Any]]]:
+    """Read workspace owners while the caller holds the metadata mutation lock."""
+    snapshot: list[tuple[str, Path, Dict[str, Any]]] = []
+    for workspace_dir in _workspace_dirs_for_runtime_root(runtime_root):
+        metadata_path = workspace_dir / "workspace.json"
+        payload = _read_workspace_metadata_raw(metadata_path)
+        workspace_id = _validate_workspace_metadata_identity(
+            workspace_dir.name,
+            payload,
+        )
+        snapshot.append((workspace_id, metadata_path, payload))
+    return snapshot
+
+
+def _enforce_workspace_owner_limit_for_update(
+    runtime_root: Path,
+    workspace_id: str,
+    current_owner: Optional[str],
+    requested_owner: Any,
+    *,
+    enforce_workspace_limit: bool,
+) -> None:
+    if (
+        not enforce_workspace_limit
+        or requested_owner is _UNCHANGED
+        or requested_owner is None
+        or requested_owner == current_owner
+    ):
+        return
+    _enforce_workspace_owner_limit(
+        _workspace_metadata_snapshot_for_limit(runtime_root),
+        requested_owner,
+        exclude_workspace_id=workspace_id,
+    )
+
+
 def _write_backup_once(path: Path, payload: bytes) -> None:
     if path.exists():
         return
@@ -894,9 +966,8 @@ def create_workspace(
                 raise ValueError("工作空间 ID 使用了系统保留前缀")
 
             if enforce_workspace_limit:
-                max_workspaces = LimitsConfig.from_env().workspace_max_count
-                if len(workspaces) >= max_workspaces:
-                    raise ValueError("工作空间数量已达上限: {}".format(max_workspaces))
+                # WORKSPACE_MAX_COUNT is per owner; ownerless spaces have no bucket.
+                _enforce_workspace_owner_limit(workspaces, normalized_owner)
 
             endpoint_id = generate_mcp_endpoint_id(set(endpoint_owners))
             paths = get_workspace_paths(candidate)
@@ -919,18 +990,22 @@ def update_workspace(
     description: Optional[str] = None,
     owner: Any = _UNCHANGED,
     members: Optional[List[str]] = None,
+    enforce_workspace_limit: bool = True,
 ) -> Dict[str, str]:
     normalized_owner = _UNCHANGED if owner is _UNCHANGED else _normalize_workspace_owner(owner)
     normalized_members = _normalize_workspace_members(members) if members is not None else None
 
-    with _workspace_metadata_lock:
-        paths = _update_workspace_locked(
-            workspace_id,
-            name=name,
-            description=description,
-            owner=normalized_owner,
-            members=normalized_members,
-        )
+    runtime_root = get_runtime_root()
+    with _workspace_endpoint_file_lock(runtime_root):
+        with _workspace_metadata_lock:
+            paths = _update_workspace_locked(
+                workspace_id,
+                name=name,
+                description=description,
+                owner=normalized_owner,
+                members=normalized_members,
+                enforce_workspace_limit=enforce_workspace_limit,
+            )
     return get_workspace(paths.workspace_id)
 
 
@@ -941,12 +1016,20 @@ def _update_workspace_locked(
     description: Optional[str],
     owner: Any,
     members: Optional[List[str]],
+    enforce_workspace_limit: bool = True,
 ) -> WorkspacePaths:
     paths = get_workspace_paths(workspace_id)
     if not paths.metadata_path.exists():
         raise WorkspaceNotFoundError(workspace_id)
     payload = _read_workspace_metadata_raw(paths.metadata_path)
     _validate_workspace_metadata_identity(paths.workspace_id, payload)
+    _enforce_workspace_owner_limit_for_update(
+        get_runtime_root(),
+        paths.workspace_id,
+        payload.get("owner"),
+        owner,
+        enforce_workspace_limit=enforce_workspace_limit,
+    )
     if name is not None:
         payload["name"] = _normalize_workspace_name(name)
     if description is not None:
@@ -968,32 +1051,36 @@ def update_workspace_authorized(
     description: Optional[str] = None,
     owner: Any = _UNCHANGED,
     members: Optional[List[str]] = None,
+    enforce_workspace_limit: bool = True,
 ) -> Dict[str, Any]:
     """Authorize against current metadata and update it in one lock transaction."""
     normalized_owner = _UNCHANGED if owner is _UNCHANGED else _normalize_workspace_owner(owner)
     normalized_members = _normalize_workspace_members(members) if members is not None else None
 
-    with _workspace_metadata_lock:
-        paths = get_workspace_paths(workspace_id)
-        if not paths.metadata_path.exists():
-            raise WorkspaceNotFoundError(workspace_id)
-        payload = _read_workspace_metadata_raw(paths.metadata_path)
-        _validate_workspace_metadata_identity(paths.workspace_id, payload)
-        username = getattr(user, "username", None)
-        is_admin = getattr(user, "role", None) == "admin"
-        is_owner = bool(payload.get("owner")) and payload.get("owner") == username
-        if not (is_admin or is_owner):
-            raise WorkspaceAuthorizationError("workspace mutation is forbidden")
-        if normalized_owner is not _UNCHANGED and not is_admin:
-            raise WorkspaceAuthorizationError("only a global admin may change workspace owner")
-        _update_workspace_locked(
-            paths.workspace_id,
-            name=name,
-            description=description,
-            owner=normalized_owner,
-            members=normalized_members,
-        )
-        return get_workspace(paths.workspace_id)
+    runtime_root = get_runtime_root()
+    with _workspace_endpoint_file_lock(runtime_root):
+        with _workspace_metadata_lock:
+            paths = get_workspace_paths(workspace_id)
+            if not paths.metadata_path.exists():
+                raise WorkspaceNotFoundError(workspace_id)
+            payload = _read_workspace_metadata_raw(paths.metadata_path)
+            _validate_workspace_metadata_identity(paths.workspace_id, payload)
+            username = getattr(user, "username", None)
+            is_admin = getattr(user, "role", None) == "admin"
+            is_owner = bool(payload.get("owner")) and payload.get("owner") == username
+            if not (is_admin or is_owner):
+                raise WorkspaceAuthorizationError("workspace mutation is forbidden")
+            if normalized_owner is not _UNCHANGED and not is_admin:
+                raise WorkspaceAuthorizationError("only a global admin may change workspace owner")
+            _update_workspace_locked(
+                paths.workspace_id,
+                name=name,
+                description=description,
+                owner=normalized_owner,
+                members=normalized_members,
+                enforce_workspace_limit=enforce_workspace_limit,
+            )
+            return get_workspace(paths.workspace_id)
 
 
 def delete_workspace(workspace_id: str, *, allow_default: bool = False) -> None:

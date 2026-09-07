@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 import workspace.workspaces as workspaces_module
@@ -90,8 +93,129 @@ def test_create_workspace_rejects_new_workspace_after_limit(tmp_path, monkeypatc
         create_workspace(
             "Workspace {}".format(index),
             workspace_id="ws{}".format(index),
-            set_as_default=index == 0,
+            owner="alice",
+            auto_set_default=False,
         )
 
     with pytest.raises(ValueError, match="工作空间数量已达上限"):
-        create_workspace("Workspace 5", workspace_id="ws5")
+        create_workspace(
+            "Workspace 5",
+            workspace_id="ws5",
+            owner="alice",
+            auto_set_default=False,
+        )
+
+
+def test_create_workspace_limit_is_scoped_to_each_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "2")
+
+    for index in range(2):
+        create_workspace(
+            "Alice Workspace {}".format(index),
+            workspace_id="alice-ws{}".format(index),
+            owner="alice",
+            auto_set_default=False,
+        )
+
+    for index in range(2):
+        create_workspace(
+            "Bob Workspace {}".format(index),
+            workspace_id="bob-ws{}".format(index),
+            owner="bob",
+            auto_set_default=False,
+        )
+
+    with pytest.raises(ValueError, match="工作空间数量已达上限"):
+        create_workspace(
+            "Alice Workspace 2",
+            workspace_id="alice-ws2",
+            owner="alice",
+            auto_set_default=False,
+        )
+
+
+def test_ownerless_workspace_does_not_consume_an_owner_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+
+    create_workspace(
+        "Alice Workspace",
+        workspace_id="alice-ws",
+        owner="alice",
+        auto_set_default=False,
+    )
+
+    create_workspace(
+        "Shared Workspace",
+        workspace_id="shared-ws",
+        owner=None,
+        auto_set_default=False,
+    )
+
+    create_workspace(
+        "Another Shared Workspace",
+        workspace_id="shared-ws-2",
+        owner=None,
+        auto_set_default=False,
+    )
+
+
+def test_same_owner_update_does_not_consume_an_additional_quota_slot(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    create_workspace(
+        "Alice Workspace",
+        workspace_id="alice-ws",
+        owner="alice",
+        auto_set_default=False,
+    )
+    create_workspace(
+        "Legacy Over-limit Workspace",
+        workspace_id="alice-legacy-over-limit",
+        owner="alice",
+        auto_set_default=False,
+        enforce_workspace_limit=False,
+    )
+
+    updated = workspaces_module.update_workspace(
+        "alice-ws",
+        name="Renamed Workspace",
+        owner="alice",
+    )
+
+    assert updated["owner"] == "alice"
+    assert updated["name"] == "Renamed Workspace"
+
+
+def test_concurrent_workspace_creation_never_exceeds_owner_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "2")
+    attempts = 8
+    barrier = Barrier(attempts)
+
+    def create(index):
+        barrier.wait(timeout=5)
+        try:
+            create_workspace(
+                "Alice Workspace {}".format(index),
+                workspace_id="alice-concurrent-{}".format(index),
+                owner="alice",
+                auto_set_default=False,
+            )
+            return "created"
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=attempts) as executor:
+        results = list(executor.map(create, range(attempts)))
+
+    assert results.count("created") == 2
+    assert sum("工作空间数量已达上限" in result for result in results) == attempts - 2
+    assert (
+        sum(item.get("owner") == "alice" for item in workspaces_module.list_workspaces())
+        == 2
+    )

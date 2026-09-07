@@ -155,7 +155,11 @@ class WebSearchConfig:
 
 @dataclass
 class LimitsConfig:
-    """Business/runtime limits shared by route and storage boundaries."""
+    """Business/runtime limits shared by route and storage boundaries.
+
+    ``workspace_max_count`` is retained as a compatibility field name, but its
+    scope is the number of workspaces owned by one user.
+    """
 
     run_tps: int = 50
     user_max_count: int = 0

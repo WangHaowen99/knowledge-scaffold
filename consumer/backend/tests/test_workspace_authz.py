@@ -734,6 +734,192 @@ def test_regular_user_can_create_only_self_owned_non_default_workspace(tmp_path,
     assert body["is_default"] is False
 
 
+def test_workspace_creation_limit_is_scoped_per_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    client, headers = _build_env(tmp_path, monkeypatch)
+
+    alice_first = client.post(
+        "/agentic/workspaces",
+        json={"name": "Alice First", "id": "alice-first"},
+        headers=headers["alice"],
+    )
+    assert alice_first.status_code == 201
+
+    bob_first = client.post(
+        "/agentic/workspaces",
+        json={"name": "Bob First", "id": "bob-first"},
+        headers=headers["bob"],
+    )
+    assert bob_first.status_code == 201
+
+    alice_second = client.post(
+        "/agentic/workspaces",
+        json={"name": "Alice Second", "id": "alice-second"},
+        headers=headers["alice"],
+    )
+    assert alice_second.status_code == 400
+    assert "工作空间数量已达上限" in alice_second.json()["detail"]
+
+
+def test_admin_delegated_workspace_consumes_target_owner_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    client, headers = _build_env(tmp_path, monkeypatch)
+
+    first = client.post(
+        "/agentic/workspaces",
+        json={
+            "name": "Alice Delegated",
+            "id": "alice-delegated",
+            "owner": "alice",
+        },
+        headers=headers["admin"],
+    )
+    assert first.status_code == 201
+
+    rejected = client.post(
+        "/agentic/workspaces",
+        json={
+            "name": "Alice Delegated 2",
+            "id": "alice-delegated-2",
+            "owner": "alice",
+        },
+        headers=headers["admin"],
+    )
+    assert rejected.status_code == 400
+    assert "工作空间数量已达上限" in rejected.json()["detail"]
+
+    other_owner = client.post(
+        "/agentic/workspaces",
+        json={"name": "Bob Delegated", "id": "bob-delegated", "owner": "bob"},
+        headers=headers["admin"],
+    )
+    assert other_owner.status_code == 201
+
+
+def test_admin_workspace_without_owner_uses_admin_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    client, headers = _build_env(tmp_path, monkeypatch)
+
+    first = client.post(
+        "/agentic/workspaces",
+        json={"name": "Admin First", "id": "admin-first"},
+        headers=headers["admin"],
+    )
+    assert first.status_code == 201
+    assert first.json()["owner"] == "admin"
+
+    rejected = client.post(
+        "/agentic/workspaces",
+        json={"name": "Admin Second", "id": "admin-second"},
+        headers=headers["admin"],
+    )
+    assert rejected.status_code == 400
+
+    delegated = client.post(
+        "/agentic/workspaces",
+        json={
+            "name": "Alice Delegated",
+            "id": "admin-to-alice",
+            "owner": "alice",
+        },
+        headers=headers["admin"],
+    )
+    assert delegated.status_code == 201
+
+
+def test_workspace_owner_transfer_into_full_user_is_rejected_atomically(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _create_workspace_api(
+        client,
+        headers["admin"],
+        name="Alice Existing",
+        workspace_id="alice-existing",
+        owner="alice",
+    )
+    _create_workspace_api(
+        client,
+        headers["admin"],
+        name="Bob Existing",
+        workspace_id="bob-existing",
+        owner="bob",
+    )
+
+    response = client.patch(
+        "/agentic/workspaces/bob-existing",
+        json={"owner": "alice"},
+        headers=headers["admin"],
+    )
+
+    assert response.status_code == 400
+    assert "工作空间数量已达上限" in response.json()["detail"]
+    assert client.get(
+        "/agentic/workspaces/bob-existing",
+        headers=headers["admin"],
+    ).json()["owner"] == "bob"
+
+
+def test_workspace_owner_transfer_out_releases_owner_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _create_workspace_api(
+        client,
+        headers["admin"],
+        name="Alice Existing",
+        workspace_id="alice-existing",
+        owner="alice",
+    )
+
+    moved = client.patch(
+        "/agentic/workspaces/alice-existing",
+        json={"owner": "bob"},
+        headers=headers["admin"],
+    )
+    assert moved.status_code == 200
+
+    created = client.post(
+        "/agentic/workspaces",
+        json={"name": "Alice Replacement", "id": "alice-replacement"},
+        headers=headers["alice"],
+    )
+    assert created.status_code == 201
+
+
+def test_existing_ownerless_shadow_binding_still_bypasses_owner_quota(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _create_workspace_api(
+        client,
+        headers["admin"],
+        name="Alice Existing",
+        workspace_id="alice-existing",
+        owner="alice",
+    )
+    _create_workspace_api(
+        client,
+        headers["admin"],
+        name="Shadow",
+        workspace_id="mw-shadow-pj-demo-123",
+        owner=None,
+    )
+
+    response = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["workspace"]["owner"] == "alice"
+
+
 def test_regular_user_first_workspace_does_not_become_global_default(tmp_path, monkeypatch):
     client, headers = _build_env(tmp_path, monkeypatch)
 
@@ -928,7 +1114,7 @@ def test_modeling_shadow_workspace_is_not_blocked_by_user_workspace_limit(
 
     ordinary = client.post(
         "/agentic/workspaces",
-        json={"name": "Ordinary", "id": "ordinary"},
+        json={"name": "Ordinary", "id": "ordinary", "owner": "alice"},
         headers=headers["admin"],
     )
     assert ordinary.status_code == 201
@@ -944,7 +1130,11 @@ def test_modeling_shadow_workspace_is_not_blocked_by_user_workspace_limit(
 
     over_limit = client.post(
         "/agentic/workspaces",
-        json={"name": "Second ordinary", "id": "second-ordinary"},
+        json={
+            "name": "Second ordinary",
+            "id": "second-ordinary",
+            "owner": "alice",
+        },
         headers=headers["admin"],
     )
     assert over_limit.status_code == 400
