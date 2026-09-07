@@ -130,6 +130,37 @@ if [ "${CONSUMER_ONLY}" = "1" ] && [ "${MODELING_ONLY}" = "1" ]; then
     die "--consumer-only and --modeling-only cannot be used together"
 fi
 
+# A release archive is commonly unpacked into a staging directory by CI or a
+# remote deployment runner. When an existing install is present elsewhere,
+# dispatch through its upgrade flow so BUNDLE_ROOT and persistent data stay
+# bound to the real installation directory.
+INSTALL_DIR="${ONTO_AGENT_INSTALL_DIR:-/opt/onto-agent}"
+BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}" ]; then
+    EXISTING_INSTALL=false
+    for marker in \
+        "${INSTALL_DIR}/VERSION" \
+        "${INSTALL_DIR}/deploy/state/current.env" \
+        "${INSTALL_DIR}/backend/.env"; do
+        if [ -e "${marker}" ]; then
+            EXISTING_INSTALL=true
+            break
+        fi
+    done
+    if [ "${EXISTING_INSTALL}" = true ]; then
+        [ -f "${SCRIPT_DIR}/upgrade.sh" ] \
+            || die "Existing installation detected but upgrade.sh is missing"
+        log "Existing installation detected at ${INSTALL_DIR}; dispatching upgrade flow"
+        UPGRADE_ARGS=("${INSTALL_DIR}")
+        if [ "${CONSUMER_ONLY}" = "1" ]; then
+            UPGRADE_ARGS+=(--consumer-only)
+        elif [ "${MODELING_ONLY}" = "1" ]; then
+            UPGRADE_ARGS+=(--modeling-only)
+        fi
+        exec bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
+    fi
+fi
+
 DEPLOY_ARGS=()
 if [ "${CONSUMER_ONLY}" = "1" ]; then
     DEPLOY_ARGS+=(--consumer-only)

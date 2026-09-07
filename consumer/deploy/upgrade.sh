@@ -16,7 +16,7 @@ die() {
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [install-dir]
+Usage: $(basename "$0") [install-dir] [--consumer-only|--modeling-only]
 
 Upgrade onto-agent from this release package.
 
@@ -35,6 +35,27 @@ EOF
 }
 
 INSTALL_DIR="${1:-/opt/onto-agent}"
+shift || true
+DEPLOY_ARGS=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --consumer-only|--modeling-only)
+            DEPLOY_ARGS+=("$1")
+            ;;
+        -h|--help|help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "Unknown argument: $1"
+            ;;
+    esac
+    shift
+done
+
+if [ "${DEPLOY_ARGS[0]:-}" = "--consumer-only" ] && [ "${DEPLOY_ARGS[1]:-}" = "--modeling-only" ]; then
+    die "--consumer-only and --modeling-only cannot be used together"
+fi
 
 if [ ! -d "${INSTALL_DIR}/deploy" ] || [ ! -f "${INSTALL_DIR}/VERSION" ]; then
     die "Not a valid installation directory: ${INSTALL_DIR} (expected deploy/ and VERSION to exist)"
@@ -161,6 +182,6 @@ for item in ${PROTECTED_ITEMS}; do
 done
 
 log "Running deploy.sh to complete upgrade"
-"${INSTALL_DIR}/deploy/deploy.sh"
+"${INSTALL_DIR}/deploy/deploy.sh" "${DEPLOY_ARGS[@]}"
 
 log "Upgrade completed successfully"
