@@ -1262,6 +1262,124 @@ def test_release_lifecycle_supports_legacy_docker_compose_and_uses_compatible_en
     assert 'PROTECTED_ITEMS=".env backend/.env ' in upgrade_text
 
 
+def test_deploy_refuses_fresh_install_when_existing_runtime_has_no_state(tmp_path):
+    deploy_root = tmp_path / "deploy"
+    bundle_root = tmp_path
+    deploy_root.mkdir()
+    (bundle_root / ".onto-runtime" / "data" / "chats").mkdir(parents=True)
+    (bundle_root / ".onto-runtime" / "data" / "chats" / "existing.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (bundle_root / ".onto-auth").mkdir()
+    (bundle_root / "backend").mkdir()
+    (bundle_root / "backend" / ".env").write_text(
+        "LLM_MAX_TOKENS=4096\n", encoding="utf-8"
+    )
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "flock").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_bin / "flock").chmod(0o755)
+    test_env = os.environ.copy()
+    test_env["PATH"] = f"{fake_bin}{os.pathsep}{test_env.get('PATH', '')}"
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "load_state; assert_no_existing_install_for_install",
+        ],
+        cwd=bundle_root,
+        env=test_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "existing installation" in result.stderr.lower()
+
+
+def test_deploy_allows_empty_persistent_directories_for_first_install(tmp_path):
+    deploy_root = tmp_path / "deploy"
+    deploy_root.mkdir()
+    (tmp_path / ".onto-runtime" / "config").mkdir(parents=True)
+    (tmp_path / ".onto-auth").mkdir()
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "flock").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_bin / "flock").chmod(0o755)
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "load_state; assert_no_existing_install_for_install",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_release_dispatcher_routes_staged_package_to_existing_install_upgrade():
+    deploy_script = (REPOSITORY_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert 'INSTALL_DIR="${ONTO_AGENT_INSTALL_DIR:-/opt/onto-agent}"' in deploy_script
+    assert '"${BUNDLE_ROOT}" != "${INSTALL_DIR}"' in deploy_script
+    assert '"${INSTALL_DIR}/deploy/state/current.env"' in deploy_script
+    assert 'UPGRADE_ARGS=("${INSTALL_DIR}")' in deploy_script
+    assert 'exec bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"' in deploy_script
+    assert deploy_script.index('Existing installation detected') < deploy_script.index(
+        'ensure_release_modeling_service_token "${BUNDLE_ROOT}"'
+    )
+
+
+def test_staged_release_entrypoint_executes_upgrade_against_existing_install(tmp_path):
+    staging = tmp_path / "release"
+    target = tmp_path / "install"
+    (staging / "deploy").mkdir(parents=True)
+    (target / "deploy" / "state").mkdir(parents=True)
+    (target / "backend").mkdir()
+    (target / "VERSION").write_text("old\n", encoding="utf-8")
+    (target / "backend" / ".env").write_text("LLM_MAX_TOKENS=4096\n", encoding="utf-8")
+    (staging / "deploy" / "manifest.json").write_text("{}\n", encoding="utf-8")
+    marker = tmp_path / "upgrade-called"
+    (staging / "deploy" / "upgrade.sh").write_text(
+        f"#!/bin/sh\nprintf '%s' \"$1\" > {shlex.quote(str(marker))}\n",
+        encoding="utf-8",
+    )
+    (staging / "deploy" / "upgrade.sh").chmod(0o755)
+    shutil.copyfile(REPOSITORY_ROOT / "deploy" / "deploy.sh", staging / "deploy" / "deploy.sh")
+
+    result = subprocess.run(
+        [TEST_BASH, str(staging / "deploy" / "deploy.sh"), "--consumer-only"],
+        env={**os.environ, "ONTO_AGENT_INSTALL_DIR": str(target)},
+        cwd=staging,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert marker.read_text(encoding="utf-8") == str(target)
+
+
+def test_upgrade_forwards_deploy_scope_to_installed_entrypoint(tmp_path):
+    upgrade_text = (DEPLOY_ROOT / "upgrade.sh").read_text(encoding="utf-8")
+
+    assert 'DEPLOY_ARGS+=("$1")' in upgrade_text
+    assert '"${INSTALL_DIR}/deploy/deploy.sh" "${DEPLOY_ARGS[@]}"' in upgrade_text
+    assert "--consumer-only|--modeling-only" in upgrade_text
+
+
 def test_release_lifecycle_preserves_legacy_root_env_port_overrides(tmp_path):
     deploy_root = tmp_path / "deploy"
     backend_root = tmp_path / "backend"
