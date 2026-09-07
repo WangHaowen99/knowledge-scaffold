@@ -806,13 +806,28 @@ def _validate_case_consistency(case: Mapping[str, Any]) -> None:
         unit_loads = batch.get("unit_loads")
         if not isinstance(unit_loads, Mapping):
             raise ValueError("package evaluator unit loads are invalid")
+        # Keep the package's declared bases aligned. VGO monthly load is RAW
+        # HC feed, while unit_loads[].input_tons is corrected effective feed.
+        basis_values: dict[str, tuple[Any, bool]] = {
+            "2#常减压塔": (batch.get("input_weight_tons"), True),
+            "2#柴油加氢": (batch.get("diesel_load_effective_input_tons"), True),
+            "蜡油加氢": (batch.get("vgo_load_raw_feed_tons"), False),
+        }
         for unit_name, status in unit_loads.items():
-            if not isinstance(status, Mapping) or status.get("input_tons") is None:
+            if str(unit_name) not in basis_values:
+                basis_values[str(unit_name)] = (
+                    status.get("input_tons") if isinstance(status, Mapping) else None,
+                    True,
+                )
+        for unit_name, (raw_value, allow_status_fallback) in basis_values.items():
+            value = raw_value
+            if value is None and allow_status_fallback:
+                status = unit_loads.get(unit_name)
+                value = status.get("input_tons") if isinstance(status, Mapping) else None
+            if value is None:
                 continue
-            value = _finite_decimal(
-                status.get("input_tons"), "batch.{}.input_tons".format(unit_name)
-            )
-            batch_totals[str(unit_name)] = batch_totals.get(str(unit_name), Decimal(0)) + value
+            parsed = _finite_decimal(value, "batch.{}.input_tons".format(unit_name))
+            batch_totals[unit_name] = batch_totals.get(unit_name, Decimal(0)) + parsed
 
     adjustments: dict[str, Decimal] = {}
     ledger = case.get("adjustment_ledger")
@@ -830,11 +845,15 @@ def _validate_case_consistency(case: Mapping[str, Any]) -> None:
                 entry["tons"], "adjustment_ledger.{}.tons".format(unit)
             )
 
+    monthly_aliases = {"柴油加氢": "2#柴油加氢"}
     for unit_name, status in units.items():
         if not isinstance(status, Mapping) or status.get("monthly_input_tons") is None:
             continue
-        expected = batch_totals.get(str(unit_name), Decimal(0)) + adjustments.get(
-            str(unit_name), Decimal(0)
+        canonical_name = monthly_aliases.get(str(unit_name), str(unit_name))
+        if canonical_name not in batch_totals:
+            continue
+        expected = batch_totals[canonical_name] + adjustments.get(
+            canonical_name, Decimal(0)
         )
         actual = _finite_decimal(
             status.get("monthly_input_tons"),
@@ -843,8 +862,8 @@ def _validate_case_consistency(case: Mapping[str, Any]) -> None:
         if abs(actual - expected) > Decimal("0.01"):
             raise BusinessSummaryInconsistentError(
                 "monthly load is inconsistent for {}: batch_total={} adjustment={} monthly={}".format(
-                    unit_name, expected - adjustments.get(str(unit_name), Decimal(0)),
-                    adjustments.get(str(unit_name), Decimal(0)), actual
+                    unit_name, expected - adjustments.get(canonical_name, Decimal(0)),
+                    adjustments.get(canonical_name, Decimal(0)), actual
                 )
             )
 
