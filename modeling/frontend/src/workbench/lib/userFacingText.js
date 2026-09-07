@@ -52,6 +52,7 @@ const TOKEN_LABELS = {
   claim_candidate_workspace: '准备本次修改',
   evaluation_passed: '正式评测',
   ready_for_eval: '评测准备',
+  product_ledger_verified: '产品清单台账',
   deterministic_confirmed: '确定性计算范围确认',
   releasable: '发布条件',
   revision: '版本',

@@ -122,6 +122,11 @@ import {
   listResultTraces,
   listTestcases,
 } from '../workflow/m3-repo.js';
+import {
+  validateProductLedger,
+  type ProductLedger,
+  type ProductLedgerValidation,
+} from './product-ledger.js';
 import { issueAgentRunCredential } from './run-credential.js';
 import { runScriptCasesInJiuwenbox } from './sandbox.js';
 import {
@@ -205,6 +210,7 @@ const GATE_LABELS: Record<string, string> = {
   goal_confirmed: '建模目标确认',
   process_confirmed: '业务流程确认',
   knowledge_confirmed: '知识内容确认',
+  product_ledger_verified: '产品清单台账',
   deterministic_confirmed: '确定性计算范围确认',
   modeling_complete: '建模完成',
   ready_for_eval: '评测准备',
@@ -686,6 +692,8 @@ export class AgentCoreService {
     const workspace = await this.ensureWorkspace(context);
     switch (tool) {
       case 'list_documents': return this.listDocuments(context.project.id);
+      case 'get_product_ledger': return this.getProductLedger(workspace);
+      case 'stage_product_ledger': return this.stageProductLedger(workspace, args);
       case 'read_document': return this.readDocument(context.project.id, args);
       case 'set_material_directive': return this.setMaterialDirective(context.project.id, args);
       case 'read_documents_fully': return this.readDocumentsFully(context, args);
@@ -1226,6 +1234,7 @@ export class AgentCoreService {
       const mutationId = text(args.mutation_id, 'mutation_id');
       const expectedRevision = text(args.expected_revision, 'expected_revision');
       const actions = parseChangeSetActions(args.actions);
+      this.assertProductLedgerBeforeRuleBatch(context, actions);
       const requestHash = domainMutationRequestHash('change-set', args);
       const prepared = this.changeControl.prepareChangeSet({
         projectId: context.project.id,
@@ -1306,6 +1315,59 @@ export class AgentCoreService {
       }
       throw normalized;
     }
+  }
+
+  private assertProductLedgerBeforeRuleBatch(
+    context: AgentToolContext,
+    actions: ChangeSetActionInput[],
+  ): void {
+    if (config.productLedger.mode !== 'enforce') return;
+    const touchesRuleBatch = actions.some((action) => (
+      action.tool === 'create_rule' || action.tool === 'patch_rule'
+    ));
+    if (!touchesRuleBatch) return;
+    const workspace = this.workspace(context.project.id);
+    if (!workspace) return;
+    const ledger = this.getProductLedger(workspace);
+    const validation = ledger.validation;
+    const ruleActionCount = actions.filter((action) => (
+      action.tool === 'create_rule' || action.tool === 'patch_rule'
+    )).length;
+    if (ledger.required === true && ruleActionCount > 10) {
+      throw new AgentCoreError(
+        'PRODUCT_LEDGER_BATCH_TOO_LARGE',
+        `产品清单规则批次包含 ${ruleActionCount} 项，单批最多 10 项`,
+        ['将规则生成拆分为每批 5 到 10 项，并在每批完成后重新读取台账和回执'],
+        409,
+        {
+          gate: 'product_ledger_verified',
+          batchSize: ruleActionCount,
+          maxBatchSize: 10,
+        },
+      );
+    }
+    if (ledger.required !== true || (
+      ledger.available === true
+      && ledger.sourceRevision === workspace.base_revision_oid
+      && validation?.pass === true
+    )) return;
+    const blockers = ledger.available !== true
+      ? ['先提交当前产品大清单的结构化台账']
+      : ledger.sourceRevision !== workspace.base_revision_oid
+        ? ['台账对应的资料修订已变化，请重新核对当前清单']
+        : (validation?.errors ?? []).slice(0, 8);
+    throw new AgentCoreError(
+      'PRODUCT_LEDGER_GATE_BLOCKED',
+      `产品清单台账未通过，不能开始正式规则批次生成：${blockers.join('；')}`,
+      blockers,
+      409,
+      {
+        gate: 'product_ledger_verified',
+        blockers,
+        validation,
+        next: ['完成台账核对后，再按小批次提交规则生成任务'],
+      },
+    );
   }
 
   private async runPlannedDirectTask(
@@ -4802,6 +4864,142 @@ export class AgentCoreService {
     return { sources, defaultColumns };
   }
 
+  private getProductLedger(workspace: WorkspaceRow) {
+    const row = this.db.prepare(`SELECT source_revision, scope, required,
+      ledger_json, validation_json, created_at, updated_at
+      FROM product_ledger_snapshots
+      WHERE project_id = ? AND source_revision = ?`).get(
+      workspace.project_id,
+      workspace.base_revision_oid,
+    ) as {
+      source_revision: string;
+      scope: string;
+      required: number;
+      ledger_json: string;
+      validation_json: string;
+      created_at: string;
+      updated_at: string;
+    } | undefined;
+    if (!row) {
+      return {
+        available: false,
+        required: false,
+        mode: config.productLedger.mode,
+        sourceRevision: workspace.base_revision_oid,
+        validation: null,
+        display: { text: '当前没有产品清单对账台账' },
+      };
+    }
+    let ledger: Record<string, unknown> = {};
+    let validation: ProductLedgerValidation | null = null;
+    try { ledger = JSON.parse(row.ledger_json) as Record<string, unknown>; } catch { ledger = {}; }
+    try { validation = JSON.parse(row.validation_json) as ProductLedgerValidation; } catch { validation = null; }
+    return {
+      available: true,
+      required: row.required === 1,
+      mode: config.productLedger.mode,
+      sourceRevision: row.source_revision,
+      scope: row.scope,
+      ledger,
+      validation,
+      rawCount: validation?.counts.raw ?? 0,
+      canonicalCount: validation?.counts.canonical ?? 0,
+      mergedGroupCount: validation?.counts.mergedGroups ?? 0,
+      completeCount: validation?.counts.complete ?? 0,
+      insufficientCount: validation?.counts.insufficient ?? 0,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      display: {
+        text: validation?.pass === true
+          ? `产品清单台账已校验：${validation.counts.raw} 条原始项，${validation.counts.canonical} 条去重项`
+          : `产品清单台账校验未通过：${validation?.errors?.length ?? 0} 项待处理`,
+      },
+    };
+  }
+
+  private stageProductLedger(workspace: WorkspaceRow, args: Record<string, unknown>) {
+    const raw = args.ledger && typeof args.ledger === 'object' && !Array.isArray(args.ledger)
+      ? args.ledger as Record<string, unknown>
+      : args;
+    const normalizeEntry = (value: unknown): ProductLedger['entries'][number] => {
+      const item = value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+      return {
+        canonicalItemId: item.canonicalItemId ?? item.canonical_item_id,
+        ruleId: item.ruleId ?? item.rule_id,
+        sourceRecordIds: item.sourceRecordIds ?? item.source_record_ids,
+        sourceLocator: item.sourceLocator ?? item.source_locator,
+        mergeGroupId: item.mergeGroupId ?? item.merge_group_id,
+        evidenceStatus: item.evidenceStatus ?? item.evidence_status,
+        processingStatus: item.processingStatus ?? item.processing_status,
+        insufficiencyReason: item.insufficiencyReason ?? item.insufficiency_reason,
+      } as ProductLedger['entries'][number];
+    };
+    const ledger: ProductLedger = {
+      schemaVersion: 'product-ledger-v1',
+      sourceRevision: String(raw.sourceRevision ?? raw.source_revision ?? '').trim()
+        || workspace.base_revision_oid,
+      scope: String(raw.scope ?? 'product_catalog').trim(),
+      rawCount: Number(raw.rawCount ?? raw.raw_count ?? 0),
+      canonicalCount: Number(raw.canonicalCount ?? raw.canonical_count ?? 0),
+      mergedGroupCount: Number(raw.mergedGroupCount ?? raw.merged_group_count ?? 0),
+      entries: (Array.isArray(raw.entries) ? raw.entries : []).map(normalizeEntry),
+      required: raw.required === true,
+    };
+    const required = ledger.required === true
+      || ledger.rawCount >= 100
+      || /(?:product|catalog|产品|商品|规则|手册|台账|清单)/iu.test(ledger.scope);
+    ledger.required = required;
+    const validation = validateProductLedger(ledger);
+    const timestamp = nowIso();
+    this.db.prepare(`INSERT INTO product_ledger_snapshots
+      (project_id, source_revision, scope, required, ledger_json, validation_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, source_revision) DO UPDATE SET
+        scope = excluded.scope,
+        required = excluded.required,
+        ledger_json = excluded.ledger_json,
+        validation_json = excluded.validation_json,
+        updated_at = excluded.updated_at`).run(
+      workspace.project_id,
+      ledger.sourceRevision,
+      ledger.scope,
+      required ? 1 : 0,
+      JSON.stringify(ledger),
+      JSON.stringify(validation),
+      timestamp,
+      timestamp,
+    );
+    if (!validation.pass && config.productLedger.mode === 'enforce' && required) {
+      throw new AgentCoreError(
+        'PRODUCT_LEDGER_INVALID',
+        `产品清单台账校验未通过：${validation.errors.slice(0, 8).join('；')}`,
+        ['补齐逐项来源定位、唯一 ID、归并关系和完整/不足状态后重新提交台账'],
+        409,
+        { validation, ledger },
+      );
+    }
+    return {
+      ok: validation.pass,
+      required,
+      mode: config.productLedger.mode,
+      sourceRevision: ledger.sourceRevision,
+      validation,
+      counts: validation.counts,
+      rawCount: validation.counts.raw,
+      canonicalCount: validation.counts.canonical,
+      mergedGroupCount: validation.counts.mergedGroups,
+      completeCount: validation.counts.complete,
+      insufficientCount: validation.counts.insufficient,
+      display: {
+        text: validation.pass
+          ? `已记录产品清单台账：${validation.counts.raw} 条原始项，${validation.counts.canonical} 条去重项`
+          : `已记录产品清单台账，但还有 ${validation.errors.length} 项待处理`,
+      },
+    };
+  }
+
   private async schemaMappingPlan(workspace: WorkspaceRow) {
     const current = await this.overlay(workspace);
     const reviews = this.materialPurposeReviews.list(workspace.project_id);
@@ -6784,6 +6982,10 @@ export class AgentCoreService {
       workspace.project_id,
       workingSpec,
     );
+    const productLedger = this.getProductLedger(workspace);
+    const productLedgerValidation = productLedger.validation;
+    const productLedgerEnforced = config.productLedger.mode === 'enforce'
+      && productLedger.required === true;
     const manualCases = listTestcases(workspace.project_id).filter((item) => item.source === 'manual');
     const { latestRound: latestEval, results: latestResults } = latestEffectiveEvaluation(
       workspace.project_id,
@@ -6861,11 +7063,30 @@ export class AgentCoreService {
         ],
       },
     };
+    // 只有明确提交过产品大清单台账时才把它显示为独立门禁；普通对象/规则
+    // 建模不会因为新增的观测能力多出一条视觉闸位。
+    if (productLedger.available === true) {
+      gates.product_ledger_verified = {
+        pass: !productLedgerEnforced || (
+          productLedger.sourceRevision === workspace.base_revision_oid
+          && productLedgerValidation?.pass === true
+        ),
+        blockers: !productLedgerEnforced
+          ? []
+          : productLedger.sourceRevision !== workspace.base_revision_oid
+            ? ['台账对应的资料修订已变化，请重新核对当前清单']
+            : (productLedgerValidation?.errors ?? []).slice(0, 8),
+        warnings: config.productLedger.mode === 'advisory' && productLedgerValidation?.pass !== true
+          ? ['产品清单台账目前处于观测阶段，当前问题不会阻断普通建模']
+          : [],
+      };
+    }
     const modelingReady = combine(gates, [
       'materials_ready',
       'goal_confirmed',
       'process_confirmed',
       'knowledge_confirmed',
+      ...(productLedger.available === true ? ['product_ledger_verified'] : []),
       'modeling_complete',
       'deterministic_confirmed',
     ]);

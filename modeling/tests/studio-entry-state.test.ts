@@ -241,6 +241,8 @@ test('StudioView 接线字段纠错、NO_CHANGES 同步和完整资源删除文�
     'utf8',
   );
   assert.match(rightPane, /window\.addEventListener\('mw-pending-attention', focusPending\)/);
+  assert.match(rightPane, /answer\.displayText && answer\.text/);
+  assert.match(rightPane, /补充说明：\$\{visible\(answer\.text\)\}/);
 
   const blocks = readFileSync(
     new URL('../frontend/src/workbench/right/blocks/Blocks.jsx', import.meta.url),
