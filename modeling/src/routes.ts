@@ -120,7 +120,10 @@ import {
   evaluationDatabaseUrlSummary,
   selectEvaluationDatabaseUrlOverride,
 } from './evaluation/evaluation-database-target.js';
-import { validateEvaluationDatabaseExcelContents } from './evaluation/eval-db.js';
+import {
+  validateEvaluationDatabaseExcelContents,
+  validateEvaluationDatabaseExcelUpload,
+} from './evaluation/eval-db.js';
 import { shadowWorkspaceId } from './evaluation/shadow-workspace.js';
 import {
   cancelGraphImportUpload,
@@ -223,6 +226,7 @@ import { getProjectPackageDataSourceSelection } from './workflow/package-data-so
 import { registerAcceptanceRoutes } from './acceptance/routes.js';
 import { takeAcceptanceFault } from './acceptance/faults.js';
 import { registerProjectTransferRoutes } from './projects/project-transfer-routes.js';
+import { installHttpErrorHandler, sendHttpError } from './http-error.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
   `semantic_binding_ignored:${projectId}:${revision}`;
@@ -366,7 +370,12 @@ function materialRevisionFingerprint(documents: ReturnType<typeof listDocuments>
 }
 
 function sendPackageDraftError(reply: any, error: unknown) {
-  if (!(error instanceof PackageDraftError)) throw error;
+  if (!(error instanceof PackageDraftError)) {
+    return sendHttpError(reply, error, {
+      logMessage: '知识包草稿操作失败',
+    });
+  }
+  if (error.statusCode >= 500) return sendHttpError(reply, error);
   return reply.code(error.statusCode).send({
     code: error.code,
     error: error.message,
@@ -383,6 +392,24 @@ function blockForActivePackageDraft(reply: any, projectId: string, operation: st
   }
 }
 
+class RequestInputError extends Error {
+  readonly statusCode = 400;
+
+  constructor(message: string, readonly code = 'INVALID_INPUT') {
+    super(message);
+    this.name = 'RequestInputError';
+  }
+}
+
+class RequestConflictError extends Error {
+  readonly statusCode = 409;
+
+  constructor(message: string, readonly code = 'REVISION_CONFLICT') {
+    super(message);
+    this.name = 'RequestConflictError';
+  }
+}
+
 async function readEvaluationDatabaseUpload(req: any): Promise<{
   filename: string;
   buffer: Buffer;
@@ -396,7 +423,7 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
   let customDatabaseUrl = '';
   for await (const part of req.parts()) {
     if (part.type === 'file') {
-      if (buffer) throw new Error('一次只能上传一个 Excel 文件');
+      if (buffer) throw new RequestInputError('一次只能上传一个 Excel 文件');
       filename = part.filename;
       buffer = await part.toBuffer();
     } else if (part.fieldname === 'replace_confirmation') {
@@ -407,12 +434,19 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
       customDatabaseUrl = String(part.value ?? '');
     }
   }
-  if (!buffer) throw new Error('缺少 Excel 文件');
+  if (!buffer) throw new RequestInputError('缺少 Excel 文件');
+  let databaseUrl: string | undefined;
+  try {
+    databaseUrl = selectEvaluationDatabaseUrlOverride(databaseUrlMode, customDatabaseUrl);
+    if (databaseUrl) evaluationDatabaseUrlSummary(databaseUrl);
+  } catch (error) {
+    throw new RequestInputError(error instanceof Error ? error.message : '数据库连接 URL 不正确');
+  }
   return {
     filename,
     buffer,
     replaceConfirmed,
-    databaseUrl: selectEvaluationDatabaseUrlOverride(databaseUrlMode, customDatabaseUrl),
+    databaseUrl,
   };
 }
 
@@ -423,11 +457,18 @@ async function readQuickEvaluationDatabaseUpload(req: any): Promise<{
   let upload: { filename: string; buffer: Buffer } | undefined;
   for await (const part of req.parts()) {
     if (part.type !== 'file') continue;
-    if (upload) throw new Error('一次只能上传一个 Excel 文件');
+    if (upload) throw new RequestInputError('一次只能上传一个 Excel 文件');
     upload = { filename: part.filename, buffer: await part.toBuffer() };
   }
-  if (!upload) throw new Error('缺少 Excel 文件');
-  validateEvaluationDatabaseExcelContents(upload.filename, upload.buffer);
+  if (!upload) throw new RequestInputError('缺少 Excel 文件');
+  try {
+    validateEvaluationDatabaseExcelContents(upload.filename, upload.buffer);
+  } catch (error) {
+    throw new RequestInputError(
+      error instanceof Error ? error.message : 'Excel 文件内容不正确',
+      'EVALUATION_DATABASE_IMPORT_INVALID',
+    );
+  }
   return upload;
 }
 
@@ -436,6 +477,11 @@ function isAgentWorkflowFactRequest(req: FastifyRequest): boolean {
 }
 
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
+  // 必须在所有子插件注册前安装：Fastify 的默认 handler 会把没有
+  // statusCode 的业务异常一律当成 500，且会把 message 直接暴露给客户端。
+  // 根级 handler 同时覆盖 async handler 的 Promise rejection。
+  installHttpErrorHandler(app);
+
   // 错误响应统一按 code 挂上「接下来能做什么」：逐个路由补出口既改不动也守不住，
   // 集中派生后新增错误码只要在 error-next-actions 登记一次即可。
   app.addHook('onSend', async (_req, reply, payload) => {
@@ -754,9 +800,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return { ok: true };
       } catch (error) {
         if (error instanceof LlmDefaultSyncError) {
+          if (error.statusCode >= 500) {
+            return sendHttpError(reply, error, {
+              code: 'LLM_CONFIG_UNAVAILABLE',
+              message: '平台模型配置暂时不可用，请稍后重试',
+              logMessage: '同步平台 LLM 默认配置失败',
+            });
+          }
           return reply.code(error.statusCode).send({ error: error.message });
         }
-        throw error;
+        return sendHttpError(reply, error, { logMessage: '同步平台 LLM 默认配置失败' });
       }
     });
 
@@ -848,12 +901,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return reply.code(404).send({ error: '项目不存在' });
       }
       const body = (req.body ?? {}) as any;
+      const role = body.role === 'modeler' ? 'modeler' : body.role === 'viewer' ? 'viewer' : null;
+      if (!role) return reply.code(400).send({ error: '请选择建模成员或只读成员' });
+      const username = String(body.username ?? '').trim();
+      if (!username || username.length > 128) {
+        return reply.code(400).send({ error: '请输入有效的成员用户名' });
+      }
+      if (username === project.owner) {
+        return reply.code(400).send({ error: '项目负责人不需要重复添加' });
+      }
       try {
-        const role = body.role === 'modeler' ? 'modeler' : body.role === 'viewer' ? 'viewer' : null;
-        if (!role) return reply.code(400).send({ error: '请选择建模成员或只读成员' });
-        return { members: setProjectMember(project.id, project.owner, body.username, role) };
+        return { members: setProjectMember(project.id, project.owner, username, role) };
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '更新项目成员失败',
+        });
       }
     });
 
@@ -869,21 +932,35 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     });
 
     r.post('/api/package-workspaces/import', async (req, reply) => {
-      const file = await (req as any).file();
+      let file: any;
+      try {
+        file = await (req as any).file();
+      } catch (error) {
+        return sendHttpError(reply, error, { logMessage: '读取知识包上传内容失败' });
+      }
       if (!file) return reply.code(400).send({ error: '请选择知识包 ZIP' });
       if (!String(file.filename || '').toLowerCase().endsWith('.zip')) {
         return reply.code(400).send({ error: '仅支持 .zip 知识包' });
       }
 
+      let buffer: Buffer;
+      try {
+        buffer = await file.toBuffer();
+      } catch (error) {
+        return sendHttpError(reply, error, { logMessage: '读取知识包 ZIP 失败' });
+      }
       let imported: ReturnType<typeof parsePackageArchive>;
       let originalPackageName = '';
       try {
-        imported = parsePackageArchive(new Uint8Array(await file.toBuffer()));
+        imported = parsePackageArchive(new Uint8Array(buffer));
         originalPackageName = imported.spec.name;
         const requestedName = String((file.fields as any)?.package_name?.value ?? '').trim();
         if (requestedName) imported = renameImportedPackageArchive(imported, requestedName);
-      } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      } catch {
+        return reply.code(400).send({
+          code: 'PACKAGE_IMPORT_INVALID',
+          error: '知识包 ZIP 内容不正确，请检查后重试',
+        });
       }
 
       const nameConflict = visiblePackageNameConflict(
@@ -946,14 +1023,20 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           warnings: imported.warnings,
         });
       } catch (error) {
-        req.log.error({ err: error, projectId: project.id }, '导入知识包失败');
-        deleteProjectLocalData(project.id, req.user!.username);
+        try {
+          deleteProjectLocalData(project.id, req.user!.username);
+        } catch (cleanupError) {
+          req.log.error({ err: cleanupError, projectId: project.id }, '清理失败的知识包项目数据失败');
+        }
         try {
           await packageArtifacts.removeProjectArtifacts(project.id);
         } catch (cleanupError) {
           req.log.error({ err: cleanupError, projectId: project.id }, '清理失败的知识包工件仓库失败');
         }
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          logMessage: '导入知识包失败',
+          includeReason: false,
+        });
       }
     });
 
@@ -1015,12 +1098,37 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           });
         }
         if (purpose === 'term') {
+          let parsed: Awaited<ReturnType<typeof parseDocumentIsolated>>;
           try {
-            const parsed = await parseDocumentIsolated(kind, buffer, filename);
-            if (parsed.error) throw new Error(parsed.error);
-            validateProjectTermTables(p.id, parsed.tables ?? []);
+            parsed = await parseDocumentIsolated(kind, buffer, filename);
           } catch (error) {
-            return reply.code(400).send({ error: error instanceof Error ? error.message : '术语表格式不正确' });
+            return sendHttpError(reply, error, {
+              code: 'MATERIAL_PARSE_FAILED',
+              message: '资料解析服务暂时不可用，请稍后重试',
+              logMessage: '术语表上传预解析失败',
+            });
+          }
+          if (parsed.error) {
+            return reply.code(400).send({
+              code: 'MATERIAL_TERM_TABLE_INVALID',
+              error: parsed.error,
+            });
+          }
+          let dataSourceType: ReturnType<typeof getProjectPackageDataSourceSelection>['dataSourceType'];
+          try {
+            dataSourceType = getProjectPackageDataSourceSelection(p.id).dataSourceType;
+          } catch (error) {
+            return sendHttpError(reply, error, {
+              logMessage: '读取术语表数据源配置失败',
+            });
+          }
+          try {
+            validateTermTables(parsed.tables ?? [], { dataSourceType });
+          } catch (error) {
+            return reply.code(400).send({
+              code: 'MATERIAL_TERM_TABLE_INVALID',
+              error: error instanceof Error ? error.message : '术语表格式不正确',
+            });
           }
         }
         const revision = insertDocumentRevision({
@@ -1082,20 +1190,55 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!document || document.projectId !== project.id || document.lifecycleStatus !== 'active') {
         return reply.code(404).send({ error: '资料不存在' });
       }
+      let purpose: NonNullable<DocumentRecord['purpose']>;
+      let readingMode: NonNullable<DocumentRecord['readingMode']>;
       try {
-        const purpose = parseMaterialPurpose((req.body as any)?.purpose) ?? document.purpose ?? 'auto';
-        const readingMode = parseReadingMode((req.body as any)?.readingMode) ?? document.readingMode ?? 'on_demand';
-        if (purpose === 'term' && !['excel', 'csv'].includes(document.kind)) {
-          return reply.code(400).send({ error: '只有 Excel 或 CSV 表格可以指定为术语表' });
+        purpose = parseMaterialPurpose((req.body as any)?.purpose) ?? document.purpose ?? 'auto';
+        readingMode = parseReadingMode((req.body as any)?.readingMode) ?? document.readingMode ?? 'on_demand';
+      } catch (error) {
+        return reply.code(400).send({
+          code: 'DOCUMENT_INVALID_DIRECTIVES',
+          error: error instanceof Error ? error.message : '资料设置不正确',
+        });
+      }
+      if (purpose === 'term' && !['excel', 'csv'].includes(document.kind)) {
+        return reply.code(400).send({
+          code: 'DOCUMENT_INVALID_DIRECTIVES',
+          error: '只有 Excel 或 CSV 表格可以指定为术语表',
+        });
+      }
+      if (purpose === 'schema' && !(document.tables ?? []).length) {
+        return reply.code(400).send({
+          code: 'DOCUMENT_INVALID_DIRECTIVES',
+          error: '只有包含可识别数据表的资料可以指定为数据 Schema',
+        });
+      }
+      if (purpose === 'term') {
+        let dataSourceType: ReturnType<typeof getProjectPackageDataSourceSelection>['dataSourceType'];
+        try {
+          dataSourceType = getProjectPackageDataSourceSelection(project.id).dataSourceType;
+        } catch (error) {
+          return sendHttpError(reply, error, {
+            logMessage: '读取术语表数据源配置失败',
+          });
         }
-        if (purpose === 'schema' && !(document.tables ?? []).length) {
-          return reply.code(400).send({ error: '只有包含可识别数据表的资料可以指定为数据 Schema' });
+        try {
+          validateTermTables(document.tables ?? [], { dataSourceType });
+        } catch (error) {
+          return reply.code(400).send({
+            code: 'MATERIAL_TERM_TABLE_INVALID',
+            error: error instanceof Error ? error.message : '术语表格式不正确',
+          });
         }
-        if (purpose === 'term') validateProjectTermTables(project.id, document.tables ?? []);
-        const expectedDirectiveRevision = Number((req.body as any)?.expectedDirectiveRevision);
-        if (!Number.isSafeInteger(expectedDirectiveRevision) || expectedDirectiveRevision < 0) {
-          return reply.code(400).send({ error: '缺少有效的资料设置版本，请刷新后重试' });
-        }
+      }
+      const expectedDirectiveRevision = parseDraftRevision((req.body as any)?.expectedDirectiveRevision);
+      if (expectedDirectiveRevision == null) {
+        return reply.code(400).send({
+          code: 'DOCUMENT_INVALID_DIRECTIVES',
+          error: '缺少有效的资料设置版本，请刷新后重试',
+        });
+      }
+      try {
         const updated = updateDocumentDirectives(document.id, {
           purpose, readingMode, expectedDirectiveRevision,
         });
@@ -1105,8 +1248,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           : materialPurposeReviews.get(updated.id);
         return { document: updated, purposeReview };
       } catch (error) {
-        const message = error instanceof Error ? error.message : '资料设置保存失败';
-        return reply.code(message.includes('其他位置更新') ? 409 : 400).send({ error: message });
+        return sendHttpError(reply, error, {
+          logMessage: '保存资料设置失败',
+        });
       }
     });
 
@@ -1117,12 +1261,29 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!document || document.projectId !== project.id || document.lifecycleStatus !== 'active') {
         return reply.code(404).send({ error: '资料不存在' });
       }
+      let purpose: ReturnType<typeof parseMaterialPurpose>;
       try {
-        const purpose = parseMaterialPurpose((req.body as any)?.purpose);
-        if (!purpose || purpose === 'auto') {
-          return reply.code(400).send({ error: '请确认明确的资料用途' });
-        }
-        const expectedDirectiveRevision = Number((req.body as any)?.expectedDirectiveRevision);
+        purpose = parseMaterialPurpose((req.body as any)?.purpose);
+      } catch (error) {
+        return reply.code(400).send({
+          code: 'MATERIAL_PURPOSE_REVIEW_INVALID',
+          error: error instanceof Error ? error.message : '资料用途不正确',
+        });
+      }
+      if (!purpose || purpose === 'auto') {
+        return reply.code(400).send({
+          code: 'MATERIAL_PURPOSE_REVIEW_INVALID',
+          error: '请确认明确的资料用途',
+        });
+      }
+      const expectedDirectiveRevision = parseDraftRevision((req.body as any)?.expectedDirectiveRevision);
+      if (expectedDirectiveRevision == null) {
+        return reply.code(400).send({
+          code: 'MATERIAL_PURPOSE_REVIEW_INVALID',
+          error: '缺少有效的资料设置版本，请刷新后重试',
+        });
+      }
+      try {
         const result = materialPurposeReviews.confirm(document, {
           purpose,
           sheets: Array.isArray((req.body as any)?.sheetDecisions)
@@ -1137,8 +1298,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           purposeReviewProgress: materialPurposeReviews.progress(project.id),
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : '资料用途确认失败';
-        return reply.code(message.includes('其他位置更新') ? 409 : 400).send({ error: message });
+        return sendHttpError(reply, error, {
+          logMessage: '确认资料用途失败',
+        });
       }
     });
 
@@ -1155,15 +1317,34 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         expectedDirectiveRevision: number;
       }> = [];
       for (const value of values) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          return reply.code(400).send({
+            code: 'MATERIAL_PURPOSE_REVIEW_INVALID',
+            error: '资料用途确认项必须是对象',
+          });
+        }
         const documentId = String(value?.documentId ?? '').trim();
+        if (!documentId) {
+          return reply.code(400).send({
+            code: 'MATERIAL_PURPOSE_REVIEW_INVALID',
+            error: '资料编号不能为空',
+          });
+        }
         const document = getDocument(documentId);
         if (!document || document.projectId !== project.id || document.lifecycleStatus !== 'active') {
           return reply.code(404).send({ error: '资料不存在' });
         }
+        const expectedDirectiveRevision = parseDraftRevision(value.expectedDirectiveRevision);
+        if (expectedDirectiveRevision == null) {
+          return reply.code(400).send({
+            code: 'MATERIAL_PURPOSE_REVIEW_INVALID',
+            error: '缺少有效的资料设置版本，请刷新后重试',
+          });
+        }
         inputs.push({
           document,
           confirmedBy: req.user!.username,
-          expectedDirectiveRevision: Number(value?.expectedDirectiveRevision),
+          expectedDirectiveRevision,
         });
       }
       try {
@@ -1176,9 +1357,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           purposeReviewProgress: materialPurposeReviews.progress(project.id),
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : '资料用途批量确认失败';
-        return reply.code(message.includes('刷新') || message.includes('其他位置更新') ? 409 : 400)
-          .send({ error: message });
+        return sendHttpError(reply, error, {
+          logMessage: '批量确认资料用途失败',
+        });
       }
     });
 
@@ -1437,7 +1618,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return { deleted: p.id };
       } catch (error) {
         req.log.error({ err: error, projectId: p.id }, '删除项目失败');
-        return reply.code(500).send({ error: error instanceof Error ? error.message : '项目删除失败，请稍后重试' });
+        return sendHttpError(reply, error, {
+          code: 'PROJECT_DELETE_FAILED',
+          message: '项目删除失败，请稍后重试',
+          logMessage: '删除项目失败（HTTP 错误归一化）',
+        });
       }
     });
 
@@ -2090,7 +2275,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           },
         };
       } catch (e) {
-        return reply.code(500).send({ error: `体检失败：${e instanceof Error ? e.message : e}` });
+        return sendHttpError(reply, e, {
+          code: 'PACKAGE_CHECK_FAILED',
+          message: '体检失败，请稍后重试',
+          logMessage: '知识包体检失败',
+        });
       }
       });
     });
@@ -2158,7 +2347,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           }),
         };
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '确认知识包警告失败',
+        });
       }
     });
     r.get('/api/projects/:id/package/export', async (req, reply) => {
@@ -2227,7 +2419,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           if (!isAgentWorkflowFactRequest(req)) setProjectStage(c.p.id, 'data_source');
           return { dataSource };
         } catch (e) {
-          return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
+          return sendHttpError(reply, e, {
+            includeReason: false,
+            logMessage: '保存项目数据源配置失败',
+          });
         }
       });
     });
@@ -2241,7 +2436,12 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           ...evaluationDatabaseUrlSummary(options.evaluationDatabaseDependencies?.databaseUrl),
         };
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          statusCode: 503,
+          code: 'EVAL_DB_ADMIN_UNAVAILABLE',
+          message: '评测数据服务暂时不可用，请稍后重试',
+          logMessage: '读取评测库目标配置失败',
+        });
       }
     });
 
@@ -2249,19 +2449,35 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       return withLock(`${c.p.id}:evaluation-database-create`, reply, async () => {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        let databaseUrl: string | undefined;
         try {
-          const body = (req.body ?? {}) as Record<string, unknown>;
-          const databaseUrl = selectEvaluationDatabaseUrlOverride(
+          databaseUrl = selectEvaluationDatabaseUrlOverride(
             body.database_url_mode,
             body.database_url,
           );
+          // 自定义 URL 是请求输入，在调用数据库管理端之前单独校验，
+          // 避免把连接或 SQL 执行故障一起误判成 400。
+          if (databaseUrl) evaluationDatabaseUrlSummary(databaseUrl);
+        } catch (error) {
+          return reply.code(400).send({
+            code: 'INVALID_INPUT',
+            error: error instanceof Error ? error.message : '数据库连接 URL 不正确',
+          });
+        }
+        try {
           const result = await createProjectEvaluationDatabase({
             projectId: c.p.id,
             databaseUrl,
           }, options.evaluationDatabaseDependencies);
           return reply.code(result.created ? 201 : 200).send(result);
         } catch (error) {
-          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+          return sendHttpError(reply, error, {
+            statusCode: 503,
+            code: 'EVAL_DB_ADMIN_UNAVAILABLE',
+            message: '评测数据服务暂时不可用，请稍后重试',
+            logMessage: '创建项目评测库失败',
+          });
         }
       });
     });
@@ -2273,6 +2489,20 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         try {
           assertProjectEvaluationDatabaseImportAvailable(c.p.id);
           const upload = await readEvaluationDatabaseUpload(req);
+          if (!upload.replaceConfirmed) {
+            return reply.code(400).send({
+              code: 'EVALUATION_DATABASE_IMPORT_CONFIRMATION_REQUIRED',
+              error: '请先确认 Excel 中的同名表将替换目标数据库中的现有表',
+            });
+          }
+          try {
+            validateEvaluationDatabaseExcelUpload(upload.filename, upload.buffer);
+          } catch (error) {
+            return reply.code(400).send({
+              code: 'EVALUATION_DATABASE_IMPORT_INVALID',
+              error: error instanceof Error ? error.message : 'Excel 文件不正确',
+            });
+          }
           const result = startProjectEvaluationDatabaseImport({
             projectId: c.p.id,
             ...upload,
@@ -2285,7 +2515,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           if (error instanceof EvaluationDatabaseImportCapacityError) {
             return reply.code(429).send({ error: error.message });
           }
-          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+          return sendHttpError(reply, error, {
+            includeReason: false,
+            logMessage: '启动评测库导入失败',
+          });
         }
       });
     });
@@ -2299,13 +2532,35 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           const upload = await readQuickEvaluationDatabaseUpload(req);
           const defaults = getEvalBindingDefaults();
           if (!['nl2sql_template', 'nl2sql_http'].includes(defaults.provider)) {
-            throw new Error('平台默认数据源不是 NL2SQL，无法一键导入 Excel');
+            return sendHttpError(reply, new Error('平台默认数据源不是 NL2SQL'), {
+              statusCode: 503,
+              code: 'EVAL_DB_ADMIN_UNAVAILABLE',
+              message: '平台评测数据源暂时不可用，请联系管理员检查配置',
+              logMessage: '评测库一键导入缺少 NL2SQL 配置',
+            });
           }
-          if (!defaults.url) throw new Error('平台尚未配置 NL2SQL 数据服务 URL');
-          const database = await createProjectEvaluationDatabase(
-            { projectId: c.p.id },
-            options.evaluationDatabaseDependencies,
-          );
+          if (!defaults.url) {
+            return sendHttpError(reply, new Error('平台尚未配置 NL2SQL 数据服务 URL'), {
+              statusCode: 503,
+              code: 'EVAL_DB_ADMIN_UNAVAILABLE',
+              message: '平台评测数据源暂时不可用，请联系管理员检查配置',
+              logMessage: '评测库一键导入缺少 NL2SQL URL',
+            });
+          }
+          let database: Awaited<ReturnType<typeof createProjectEvaluationDatabase>>;
+          try {
+            database = await createProjectEvaluationDatabase(
+              { projectId: c.p.id },
+              options.evaluationDatabaseDependencies,
+            );
+          } catch (error) {
+            return sendHttpError(reply, error, {
+              statusCode: 503,
+              code: 'EVAL_DB_ADMIN_UNAVAILABLE',
+              message: '评测数据服务暂时不可用，请稍后重试',
+              logMessage: '一键导入创建项目评测库失败',
+            });
+          }
           const token = (req.headers.authorization ?? '').slice(7);
           const dataSource = await configureProjectDataSource({
             projectId: c.p.id,
@@ -2337,7 +2592,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           if (error instanceof EvaluationDatabaseImportCapacityError) {
             return reply.code(429).send({ error: error.message });
           }
-          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+          return sendHttpError(reply, error, {
+            includeReason: false,
+            logMessage: '启动评测库一键导入失败',
+          });
         }
       });
     });
@@ -2368,13 +2626,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           return reply.code(201).send({ upload });
         } catch (error) {
           if (error instanceof GraphImportInputError) {
-            return reply.code(400).send({
+            return reply.code(error.statusCode).send({
               code: error.code,
               error: error.message,
               details: error.details,
             });
           }
-          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+          return sendHttpError(reply, error, {
+            includeReason: false,
+            logMessage: '上传图导入 Excel 失败',
+          });
         }
       });
     });
@@ -2404,13 +2665,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           });
         }
         if (error instanceof GraphImportInputError) {
-          return reply.code(400).send({
+          return reply.code(error.statusCode).send({
             code: error.code,
             error: error.message,
             details: error.details,
           });
         }
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '校验图导入映射失败',
+        });
       }
     });
 
@@ -2456,13 +2720,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             });
           }
           if (error instanceof GraphImportInputError) {
-            return reply.code(400).send({
+            return reply.code(error.statusCode).send({
               code: error.code,
               error: error.message,
               details: error.details,
             });
           }
-          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+          return sendHttpError(reply, error, {
+            includeReason: false,
+            logMessage: '启动图数据导入失败',
+          });
         }
       });
     });
@@ -2485,7 +2752,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const run = await cancelGraphImportRun(c.p.id, (req.params as any).runId);
         return { run };
       } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '取消图数据导入失败',
+        });
       }
     });
 
@@ -2517,16 +2787,19 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const { cases } = (req.body ?? {}) as { cases?: Array<{ question?: string; groundTruth?: string }> };
       if (!Array.isArray(cases)) return reply.code(400).send({ error: '请提供真实评测用例数组' });
-      try {
-        const result = m3repo.addTestcases(c.p.id, cases.map((item) => ({
-          question: String(item?.question ?? ''),
-          groundTruth: String(item?.groundTruth ?? ''),
-        })));
-        if (!isAgentWorkflowFactRequest(req)) setProjectStage(c.p.id, 'testcases');
-        return result;
-      } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      if (!cases.length) return reply.code(400).send({ error: '请提供至少一条真实评测用例' });
+      if (cases.length > 500) return reply.code(400).send({ error: '一次最多导入 500 条真实评测用例' });
+      const normalizedCases = cases.map((item) => ({
+        question: String(item?.question ?? '').trim(),
+        groundTruth: String(item?.groundTruth ?? '').trim(),
+      }));
+      const missingQuestion = normalizedCases.findIndex((item) => !item.question);
+      if (missingQuestion >= 0) {
+        return reply.code(400).send({ error: `第 ${missingQuestion + 1} 条缺少问题` });
       }
+      const result = m3repo.addTestcases(c.p.id, normalizedCases);
+      if (!isAgentWorkflowFactRequest(req)) setProjectStage(c.p.id, 'testcases');
+      return result;
     });
     r.post('/api/projects/:id/testcases/prefill', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -2628,7 +2901,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
       } catch (e) {
-        return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
+        return sendHttpError(reply, e, {
+          includeReason: false,
+          logMessage: '启动项目评测失败',
+        });
       }
     });
     r.post('/api/projects/:id/evaluate/cancel', async (req, reply) => {
@@ -2642,7 +2918,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       try {
         return { round: await cancelEvaluation(c.p.id, roundId) };
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '取消项目评测失败',
+        });
       }
     });
     r.get('/api/projects/:id/rounds', async (req, reply) => {
@@ -2663,17 +2942,23 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const { verdict, reason } = (req.body ?? {}) as any;
       if (!['pass', 'partial', 'fail'].includes(verdict)) return reply.code(400).send({ error: '评测结果不正确' });
       const resultId = String((req.params as any).resultId);
-      if (!m3repo.resultBelongsToProject(resultId, c.p.id)) {
+      const currentResult = m3repo.getResult(resultId);
+      if (!currentResult || !m3repo.resultBelongsToProject(resultId, c.p.id)) {
         return reply.code(404).send({ error: '评测结果不存在' });
       }
-      try {
-        const res = m3repo.overrideVerdict(resultId, verdict, {
-          reason: String(reason ?? ''), actor: req.user!.username,
-        });
-        return { result: res };
-      } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      const normalizedReason = String(reason ?? '').trim();
+      if (!normalizedReason) return reply.code(400).send({ error: '请填写人工改判理由' });
+      if (normalizedReason.length > 1_000) {
+        return reply.code(400).send({ error: '人工改判理由不能超过 1000 字' });
       }
+      if (currentResult.verdict === 'error') {
+        return reply.code(409).send({ error: '运行错误不能人工改判，请先修复运行环境后重试' });
+      }
+      const res = m3repo.overrideVerdict(resultId, verdict, {
+        reason: normalizedReason, actor: req.user!.username,
+      });
+      if (!res) return reply.code(404).send({ error: '评测结果不存在' });
+      return { result: res };
     });
 
     // ---- 节点 11 失败诊断 → 优化建议 → 候选修订确认 ----
@@ -2718,7 +3003,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
           };
         } catch (error) {
-          return reply.code(500).send({ error: `失败原因分析失败：${error instanceof Error ? error.message : error}` });
+          return sendHttpError(reply, error, {
+            code: 'MODEL_DIAGNOSIS_FAILED',
+            message: '失败原因分析暂时不可用，请稍后重试',
+            logMessage: '评测失败原因分析失败',
+          });
         }
       }, 'diagnose');
     });
@@ -2831,7 +3120,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(currentDiagnoses),
         };
       } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '登记评测缺陷修缮任务失败',
+        });
       }
     });
 
@@ -2889,7 +3181,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           nextSteps: plan.nextSteps,
         };
       } catch (error) {
-        return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '记录评测失败原因处置失败',
+        });
       }
     });
     r.post('/api/projects/:id/optimize/propose', async (req, reply) => {
@@ -2956,10 +3251,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           );
           return { suggestions };
         } catch (error) {
-          const code = (error as any)?.code;
-          return reply.code(code === 'MODEL_REQUEST_TIMEOUT' ? 504 : 500).send({
-            ...(code ? { code } : {}),
-            error: `优化建议生成失败：${error instanceof Error ? error.message : error}`,
+          return sendHttpError(reply, error, {
+            code: 'OPTIMIZATION_PROPOSAL_FAILED',
+            message: '优化建议生成暂时不可用，请稍后重试',
+            logMessage: '优化建议生成失败',
           });
         }
       }, 'propose');
@@ -2981,9 +3276,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const diagnosisIds: string[] = Array.isArray(body?.diagnosisIds)
         ? [...new Set<string>(body.diagnosisIds.map((id: unknown) => String(id)).filter(Boolean))]
         : [];
-      if (!title || !detail) throw new Error('建议标题和修改要求不能为空');
-      if (!m4repo.SUGGESTION_KINDS.includes(kind)) throw new Error('建议类型不正确');
-      if (!diagnosisIds.length) throw new Error('建议必须关联至少一项已确认的失败根因');
+      if (!title || !detail) throw new RequestInputError('建议标题和修改要求不能为空');
+      if (!m4repo.SUGGESTION_KINDS.includes(kind)) throw new RequestInputError('建议类型不正确');
+      if (!diagnosisIds.length) throw new RequestInputError('建议必须关联至少一项已确认的失败根因');
       return {
         title, detail, kind, diagnosisIds,
         target: String(body?.target ?? '').trim() || undefined,
@@ -2998,7 +3293,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     const validateSuggestionDiagnoses = async (projectId: string, roundId: string, basedRevisionOid: string, ids: string[]) => {
       const current = await packageArtifacts.current(projectId);
       if (!current || current.revision.oid !== basedRevisionOid) {
-        throw new Error('知识包已变化，请重新评测并分析失败原因');
+        throw new RequestConflictError(
+          '知识包已变化，请重新评测并分析失败原因',
+          'OPTIMIZATION_REVISION_CONFLICT',
+        );
       }
       const diagnoses = diagnosisRepo.listFailureDiagnoses(projectId, roundId);
       const byId = new Map(diagnoses.map((item) => [item.id, item]));
@@ -3007,7 +3305,12 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return !diagnosis || diagnosis.basedRevisionOid !== basedRevisionOid
           || diagnosis.resolutionStatus !== 'confirmed' || !diagnosis.packageOptimizable
           || !diagnosis.packageRepairEligible;
-      })) throw new Error('建议只能关联当前版本中已确认且可由知识包修复的失败根因');
+      })) {
+        throw new RequestConflictError(
+          '建议只能关联当前版本中已确认且可由知识包修复的失败根因',
+          'OPTIMIZATION_DIAGNOSIS_CONFLICT',
+        );
+      }
     };
     r.patch('/api/projects/:id/optimize/suggestions/:suggestionId', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -3023,7 +3326,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           projectId: c.p.id, suggestionId: existing.id, ...input,
         }) };
       } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '更新优化建议失败',
+        });
       }
     });
     r.post('/api/projects/:id/optimize/suggestions/manual', async (req, reply) => {
@@ -3042,7 +3348,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         );
         return { suggestion: suggestions.at(-1), suggestions };
       } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '新增人工优化建议失败',
+        });
       }
     });
     r.get('/api/projects/:id/optimize/apply-status', async (req, reply) => {
@@ -3160,12 +3469,12 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           }
           failOptimizationApplyTask(task.id, error instanceof Error ? error.message : String(error));
           if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
-            return reply.code(409).send({ code: error.code, error: error.message });
+            return sendHttpError(reply, error);
           }
-          const code = (error as any)?.code;
-          return reply.code(code === 'MODEL_REQUEST_TIMEOUT' ? 504 : 500).send({
-            ...(code ? { code } : {}),
-            error: `优化候选生成失败：${error instanceof Error ? error.message : error}`,
+          return sendHttpError(reply, error, {
+            code: 'OPTIMIZATION_APPLY_FAILED',
+            message: '优化候选生成暂时不可用，请稍后重试',
+            logMessage: '优化候选生成失败',
           });
         }
       }, 'apply');
@@ -3332,9 +3641,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           });
           return { version, revision: saved.revision.oid };
         } catch (error) {
-          if (error instanceof Error && error.message === '知识包版本不正确') {
-            return reply.code(400).send({ error: error.message });
-          }
           return sendArtifactError(reply, error);
         }
       }, 'release');

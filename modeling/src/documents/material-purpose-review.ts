@@ -56,7 +56,13 @@ export interface MaterialPurposeReviewProgress {
 }
 
 export class MaterialPurposeReviewError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly statusCode: 400 | 409 = 400,
+    readonly code = statusCode === 409
+      ? 'MATERIAL_PURPOSE_REVIEW_CONFLICT'
+      : 'MATERIAL_PURPOSE_REVIEW_INVALID',
+  ) {
     super(message);
     this.name = 'MaterialPurposeReviewError';
   }
@@ -237,7 +243,9 @@ export class MaterialPurposeReviewStore {
     sheets?: readonly unknown[];
     suggestedBy: MaterialPurposeReview['suggestedBy'];
   }): MaterialPurposeReview {
-    if (!isReviewable(document)) throw new MaterialPurposeReviewError('只有已解析成功的资料可以审查用途');
+    if (!isReviewable(document)) {
+      throw new MaterialPurposeReviewError('资料尚未解析成功，暂时无法审查用途', 409);
+    }
     if (!PURPOSES.has(input.purpose)) throw new MaterialPurposeReviewError('资料用途建议不正确');
     const purpose = input.purpose === 'auto' ? defaultPurpose(document) : input.purpose;
     const current = this.get(document.id);
@@ -288,19 +296,24 @@ export class MaterialPurposeReviewStore {
     confirmedBy: string;
     expectedDirectiveRevision: number;
   }): { document: DocumentRecord; review: MaterialPurposeReview } {
-    if (!isReviewable(document)) throw new MaterialPurposeReviewError('只有已解析成功的资料可以确认用途');
+    if (!isReviewable(document)) {
+      throw new MaterialPurposeReviewError('资料尚未解析成功，暂时无法确认用途', 409);
+    }
     if (!PURPOSES.has(input.purpose as MaterialPurpose) || String(input.purpose) === 'auto') {
       throw new MaterialPurposeReviewError('确认后的资料用途不能是“由助手判断”');
     }
     const currentReview = this.get(document.id) ?? this.ensure(document);
     if (!currentReview || (currentReview.status !== 'confirmed' && currentReview.suggestedBy !== 'agent')) {
-      throw new MaterialPurposeReviewError('资料用途仍在分析，请等待助手完成逐 Sheet 建议');
+      throw new MaterialPurposeReviewError(
+        '资料用途仍在分析，请等待助手完成逐 Sheet 建议',
+        409,
+      );
     }
     const decisions = normalizeSheetDecisions(document, input.sheets, input.purpose, { fillMissing: false });
     assertPurposeMatchesDecisions(input.purpose, decisions);
     const expected = input.expectedDirectiveRevision;
     if (!Number.isSafeInteger(expected) || expected < 0) {
-      throw new MaterialPurposeReviewError('缺少有效的资料设置版本，请刷新后重试');
+      throw new MaterialPurposeReviewError('缺少有效的资料设置版本，请刷新后重试', 409);
     }
     const now = nowIso();
     const ownsTransaction = !this.db.isTransaction;
@@ -311,7 +324,7 @@ export class MaterialPurposeReviewStore {
         WHERE id = ? AND lifecycle_status = 'active' AND directive_revision = ?`)
         .run(input.purpose, document.id, expected);
       if (Number(updated.changes) !== 1) {
-        throw new MaterialPurposeReviewError('资料设置已在其他位置更新，请刷新后重试');
+        throw new MaterialPurposeReviewError('资料设置已在其他位置更新，请刷新后重试', 409);
       }
       const suggestions = currentReview.sheetSuggestions.length
         ? currentReview.sheetSuggestions
@@ -336,7 +349,9 @@ export class MaterialPurposeReviewStore {
         );
       if (ownsTransaction) this.db.exec('COMMIT');
     } catch (error) {
-      if (ownsTransaction && this.db.isTransaction) this.db.exec('ROLLBACK');
+      if (ownsTransaction && this.db.isTransaction) {
+        try { this.db.exec('ROLLBACK'); } catch { /* 回滚失败不覆盖原始错误 */ }
+      }
       throw error;
     }
     const row = this.db.prepare('SELECT * FROM documents WHERE id = ?').get(document.id) as any;
@@ -372,13 +387,13 @@ export class MaterialPurposeReviewStore {
     if (!pending.length) return [];
     for (const review of pending) {
       if (!byDocumentId.has(review.documentId)) {
-        throw new MaterialPurposeReviewError('资料用途列表已更新，请刷新后重试');
+        throw new MaterialPurposeReviewError('资料用途列表已更新，请刷新后重试', 409);
       }
       if (review.suggestedBy !== 'agent') {
-        throw new MaterialPurposeReviewError('资料用途仍在分析，请等待助手完成建议');
+        throw new MaterialPurposeReviewError('资料用途仍在分析，请等待助手完成建议', 409);
       }
       if (review.suggestedPurpose === 'auto') {
-        throw new MaterialPurposeReviewError('助手尚未给出明确的资料用途建议');
+        throw new MaterialPurposeReviewError('助手尚未给出明确的资料用途建议', 409);
       }
     }
 
@@ -397,7 +412,9 @@ export class MaterialPurposeReviewStore {
       if (ownsTransaction) this.db.exec('COMMIT');
       return confirmed;
     } catch (error) {
-      if (ownsTransaction && this.db.isTransaction) this.db.exec('ROLLBACK');
+      if (ownsTransaction && this.db.isTransaction) {
+        try { this.db.exec('ROLLBACK'); } catch { /* 回滚失败不覆盖原始错误 */ }
+      }
       throw error;
     }
   }

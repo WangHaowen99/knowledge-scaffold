@@ -6,6 +6,17 @@ import { getCheck, type CheckFinding } from './package-check.js';
 export type WarningAcceptancePhase = 'validation' | 'release';
 export type WarningAcceptanceRole = 'project_owner' | 'modeler' | 'domain_expert' | 'validator';
 
+export class PackageWarningAcceptanceError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly statusCode: 400 | 409,
+  ) {
+    super(message);
+    this.name = 'PackageWarningAcceptanceError';
+  }
+}
+
 export interface PackageWarningReviewItem {
   fingerprint: string;
   finding: CheckFinding;
@@ -121,21 +132,53 @@ export function acceptPackageWarnings(input: {
   phase: WarningAcceptancePhase;
 }): PackageWarningReview {
   const note = input.note.trim();
-  if (note.length < 4) throw new Error('请填写警告影响和接受理由');
-  if (note.length > 2_000) throw new Error('警告接受说明过长');
+  if (note.length < 4) {
+    throw new PackageWarningAcceptanceError(
+      'PACKAGE_WARNING_NOTE_REQUIRED',
+      '请填写警告影响和接受理由',
+      400,
+    );
+  }
+  if (note.length > 2_000) {
+    throw new PackageWarningAcceptanceError(
+      'PACKAGE_WARNING_NOTE_TOO_LONG',
+      '警告接受说明过长',
+      400,
+    );
+  }
   const check = getCheck(input.projectId, input.revision);
   if (!check) {
-    throw new Error('知识包检查已过期，请重新检查后再确认警告');
+    throw new PackageWarningAcceptanceError(
+      'PACKAGE_WARNING_REVIEW_STALE',
+      '知识包检查已过期，请重新检查后再确认警告',
+      409,
+    );
   }
   const review = getPackageWarningReview(input.projectId, input.revision);
   const requested = new Set(input.fingerprints);
   const selected = review.items.filter((item) => requested.has(item.fingerprint));
-  if (!selected.length || selected.length !== requested.size) throw new Error('请选择当前修订中的警告');
+  if (!selected.length || selected.length !== requested.size) {
+    throw new PackageWarningAcceptanceError(
+      'PACKAGE_WARNING_SELECTION_INVALID',
+      '请选择当前修订中的警告',
+      400,
+    );
+  }
   if (input.phase === 'release') {
     if (selected.some((item) => item.finding.releaseBlocking === true)) {
-      throw new Error('发布阻断警告必须修复，不能作为已知限制接受');
+      throw new PackageWarningAcceptanceError(
+        'PACKAGE_WARNING_RELEASE_BLOCKED',
+        '发布阻断警告必须修复，不能作为已知限制接受',
+        409,
+      );
     }
-    if (selected.some((item) => !item.accepted)) throw new Error('请先在验证阶段接受警告影响');
+    if (selected.some((item) => !item.accepted)) {
+      throw new PackageWarningAcceptanceError(
+        'PACKAGE_WARNING_VALIDATION_REQUIRED',
+        '请先在验证阶段接受警告影响',
+        409,
+      );
+    }
   }
   const db = getDb();
   const timestamp = nowIso();

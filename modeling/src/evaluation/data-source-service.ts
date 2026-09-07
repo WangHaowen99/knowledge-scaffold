@@ -18,6 +18,18 @@ import {
 import { evaluationWorkspaceId } from './shadow-workspace.js';
 import { getPackageArtifactStore } from '../artifacts/index.js';
 
+export class DataSourceConfigurationError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly statusCode: 400 | 409 | 502,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'DataSourceConfigurationError';
+  }
+}
+
 function assertEvaluationGraphScope(
   ontologyId: string,
   source: ConnectionDataSourceInput,
@@ -48,8 +60,19 @@ export async function configureProjectDataSource({
   testConnection?: DataSourceConnectionTester;
   syncConnection?: DataSourceConsumerSync;
 }): Promise<ProjectDataSource> {
-  const normalized = normalizeDataSourceInput(input);
-  const workspaceId = evaluationWorkspaceId(projectId, normalized);
+  let normalized: ReturnType<typeof normalizeDataSourceInput>;
+  let workspaceId: string;
+  try {
+    normalized = normalizeDataSourceInput(input);
+    workspaceId = evaluationWorkspaceId(projectId, normalized);
+  } catch (error) {
+    throw new DataSourceConfigurationError(
+      'DATA_SOURCE_INVALID_INPUT',
+      error instanceof Error ? error.message : '数据源配置不正确',
+      400,
+      error,
+    );
+  }
   if (normalized.mode === 'none') {
     return saveProjectDataSource({
       projectId,
@@ -59,10 +82,35 @@ export async function configureProjectDataSource({
   }
 
   const current = await getPackageArtifactStore().current(projectId);
-  if (!current) throw new Error('尚未生成知识包，请先完成知识包生成');
+  if (!current) {
+    throw new DataSourceConfigurationError(
+      'DATA_SOURCE_PACKAGE_REQUIRED',
+      '尚未生成知识包，请先完成知识包生成',
+      409,
+    );
+  }
   const ontologyId = String(current.spec.id ?? '').trim();
-  assertEvaluationGraphScope(ontologyId, normalized);
-  await testConnection(normalized);
+  try {
+    assertEvaluationGraphScope(ontologyId, normalized);
+  } catch (error) {
+    throw new DataSourceConfigurationError(
+      'DATA_SOURCE_INVALID_INPUT',
+      error instanceof Error ? error.message : '数据源隔离配置不正确',
+      400,
+      error,
+    );
+  }
+  try {
+    await testConnection(normalized);
+  } catch (error) {
+    if (error instanceof DataSourceConfigurationError) throw error;
+    throw new DataSourceConfigurationError(
+      'DATA_SOURCE_CONNECTION_FAILED',
+      '数据源连接测试失败，请检查连接配置和上游服务状态',
+      502,
+      error,
+    );
+  }
   const syncOptions = {
     projectId,
     workspaceId,
@@ -71,7 +119,18 @@ export async function configureProjectDataSource({
     source: normalized,
     ...(owner ? { owner } : {}),
   };
-  const reference = await syncConnection(syncOptions);
+  let reference: Awaited<ReturnType<DataSourceConsumerSync>>;
+  try {
+    reference = await syncConnection(syncOptions);
+  } catch (error) {
+    if (error instanceof DataSourceConfigurationError) throw error;
+    throw new DataSourceConfigurationError(
+      'DATA_SOURCE_SYNC_FAILED',
+      '数据源暂时无法同步到运行服务，请稍后重试',
+      502,
+      error,
+    );
+  }
   return saveProjectDataSource({
     projectId,
     mode: 'connection',

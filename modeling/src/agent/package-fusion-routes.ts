@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
-import { PackageArtifactStoreError } from '../artifacts/package-store.js';
+import { mapArtifactHttpError } from '../artifacts/http-error.js';
+import { sendHttpError } from '../http-error.js';
 import { getProject } from '../projects/repo.js';
 import { PackageFusionService, PackageFusionServiceError } from './package-fusion-service.js';
 import {
@@ -101,6 +102,7 @@ function ownedProject(request: any, reply: FastifyReply) {
 
 function sendPackageFusionError(reply: FastifyReply, error: unknown) {
   if (error instanceof PackageFusionServiceError) {
+    if (error.statusCode >= 500) return sendHttpError(reply, error);
     return reply.code(error.statusCode).send({
       code: error.code,
       reason: error.message,
@@ -108,17 +110,15 @@ function sendPackageFusionError(reply: FastifyReply, error: unknown) {
       display: { text: error.message },
     });
   }
-  if (error instanceof PackageArtifactStoreError) {
-    const status = error.code === 'project_not_found'
-      || error.code === 'package_not_found'
-      || error.code === 'candidate_not_found'
-      ? 404
-      : error.code === 'invalid_input' ? 400 : 409;
-    return reply.code(status).send({
-      code: `ARTIFACT_${error.code.toUpperCase()}`,
-      reason: error.message,
-      display: { text: error.message },
+  const artifactError = mapArtifactHttpError(error);
+  if (artifactError) {
+    if (artifactError.statusCode >= 500) return sendHttpError(reply, error);
+    return reply.code(artifactError.statusCode).send({
+      code: `ARTIFACT_${artifactError.code.toUpperCase()}`,
+      error: artifactError.message,
+      reason: artifactError.message,
+      display: { text: artifactError.message },
     });
   }
-  throw error;
+  return sendHttpError(reply, error);
 }

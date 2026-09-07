@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { MaterialPurposeReviewStore } from '../documents/material-purpose-review.js';
+import { sendHttpError } from '../http-error.js';
 import { canReadProject, canWriteProject } from '../projects/repo.js';
 import { getDb } from '../db/index.js';
 import { ChangeControlStore } from './change-control.js';
@@ -157,7 +158,7 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
       return reply.code(503).send({ code: 'AGENT_UNAVAILABLE', error: '建模助手暂时不可用' });
     }
     if (!upstream.ok || !upstream.body) {
-      return sendUpstreamError(reply, upstream);
+      return sendUpstreamError(request, reply, upstream);
     }
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -310,6 +311,9 @@ async function proxyJson(
     : canReadProject(id, request.user!.username);
   if (!allowed) return reply.code(404).send({ error: '项目不存在' });
   const result = await agentJson(request, path, method, method === 'POST' ? request.body : undefined);
+  if (result.status >= 500) {
+    return sendAgentServiceError(request, reply, result.status);
+  }
   return reply.code(result.status).send(result.payload);
 }
 
@@ -322,7 +326,30 @@ function authorizationHeaders(request: FastifyRequest): Record<string, string> {
   return authorization ? { authorization } : {};
 }
 
-async function sendUpstreamError(reply: FastifyReply, upstream: Response) {
+async function sendUpstreamError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  upstream: Response,
+) {
   const payload = await upstream.json().catch(() => ({ error: '建模助手返回了不可读取的响应' }));
+  if (upstream.status >= 500 || upstream.ok) {
+    return sendAgentServiceError(request, reply, upstream.ok ? 502 : upstream.status);
+  }
   return reply.code(upstream.status).send(payload);
+}
+
+function sendAgentServiceError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  upstreamStatus: number,
+): FastifyReply {
+  const statusCode = upstreamStatus === 504 ? 504 : upstreamStatus === 503 ? 503 : 502;
+  return sendHttpError(reply, new Error(`Agent upstream HTTP ${upstreamStatus}`), {
+    statusCode,
+    code: 'AGENT_UNAVAILABLE',
+    message: statusCode === 504
+      ? '建模助手响应超时，请稍后重试'
+      : '建模助手暂时不可用，请稍后重试',
+    logMessage: `${request.method} ${request.url} Agent 上游请求失败`,
+  });
 }

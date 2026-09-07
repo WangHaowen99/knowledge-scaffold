@@ -10,6 +10,7 @@ import {
 import { extname, join } from 'node:path';
 import { config } from '../config.js';
 import { getDb, nowIso } from '../db/index.js';
+import { GraphImportInputError } from './errors.js';
 
 const DEFAULT_TTL_MS = 30 * 60_000;
 
@@ -75,7 +76,9 @@ export function saveGraphImportUpload(input: {
 }): GraphImportUpload {
   cleanupExpiredGraphImportUploads();
   const extension = extname(input.filename).toLowerCase();
-  if (!['.xlsx', '.xls'].includes(extension)) throw new Error('仅支持 .xlsx 或 .xls 文件');
+  if (!['.xlsx', '.xls'].includes(extension)) {
+    throw new GraphImportInputError('GRAPH_IMPORT_INPUT', '仅支持 .xlsx 或 .xls 文件');
+  }
   const id = `giu_${randomUUID().slice(0, 16)}`;
   const directory = join(config.dataDir, 'tmp', 'graph-import');
   mkdirSync(directory, { recursive: true });
@@ -115,11 +118,23 @@ export function getGraphImportUpload(input: {
   const row = getDb().prepare(`SELECT * FROM graph_import_uploads
     WHERE id = ? AND project_id = ? AND owner = ?`)
     .get(input.uploadId, input.projectId, input.owner);
-  if (!row) throw new Error('图导入临时文件不存在或已过期');
+  if (!row) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_UPLOAD_NOT_FOUND',
+      '图导入临时文件不存在或已过期',
+      {},
+      404,
+    );
+  }
   const upload = rowToUpload(row);
   if (!existsSync(upload.storedPath)) {
     getDb().prepare('DELETE FROM graph_import_uploads WHERE id = ?').run(upload.id);
-    throw new Error('图导入临时文件不存在或已过期');
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_UPLOAD_NOT_FOUND',
+      '图导入临时文件不存在或已过期',
+      {},
+      404,
+    );
   }
   return upload;
 }
@@ -132,7 +147,14 @@ export function readGraphImportUpload(input: {
   const upload = getGraphImportUpload(input);
   const buffer = readFileSync(upload.storedPath);
   const hash = createHash('sha256').update(buffer).digest('hex');
-  if (hash !== upload.fileHash) throw new Error('图导入文件校验失败，请重新上传');
+  if (hash !== upload.fileHash) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_UPLOAD_CORRUPT',
+      '图导入文件校验失败，请重新上传',
+      {},
+      409,
+    );
+  }
   return { upload, buffer };
 }
 
