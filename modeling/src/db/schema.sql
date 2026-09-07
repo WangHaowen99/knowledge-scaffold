@@ -224,6 +224,22 @@ CREATE INDEX IF NOT EXISTS idx_documents_source_history
 CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_active_source
   ON documents(project_id, source_key) WHERE lifecycle_status = 'active';
 
+-- 产品/规则大清单的逐项对账台账。它独立于知识包候选文件，先以 advisory
+-- 方式记录确定性校验结果，部署切换 enforce 后才参与批量生成门禁。
+CREATE TABLE IF NOT EXISTS product_ledger_snapshots (
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_revision  TEXT NOT NULL,
+  scope            TEXT NOT NULL,
+  required         INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0, 1)),
+  ledger_json      TEXT NOT NULL,
+  validation_json  TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, source_revision)
+);
+CREATE INDEX IF NOT EXISTS idx_product_ledger_project
+  ON product_ledger_snapshots(project_id, updated_at DESC);
+
 -- 资料用途建议与用户确认分离；表格额外保存逐 Sheet 处置。审查绑定不可变资料修订。
 CREATE TABLE IF NOT EXISTS material_purpose_reviews (
   document_id             TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
