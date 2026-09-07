@@ -42,7 +42,10 @@ def test_tool_timeout_uses_default_and_env_override(tmp_path, monkeypatch):
 
     assert system_config.load_system_config()["agent"]["tool_timeout_seconds"] == 600
 
+    override_path = tmp_path / "override" / "system_config.json"
     monkeypatch.setenv("AGENT_TOOL_TIMEOUT_SECONDS", "45")
+    monkeypatch.setattr(system_config, "CONFIG_PATH", override_path)
+    monkeypatch.setattr(system_config, "CONFIG_DIR", override_path.parent)
     assert system_config.load_system_config()["agent"]["tool_timeout_seconds"] == 45
 
 

@@ -14,6 +14,8 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import is_dataclass, replace
 from inspect import isawaitable
@@ -2258,6 +2260,30 @@ def _reject_factory_agent_with_history(
         )
 
 
+_PREFLIGHT_MAIN_LLM_CONFIG: ContextVar[Any] = ContextVar(
+    "jiuwen_preflight_main_llm_config",
+    default=None,
+)
+
+
+@contextmanager
+def jiuwen_preflight_llm_config_context(
+    model_profile: Optional[Mapping[str, Any]],
+):
+    """Bind an admitted MAIN profile without exposing its secrets in state."""
+
+    llm_config = None
+    if model_profile is not None:
+        from config import LLMConfig
+
+        llm_config = LLMConfig.from_mapping(dict(model_profile))
+    token = _PREFLIGHT_MAIN_LLM_CONFIG.set(llm_config)
+    try:
+        yield
+    finally:
+        _PREFLIGHT_MAIN_LLM_CONFIG.reset(token)
+
+
 def _resolve_jiuwen_llm_config(
     state: Optional[Mapping[str, Any]],
     *,
@@ -2271,6 +2297,12 @@ def _resolve_jiuwen_llm_config(
         or _resolve_current_workspace_id()
     )
     purpose = LLMPurpose.MAIN if str(caller or "").strip() in {"main", "acp"} else LLMPurpose.SUBAGENT
+    admitted_config = _PREFLIGHT_MAIN_LLM_CONFIG.get()
+    if purpose == LLMPurpose.MAIN and admitted_config is not None:
+        return _clamp_jiuwen_llm_config_output_tokens(
+            admitted_config,
+            agent_config,
+        )
     try:
         router = get_llm_router()
     except RuntimeError:

@@ -2,6 +2,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import logging
+import os
+from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ import pytest
 from agent.runtime.contracts import (
     PublicEvent,
     PublicEventDraft,
+    RunPreflightSnapshot,
     RunScope,
     RunSnapshot,
     RunStatus,
@@ -39,6 +42,11 @@ from agent.runtime.store import InMemoryRunRepository
 from agent.runtime.store import utc_now_iso
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
+from ontology.view_cache import (
+    build_package_content_revision,
+    build_package_revision_source_signature,
+    get_ontology_mutation_revision,
+)
 
 
 def _context(run_id="run_demo"):
@@ -2198,7 +2206,7 @@ def test_deterministic_artifact_rollback_deletes_every_reserved_ref():
     assert execution_store.released == execution_store.reserved
 
 
-def test_direct_execution_routes_and_preserves_runtime_scope():
+def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     from agent.direct_execution.contracts import Completed, NotApplicable
 
     class _RuntimeContext:
@@ -2246,14 +2254,42 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
             self.error = error
 
     calls = []
+    legacy_stage_observations = []
 
     class _DeterministicService:
         outcome = NotApplicable("synthetic-fallback")
+        calls = 0
+        staged_manifests = []
 
-        def execute(self, *_args, **_kwargs):
+        def execute(self, *_args, **kwargs):
+            type(self).calls += 1
+            manifest = kwargs.get("ontology_manifest")
+            if manifest is not None:
+                staged_root = Path(manifest.ontology_dir)
+                type(self).staged_manifests.append(
+                    {
+                        "root": staged_root,
+                        "exists_during_execute": staged_root.is_dir(),
+                        "content": (staged_root / "handler.py").read_text(
+                            encoding="utf-8"
+                        ),
+                    }
+                )
             return self.outcome
 
     def run_direct_script(**kwargs):
+        manifest = kwargs.get("ontology_manifest")
+        if manifest is not None:
+            staged_root = Path(manifest.ontology_dir)
+            legacy_stage_observations.append(
+                {
+                    "root": staged_root,
+                    "exists": staged_root.is_dir(),
+                    "content": (staged_root / "handler.py").read_text(
+                        encoding="utf-8"
+                    ),
+                }
+            )
         calls.append(kwargs)
         return (
             [
@@ -2283,7 +2319,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
         "run_direct_script": run_direct_script,
         "tool_output_artifact_writer_context": artifact_scope,
         "load_system_config": lambda: {
-            "storage": {"project_root": "/tmp/synthetic-project"}
+            "storage": {"project_root": str(tmp_path)}
         },
         "DeterministicExecutionService": _DeterministicService,
         "NotApplicable": NotApplicable,
@@ -2318,6 +2354,85 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
         "type": "deterministic",
         "authoritative": True,
     }
+
+    ontology_dir = (
+        tmp_path
+        / "workspaces"
+        / "workspace_demo"
+        / "ontologies"
+        / "ontology_demo"
+    )
+    ontology_dir.mkdir(parents=True)
+    package_file = ontology_dir / "handler.py"
+    package_file.write_text("old handler", encoding="utf-8")
+    source_signature = build_package_revision_source_signature(ontology_dir)
+    pinned_context = context.model_copy(
+        update={
+            "preflight_snapshot": RunPreflightSnapshot(
+                workspace_id="workspace_demo",
+                workspace_config_generation=1,
+                system_config_generation=1,
+                ontology_id="ontology_demo",
+                ontology_version="v1",
+                mutation_revision=get_ontology_mutation_revision(
+                    "workspace_demo",
+                    "ontology_demo",
+                ),
+                ontology_manifest={
+                    "id": "ontology_demo",
+                    "version": "v1",
+                    "ontology_dir": str(ontology_dir),
+                },
+                ontology_source_signature=source_signature,
+                ontology_content_revision=build_package_content_revision(
+                    ontology_dir
+                ),
+                deterministic_candidate=True,
+            )
+        }
+    )
+    pinned = adapter._try_direct_execute_sync(pinned_context, dependencies)
+    assert pinned[-1].status == "completed"
+    staged_manifest = _DeterministicService.staged_manifests[-1]
+    assert staged_manifest["exists_during_execute"] is True
+    assert staged_manifest["content"] == "old handler"
+    assert staged_manifest["root"].is_relative_to(tmp_path)
+    assert staged_manifest["root"].parent.parent == (
+        tmp_path / ".ontology-run-staging"
+    )
+    assert ".ontology-run-staging" in staged_manifest["root"].parts
+    assert not staged_manifest["root"].exists()
+
+    _DeterministicService.outcome = NotApplicable("explicit_legacy_operation")
+    _DecisionRouter.decision = SimpleNamespace(route="execute")
+    legacy_pinned = adapter._try_direct_execute_sync(pinned_context, dependencies)
+
+    assert legacy_pinned[-1].status == "completed"
+    assert legacy_stage_observations[-1]["exists"] is True
+    assert legacy_stage_observations[-1]["content"] == "old handler"
+    assert not legacy_stage_observations[-1]["root"].exists()
+    assert calls[-1]["ontology_manifest"].ontology_dir == str(
+        legacy_stage_observations[-1]["root"]
+    )
+    calls.clear()
+
+    original_stat = package_file.stat()
+    package_file.write_text("new handler", encoding="utf-8")
+    os.utime(
+        package_file,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    assert package_file.stat().st_size == original_stat.st_size
+    assert build_package_revision_source_signature(ontology_dir) == source_signature
+    calls_before_drift = _DeterministicService.calls
+
+    drifted = adapter._try_direct_execute_sync(pinned_context, dependencies)
+
+    assert drifted[-1].status == "failed"
+    assert drifted[-1].payload["error"]["error_code"] == (
+        "ontology_revision_changed"
+    )
+    assert _DeterministicService.calls == calls_before_drift
     _DeterministicService.outcome = NotApplicable("synthetic-fallback")
 
     _DecisionRouter.decision = SimpleNamespace(route="fallback_agent_loop")
@@ -2343,7 +2458,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope():
     ]
     assert success[-1].status == "completed"
     assert success[-1].payload["content"] == "synthetic direct answer"
-    assert calls[-1]["project_root"] == "/tmp/synthetic-project"
+    assert calls[-1]["project_root"] == str(tmp_path)
     assert calls[-1]["timeout_seconds"] == 12
     assert _RuntimeContext.latest.workspace_id == "workspace_demo"
 

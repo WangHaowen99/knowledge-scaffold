@@ -1,13 +1,276 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from types import SimpleNamespace
 
 import pytest
 
+import app as app_module
 from agent.runtime.config import NativeAsyncRuntimeConfig
 from agent.runtime.event_bus import AsyncEventBus, EventBusClosedError
 from agent.runtime.runtime import RuntimeContainer, RuntimeState
 from agent.runtime.store import InMemoryRunRepository
+from app import _run_session_recovery_batches, _stop_session_recovery
+
+
+class _LifecycleRecoveryManager:
+    def __init__(self, *, failures=0):
+        self.failures = failures
+        self.batch_calls = []
+        self.close_calls = []
+        self.summary_close_calls = []
+
+    def recover_pending_sessions_batch(self, **options):
+        self.batch_calls.append(options)
+        return {
+            "processed": 1,
+            "recovered": 0,
+            "failures": self.failures,
+            "remaining": 0,
+            "complete": True,
+        }
+
+    def close_recovery_discovery(self, *, wait_seconds):
+        self.close_calls.append(wait_seconds)
+        return True
+
+    def close_summary_rebuilds(self, *, wait_seconds):
+        self.summary_close_calls.append(wait_seconds)
+        return True
+
+
+def _build_lifespan_test_app(monkeypatch, manager):
+    class FakeRuntimeContainer:
+        def __init__(self, *, config, components_factory):
+            del components_factory
+            self.config = config
+            self.runtime = object()
+
+        async def start(self):
+            return True
+
+        async def close(self, *, deadline):
+            assert deadline > asyncio.get_running_loop().time()
+            return True
+
+    async def stop_warmup(*, deadline):
+        assert deadline > asyncio.get_running_loop().time()
+        return True
+
+    services = {
+        "config": object(),
+        "agent_config": object(),
+        "llm_router": object(),
+        "auth_manager": object(),
+        "user_store_manager": manager,
+        "solver_coordination_service": None,
+    }
+    monkeypatch.setattr(app_module, "run_startup_migrations", lambda: None)
+    monkeypatch.setattr(
+        app_module,
+        "recover_workspace_ontology_replacements",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(app_module, "get_workspaces_root", lambda: object())
+    monkeypatch.setattr(app_module, "build_runtime_services", lambda: services)
+    monkeypatch.setattr(app_module, "register_routers", lambda _app: None)
+    monkeypatch.setattr(app_module, "initialize_open_telemetry", lambda _app: None)
+    monkeypatch.setattr(app_module, "configure_llm_router", lambda _router: None)
+    monkeypatch.setattr(app_module, "configure_solver_tool_service", lambda _service: None)
+    monkeypatch.setattr(app_module, "_install_solver_recovery_worker", lambda *_args: None)
+    monkeypatch.setattr(app_module, "_stop_solver_recovery_worker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        app_module,
+        "initialize_runtime_dependencies",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            operation_patcher=None,
+            reflection_worker=None,
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "NativeAsyncRuntimeConfig",
+        SimpleNamespace(
+            from_agent_config=lambda _config: SimpleNamespace(
+                shutdown_total_deadline_seconds=1.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(app_module, "RuntimeContainer", FakeRuntimeContainer)
+    monkeypatch.setattr(app_module, "components_factory", lambda _factory: object())
+    monkeypatch.setattr(app_module, "set_agent_execution_runtime", lambda _runtime: None)
+    monkeypatch.setattr(app_module, "start_runtime_warmup", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module, "stop_runtime_warmup", stop_warmup)
+    monkeypatch.setattr(app_module, "init_skill_evolution_worker", lambda: None)
+    monkeypatch.setattr(app_module, "reset_skill_evolution_singletons", lambda: None)
+    monkeypatch.setattr(app_module, "refresh_evidence_index_worker", lambda: None)
+    monkeypatch.setattr(app_module, "start_platform_observer_if_enabled", lambda: None)
+    monkeypatch.setattr(app_module, "shutdown_platform_observer", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module, "shutdown_observer", lambda **_kwargs: None)
+    return app_module.create_app()
+
+
+async def _wait_for_recovery_batch(manager):
+    for _attempt in range(100):
+        if manager.batch_calls:
+            return
+        await asyncio.sleep(0.001)
+    raise AssertionError("session recovery task did not execute")
+
+
+def test_session_recovery_batches_yield_until_bounded_queue_is_complete():
+    class Manager:
+        def __init__(self):
+            self.calls = 0
+
+        def recover_pending_sessions_batch(self, **options):
+            assert options["max_items"] == 25
+            assert options["max_seconds"] == 0.25
+            assert isinstance(options["stop_event"], threading.Event)
+            self.calls += 1
+            return {
+                "processed": 25 if self.calls == 1 else 1,
+                "recovered": 0,
+                "failures": 0,
+                "remaining": 1 if self.calls == 1 else 0,
+                "complete": self.calls > 1,
+            }
+
+    manager = Manager()
+    outcome = asyncio.run(
+        _run_session_recovery_batches(manager, threading.Event())
+    )
+
+    assert manager.calls == 2
+    assert outcome["complete"] is True
+
+
+def test_session_recovery_reports_failure_only_after_scanning_remaining_users():
+    class Manager:
+        def __init__(self):
+            self.calls = 0
+
+        def recover_pending_sessions_batch(self, **_options):
+            self.calls += 1
+            return {
+                "processed": 1,
+                "recovered": 0,
+                "failures": 1 if self.calls == 1 else 0,
+                "remaining": 1 if self.calls == 1 else 0,
+                "complete": self.calls > 1,
+            }
+
+        @staticmethod
+        def close_recovery_discovery(*, wait_seconds):
+            assert wait_seconds == 0.25
+            return True
+
+    manager = Manager()
+    with pytest.raises(RuntimeError, match="1 failure"):
+        asyncio.run(_run_session_recovery_batches(manager, threading.Event()))
+
+    assert manager.calls == 2
+
+
+def test_session_recovery_batch_propagates_worker_drain_failure():
+    class Manager:
+        @staticmethod
+        def recover_pending_sessions_batch(**_options):
+            raise AssertionError("a pre-stopped recovery must not schedule work")
+
+        @staticmethod
+        def close_recovery_discovery(*, wait_seconds):
+            assert wait_seconds == 0.25
+            return False
+
+    stopped = threading.Event()
+    stopped.set()
+    with pytest.raises(RuntimeError, match="did not drain"):
+        asyncio.run(_run_session_recovery_batches(Manager(), stopped))
+
+
+def test_session_recovery_shutdown_waits_for_cooperative_exit_without_cancelling():
+    async def scenario():
+        stop = threading.Event()
+        completed = asyncio.Event()
+
+        async def worker():
+            while not stop.is_set():
+                await asyncio.sleep(0)
+            await asyncio.sleep(0.02)
+            completed.set()
+
+        task = asyncio.create_task(worker())
+        assert await _stop_session_recovery(task, stop, timeout=0.001) is False
+        assert task.cancelled() is False
+        await task
+        assert completed.is_set()
+        assert task.cancelled() is False
+
+    asyncio.run(scenario())
+
+
+def test_create_app_lifespan_starts_bounded_recovery_and_drains_it_on_shutdown(
+    monkeypatch,
+):
+    manager = _LifecycleRecoveryManager()
+    application = _build_lifespan_test_app(monkeypatch, manager)
+
+    async def scenario():
+        async with application.router.lifespan_context(application):
+            task = application.state.session_recovery_task
+            assert isinstance(task, asyncio.Task)
+            assert task.get_name() == "session-summary-recovery"
+            await _wait_for_recovery_batch(manager)
+
+    asyncio.run(scenario())
+
+    assert len(manager.batch_calls) == 1
+    options = manager.batch_calls[0]
+    assert options["max_items"] == 25
+    assert options["max_seconds"] == 0.25
+    assert isinstance(options["stop_event"], threading.Event)
+    assert manager.close_calls == [0.25]
+    assert len(manager.summary_close_calls) == 1
+    assert 0 <= manager.summary_close_calls[0] <= 2.0
+    assert application.state.session_recovery_task is None
+
+
+def test_create_app_lifespan_reports_recovery_failures_as_incomplete_shutdown(
+    monkeypatch,
+):
+    manager = _LifecycleRecoveryManager(failures=1)
+    application = _build_lifespan_test_app(monkeypatch, manager)
+
+    async def scenario():
+        with pytest.raises(
+            RuntimeError,
+            match="Application shutdown incomplete: session-recovery",
+        ):
+            async with application.router.lifespan_context(application):
+                await _wait_for_recovery_batch(manager)
+
+    asyncio.run(scenario())
+
+    assert manager.close_calls == [0.25]
+    assert application.state.session_recovery_task is None
+
+
+def test_create_app_lifespan_reports_incomplete_observer_shutdown(monkeypatch):
+    manager = _LifecycleRecoveryManager()
+    application = _build_lifespan_test_app(monkeypatch, manager)
+    monkeypatch.setattr(app_module, "shutdown_observer", lambda **_kwargs: False)
+
+    async def scenario():
+        with pytest.raises(
+            RuntimeError,
+            match="Application shutdown incomplete: observer",
+        ):
+            async with application.router.lifespan_context(application):
+                await _wait_for_recovery_batch(manager)
+
+    asyncio.run(scenario())
 
 
 class _RunnerLifecycle:
@@ -237,3 +500,8 @@ def test_runtime_container_closes_the_process_level_event_bus():
             await event_bus.reserve_subscriber("run_after_shutdown")
 
     asyncio.run(scenario())
+
+
+def test_safe_sync_step_propagates_explicit_incomplete_result():
+    assert app_module._safe_sync_step("synthetic", lambda: False) is False
+    assert app_module._safe_sync_step("synthetic", lambda: None) is True

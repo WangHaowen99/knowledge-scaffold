@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 from integration.observability.events import RuntimeEvent, RuntimeEventType
 from integration.observability.local_storage import IndexedLocalOTelStore
@@ -14,6 +14,8 @@ from utils.logging import LOG_DIR
 
 class LocalPerfExporter:
     """Project runtime events into bounded local performance records."""
+
+    metric_name = "local"
 
     def __init__(self, config: Mapping[str, Any], *, log_dir: str | os.PathLike[str] | None = None) -> None:
         local = config.get("local") if isinstance(config.get("local"), dict) else {}
@@ -31,11 +33,21 @@ class LocalPerfExporter:
         return True
 
     def export(self, event: RuntimeEvent) -> None:
+        for record in self._records_for_event(event):
+            self._write_record(record)
+
+    def export_batch(self, events: Iterable[RuntimeEvent]) -> None:
+        records: list[Dict[str, Any]] = []
+        for event in events:
+            records.extend(self._records_for_event(event))
+        self._store.append_many(records)
+
+    def _records_for_event(self, event: RuntimeEvent) -> list[Dict[str, Any]]:
         if event.type in {"otel.span.exported", "otel.metric.exported"}:
             record = (event.payload or {}).get("otel_record")
             if isinstance(record, dict):
-                self._write_record(dict(record))
-            return
+                return [dict(record)]
+            return []
         self._track_run_labels(event)
         self._track_run_metrics(event)
         records = _project_event(event)
@@ -43,8 +55,7 @@ class LocalPerfExporter:
             records.append(self._run_summary(event))
             self._run_metrics.pop(event.run_id, None)
             self._run_labels.pop(event.run_id, None)
-        for record in records:
-            self._write_record(record)
+        return records
 
     def _write_record(self, record: Dict[str, Any]) -> None:
         self._store.append(record)

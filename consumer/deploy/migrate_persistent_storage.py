@@ -337,8 +337,11 @@ def migrate(
     *,
     dry_run: bool,
     legacy_backup_dir: Path | None = None,
+    storage_mode: str = "bind",
 ) -> dict[str, Any]:
     root = root.resolve()
+    if storage_mode not in {"bind", "volume"}:
+        raise ValueError("storage_mode must be bind or volume")
     env_path = root / "backend" / ".env"
     system_config_path = root / ".onto-runtime" / "config" / "system_config.json"
 
@@ -347,6 +350,7 @@ def migrate(
         "mode": "dry-run" if dry_run else "apply",
         "status": "ok",
         "changed": False,
+        "storage_mode": storage_mode,
         "canonical_project_root": CANONICAL_PROJECT_ROOT,
         "canonical_storage": {
             "chat_storage_dir": CANONICAL_CHAT_STORAGE_DIR,
@@ -394,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--legacy-backup-dir", type=Path)
+    parser.add_argument("--storage-mode", choices=("bind", "volume"), default="bind")
     parser.add_argument("--print-legacy-export-paths", action="store_true")
     args = parser.parse_args(argv)
     if args.print_legacy_export_paths:
@@ -408,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             args.root,
             dry_run=args.dry_run,
             legacy_backup_dir=args.legacy_backup_dir,
+            storage_mode=args.storage_mode,
         )
         _write_report(args.report, report)
         return 0

@@ -300,30 +300,48 @@ async def execute_mcp_chat_workflow_async(
         or ""
     ).strip()
     try:
-        deterministic_preflight = getattr(
+        preflight_snapshot = None
+        preflight_builder = getattr(
             orchestrator,
-            "is_deterministic_request_potentially_applicable",
+            "build_run_preflight_snapshot",
             None,
         )
-        deterministic_candidate = bool(
-            callable(deterministic_preflight)
-            and await short_io.run(
-                deterministic_preflight,
+        if callable(preflight_builder):
+            preflight_snapshot = await short_io.run(
+                preflight_builder,
                 user_request=query,
                 user_context=context_values,
                 arguments=arguments,
                 session_id=session_id,
+                model_profile_id=model_profile_id or None,
                 user_id=scope.username,
                 workspace_id=scope.workspace_id,
             )
-        )
-        if not deterministic_candidate:
-            await short_io.run(
-                resolve_effective_llm_profile_config,
-                model_profile_id or None,
-                allow_default_fallback=not bool(model_profile_id),
-                workspace_id=scope.workspace_id,
+        else:
+            deterministic_preflight = getattr(
+                orchestrator,
+                "is_deterministic_request_potentially_applicable",
+                None,
             )
+            deterministic_candidate = bool(
+                callable(deterministic_preflight)
+                and await short_io.run(
+                    deterministic_preflight,
+                    user_request=query,
+                    user_context=context_values,
+                    arguments=arguments,
+                    session_id=session_id,
+                    user_id=scope.username,
+                    workspace_id=scope.workspace_id,
+                )
+            )
+            if not deterministic_candidate:
+                await short_io.run(
+                    resolve_effective_llm_profile_config,
+                    model_profile_id or None,
+                    allow_default_fallback=not bool(model_profile_id),
+                    workspace_id=scope.workspace_id,
+                )
     except SystemConfigValidationError as exc:
         await _emit_mcp_terminal_progress(
             progress_sink,
@@ -375,6 +393,7 @@ async def execute_mcp_chat_workflow_async(
                     context_values.get("llm_request_mode")
                 ),
                 model_profile_id=model_profile_id or None,
+                preflight_snapshot=preflight_snapshot,
                 requested_operation_key=requested_operation_key or None,
                 arguments=arguments,
                 include_trace=include_trace,
@@ -971,8 +990,13 @@ def _locked_session_ontology_context(
         return {}
     try:
         chat_store, _execution_store = get_stores(username, workspace_id)
-        session = chat_store.get_session(session_id)
-        metadata = dict(getattr(session, "metadata", {}) or {})
+        metadata_reader = getattr(chat_store, "get_session_metadata", None)
+        if callable(metadata_reader):
+            metadata = dict(metadata_reader(session_id) or {})
+        else:
+            # Compatibility for third-party orchestrator store adapters.
+            session = chat_store.get_session(session_id)
+            metadata = dict(getattr(session, "metadata", {}) or {})
     except (AttributeError, LookupError, OSError, TypeError, ValueError):
         return {}
     selected_id = str(metadata.get("selected_ontology_id") or "").strip()

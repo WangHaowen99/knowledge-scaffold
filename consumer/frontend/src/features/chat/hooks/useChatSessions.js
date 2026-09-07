@@ -17,7 +17,10 @@ import {
   createSessionScope,
   isCurrentSessionRead,
   isSameSessionScope,
+  mergeSessionPage,
   mergeSessionCollections,
+  normalizeSessionPage,
+  resolveInitialSessionSelection,
   selectedSessionStorageKey,
   shouldCommitSessionSelection,
 } from '../lib/sessionScope';
@@ -84,6 +87,10 @@ const useChatSessions = (streamManager) => {
   const currentChatId = currentSession.id;
   const messages = currentSession.messages;
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
+  const [hasMoreSessions, setHasMoreSessions] = useState(false);
+  const loadingMoreSessionsRef = useRef(false);
+  const nextSessionCursorRef = useRef(null);
   const [firstSendPending, setFirstSendPending] = useState(false);
   const [firstSendCoordinator] = useState(() => createFirstSendCoordinator({
     onPendingChange: setFirstSendPending,
@@ -337,31 +344,39 @@ const useChatSessions = (streamManager) => {
     logger.info('Loading chat sessions', { selectLatest, workspaceId: scope.workspaceId });
     setLoadingSessions(true);
     try {
-      const response = await scopedFetch('/agentic/sessions', {}, scope);
+      const response = await scopedFetch('/agentic/sessions?limit=50', {}, scope);
       if (!response || !isCurrentScope(scope)) return false;
-      logger.api('GET', '/agentic/sessions', response.status);
+      logger.api('GET', '/agentic/sessions?limit=50', response.status);
       if (!response.ok) throw await responseError(response, 'Failed to load chats');
       const payload = await response.json();
       if (!isCurrentScope(scope)) return false;
-      const sorted = sortSessions(payload.sessions || []);
-      const nextSessions = mutationEpochAtStart === collectionMutationEpochRef.current
+      const page = normalizeSessionPage(payload);
+      const sorted = sortSessions(page.sessions);
+      const serverSessions = mutationEpochAtStart === collectionMutationEpochRef.current
         ? sorted
         : sortSessions(mergeSessionCollections(
           sorted,
           sessionsRef.current,
           deletedSessionIdsRef.current,
         ));
+      const nextSessions = sortSessions(mergeSessionPage({
+        current: sessionsRef.current,
+        incoming: serverSessions,
+        selectedId: currentSessionRef.current.id,
+        deletedSessionIds: deletedSessionIdsRef.current,
+      }));
       setSessions(nextSessions);
+      nextSessionCursorRef.current = page.nextCursor;
+      setHasMoreSessions(page.hasMore);
 
       if (selectionEpochRef.current !== selectionEpochAtStart) return true;
-      let nextId = currentSessionRef.current.id;
-      if (selectLatest && nextSessions.length > 0) {
-        nextId = nextSessions[0].id;
-      } else {
-        const persistedId = readSelectedSession(scope.workspaceId);
-        if (persistedId && nextSessions.some((session) => session.id === persistedId)) nextId = persistedId;
-        else if (!nextId || !nextSessions.some((session) => session.id === nextId)) nextId = nextSessions[0]?.id || null;
-      }
+      const selection = resolveInitialSessionSelection({
+        persistedId: readSelectedSession(scope.workspaceId),
+        currentId: currentSessionRef.current.id,
+        sessions: nextSessions,
+        selectLatest,
+      });
+      const nextId = selection.sessionId;
 
       if (!nextId) {
         selectionEpochRef.current += 1;
@@ -369,7 +384,10 @@ const useChatSessions = (streamManager) => {
         persistSelectedSession(scope.workspaceId, '');
         return true;
       }
-      await openChat(nextId);
+      const opened = await openChat(nextId);
+      if (!opened && selection.requiresDirectHydration && nextSessions[0]?.id) {
+        await openChat(nextSessions[0].id);
+      }
       return true;
     } catch (error) {
       if (error?.name !== 'AbortError') logger.error('Failed to load sessions', { error: error.message });
@@ -378,6 +396,54 @@ const useChatSessions = (streamManager) => {
       if (isCurrentScope(scope)) setLoadingSessions(false);
     }
   }, [captureScope, isCurrentScope, openChat, scopedFetch, setCurrentSession, setSessions]);
+
+  const loadMoreSessions = useCallback(async () => {
+    const cursor = nextSessionCursorRef.current;
+    if (!cursor || !hasMoreSessions || loadingMoreSessionsRef.current) return false;
+    const scope = captureScope();
+    loadingMoreSessionsRef.current = true;
+    setLoadingMoreSessions(true);
+    const url = `/agentic/sessions?limit=50&cursor=${encodeURIComponent(cursor)}`;
+    try {
+      const response = await scopedFetch(url, {}, scope);
+      if (!response || !isCurrentScope(scope)) return false;
+      logger.api('GET', url, response.status);
+      if (!response.ok) {
+        if (response.status === 400) {
+          await loadSessions(false);
+          return false;
+        }
+        throw await responseError(response, 'Failed to load more chats');
+      }
+      const page = normalizeSessionPage(await response.json());
+      if (!isCurrentScope(scope)) return false;
+      setSessions((current) => sortSessions(mergeSessionPage({
+        current,
+        incoming: page.sessions,
+        append: true,
+        selectedId: currentSessionRef.current.id,
+        deletedSessionIds: deletedSessionIdsRef.current,
+      })));
+      nextSessionCursorRef.current = page.nextCursor;
+      setHasMoreSessions(page.hasMore);
+      return true;
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        logger.error('Failed to load more sessions', { error: error.message });
+      }
+      return false;
+    } finally {
+      loadingMoreSessionsRef.current = false;
+      if (isCurrentScope(scope)) setLoadingMoreSessions(false);
+    }
+  }, [
+    captureScope,
+    hasMoreSessions,
+    isCurrentScope,
+    loadSessions,
+    scopedFetch,
+    setSessions,
+  ]);
 
   const startNewChat = useCallback(() => {
     const scope = captureScope();
@@ -405,6 +471,10 @@ const useChatSessions = (streamManager) => {
     pinTransactionsRef.current = new Map();
     firstSendCoordinator.reset();
     setLoadingSessions(false);
+    setLoadingMoreSessions(false);
+    loadingMoreSessionsRef.current = false;
+    setHasMoreSessions(false);
+    nextSessionCursorRef.current = null;
     setSessions([]);
     setCurrentSession({ id: null, messages: [] });
   }, [firstSendCoordinator, setCurrentSession, setSessions]);
@@ -490,8 +560,11 @@ const useChatSessions = (streamManager) => {
     streamStates: streamManager.streamStates,
     setMessages,
     loadingSessions,
+    loadingMoreSessions,
+    hasMoreSessions,
     firstSendPending,
     loadSessions,
+    loadMoreSessions,
     createChat,
     runFirstSend,
     deleteChat,

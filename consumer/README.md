@@ -447,7 +447,7 @@ Docker 运行入口：
 ./run_docker.sh <tag> [all|backend|frontend]
 ```
 
-更完整的生产部署、升级、备份和回滚流程见 [`deploy/README.md`](deploy/README.md)。
+更完整的生产部署、升级、bind/named-volume 选择、规范备份、显式恢复、双向存储迁移和 code-only 回滚流程见 [`deploy/README.md`](deploy/README.md)。
 
 ## 相关文档
 

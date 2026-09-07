@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,6 +34,7 @@ def run_direct_script(
     project_root: Optional[str] = None,
     timeout_seconds: int = 300,
     observer: Any = None,
+    ontology_manifest: Any = None,
 ) -> Tuple[List[Dict[str, Any]], DirectExecutionResult]:
     """Execute a matched script operation and return SSE events + result.
 
@@ -120,16 +122,49 @@ def run_direct_script(
         if base_path is None:
             base_path = BACKEND_DIR.parent.resolve()
 
-        manifest_kwargs = {"workspace_id": runtime_context.workspace_id}
-        if str(runtime_context.selected_ontology_version or "").strip():
-            manifest_kwargs["version"] = runtime_context.selected_ontology_version
-        onto_manifest, onto_error = get_ontology_manifest(ontology_id, **manifest_kwargs)
+        onto_manifest = ontology_manifest
+        onto_error = None
+        if onto_manifest is None:
+            manifest_kwargs = {"workspace_id": runtime_context.workspace_id}
+            if str(runtime_context.selected_ontology_version or "").strip():
+                manifest_kwargs["version"] = runtime_context.selected_ontology_version
+            onto_manifest, onto_error = get_ontology_manifest(ontology_id, **manifest_kwargs)
         if onto_error or onto_manifest is None:
             return fail_preflight(
                 onto_error or "Error: Ontology '{}' not found.".format(ontology_id),
                 "ontology_not_found",
             )
-        ontology_dir = Path(onto_manifest.ontology_dir).resolve()
+        manifest_id = str(
+            onto_manifest.get("id")
+            if isinstance(onto_manifest, Mapping)
+            else getattr(onto_manifest, "id", "")
+        ).strip()
+        manifest_version = str(
+            onto_manifest.get("version")
+            if isinstance(onto_manifest, Mapping)
+            else getattr(onto_manifest, "version", "")
+        ).strip()
+        requested_version = str(
+            runtime_context.selected_ontology_version or ""
+        ).strip()
+        if manifest_id != ontology_id or (
+            requested_version and manifest_version != requested_version
+        ):
+            return fail_preflight(
+                "Error: Pinned ontology manifest does not match the admitted request.",
+                "ontology_revision_changed",
+            )
+        raw_ontology_dir = (
+            onto_manifest.get("ontology_dir")
+            if isinstance(onto_manifest, Mapping)
+            else getattr(onto_manifest, "ontology_dir", None)
+        )
+        if not str(raw_ontology_dir or "").strip():
+            return fail_preflight(
+                "Error: Pinned ontology manifest has no ontology directory.",
+                "ontology_revision_changed",
+            )
+        ontology_dir = Path(str(raw_ontology_dir or "")).resolve()
         resolved = resolve_ontology_script_path(ontology_dir, raw_script_path)
         if resolved is None:
             return fail_preflight(

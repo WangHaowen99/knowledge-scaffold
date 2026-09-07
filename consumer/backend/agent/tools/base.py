@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Protocol
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Protocol,
+)
 
 from config import AgentConfig
 
@@ -66,6 +76,32 @@ class ToolContext:
     # tool adapters while carrying the W3C context through solver calls.
     traceparent: Optional[str] = None
     selected_ontology_is_explicit: bool = True
+    preflight_ontology_manifest: Optional[Mapping[str, Any]] = field(
+        default=None,
+        repr=False,
+    )
+    preflight_ontology_source_signature: Optional[tuple[object, ...]] = field(
+        default=None,
+        repr=False,
+    )
+    preflight_ontology_content_revision: Optional[str] = field(
+        default=None,
+        repr=False,
+    )
+    preflight_ontology_script_bindings: Optional[
+        Mapping[str, Mapping[str, Any]]
+    ] = field(default=None, repr=False)
+    preflight_ontology_mutation_revision: Optional[int] = field(
+        default=None,
+        repr=False,
+    )
+    preflight_execute_script_tool_schema: Optional[Mapping[str, Any]] = field(
+        default=None,
+        repr=False,
+    )
+    preflight_solver_capabilities: Optional[
+        tuple[Mapping[str, Any], ...]
+    ] = field(default=None, repr=False)
 
 
 @dataclass

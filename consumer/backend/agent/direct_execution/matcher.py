@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,16 +46,41 @@ def _get_script_catalog(
     *,
     ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    ontology_manifest: Any = None,
 ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """Load and parse the script catalog for an ontology."""
-    kwargs = {"workspace_id": workspace_id}
-    if str(ontology_version or "").strip():
-        kwargs["version"] = ontology_version
-    ontology, error = get_ontology_manifest(ontology_id, **kwargs)
+    ontology = ontology_manifest
+    error = None
+    if ontology is None:
+        kwargs = {"workspace_id": workspace_id}
+        if str(ontology_version or "").strip():
+            kwargs["version"] = ontology_version
+        ontology, error = get_ontology_manifest(ontology_id, **kwargs)
     if error or ontology is None:
         return None, error or "Ontology not found"
 
-    ontology_dir = Path(ontology.ontology_dir).resolve()
+    manifest_id = str(
+        ontology.get("id") if isinstance(ontology, Mapping) else getattr(ontology, "id", "")
+    ).strip()
+    manifest_version = str(
+        ontology.get("version")
+        if isinstance(ontology, Mapping)
+        else getattr(ontology, "version", "")
+    ).strip()
+    if manifest_id != str(ontology_id or "").strip() or (
+        str(ontology_version or "").strip()
+        and manifest_version != str(ontology_version).strip()
+    ):
+        return None, "Pinned ontology manifest does not match the requested ontology"
+
+    raw_ontology_dir = (
+        ontology.get("ontology_dir")
+        if isinstance(ontology, Mapping)
+        else getattr(ontology, "ontology_dir", None)
+    )
+    if not str(raw_ontology_dir or "").strip():
+        return None, "Pinned ontology manifest has no ontology directory"
+    ontology_dir = Path(str(raw_ontology_dir or "")).resolve()
     catalog = [
         entry
         for entry in load_script_catalog(ontology_dir)
@@ -179,6 +205,7 @@ def find_best_script_operation(
     ontology_version: Optional[str] = None,
     confidence_threshold: float = 0.85,
     workspace_id: Optional[str] = None,
+    ontology_manifest: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str], float]:
     """Find the best matching script-based operation for a user request.
 
@@ -190,6 +217,7 @@ def find_best_script_operation(
         ontology_id,
         ontology_version=ontology_version,
         workspace_id=workspace_id,
+        ontology_manifest=ontology_manifest,
     )
     if error or catalog is None:
         logger.debug("No script catalog for ontology %s: %s", ontology_id, error)
