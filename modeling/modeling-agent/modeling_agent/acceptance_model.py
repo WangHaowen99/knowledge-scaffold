@@ -175,26 +175,37 @@ def _domain_turn(
                 return _tool("get_change_plan", {"plan_id": plan.get("id", "")}, available)
         return PlannedTurn(content="建模计划已经保存，批准前不会生成候选修改。")
 
-    schema_tasks = [
-        task for task in plan.get("tasks", [])
-        if isinstance(task, Mapping)
-        and ({"sync_schema_objects", "stage_schema_semantic_changes", "confirm_schema_semantics"}
-             & set(task.get("allowed_tools") or []))
-    ]
+    schema_tools = {
+        "sync_schema_objects",
+        "stage_schema_semantic_changes",
+        "confirm_schema_semantics",
+    }
+    schema_tasks: list[Mapping[str, Any]] = []
+    for task in plan.get("tasks", []):
+        if not isinstance(task, Mapping):
+            continue
+        allowed_tools = set(task.get("allowed_tools") or [])
+        if schema_tools & allowed_tools:
+            schema_tasks.append(task)
     plan_id = str(plan.get("id") or "")
-    plan_boundary = max((
-        call.index for call in calls
-        if call.name in {"create_change_plan", "get_change_plan", "revise_change_plan"}
-        and isinstance(call.result.get("plan"), Mapping)
-        and str(call.result["plan"].get("id") or "") == plan_id
-    ), default=-1)
-    schema_syncs = [
-        call for call in calls
-        if call.name == "sync_schema_objects"
-        and call.index > plan_boundary
-        and (not isinstance(call.result.get("plan"), Mapping)
-             or str(call.result["plan"].get("id") or "") == plan_id)
-    ]
+    plan_boundary = -1
+    for call in calls:
+        if call.name not in {"create_change_plan", "get_change_plan", "revise_change_plan"}:
+            continue
+        call_plan = call.result.get("plan")
+        if not isinstance(call_plan, Mapping):
+            continue
+        if str(call_plan.get("id") or "") != plan_id:
+            continue
+        plan_boundary = max(plan_boundary, call.index)
+    schema_syncs: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "sync_schema_objects" or call.index <= plan_boundary:
+            continue
+        call_plan = call.result.get("plan")
+        if isinstance(call_plan, Mapping) and str(call_plan.get("id") or "") != plan_id:
+            continue
+        schema_syncs.append(call)
     if any("sync_schema_objects" in (task.get("allowed_tools") or []) for task in schema_tasks) and not schema_syncs:
         return _tool("sync_schema_objects", {
             "plan_task_id": schema_tasks[0].get("id", ""),
@@ -263,12 +274,13 @@ def _domain_turn(
         return _tool("stage_change_set", _change_set_arguments(effective_prompt, plan, calls, generation), available)
 
     validated = [call for call in calls if call.name == "validate_change_set"]
-    relation_suggestions = [
-        call for call in calls
-        if call.name == "suggest_object_relations"
-        and call.index > plan_boundary
-        and not call.result.get("error")
-    ]
+    relation_suggestions: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "suggest_object_relations" or call.index <= plan_boundary:
+            continue
+        if call.result.get("error"):
+            continue
+        relation_suggestions.append(call)
     validation_boundary = max([staged_boundary, *(call.index for call in relation_suggestions)])
     if not validated or validated[-1].index < validation_boundary:
         return _tool("validate_change_set", {
@@ -301,12 +313,12 @@ def _schema_semantic_turn(
         return None
     task = semantic_tasks[0]
     sync_index = successful_syncs[-1].index if successful_syncs else plan_boundary
-    confirmed = [
-        call for call in calls
-        if call.name == "confirm_schema_semantics"
-        and call.index > sync_index
-        and call.result.get("ok") is True
-    ]
+    confirmed: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "confirm_schema_semantics" or call.index <= sync_index:
+            continue
+        if call.result.get("ok") is True:
+            confirmed.append(call)
     if confirmed:
         return None
 
@@ -367,24 +379,23 @@ def _schema_semantic_turn(
             "objects": changes,
         }, available)
 
-    object_lists = [
-        call for call in calls
-        if call.name == "list_domain_resources"
-        and call.arguments.get("kind") == "object"
-        and call.index > sync_index
-    ]
+    object_lists: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "list_domain_resources" or call.index <= sync_index:
+            continue
+        if call.arguments.get("kind") == "object":
+            object_lists.append(call)
     if not object_lists:
         return _tool("list_domain_resources", {"kind": "object", "limit": 200}, available)
     resources = [
         item for item in object_lists[-1].result.get("items", [])
         if isinstance(item, Mapping) and item.get("resource_id")
     ]
-    staged_ids = {
-        str(item.get("resource_id") or "")
-        for call in stages
-        for item in call.arguments.get("objects", [])
-        if isinstance(item, Mapping)
-    }
+    staged_ids: set[str] = set()
+    for call in stages:
+        for item in call.arguments.get("objects", []):
+            if isinstance(item, Mapping):
+                staged_ids.add(str(item.get("resource_id") or ""))
     remaining = [item for item in resources if str(item.get("resource_id")) not in staged_ids]
     if not remaining:
         return _tool("get_schema_semantics", {"level": "error", "offset": 0, "limit": 100}, available)
@@ -438,12 +449,13 @@ def _schema_relation_suggestion_turn(
     if not requirements:
         return None
     requirement = requirements[-1]
-    suggestions = [
-        call for call in calls
-        if call.name == "suggest_object_relations"
-        and call.index > requirement.index
-        and not call.result.get("error")
-    ]
+    suggestions: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "suggest_object_relations" or call.index <= requirement.index:
+            continue
+        if call.result.get("error"):
+            continue
+        suggestions.append(call)
     if not suggestions:
         return _tool("suggest_object_relations", {
             "working_revision": _working_revision(calls),
