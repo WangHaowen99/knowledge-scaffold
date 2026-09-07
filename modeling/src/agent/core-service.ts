@@ -1346,11 +1346,11 @@ export class AgentCoreService {
         },
       );
     }
-    if (ledger.required !== true || (
-      ledger.available === true
-      && ledger.sourceRevision === workspace.base_revision_oid
-      && validation?.pass === true
-    )) return;
+    const hasCurrentLedger = ledger.available === true;
+    const ledgerMatchesWorkspace = ledger.sourceRevision === workspace.base_revision_oid;
+    const ledgerPassed = validation?.pass === true;
+    const ledgerGatePassed = hasCurrentLedger && ledgerMatchesWorkspace && ledgerPassed;
+    if (ledger.required !== true || ledgerGatePassed) return;
     const blockers = ledger.available !== true
       ? ['先提交当前产品大清单的结构化台账']
       : ledger.sourceRevision !== workspace.base_revision_oid
