@@ -4511,6 +4511,18 @@ async def test_text_only_description_request_is_retried_until_input_card(setting
         await runtime.shutdown()
 
 
+async def test_delayed_expert_input_request_is_detected() -> None:
+    assert requests_user_input("下一步将在专家明确后继续处理")
+    assert requests_user_input("待业务专家确认范围之后再生成规则")
+    assert not requests_user_input("专家已经明确范围，继续生成规则")
+
+
+async def test_product_ledger_intent_requires_structured_ledger_tool_only_for_large_list() -> None:
+    intent = "调整规则内容/结构；重新给出资料完整/不足数量，保留 198 条与 3 组归并，不修改知识包"
+    assert "stage_product_ledger" in _required_tools_for_user_intent(intent)
+    assert "stage_product_ledger" not in _required_tools_for_user_intent("修改一条规则的描述")
+
+
 async def test_required_option_text_must_be_present_before_resume(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("ask", {
@@ -4563,6 +4575,122 @@ async def test_required_option_text_must_be_present_before_resume(settings) -> N
         completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
         assert completed["status"] == "completed", completed["error"]
         assert runtime.store.pending_interaction("project_required_option_text") is None
+        snapshot = runtime.store.require_run(started["id"]).latest_interaction
+        assert snapshot["requiredTextConstraint"]["text"] == "将客户分类从三级调整为四级。"
+        assert snapshot["requiredTextConstraint"]["textHash"].startswith("sha256:")
+        assert any("将客户分类从三级调整为四级。" in str(item) for item in model.stream_inputs)
+        assert any(
+            event.kind == "tool"
+            and event.payload.get("name") == "required_text_constraint"
+            and event.payload.get("phase") == "completed"
+            for event in runtime.store.events_after("project_required_option_text", 0)
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_required_text_guard_creates_actionable_card_when_model_does_not_acknowledge(
+    settings,
+) -> None:
+    model = ScriptedModel(
+        [[ToolTurn("ask", {
+            "question": "知识内容是否需要调整？",
+            "kind": "clarification",
+            "options": [{
+                "label": "内容需要修改",
+                "description": "说明需要修改的位置和内容",
+                "value": "content_fix",
+                "requiresText": True,
+                "textPrompt": "请描述具体需要修改的地方",
+            }],
+        })]],
+        final="这次处理无法继续。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_required_text_guard",
+            token="token_1",
+            message="核对知识内容",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        interaction = runtime.store.pending_interaction("project_required_text_guard")
+        assert interaction is not None
+
+        await runtime.answer_interaction(
+            project_id="project_required_text_guard",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "value": "content_fix",
+                "selected": ["content_fix"],
+                "text": "保留既有 ID，仅重新核对完整性。",
+            },
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        review = runtime.store.pending_interaction("project_required_text_guard")
+        assert review is not None
+        assert review.payload["requiredTextConstraint"]["text"] == "保留既有 ID，仅重新核对完整性。"
+        assert [item["value"] for item in review.payload["options"]] == [
+            "retry_required_text", "edit_required_text",
+        ]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_required_text_guard_replaces_repeated_original_question_with_review_card(
+    settings,
+) -> None:
+    original = {
+        "question": "知识内容是否需要调整？",
+        "kind": "clarification",
+        "options": [{
+            "label": "内容需要修改",
+            "description": "说明需要修改的位置和内容",
+            "value": "content_fix",
+            "requiresText": True,
+            "textPrompt": "请描述具体需要修改的地方",
+        }],
+    }
+    model = ScriptedModel([
+        [ToolTurn("ask", original)],
+        [ToolTurn("ask", original)],
+        [ToolTurn("ask", original)],
+    ])
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_required_text_repeated_question",
+            token="token_1",
+            message="核对知识内容",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        interaction = runtime.store.pending_interaction(
+            "project_required_text_repeated_question",
+        )
+        assert interaction is not None
+
+        await runtime.answer_interaction(
+            project_id="project_required_text_repeated_question",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "value": "content_fix",
+                "selected": ["content_fix"],
+                "text": "只修改指定说明，保留既有 ID。",
+            },
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        review = runtime.store.pending_interaction(
+            "project_required_text_repeated_question",
+        )
+        assert review is not None
+        assert review.payload["question"].startswith("助手还没有明确响应")
+        assert review.payload["requiredTextConstraint"]["text"] == "只修改指定说明，保留既有 ID。"
     finally:
         await runtime.shutdown()
 

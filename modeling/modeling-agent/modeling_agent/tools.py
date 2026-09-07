@@ -958,6 +958,47 @@ CHANGE_SET_ACTION = {"oneOf": [
 CORE_TOOL_SPECS = (
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
+        "get_product_ledger",
+        "读取当前产品/规则大清单的逐项对账台账和确定性校验结果；没有台账时返回未建立状态。",
+        {},
+        display="正在读取产品清单台账",
+    ),
+    ToolSpec(
+        "stage_product_ledger",
+        "提交产品/规则大清单的结构化台账。sourceRevision 可留空，由核心绑定当前工作区修订；必须提供每个 canonical item 的唯一 ID、rule ID、原始记录定位、归并组、证据覆盖状态和处理状态；核心会确定性校验数量闭合和 ID 唯一性。",
+        {
+            "schemaVersion": {"type": "string", "enum": ["product-ledger-v1"]},
+            "sourceRevision": STRING,
+            "scope": STRING,
+            "rawCount": {"type": "integer", "minimum": 0},
+            "canonicalCount": {"type": "integer", "minimum": 0},
+            "mergedGroupCount": {"type": "integer", "minimum": 0},
+            "required": {"type": "boolean"},
+            "entries": {
+                "type": "array",
+                "maxItems": 10000,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "canonicalItemId": STRING,
+                        "ruleId": STRING,
+                        "sourceRecordIds": {"type": "array", "items": STRING, "minItems": 1},
+                        "sourceLocator": STRING,
+                        "mergeGroupId": STRING,
+                        "evidenceStatus": {"type": "string", "enum": ["complete", "insufficient"]},
+                        "processingStatus": {"type": "string", "enum": ["pending", "ready", "generated", "blocked"]},
+                        "insufficiencyReason": STRING,
+                    },
+                    "required": ["canonicalItemId", "ruleId", "sourceRecordIds", "sourceLocator", "evidenceStatus", "processingStatus"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        ("scope", "rawCount", "canonicalCount", "mergedGroupCount", "entries"),
+        False,
+        "正在校验产品清单台账",
+    ),
+    ToolSpec(
         "get_schema_mapping_plan",
         "读取全部已确认 Sheet 与当前对象结构化来源的完整对照台账，返回逐 Sheet 映射状态和未闭环计数。业务流程确认并进入 knowledge 阶段后先调用，补齐来源后再次核对；只有 complete=true 才能发起知识候选确认。",
         {},
@@ -2678,8 +2719,9 @@ DOMAIN_PHASE_TOOLS = frozenset({
     "preview_domain_delete", "delete_domain_resource",
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
+    "get_product_ledger", "stage_product_ledger",
 })
-DOMAIN_READ_TOOLS = frozenset({"list_domain_resources", "get_domain_resource"})
+DOMAIN_READ_TOOLS = frozenset({"list_domain_resources", "get_domain_resource", "get_product_ledger"})
 FUSION_PHASE_TOOLS = frozenset({
     "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",
     "get_package_fusion_plan", "create_package_fusion_plan", "update_package_fusion_plan",

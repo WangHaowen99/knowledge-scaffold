@@ -41,6 +41,9 @@ class Settings:
     context_max_messages: int = 64
     context_window_messages: int = 48
     context_window_rounds: int = 10
+    # requiredText 语义守卫支持分阶段上线：off 仅保留兼容行为，observe
+    # 记录约束但不阻断，enforce 在模型未确认约束时重新提示并生成可操作卡片。
+    required_text_guard_mode: str = "enforce"
 
     @property
     def runtime_db(self) -> Path:
@@ -80,6 +83,11 @@ class Settings:
             context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
             context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
             context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 30),
+            required_text_guard_mode=(
+                os.getenv("MODELING_REQUIRED_TEXT_GUARD_MODE", "enforce").strip().lower()
+                if os.getenv("MODELING_REQUIRED_TEXT_GUARD_MODE", "enforce").strip().lower()
+                in {"off", "observe", "enforce"} else "enforce"
+            ),
         )
 
     def with_runtime_llm(self, config: dict[str, object]) -> "Settings":
@@ -119,4 +127,5 @@ class Settings:
                 "windowRounds": self.context_window_rounds,
                 "reloadArchivedHistory": False,
             },
+            "requiredTextGuardMode": self.required_text_guard_mode,
         }
