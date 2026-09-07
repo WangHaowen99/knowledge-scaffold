@@ -6,17 +6,26 @@ saved system config > environment variables > built-in defaults.
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
+import logging
 import os
 import stat
+import tempfile
+import time
 import uuid
-from pathlib import Path
-from threading import Lock
-from typing import Any
+from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from threading import RLock
+from typing import Any, Iterator, Mapping
 
 import requests
 
+from config.config_snapshot import ConfigSnapshotManager
 from config.ops_config import resolve_model_profile_max_count
 from utils.security.secrets import (
     SecretEncryptionError,
@@ -28,6 +37,7 @@ from utils.security.secrets import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
+logger = logging.getLogger(__name__)
 
 
 def _resolve_default_runtime_root(backend_root: Path | None = None) -> Path:
@@ -68,7 +78,16 @@ def _resolve_config_path() -> Path:
 
 CONFIG_PATH = _resolve_config_path()
 CONFIG_DIR = CONFIG_PATH.parent
-_CONFIG_LOCK = Lock()
+_CONFIG_PUBLICATION_LOCK = RLock()
+_CONFIG_LOCK = RLock()
+_CONFIG_SNAPSHOT_MANAGER_LOCK = RLock()
+_CONFIG_SNAPSHOT_MANAGER: ConfigSnapshotManager | None = None
+_SYSTEM_CONFIG_PROCESS_GENERATION = 0
+
+PERF_CONFIG_SNAPSHOT_ENABLED_ENV = "PERF_CONFIG_SNAPSHOT_ENABLED"
+CONFIG_SNAPSHOT_CHECK_INTERVAL_SECONDS = 1.5
+_TRANSIENT_CONFIG_ERRNOS = {errno.EAGAIN, errno.EBUSY, errno.EINTR}
+_IS_WINDOWS = os.name == "nt"
 
 SECTION_KEYS = (
     "llm",
@@ -233,12 +252,115 @@ class SystemConfigValidationError(ValueError):
     """Raised when system configuration payload is invalid."""
 
 
+class ModelProfilePreconditionError(RuntimeError):
+    """A destructive model-profile mutation failed its atomic precondition."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        super().__init__(detail)
+
+
 class SystemConfigReadError(RuntimeError):
     """Sanitized persisted-config error that must never trigger fallback."""
 
     def __init__(self, code: str, detail: str) -> None:
         self.code = code
         super().__init__(detail)
+
+
+class SystemConfigTransientReadError(SystemConfigReadError):
+    """A whitelisted source I/O interruption eligible for last-good fallback."""
+
+
+class SystemConfigDurabilityError(OSError):
+    """The replacement committed but its directory durability is unconfirmed."""
+
+    def __init__(self, detail: str, *, committed: bool) -> None:
+        self.committed = committed
+        super().__init__(detail)
+
+
+def _config_snapshot_enabled() -> bool:
+    value = os.getenv(PERF_CONFIG_SNAPSHOT_ENABLED_ENV, "true")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _is_security_config_snapshot_error(exc: Exception) -> bool:
+    if isinstance(exc, SystemConfigTransientReadError):
+        return False
+    if isinstance(exc, (SystemConfigReadError, PermissionError)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM}
+
+
+def _is_transient_config_snapshot_error(exc: Exception) -> bool:
+    if isinstance(exc, SystemConfigTransientReadError):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _TRANSIENT_CONFIG_ERRNOS
+
+
+def _load_system_config_snapshot(environment: Mapping[str, str]) -> dict[str, dict[str, Any]]:
+    with _CONFIG_LOCK:
+        return _load_system_config_unlocked(environment=environment)
+
+
+def _get_system_config_snapshot_manager() -> ConfigSnapshotManager:
+    global _CONFIG_SNAPSHOT_MANAGER, _SYSTEM_CONFIG_PROCESS_GENERATION
+
+    source_path = Path(CONFIG_PATH)
+    with _CONFIG_SNAPSHOT_MANAGER_LOCK:
+        initial_generation = _SYSTEM_CONFIG_PROCESS_GENERATION
+        if _CONFIG_SNAPSHOT_MANAGER is not None:
+            if _CONFIG_SNAPSHOT_MANAGER.source_path == source_path:
+                return _CONFIG_SNAPSHOT_MANAGER
+            _SYSTEM_CONFIG_PROCESS_GENERATION = max(
+                _SYSTEM_CONFIG_PROCESS_GENERATION,
+                _CONFIG_SNAPSHOT_MANAGER.generation,
+            ) + 1
+            initial_generation = _SYSTEM_CONFIG_PROCESS_GENERATION
+
+        if _CONFIG_SNAPSHOT_MANAGER is None or _CONFIG_SNAPSHOT_MANAGER.source_path != source_path:
+            _CONFIG_SNAPSHOT_MANAGER = ConfigSnapshotManager(
+                source_path=source_path,
+                loader=_load_system_config_snapshot,
+                environment=os.environ,
+                initial_generation=initial_generation,
+                check_interval_seconds=CONFIG_SNAPSHOT_CHECK_INTERVAL_SECONDS,
+                is_security_error=_is_security_config_snapshot_error,
+                is_transient_error=_is_transient_config_snapshot_error,
+            )
+        return _CONFIG_SNAPSHOT_MANAGER
+
+
+def _record_system_config_generation(manager: ConfigSnapshotManager) -> int:
+    global _SYSTEM_CONFIG_PROCESS_GENERATION
+
+    with _CONFIG_SNAPSHOT_MANAGER_LOCK:
+        _SYSTEM_CONFIG_PROCESS_GENERATION = max(
+            _SYSTEM_CONFIG_PROCESS_GENERATION,
+            manager.generation,
+        )
+        return _SYSTEM_CONFIG_PROCESS_GENERATION
+
+
+@contextmanager
+def _config_write_publication() -> Iterator[None]:
+    with _CONFIG_PUBLICATION_LOCK:
+        try:
+            with _CONFIG_LOCK:
+                yield
+        except SystemConfigDurabilityError as exc:
+            if exc.committed:
+                try:
+                    invalidate_system_config_snapshot()
+                except BaseException as invalidate_error:
+                    exc.add_note(
+                        "Snapshot invalidation also failed: "
+                        f"{type(invalidate_error).__name__}"
+                    )
+            raise
+        else:
+            invalidate_system_config_snapshot()
 
 
 def _coerce_string(value: Any) -> str:
@@ -320,6 +442,11 @@ def _read_json_document(path: Path) -> dict[str, Any]:
             descriptor = None
             raw = json.load(stream)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if isinstance(exc, OSError) and exc.errno in _TRANSIENT_CONFIG_ERRNOS:
+            raise SystemConfigTransientReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "System configuration source is temporarily unavailable",
+            ) from exc
         raise SystemConfigReadError(
             "SYSTEM_CONFIG_INVALID",
             "系统配置文件无效，请修复配置后重试",
@@ -496,7 +623,11 @@ def _validate_persisted_profiles(section: dict[str, Any]) -> None:
             )
 
 
-def _validate_persisted_document(document: dict[str, Any]) -> None:
+def _validate_persisted_document(
+    document: dict[str, Any],
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> None:
     for section in SECTION_KEYS:
         if section not in document:
             continue
@@ -524,6 +655,7 @@ def _validate_persisted_document(document: dict[str, Any]) -> None:
                     semantic_specs,
                     section_value,
                     [section],
+                    environment=environment,
                 )
                 if section == "agent":
                     _normalize_agent_effective(effective_section)
@@ -583,10 +715,13 @@ def _validate_encrypted_secrets(document: dict[str, Any]) -> None:
         ) from exc
 
 
-def _read_config_document_unlocked() -> dict[str, Any]:
+def _read_config_document_unlocked(
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     if CONFIG_PATH.exists() or CONFIG_PATH.is_symlink():
         document = _read_json_document(CONFIG_PATH)
-        _validate_persisted_document(document)
+        _validate_persisted_document(document, environment=environment)
         if _document_has_legacy_model_fields(document):
             raise SystemConfigReadError(
                 "SYSTEM_CONFIG_MODEL_MIGRATION_REQUIRED",
@@ -607,8 +742,11 @@ def load_raw_system_config() -> dict[str, dict[str, Any]]:
         return _load_raw_system_config_unlocked()
 
 
-def _load_raw_system_config_unlocked() -> dict[str, dict[str, Any]]:
-    document = _read_config_document_unlocked()
+def _load_raw_system_config_unlocked(
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    document = _read_config_document_unlocked(environment=environment)
     config = {
         section: dict(document.get(section) or {})
         for section in SECTION_KEYS
@@ -617,10 +755,16 @@ def _load_raw_system_config_unlocked() -> dict[str, dict[str, Any]]:
     return config
 
 
-def _get_env_value(path: list[str], field_spec: dict[str, Any]) -> Any:
+def _get_env_value(
+    path: list[str],
+    field_spec: dict[str, Any],
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> Any:
     env_name = field_spec.get("env")
-    if env_name and os.getenv(env_name) is not None:
-        return os.getenv(env_name)
+    source = os.environ if environment is None else environment
+    if env_name and env_name in source:
+        return source[env_name]
     return None
 
 
@@ -662,6 +806,8 @@ def _process_fields_recursive(
     specs: dict[str, Any],
     raw_data: dict[str, Any],
     path: list[str],
+    *,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     result = {}
     for field_name, field_spec in specs.items():
@@ -674,13 +820,18 @@ def _process_fields_recursive(
                 field_spec,
                 sub_raw,
                 current_path,
+                environment=environment,
             )
             continue
 
         # 普通字段处理
         val = raw_data.get(field_name)
         if val is None:
-            env_val = _get_env_value(current_path, field_spec)
+            env_val = _get_env_value(
+                current_path,
+                field_spec,
+                environment=environment,
+            )
             if env_val is not None:
                 val = env_val
         if val is None:
@@ -880,6 +1031,7 @@ def _normalize_llm_profiles_section(
     legacy_llm: dict[str, Any],
     current_raw_section: dict[str, Any] | None = None,
     allow_profile_id_colon: bool = True,
+    rename_sources_by_target: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     section = raw_section if isinstance(raw_section, dict) else {}
     current_section = current_raw_section if isinstance(current_raw_section, dict) else {}
@@ -899,12 +1051,14 @@ def _normalize_llm_profiles_section(
         }
         profiles = []
         seen_ids: set[str] = set()
+        rename_sources = dict(rename_sources_by_target or {})
         for index, raw_profile in enumerate(raw_profiles):
             candidate_id = _coerce_string(raw_profile.get("id")) if isinstance(raw_profile, dict) else ""
+            existing_id = rename_sources.get(candidate_id, candidate_id)
             profile = _normalize_llm_profile(
                 raw_profile,
                 legacy_llm=legacy_llm,
-                existing_profile=existing_by_id.get(candidate_id),
+                existing_profile=existing_by_id.get(existing_id),
                 index=index,
                 allow_colon_id=allow_profile_id_colon,
             )
@@ -1100,12 +1254,81 @@ def _normalize_ontology_evidence_effective(section: dict[str, Any]) -> dict[str,
 
 
 def load_system_config() -> dict[str, dict[str, Any]]:
-    with _CONFIG_LOCK:
-        return _load_system_config_unlocked()
+    with _CONFIG_PUBLICATION_LOCK:
+        if _config_snapshot_enabled():
+            manager = _get_system_config_snapshot_manager()
+            config = manager.load()
+            _record_system_config_generation(manager)
+            return config
+        started = time.perf_counter()
+        result = "error"
+        try:
+            with _CONFIG_LOCK:
+                config = _load_system_config_unlocked()
+            result = "bypass"
+            return config
+        finally:
+            _record_system_config_bypass(result, started)
 
 
-def _load_system_config_unlocked() -> dict[str, dict[str, Any]]:
-    raw = _load_raw_system_config_unlocked()
+def load_system_config_section(section: str) -> dict[str, Any]:
+    normalized_section = _coerce_string(section).lower()
+    if normalized_section not in SECTION_KEYS:
+        raise SystemConfigValidationError(
+            "section invalid; supported values: {}".format(" | ".join(SECTION_KEYS))
+        )
+
+    with _CONFIG_PUBLICATION_LOCK:
+        if _config_snapshot_enabled():
+            manager = _get_system_config_snapshot_manager()
+            section_config = manager.load_section(normalized_section)
+            _record_system_config_generation(manager)
+            return section_config
+        started = time.perf_counter()
+        result = "error"
+        try:
+            with _CONFIG_LOCK:
+                config = _load_system_config_unlocked()
+                section_config = deepcopy(config[normalized_section])
+            result = "bypass"
+            return section_config
+        finally:
+            _record_system_config_bypass(result, started)
+
+
+def get_system_config_generation() -> int:
+    with _CONFIG_PUBLICATION_LOCK:
+        manager = _get_system_config_snapshot_manager()
+        if _config_snapshot_enabled():
+            manager.refresh_generation()
+        return _record_system_config_generation(manager)
+
+
+def invalidate_system_config_snapshot() -> int:
+    with _CONFIG_PUBLICATION_LOCK:
+        manager = _get_system_config_snapshot_manager()
+        manager.invalidate()
+        return _record_system_config_generation(manager)
+
+
+def _record_system_config_bypass(result: str, started: float) -> None:
+    try:
+        from integration.observability.performance import record_cache_access
+
+        record_cache_access(
+            "system_config",
+            result,
+            max(0.0, (time.perf_counter() - started) * 1000),
+        )
+    except Exception:
+        logger.debug("System config cache metric recording failed", exc_info=True)
+
+
+def _load_system_config_unlocked(
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    raw = _load_raw_system_config_unlocked(environment=environment)
     try:
         effective: dict[str, dict[str, Any]] = {}
         for section, specs in _SECTION_FIELDS.items():
@@ -1117,6 +1340,7 @@ def _load_system_config_unlocked() -> dict[str, dict[str, Any]]:
                 specs,
                 raw_section,
                 [section],
+                environment=environment,
             )
             if section == "agent":
                 effective[section] = _normalize_agent_effective(effective[section])
@@ -1179,6 +1403,33 @@ def _public_section(section: str, config: dict[str, dict[str, Any]]) -> dict[str
 def get_public_system_config() -> dict[str, dict[str, Any]]:
     config = load_system_config()
     return {section: _public_section(section, config) for section in SECTION_KEYS}
+
+
+def _llm_profiles_fingerprint(config: dict[str, dict[str, Any]]) -> str:
+    public_section = _public_section(_LLM_PROFILES_SECTION, config)
+    encoded = json.dumps(
+        public_section,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def get_public_system_config_snapshot() -> dict[str, Any]:
+    """Return public config with opaque concurrency metadata from one snapshot."""
+
+    with _CONFIG_PUBLICATION_LOCK:
+        config = load_system_config()
+        generation = get_system_config_generation()
+        return {
+            "config": {
+                section: _public_section(section, config)
+                for section in SECTION_KEYS
+            },
+            "generation": generation,
+            "llm_profiles_fingerprint": _llm_profiles_fingerprint(config),
+        }
 
 
 def get_system_config_template() -> dict[str, dict[str, Any]]:
@@ -1314,6 +1565,20 @@ def _encrypt_config_document(config: dict[str, dict[str, Any]]) -> dict[str, dic
     return document
 
 
+def _fsync_directory(path: Path) -> None:
+    if _IS_WINDOWS:
+        return
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        0o700,
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_config_document_unlocked(
     config: dict[str, dict[str, Any]],
     *,
@@ -1335,7 +1600,48 @@ def _write_config_document_unlocked(
     }
     document.update(_encrypt_config_document(config))
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(document, ensure_ascii=False, indent=2)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{CONFIG_PATH.name}.",
+        suffix=".tmp",
+        dir=str(CONFIG_PATH.parent),
+    )
+    temporary_path = Path(temporary_name)
+    primary_error: BaseException | None = None
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, CONFIG_PATH)
+        try:
+            _fsync_directory(CONFIG_PATH.parent)
+        except Exception as exc:
+            raise SystemConfigDurabilityError(
+                "System configuration replacement committed, but directory "
+                "durability could not be confirmed",
+                committed=True,
+            ) from exc
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup_error: BaseException | None = None
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except BaseException as exc:
+                cleanup_error = exc
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        except BaseException as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def build_effective_section_config(section: str, data: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
@@ -1394,33 +1700,361 @@ def build_effective_section_config(section: str, data: dict[str, Any] | None = N
     return normalized_section, next_effective
 
 
-def update_system_config_section(section: str, data: dict[str, Any]) -> dict[str, Any]:
+_MODEL_PROFILE_PRECONDITION_FIELDS = frozenset(
+    {
+        "config_generation",
+        "config_fingerprint",
+        "reference_generation",
+        "removed_profile_ids",
+        "renames",
+    }
+)
+
+
+def _normalize_sha256_digest(value: Any, *, field_name: str) -> str:
+    digest = _coerce_string(value).lower()
+    hexadecimal = digest.removeprefix("sha256:")
+    if (
+        not digest.startswith("sha256:")
+        or len(hexadecimal) != 64
+        or any(character not in "0123456789abcdef" for character in hexadecimal)
+    ):
+        raise SystemConfigValidationError(f"precondition.{field_name} 必须是 sha256 摘要")
+    return digest
+
+
+def _normalize_model_profile_precondition(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SystemConfigValidationError("precondition 必须是对象")
+    unknown = set(value) - _MODEL_PROFILE_PRECONDITION_FIELDS
+    if unknown:
+        raise SystemConfigValidationError(
+            "precondition 不支持字段: {}".format(", ".join(sorted(unknown)))
+        )
+    generation = value.get("config_generation")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 0
+    ):
+        raise SystemConfigValidationError("precondition.config_generation 必须是非负整数")
+    removed = value.get("removed_profile_ids")
+    if not isinstance(removed, list) or not removed:
+        raise SystemConfigValidationError("precondition.removed_profile_ids 必须是非空数组")
+    removed_ids = [
+        _normalize_profile_id(
+            item,
+            field_name="precondition.removed_profile_ids",
+            allow_colon=False,
+        )
+        for item in removed
+    ]
+    if len(set(removed_ids)) != len(removed_ids):
+        raise SystemConfigValidationError("precondition.removed_profile_ids 不能重复")
+
+    raw_renames = value.get("renames", [])
+    if not isinstance(raw_renames, list):
+        raise SystemConfigValidationError("precondition.renames 必须是数组")
+    renames: list[dict[str, str]] = []
+    original_ids: set[str] = set()
+    new_ids: set[str] = set()
+    for index, item in enumerate(raw_renames):
+        if not isinstance(item, dict) or set(item) != {"original_id", "new_id"}:
+            raise SystemConfigValidationError(
+                f"precondition.renames[{index}] 必须只包含 original_id 和 new_id"
+            )
+        original_id = _normalize_profile_id(
+            item.get("original_id"),
+            field_name=f"precondition.renames[{index}].original_id",
+            allow_colon=False,
+        )
+        new_id = _normalize_profile_id(
+            item.get("new_id"),
+            field_name=f"precondition.renames[{index}].new_id",
+            allow_colon=False,
+        )
+        if original_id == new_id:
+            raise SystemConfigValidationError("rename 的 original_id 与 new_id 不能相同")
+        if original_id in original_ids or new_id in new_ids:
+            raise SystemConfigValidationError("rename 必须是一对一映射")
+        original_ids.add(original_id)
+        new_ids.add(new_id)
+        renames.append({"original_id": original_id, "new_id": new_id})
+    if original_ids.intersection(new_ids):
+        raise SystemConfigValidationError("rename 不支持链式或交换映射")
+    return {
+        "config_generation": generation,
+        "config_fingerprint": _normalize_sha256_digest(
+            value.get("config_fingerprint"),
+            field_name="config_fingerprint",
+        ),
+        "reference_generation": _normalize_sha256_digest(
+            value.get("reference_generation"),
+            field_name="reference_generation",
+        ),
+        "removed_profile_ids": removed_ids,
+        "renames": renames,
+    }
+
+
+def _prepare_llm_profiles_update(
+    data: dict[str, Any],
+    *,
+    current_raw_section: dict[str, Any],
+    effective: dict[str, dict[str, Any]],
+    precondition: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[str], dict[str, Any] | None]:
+    normalized_precondition = (
+        _normalize_model_profile_precondition(precondition)
+        if precondition is not None
+        else None
+    )
+    current_ids = [
+        _coerce_string(profile.get("id"))
+        for profile in (current_raw_section.get("profiles") or [])
+        if isinstance(profile, dict) and _coerce_string(profile.get("id"))
+    ]
+    current_id_set = set(current_ids)
+    renames = (normalized_precondition or {}).get("renames", [])
+    rename_sources_by_target = {
+        item["new_id"]: item["original_id"]
+        for item in renames
+    }
+    for item in renames:
+        if item["original_id"] not in current_id_set:
+            raise SystemConfigValidationError(
+                "rename 原 profile 不存在: {}".format(item["original_id"])
+            )
+        if item["new_id"] in current_id_set:
+            raise SystemConfigValidationError(
+                "rename 目标已存在: {}".format(item["new_id"])
+            )
+
+    candidate = _normalize_llm_profiles_section(
+        data,
+        legacy_llm=effective["llm"],
+        current_raw_section=current_raw_section,
+        allow_profile_id_colon=False,
+        rename_sources_by_target=rename_sources_by_target,
+    )
+    candidate_ids = [profile["id"] for profile in candidate["profiles"]]
+    candidate_id_set = set(candidate_ids)
+    removed_ids = [profile_id for profile_id in current_ids if profile_id not in candidate_id_set]
+    for item in renames:
+        if item["original_id"] not in removed_ids or item["new_id"] not in candidate_id_set:
+            raise SystemConfigValidationError("rename 映射与候选 profiles 不一致")
+
+    if removed_ids and normalized_precondition is None:
+        raise ModelProfilePreconditionError(
+            "MODEL_PROFILE_PRECONDITION_REQUIRED",
+            "删除或修改全局模型标识必须提供并发前置条件",
+        )
+    if normalized_precondition is not None:
+        if normalized_precondition["removed_profile_ids"] != removed_ids:
+            raise ModelProfilePreconditionError(
+                "MODEL_PROFILE_DESTRUCTIVE_SET_CHANGED",
+                "全局模型破坏性变更集合已变化，请刷新后重试",
+            )
+        if not removed_ids:
+            raise SystemConfigValidationError("非破坏性更新不得携带 destructive precondition")
+    return candidate, removed_ids, normalized_precondition
+
+
+def _assert_model_profile_config_precondition(
+    precondition: dict[str, Any],
+    effective: dict[str, dict[str, Any]],
+) -> None:
+    if precondition["config_generation"] != get_system_config_generation():
+        raise ModelProfilePreconditionError(
+            "MODEL_PROFILE_CONFIG_CHANGED",
+            "系统模型配置 generation 已变化，请刷新后重试",
+        )
+    if precondition["config_fingerprint"] != _llm_profiles_fingerprint(effective):
+        raise ModelProfilePreconditionError(
+            "MODEL_PROFILE_CONFIG_CHANGED",
+            "系统模型配置 fingerprint 已变化，请刷新后重试",
+        )
+
+
+def _assert_model_profile_reference_precondition(
+    precondition: dict[str, Any],
+    inventory: dict[str, Any],
+) -> None:
+    if inventory.get("generation") != precondition["reference_generation"]:
+        raise ModelProfilePreconditionError(
+            "MODEL_PROFILE_REFERENCES_CHANGED",
+            "工作空间模型引用 generation 已变化，请刷新后重试",
+        )
+    _assert_model_profile_inventory_allows_removal(
+        precondition["removed_profile_ids"],
+        inventory,
+    )
+
+
+def _assert_model_profile_inventory_allows_removal(
+    removed_profile_ids: list[str],
+    inventory: dict[str, Any],
+) -> None:
+    entries = inventory.get("entries")
+    if inventory.get("complete") is not True or not isinstance(entries, list):
+        raise ModelProfilePreconditionError(
+            "MODEL_PROFILE_REFERENCES_INCOMPLETE",
+            "无法完整核对工作空间模型引用，已阻止保存",
+        )
+    removed = set(removed_profile_ids)
+    usages: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("references"), list):
+            raise ModelProfilePreconditionError(
+                "MODEL_PROFILE_REFERENCES_INCOMPLETE",
+                "无法完整核对工作空间模型引用，已阻止保存",
+            )
+        for reference in entry["references"]:
+            if (
+                isinstance(reference, dict)
+                and reference.get("scope") == "global"
+                and reference.get("profile_id") in removed
+            ):
+                usages.append(
+                    "{}:{}".format(
+                        entry.get("workspace_id") or "unknown",
+                        reference.get("field") or "unknown",
+                    )
+                )
+    if usages:
+        raise ModelProfilePreconditionError(
+            "MODEL_PROFILE_REFERENCED",
+            "待删除或改名模型仍被工作空间引用: {}".format(", ".join(usages)),
+        )
+
+
+@dataclass(frozen=True)
+class _LlmProfilesUpdateState:
+    document: dict[str, Any]
+    raw_config: dict[str, Any]
+    effective: dict[str, dict[str, Any]]
+    candidate: dict[str, Any]
+    removed_ids: list[str]
+    normalized_precondition: dict[str, Any] | None
+
+
+def _read_llm_profiles_update_state(
+    data: dict[str, Any],
+    precondition: dict[str, Any] | None,
+) -> _LlmProfilesUpdateState:
+    document = _read_config_document_unlocked()
+    raw_config = {
+        section_key: dict(document.get(section_key) or {})
+        for section_key in SECTION_KEYS
+    }
+    effective = _load_system_config_unlocked()
+    current_profiles_section = raw_config[_LLM_PROFILES_SECTION]
+    if (
+        precondition is not None
+        and not isinstance(current_profiles_section.get("profiles"), list)
+    ):
+        projected_profiles = (
+            effective.get(_LLM_PROFILES_SECTION, {}).get("profiles") or []
+        )
+        current_profiles_section = {"profiles": deepcopy(projected_profiles)}
+    candidate, removed_ids, normalized_precondition = _prepare_llm_profiles_update(
+        data,
+        current_raw_section=current_profiles_section,
+        effective=effective,
+        precondition=precondition,
+    )
+    return _LlmProfilesUpdateState(
+        document=document,
+        raw_config=raw_config,
+        effective=effective,
+        candidate=candidate,
+        removed_ids=removed_ids,
+        normalized_precondition=normalized_precondition,
+    )
+
+
+def _update_llm_profiles_section(
+    data: dict[str, Any],
+    precondition: dict[str, Any] | None,
+) -> dict[str, Any]:
+    from config.model_profile_references import (
+        get_model_profile_references,
+        model_profile_reference_guard,
+    )
+
+    with model_profile_reference_guard():
+        with _CONFIG_PUBLICATION_LOCK:
+            with _CONFIG_LOCK:
+                initial_state = _read_llm_profiles_update_state(data, precondition)
+                effective = initial_state.effective
+                removed_ids = initial_state.removed_ids
+                normalized_precondition = initial_state.normalized_precondition
+                if removed_ids:
+                    _assert_model_profile_config_precondition(
+                        normalized_precondition,
+                        effective,
+                    )
+
+        inventory = None
+        if removed_ids:
+            inventory = get_model_profile_references()
+            _assert_model_profile_reference_precondition(
+                normalized_precondition,
+                inventory,
+            )
+
+        with _config_write_publication():
+            final_state = _read_llm_profiles_update_state(data, precondition)
+            document = final_state.document
+            raw_config = final_state.raw_config
+            effective = final_state.effective
+            candidate = final_state.candidate
+            final_removed_ids = final_state.removed_ids
+            final_precondition = final_state.normalized_precondition
+            if final_removed_ids:
+                _assert_model_profile_config_precondition(final_precondition, effective)
+                if final_removed_ids != removed_ids:
+                    raise ModelProfilePreconditionError(
+                        "MODEL_PROFILE_DESTRUCTIVE_SET_CHANGED",
+                        "全局模型破坏性变更集合已变化，请刷新后重试",
+                    )
+                _assert_model_profile_reference_precondition(final_precondition, inventory)
+            raw_config[_LLM_PROFILES_SECTION] = candidate
+            _write_config_document_unlocked(raw_config, source_document=document)
+    return _public_section(_LLM_PROFILES_SECTION, load_system_config())
+
+
+def update_system_config_section(
+    section: str,
+    data: dict[str, Any],
+    *,
+    precondition: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     normalized_section = _coerce_string(section).lower()
     if normalized_section not in SECTION_KEYS:
         raise SystemConfigValidationError("section 非法，仅支持 {}".format(" | ".join(SECTION_KEYS)))
     if not isinstance(data, dict):
         raise SystemConfigValidationError("data 必须是对象")
 
-    with _CONFIG_LOCK:
+    if normalized_section == _LLM_PROFILES_SECTION:
+        return _update_llm_profiles_section(data, precondition)
+    if precondition is not None:
+        raise SystemConfigValidationError("仅 llm_profiles 支持 precondition")
+
+    with _config_write_publication():
         document = _read_config_document_unlocked()
-        raw_config = {section_key: dict(document.get(section_key) or {}) for section_key in SECTION_KEYS}
+        raw_config = {
+            section_key: dict(document.get(section_key) or {})
+            for section_key in SECTION_KEYS
+        }
         effective = _load_system_config_unlocked()
 
-        if normalized_section == _LLM_PROFILES_SECTION:
-            raw_config[normalized_section] = _normalize_llm_profiles_section(
-                data,
-                legacy_llm=effective["llm"],
-                current_raw_section=raw_config[normalized_section],
-                allow_profile_id_colon=False,
-            )
-        else:
-            raw_config[normalized_section] = _merge_section_update(
-                normalized_section,
-                data,
-                raw_config[normalized_section],
-            )
+        raw_config[normalized_section] = _merge_section_update(
+            normalized_section,
+            data,
+            raw_config[normalized_section],
+        )
         _write_config_document_unlocked(raw_config, source_document=document)
-
     return _public_section(normalized_section, load_system_config())
 
 
@@ -1434,29 +2068,62 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
     if not imported_sections:
         raise SystemConfigValidationError("config 至少需要包含一个合法 section")
 
-    with _CONFIG_LOCK:
-        document = _read_config_document_unlocked()
-        raw_config = {section_key: dict(document.get(section_key) or {}) for section_key in SECTION_KEYS}
-        effective = _load_system_config_unlocked()
-        for section in imported_sections:
-            section_data = config_payload.get(section)
-            if not isinstance(section_data, dict):
-                raise SystemConfigValidationError(f"{section} 必须是对象")
-            if section == _LLM_PROFILES_SECTION:
-                raw_config[section] = _normalize_llm_profiles_section(
-                    section_data,
-                    legacy_llm=effective["llm"],
-                    current_raw_section=raw_config[section],
-                    allow_profile_id_colon=False,
-                )
-            else:
-                raw_config[section] = _merge_section_update(
-                    section,
-                    section_data,
-                    raw_config[section],
-                )
-        _write_config_document_unlocked(raw_config, source_document=document)
+    from config.model_profile_references import (
+        get_model_profile_references,
+        model_profile_reference_guard,
+    )
 
+    with model_profile_reference_guard():
+        inventory = (
+            get_model_profile_references()
+            if _LLM_PROFILES_SECTION in imported_sections
+            else None
+        )
+        with _config_write_publication():
+            document = _read_config_document_unlocked()
+            raw_config = {
+                section_key: dict(document.get(section_key) or {})
+                for section_key in SECTION_KEYS
+            }
+            effective = _load_system_config_unlocked()
+            removed_profile_ids: list[str] = []
+            for section in imported_sections:
+                section_data = config_payload.get(section)
+                if not isinstance(section_data, dict):
+                    raise SystemConfigValidationError(f"{section} 必须是对象")
+                if section == _LLM_PROFILES_SECTION:
+                    candidate = _normalize_llm_profiles_section(
+                        section_data,
+                        legacy_llm=effective["llm"],
+                        current_raw_section=raw_config[section],
+                        allow_profile_id_colon=False,
+                    )
+                    candidate_ids = {
+                        _coerce_string(profile.get("id"))
+                        for profile in candidate["profiles"]
+                    }
+                    removed_profile_ids = [
+                        _coerce_string(profile.get("id"))
+                        for profile in effective[_LLM_PROFILES_SECTION]["profiles"]
+                        if _coerce_string(profile.get("id")) not in candidate_ids
+                    ]
+                    raw_config[section] = candidate
+                else:
+                    raw_config[section] = _merge_section_update(
+                        section,
+                        section_data,
+                        raw_config[section],
+                    )
+            if removed_profile_ids:
+                if inventory is None:
+                    raise RuntimeError(
+                        "model profile inventory is required for destructive imports"
+                    )
+                _assert_model_profile_inventory_allows_removal(
+                    removed_profile_ids,
+                    inventory,
+                )
+            _write_config_document_unlocked(raw_config, source_document=document)
     return imported_sections, get_public_system_config()
 
 

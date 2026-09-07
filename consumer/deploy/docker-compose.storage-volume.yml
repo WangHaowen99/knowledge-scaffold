@@ -1,0 +1,22 @@
+services:
+  backend:
+    volumes:
+      - consumer-runtime-data:/app/.onto-runtime
+
+  mcp:
+    volumes:
+      - consumer-runtime-data:/app/.onto-runtime
+
+  jiuwenbox:
+    volumes:
+      - consumer-runtime-data:/app/.onto-runtime:ro
+
+  auth-server:
+    volumes:
+      - consumer-auth-data:/data
+
+volumes:
+  consumer-runtime-data:
+    name: consumer-runtime-data
+  consumer-auth-data:
+    name: consumer-auth-data

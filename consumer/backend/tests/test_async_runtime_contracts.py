@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -19,6 +20,17 @@ from agent.runtime import (
     RuntimeResult,
 )
 from agent.runtime.mock import FixedAsyncAgentRuntime, ListRuntimeEventSink
+from agent.runtime.contracts import RunPreflightSnapshot
+from agent.runtime.preflight import (
+    build_run_preflight_snapshot,
+    ontology_preflight_revision_matches,
+)
+from agent.runtime.preflight_cache import ImmutablePreflightCache
+from ontology.view_cache import (
+    build_package_content_revision,
+    build_package_revision_source_signature,
+    get_ontology_mutation_revision,
+)
 
 
 def _context(run_id: str = "run-01", **arguments) -> RuntimeInvocationContext:
@@ -33,6 +45,378 @@ def _context(run_id: str = "run-01", **arguments) -> RuntimeInvocationContext:
         llm_request_mode="stream",
         arguments=arguments or None,
     )
+
+
+def test_run_preflight_snapshot_is_immutable_and_excluded_from_public_context():
+    snapshot = RunPreflightSnapshot(
+        workspace_id="workspace-a",
+        workspace_config_generation=1,
+        system_config_generation=2,
+        ontology_id="ontology-a",
+        ontology_version="1.0.0",
+        mutation_revision=3,
+        ontology_manifest={"id": "ontology-a", "version": "1.0.0"},
+        root_payload={"operations_catalog": [{"operation_key": "synthetic"}]},
+        selected_ontology_context="<Selected-Ontology />",
+        preload_records=({"path": "index.md"},),
+        model_profile={"id": "model-a"},
+        deterministic_candidate=False,
+    )
+    context = _context().model_copy(update={"preflight_snapshot": snapshot})
+
+    assert context.preflight_snapshot is snapshot
+    assert "preflight_snapshot" not in context.model_dump(mode="json")
+    with pytest.raises(TypeError):
+        snapshot.root_payload["operations_catalog"] = ()
+    with pytest.raises(TypeError):
+        snapshot.root_payload["operations_catalog"][0]["operation_key"] = "changed"
+
+
+def test_preflight_builder_reuses_only_immutable_package_products():
+    cache = ImmutablePreflightCache(max_entries=4)
+    generations = [1, 2, 3]
+    package_loads = []
+    profile_loads = []
+
+    class Manifest:
+        id = "ontology-a"
+        version = "1.0.0"
+
+        @staticmethod
+        def model_dump(mode="python"):
+            assert mode == "python"
+            return {"id": "ontology-a", "version": "1.0.0", "enabled": True}
+
+    def resolve_generations(_workspace_id, _ontology_id):
+        return tuple(generations)
+
+    def load_package(_manifest, _workspace_id):
+        package_loads.append(tuple(generations))
+        return {
+            "root_payload": {"operations_catalog": [{"operation_key": "synthetic"}]},
+            "selected_ontology_context": "context",
+            "preload_records": [{"path": "index.md"}],
+            "ontology_source_signature": (("file", "index.md", 1, 2),),
+            "ontology_content_revision": "sha256:" + "a" * 64,
+            "script_bindings": {
+                "synthetic": {
+                    "_script_path": "scripts/synthetic.py",
+                    "_expected_script_digest": "sha256:synthetic",
+                }
+            },
+        }
+
+    def load_profile():
+        profile_loads.append("profile")
+        return {"id": "model-a", "api_key": "synthetic-secret"}
+
+    first = build_run_preflight_snapshot(
+        workspace_id="workspace-a",
+        ontology_manifest=Manifest(),
+        deterministic_candidate=False,
+        model_profile_loader=load_profile,
+        cache=cache,
+        generation_resolver=resolve_generations,
+        package_loader=load_package,
+    )
+    second = build_run_preflight_snapshot(
+        workspace_id="workspace-a",
+        ontology_manifest=Manifest(),
+        deterministic_candidate=True,
+        model_profile_loader=None,
+        cache=cache,
+        generation_resolver=resolve_generations,
+        package_loader=load_package,
+    )
+
+    assert first.root_payload is second.root_payload
+    assert package_loads == [(1, 2, 3)]
+    assert profile_loads == ["profile"]
+    assert first.model_profile["id"] == "model-a"
+    assert first.ontology_source_signature == (("file", "index.md", 1, 2),)
+    assert first.ontology_content_revision == "sha256:" + "a" * 64
+    assert second.ontology_content_revision == first.ontology_content_revision
+    assert first.script_bindings["synthetic"]["_script_path"] == (
+        "scripts/synthetic.py"
+    )
+    with pytest.raises(TypeError):
+        first.script_bindings["synthetic"]["_script_path"] = "changed.py"
+    assert second.model_profile is None
+    assert second.deterministic_candidate is True
+
+    generations[2] = 4
+    third = build_run_preflight_snapshot(
+        workspace_id="workspace-a",
+        ontology_manifest=Manifest(),
+        deterministic_candidate=False,
+        model_profile_loader=load_profile,
+        cache=cache,
+        generation_resolver=resolve_generations,
+        package_loader=load_package,
+    )
+    assert third.mutation_revision == 4
+    assert package_loads == [(1, 2, 3), (1, 2, 4)]
+
+
+def test_default_preflight_package_loader_freezes_content_revision(
+    tmp_path,
+    monkeypatch,
+):
+    from agent.runtime import preflight as preflight_module
+    import ontology.ontology_catalog as catalog_module
+    import ontology.ontologies as ontologies_module
+
+    ontology_dir = tmp_path / "ontology"
+    ontology_dir.mkdir()
+    (ontology_dir / "index.md").write_text("admitted", encoding="utf-8")
+    manifest = SimpleNamespace(ontology_dir=str(ontology_dir))
+    monkeypatch.setattr(catalog_module, "build_root_payload", lambda **_kwargs: {})
+    monkeypatch.setattr(catalog_module, "load_script_catalog", lambda _root: [])
+    monkeypatch.setattr(
+        ontologies_module,
+        "build_selected_ontology_preload_context_from_manifest",
+        lambda *_args, **_kwargs: "context",
+    )
+    monkeypatch.setattr(
+        ontologies_module,
+        "build_selected_ontology_preload_records_from_manifest",
+        lambda *_args, **_kwargs: (),
+    )
+
+    product = preflight_module._default_package_loader(manifest, "workspace-a")
+
+    assert product["ontology_content_revision"] == (
+        build_package_content_revision(ontology_dir)
+    )
+
+
+def test_preflight_builder_reloads_manifest_inside_generation_retry():
+    generations = [1, 2, 7]
+    manifest_reads = []
+    package_reads = []
+
+    def load_manifest():
+        marker = "stale" if not manifest_reads else "current"
+        manifest_reads.append(marker)
+        return {
+            "id": "ontology-a",
+            "version": "1.0.0",
+            "marker": marker,
+        }
+
+    def load_package(manifest, _workspace_id):
+        marker = manifest["marker"]
+        package_reads.append(marker)
+        if marker == "stale":
+            generations[2] += 1
+        return {
+            "root_payload": {"marker": marker},
+            "selected_ontology_context": marker,
+            "preload_records": (),
+        }
+
+    snapshot = build_run_preflight_snapshot(
+        workspace_id="workspace-a",
+        ontology_id="ontology-a",
+        ontology_version="1.0.0",
+        ontology_manifest_loader=load_manifest,
+        deterministic_candidate_loader=lambda manifest: manifest["marker"] == "current",
+        model_profile_loader=lambda: {"id": "model-a"},
+        cache=ImmutablePreflightCache(max_entries=4),
+        generation_resolver=lambda _workspace_id, _ontology_id: tuple(generations),
+        package_loader=load_package,
+    )
+
+    assert manifest_reads == ["stale", "current"]
+    assert package_reads == ["stale", "current"]
+    assert snapshot.mutation_revision == 8
+    assert snapshot.ontology_manifest["marker"] == "current"
+    assert snapshot.root_payload["marker"] == "current"
+    assert snapshot.deterministic_candidate is True
+
+
+def test_preflight_builder_rejects_disappeared_selected_manifest():
+    package_reads = []
+
+    with pytest.raises(
+        RuntimeError,
+        match="ontology manifest became unavailable during preflight",
+    ):
+        build_run_preflight_snapshot(
+            workspace_id="workspace-a",
+            ontology_id="ontology-a",
+            ontology_version="1.0.0",
+            ontology_manifest_loader=lambda: None,
+            deterministic_candidate_loader=lambda _manifest: False,
+            model_profile_loader=lambda: {"id": "model-a"},
+            cache=ImmutablePreflightCache(max_entries=4),
+            generation_resolver=lambda _workspace_id, _ontology_id: (1, 2, 7),
+            package_loader=lambda manifest, _workspace_id: (
+                package_reads.append(manifest) or {}
+            ),
+        )
+
+    assert package_reads == []
+
+
+def test_preflight_builder_rejects_mixed_manifest_and_cached_package_product():
+    cache = ImmutablePreflightCache(max_entries=4)
+    manifest = {
+        "id": "ontology-a",
+        "version": "1.0.0",
+        "marker": "old",
+    }
+    package_reads = []
+
+    def load_manifest():
+        return dict(manifest)
+
+    def load_package(current_manifest, _workspace_id):
+        marker = current_manifest["marker"]
+        package_reads.append(marker)
+        return {
+            "root_payload": {"marker": marker},
+            "preload_records": (),
+        }
+
+    first = build_run_preflight_snapshot(
+        workspace_id="workspace-a",
+        ontology_id="ontology-a",
+        ontology_version="1.0.0",
+        ontology_manifest_loader=load_manifest,
+        deterministic_candidate_loader=lambda _manifest: False,
+        model_profile_loader=lambda: {"id": "model-a"},
+        cache=cache,
+        generation_resolver=lambda _workspace_id, _ontology_id: (1, 2, 7),
+        package_loader=load_package,
+    )
+    manifest["marker"] = "new"
+
+    with pytest.raises(
+        RuntimeError,
+        match="ontology manifest changed without generation advancement",
+    ):
+        build_run_preflight_snapshot(
+            workspace_id="workspace-a",
+            ontology_id="ontology-a",
+            ontology_version="1.0.0",
+            ontology_manifest_loader=load_manifest,
+            deterministic_candidate_loader=lambda _manifest: False,
+            model_profile_loader=lambda: {"id": "model-a"},
+            cache=cache,
+            generation_resolver=lambda _workspace_id, _ontology_id: (1, 2, 7),
+            package_loader=load_package,
+        )
+
+    assert first.ontology_manifest["marker"] == "old"
+    assert first.root_payload["marker"] == "old"
+    assert package_reads == ["old"]
+
+
+def test_execution_guard_detects_source_drift_without_warm_package_reload(tmp_path):
+    workspace_id = "workspace-source-drift"
+    ontology_id = "ontology-source-drift"
+    ontology_dir = tmp_path / ontology_id
+    ontology_dir.mkdir()
+    package_file = ontology_dir / "index.md"
+    package_file.write_text("old", encoding="utf-8")
+    manifest = {
+        "id": ontology_id,
+        "version": "1.0.0",
+        "ontology_dir": str(ontology_dir),
+    }
+    cache = ImmutablePreflightCache(max_entries=4)
+    package_reads = []
+
+    def load_package(_manifest, _workspace_id):
+        package_reads.append("load")
+        return {
+            "root_payload": {"marker": "old"},
+            "preload_records": (),
+            "ontology_source_signature": (
+                build_package_revision_source_signature(ontology_dir)
+            ),
+            "ontology_content_revision": build_package_content_revision(
+                ontology_dir
+            ),
+        }
+
+    first = build_run_preflight_snapshot(
+        workspace_id=workspace_id,
+        ontology_id=ontology_id,
+        ontology_version="1.0.0",
+        ontology_manifest_loader=lambda: dict(manifest),
+        deterministic_candidate_loader=lambda _manifest: False,
+        model_profile_loader=lambda: {"id": "model-a"},
+        cache=cache,
+        generation_resolver=lambda _workspace_id, _ontology_id: (
+            1,
+            2,
+            get_ontology_mutation_revision(workspace_id, ontology_id),
+        ),
+        package_loader=load_package,
+    )
+    assert ontology_preflight_revision_matches(first) is True
+    package_file.write_text("new package content", encoding="utf-8")
+
+    second = build_run_preflight_snapshot(
+        workspace_id=workspace_id,
+        ontology_id=ontology_id,
+        ontology_version="1.0.0",
+        ontology_manifest_loader=lambda: dict(manifest),
+        deterministic_candidate_loader=lambda _manifest: False,
+        model_profile_loader=lambda: {"id": "model-a"},
+        cache=cache,
+        generation_resolver=lambda _workspace_id, _ontology_id: (
+            1,
+            2,
+            get_ontology_mutation_revision(workspace_id, ontology_id),
+        ),
+        package_loader=load_package,
+    )
+
+    assert ontology_preflight_revision_matches(first) is False
+    assert second.root_payload is first.root_payload
+    assert ontology_preflight_revision_matches(second) is False
+    assert package_reads == ["load"]
+
+
+def test_execution_guard_rejects_content_drift_with_unchanged_stat(tmp_path):
+    workspace_id = "workspace-content-drift"
+    ontology_id = "ontology-content-drift"
+    ontology_dir = tmp_path / ontology_id
+    ontology_dir.mkdir()
+    package_file = ontology_dir / "operations.json"
+    package_file.write_text('{"mode":"alpha"}', encoding="utf-8")
+    source_signature = build_package_revision_source_signature(ontology_dir)
+    snapshot = RunPreflightSnapshot(
+        workspace_id=workspace_id,
+        workspace_config_generation=1,
+        system_config_generation=2,
+        ontology_id=ontology_id,
+        ontology_version="1.0.0",
+        mutation_revision=get_ontology_mutation_revision(workspace_id, ontology_id),
+        ontology_manifest={
+            "id": ontology_id,
+            "version": "1.0.0",
+            "ontology_dir": str(ontology_dir),
+        },
+        ontology_source_signature=source_signature,
+        ontology_content_revision=build_package_content_revision(ontology_dir),
+    )
+    original_stat = package_file.stat()
+
+    package_file.write_text('{"mode":"bravo"}', encoding="utf-8")
+    package_file.touch()
+    import os
+
+    os.utime(
+        package_file,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+
+    assert build_package_revision_source_signature(ontology_dir) == source_signature
+    assert ontology_preflight_revision_matches(snapshot) is False
 
 
 def test_invocation_context_is_strict_immutable_and_normalized():

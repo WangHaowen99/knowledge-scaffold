@@ -207,7 +207,9 @@ def normalize_imported_package(source_root: Path, target_root: Path) -> PackageN
     contains_legacy_artifacts = any((target / name).is_file() for name in LEGACY_FILE_NAMES) or any(
         target.glob("*-list.md")
     )
-    if package.source_format == "legacy" or contains_legacy_artifacts:
+    if package.source_format == "legacy" or (
+        package.source_format == "v0.1" and contains_legacy_artifacts
+    ):
         try:
             converted, conversion_warnings = convert_legacy_package_in_place(target)
         except (OSError, ValueError) as exc:

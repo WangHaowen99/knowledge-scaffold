@@ -7,8 +7,315 @@ from pathlib import Path
 import pytest
 
 import persistence.chat_store as chat_store_module
+import persistence.session_summary_index as summary_index_module
 from persistence.chat_store import ChatStore, ToolOutputLimits
+from persistence.session_summary_index import (
+    SessionSummaryIndex,
+    SessionSummaryIndexWriteError,
+)
 from utils.streaming import build_agent_event
+
+
+def _only_summary(index: SessionSummaryIndex):
+    page = index.list_page(limit=10)
+    assert len(page.items) == 1
+    return page.items[0]
+
+
+def test_chat_store_projects_durable_summary_mutations_but_not_stream_tokens(tmp_path):
+    index = SessionSummaryIndex(tmp_path / "session-summary-index.json")
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+
+    created = store.create_session(
+        session_id="summary-chat",
+        title="Initial",
+        metadata={"selected_ontology_id": "synthetic-ontology"},
+    )
+    summary = _only_summary(index)
+    assert summary.session_id == created.id
+    assert summary.message_count == 0
+
+    assert store.add_message(created.id, "user", "synthetic request") is not None
+    assert store.update_session_title(created.id, "Updated") is not None
+    assert store.merge_session_metadata(created.id, {"agent_mode": "quick"}) is not None
+    assert store.set_session_pinned(created.id, True) is not None
+    assert store.record_interaction_cancellation(
+        created.id,
+        "interaction-summary",
+        "Synthetic interaction cancelled",
+        cancelled_at="2026-08-31T12:00:00+00:00",
+    ) is True
+    assert store.set_active_run(created.id, "run-summary") is True
+
+    summary = _only_summary(index)
+    assert summary.title == "Updated"
+    assert summary.message_count == 2
+    assert summary.metadata["agent_mode"] == "quick"
+    assert summary.pinned is True
+    assert summary.active_run_id == "run-summary"
+
+    revision = index.index_revision
+    token = build_agent_event(
+        event_type="token.delta",
+        run_id="run-summary",
+        session_id=created.id,
+        turn_id=1,
+        payload={"channel": "final", "text": "synthetic"},
+    )
+    assert store.append_event(created.id, token) is True
+    assert index.index_revision == revision
+
+    assert store.clear_active_run(created.id) is True
+    assert store.compact_session(created.id) is True
+    assert _only_summary(index).active_run_id is None
+    assert store.delete_session(created.id) is True
+    assert index.list_page(limit=10).items == ()
+
+
+def test_get_session_metadata_uses_ready_summary_without_full_session_read(
+    tmp_path,
+    monkeypatch,
+):
+    index = SessionSummaryIndex(tmp_path / "session-summary-index.json")
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+    store.create_session(
+        session_id="metadata-ready",
+        metadata={"selected_ontology_id": "ontology-ready", "nested": {"v": 1}},
+    )
+    monkeypatch.setattr(
+        store,
+        "get_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ready metadata lookup must not load a full session")
+        ),
+    )
+    monkeypatch.setattr(
+        store._store,
+        "get_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ready metadata lookup must not replay chat events")
+        ),
+    )
+
+    metadata = store.get_session_metadata("metadata-ready")
+
+    assert metadata["selected_ontology_id"] == "ontology-ready"
+    metadata["nested"]["v"] = 2
+    assert index.get_summary("metadata-ready").to_dict()["metadata"]["nested"]["v"] == 1
+
+
+def test_get_session_metadata_cold_index_schedules_rebuild_and_reads_snapshot_only(
+    tmp_path,
+    monkeypatch,
+):
+    storage_dir = tmp_path / "chats"
+    writer = ChatStore(str(storage_dir))
+    writer.create_session(
+        session_id="metadata-cold",
+        metadata={"selected_ontology_id": "ontology-cold"},
+    )
+    scheduled = []
+    index = SessionSummaryIndex(
+        tmp_path / "missing-session-summary-index.json",
+        rebuild_loader=lambda: (),
+        rebuild_scheduler=lambda: scheduled.append(True) or True,
+    )
+    reader = ChatStore(str(storage_dir), summary_index=index)
+    monkeypatch.setattr(
+        reader._store,
+        "_replay_event_log_unlocked",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cold metadata fallback must not replay chat events")
+        ),
+    )
+
+    metadata = reader.get_session_metadata("metadata-cold")
+
+    assert metadata["selected_ontology_id"] == "ontology-cold"
+    assert scheduled == [True]
+
+
+def test_chat_store_summary_failure_does_not_rollback_durable_write(tmp_path):
+    class FailingIndex:
+        def __init__(self):
+            self.degraded_reason = None
+
+        def upsert_chat(self, _summary, **_options):
+            raise OSError("synthetic index failure")
+
+        def mark_degraded(self, reason):
+            self.degraded_reason = reason
+
+    index = FailingIndex()
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+
+    created = store.create_session(session_id="summary-write-survives")
+
+    assert store.get_session(created.id) is not None
+    assert index.degraded_reason == "chat_projection_failed"
+
+
+def test_chat_projection_crash_marker_repairs_valid_index_after_restart(tmp_path, monkeypatch):
+    holder = {}
+    path = tmp_path / "session-summary-index.json"
+    index = SessionSummaryIndex(
+        path,
+        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+    )
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+    holder["store"] = store
+    store.create_session(session_id="before-crash", title="Before")
+
+    monkeypatch.setattr(
+        index,
+        "upsert_chat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic process exit before projection")
+        ),
+    )
+    store.create_session(session_id="after-fact", title="After fact")
+    assert store.get_session("after-fact") is not None
+
+    restarted = SessionSummaryIndex(
+        path,
+        rebuild_loader=store.rebuild_session_summaries,
+    )
+    assert {item.session_id for item in restarted.list_all()} == {
+        "before-crash",
+        "after-fact",
+    }
+
+
+def test_chat_projection_failure_rebuilds_in_same_process(tmp_path, monkeypatch):
+    holder = {}
+    path = tmp_path / "session-summary-index.json"
+    index = SessionSummaryIndex(
+        path,
+        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+    )
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+    holder["store"] = store
+    store.create_session(session_id="before-failure", title="Before")
+
+    monkeypatch.setattr(
+        index,
+        "upsert_chat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic projection failure")
+        ),
+    )
+    store.create_session(session_id="after-fact", title="After")
+
+    assert index._dirty_path.exists() is True
+    assert {item.session_id for item in index.list_all()} == {
+        "before-failure",
+        "after-fact",
+    }
+    assert index._dirty_path.exists() is False
+
+
+def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
+    tmp_path,
+    monkeypatch,
+):
+    holder = {}
+    path = tmp_path / "session-summary-index.json"
+    index = SessionSummaryIndex(
+        path,
+        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+    )
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+    holder["store"] = store
+    store.create_session(session_id="stable", title="Stable")
+    monkeypatch.setattr(
+        store._store,
+        "create_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic source failure")
+        ),
+    )
+
+    with pytest.raises(OSError, match="source failure"):
+        store.create_session(session_id="failed", title="Failed")
+
+    assert [item.session_id for item in index.list_all()] == ["stable"]
+    assert index._dirty_path.exists() is False
+
+
+def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "session-summary-index.json"
+    holder = {}
+    index = SessionSummaryIndex(
+        path,
+        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+    )
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+    holder["store"] = store
+    store.create_session(session_id="stable", title="Stable")
+    original_write = summary_index_module._write_atomic_json
+
+    def fail_dirty_marker(target, document):
+        if str(target).endswith(".dirty"):
+            raise SessionSummaryIndexWriteError(
+                "synthetic marker failure",
+                committed=False,
+            )
+        return original_write(target, document)
+
+    monkeypatch.setattr(summary_index_module, "_write_atomic_json", fail_dirty_marker)
+
+    store.create_session(session_id="must-commit", title="Committed")
+    assert store.get_session("must-commit") is not None
+
+    restarted = SessionSummaryIndex(path, rebuild_loader=store.rebuild_session_summaries)
+    assert {item.session_id for item in restarted.list_all()} == {
+        "stable",
+        "must-commit",
+    }
+
+
+def test_marker_directory_fsync_failure_does_not_abort_source_fact(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "session-summary-index.json"
+    holder = {}
+    index = SessionSummaryIndex(
+        path,
+        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+    )
+    store = ChatStore(str(tmp_path / "chats"), summary_index=index)
+    holder["store"] = store
+    index.rebuild()
+    store.create_session(session_id="stable", title="Stable")
+    original_write = summary_index_module._write_atomic_json
+
+    def fail_after_marker_replace(target, document):
+        if str(target).endswith(".dirty"):
+            original_write(target, document)
+            raise SessionSummaryIndexWriteError(
+                "synthetic marker directory fsync failure",
+                committed=True,
+            )
+        return original_write(target, document)
+
+    monkeypatch.setattr(
+        summary_index_module,
+        "_write_atomic_json",
+        fail_after_marker_replace,
+    )
+
+    store.create_session(session_id="must-commit", title="Committed")
+    assert store.get_session("must-commit") is not None
+
+    restarted = SessionSummaryIndex(path, rebuild_loader=store.rebuild_session_summaries)
+    assert {item.session_id for item in restarted.list_all()} == {
+        "stable",
+        "must-commit",
+    }
 
 
 def test_chat_store_persists_session_metadata(tmp_path):

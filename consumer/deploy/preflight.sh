@@ -31,17 +31,74 @@ fi
 ensure_runtime_layout
 ensure_env_files
 ensure_mcp_token_secret
+load_state
+
+PREFLIGHT_STORAGE_VIEW=""
+PREFLIGHT_ENV_FILE="${BUNDLE_ROOT}/backend/.env"
+PREFLIGHT_RUNTIME_ROOT="${BUNDLE_ROOT}/.onto-runtime"
+
+cleanup_preflight_storage_view() {
+    if [ -n "${PREFLIGHT_STORAGE_VIEW}" ]; then
+        case "${PREFLIGHT_STORAGE_VIEW}" in
+            "${STATE_DIR}"/preflight-storage.*)
+                rm -rf "${PREFLIGHT_STORAGE_VIEW}"
+                ;;
+            *)
+                warn "Refusing to remove unexpected preflight storage view path"
+                ;;
+        esac
+    fi
+}
+trap cleanup_preflight_storage_view EXIT
+
+prepare_preflight_storage_view() {
+    [ "${RESOLVED_STORAGE_MODE}" = "volume" ] || return 0
+    if ! docker volume inspect "${ACTIVE_RUNTIME_VOLUME}" >/dev/null 2>&1 \
+        || ! docker volume inspect "${ACTIVE_AUTH_VOLUME}" >/dev/null 2>&1; then
+        [ -z "${CURRENT_VERSION:-}" ] \
+            || die "Installed volume storage is missing; refusing to preflight host shadow directories"
+        return 0
+    fi
+    if [ -z "${STORAGE_UTILITY_IMAGE:-}" ] && [ -n "${CURRENT_BACKEND_IMAGE:-}" ]; then
+        STORAGE_UTILITY_IMAGE="${CURRENT_BACKEND_IMAGE}"
+        export STORAGE_UTILITY_IMAGE
+    fi
+    PREFLIGHT_STORAGE_VIEW="$(mktemp -d "${STATE_DIR}/preflight-storage.XXXXXX")" \
+        || die "Cannot create restricted preflight storage view"
+    chmod 700 "${PREFLIGHT_STORAGE_VIEW}"
+    run_storage_utility \
+        -v "${ACTIVE_RUNTIME_VOLUME}:/source/runtime:ro" \
+        -v "${ACTIVE_AUTH_VOLUME}:/source/auth:ro" \
+        -v "${PREFLIGHT_STORAGE_VIEW}:/view:rw" \
+        -v "${SCRIPT_DIR}:/tool:ro" \
+        -- \
+        python /tool/storage_integrity.py export-preflight-view \
+        --runtime /source/runtime \
+        --auth /source/auth \
+        --output /view >/dev/null \
+        || die "Could not create the read-only volume preflight view"
+    mkdir -p "${PREFLIGHT_STORAGE_VIEW}/backend"
+    cp "${BUNDLE_ROOT}/backend/.env" "${PREFLIGHT_STORAGE_VIEW}/backend/.env"
+    chmod 600 "${PREFLIGHT_STORAGE_VIEW}/backend/.env"
+    PREFLIGHT_ENV_FILE="${PREFLIGHT_STORAGE_VIEW}/backend/.env"
+    PREFLIGHT_RUNTIME_ROOT="${PREFLIGHT_STORAGE_VIEW}/.onto-runtime"
+}
+
+prepare_preflight_storage_view
 
 command -v python3 >/dev/null 2>&1 || die "Python 3 is required for deployment validation"
 build_compose_env_args
 PREFLIGHT_COMPOSE_ENV_ARGS=()
 for compose_env_file in "${COMPOSE_ENV_FILES[@]}"; do
+    if [ "${compose_env_file}" = "${BACKEND_COMPOSE_ENV_FILE}" ]; then
+        compose_env_file="${PREFLIGHT_ENV_FILE}"
+    fi
     PREFLIGHT_COMPOSE_ENV_ARGS+=(--compose-env-file "${compose_env_file}")
 done
 python3 "${SCRIPT_DIR}/preflight_config.py" \
-    --env-file "${BUNDLE_ROOT}/backend/.env" \
+    --env-file "${PREFLIGHT_ENV_FILE}" \
     "${PREFLIGHT_COMPOSE_ENV_ARGS[@]}" \
-    --runtime-root "${BUNDLE_ROOT}/.onto-runtime" \
+    --runtime-root "${PREFLIGHT_RUNTIME_ROOT}" \
     --compose-file "${COMPOSE_FILE}" \
     --report "${STATE_DIR}/preflight-config.json" \
     "${PREFLIGHT_ARGS[@]}" \

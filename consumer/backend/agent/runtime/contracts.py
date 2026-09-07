@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .preflight_cache import freeze_preflight_product
 
 if TYPE_CHECKING:
     from .events import RuntimeEvent
@@ -17,6 +19,115 @@ RuntimeTerminalStatus = Literal["awaiting_input", "completed", "failed", "cancel
 LlmRequestMode = Literal["sync", "stream"]
 RuntimeHistoryRole = Literal["user", "assistant", "tool"]
 USER_WORKSPACE_RUN_CONCURRENCY_LIMIT = 100
+
+
+@dataclass(frozen=True, slots=True)
+class RunPreflightSnapshot:
+    """Exact immutable products admitted for one run request."""
+
+    workspace_id: str
+    workspace_config_generation: int
+    system_config_generation: int
+    ontology_id: str = ""
+    ontology_version: str = ""
+    mutation_revision: int = 0
+    ontology_manifest: Mapping[str, Any] | None = field(default=None, repr=False)
+    root_payload: Mapping[str, Any] | None = field(default=None, repr=False)
+    ontology_source_signature: tuple[object, ...] | None = field(
+        default=None,
+        repr=False,
+    )
+    ontology_content_revision: str | None = field(default=None, repr=False)
+    script_bindings: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    execute_script_tool_schema: Mapping[str, Any] | None = field(
+        default=None,
+        repr=False,
+    )
+    solver_capabilities: tuple[Mapping[str, Any], ...] = field(
+        default_factory=tuple,
+        repr=False,
+    )
+    selected_ontology_context: str | None = field(default=None, repr=False)
+    preload_records: tuple[Mapping[str, Any], ...] = field(
+        default_factory=tuple,
+        repr=False,
+    )
+    model_profile: Mapping[str, Any] | None = field(default=None, repr=False)
+    deterministic_candidate: bool = False
+
+    def __post_init__(self) -> None:
+        workspace = str(self.workspace_id or "").strip()
+        if not workspace:
+            raise ValueError("workspace_id must not be empty")
+        object.__setattr__(self, "workspace_id", workspace)
+        for field_name in (
+            "workspace_config_generation",
+            "system_config_generation",
+            "mutation_revision",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        object.__setattr__(self, "ontology_id", str(self.ontology_id or "").strip())
+        object.__setattr__(
+            self,
+            "ontology_version",
+            str(self.ontology_version or "").strip(),
+        )
+        for field_name in (
+            "ontology_manifest",
+            "root_payload",
+            "execute_script_tool_schema",
+            "model_profile",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    freeze_preflight_product(value),
+                )
+        if self.ontology_source_signature is not None:
+            object.__setattr__(
+                self,
+                "ontology_source_signature",
+                freeze_preflight_product(self.ontology_source_signature),
+            )
+        if self.ontology_content_revision is not None:
+            revision = str(self.ontology_content_revision or "").strip()
+            if (
+                len(revision) != 71
+                or not revision.startswith("sha256:")
+                or any(character not in "0123456789abcdef" for character in revision[7:])
+            ):
+                raise ValueError(
+                    "ontology_content_revision must be a sha256 digest"
+                )
+            object.__setattr__(self, "ontology_content_revision", revision)
+        object.__setattr__(
+            self,
+            "script_bindings",
+            freeze_preflight_product(self.script_bindings),
+        )
+        object.__setattr__(
+            self,
+            "solver_capabilities",
+            tuple(
+                freeze_preflight_product(capability)
+                for capability in self.solver_capabilities
+            ),
+        )
+        object.__setattr__(
+            self,
+            "preload_records",
+            tuple(
+                freeze_preflight_product(record)
+                for record in self.preload_records
+            ),
+        )
 
 
 def _require_non_empty(value: str, info) -> str:
@@ -85,6 +196,11 @@ class RuntimeInvocationContext(BaseModel):
     history_messages: list[RuntimeHistoryMessage] = Field(default_factory=list)
     model_profile_ref: dict[str, Any] | None = Field(default=None, exclude=True)
     model_provider: str | None = Field(default=None, exclude=True)
+    preflight_snapshot: RunPreflightSnapshot | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
     memory_context: str | None = Field(default=None, exclude=True)
     read_documents: dict[str, Any] | None = Field(default=None, exclude=True)
     interaction_cancellation: dict[str, Any] | None = Field(

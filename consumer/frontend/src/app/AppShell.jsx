@@ -18,6 +18,8 @@ import { EmptyState } from '../shared/ui/primitives';
 import { APP_VERSION } from './appMeta';
 import OnboardingWizard from './onboarding/OnboardingWizard';
 import { wizardSeen } from './onboarding/wizardState';
+import { clearOntologyResourcePrincipal, ontologyResource } from './providers/ontologyResource';
+import { ontologyRequestPolicy } from './providers/ontologyRequestPolicy';
 import { clearWorkspaceRuntime } from './providers/workspaceRuntime';
 import './appShell.css';
 
@@ -48,6 +50,12 @@ export default function AppShell() {
   });
   const [kbFocus, setKbFocus] = useState(null);
   const [solverResetToken, setSolverResetToken] = useState(0);
+  const principalId = String(user?.username || '');
+  const ontologyPolicy = ontologyRequestPolicy({
+    surface,
+    configScope: cfgScope,
+    configSection: cfgSec,
+  });
   const streamManager = useStreamManager();
   const chat = useChatSessions(streamManager);
   const agenticStream = useAgenticStream({
@@ -56,7 +64,11 @@ export default function AppShell() {
     streamManager,
     scopeKey: workspaceId,
   });
-  const kb = useKbBrowser();
+  const kb = useKbBrowser({
+    listEnabled: ontologyPolicy.listEnabled,
+    treeEnabled: ontologyPolicy.treeEnabled,
+    ontologyResource,
+  });
   const kbImportPicker = useNativeFilePicker({
     onSelect: kb.importZip,
     onCancel: kb.cancelImportSelection,
@@ -76,6 +88,10 @@ export default function AppShell() {
     return next;
   });
   const resetSolver = useCallback(() => setSolverResetToken((value) => value + 1), []);
+  const handleLogout = useCallback(() => {
+    clearOntologyResourcePrincipal(principalId);
+    return logout();
+  }, [logout, principalId]);
 
   // 每次新登录弹出操作向导（会话级标记，跳过/完成后本次不再弹）
   useEffect(() => {
@@ -329,7 +345,7 @@ export default function AppShell() {
                 <button onClick={() => { setUserMenu(false); navigate({ surface: 'config', scope: 'personal', sec: 'prefs' }); }}><SlidersHorizontal size={14} />个人设置</button>
                 <button onClick={() => { setUserMenu(false); setWizardOpen(true); }}><Compass size={14} />操作向导</button>
                 <div className="div" />
-                <button className="menu-danger" onClick={logout}><LogOut size={14} />退出登录</button>
+                <button className="menu-danger" onClick={handleLogout}><LogOut size={14} />退出登录</button>
               </div>
             )}
           </div>
@@ -365,6 +381,10 @@ export default function AppShell() {
             )}
             {surface === 'chat' && workspaceDataReady && (
               <ChatWorkspace chat={chat} streamManager={streamManager} agenticStream={agenticStream}
+                ontologies={kb.packages}
+                ontologiesLoading={kb.pkgsLoading}
+                ontologiesError={kb.packagesError}
+                onRetryOntologies={kb.retryPackages}
                 onOpenObservability={openObservability}
                 onConfigureDataSource={(ontologyId) => navigate({ surface: 'kb', tab: 'data', ontologyId })} />
             )}
@@ -374,7 +394,15 @@ export default function AppShell() {
                 <SolverCoordinationWorkbench key={workspaceId} workspaceId={workspaceId} resetToken={solverResetToken} />
               </Suspense>
             )}
-            {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
+            {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter
+              scope={cfgScope}
+              section={cfgSec}
+              onNavigate={navigate}
+              ontologies={kb.packages}
+              ontologiesLoading={kb.pkgsLoading}
+              ontologiesError={kb.packagesError}
+              onRetryOntologies={kb.retryPackages}
+            /></Suspense>}
             {surface === 'observability' && !workspaceSurfaceBlocked && (
               <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载可观测性" /></div>}>
                 <ObservabilityFeature view={observabilityView} sessionId={chat.currentChatId} user={user}

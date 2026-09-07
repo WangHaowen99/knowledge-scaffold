@@ -25,15 +25,34 @@ const jsonOptions = (method, body, signal) => ({
 });
 
 export async function loadGlobalModels({ request = authFetch, signal } = {}) {
-  const payload = await requestModelJson(request, '/api/system-config', { signal }, '加载全局模型失败');
-  return payload.llm_profiles || { profiles: [], default_main_profile_ref: null, default_task_profile_ref: null };
+  const response = await request('/api/system-config', { signal });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.detail || payload.error || `加载全局模型失败（HTTP ${response.status}）`);
+    error.status = response.status;
+    error.code = payload.code || '';
+    throw error;
+  }
+  const generationHeader = response.headers?.get?.('x-system-config-generation') || '';
+  const generation = Number(generationHeader);
+  return {
+    config: payload.llm_profiles || { profiles: [], default_main_profile_ref: null, default_task_profile_ref: null },
+    snapshot: {
+      generation: generationHeader && Number.isSafeInteger(generation) && generation >= 0
+        ? generation
+        : null,
+      fingerprint: response.headers?.get?.('x-llm-profiles-fingerprint') || '',
+    },
+  };
 }
 
-export function saveGlobalModels(data, { request = authFetch, signal } = {}) {
+export function saveGlobalModels(data, { request = authFetch, signal, precondition } = {}) {
+  const body = { section: 'llm_profiles', data };
+  if (precondition) body.precondition = precondition;
   return requestModelJson(
     request,
     '/api/system-config',
-    jsonOptions('PATCH', { section: 'llm_profiles', data }, signal),
+    jsonOptions('PATCH', body, signal),
     '保存全局模型失败',
   );
 }
@@ -116,44 +135,49 @@ export function saveWorkspaceModelRefs(workspaceId, llm, { request = authFetch, 
   );
 }
 
-export async function loadWorkspaceReferenceInventory({ request = authFetch, signal, workspaces: providedWorkspaces } = {}) {
-  const listPayload = Array.isArray(providedWorkspaces) && providedWorkspaces.length
-    ? { workspaces: providedWorkspaces }
-    : await requestModelJson(
-      request,
-      '/agentic/workspaces',
-      { signal },
-      '加载工作空间列表失败',
-    );
-  const workspaces = Array.isArray(listPayload.workspaces) ? listPayload.workspaces : [];
-  const entries = await Promise.all(workspaces.map(async (workspace) => {
-    const workspaceId = String(workspace?.id || '');
-    try {
-      const runtime = await requestModelJson(
-        request,
-        workspacePath(workspaceId, '/runtime-config'),
-        { signal },
-        `加载工作空间 ${workspaceId} 的运行时引用失败`,
-      );
-      return {
-        workspaceId,
-        workspaceName: String(workspace?.name || ''),
-        runtime,
-        runtimeKnown: true,
-      };
-    } catch (error) {
-      if (error?.name === 'AbortError') throw error;
-      return {
-        workspaceId,
-        workspaceName: String(workspace?.name || ''),
-        runtime: null,
-        runtimeKnown: false,
-        error: error?.message || '运行时引用加载失败',
-      };
-    }
-  }));
+export async function loadModelProfileReferences(profileId, { request = authFetch, signal } = {}) {
+  const normalizedProfileId = String(profileId || '').trim();
+  const query = normalizedProfileId ? `?profile_id=${encodeURIComponent(normalizedProfileId)}` : '';
+  const payload = await requestModelJson(
+    request,
+    `/api/model-profile-references${query}`,
+    { signal },
+    '加载模型引用失败',
+  );
+  const sourceEntries = Array.isArray(payload.entries) ? payload.entries : [];
+  const entries = sourceEntries.map((entry) => {
+    const references = Array.isArray(entry?.references) ? entry.references.map((reference) => ({
+      field: String(reference?.field || ''),
+      scope: String(reference?.scope || ''),
+      profile_id: String(reference?.profile_id || ''),
+    })) : [];
+    const referencesValid = Array.isArray(entry?.references) && references.every((reference) => (
+      ['default_main_profile_ref', 'default_task_profile_ref'].includes(reference.field)
+      && ['global', 'workspace'].includes(reference.scope)
+      && Boolean(reference.profile_id)
+    ));
+    const diagnostic = entry?.diagnostic && typeof entry.diagnostic === 'object'
+      ? {
+        code: String(entry.diagnostic.code || 'runtime_config_unavailable'),
+        message: String(entry.diagnostic.message || '模型引用无法核对'),
+      }
+      : null;
+    return {
+      workspaceId: String(entry?.workspace_id || ''),
+      workspaceName: String(entry?.workspace_name || ''),
+      configGeneration: entry?.config_generation ?? null,
+      references,
+      runtimeKnown: !diagnostic && referencesValid,
+      ...(diagnostic ? { diagnostic } : {}),
+    };
+  });
+  const generation = typeof payload.generation === 'string' ? payload.generation : '';
   return {
-    complete: entries.every((entry) => entry.runtimeKnown),
+    complete: payload.complete === true
+      && Array.isArray(payload.entries)
+      && Boolean(generation)
+      && entries.every((entry) => entry.runtimeKnown),
+    generation,
     entries,
   };
 }

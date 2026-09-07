@@ -9,7 +9,10 @@ import {
   deletionSnapshotDecision,
   encodeProfileRef,
   globalProfileDeleteDecision,
+  globalProfileDestructiveChanges,
+  globalProfileMutationDecision,
   isProfileTestResultCurrent,
+  markGlobalProfileRename,
   normalizeGlobalModelConfig,
   parseProfileRef,
   profileFingerprint,
@@ -166,6 +169,186 @@ test('global deletion checks main and task refs across every workspace', () => {
   assert.equal(allowed.allowed, true);
 });
 
+test('global rename metadata preserves the persisted origin without entering profile payloads', () => {
+  const renamed = markGlobalProfileRename(
+    { ...profile('fast'), id: 'renamed' },
+    'fast',
+    ['fast', 'other'],
+  );
+
+  assert.equal(renamed.rename_from, 'fast');
+  assert.equal(profileToPayload(renamed).rename_from, undefined);
+  assert.equal(
+    markGlobalProfileRename({ ...renamed, id: 'final' }, 'renamed', ['fast', 'other']).rename_from,
+    'fast',
+  );
+  assert.equal(
+    markGlobalProfileRename({ ...renamed, id: 'fast' }, 'renamed', ['fast', 'other']).rename_from,
+    undefined,
+  );
+});
+
+test('destructive change set includes a delete target and every other unsaved rename', () => {
+  const baseline = {
+    profiles: [profile('alpha'), profile('beta'), profile('stable')],
+  };
+  const renamed = markGlobalProfileRename(
+    { ...profile('alpha'), id: 'alpha-v2' },
+    'alpha',
+    baseline.profiles.map((item) => item.id),
+  );
+  const candidate = {
+    profiles: [renamed, profile('stable')],
+  };
+
+  assert.deepEqual(globalProfileDestructiveChanges(baseline, candidate), {
+    removedProfileIds: ['alpha', 'beta'],
+    renames: [{ original_id: 'alpha', new_id: 'alpha-v2' }],
+  });
+});
+
+test('global mutation decision validates every removed id and builds one atomic precondition', () => {
+  const baseline = {
+    profiles: [profile('alpha'), profile('beta'), profile('stable')],
+    default_main_profile_ref: { scope: 'global', id: 'stable' },
+    default_task_profile_ref: null,
+  };
+  const renamed = markGlobalProfileRename(
+    { ...profile('alpha'), id: 'alpha-v2' },
+    'alpha',
+    baseline.profiles.map((item) => item.id),
+  );
+  const candidate = {
+    profiles: [renamed, profile('stable')],
+    default_main_profile_ref: { scope: 'global', id: 'stable' },
+    default_task_profile_ref: null,
+  };
+  const serverSnapshot = { generation: 12, fingerprint: 'sha256:config' };
+  const inventory = {
+    complete: true,
+    generation: 'sha256:references',
+    entries: [],
+  };
+
+  const decision = globalProfileMutationDecision({
+    baseline,
+    baselineSnapshot: serverSnapshot,
+    candidate,
+    serverConfig: baseline,
+    serverSnapshot,
+    inventory,
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.deepEqual(decision.precondition, {
+    config_generation: 12,
+    config_fingerprint: 'sha256:config',
+    reference_generation: 'sha256:references',
+    removed_profile_ids: ['alpha', 'beta'],
+    renames: [{ original_id: 'alpha', new_id: 'alpha-v2' }],
+  });
+
+  const referenced = globalProfileMutationDecision({
+    baseline,
+    baselineSnapshot: serverSnapshot,
+    candidate,
+    serverConfig: baseline,
+    serverSnapshot,
+    inventory: {
+      ...inventory,
+      entries: [{
+        workspaceId: 'workspace-a',
+        runtimeKnown: true,
+        references: [{ field: 'default_task_profile_ref', scope: 'global', profile_id: 'alpha' }],
+      }],
+    },
+  });
+  assert.equal(referenced.code, 'profile_referenced');
+});
+
+test('global mutation decision fails closed for stale or missing server snapshots', () => {
+  const baseline = {
+    profiles: [profile('old'), profile('stable')],
+    default_main_profile_ref: { scope: 'global', id: 'stable' },
+    default_task_profile_ref: null,
+  };
+  const candidate = { ...baseline, profiles: [profile('stable')] };
+  const inventory = { complete: true, generation: 'sha256:references', entries: [] };
+
+  assert.equal(globalProfileMutationDecision({
+    baseline,
+    baselineSnapshot: { generation: 4, fingerprint: 'sha256:old' },
+    candidate,
+    serverConfig: baseline,
+    serverSnapshot: { generation: 5, fingerprint: 'sha256:new' },
+    inventory,
+  }).code, 'snapshot_changed');
+  assert.equal(globalProfileMutationDecision({
+    baseline,
+    baselineSnapshot: { generation: 4, fingerprint: 'sha256:old' },
+    candidate,
+    serverConfig: baseline,
+    serverSnapshot: { generation: null, fingerprint: '' },
+    inventory,
+  }).code, 'snapshot_unknown');
+});
+
+test('renaming the only global profile is not treated as deleting the last model', () => {
+  const baseline = {
+    profiles: [profile('only')],
+    default_main_profile_ref: { scope: 'global', id: 'only' },
+    default_task_profile_ref: null,
+  };
+  const candidate = {
+    profiles: [markGlobalProfileRename(
+      { ...profile('only'), id: 'renamed' },
+      'only',
+      ['only'],
+    )],
+    default_main_profile_ref: { scope: 'global', id: 'renamed' },
+    default_task_profile_ref: null,
+  };
+  const snapshot = { generation: 3, fingerprint: 'sha256:config' };
+
+  const decision = globalProfileMutationDecision({
+    baseline,
+    baselineSnapshot: snapshot,
+    candidate,
+    serverConfig: baseline,
+    serverSnapshot: snapshot,
+    inventory: { complete: true, generation: 'sha256:references', entries: [] },
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.deepEqual(decision.precondition.renames, [
+    { original_id: 'only', new_id: 'renamed' },
+  ]);
+});
+
+test('global deletion consumes aggregate reference entries without runtime documents', () => {
+  const config = {
+    profiles: [profile('fast'), profile('other')],
+    default_main_profile_ref: { scope: 'global', id: 'other' },
+    default_task_profile_ref: null,
+  };
+  const referenced = globalProfileDeleteDecision({
+    profileId: 'fast',
+    config,
+    referenceInventory: {
+      complete: true,
+      generation: 'sha256:one',
+      entries: [{
+        workspaceId: 'alpha',
+        workspaceName: 'Alpha',
+        runtimeKnown: true,
+        references: [{ field: 'default_task_profile_ref', scope: 'global', profile_id: 'fast' }],
+      }],
+    },
+  });
+  assert.equal(referenced.code, 'profile_referenced');
+  assert.match(referenced.message, /Alpha.*任务 Agent/);
+});
+
 test('workspace deletion blocks unknown runtime and referenced private roles, then allows an unreferenced profile', () => {
   const profiles = [profile('private'), profile('other')];
   assert.equal(workspaceProfileDeleteDecision({ profileId: 'private', profiles, runtimeKnown: false }).code, 'references_incomplete');
@@ -210,5 +393,18 @@ test('delete snapshot comparison fails closed for missing, stale, and confirmati
   }).code, 'snapshot_changed');
   assert.equal(deletionSnapshotDecision({
     currentFingerprint: 'base', baselineFingerprint: 'base', openedFingerprint: 'base',
+    currentGeneration: 'inventory-a', openedGeneration: 'inventory-a',
   }).allowed, true);
+});
+
+test('delete confirmation fails closed when aggregate inventory generation is missing or changes', () => {
+  assert.equal(deletionSnapshotDecision({
+    currentFingerprint: 'base', baselineFingerprint: 'base',
+    requireGeneration: true,
+  }).code, 'snapshot_unknown');
+  assert.equal(deletionSnapshotDecision({
+    currentFingerprint: 'base', baselineFingerprint: 'base',
+    currentGeneration: 'inventory-new', openedGeneration: 'inventory-old',
+    requireGeneration: true,
+  }).code, 'snapshot_changed');
 });

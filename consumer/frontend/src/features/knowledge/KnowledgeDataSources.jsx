@@ -180,6 +180,14 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
     return { mode: 'direct_provider', provider, config: providerConfig };
   };
 
+  const notifyDataSourceChanged = useCallback((targetScope) => {
+    try {
+      return Promise.resolve(onDataSourceChanged?.(targetScope)).catch(() => undefined);
+    } catch {
+      return Promise.resolve();
+    }
+  }, [onDataSourceChanged]);
+
   const submit = async (action) => {
     const targetScope = { ontologyId, workspaceId };
     const operationId = ++operationRequestRef.current;
@@ -199,10 +207,16 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
           body: JSON.stringify(buildPayload()),
         },
       );
+      const summaryRefresh = response.ok && action !== 'test'
+        ? notifyDataSourceChanged(targetScope)
+        : null;
       const data = await response.json().catch(() => ({}));
-      if (!isCurrentOperation()) return;
-      if (!response.ok) throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
+      if (!response.ok) {
+        if (!isCurrentOperation()) return;
+        throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
+      }
       if (action === 'test') {
+        if (!isCurrentOperation()) return;
         setNotice({
           type: data.success ? 'success' : 'error',
           message: data.message
@@ -210,9 +224,13 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
             : (data.success ? '连接成功：数据源配置有效，可正常查询' : '连接失败：请检查配置后重试'),
         });
       } else {
+        if (!isCurrentOperation()) {
+          await summaryRefresh;
+          return;
+        }
         const reloaded = await load();
+        await summaryRefresh;
         if (isCurrentOperation() && reloaded) {
-          await Promise.resolve(onDataSourceChanged?.()).catch(() => undefined);
           if (isCurrentOperation()) setNotice({ type: 'success', message: '数据源配置已保存' });
         }
       }
@@ -242,13 +260,22 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
         `/agentic/ontologies/${encodeURIComponent(ontologyId)}/data-source`,
         { method: 'DELETE' },
       );
+      const summaryRefresh = response.ok
+        ? notifyDataSourceChanged(targetScope)
+        : null;
       const data = await response.json().catch(() => ({}));
-      if (!isCurrentOperation()) return;
-      if (!response.ok) throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
+      if (!response.ok) {
+        if (!isCurrentOperation()) return;
+        throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
+      }
+      if (!isCurrentOperation()) {
+        await summaryRefresh;
+        return;
+      }
       setRemoveConfirmOpen(false);
       const reloaded = await load();
+      await summaryRefresh;
       if (isCurrentOperation() && reloaded) {
-        await Promise.resolve(onDataSourceChanged?.()).catch(() => undefined);
         if (isCurrentOperation()) setNotice({ type: 'success', message: '数据源配置已清除' });
       }
     } catch (error) {

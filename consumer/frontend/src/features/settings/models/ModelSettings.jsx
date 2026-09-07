@@ -4,9 +4,9 @@ import { authFetch } from '../../../shared/api/auth.js';
 import { EmptyState, FieldRow, Modal, SectionCard, StatusTag, Table } from '../../../shared/ui/primitives.jsx';
 import {
   loadGlobalModels,
+  loadModelProfileReferences,
   loadWorkspaceModels,
   loadWorkspacePrivateModels,
-  loadWorkspaceReferenceInventory,
   loadWorkspaceRuntime,
   saveGlobalModels,
   saveWorkspaceModelRefs,
@@ -21,8 +21,11 @@ import {
   createProfileDraft,
   deletionSnapshotDecision,
   encodeProfileRef,
+  globalProfileDestructiveChanges,
   globalProfileDeleteDecision,
+  globalProfileMutationDecision,
   isProfileTestResultCurrent,
+  markGlobalProfileRename,
   modelConfigFingerprint,
   normalizeGlobalModelConfig,
   parseProfileRef,
@@ -38,6 +41,7 @@ const PROVIDERS = {
   deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com' },
   openai_compatible: { label: 'OpenAI 兼容', baseUrl: '' },
 };
+const ON_DEMAND_REFERENCE_INVENTORY = Object.freeze({ complete: false, entries: [] });
 
 function ReadOnlyNotice({ children }) {
   return <div className="mw-model-readonly">🔒 {children}</div>;
@@ -66,7 +70,16 @@ function SecretStatus({ profile }) {
   return <StatusTag status={profile.has_api_key ? 'success' : 'warning'}>{profile.has_api_key ? '已配置' : '未配置'}</StatusTag>;
 }
 
-function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, onTestDraft }) {
+function ProfileEditor({
+  scope,
+  initial,
+  profiles,
+  busy,
+  allowIdEdit = false,
+  onClose,
+  onSaveDraft,
+  onTestDraft,
+}) {
   const originalId = initial?.id || '';
   const [draft, setDraft] = useState(() => ({
     ...createProfileDraft(initial || {}, { scope }),
@@ -94,11 +107,15 @@ function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, o
     });
   };
   const validate = () => validateProfile(draft, { scope, existingIds, originalId });
-  const save = () => {
+  const save = async () => {
     const nextError = validate();
     if (nextError) { setError(nextError); return; }
     setError('');
-    onSaveDraft({ ...draft, id: draft.id.trim(), name: draft.name.trim() }, originalId);
+    try {
+      await onSaveDraft({ ...draft, id: draft.id.trim(), name: draft.name.trim() }, originalId);
+    } catch (saveError) {
+      setError(saveError?.message || '应用模型草稿失败');
+    }
   };
   const test = async () => {
     const nextError = validate();
@@ -130,8 +147,8 @@ function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, o
       </>}
     >
       <div className="mw-model-form">
-        <FieldRow label="标识 *" hint="创建后不可修改；不允许空格，最多 80 个字符">
-          <input aria-label="模型标识" autoFocus disabled={isEdit} value={draft.id} onChange={(event) => update('id', event.target.value)} />
+        <FieldRow label="标识 *" hint={allowIdEdit ? '修改已有标识会在保存前核验引用；不允许空格，最多 80 个字符' : '创建后不可修改；不允许空格，最多 80 个字符'}>
+          <input aria-label="模型标识" autoFocus disabled={isEdit && !allowIdEdit} value={draft.id} onChange={(event) => update('id', event.target.value)} />
         </FieldRow>
         <FieldRow label="显示名称 *"><input aria-label="模型显示名称" value={draft.name} onChange={(event) => update('name', event.target.value)} /></FieldRow>
         <FieldRow label="模型厂商">
@@ -189,6 +206,7 @@ function GlobalModelTable({ config, canEdit, busy, tests, inventory, onEdit, onT
         <tbody>
           {config.profiles.map((profile) => {
             const decision = globalProfileDeleteDecision({ profileId: profile.id, config, referenceInventory: inventory });
+            const canPreflight = decision.allowed || decision.code === 'references_incomplete';
             return (
               <tr key={profile.id}>
                 <td><strong>{profile.name}</strong><span className="mw-model-id">{profile.id} · {profile.model}</span></td>
@@ -199,8 +217,8 @@ function GlobalModelTable({ config, canEdit, busy, tests, inventory, onEdit, onT
                 {canEdit && <td className="mw-model-actions">
                   <button type="button" className="btn" disabled={busy} onClick={() => onTest(profile.id)}>测试</button>
                   <button type="button" className="btn" disabled={busy} onClick={() => onEdit(profile)}>编辑</button>
-                  <button type="button" className="btn btn-danger" disabled={busy} aria-disabled={!decision.allowed}
-                    title={decision.allowed ? '删除模型' : decision.message} onClick={() => onDelete(profile, decision)}>删除</button>
+                  <button type="button" className="btn btn-danger" disabled={busy || !canPreflight}
+                    title={canPreflight ? '删除前核验全部工作空间引用' : decision.message} onClick={() => onDelete(profile)}>删除</button>
                 </td>}
               </tr>
             );
@@ -214,16 +232,15 @@ function GlobalModelTable({ config, canEdit, busy, tests, inventory, onEdit, onT
 export function GlobalModelSettings({
   canEdit = false,
   request = authFetch,
-  workspaces,
-  referenceInventory: providedInventory,
   onChanged,
 }) {
   const [baseline, setBaseline] = useState(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState(null);
   const [draft, setDraft] = useState(null);
-  const [inventory, setInventory] = useState(providedInventory || { complete: false, entries: [] });
   const [editor, setEditor] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [deleteServerFingerprint, setDeleteServerFingerprint] = useState('');
+  const [deleteCandidate, setDeleteCandidate] = useState(null);
+  const [deleteOpenedSnapshot, setDeleteOpenedSnapshot] = useState(null);
   const [tests, setTests] = useState({});
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState('');
@@ -234,21 +251,12 @@ export function GlobalModelSettings({
     setBusy('load');
     if (!preserveNotice) setNotice(null);
     try {
-      const section = await loadGlobalModels({ request, signal });
-      let nextInventory = providedInventory || { complete: false, entries: [] };
-      if (!providedInventory && canEdit) {
-        try {
-          nextInventory = await loadWorkspaceReferenceInventory({ request, signal, workspaces });
-        } catch (inventoryError) {
-          if (inventoryError?.name === 'AbortError') throw inventoryError;
-          nextInventory = { complete: false, entries: [], error: inventoryError?.message || '工作空间引用核对失败' };
-        }
-      }
+      const { config, snapshot } = await loadGlobalModels({ request, signal });
       if (sequence !== requestSequence.current) return;
-      const normalized = normalizeGlobalModelConfig(section);
+      const normalized = normalizeGlobalModelConfig(config);
       setBaseline(normalized);
+      setBaselineSnapshot(snapshot);
       setDraft(normalized);
-      setInventory(nextInventory);
       setTests({});
     } catch (error) {
       if (error?.name !== 'AbortError' && sequence === requestSequence.current) {
@@ -257,7 +265,7 @@ export function GlobalModelSettings({
     } finally {
       if (sequence === requestSequence.current) setBusy('');
     }
-  }, [canEdit, providedInventory, request, workspaces]);
+  }, [request]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -268,6 +276,27 @@ export function GlobalModelSettings({
   const dirty = useMemo(() => Boolean(
     baseline && draft && modelConfigFingerprint(baseline) !== modelConfigFingerprint(draft)
   ), [baseline, draft]);
+
+  const latestGlobalMutationDecision = async (
+    candidateConfig,
+    {
+      openedSnapshot = null,
+    } = {},
+  ) => {
+    const [serverBundle, nextInventory] = await Promise.all([
+      loadGlobalModels({ request }),
+      loadModelProfileReferences(undefined, { request }),
+    ]);
+    return globalProfileMutationDecision({
+      baseline,
+      baselineSnapshot,
+      candidate: candidateConfig,
+      serverConfig: normalizeGlobalModelConfig(serverBundle.config),
+      serverSnapshot: serverBundle.snapshot,
+      inventory: nextInventory,
+      openedSnapshot,
+    });
+  };
 
   const runTest = async (candidateConfig, profileId) => {
     const testedProfile = candidateConfig.profiles.find((profile) => profile.id === profileId);
@@ -288,11 +317,25 @@ export function GlobalModelSettings({
     }
   };
 
-  const save = async (nextConfig = draft, successMessage = '全局模型配置已保存') => {
+  const save = async (
+    nextConfig = draft,
+    successMessage = '全局模型配置已保存',
+    { precondition: suppliedPrecondition = null } = {},
+  ) => {
     setBusy('save');
     setNotice(null);
     try {
-      await saveGlobalModels(buildGlobalModelPayload(nextConfig), { request });
+      let precondition = suppliedPrecondition;
+      const changes = globalProfileDestructiveChanges(baseline, nextConfig);
+      if (changes.removedProfileIds.length && !precondition) {
+        const decision = await latestGlobalMutationDecision(nextConfig);
+        if (!decision.allowed) {
+          setNotice({ type: 'error', message: decision.message });
+          return false;
+        }
+        precondition = decision.precondition;
+      }
+      await saveGlobalModels(buildGlobalModelPayload(nextConfig), { request, precondition });
       setNotice({ type: 'success', message: successMessage });
       onChanged?.({ scope: 'global' });
       await load(undefined, { preserveNotice: true });
@@ -310,55 +353,57 @@ export function GlobalModelSettings({
   }
 
   const editDraft = (profile, originalId) => {
+    if (originalId && profile.id !== originalId) {
+      setTests((current) => {
+        const next = { ...current };
+        delete next[originalId];
+        return next;
+      });
+    }
     setDraft((current) => {
-      const profiles = replaceProfile(current.profiles, profile, originalId);
+      const nextProfile = markGlobalProfileRename(
+        profile,
+        originalId,
+        (baseline?.profiles || []).map((item) => item.id),
+      );
+      const profiles = replaceProfile(current.profiles, nextProfile, originalId);
       return {
         ...current,
         profiles,
-        default_main_profile_ref: current.default_main_profile_ref || { scope: 'global', id: profile.id },
+        default_main_profile_ref: current.default_main_profile_ref || { scope: 'global', id: nextProfile.id },
       };
     });
     setEditor(null);
   };
   const testEditorDraft = (profile, originalId) => {
+    const nextProfile = markGlobalProfileRename(
+      profile,
+      originalId,
+      (baseline?.profiles || []).map((item) => item.id),
+    );
     const candidate = {
       ...draft,
-      profiles: replaceProfile(draft.profiles, profile, originalId),
-      default_main_profile_ref: draft.default_main_profile_ref || { scope: 'global', id: profile.id },
+      profiles: replaceProfile(draft.profiles, nextProfile, originalId),
+      default_main_profile_ref: draft.default_main_profile_ref || { scope: 'global', id: nextProfile.id },
     };
-    return runTest(candidate, profile.id);
-  };
-  const latestDeleteDecision = async (profile, openedFingerprint = '') => {
-    const [serverSection, nextInventory] = await Promise.all([
-      loadGlobalModels({ request }),
-      // Destructive rechecks fetch the authoritative list so a concurrently-created
-      // workspace cannot be omitted by a stale workspaces prop.
-      loadWorkspaceReferenceInventory({ request }),
-    ]);
-    const serverConfig = normalizeGlobalModelConfig(serverSection);
-    const serverFingerprint = modelConfigFingerprint(serverConfig);
-    const snapshotDecision = deletionSnapshotDecision({
-      currentFingerprint: serverFingerprint,
-      baselineFingerprint: modelConfigFingerprint(baseline),
-      openedFingerprint,
-    });
-    setInventory(nextInventory);
-    if (!snapshotDecision.allowed) return snapshotDecision;
-    return {
-      ...globalProfileDeleteDecision({ profileId: profile.id, config: draft, referenceInventory: nextInventory }),
-      serverFingerprint,
-    };
+    return runTest(candidate, nextProfile.id);
   };
   const requestDelete = async (profile) => {
     setBusy('check-delete');
     setNotice(null);
     try {
-      const decision = await latestDeleteDecision(profile);
+      const candidate = { ...draft, profiles: removeProfile(draft.profiles, profile.id) };
+      const decision = await latestGlobalMutationDecision(candidate);
       if (!decision.allowed) {
         setNotice({ type: 'error', message: decision.message });
         return;
       }
-      setDeleteServerFingerprint(decision.serverFingerprint);
+      setDeleteCandidate(candidate);
+      setDeleteOpenedSnapshot({
+        configGeneration: decision.precondition.config_generation,
+        configFingerprint: decision.precondition.config_fingerprint,
+        referenceGeneration: decision.precondition.reference_generation,
+      });
       setDeleteTarget(profile);
     } catch (error) {
       setNotice({ type: 'error', message: `${error?.message || '模型引用核对失败'}；已阻止删除` });
@@ -368,27 +413,32 @@ export function GlobalModelSettings({
   };
   const confirmDelete = async () => {
     setBusy('check-delete');
+    let decision;
     try {
-      const decision = await latestDeleteDecision(deleteTarget, deleteServerFingerprint);
+      decision = await latestGlobalMutationDecision(deleteCandidate, {
+        openedSnapshot: deleteOpenedSnapshot,
+      });
       if (!decision.allowed) {
         setNotice({ type: 'error', message: decision.message });
         setDeleteTarget(null);
-        setDeleteServerFingerprint('');
+        setDeleteCandidate(null);
+        setDeleteOpenedSnapshot(null);
         setBusy('');
         return;
       }
     } catch (error) {
       setNotice({ type: 'error', message: `${error?.message || '模型引用核对失败'}；已阻止删除` });
       setDeleteTarget(null);
-      setDeleteServerFingerprint('');
+      setDeleteCandidate(null);
+      setDeleteOpenedSnapshot(null);
       setBusy('');
       return;
     }
     const targetName = deleteTarget.name || deleteTarget.id;
-    const next = { ...draft, profiles: removeProfile(draft.profiles, deleteTarget.id) };
     setDeleteTarget(null);
-    setDeleteServerFingerprint('');
-    await save(next, `全局模型「${targetName}」已删除`);
+    setDeleteCandidate(null);
+    setDeleteOpenedSnapshot(null);
+    await save(deleteCandidate, `全局模型「${targetName}」已删除`, { precondition: decision.precondition });
   };
 
   return (
@@ -416,7 +466,8 @@ export function GlobalModelSettings({
       </div>
       {!draft.profiles.length
         ? <EmptyState title="尚未配置模型" description="新增至少一个全局模型后才能保存。" />
-        : <GlobalModelTable config={draft} canEdit={canEdit} busy={Boolean(busy)} tests={tests} inventory={inventory}
+        : <GlobalModelTable config={draft} canEdit={canEdit} busy={Boolean(busy)} tests={tests}
+          inventory={ON_DEMAND_REFERENCE_INVENTORY}
           onEdit={(profile) => setEditor({ profile })} onTest={(id) => runTest(draft, id)} onDelete={requestDelete} />}
       <Feedback notice={notice} />
       {canEdit && <div className="mw-model-footer">
@@ -424,10 +475,10 @@ export function GlobalModelSettings({
         <button type="button" className="btn" disabled={Boolean(busy) || !dirty} onClick={() => setDraft(normalizeGlobalModelConfig(baseline))}>重置</button>
         <button type="button" className="btn btn-p" disabled={Boolean(busy) || !dirty || !draft.profiles.length} onClick={() => save()}>{busy === 'save' ? '保存中…' : '保存修改'}</button>
       </div>}
-      {editor && <ProfileEditor key={editor.profile?.id || 'new-global'} scope="global" initial={editor.profile} profiles={draft.profiles}
+      {editor && <ProfileEditor key={editor.profile?.id || 'new-global'} scope="global" initial={editor.profile} profiles={draft.profiles} allowIdEdit
         busy={Boolean(busy)} onClose={() => setEditor(null)} onSaveDraft={editDraft} onTestDraft={testEditorDraft} />}
       {deleteTarget && <DeleteDialog title="删除全局模型" profile={deleteTarget} busy={busy === 'save' || busy === 'check-delete'}
-        onClose={() => { setDeleteTarget(null); setDeleteServerFingerprint(''); }} onConfirm={confirmDelete} />}
+        onClose={() => { setDeleteTarget(null); setDeleteCandidate(null); setDeleteOpenedSnapshot(null); }} onConfirm={confirmDelete} />}
     </SectionCard>
   );
 }

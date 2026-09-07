@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
+from pathlib import Path
 import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from agent.runtime.adapter import PublicEventAdapter
@@ -78,6 +81,26 @@ def _solver_tool_arguments(
     except (TypeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _preflight_profile_matches(
+    profile_ref: str | None,
+    snapshot_profile: Mapping[str, Any] | None,
+    model_profile_ref_to_dict: Callable[[Any], Any],
+) -> bool:
+    if profile_ref is None:
+        return snapshot_profile is not None
+    if not isinstance(snapshot_profile, Mapping):
+        return False
+    try:
+        expected = model_profile_ref_to_dict(profile_ref)
+        actual = model_profile_ref_to_dict(
+            snapshot_profile.get("model_profile_ref")
+            or snapshot_profile.get("id")
+        )
+    except (TypeError, ValueError):
+        return False
+    return expected is not None and actual == expected
 
 
 def _waiting_solver_checkpoint_from_state(
@@ -1629,8 +1652,16 @@ class OrchestratorSessionAdapter:
         orchestrator = self._orchestrator_provider()
         chat_store, execution_store = self._stores(context)
         with _workspace_context(context.workspace_id):
-            session = chat_store.get_session(context.session_id)
-            session_metadata = dict(getattr(session, "metadata", {}) or {})
+            metadata_reader = getattr(chat_store, "get_session_metadata", None)
+            if callable(metadata_reader):
+                stored_session_metadata = metadata_reader(context.session_id)
+                session_exists = stored_session_metadata is not None
+                session_metadata = dict(stored_session_metadata or {})
+            else:
+                # Compatibility for injected stores that predate metadata snapshots.
+                session = chat_store.get_session(context.session_id)
+                session_exists = session is not None
+                session_metadata = dict(getattr(session, "metadata", {}) or {})
             turn_count = execution_store.get_turn_count(context.session_id)
             existing_turn = execution_store.get_turn(
                 context.session_id,
@@ -1710,13 +1741,38 @@ class OrchestratorSessionAdapter:
             selected_ontology_version = (
                 locked_ontology_version or requested_ontology_version
             )
+            preflight = context.preflight_snapshot
+            preflight_workspace_matches = bool(
+                preflight is not None
+                and preflight.workspace_id == context.workspace_id
+            )
             if selected_ontology_id:
                 from ontology.ontologies import (
                     get_ontology_registry,
                     get_runtime_ontology_manifest,
                 )
 
-                if locked_ontology_id:
+                preflight_manifest = (
+                    dict(preflight.ontology_manifest)
+                    if preflight_workspace_matches
+                    and preflight is not None
+                    and preflight.ontology_manifest is not None
+                    and preflight.ontology_id == selected_ontology_id
+                    and (
+                        not selected_ontology_version
+                        or preflight.ontology_version == selected_ontology_version
+                    )
+                    else None
+                )
+                if preflight_manifest is not None:
+                    selected_ontology = SimpleNamespace(**preflight_manifest)
+                    if not bool(getattr(selected_ontology, "enabled", True)):
+                        raise ValueError(
+                            "Disabled selected_ontology_id: {}".format(
+                                selected_ontology_id
+                            )
+                        )
+                elif locked_ontology_id:
                     selected_ontology = get_runtime_ontology_manifest(
                         locked_ontology_id,
                         version=locked_ontology_version or None,
@@ -1783,6 +1839,13 @@ class OrchestratorSessionAdapter:
                     arguments["selected_ontology_version"] = selected_ontology_version
                     arguments["selected_version"] = selected_ontology_version
 
+            preflight_matches = bool(
+                preflight_workspace_matches
+                and preflight is not None
+                and preflight.ontology_id == selected_ontology_id
+                and preflight.ontology_version == selected_ontology_version
+            )
+
             requested_profile = context.model_profile_id
             stored_profile = str(
                 session_metadata.get("model_profile_id") or ""
@@ -1793,8 +1856,12 @@ class OrchestratorSessionAdapter:
                 if context.interaction_response
                 else None
             )
-            deterministic_candidate = False
-            if selected_ontology_id:
+            deterministic_candidate = (
+                bool(preflight.deterministic_candidate)
+                if preflight_matches and preflight is not None
+                else False
+            )
+            if selected_ontology_id and not preflight_matches:
                 from agent.direct_execution.contracts import (
                     DeterministicRequest,
                 )
@@ -1848,11 +1915,23 @@ class OrchestratorSessionAdapter:
                 )
             selected_profile = None
             if hasattr(orchestrator, "agent_config") and not deterministic_candidate:
-                selected_profile = resolve_effective_llm_profile_config(
-                    profile_ref,
-                    workspace_id=context.workspace_id,
-                    allow_default_fallback=not bool(requested_profile),
-                )
+                use_preflight_profile = preflight_matches and preflight is not None
+                if use_preflight_profile:
+                    use_preflight_profile = preflight.model_profile is not None
+                if use_preflight_profile:
+                    use_preflight_profile = _preflight_profile_matches(
+                        profile_ref,
+                        preflight.model_profile,
+                        model_profile_ref_to_dict,
+                    )
+                if use_preflight_profile:
+                    selected_profile = preflight.model_profile
+                else:
+                    selected_profile = resolve_effective_llm_profile_config(
+                        profile_ref,
+                        workspace_id=context.workspace_id,
+                        allow_default_fallback=not bool(requested_profile),
+                    )
             effective_profile_id = (
                 str(selected_profile.get("id") or "").strip()
                 if isinstance(selected_profile, Mapping)
@@ -1888,7 +1967,7 @@ class OrchestratorSessionAdapter:
                         "selected_ontology_version": selected_ontology_version or None,
                     }
                 )
-            if session is None:
+            if not session_exists:
                 chat_store.create_session(
                     session_id=context.session_id,
                     metadata=metadata,
@@ -2303,7 +2382,7 @@ class OrchestratorSessionAdapter:
             selected_ontology_id=selected_ontology_id or None,
             selected_ontology_version=selected_ontology_version or None,
         )
-        with _workspace_context(context.workspace_id):
+        with _workspace_context(context.workspace_id), ExitStack() as package_stack:
             chat_store, execution_store = self._stores(context)
             checkpoint = (
                 execution_store.get_pending_deterministic_checkpoint(
@@ -2349,26 +2428,133 @@ class OrchestratorSessionAdapter:
             )
             if isinstance(dependencies, dict):
                 dependencies["artifact_writer"] = artifact_writer
-            system_config = load_system_config()
-            outcome = (
-                DeterministicExecutionService().execute(
-                    request,
-                    enabled=bool(
+            outcome = None
+            pinned_ontology_manifest = None
+            preflight = context.preflight_snapshot
+            deterministic_available = (
+                DeterministicExecutionService is not None
+                and agent_config is not None
+            )
+            system_config = load_system_config() if deterministic_available else None
+            project_root = (
+                Path(str(system_config["storage"]["project_root"]))
+                if system_config is not None
+                else None
+            )
+
+            def execute_deterministic(ontology_manifest: Any = None) -> Any:
+                if not deterministic_available or project_root is None:
+                    return None
+                execute_kwargs = {
+                    "enabled": bool(
                         getattr(
                             agent_config,
                             "deterministic_execution_enabled",
                             False,
                         )
                     ),
-                    project_root=str(system_config["storage"]["project_root"]),
-                    timeout_seconds=int(agent_config.execute_script_timeout),
-                    artifact_writer=artifact_writer,
-                    cancel_event=dependencies.get("cancel_event"),
+                    "project_root": str(project_root),
+                    "timeout_seconds": int(agent_config.execute_script_timeout),
+                    "artifact_writer": artifact_writer,
+                    "cancel_event": dependencies.get("cancel_event"),
+                }
+                if ontology_manifest is not None:
+                    execute_kwargs["ontology_manifest"] = ontology_manifest
+                return DeterministicExecutionService().execute(
+                    request,
+                    **execute_kwargs,
                 )
-                if DeterministicExecutionService is not None
-                and agent_config is not None
-                else None
-            )
+
+            if preflight is not None and selected_ontology_id:
+                manifest = preflight.ontology_manifest
+                revision_changed = preflight.workspace_id != context.workspace_id
+                if preflight.ontology_id != selected_ontology_id:
+                    revision_changed = True
+                if preflight.ontology_version != selected_ontology_version:
+                    revision_changed = True
+                if not isinstance(manifest, Mapping):
+                    revision_changed = True
+                elif not str(manifest.get("ontology_dir") or "").strip():
+                    revision_changed = True
+                if not preflight.ontology_content_revision:
+                    revision_changed = True
+                if project_root is None:
+                    revision_changed = True
+                if revision_changed:
+                    outcome = Failed(
+                        "ontology_revision_changed",
+                        "The ontology package changed after run admission.",
+                    )
+                else:
+                    from ontology.view_cache import (
+                        OntologyPackageRevisionError,
+                        get_ontology_mutation_revision,
+                        resolve_package_staging_boundary,
+                        stage_verified_package_revision,
+                    )
+
+                    source_ontology_dir = Path(
+                        os.path.abspath(str(manifest["ontology_dir"]))
+                    )
+
+                    def mutation_revision_matches() -> bool:
+                        try:
+                            return get_ontology_mutation_revision(
+                                context.workspace_id,
+                                selected_ontology_id,
+                            ) == preflight.mutation_revision
+                        except Exception:
+                            return False
+
+                    try:
+                        staging_boundary = resolve_package_staging_boundary(
+                            project_root=project_root,
+                            workspace_id=context.workspace_id,
+                        )
+                        staged_ontology_dir = package_stack.enter_context(
+                            stage_verified_package_revision(
+                                source_root=source_ontology_dir,
+                                expected_content_revision=(
+                                    preflight.ontology_content_revision
+                                ),
+                                staging_root=staging_boundary,
+                                revision_guard=mutation_revision_matches,
+                            )
+                        )
+                        try:
+                            staged_manifest = dict(manifest)
+                            staged_manifest["ontology_dir"] = str(
+                                staged_ontology_dir
+                            )
+                            for path_field in ("manifest_path", "index_path"):
+                                raw_path = str(
+                                    staged_manifest.get(path_field) or ""
+                                ).strip()
+                                if not raw_path:
+                                    continue
+                                relative_path = (
+                                    Path(raw_path)
+                                    .resolve()
+                                    .relative_to(source_ontology_dir.resolve())
+                                )
+                                staged_manifest[path_field] = str(
+                                    staged_ontology_dir / relative_path
+                                )
+                            pinned_ontology_manifest = SimpleNamespace(
+                                **staged_manifest
+                            )
+                        except (OSError, TypeError, ValueError) as exc:
+                            raise OntologyPackageRevisionError(
+                                "admitted ontology manifest paths are unsafe"
+                            ) from exc
+                        outcome = execute_deterministic(pinned_ontology_manifest)
+                    except OntologyPackageRevisionError:
+                        outcome = Failed(
+                            "ontology_revision_changed",
+                            "The ontology package changed after run admission.",
+                        )
+            elif outcome is None:
+                outcome = execute_deterministic()
             if outcome is not None and not isinstance(outcome, NotApplicable):
                 events = [
                     RuntimeEvent(
@@ -2509,6 +2695,7 @@ class OrchestratorSessionAdapter:
                 },
                 runtime_context=runtime_context,
                 arguments=arguments,
+                ontology_manifest=pinned_ontology_manifest,
             )
             if decision.route == "fallback_agent_loop":
                 return None
@@ -2553,6 +2740,7 @@ class OrchestratorSessionAdapter:
                     runtime_context=runtime_context,
                     project_root=project_root,
                     timeout_seconds=agent_config.execute_script_timeout,
+                    ontology_manifest=pinned_ontology_manifest,
                 )
             for item in raw_events:
                 event = _runtime_event_from_legacy(item, context)
