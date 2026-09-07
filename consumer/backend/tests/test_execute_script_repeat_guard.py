@@ -40,8 +40,8 @@ def test_structured_unit_load_result_rejects_unexplained_monthly_difference():
     payload = {
         "operation_key": "装置负荷硬约束炼化装置容量约束与超限分流",
         "batches": [
-            {"unit_loads": {"蜡油加氢": {"input_tons": 120}}},
-            {"unit_loads": {"蜡油加氢": {"input_tons": 80}}},
+            {"vgo_load_raw_feed_tons": 120, "unit_loads": {"蜡油加氢": {"input_tons": 130}}},
+            {"vgo_load_raw_feed_tons": 80, "unit_loads": {"蜡油加氢": {"input_tons": 90}}},
         ],
         "monthly_unit_load": {
             "units": {"蜡油加氢": {"monthly_input_tons": 190}}
@@ -51,6 +51,19 @@ def test_structured_unit_load_result_rejects_unexplained_monthly_difference():
     error = _validate_structured_result_consistency(__import__("json").dumps(payload, ensure_ascii=False))
 
     assert error == "Error: BUSINESS_SUMMARY_INCONSISTENT"
+
+
+def test_structured_unit_load_result_skips_vgo_when_only_effective_basis_is_returned():
+    payload = {
+        "operation_key": "装置负荷硬约束炼化装置容量约束与超限分流",
+        "batches": [
+            {"unit_loads": {"蜡油加氢": {"input_tons": 120}}},
+            {"unit_loads": {"蜡油加氢": {"input_tons": 80}}},
+        ],
+        "monthly_unit_load": {"units": {"蜡油加氢": {"monthly_input_tons": 190}}},
+    }
+
+    assert _validate_structured_result_consistency(__import__("json").dumps(payload, ensure_ascii=False)) is None
 
 
 def test_structured_unit_load_result_accepts_matching_monthly_total():
