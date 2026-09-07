@@ -394,6 +394,20 @@ def _required_text_prompt(constraint: dict[str, Any]) -> str:
     )
 
 
+def _contains_any_token(value: str, tokens: tuple[str, ...] | list[str]) -> bool:
+    for token in tokens:
+        if token in value:
+            return True
+    return False
+
+
+def _contains_all_tokens(value: str, tokens: list[str]) -> bool:
+    for token in tokens:
+        if token not in value:
+            return False
+    return True
+
+
 def _required_text_response_acknowledged(
     output: str,
     constraint: dict[str, Any],
@@ -406,9 +420,9 @@ def _required_text_response_acknowledged(
     normalized = re.sub(r"\s+", "", str(output or ""))
     if not normalized:
         return False
-    if any(token in normalized for token in ("无法", "不能", "缺少", "不足以", "未能")):
+    if _contains_any_token(normalized, ("无法", "不能", "缺少", "不足以", "未能")):
         return False
-    if not any(token in normalized for token in (
+    if not _contains_any_token(normalized, (
         "已收到", "已按你的补充", "已按补充说明", "已按要求",
         "已逐项", "已保留", "不会修改", "不修改知识包", "已核对",
         "已根据", "已记录", "已采用", "按口述", "无需修改", "无需调整",
@@ -417,16 +431,18 @@ def _required_text_response_acknowledged(
         return False
     # 用户给出两个以上精确数量时，至少要在回执中逐项回显这些数量，
     # 避免“已按要求”掩盖 201/198/3 等统计没有真正执行。
-    required_numbers = re.findall(
+    required_numbers: list[str] = []
+    for item in re.findall(
         r"(?<![A-Za-z0-9])\d+\s*(?:条|项|组|个|份|张|件|条目)",
         str(constraint.get("text") or ""),
-    )
-    required_numbers = [re.sub(r"\D", "", item) for item in required_numbers]
-    if len(required_numbers) >= 2 and any(number not in normalized for number in required_numbers):
+    ):
+        required_numbers.append(re.sub(r"\D", "", item))
+    if len(required_numbers) >= 2 and not _contains_all_tokens(normalized, required_numbers):
         return False
     requirement_text = re.sub(r"\s+", "", str(constraint.get("text") or ""))
-    if "不修改知识包" in requirement_text and not any(
-        phrase in normalized for phrase in ("不修改知识包", "知识包保持不变", "不改动知识包")
+    if "不修改知识包" in requirement_text and not _contains_any_token(
+        normalized,
+        ("不修改知识包", "知识包保持不变", "不改动知识包"),
     ):
         return False
     return True
@@ -446,7 +462,7 @@ def _required_text_interrupt_acknowledged(
     if not question or (original and question == original):
         return False
     # 新卡必须明确承接约束或说明还缺什么，不能换一种说法重复原问题。
-    return any(token in question for token in (
+    return _contains_any_token(question, (
         "补充说明", "业务约束", "无法满足", "不能满足", "仍需补充",
         "缺少", "证据", "具体原因", "按原", "调整补充", "唯一目标",
         "明确范围", "具体目标",
