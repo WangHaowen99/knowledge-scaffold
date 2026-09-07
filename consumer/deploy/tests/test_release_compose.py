@@ -1357,6 +1357,36 @@ def test_staged_release_entrypoint_executes_upgrade_against_existing_install(tmp
     assert marker.read_text(encoding="utf-8") == str(target)
 
 
+def test_staged_consumer_package_entrypoint_routes_to_existing_install_upgrade(tmp_path):
+    staging = tmp_path / "release"
+    target = tmp_path / "install"
+    (staging / "deploy").mkdir(parents=True)
+    (target / "deploy" / "state").mkdir(parents=True)
+    (target / "backend").mkdir()
+    (target / "VERSION").write_text("old\n", encoding="utf-8")
+    (target / "backend" / ".env").write_text("LLM_MAX_TOKENS=4096\n", encoding="utf-8")
+    (staging / "deploy" / "manifest.json").write_text("{}\n", encoding="utf-8")
+    marker = tmp_path / "consumer-upgrade-called"
+    (staging / "deploy" / "upgrade.sh").write_text(
+        f"#!/bin/sh\nprintf '%s' \"$1\" > {shlex.quote(str(marker))}\n",
+        encoding="utf-8",
+    )
+    (staging / "deploy" / "upgrade.sh").chmod(0o755)
+    shutil.copyfile(DEPLOY_ROOT / "deploy.sh", staging / "deploy" / "deploy.sh")
+
+    result = subprocess.run(
+        [TEST_BASH, str(staging / "deploy" / "deploy.sh")],
+        env={**os.environ, "ONTO_AGENT_INSTALL_DIR": str(target)},
+        cwd=staging,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert marker.read_text(encoding="utf-8") == str(target)
+
+
 def test_upgrade_forwards_deploy_scope_to_installed_entrypoint(tmp_path):
     upgrade_text = (DEPLOY_ROOT / "upgrade.sh").read_text(encoding="utf-8")
 

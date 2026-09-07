@@ -94,3 +94,9 @@ def test_release_migration_entrypoint_invokes_system_config_cleanup():
     assert '"${RUNTIME_STORAGE_SOURCE}:/release/.onto-runtime:${DATA_ACCESS}"' in migrate_shell
     assert '"${AUTH_STORAGE_SOURCE}:/release/.onto-auth:${DATA_ACCESS}"' in migrate_shell
     assert "SYSTEM_CONFIG_ARGS+=(--dry-run)" in migrate_shell
+
+
+def test_release_backend_migration_uses_writable_log_dir_in_read_only_sandbox():
+    migrate_shell = (DEPLOY_DIR / "migrate.sh").read_text(encoding="utf-8")
+
+    assert 'LOG_DIR=/tmp/logs' in migrate_shell
