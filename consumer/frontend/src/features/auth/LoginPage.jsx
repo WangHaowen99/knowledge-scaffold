@@ -151,7 +151,7 @@ export default function LoginPage() {
           <input id="login-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
         </div>
         {notice && <div className="lok">{notice}</div>}
-        {error && <div className="lerr">{error}</div>}
+        {error && <div className="lerr" role="alert" aria-live="assertive">{error}</div>}
         <button className="lbtn" type="submit" disabled={busy}>
           {busy && <LoaderCircle className="spin" size={16} />}{busy ? '登录中…' : '登录'}
         </button>

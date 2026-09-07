@@ -12,6 +12,7 @@ import {
   synchronizeAuthStateFromStorage,
 } from '../../shared/api/auth';
 import createLogger from '../../shared/lib/logger';
+import { getLoginErrorMessage } from './loginErrors.js';
 
 const logger = createLogger('Auth');
 
@@ -186,7 +187,14 @@ const useAuth = () => {
           localAuthOperationRef.current = { id: localOperation.id, kind: 'idle' };
           return { success: false, stale: true };
         }
-        throw new Error(result.data.error || '登录失败');
+        const authError = new Error(getLoginErrorMessage({
+          status: result.status,
+          error: result.data?.error,
+          code: result.data?.code,
+        }));
+        authError.status = result.status;
+        authError.code = result.data?.code;
+        throw authError;
       }
 
       const synchronized = synchronizeAuthStateFromStorage();
@@ -211,10 +219,16 @@ const useAuth = () => {
         return { success: false, stale: true };
       }
       localAuthOperationRef.current = { id: localOperation.id, kind: 'idle' };
-      logger.warn('Login failed', { error: err.message });
-      setError(err.message || '登录失败');
+      const message = getLoginErrorMessage(err);
+      logger.warn('Login failed', { error: err?.message, status: err?.status });
+      setError(message);
       setStatus('unauthenticated');
-      return { success: false, error: err.message };
+      return {
+        success: false,
+        error: message,
+        status: err?.status,
+        code: err?.code,
+      };
     }
   }, [applyAuthPayload]);
 

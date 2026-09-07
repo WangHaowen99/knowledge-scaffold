@@ -34,6 +34,10 @@ class PackageSolverContractError(ValueError):
     """Raised when the package cannot satisfy the evaluator contract."""
 
 
+class BusinessSummaryInconsistentError(ValueError):
+    """Raised when structured batch and monthly business facts disagree."""
+
+
 def _write_json_result(payload: Mapping[str, Any]) -> None:
     sys.stdout.write(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -779,6 +783,91 @@ def _headroom(load: Any, capacity: Any, field_name: str) -> Decimal | None:
     return (capacity_value - load_value) / capacity_value
 
 
+def _validate_case_consistency(case: Mapping[str, Any]) -> None:
+    """Reject silent differences between batch facts and monthly summaries.
+
+    A package may intentionally apply a documented adjustment (maintenance,
+    inventory carry-over, etc.), but that adjustment must be represented in an
+    explicit ledger.  Without one, a monthly value that differs from the sum
+    of the batch values is not safe to present as a capacity conclusion.
+    """
+    batches = case.get("batches")
+    monthly = case.get("monthly_unit_load")
+    if not isinstance(batches, list) or not isinstance(monthly, Mapping):
+        return
+    units = monthly.get("units")
+    if not isinstance(units, Mapping):
+        return
+
+    batch_totals: dict[str, Decimal] = {}
+    for batch in batches:
+        if not isinstance(batch, Mapping):
+            raise ValueError("package evaluator batch is invalid")
+        unit_loads = batch.get("unit_loads")
+        if not isinstance(unit_loads, Mapping):
+            raise ValueError("package evaluator unit loads are invalid")
+        # Keep the package's declared bases aligned. VGO monthly load is RAW
+        # HC feed, while unit_loads[].input_tons is corrected effective feed.
+        basis_values: dict[str, tuple[Any, bool]] = {
+            "2#常减压塔": (batch.get("input_weight_tons"), True),
+            "2#柴油加氢": (batch.get("diesel_load_effective_input_tons"), True),
+            "蜡油加氢": (batch.get("vgo_load_raw_feed_tons"), False),
+        }
+        for unit_name, status in unit_loads.items():
+            if str(unit_name) not in basis_values:
+                basis_values[str(unit_name)] = (
+                    status.get("input_tons") if isinstance(status, Mapping) else None,
+                    True,
+                )
+        for unit_name, (raw_value, allow_status_fallback) in basis_values.items():
+            value = raw_value
+            if value is None and allow_status_fallback:
+                status = unit_loads.get(unit_name)
+                value = status.get("input_tons") if isinstance(status, Mapping) else None
+            if value is None:
+                continue
+            parsed = _finite_decimal(value, "batch.{}.input_tons".format(unit_name))
+            batch_totals[unit_name] = batch_totals.get(unit_name, Decimal(0)) + parsed
+
+    adjustments: dict[str, Decimal] = {}
+    ledger = case.get("adjustment_ledger")
+    if ledger is not None:
+        if not isinstance(ledger, list):
+            raise ValueError("package evaluator adjustment ledger is invalid")
+        for entry in ledger:
+            if not isinstance(entry, Mapping) or not entry.get("unit") or entry.get("tons") is None:
+                raise ValueError("package evaluator adjustment ledger is invalid")
+            reason = str(entry.get("reason") or "").strip()
+            if not reason:
+                raise ValueError("package evaluator adjustment ledger reason is missing")
+            unit = str(entry["unit"])
+            adjustments[unit] = adjustments.get(unit, Decimal(0)) + _finite_decimal(
+                entry["tons"], "adjustment_ledger.{}.tons".format(unit)
+            )
+
+    monthly_aliases = {"柴油加氢": "2#柴油加氢"}
+    for unit_name, status in units.items():
+        if not isinstance(status, Mapping) or status.get("monthly_input_tons") is None:
+            continue
+        canonical_name = monthly_aliases.get(str(unit_name), str(unit_name))
+        if canonical_name not in batch_totals:
+            continue
+        expected = batch_totals[canonical_name] + adjustments.get(
+            canonical_name, Decimal(0)
+        )
+        actual = _finite_decimal(
+            status.get("monthly_input_tons"),
+            "monthly.{}.monthly_input_tons".format(unit_name),
+        )
+        if abs(actual - expected) > Decimal("0.01"):
+            raise BusinessSummaryInconsistentError(
+                "monthly load is inconsistent for {}: batch_total={} adjustment={} monthly={}".format(
+                    unit_name, expected - adjustments.get(canonical_name, Decimal(0)),
+                    adjustments.get(canonical_name, Decimal(0)), actual
+                )
+            )
+
+
 def _safety_margin(case: Mapping[str, Any]) -> Decimal:
     margins: list[Decimal] = []
     policy = case.get("constraint_policy")
@@ -916,6 +1005,7 @@ def evaluate_payload(module: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(cases, list) or len(cases) != 1 or not isinstance(cases[0], Mapping):
             raise ValueError("package evaluator report is invalid")
         case = cases[0]
+        _validate_case_consistency(case)
         eligible = case.get("pass_core_constraints")
         if not isinstance(eligible, bool):
             raise ValueError("package evaluator feasibility is invalid")
@@ -958,6 +1048,16 @@ def main() -> int:
                 "error": {
                     "code": _PACKAGE_SOLVER_CONTRACT_ERROR_CODE,
                     "detail": "knowledge package solver contract is incompatible",
+                }
+            }
+        )
+        return 2
+    except BusinessSummaryInconsistentError:
+        _write_json_result(
+            {
+                "error": {
+                    "code": "BUSINESS_SUMMARY_INCONSISTENT",
+                    "detail": "structured batch and monthly business totals are inconsistent",
                 }
             }
         )

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { applyLocalRunTermination, applyPublicEvent } from './streamHelpers.js';
+import {
+  applyLocalRunTermination,
+  applyPublicEvent,
+  friendlyRuntimeError,
+} from './streamHelpers.js';
 import { buildTraceViewModel } from './traceModel.js';
 
 const canonicalStatus = (status) => ({
@@ -39,6 +43,17 @@ const publicEvent = (eventType, payload = {}, seq = 1, trace = {}) => {
     ...overrides,
   };
 };
+
+test('runtime capacity failures are presented as incomplete results with a retry action', () => {
+  assert.deepEqual(friendlyRuntimeError('RUNTIME_EVENT_BUFFER_FULL'), {
+    message: '执行中断，当前结果不完整，请重试。',
+    incomplete: true,
+  });
+  assert.deepEqual(friendlyRuntimeError('BUSINESS_SUMMARY_INCONSISTENT'), {
+    message: '结果口径不一致，当前结论未通过校验，请检查调整项后重试。',
+    incomplete: true,
+  });
+});
 
 test('replayed tool events keep one node and preserve the original parent', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
