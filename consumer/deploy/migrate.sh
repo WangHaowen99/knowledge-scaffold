@@ -101,6 +101,7 @@ MIGRATION_DOCKER_ARGS=(
     --security-opt no-new-privileges
     --user 0:0
     --tmpfs /tmp:rw,noexec,nosuid,size=256m
+    -e "LOG_DIR=/tmp/logs"
     -v "${RUNTIME_STORAGE_SOURCE}:/release/.onto-runtime:${DATA_ACCESS}"
     -v "${AUTH_STORAGE_SOURCE}:/release/.onto-auth:${DATA_ACCESS}"
     -v "${BUNDLE_ROOT}/backend:/release/backend:ro"
