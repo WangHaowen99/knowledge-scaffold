@@ -2049,6 +2049,57 @@ def _extract_public_python_exception_type(stderr: str) -> Optional[str]:
     return "[SCRIPT_RUNTIME_ERROR] Python {}.".format(exception_name)
 
 
+def _validate_structured_result_consistency(content: str) -> Optional[str]:
+    """Guard the refinery load result against silent batch/monthly drift."""
+    try:
+        payload = json.loads(str(content or "").strip())
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    operation_key = str(payload.get("operation_key") or "").strip()
+    if operation_key != "装置负荷硬约束炼化装置容量约束与超限分流":
+        return None
+    batches = payload.get("batches")
+    monthly = payload.get("monthly_unit_load")
+    if not isinstance(batches, list) or not isinstance(monthly, Mapping):
+        return None
+    units = monthly.get("units")
+    if not isinstance(units, Mapping):
+        return None
+    totals: dict[str, float] = {}
+    for batch in batches:
+        if not isinstance(batch, Mapping):
+            continue
+        loads = batch.get("unit_loads")
+        if not isinstance(loads, Mapping):
+            continue
+        for unit_name, status in loads.items():
+            if not isinstance(status, Mapping):
+                continue
+            try:
+                value = float(status.get("input_tons"))
+            except (TypeError, ValueError):
+                continue
+            totals[str(unit_name)] = totals.get(str(unit_name), 0.0) + value
+    aliases = {"柴油加氢": "2#柴油加氢"}
+    for monthly_name, status in units.items():
+        if not isinstance(status, Mapping):
+            continue
+        try:
+            actual = float(status.get("monthly_input_tons"))
+        except (TypeError, ValueError):
+            continue
+        batch_total = totals.get(str(monthly_name))
+        if batch_total is None:
+            batch_total = totals.get(aliases.get(str(monthly_name), str(monthly_name)))
+        if batch_total is None:
+            continue
+        if abs(batch_total - actual) > 0.01:
+            return "Error: BUSINESS_SUMMARY_INCONSISTENT"
+    return None
+
+
 def handle_execute_script(
     *,
     ontology_id: str,
@@ -2324,7 +2375,7 @@ def handle_execute_script(
         )
     except BusinessDataConnectionError:
         return _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR
-    return handle_execute_script_path(
+    result = handle_execute_script_path(
         script_path=script_path,
         args=cli_args,
         base_path=base_path,
@@ -2342,6 +2393,8 @@ def handle_execute_script(
         data_access=data_access,
         include_stderr_on_success=False,
     )
+    consistency_error = _validate_structured_result_consistency(result)
+    return consistency_error or result
 
 
 def _build_cli_args(
