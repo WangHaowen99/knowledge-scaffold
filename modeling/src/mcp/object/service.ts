@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { PackageArtifactStoreError, type PackageArtifactFiles } from '../../artifacts/package-store.js';
+import type { PackageArtifactFiles } from '../../artifacts/package-store.js';
 import { getPackageArtifactStore } from '../../artifacts/runtime.js';
 import { ArtifactRepositoryError } from '../../artifacts/repository.js';
 import { getDb } from '../../db/index.js';
@@ -22,6 +22,7 @@ import { getActivePackageDraft } from '../../workflow/package-draft.js';
 import { parseRenderedPackageFiles } from '../../workflow/package-import.js';
 import { renderPackage } from '../../workflow/package-render.js';
 import { coverageFor } from '../../workflow/spec-validation.js';
+import { mapMcpArtifactError } from '../artifact-error.js';
 import {
   publishModelingMcpRevisionEvent,
   tryPublishModelingMcpRevisionEvent,
@@ -88,13 +89,13 @@ export class ObjectMcpService {
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     try {
-      if (toolName === 'list_ontology_objects') return this.list(project, args);
-      if (toolName === 'get_ontology_object') return this.get(project, args);
+      if (toolName === 'list_ontology_objects') return await this.list(project, args);
+      if (toolName === 'get_ontology_object') return await this.get(project, args);
       if (toolName === 'validate_ontology_object_change') {
         return this.publicAnalysis(await this.analyze(project, commandFromObjectChange(args)));
       }
       if (toolName === 'update_ontology_object') {
-        return this.submit(project, username, commandFromObjectChange(args));
+        return await this.submit(project, username, commandFromObjectChange(args));
       }
       throw new ModelingMcpToolError(
         'MCP_TOOL_NOT_FOUND',
@@ -104,7 +105,7 @@ export class ObjectMcpService {
         { phase: 'input', reason_code: 'MCP_TOOL_NOT_FOUND', retryable: false },
       );
     } catch (error) {
-      throw mapObjectMcpError(error, { phase: 'load' });
+      throw mapMcpArtifactError(error, { phase: 'load' });
     }
   }
 
@@ -210,7 +211,7 @@ export class ObjectMcpService {
         display: { text: `${objectActionSummary(command)}，已生成正式修订` },
       };
     } catch (error) {
-      throw mapObjectMcpError(error, { phase: 'persist', resource: analysis.resource });
+      throw mapMcpArtifactError(error, { phase: 'persist', resource: analysis.resource });
     }
   }
 
@@ -291,7 +292,7 @@ export class ObjectMcpService {
         ));
       } catch (error) {
         if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
-          throw mapObjectMcpError(error, { phase: 'validate', resource });
+          throw mapMcpArtifactError(error, { phase: 'validate', resource });
         }
         issues.push(toolIssue(
           'PACKAGE_RENDER_FAILED',
@@ -335,7 +336,7 @@ export class ObjectMcpService {
       const requestedRevision = optionalText(revision);
       return await this.artifacts.readPackageFiles(projectId, requestedRevision || undefined);
     } catch (error) {
-      throw mapObjectMcpError(error, { phase: 'load' });
+      throw mapMcpArtifactError(error, { phase: 'load' });
     }
   }
 
@@ -601,117 +602,6 @@ function findingReasonCode(finding: CheckFinding, resource: ModelingMcpToolResou
   if (finding.code) return finding.code;
   if ((finding.path || '').startsWith('objects/')) return 'PACKAGE_CHECK_FAILED';
   return resource.type === 'object' ? 'PACKAGE_CHECK_FAILED' : 'PACKAGE_CHECK_FAILED';
-}
-
-function mapObjectMcpError(
-  error: unknown,
-  context: { phase: 'input' | 'load' | 'validate' | 'persist'; resource?: ModelingMcpToolResourceRef },
-): ModelingMcpToolError {
-  if (error instanceof ModelingMcpToolError) {
-    if (error.details.phase) return error;
-    return new ModelingMcpToolError(error.code, error.message, error.statusCode, error.next, {
-      phase: context.phase,
-      ...(context.resource ? { resource: context.resource } : {}),
-      reason_code: error.code,
-      retryable: error.code === 'REVISION_CONFLICT' || error.code === 'PROJECT_WRITE_BUSY',
-      ...error.details,
-    });
-  }
-  if (error instanceof ArtifactRepositoryError && error.code === 'revision_not_found') {
-    return new ModelingMcpToolError(
-      'RESOURCE_NOT_FOUND',
-      '指定的 revision 不存在',
-      404,
-      ['使用最新 revision 或从第一页重新读取'],
-      {
-        phase: context.phase,
-        ...(context.resource ? { resource: context.resource } : {}),
-        reason_code: 'REVISION_NOT_FOUND',
-        retryable: false,
-      } satisfies ModelingMcpToolDetails,
-    );
-  }
-  if (error instanceof ArtifactRepositoryError && error.code === 'no_change') {
-    return new ModelingMcpToolError('NO_CHANGES', '提交内容与当前资源一致，没有产生修改', 409, [], {
-      phase: context.phase,
-      ...(context.resource ? { resource: context.resource } : {}),
-      reason_code: 'NO_CHANGES',
-      retryable: false,
-    });
-  }
-  if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
-    return new ModelingMcpToolError(
-      'REVISION_CONFLICT',
-      '知识包内容已更新，请刷新后重试',
-      409,
-      ['重新读取对象和 revision 后再次分析'],
-      {
-        phase: context.phase,
-        ...(context.resource ? { resource: context.resource } : {}),
-        reason_code: 'REVISION_CONFLICT',
-        retryable: true,
-        expected_revision: error.details?.expectedRevision,
-        actual_revision: error.details?.actualRevision,
-      } satisfies ModelingMcpToolDetails,
-    );
-  }
-  if (error instanceof PackageArtifactStoreError && error.code === 'commit_in_progress') {
-    return new ModelingMcpToolError(
-      'PROJECT_WRITE_BUSY',
-      '知识包正在保存，请稍后重试',
-      409,
-      ['短暂退避后重试；若 revision 已变化则重新分析'],
-      {
-        phase: context.phase,
-        ...(context.resource ? { resource: context.resource } : {}),
-        reason_code: 'PROJECT_WRITE_BUSY',
-        retryable: true,
-      } satisfies ModelingMcpToolDetails,
-    );
-  }
-  if (error instanceof PackageArtifactStoreError && ['package_not_found', 'revision_has_no_package'].includes(error.code)) {
-    return new ModelingMcpToolError(
-      'RESOURCE_NOT_FOUND',
-      '当前项目还没有可用的知识包版本',
-      404,
-      ['先生成或导入知识包后再调用 MCP 工具'],
-      {
-        phase: context.phase,
-        ...(context.resource ? { resource: context.resource } : {}),
-        reason_code: 'PACKAGE_NOT_FOUND',
-        retryable: false,
-      } satisfies ModelingMcpToolDetails,
-    );
-  }
-  if (error instanceof PackageArtifactStoreError && error.code === 'invalid_package') {
-    return new ModelingMcpToolError(
-      'SUBMISSION_BLOCKED',
-      '知识包内容不完整，无法执行当前修改',
-      422,
-      ['先修复当前知识包存量结构问题后重试'],
-      {
-        phase: context.phase,
-        ...(context.resource ? { resource: context.resource } : {}),
-        reason_code: 'PACKAGE_INTEGRITY_FAILED',
-        retryable: false,
-      } satisfies ModelingMcpToolDetails,
-    );
-  }
-  if (error instanceof PackageArtifactStoreError && error.code === 'invalid_input') {
-    return new ModelingMcpToolError(
-      'INVALID_INPUT',
-      error.message,
-      400,
-      [],
-      {
-        phase: context.phase,
-        ...(context.resource ? { resource: context.resource } : {}),
-        reason_code: 'INVALID_INPUT',
-        retryable: false,
-      } satisfies ModelingMcpToolDetails,
-    );
-  }
-  throw error;
 }
 
 function objectNotFound(key: string): ModelingMcpToolError {

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth } from '../auth/middleware.js';
 import { DEFAULT_LLM_CONTEXT_WINDOW, DEFAULT_LLM_MAX_TOKENS } from '../config.js';
+import { sendHttpError } from '../http-error.js';
 import { testLlmConnection } from './llm-connection-test.js';
 import {
   deleteLlmDefaultSettings,
@@ -34,8 +35,14 @@ function expectedRevision(value: unknown): number | undefined {
 function sendLlmDefaultError(reply: FastifyReply, error: unknown) {
   if (error instanceof LlmDefaultValidationError) return reply.code(400).send({ error: error.message });
   if (error instanceof LlmDefaultRevisionConflictError) return reply.code(409).send({ error: error.message });
-  if (error instanceof LlmConfigEncryptionKeyError) return reply.code(503).send({ error: error.message });
-  throw error;
+  if (error instanceof LlmConfigEncryptionKeyError) {
+    return sendHttpError(reply, error, {
+      code: 'LLM_CONFIG_UNAVAILABLE',
+      message: '平台模型配置暂时不可用，请稍后重试',
+      logMessage: '平台 LLM 配置加密密钥不可用',
+    });
+  }
+  return sendHttpError(reply, error, { logMessage: '平台 LLM 默认配置操作失败' });
 }
 
 /** 注册平台 LLM 默认配置接口；独立使用时可让本模块挂载 requireAuth。 */

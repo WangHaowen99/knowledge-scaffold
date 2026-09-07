@@ -6,8 +6,7 @@ const request = async (promise) => {
   try {
     return await promise;
   } catch (error) {
-    const message = error?.data?.display?.text || error?.data?.reason || error?.data?.message
-      || error?.message || '融合操作失败';
+    const message = error?.message || '融合操作失败';
     throw Object.assign(new Error(message), {
       status: error?.status,
       code: error?.data?.code,

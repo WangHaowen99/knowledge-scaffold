@@ -30,6 +30,17 @@ export type DiagnosisResolutionAction =
 
 export type DiagnosisStoredAction = DiagnosisResolutionAction | 'plan_repair';
 
+export class FailureDiagnosisStateError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly statusCode: 404 | 409,
+  ) {
+    super(message);
+    this.name = 'FailureDiagnosisStateError';
+  }
+}
+
 function rowToDiagnosis(row: any): StoredFailureDiagnosis {
   return {
     id: row.id,
@@ -100,7 +111,7 @@ export function replaceFailureDiagnoses(
     }
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try { db.exec('ROLLBACK'); } catch { /* 回滚失败不覆盖原始业务错误 */ }
     throw error;
   }
   return listFailureDiagnoses(projectId, roundId);
@@ -150,15 +161,29 @@ export function markFailureDiagnosesForRepair(input: {
   try {
     for (const diagnosisId of diagnosisIds) {
       const current = select.get(diagnosisId, input.projectId) as any;
-      if (!current) throw new Error('失败诊断不存在');
+      if (!current) {
+        throw new FailureDiagnosisStateError(
+          'OPTIMIZATION_DIAGNOSIS_NOT_FOUND',
+          '失败诊断不存在',
+          404,
+        );
+      }
       if (['resolved', 'irrelevant'].includes(String(current.resolution_status))) {
-        throw new Error('该失败诊断已关闭，不能再次加入建模修缮');
+        throw new FailureDiagnosisStateError(
+          'OPTIMIZATION_DIAGNOSIS_CONFLICT',
+          '该失败诊断已关闭，不能再次加入建模修缮',
+          409,
+        );
       }
       if (!isPackageRepairEligible({
         repairScope: current.repair_scope,
         blocking: !!current.blocking,
       })) {
-        throw new Error('只有不阻断的知识包缺陷才能进入优化更新');
+        throw new FailureDiagnosisStateError(
+          'OPTIMIZATION_DIAGNOSIS_CONFLICT',
+          '只有不阻断的知识包缺陷才能进入优化更新',
+          409,
+        );
       }
       update.run(
         'plan_repair', note, input.actor, payload, resolvedAt,
@@ -167,7 +192,7 @@ export function markFailureDiagnosesForRepair(input: {
     }
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
+    try { db.exec('ROLLBACK'); } catch { /* 回滚失败不覆盖原始业务错误 */ }
     throw error;
   }
 
@@ -188,7 +213,13 @@ export function resolveFailureDiagnosis(input: {
   const db = getDb();
   const current = db.prepare(`SELECT * FROM failure_diagnoses
     WHERE id = ? AND project_id = ?`).get(input.diagnosisId, input.projectId) as any;
-  if (!current) throw new Error('失败诊断不存在');
+  if (!current) {
+    throw new FailureDiagnosisStateError(
+      'OPTIMIZATION_DIAGNOSIS_NOT_FOUND',
+      '失败诊断不存在',
+      404,
+    );
+  }
   const status = input.action === 'data_updated'
     ? 'resolved'
     : input.action === 'not_applicable'

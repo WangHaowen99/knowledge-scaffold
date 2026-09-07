@@ -125,6 +125,7 @@ export class PackageFusionServiceError extends Error {
     readonly details: Record<string, unknown> = {},
   ) {
     super(message);
+    this.name = 'PackageFusionServiceError';
   }
 }
 
@@ -501,10 +502,14 @@ export class PackageFusionService {
           error.details,
         );
       }
+      // 编译阶段可能失败于数据库、文件系统或上游解析器。它不是用户的
+      // 融合裁决冲突，不能把任意异常包装成 409；保留固定公开文案并交给
+      // HTTP 层按 500/503 脱敏返回，详细原因只写入服务端日志/计划记录。
       throw new PackageFusionServiceError(
         'FUSION_COMPILE_FAILED',
-        `批量融合编译失败：${message}`,
-        409,
+        '批量融合编译暂时失败，请稍后重试',
+        500,
+        { internalError: message.slice(0, 500) },
       );
     }
   }

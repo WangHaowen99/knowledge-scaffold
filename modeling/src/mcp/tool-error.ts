@@ -50,6 +50,14 @@ export interface PublicMcpToolError {
 }
 
 export function publicMcpToolError(error: ModelingMcpToolError): PublicMcpToolError {
+  if (error.statusCode >= 500) {
+    return {
+      code: error.code,
+      message: 'MCP 工具暂时不可用，请稍后重试',
+      next: [],
+      details: {},
+    };
+  }
   return {
     code: error.code,
     message: error.message,

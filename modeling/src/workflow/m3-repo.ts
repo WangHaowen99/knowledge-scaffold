@@ -249,6 +249,11 @@ export function listResults(roundId: string): EvalResult[] {
   return getDb().prepare('SELECT * FROM eval_results WHERE round_id = ? ORDER BY created_at').all(roundId).map(rowToResult);
 }
 
+export function getResult(resultId: string): EvalResult | null {
+  const row = getDb().prepare('SELECT * FROM eval_results WHERE id = ?').get(resultId);
+  return row ? rowToResult(row as any) : null;
+}
+
 export function latestEffectiveEvaluation(
   projectId: string,
   artifactRevision: string | null | undefined,

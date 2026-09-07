@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { AgentCoreError } from '../agent/core-service.js';
 import { config } from '../config.js';
 import { canWriteProject, getProject } from '../projects/repo.js';
+import { normalizeHttpError, sendHttpError } from '../http-error.js';
 import {
   MODELING_MCP_SERVER_INFO,
   ModelingMcpError,
@@ -14,6 +15,7 @@ import {
   verifyProjectMcpToken,
 } from './service.js';
 import { ModelingMcpToolError, publicMcpToolError } from './tool-error.js';
+import { mapMcpArtifactError } from './artifact-error.js';
 import { executeModelingMcpTool, toolDefinitionByName, toolDefinitionsFor } from './toolset.js';
 
 type JsonRpcId = string | number | null;
@@ -31,12 +33,24 @@ const JSONRPC_INVALID_REQUEST = -32600;
 const JSONRPC_METHOD_NOT_FOUND = -32601;
 const JSONRPC_INVALID_PARAMS = -32602;
 const JSONRPC_INTERNAL_ERROR = -32603;
+const JSONRPC_RESOURCE_NOT_FOUND = -32004;
 const JSONRPC_HEADER_MISMATCH = -32020;
 const JSONRPC_AUTH_ERROR = -32001;
 const SSE_SESSION_NOT_FOUND = 'Session not found';
 const SSE_HEARTBEAT_MS = 15_000;
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
 const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
+
+function isMcpTransportPath(url: string): boolean {
+  return /\/(?:mcp|sse)(?:\/|[?]|$)/u.test(String(url ?? ''));
+}
+
+function rpcCodeForHttpStatus(statusCode: number): number {
+  if (statusCode === 401 || statusCode === 403) return JSONRPC_AUTH_ERROR;
+  if (statusCode === 404) return JSONRPC_RESOURCE_NOT_FOUND;
+  if (statusCode >= 500) return JSONRPC_INTERNAL_ERROR;
+  return JSONRPC_INVALID_PARAMS;
+}
 
 interface SseSessionRecord {
   sessionId: string;
@@ -103,12 +117,14 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       return reply.code(200).send(rpcResultEnvelope(rpc.id ?? null, result));
     } catch (error) {
       if (error instanceof ModelingMcpError) {
-        return sendRpcError(reply, rpc.id ?? null, error.statusCode, JSONRPC_AUTH_ERROR, error.message, {
-          code: error.code,
-        });
+        return sendNormalizedMcpRpcError(reply, rpc.id ?? null, error);
       }
       if (error instanceof RpcProtocolError) {
         return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message);
+      }
+      const artifactError = tryMapMcpArtifactError(error, 'load');
+      if (artifactError) {
+        return sendMcpArtifactRpcError(reply, rpc.id ?? null, artifactError, error);
       }
       request.log.error({ err: error }, 'MCP Streamable HTTP 请求执行失败');
       return sendRpcError(
@@ -147,11 +163,7 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       };
     } catch (error) {
       if (error instanceof ModelingMcpError) {
-        return reply.code(error.statusCode).send({
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: JSONRPC_AUTH_ERROR, message: error.message, data: { code: error.code } },
-        });
+        return sendNormalizedMcpRpcError(reply, null, error);
       }
       throw error;
     }
@@ -191,15 +203,19 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       if (!principal) throw new ModelingMcpError('MCP_AUTH_REQUIRED', '缺少 MCP 会话身份', 401);
       sessionId = sseSessions.create(endpointId, toolset, principal, send, release).sessionId;
     } catch (error) {
-      raw.statusCode = error instanceof ModelingMcpError ? error.statusCode : 500;
+      const normalized = normalizeHttpError(error, {
+        code: 'MCP_INTERNAL_ERROR',
+        message: 'MCP 服务内部错误',
+      });
+      raw.statusCode = normalized.statusCode;
       raw.setHeader('Content-Type', 'application/json; charset=utf-8');
-      if (!(error instanceof ModelingMcpError)) request.log.error({ err: error }, 'MCP SSE 会话创建失败');
+      if (normalized.statusCode >= 500) request.log.error({ err: error }, 'MCP SSE 会话创建失败');
       raw.end(JSON.stringify(
         rpcErrorEnvelope(
           null,
-          JSONRPC_INTERNAL_ERROR,
-          error instanceof ModelingMcpError ? error.message : 'MCP 服务内部错误',
-          { code: error instanceof ModelingMcpError ? error.code : 'MCP_INTERNAL_ERROR' },
+          rpcCodeForHttpStatus(normalized.statusCode),
+          normalized.message,
+          { code: normalized.code },
         ),
       ));
       return;
@@ -261,12 +277,14 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       return reply.code(202).send();
     } catch (error) {
       if (error instanceof ModelingMcpError) {
-        return sendRpcError(reply, rpc.id ?? null, error.statusCode, JSONRPC_AUTH_ERROR, error.message, {
-          code: error.code,
-        });
+        return sendNormalizedMcpRpcError(reply, rpc.id ?? null, error);
       }
       if (error instanceof RpcProtocolError) {
         return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message);
+      }
+      const artifactError = tryMapMcpArtifactError(error, 'load');
+      if (artifactError) {
+        return sendMcpArtifactRpcError(reply, rpc.id ?? null, artifactError, error);
       }
       request.log.error({ err: error }, 'MCP SSE 请求执行失败');
       return sendRpcError(
@@ -281,6 +299,38 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   };
   app.post('/:mcpEndpointId/:toolset/sse/messages', sseMessageHandler);
   app.post('/:mcpEndpointId/:toolset/sse/messages/', sseMessageHandler);
+}
+
+/**
+ * MCP 进程独立于主 modeling Fastify 实例运行，不能依赖主应用安装的
+ * setErrorHandler。覆盖 transport 路径上尚未被路由捕获的异常，保证它们
+ * 仍然是 JSON-RPC 响应而不是 Fastify 默认的 HTML/"Internal Server Error"。
+ * 非 transport 路径（例如健康检查）复用普通 HTTP 脱敏规则。
+ */
+export function installMcpHttpErrorHandler(app: FastifyInstance): void {
+  app.setErrorHandler((error, request, reply) => {
+    if (reply.sent) return reply;
+    if (!isMcpTransportPath(request.url)) {
+      return sendHttpError(reply, error, {
+        logMessage: `${request.method} ${request.url} MCP 服务请求执行失败`,
+      });
+    }
+
+    const normalized = normalizeHttpError(error, {
+      code: 'MCP_INTERNAL_ERROR',
+      message: 'MCP 服务内部错误',
+      logMessage: `${request.method} ${request.url} MCP transport 请求执行失败`,
+    });
+    if (normalized.statusCode >= 500) {
+      request.log.error({ err: error }, 'MCP transport 未捕获异常');
+    }
+    return reply.code(normalized.statusCode).send(rpcErrorEnvelope(
+      null,
+      rpcCodeForHttpStatus(normalized.statusCode),
+      normalized.message,
+      { code: normalized.code },
+    ));
+  });
 }
 
 async function dispatchMcpRequest(input: {
@@ -372,6 +422,12 @@ async function dispatchMcpRequest(input: {
         return protocolMode === 'modern'
           ? modernToolErrorResult(error)
           : legacyToolErrorResult(error);
+      }
+      const artifactError = tryMapMcpArtifactError(error, 'load');
+      if (artifactError) {
+        return protocolMode === 'modern'
+          ? modernToolErrorResult(artifactError)
+          : legacyToolErrorResult(artifactError);
       }
       throw error;
     }
@@ -585,6 +641,48 @@ function sendRpcError(
   return reply.code(statusCode).send(rpcErrorEnvelope(id, code, message, data));
 }
 
+function sendNormalizedMcpRpcError(
+  reply: FastifyReply,
+  id: JsonRpcId,
+  error: unknown,
+): FastifyReply {
+  const normalized = normalizeHttpError(error, {
+    code: 'MCP_INTERNAL_ERROR',
+    message: 'MCP 服务内部错误',
+    includeReason: false,
+  });
+  if (normalized.statusCode >= 500) reply.log.error({ err: error }, 'MCP 请求执行失败');
+  return sendRpcError(
+    reply,
+    id,
+    normalized.statusCode,
+    rpcCodeForHttpStatus(normalized.statusCode),
+    normalized.message,
+    { code: normalized.code },
+  );
+}
+
+function sendMcpArtifactRpcError(
+  reply: FastifyReply,
+  id: JsonRpcId,
+  error: ModelingMcpToolError,
+  cause: unknown,
+): FastifyReply {
+  const publicError = publicMcpToolError(error);
+  if (error.statusCode >= 500) reply.log.error({ err: cause }, 'MCP 工件请求执行失败');
+  return sendRpcError(
+    reply,
+    id,
+    error.statusCode,
+    rpcCodeForHttpStatus(error.statusCode),
+    publicError.message,
+    {
+      code: publicError.code,
+      ...(error.statusCode < 500 ? { details: publicError.details } : {}),
+    },
+  );
+}
+
 function originAllowed(request: FastifyRequest): boolean {
   const origin = headerValue(request.headers.origin);
   if (!origin) return true;
@@ -604,12 +702,31 @@ function sendOriginRejected(reply: FastifyReply): FastifyReply {
 
 function toolErrorPayload(error: AgentCoreError | ModelingMcpToolError) {
   if (error instanceof ModelingMcpToolError) return publicMcpToolError(error);
+  if (error.statusCode >= 500) {
+    return {
+      code: error.code,
+      message: 'MCP 工具暂时不可用，请稍后重试',
+      next: [],
+      details: {},
+    };
+  }
   return {
     code: error.code,
     message: error.message,
     next: [...error.next],
     details: safePublicDetails(error.details),
   };
+}
+
+function tryMapMcpArtifactError(
+  error: unknown,
+  phase: 'input' | 'load' | 'validate' | 'persist',
+): ModelingMcpToolError | null {
+  try {
+    return mapMcpArtifactError(error, { phase });
+  } catch {
+    return null;
+  }
 }
 
 function safePublicDetails(value: unknown, depth = 0): any {

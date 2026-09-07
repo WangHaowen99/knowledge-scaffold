@@ -14,12 +14,16 @@ const [
   { WorkflowStepProgressRepo },
   { createProject },
   { getDb },
+  { getPackageArtifactStore },
+  { PackageArtifactStoreError },
 ] = await Promise.all([
   import('../src/authoring/workflow-extra-routes.js'),
   import('../src/authoring/state.js'),
   import('../src/authoring/workflow-progress.js'),
   import('../src/projects/repo.js'),
   import('../src/db/index.js'),
+  import('../src/artifacts/runtime.js'),
+  import('../src/artifacts/package-store.js'),
 ]);
 
 function routeApp(t: test.TestContext, username = 'alice') {
@@ -31,6 +35,43 @@ function routeApp(t: test.TestContext, username = 'alice') {
   t.after(() => app.close());
   return app;
 }
+
+test('场景启动将保存忙碌映射为 409，未知 500 不回显后端详情', async (t) => {
+  const project = createProject({ owner: 'alice', kind: 'package', name: '场景错误映射' });
+  const artifacts = getPackageArtifactStore();
+  const originalCurrent = artifacts.current;
+  t.after(() => { artifacts.current = originalCurrent; });
+  const app = routeApp(t);
+
+  artifacts.current = async () => {
+    throw new PackageArtifactStoreError(
+      'commit_in_progress',
+      'synthetic backend detail\nError: internal stack',
+    );
+  };
+  const busy = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/workflow/scenario/start`,
+  });
+  assert.equal(busy.statusCode, 409, busy.body);
+  assert.deepEqual(busy.json(), {
+    error: '知识包正在保存，请稍后重试',
+    code: 'commit_in_progress',
+  });
+
+  artifacts.current = async () => {
+    throw new Error('synthetic backend detail\nError: internal stack');
+  };
+  const internal = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/workflow/scenario/start`,
+  });
+  assert.equal(internal.statusCode, 500, internal.body);
+  assert.deepEqual(internal.json(), {
+    error: '服务暂时不可用，请稍后重试',
+    code: 'INTERNAL_ERROR',
+  });
+});
 
 test('场景专用审核逐项收口、完成运行且重试不重复记录', async (t) => {
   const project = createProject({ owner: 'alice', kind: 'package', name: '场景审核闭环' });

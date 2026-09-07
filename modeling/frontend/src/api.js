@@ -1,3 +1,5 @@
+import { publicApiErrorMessage } from './error-presentation.js';
+
 // 后端 API 客户端：token 存 localStorage，统一注入 Bearer；有 refresh token 时 401 静默续期。
 const TOKEN_KEY = 'mw_modeling_token';
 const REFRESH_KEY = 'mw_modeling_refresh_token';
@@ -70,7 +72,7 @@ export async function api(path, options = {}) {
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status, data });
+    throw Object.assign(new Error(publicApiErrorMessage(data, res.status)), { status: res.status, data });
   }
   return data;
 }
@@ -78,11 +80,13 @@ export async function api(path, options = {}) {
 export async function requireOkResponse(res) {
   if (res.ok) return res;
   const data = await res.json().catch(() => ({}));
-  throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), {
+  throw Object.assign(new Error(publicApiErrorMessage(data, res.status)), {
     status: res.status,
     data,
   });
 }
+
+export { publicApiErrorMessage } from './error-presentation.js';
 
 export const login = (username, password) =>
   api('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });

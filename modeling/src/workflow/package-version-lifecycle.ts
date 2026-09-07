@@ -10,12 +10,23 @@ interface ParsedVersion {
   prerelease?: string;
 }
 
+export class PackageVersionError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'PACKAGE_VERSION_INVALID' | 'PACKAGE_VERSION_CONFLICT',
+    readonly statusCode: 400 | 409,
+  ) {
+    super(message);
+    this.name = 'PackageVersionError';
+  }
+}
+
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const RC_PATTERN = /^rc\.(0|[1-9]\d*)$/;
 
 function parseVersion(value: string): ParsedVersion {
   const match = VERSION_PATTERN.exec(String(value ?? '').trim());
-  if (!match) throw new Error('知识包版本不正确');
+  if (!match) throw new PackageVersionError('知识包版本不正确', 'PACKAGE_VERSION_INVALID', 400);
   return {
     major: BigInt(match[1]),
     minor: BigInt(match[2]),
@@ -29,7 +40,9 @@ function stableVersion(version: ParsedVersion): string {
 }
 
 function bump(version: ParsedVersion, level: PackageChangeLevel): ParsedVersion {
-  if (version.prerelease) throw new Error('请先完成或放弃当前发布候选');
+  if (version.prerelease) {
+    throw new PackageVersionError('请先完成或放弃当前发布候选', 'PACKAGE_VERSION_CONFLICT', 409);
+  }
   if (level === 'major') return { major: version.major + 1n, minor: 0n, patch: 0n };
   if (level === 'minor') return { major: version.major, minor: version.minor + 1n, patch: 0n };
   return { major: version.major, minor: version.minor, patch: version.patch + 1n };
@@ -52,7 +65,9 @@ export function nextValidationCandidateVersion(input: {
 }): string {
   const current = parseVersion(input.currentVersion);
   if (input.currentStatus === 'draft') {
-    if (current.prerelease) throw new Error('草稿版本不能带预发布标识');
+    if (current.prerelease) {
+      throw new PackageVersionError('草稿版本不能带预发布标识', 'PACKAGE_VERSION_CONFLICT', 409);
+    }
     // 本地新建草稿从 0.x 收敛到首个 1.0 候选。稳定草稿默认只进入同版本
     // 验证；调用方只有在掌握“这是导入基线”等来源事实时才显式请求递增。
     if (current.major === 0n) return '1.0.0-rc.1';
@@ -63,19 +78,19 @@ export function nextValidationCandidateVersion(input: {
     const rc = current.prerelease ? RC_PATTERN.exec(current.prerelease) : null;
     if (rc) return `${stableVersion(current)}-rc.${BigInt(rc[1]) + 1n}`;
     if (!current.prerelease) return `${stableVersion(bump(current, 'patch'))}-rc.1`;
-    throw new Error('评审版本必须使用 rc 发布候选');
+    throw new PackageVersionError('评审版本必须使用 rc 发布候选', 'PACKAGE_VERSION_CONFLICT', 409);
   }
   if (input.currentStatus === 'released') {
     const target = bump(current, input.changeLevel ?? 'patch');
     return `${stableVersion(target)}-rc.1`;
   }
-  throw new Error('已废弃版本不能继续创建发布候选');
+  throw new PackageVersionError('已废弃版本不能继续创建发布候选', 'PACKAGE_VERSION_CONFLICT', 409);
 }
 
 export function promoteReleaseCandidate(value: string): string {
   const version = parseVersion(value);
   if (!version.prerelease || !RC_PATTERN.test(version.prerelease)) {
-    throw new Error('只能正式发布 rc 发布候选');
+    throw new PackageVersionError('只能正式发布 rc 发布候选', 'PACKAGE_VERSION_CONFLICT', 409);
   }
   return stableVersion(version);
 }
