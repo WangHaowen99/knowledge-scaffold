@@ -15,10 +15,11 @@ const [
   { documentRuleIncrementRequested, incrementRoundRequested, registerAgentProxyRoutes },
   { createProject },
   outbox,
-  { ensureAgentProjectEventKinds },
+  { ensureAgentProjectEventKinds, getDb },
   { DocumentRevisionRepo },
   { MaterialPurposeReviewStore },
   { getPackageArtifactStore },
+  { ChangeControlStore },
 ] = await Promise.all([
   import('../src/agent/proxy-routes.js'),
   import('../src/projects/repo.js'),
@@ -27,6 +28,7 @@ const [
   import('../src/documents/repo.js'),
   import('../src/documents/material-purpose-review.js'),
   import('../src/artifacts/runtime.js'),
+  import('../src/agent/change-control.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -38,6 +40,81 @@ function appFor(t: test.TestContext, username = 'alice') {
   t.after(() => app.close());
   return app;
 }
+function planArgs(projectId: string, runId: string, key: string) {
+  return {
+    projectId,
+    runId,
+    goal: '代理终止回归',
+    mode: 'expert_edit',
+    expectedRevision: 'sha256:base',
+    currentRevision: 'sha256:base',
+    tasks: [{
+      client_key: key,
+      title: `验证任务-${key}`,
+      resource_kind: 'rule',
+      target_key: `Rule-${key}`,
+      allowed_tools: ['patch_rule'],
+      depends_on: [],
+      acceptance: '完成验证',
+      required: true,
+    }],
+  };
+}
+
+test('Python RUN_NOT_ACTIVE 时终止接口仍收敛 Node 活动计划', async (t) => {
+  const project = createProject({ owner: 'alice', name: '代理终止重试' });
+  const app = appFor(t);
+  const store = new ChangeControlStore(getDb());
+  const plan = store.createPlan(planArgs(project.id, 'run-stale', 'retry'));
+  t.mock.method(globalThis, 'fetch', async () => new Response(
+    JSON.stringify({ code: 'RUN_NOT_ACTIVE' }),
+    { status: 409, headers: { 'content-type': 'application/json' } },
+  ));
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/recovery/terminate-stale`,
+    headers: { authorization: 'Bearer proxy-token' },
+    payload: {},
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().reconciledAfterPythonShortCircuit, true);
+  assert.equal(response.json().cancelledActivePlans.terminated, 1);
+  assert.equal(response.json().cancelledActivePlans.planIds[0], plan.id);
+  assert.equal(
+    (getDb().prepare(`SELECT status FROM agent_change_plans WHERE id = ?`).get(plan.id) as any).status,
+    'cancelled',
+  );
+});
+
+test('终止接口只取消被终止 run 的活动计划', async (t) => {
+  const project = createProject({ owner: 'alice', name: '代理终止按 run 过滤' });
+  const app = appFor(t);
+  const store = new ChangeControlStore(getDb());
+  const stalePlan = store.createPlan(planArgs(project.id, 'run-stale', 'stale'));
+  const otherPlan = store.createPlan(planArgs(project.id, 'run-other', 'other'));
+  t.mock.method(globalThis, 'fetch', async () => new Response(
+    JSON.stringify({ terminatedStale: true, terminatedRunId: 'run-stale' }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  ));
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/recovery/terminate-stale`,
+    headers: { authorization: 'Bearer proxy-token' },
+    payload: {},
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json().cancelledActivePlans.planIds, [stalePlan.id]);
+  assert.equal(
+    (getDb().prepare(`SELECT status FROM agent_change_plans WHERE id = ?`).get(stalePlan.id) as any).status,
+    'cancelled',
+  );
+  assert.equal(
+    (getDb().prepare(`SELECT status FROM agent_change_plans WHERE id = ?`).get(otherPlan.id) as any).status,
+    'active',
+  );
+});
 
 test('只有明确执行意图才会触发增量轮次入口', () => {
   assert.equal(incrementRoundRequested('开始增量建模'), true);

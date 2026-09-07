@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -94,6 +95,66 @@ def _write_legacy_package(root):
         "  `parameters`: `[{\"name\":\"part_code\",\"flag\":\"--part-code\",\"required\":true,\"type\":\"string\"}]`\n",
         encoding="utf-8",
     )
+
+
+def _write_v02_solver_package_with_compat_index(root):
+    for directory in ("operations", "decision-models", "schemas", "presentations"):
+        (root / directory).mkdir(parents=True)
+    manifest = {
+        "kind": "ontology-package",
+        "schema_version": "0.2",
+        "id": "solver-import-demo",
+        "name": "Solver import demo",
+        "description": "Synthetic v0.2 import package",
+        "version": "1.0.0",
+        "capabilities": {
+            "decision_models": [
+                {
+                    "id": "route_choice",
+                    "entry": "decision-models/route-choice.yaml",
+                    "input_schema": "schemas/input.schema.json",
+                    "result_schema": "schemas/result.schema.json",
+                    "presentation": "presentations/result.yaml",
+                    "engine_requirements": {
+                        "problem_family": "binary_ordered_route.v1",
+                        "capabilities": ["candidate_validation"],
+                    },
+                }
+            ]
+        },
+    }
+    (root / "manifest.yaml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+    )
+    (root / "decision-models" / "route-choice.yaml").write_text(
+        "kind: decision-model\nid: route_choice\nvariables: [route_a, route_b]\n",
+        encoding="utf-8",
+    )
+    for filename, document in (
+        (
+            "input.schema.json",
+            {"type": "object", "properties": {"origin": {"type": "string"}}},
+        ),
+        (
+            "result.schema.json",
+            {"type": "object", "properties": {"route": {"type": "string"}}},
+        ),
+    ):
+        (root / "schemas" / filename).write_text(
+            json.dumps(document), encoding="utf-8"
+        )
+    (root / "presentations" / "result.yaml").write_text(
+        "title: Route result\n", encoding="utf-8"
+    )
+    (root / "operations" / "optimize-route.md").write_text(
+        "---\nresource: operation\nkey: optimize_route\ntitle: Optimize route\n"
+        "execution:\n  mode: solver_workflow\n  decision_model: route_choice\n"
+        "  validator_revision: route-validator.v1\n---\nOptimize the route.\n",
+        encoding="utf-8",
+    )
+    compat_bytes = b"# Compatibility index\n\nkept byte-for-byte\n"
+    (root / "operations-list.md").write_bytes(compat_bytes)
+    return manifest, compat_bytes
 
 
 def _write_object_definition(
@@ -218,6 +279,28 @@ def test_normalize_v01_keeps_only_new_layout_and_completes_required_indexes(tmp_
     assert entry is not None
     assert entry["_script_path"] == "scripts/query_part.py"
     assert entry["parameters"][0]["name"] == "part_code"
+
+
+def test_normalize_v02_preserves_compat_list_index_and_solver_contract(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    source_manifest, compat_bytes = _write_v02_solver_package_with_compat_index(
+        source
+    )
+
+    result = normalize_imported_package(source, target)
+
+    normalized_manifest = yaml.safe_load(
+        (target / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert result.generated_files == ()
+    assert (
+        normalized_manifest["schema_version"]
+        == source_manifest["schema_version"]
+        == "0.2"
+    )
+    assert (target / "operations-list.md").read_bytes() == compat_bytes
+    assert not (target / ".deterministic-lock.json").exists()
 
 
 def test_normalization_preserves_deterministic_validation_error_code(

@@ -626,6 +626,14 @@ def test_poll_artifact_path_traversal_blocked(tmp_path, monkeypatch):
 # Approve / drift / cancel
 # --------------------------------------------------------------------------- #
 def test_approve_new_version(tmp_path, monkeypatch):
+    import ontology.view_cache as view_cache_module
+    from ontology.view_cache import OntologyViewCache, get_ontology_mutation_revision
+
+    monkeypatch.setattr(
+        view_cache_module,
+        "_view_cache",
+        OntologyViewCache(max_entries=8),
+    )
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo\nstep1\n"})
     evolved_zip = _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\nstep2\n"}, "- foo\n")
@@ -636,6 +644,7 @@ def test_approve_new_version(tmp_path, monkeypatch):
     store.save_baseline("ws1", "t1", _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\n"}, "- foo\n"))
     service.poll_once(rec)  # → completed + temp populated
 
+    view_revision = get_ontology_mutation_revision("ws1", "onto1")
     out = service.approve(rec, mode="new_version", version_name="evol-1", decided_by="admin")
     assert out.status == "approved"
     assert out.new_version == "evol-1"
@@ -645,6 +654,7 @@ def test_approve_new_version(tmp_path, monkeypatch):
     assert not store.temp_path("ws1", "t1").exists()
     # history written
     assert store.get_history("ws1", "t1") is not None
+    assert get_ontology_mutation_revision("ws1", "onto1") == view_revision + 1
 
 
 def test_approve_version_conflict_rejected(tmp_path, monkeypatch):
@@ -808,6 +818,14 @@ def test_reject_and_cancel(tmp_path, monkeypatch):
 def test_approve_overwrite_replaces_active_version(tmp_path, monkeypatch):
     """Overwrite mode replaces the active version's contents in place — version
     number unchanged, no new version dir, manifest untouched, temp cleaned."""
+    import ontology.view_cache as view_cache_module
+    from ontology.view_cache import OntologyViewCache, get_ontology_mutation_revision
+
+    monkeypatch.setattr(
+        view_cache_module,
+        "_view_cache",
+        OntologyViewCache(max_entries=8),
+    )
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo\nstep1\n"})
     evolved_zip = _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\nstep2\n"}, "- foo\n")
@@ -818,6 +836,7 @@ def test_approve_overwrite_replaces_active_version(tmp_path, monkeypatch):
     store.save_baseline("ws1", "t1", _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\n"}, "- foo\n"))
     service.poll_once(rec)  # → completed + temp populated
 
+    view_revision = get_ontology_mutation_revision("ws1", "onto1")
     out = service.approve(rec, mode="overwrite", version_name=None, decided_by="admin")
     assert out.status == "approved"
     assert out.decision == "approve_overwrite"
@@ -847,6 +866,7 @@ def test_approve_overwrite_replaces_active_version(tmp_path, monkeypatch):
     assert event["operator"] == {"type": "user", "id": "admin"}
     assert event["request_id"] == "run-fake-1"
     assert event["trigger"] == "admin"
+    assert get_ontology_mutation_revision("ws1", "onto1") == view_revision + 1
     # temp cleaned, history written.
     assert not store.temp_path("ws1", "t1").exists()
     assert store.get_history("ws1", "t1") is not None

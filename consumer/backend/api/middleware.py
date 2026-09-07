@@ -6,9 +6,13 @@ from typing import Optional
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from integration.observability.performance import (
+    get_server_timing_header,
+    request_performance_context,
+)
 from server_config import MAX_CONTENT_LENGTH
 
 
@@ -82,6 +86,44 @@ class RequestBodyLimitMiddleware:
             await _too_large_response()(scope, receive, send)
 
 
+class ServerTimingMiddleware:
+    """Expose phases completed before response start as Server-Timing.
+
+    Streaming-body work happens after HTTP headers are committed. Those late
+    phases remain observable through metrics and are intentionally not buffered
+    just to delay the response start.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        with request_performance_context():
+            async def timing_send(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    timing_value = get_server_timing_header()
+                    if timing_value:
+                        headers = MutableHeaders(scope=message)
+                        existing = str(headers.get("server-timing") or "").strip()
+                        headers["server-timing"] = (
+                            "{}, {}".format(existing, timing_value)
+                            if existing
+                            else timing_value
+                        )
+                await send(message)
+
+            await self.app(scope, receive, timing_send)
+
+
 def install_http_middleware(app) -> None:
     app.add_middleware(
         RequestBodyLimitMiddleware,
@@ -102,3 +144,4 @@ def install_http_middleware(app) -> None:
             "traceparent",
         ],
     )
+    app.add_middleware(ServerTimingMiddleware)

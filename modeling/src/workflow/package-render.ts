@@ -89,7 +89,7 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
       source: f.key,
       ...(f.sourceColumn && f.sourceColumn !== f.key ? { source_column: f.sourceColumn } : {}),
       type: f.type || 'string',
-      required: !!f.required,
+      required: f.required === true,
       readable: true,
       ...(f.valueBindingRef ? { value_binding_ref: f.valueBindingRef } : {}),
     };
@@ -134,7 +134,7 @@ function objectMd(spec: PackageSpec, o: SpecObject): string {
     sources: sourceLabelsFor(o),
   });
   const rows = o.fields.map((f) =>
-    `| ${cell(f.key)} | ${cell(f.cnName)} | ${cell(f.type ?? '未声明')} | ${f.required == null ? '未声明' : f.required ? '是' : '否'} | ${cell(f.note)} | ${cell(f.alias)} |`);
+    `| ${cell(f.key)} | ${cell(f.cnName)} | ${cell(f.type ?? '未声明')} | ${f.required === true ? '是' : '否'} | ${cell(f.note)} | ${cell(f.alias)} |`);
   const relations = (o.relations ?? []).map((r) =>
     `| ${cell(r.relation)} | ${cell(r.target)} | ${cell(r.note)} | ${cell(r.evidence?.join('；'))} |`);
   return [
@@ -406,11 +406,12 @@ export function renderPackage(spec: PackageSpec, options: RenderPackageOptions =
   }
   const rules = s.rules ?? [];
   const metrics = s.metrics ?? [];
+  const objectProjection = renderObjectProjectionFromCanonicalSpec(s);
   const files: PackageFiles = {};
   files['manifest.yaml'] = manifest(s);
   files['index.md'] = rootIndex(s, options.includeDraftTemplate === true);
   if (options.includeDraftTemplate) files['diagrams/index.md'] = diagramsIndex();
-  files['objects/index.md'] = objectsIndex(s.objects);
+  files['objects/index.md'] = objectProjection['objects/index.md'];
   files['operations/index.md'] = operationsIndex(s.operations);
   // 可选目录语义：无规则/指标时不生成目录（规范 §2.2）
   if (options.includeDraftTemplate || rules.length) {
@@ -426,10 +427,37 @@ export function renderPackage(spec: PackageSpec, options: RenderPackageOptions =
     files[`scripts/${script.key}.md`] = scriptMd(script);
     files[`scripts/${script.entrypoint}`] = script.sourceCode.endsWith('\n') ? script.sourceCode : `${script.sourceCode}\n`;
   }
-  if (packageNeedsObjectDataMapping(s)) {
-    files['mappings/object-data-mappings.json'] = mappingsJson(s);
+  if (objectProjection['mappings/object-data-mappings.json']) {
+    files['mappings/object-data-mappings.json'] = objectProjection['mappings/object-data-mappings.json'];
   }
-  for (const o of s.objects) files[`objects/${o.key}.md`] = objectMd(s, o);
+  for (const object of s.objects) {
+    files[`objects/${object.key}.md`] = objectProjection[`objects/${object.key}.md`];
+  }
   for (const op of s.operations) files[`operations/${op.key}.md`] = operationMd(op);
+  return files;
+}
+
+/** Render only the deterministic object/index/mapping projection used by Schema no-change checks. */
+export function renderObjectProjection(spec: PackageSpec): PackageFiles {
+  const objectOnlySpec = {
+    ...spec,
+    operations: [],
+    rules: [],
+    metrics: [],
+    scripts: [],
+  };
+  return renderObjectProjectionFromCanonicalSpec(
+    validateSpecKeys(canonicalizePackageSpec(objectOnlySpec)),
+  );
+}
+
+function renderObjectProjectionFromCanonicalSpec(spec: PackageSpec): PackageFiles {
+  const files: PackageFiles = {
+    'objects/index.md': objectsIndex(spec.objects),
+  };
+  if (packageNeedsObjectDataMapping(spec)) {
+    files['mappings/object-data-mappings.json'] = mappingsJson(spec);
+  }
+  for (const object of spec.objects) files[`objects/${object.key}.md`] = objectMd(spec, object);
   return files;
 }

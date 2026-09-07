@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from utils.identifiers import resolve_session_storage_dir, validate_session_id
 from utils.logging import get_logger
+from persistence.session_summary_index import SessionSummary, SessionSummaryIndex
 
 logger = get_logger("stores.chat")
 
@@ -636,6 +637,12 @@ class _AppendOnlyChatStore:
 
         return list(session_ids)
 
+    def has_sessions(self) -> bool:
+        """Return whether authoritative chat storage contains any session."""
+
+        with self._lock:
+            return bool(self._session_ids_unlocked())
+
     def _replay_event_log_unlocked(
         self,
         snapshot: _FileChatSession,
@@ -679,6 +686,15 @@ class _AppendOnlyChatStore:
         """Get a specific chat session by ID."""
         with self._lock_for_session(session_id):
             return self._get_session_unlocked(session_id)
+
+    def get_session_metadata(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Read snapshot-owned metadata without replaying the event log."""
+
+        with self._lock_for_session(session_id):
+            snapshot = self._read_snapshot_unlocked(session_id)
+            if snapshot is None:
+                return None
+            return deepcopy(dict(snapshot.metadata or {}))
 
     def create_session(
         self,
@@ -768,10 +784,30 @@ class _AppendOnlyChatStore:
             self._write_snapshot_unlocked(session)
             return self._get_session_unlocked(session_id)
 
-    def delete_session(self, session_id: str) -> bool:
-        """Delete a chat session."""
+    def delete_session(
+        self,
+        session_id: str,
+        *,
+        require_unprotected: bool = False,
+        expected_updated_at: str | None = None,
+    ) -> bool:
+        """Delete a chat session, optionally only if its version is unchanged."""
         with self._lock_for_session(session_id):
             deleted = False
+            if require_unprotected or expected_updated_at is not None:
+                snapshot = self._read_snapshot_unlocked(session_id)
+                if expected_updated_at is not None and (
+                    snapshot is None
+                    or str(getattr(snapshot, "updated_at", "") or "")
+                    != str(expected_updated_at)
+                ):
+                    return False
+                if require_unprotected and snapshot is not None:
+                    if getattr(snapshot, "active_run_id", None):
+                        return False
+                    metadata = dict(getattr(snapshot, "metadata", {}) or {})
+                    if metadata.get("pinned") is True:
+                        return False
             session_dir = self._session_dir(session_id)
             if os.path.isdir(session_dir):
                 shutil.rmtree(session_dir)
@@ -1545,11 +1581,175 @@ class ChatStore:
         storage_dir: str,
         *,
         tool_output_limits: Optional[ToolOutputLimits] = None,
+        summary_index: Optional[SessionSummaryIndex] = None,
     ) -> None:
         self._store = _AppendOnlyChatStore(
             storage_dir,
             tool_output_limits=tool_output_limits,
         )
+        self._summary_index = summary_index
+
+    @property
+    def session_summary_index(self) -> Optional[SessionSummaryIndex]:
+        return self._summary_index
+
+    @staticmethod
+    def _summary_from_file_session(session: _FileChatSession) -> SessionSummary:
+        events = list(getattr(session, "events", []) or [])
+        last_event_sequence = 0
+        for event in events:
+            data = event.get("data") if isinstance(event, dict) else None
+            if not isinstance(data, dict) or event.get("event") != "agent.v2":
+                continue
+            try:
+                last_event_sequence = max(last_event_sequence, int(data.get("seq") or 0))
+            except (TypeError, ValueError):
+                continue
+        return SessionSummary.create(
+            session_id=session.id,
+            title=getattr(session, "title", None),
+            created_at=str(getattr(session, "created_at", "") or ""),
+            updated_at=str(getattr(session, "updated_at", "") or ""),
+            active_run_id=getattr(session, "active_run_id", None),
+            message_count=sum(
+                1 for event in events if isinstance(event, dict) and event.get("event") == "chat_message"
+            ),
+            metadata=dict(getattr(session, "metadata", {}) or {}),
+            last_event_sequence=last_event_sequence,
+        )
+
+    def _project_summary(
+        self,
+        session: _FileChatSession,
+        *,
+        project_active_run: bool = False,
+        projection_token: str | None = None,
+    ) -> bool:
+        if self._summary_index is None:
+            return True
+        try:
+            self._summary_index.upsert_chat(
+                self._summary_from_file_session(session),
+                project_active_run=project_active_run,
+                projection_token=projection_token,
+            )
+            if projection_token is not None:
+                self._summary_index.complete_source_projection(projection_token)
+            return True
+        except Exception:
+            logger.warning(
+                "Session summary chat projection failed for %s",
+                session.id,
+                exc_info=True,
+            )
+            self._abandon_summary_projection(projection_token)
+            self._mark_summary_degraded("chat_projection_failed")
+            return False
+
+    def _delete_summary(
+        self,
+        session_id: str,
+        *,
+        projection_token: str | None = None,
+    ) -> bool:
+        if self._summary_index is None:
+            return True
+        try:
+            self._summary_index.delete(
+                session_id,
+                projection_token=projection_token,
+            )
+            if projection_token is not None:
+                self._summary_index.complete_source_projection(projection_token)
+            return True
+        except Exception:
+            logger.warning(
+                "Session summary delete projection failed for %s",
+                session_id,
+                exc_info=True,
+            )
+            self._abandon_summary_projection(projection_token)
+            self._mark_summary_degraded("chat_projection_failed")
+            return False
+
+    def _mark_summary_degraded(self, reason: str) -> None:
+        if self._summary_index is None:
+            return
+        try:
+            self._summary_index.mark_degraded(reason)
+        except Exception:
+            logger.warning("Session summary degradation marker failed", exc_info=True)
+
+    def _request_summary_rebuild(self) -> None:
+        if self._summary_index is None:
+            return
+        try:
+            self._summary_index.request_rebuild()
+        except Exception:
+            logger.warning("Session summary rebuild request failed", exc_info=True)
+
+    def _begin_summary_projection(self) -> str | None:
+        if self._summary_index is None:
+            return None
+        begin = getattr(self._summary_index, "begin_source_projection", None)
+        if not callable(begin):
+            return None
+        try:
+            return begin()
+        except Exception:
+            logger.warning(
+                "Session summary source marker could not be published",
+                exc_info=True,
+            )
+            self._mark_summary_degraded("chat_projection_marker_failed")
+            return None
+
+    def _discard_summary_projection(self, projection_token: str | None) -> None:
+        if self._summary_index is None or projection_token is None:
+            return
+        try:
+            self._summary_index.complete_source_projection(projection_token)
+        except Exception:
+            logger.warning("Session summary source marker discard failed", exc_info=True)
+            self._mark_summary_degraded("chat_projection_marker_failed")
+
+    def _abandon_summary_projection(self, projection_token: str | None) -> None:
+        if self._summary_index is None or projection_token is None:
+            return
+        abandon = getattr(self._summary_index, "abandon_source_projection", None)
+        if not callable(abandon):
+            return
+        try:
+            abandon(projection_token)
+        except Exception:
+            logger.warning("Session summary source marker abandon failed", exc_info=True)
+            self._mark_summary_degraded("chat_projection_marker_failed")
+
+    def _run_summary_source_mutation(self, operation, *args, **kwargs):
+        projection_token = self._begin_summary_projection()
+        try:
+            return projection_token, operation(*args, **kwargs)
+        except BaseException:
+            self._abandon_summary_projection(projection_token)
+            raise
+
+    def rebuild_session_summaries(self) -> List[SessionSummary]:
+        """Read durable chat facts for an explicit index rebuild."""
+
+        return [
+            self._summary_from_file_session(session)
+            for session in self._store.list_sessions()
+        ]
+
+    def refresh_session_summary(self, session_id: str) -> SessionSummary | None:
+        """Reproject one authoritative chat snapshot after a prune recheck."""
+
+        session = self._store.get_session(session_id)
+        if session is None:
+            return None
+        summary = self._summary_from_file_session(session)
+        self._project_summary(session, project_active_run=True)
+        return summary
 
     def create_session(
         self,
@@ -1557,11 +1757,13 @@ class ChatStore:
         title: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> ChatSession:
-        session = self._store.create_session(
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.create_session,
             title=title or "",
             session_id=session_id,
             metadata=metadata,
         )
+        self._project_summary(session, projection_token=projection_token)
         return ChatSession.from_file_session(session)
 
     def get_session(self, session_id: str) -> Optional[ChatSession]:
@@ -1570,6 +1772,26 @@ class ChatStore:
             return None
         return ChatSession.from_file_session(session, include_messages=True)
 
+    def has_sessions(self) -> bool:
+        """Return whether authoritative chat storage contains any session."""
+
+        return self._store.has_sessions()
+
+    def get_session_metadata(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Read admission metadata from the ready index or snapshot fallback."""
+
+        if self._summary_index is not None:
+            try:
+                if self._summary_index.load_persisted_for_read():
+                    summary = self._summary_index.get_summary(session_id)
+                    if summary is not None:
+                        return summary.to_dict()["metadata"]
+                self._request_summary_rebuild()
+            except Exception:
+                logger.warning("Session summary metadata read failed", exc_info=True)
+                self._request_summary_rebuild()
+        return self._store.get_session_metadata(session_id)
+
     def add_message(
         self,
         session_id: str,
@@ -1577,15 +1799,19 @@ class ChatStore:
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[ChatMessage]:
-        session = self._store.append_message(
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.append_message,
             session_id,
             role,
             content,
             metadata=metadata,
         )
         if not session:
+            self._discard_summary_projection(projection_token)
             logger.warning("Session %s not found for message", session_id)
             return None
+
+        self._project_summary(session, projection_token=projection_token)
 
         message = ChatMessage(
             id=str(uuid.uuid4()),
@@ -1626,12 +1852,17 @@ class ChatStore:
         cancelled_at: str,
     ) -> bool:
         """Persist an idempotent system notice for an interaction cancellation."""
-        session = self._store.record_interaction_cancellation(
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.record_interaction_cancellation,
             session_id,
             interaction_id,
             content,
             cancelled_at=cancelled_at,
         )
+        if session is not None:
+            self._project_summary(session, projection_token=projection_token)
+        else:
+            self._discard_summary_projection(projection_token)
         return session is not None
 
     def get_history(
@@ -1662,17 +1893,58 @@ class ChatStore:
         for session in sessions[keep_count:]:
             if getattr(session, "active_run_id", None):
                 continue
-            if self._store.delete_session(session.id):
+            projection_token, was_deleted = self._run_summary_source_mutation(
+                self._store.delete_session,
+                session.id,
+            )
+            if was_deleted:
                 deleted.append(session.id)
+                self._delete_summary(session.id, projection_token=projection_token)
+            else:
+                self._discard_summary_projection(projection_token)
         return deleted
 
     def delete_session(self, session_id: str) -> bool:
-        return self._store.delete_session(session_id)
+        projection_token, deleted = self._run_summary_source_mutation(
+            self._store.delete_session,
+            session_id,
+        )
+        if deleted:
+            self._delete_summary(session_id, projection_token=projection_token)
+        else:
+            self._discard_summary_projection(projection_token)
+        return deleted
+
+    def delete_session_if_unprotected(
+        self,
+        session_id: str,
+        *,
+        expected_updated_at: str | None = None,
+    ) -> bool:
+        """Delete only when the durable snapshot is unchanged and unprotected."""
+
+        projection_token, deleted = self._run_summary_source_mutation(
+            self._store.delete_session,
+            session_id,
+            require_unprotected=True,
+            expected_updated_at=expected_updated_at,
+        )
+        if deleted:
+            self._delete_summary(session_id, projection_token=projection_token)
+        else:
+            self._discard_summary_projection(projection_token)
+        return deleted
 
     def update_session_title(self, session_id: str, title: str) -> Optional[ChatSession]:
-        session = self._store.update_session(session_id, title=title)
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.update_session,
+            session_id,
+            title=title,
+        )
         if not session:
+            self._discard_summary_projection(projection_token)
             return None
+        self._project_summary(session, projection_token=projection_token)
         return ChatSession.from_file_session(session)
 
     def merge_session_metadata(
@@ -1680,15 +1952,27 @@ class ChatStore:
         session_id: str,
         metadata: Dict[str, Any],
     ) -> Optional[ChatSession]:
-        session = self._store.merge_session_metadata(session_id, metadata)
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.merge_session_metadata,
+            session_id,
+            metadata,
+        )
         if not session:
+            self._discard_summary_projection(projection_token)
             return None
+        self._project_summary(session, projection_token=projection_token)
         return ChatSession.from_file_session(session, include_messages=True)
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> Optional[ChatSession]:
-        session = self._store.set_session_pinned(session_id, pinned)
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.set_session_pinned,
+            session_id,
+            pinned,
+        )
         if not session:
+            self._discard_summary_projection(projection_token)
             return None
+        self._project_summary(session, projection_token=projection_token)
         return ChatSession.from_file_session(session)
 
     def append_event(self, session_id: str, event: Dict[str, Any]) -> bool:
@@ -1772,17 +2056,47 @@ class ChatStore:
 
     def compact_session(self, session_id: str) -> bool:
         """Fold append-only events into the compact snapshot."""
-        session = self._store.compact_session(session_id)
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.compact_session,
+            session_id,
+        )
+        if session is not None:
+            self._project_summary(session, projection_token=projection_token)
+        else:
+            self._discard_summary_projection(projection_token)
         return session is not None
 
     def set_active_run(self, session_id: str, run_id: str) -> bool:
         """Mark the session as having a currently running workflow."""
-        session = self._store.set_active_run(session_id, run_id)
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.set_active_run,
+            session_id,
+            run_id,
+        )
+        if session is not None:
+            self._project_summary(
+                session,
+                project_active_run=True,
+                projection_token=projection_token,
+            )
+        else:
+            self._discard_summary_projection(projection_token)
         return session is not None
 
     def clear_active_run(self, session_id: str) -> bool:
         """Clear the session's active workflow marker."""
-        session = self._store.clear_active_run(session_id)
+        projection_token, session = self._run_summary_source_mutation(
+            self._store.clear_active_run,
+            session_id,
+        )
+        if session is not None:
+            self._project_summary(
+                session,
+                project_active_run=True,
+                projection_token=projection_token,
+            )
+        else:
+            self._discard_summary_projection(projection_token)
         return session is not None
 
     def get_active_run(self, session_id: str) -> Optional[str]:

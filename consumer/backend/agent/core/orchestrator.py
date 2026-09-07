@@ -20,6 +20,7 @@ from agent.evolution import (
 )
 from agent.memory import MemoryFactory
 from agent.runtime.async_utils import run_sync_compat
+from agent.runtime.preflight_cache import ImmutablePreflightCache
 from config import AgentConfig, AppConfig
 from persistence.chat_store import ChatStore, ToolOutputLimits
 from persistence.execution_store import ExecutionStore
@@ -59,6 +60,7 @@ class AgenticOrchestrator:
         )
         self.user_store_manager = user_store_manager
         self.memory_factory = memory_factory or MemoryFactory()
+        self._preflight_cache = ImmutablePreflightCache()
         self.run_rate_limiter = TokenBucketRateLimiter(
             rate_per_second=self.agent_config.limits.run_tps,
             burst=self.agent_config.limits.run_tps,
@@ -180,7 +182,7 @@ class AgenticOrchestrator:
             )
             return None
 
-    def is_deterministic_request_potentially_applicable(
+    def _build_protocol_preflight_request(
         self,
         *,
         user_request: str,
@@ -189,17 +191,13 @@ class AgenticOrchestrator:
         session_id: str,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
-    ) -> bool:
-        """Return whether protocol admission may safely defer LLM validation."""
+    ) -> tuple[Any | None, str, str, str | None]:
+        """Resolve dynamic request facts without reading package files."""
 
         from agent.direct_execution.contracts import (
             DeterministicRequest,
         )
         from agent.direct_execution.models import RuntimeContext
-        from agent.direct_execution.service import DeterministicExecutionService
-        from persistence.deterministic_terminal import (
-            recover_pending_deterministic_terminal,
-        )
         from utils.identifiers import validate_session_id
 
         chat_store, execution_store = self._get_stores(user_id, workspace_id)
@@ -210,25 +208,22 @@ class AgenticOrchestrator:
             if isinstance(arguments, dict)
             else dict(context.get("arguments") or {})
         )
-        session = chat_store.get_session(normalized_session_id)
-        if session is not None and callable(
-            getattr(execution_store, "deterministic_terminal_transaction", None)
-        ):
-            recover_pending_deterministic_terminal(
-                execution_store,
-                chat_store,
-                normalized_session_id,
-            )
+        metadata_reader = getattr(chat_store, "get_session_metadata", None)
+        if callable(metadata_reader):
+            metadata = dict(metadata_reader(normalized_session_id) or {})
+        else:
+            # Compatibility for lightweight protocol adapters used by embedders.
             session = chat_store.get_session(normalized_session_id)
-        metadata = dict(getattr(session, "metadata", {}) or {})
+            metadata = dict(getattr(session, "metadata", {}) or {})
         selected_ontology_id = str(
             metadata.get("selected_ontology_id")
             or context.get("selected_ontology_id")
             or request_arguments.get("selected_ontology_id")
             or ""
         ).strip()
+        stored_profile = str(metadata.get("model_profile_id") or "").strip() or None
         if not selected_ontology_id:
-            return False
+            return None, "", "", stored_profile
         selected_version = str(
             metadata.get("selected_ontology_version")
             or context.get("selected_ontology_version")
@@ -242,13 +237,21 @@ class AgenticOrchestrator:
             interaction_response,
             dict,
         ):
-            return False
-        turns = list(
-            (execution_store.get_session_history(normalized_session_id) or {}).get(
-                "turns"
+            return None, selected_ontology_id, selected_version, stored_profile
+        turn_count_reader = getattr(execution_store, "get_turn_count", None)
+        if callable(turn_count_reader):
+            turn_count = int(turn_count_reader(normalized_session_id))
+        else:
+            # Compatibility for protocol adapters that predate the summary index.
+            turn_count = len(
+                list(
+                    (
+                        execution_store.get_session_history(normalized_session_id)
+                        or {}
+                    ).get("turns")
+                    or []
+                )
             )
-            or []
-        )
         checkpoint = (
             execution_store.get_pending_deterministic_checkpoint(
                 normalized_session_id
@@ -263,7 +266,7 @@ class AgenticOrchestrator:
             runtime_context=RuntimeContext(
                 session_id=normalized_session_id,
                 run_id="protocol-preflight",
-                turn_id=len(turns) + 1,
+                turn_id=turn_count + 1,
                 user_id=user_id,
                 workspace_id=workspace_id or None,
                 selected_ontology_id=selected_ontology_id,
@@ -276,7 +279,145 @@ class AgenticOrchestrator:
                 else None
             ),
         )
-        return DeterministicExecutionService().is_potentially_applicable(request)
+        return (
+            request,
+            selected_ontology_id,
+            selected_version,
+            stored_profile,
+        )
+
+    def _resolve_protocol_preflight(
+        self,
+        *,
+        user_request: str,
+        user_context: Optional[Dict[str, Any]],
+        arguments: Optional[Dict[str, Any]],
+        session_id: str,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> tuple[bool, Any, str | None]:
+        """Resolve request-local routing state and one exact ontology manifest."""
+
+        from agent.direct_execution.service import DeterministicExecutionService
+        from ontology.ontologies import get_runtime_ontology_manifest
+
+        request, ontology_id, ontology_version, stored_profile = (
+            self._build_protocol_preflight_request(
+                user_request=user_request,
+                user_context=user_context,
+                arguments=arguments,
+                session_id=session_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+        )
+        if request is None or not ontology_id:
+            return False, None, stored_profile
+        ontology_manifest = get_runtime_ontology_manifest(
+            ontology_id,
+            version=ontology_version or None,
+            workspace_id=workspace_id,
+        )
+        if ontology_manifest is None:
+            return False, None, stored_profile
+        return (
+            DeterministicExecutionService().is_potentially_applicable(
+                request,
+                ontology_manifest=ontology_manifest,
+            ),
+            ontology_manifest,
+            stored_profile,
+        )
+
+    def is_deterministic_request_potentially_applicable(
+        self,
+        *,
+        user_request: str,
+        user_context: Optional[Dict[str, Any]],
+        arguments: Optional[Dict[str, Any]],
+        session_id: str,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> bool:
+        """Return whether protocol admission may safely defer LLM validation."""
+
+        candidate, _manifest, _stored_profile = self._resolve_protocol_preflight(
+            user_request=user_request,
+            user_context=user_context,
+            arguments=arguments,
+            session_id=session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
+        return candidate
+
+    def build_run_preflight_snapshot(
+        self,
+        *,
+        user_request: str,
+        user_context: Optional[Dict[str, Any]],
+        arguments: Optional[Dict[str, Any]],
+        session_id: str,
+        model_profile_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ):
+        """Build the exact package/profile products accepted for one request."""
+
+        from agent.runtime.preflight import build_run_preflight_snapshot
+        from agent.direct_execution.service import DeterministicExecutionService
+        from config.system_config import resolve_effective_llm_profile_config
+        from ontology.ontologies import get_runtime_ontology_manifest
+
+        normalized_workspace = str(workspace_id or "").strip() or "default"
+        request, ontology_id, ontology_version, stored_profile = (
+            self._build_protocol_preflight_request(
+                user_request=user_request,
+                user_context=user_context,
+                arguments=arguments,
+                session_id=session_id,
+                user_id=user_id,
+                workspace_id=normalized_workspace,
+            )
+        )
+        requested_profile = str(model_profile_id or "").strip() or None
+        profile_ref = requested_profile or stored_profile
+
+        def load_manifest():
+            if not ontology_id:
+                return None
+            return get_runtime_ontology_manifest(
+                ontology_id,
+                version=ontology_version or None,
+                workspace_id=normalized_workspace,
+            )
+
+        def resolve_candidate(manifest: Any) -> bool:
+            return bool(
+                request is not None
+                and manifest is not None
+                and DeterministicExecutionService().is_potentially_applicable(
+                    request,
+                    ontology_manifest=manifest,
+                )
+            )
+
+        def load_model_profile() -> Mapping[str, Any]:
+            return resolve_effective_llm_profile_config(
+                profile_ref,
+                workspace_id=normalized_workspace,
+                allow_default_fallback=not bool(requested_profile),
+            )
+
+        return build_run_preflight_snapshot(
+            workspace_id=normalized_workspace,
+            ontology_id=ontology_id,
+            ontology_version=ontology_version,
+            ontology_manifest_loader=load_manifest if ontology_id else None,
+            deterministic_candidate_loader=resolve_candidate,
+            model_profile_loader=load_model_profile,
+            cache=self._preflight_cache,
+        )
 
     def _record_evolution_recall_outcomes(
         self,

@@ -11,6 +11,9 @@
 .mwr .side-hist .ch-search:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--control-focus-ring); }
 .mwr .side-hist .ch-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 3px 10px 0; scrollbar-gutter: stable; }
 .mwr .side-hist .ch-empty { min-height: 96px; display: grid; place-items: center; align-content: center; color: var(--muted); font-size: 12px; text-align: center; }
+.mwr .side-hist .ch-load-more { width: 100%; min-height: 32px; margin-top: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.mwr .side-hist .ch-load-more:hover:not(:disabled) { color: var(--ink); border-color: var(--color-primary-muted); }
+.mwr .side-hist .ch-load-more:disabled { cursor: default; opacity: .7; }
 .mwr .side-hist .ch-group { position: sticky; top: 0; z-index: 1; padding: 8px 8px 5px; color: var(--muted); background: color-mix(in srgb, var(--surface-card) 94%, transparent);
   font-size: 10.5px; font-weight: 650; letter-spacing: 1px; backdrop-filter: blur(8px); }
 .mwr .side-hist .ch-item-wrap { position: relative; min-height: 52px; margin-bottom: 3px; border-radius: 9px; transition: background-color var(--motion-fast), transform var(--motion-fast); }

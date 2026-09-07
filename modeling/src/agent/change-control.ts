@@ -14,6 +14,7 @@ export const CHANGE_SET_DOMAIN_TOOLS = new Set([
 ]);
 export const CHANGE_PLAN_DIRECT_TOOLS = new Set([
   'sync_schema_objects', 'patch_object_source_binding', 'delete_domain_resource',
+  'stage_schema_semantic_changes', 'confirm_schema_semantics',
   'stage_script_source', 'stage_script_patch',
 ]);
 const CHANGE_PLAN_ALLOWED_TOOLS = new Set([
@@ -324,12 +325,23 @@ export class ChangeControlStore {
     }
     const task = this.taskRows(plan.id).find((item) => item.id === input.taskId);
     if (!task) throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', '修改动作不属于当前计划', 409);
+    const allowedTools = parseStringArray(task.allowed_tools_json);
+    if (task.status === 'pending'
+      && ['stage_schema_semantic_changes', 'confirm_schema_semantics'].includes(input.tool)
+      && allowedTools.includes('sync_schema_objects')) {
+      throw new ChangeControlError(
+        'CHANGE_SET_DEPENDENCY_MISSING',
+        'Schema 物理对象尚未同步，不能提前进入末尾业务语义阶段',
+        409,
+        { task_id: task.id, required_tool: 'sync_schema_objects', retryable: false },
+      );
+    }
     if (!['pending', 'staged'].includes(task.status)) {
       throw new ChangeControlError('CHANGE_PLAN_TASK_ALREADY_SETTLED', `计划任务已经处理：${task.title}`, 409, {
         task_id: task.id, status: task.status,
       });
     }
-    if (!parseStringArray(task.allowed_tools_json).includes(input.tool)) {
+    if (!allowedTools.includes(input.tool)) {
       throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', `计划未授权这项修改：${task.title}`, 409, {
         task_id: task.id, tool: input.tool,
       });
@@ -429,7 +441,11 @@ export class ChangeControlStore {
       expected_revision = CASE WHEN ? <> '' THEN ? ELSE expected_revision END,
       updated_at = ? WHERE id = ?`)
       .run(input.resultingRevision ?? '', input.resultingRevision ?? '', timestamp, plan.id);
-    this.event(input.projectId, input.runId, plan.id, null, 'plan.direct_task_staged', '受控独立任务已形成待确认修改', {
+    const summary = ['sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics']
+      .includes(input.tool)
+      ? 'Schema 同步计划任务已推进'
+      : '受控独立任务已形成待确认修改';
+    this.event(input.projectId, input.runId, plan.id, null, 'plan.direct_task_staged', summary, {
       taskId: input.taskId, tool: input.tool, receiptId: input.receiptId,
     });
     return this.snapshot(input.projectId, input.runId, plan.id);
@@ -809,6 +825,48 @@ export class ChangeControlStore {
       throw error;
     }
     return { terminated: true, planId: plan.id };
+  }
+
+  safeTerminateActivePlansForProject(input: {
+    projectId: string;
+    actor: string;
+    runId?: string;
+  }): { terminated: number; planIds: string[] } {
+    const plans = (input.runId
+      ? this.db.prepare(`SELECT * FROM agent_change_plans
+          WHERE project_id = ? AND status = 'active' AND run_id = ? ORDER BY created_at`)
+          .all(input.projectId, input.runId)
+      : this.db.prepare(`SELECT * FROM agent_change_plans
+          WHERE project_id = ? AND status = 'active' ORDER BY created_at`)
+          .all(input.projectId)) as unknown as PlanRow[];
+    const planIds = plans.map((plan) => plan.id);
+    if (!planIds.length) return { terminated: 0, planIds };
+    const timestamp = nowIso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const plan of plans) {
+        this.db.prepare(`UPDATE agent_change_plans SET status = 'cancelled', version = version + 1,
+          updated_at = ? WHERE id = ? AND status = 'active'`).run(timestamp, plan.id);
+        this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'cancelled', updated_at = ?
+          WHERE plan_id = ? AND status NOT IN ('accepted', 'skipped', 'cancelled')`).run(timestamp, plan.id);
+        this.db.prepare(`UPDATE agent_change_sets SET status = 'cancelled', updated_at = ?
+          WHERE plan_id = ? AND status IN ('staging', 'staged', 'failed')`).run(timestamp, plan.id);
+        this.event(
+          input.projectId,
+          plan.run_id,
+          plan.id,
+          null,
+          'plan.safe_terminated',
+          '已安全终止失效建模计划，候选内容与审计记录保留',
+          { actor: input.actor, plan_run_id: plan.run_id },
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return { terminated: planIds.length, planIds };
   }
 
   private taskRows(planId: string): TaskRow[] {

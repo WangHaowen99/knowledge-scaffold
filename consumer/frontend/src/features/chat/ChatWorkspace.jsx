@@ -147,6 +147,10 @@ export default function ChatWorkspace({
   chat,
   streamManager,
   agenticStream,
+  ontologies: sharedOntologies = [],
+  ontologiesLoading = false,
+  ontologiesError = '',
+  onRetryOntologies,
   onOpenObservability,
   onConfigureDataSource,
 }) {
@@ -189,7 +193,12 @@ export default function ChatWorkspace({
   const [modelProfiles, setModelProfiles] = useState([]);
   const [defaultModelProfileId, setDefaultModelProfileId] = useState('');
   const [modelProfileId, setModelProfileId] = useState('');
-  const [ontologies, setOntologies] = useState([]);
+  const ontologies = useMemo(
+    () => (Array.isArray(sharedOntologies)
+      ? sharedOntologies.filter((ontology) => ontology.enabled !== false)
+      : []),
+    [sharedOntologies],
+  );
   const [selectedOntologyId, setSelectedOntologyId] = useState('');
   const [selectedOntologyVersion, setSelectedOntologyVersion] = useState('');
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
@@ -304,29 +313,19 @@ export default function ChatWorkspace({
       if (!workspaceDataReady) {
         setModelProfiles([]);
         setDefaultModelProfileId('');
-        setOntologies([]);
         return;
       }
       try {
-        const [modelsResponse, ontologiesResponse] = await Promise.all([
-          authFetch('/agentic/model-profiles'),
-          authFetch('/agentic/ontologies'),
-        ]);
+        const modelsResponse = await authFetch('/agentic/model-profiles');
         const modelsPayload = await modelsResponse.json().catch(() => ({}));
-        const ontologiesPayload = await ontologiesResponse.json().catch(() => ({}));
         if (cancelled) return;
         const profiles = modelsResponse.ok && Array.isArray(modelsPayload.profiles) ? modelsPayload.profiles : [];
-        const availableOntologies = ontologiesResponse.ok && Array.isArray(ontologiesPayload.ontologies)
-          ? ontologiesPayload.ontologies.filter((ontology) => ontology.enabled !== false)
-          : [];
         setModelProfiles(profiles);
         setDefaultModelProfileId(modelsPayload.default_profile_id || profiles[0]?.id || '');
-        setOntologies(availableOntologies);
       } catch {
         if (!cancelled) {
           setModelProfiles([]);
           setDefaultModelProfileId('');
-          setOntologies([]);
         }
       }
     };
@@ -617,11 +616,20 @@ export default function ChatWorkspace({
               {modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
             </select>
             <select value={selectedOntologyId} title="知识包在会话创建后锁定"
-              disabled={sessionLocked || isSubmitting || streamState.isLoading}
+              disabled={sessionLocked || isSubmitting || streamState.isLoading || ontologiesLoading || Boolean(ontologiesError)}
               onChange={(event) => setSelectedOntologyId(event.target.value)}>
-              <option value="">自动选择知识包</option>
+              <option value="">
+                {ontologiesLoading ? '正在加载知识包…'
+                  : ontologiesError ? '知识包加载失败'
+                    : '自动选择知识包'}
+              </option>
               {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{packageDisplayLabel(ontology)}</option>)}
             </select>
+            {ontologiesError && (
+              <button className="btn" type="button" onClick={onRetryOntologies} disabled={!onRetryOntologies}>
+                重新加载知识包
+              </button>
+            )}
             {displayedOntologyVersion && (
               <span className="session-version-note">
                 {sessionLocked ? `Locked version ${displayedOntologyVersion}` : `Current active ${displayedOntologyVersion}`}

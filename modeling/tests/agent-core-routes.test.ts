@@ -17,7 +17,7 @@ const [
   { createProject, getProject },
   { getPackageArtifactStore },
   { getDb },
-  { getDocument, insertDocumentRevision },
+  { getDocument, insertDocument, insertDocumentRevision },
   { MaterialPurposeReviewStore, findMaterialPurposeReviewProblems },
   { requireAuth },
   { storePackageMergeSource },
@@ -2590,7 +2590,9 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
   }, runId);
   assert.equal(planResponse.statusCode, 200, planResponse.body);
   const plan = planResponse.json().plan;
-  assert.deepEqual(plan.tasks[0].allowed_tools, ['sync_schema_objects']);
+  assert.deepEqual(plan.tasks[0].allowed_tools, [
+    'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
+  ]);
   const approved = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
@@ -2613,7 +2615,8 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
     summary: '按已确认用途同步 records 对象',
     change_groups: [{ id: 'schema_objects', tier: 'structural', title: 'Schema 对象同步' }],
   }, runId);
-  assert.equal(ready.statusCode, 200, ready.body);
+  assert.equal(ready.statusCode, 422, ready.body);
+  assert.equal(ready.json().code, 'CANDIDATE_SCHEMA_SEMANTICS_INVALID');
 });
 
 test('对象领域工具原子生成跨 Sheet 主表与扩展表映射', async (t) => {
@@ -4088,4 +4091,42 @@ test('正式发布绑定当前全量评测并要求项目负责人确认覆盖�
   const restoredGate = await tool(app, project.id, 'gate_status', { gate: 'releasable' }, restoredRunId);
   assert.equal(restoredGate.statusCode, 200, restoredGate.body);
   assert.equal(restoredGate.json().pass, true);
+});
+
+test('Schema 语义摘要路由返回分页问题而不暴露样例值', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成 Schema 语义路由', runtime: 'agent' });
+  const app = appFor(t);
+  insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_schema.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    purpose: 'schema',
+    tables: [{
+      name: 'synthetic_customer',
+      rowCount: 1,
+      fields: [{
+        name: 'customer_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1,
+      }],
+    }],
+  });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: `schema-semantic-route-${project.id}`,
+    name: '合成 Schema 语义路由',
+    description: '合成测试包',
+  });
+  const summary = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/summary`,
+  });
+  assert.equal(summary.statusCode, 200, summary.body);
+  assert.equal(summary.json().summary.available, true);
+  const items = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/items?level=error&offset=0&limit=10`,
+  });
+  assert.equal(items.statusCode, 200, items.body);
+  assert.equal(items.json().offset, 0);
+  assert.ok(Array.isArray(items.json().items));
+  assert.ok(items.json().items.every((item: any) => !('sampleValues' in item)));
 });

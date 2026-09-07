@@ -51,8 +51,26 @@ test('secret fields are omitted when left blank', () => {
   assert.equal(dataSourceSource.includes('已配置，留空保留原值'), true);
 });
 
-test('saving or clearing a data source refreshes the knowledge package summary', () => {
-  assert.equal(dataSourceSource.includes('onDataSourceChanged?.()'), true);
+test('saving or clearing a data source invalidates the package summary before independent readback', () => {
+  const submitStart = dataSourceSource.indexOf('const submit = async (action) => {');
+  const removeStart = dataSourceSource.indexOf('const remove = async () => {');
+  const submitBody = dataSourceSource.slice(submitStart, removeStart);
+  const removeBody = dataSourceSource.slice(removeStart);
+  const submitNotify = submitBody.indexOf('notifyDataSourceChanged(targetScope)');
+  const removeNotify = removeBody.indexOf('notifyDataSourceChanged(targetScope)');
+
+  assert.ok(submitStart >= 0);
+  assert.ok(removeStart > submitStart);
+  assert.ok(submitNotify >= 0);
+  assert.ok(submitNotify < submitBody.indexOf('const data = await response.json()'));
+  assert.ok(submitNotify < submitBody.indexOf('const reloaded = await load();'));
+  assert.ok(removeNotify >= 0);
+  assert.ok(removeNotify < removeBody.indexOf('const data = await response.json()'));
+  assert.ok(removeNotify < removeBody.indexOf('const reloaded = await load();'));
+  assert.equal(
+    dataSourceSource.includes('return Promise.resolve(onDataSourceChanged?.(targetScope)).catch(() => undefined);'),
+    true,
+  );
   assert.equal(workbenchSource.includes('onDataSourceChanged={retryPackages}'), true);
 });
 

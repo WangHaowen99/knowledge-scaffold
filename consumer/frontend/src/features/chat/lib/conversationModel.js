@@ -533,6 +533,7 @@ const normalizeMessage = (message, index, occurrences) => {
     options: Array.isArray(message?.options) ? message.options : [],
     error: publicErrorMessage(message?.meta?.error),
     errorCode: stringValue(message?.meta?.error_code),
+    incomplete: Boolean(message?.meta?.incomplete),
     cancelReason: stringValue(message?.meta?.cancel_reason),
     startedAt,
     endedAt,

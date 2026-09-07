@@ -37,6 +37,7 @@ class OperationDirectRouter:
         context: Dict[str, Any],
         runtime_context: RuntimeContext,
         arguments: Optional[Dict[str, Any]] = None,
+        ontology_manifest: Any = None,
     ) -> RouteDecision:
         """Evaluate the user request and return a routing decision.
 
@@ -86,6 +87,7 @@ class OperationDirectRouter:
             ontology_version=selected_ontology_version or None,
             confidence_threshold=self._config.confidence_threshold,
             workspace_id=runtime_context.workspace_id,
+            ontology_manifest=ontology_manifest,
         )
 
         if script_entry is None or operation_key is None:
