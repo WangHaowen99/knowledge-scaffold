@@ -1,5 +1,6 @@
 import type { DataDictTable, PackageSpec, SpecObject } from '../types.js';
 import { buildPhysicalSchemaObjects, type PhysicalSchemaObject } from './schema-manifest.js';
+import { mappingFieldName, mappingObjectName } from './mapping-contract.js';
 import { tableSourceFor, tableSourcesFor } from './source-references.js';
 
 export const OBJECT_DATA_MAPPING_PATH = 'mappings/object-data-mappings.json';
@@ -11,6 +12,7 @@ export interface SchemaObjectPolicyIssue {
   message: string;
   path?: string;
   objectKey?: string;
+  fieldKey?: string;
   table?: string;
 }
 
@@ -23,7 +25,7 @@ export function objectSourceMode(tables: DataDictTable[]): ObjectSourceMode {
 }
 
 export function expectedSchemaObjects(tables: DataDictTable[]): PhysicalSchemaObject[] {
-  return buildPhysicalSchemaObjects(schemaTables(tables));
+  return buildPhysicalSchemaObjects(schemaTables(tables), tables);
 }
 
 export function packageNeedsObjectDataMapping(spec: PackageSpec): boolean {
@@ -72,12 +74,10 @@ function expectedColumns(table: DataDictTable): string[] {
   return table.fields.map((field) => field.name.trim()).sort();
 }
 
-function fieldSignatures(object: SpecObject): string[] {
+function physicalFieldSignatures(object: SpecObject): string[] {
   return object.fields.map((field) => JSON.stringify({
     key: field.key,
-    cnName: field.cnName ?? '',
     type: field.type ?? 'string',
-    required: field.required === true,
     sourceColumn: field.sourceColumn ?? '',
   })).sort();
 }
@@ -98,6 +98,13 @@ export function schemaObjectPolicyIssues(
   const expected = expectedSchemaObjects(tables);
   const mappingPresent = Object.hasOwn(files, OBJECT_DATA_MAPPING_PATH)
     && Boolean(files[OBJECT_DATA_MAPPING_PATH]?.trim());
+  let mapping: Record<string, any> | null = null;
+  if (mappingPresent) {
+    try {
+      const parsed = JSON.parse(files[OBJECT_DATA_MAPPING_PATH]);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) mapping = parsed;
+    } catch { /* Package format validation reports malformed JSON. */ }
+  }
   const issues: SchemaObjectPolicyIssue[] = [];
 
   if (!expected.length) {
@@ -159,14 +166,48 @@ export function schemaObjectPolicyIssues(
         message: `对象 ${actual.key} 的字段必须完整且一一对应 Schema Sheet ${table.name} 的全部列`,
       });
     }
-    if (!sameStrings(fieldSignatures(actual), fieldSignatures(expectedObject))
+    if (!sameStrings(physicalFieldSignatures(actual), physicalFieldSignatures(expectedObject))
       || !sameStrings([...(actual.primaryKey ?? [])].sort(), [...(expectedObject.primaryKey ?? [])].sort())) {
       issues.push({
         code: 'SCHEMA_OBJECT_DEFINITION_MISMATCH',
         objectKey: actual.key,
         table: table.name,
-        message: `对象 ${actual.key} 的字段 key、类型或主键不符合 Schema Sheet ${table.name} 的确定性定义`,
+        message: `对象 ${actual.key} 的字段 key、来源列、类型或主键不符合 Schema Sheet ${table.name} 的确定性定义`,
       });
+    }
+    const objectMapping = mapping?.objects?.[mappingObjectName(actual)];
+    for (const field of actual.fields) {
+      if (typeof field.required !== 'boolean') {
+        issues.push({
+          code: 'FIELD_REQUIRED_INVALID',
+          path: `objects/${actual.key}.md`,
+          objectKey: actual.key,
+          fieldKey: field.key,
+          table: table.name,
+          message: `对象 ${actual.key} 的字段 ${field.key} 必填标志必须是布尔值`,
+        });
+      }
+      if (!objectMapping?.fields) continue;
+      const mappedRequired = objectMapping.fields[mappingFieldName(field)]?.required;
+      if (typeof mappedRequired !== 'boolean') {
+        issues.push({
+          code: 'FIELD_REQUIRED_INVALID',
+          path: OBJECT_DATA_MAPPING_PATH,
+          objectKey: actual.key,
+          fieldKey: field.key,
+          table: table.name,
+          message: `对象 ${actual.key} 的字段 ${field.key} mapping 必填标志必须是布尔值`,
+        });
+      } else if (typeof field.required === 'boolean' && mappedRequired !== field.required) {
+        issues.push({
+          code: 'FIELD_REQUIRED_MAPPING_MISMATCH',
+          path: OBJECT_DATA_MAPPING_PATH,
+          objectKey: actual.key,
+          fieldKey: field.key,
+          table: table.name,
+          message: `对象 ${actual.key} 的字段 ${field.key} 与 mapping 的必填标志不一致`,
+        });
+      }
     }
   }
   for (const object of spec.objects) {

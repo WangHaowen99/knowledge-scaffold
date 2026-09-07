@@ -622,13 +622,21 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
             add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 primary_key 与字段 key 不一致`);
           }
           if (v.fields && typeof v.fields === 'object' && !Array.isArray(v.fields)) {
-            const expectedFields = new Map((object.fields ?? []).map((field) => [mappingFieldName(field), field.key]));
-            for (const [fieldName, fieldKey] of expectedFields) {
+            const expectedFields = new Map((object.fields ?? []).map((field) => [mappingFieldName(field), field]));
+            for (const [fieldName, field] of expectedFields) {
               const fieldMapping = v.fields[fieldName];
+              const expectedRequired = field.required === true;
               if (!fieldMapping || typeof fieldMapping !== 'object') {
                 add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping 缺少字段 key ${fieldName}`);
-              } else if (fieldMapping.source !== fieldKey) {
-                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 字段 ${fieldName} 的 mapping source 应为 ${fieldKey}（当前：${fieldMapping.source ?? '缺失'}）`);
+              } else {
+                if (fieldMapping.source !== field.key) {
+                  add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 字段 ${fieldName} 的 mapping source 应为 ${field.key}（当前：${fieldMapping.source ?? '缺失'}）`);
+                }
+                if (typeof fieldMapping.required !== 'boolean') {
+                  add('错误', 'mapping 必填标志非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 字段 ${fieldName} 的 mapping required 必须是布尔值`);
+                } else if (fieldMapping.required !== expectedRequired) {
+                  add('错误', '对象与 mapping 必填标志不一致', 'mappings/object-data-mappings.json', `对象 ${object.key} 字段 ${fieldName} 的 required 与 mapping 不一致`);
+                }
               }
             }
             for (const fieldName of Object.keys(v.fields)) {

@@ -12,7 +12,9 @@ TOOL_NAMES = {
     "get_project_state", "list_documents", "read_documents_fully", "list_tables", "describe_table",
     "list_domain_resources", "get_domain_resource", "create_change_plan", "get_change_plan",
     "stage_change_set", "get_change_set_receipt", "validate_change_set", "request_confirmation",
-    "sync_schema_objects", "patch_object_source_binding", "define_script_contract", "get_script_contract",
+    "sync_schema_objects", "get_schema_semantics", "stage_schema_semantic_changes",
+    "confirm_schema_semantics", "suggest_object_relations", "patch_object_source_binding",
+    "define_script_contract", "get_script_contract",
     "get_script_edit_context", "stage_script_patch", "run_script_test", "ask",
     "discard_rejected_candidate_changes",
 }
@@ -194,6 +196,118 @@ def test_schema_generation_executes_core_injected_sync_task() -> None:
         "mutation_id": "acceptance-schema-sync-1",
         "reason": "按全部合成 Schema Sheet 确定性同步物理对象",
     }
+
+
+def test_schema_generation_recommends_relations_after_semantic_confirmation() -> None:
+    messages = [{"role": "user", "content": "按合成数据 Schema 生成全部对象。"}]
+    state_ready(messages)
+    completed(messages, "create_change_plan", {}, {"plan": {
+        "id": "cp-schema-semantics", "mode": "generation", "approval_status": "approved",
+        "expected_revision": "rev-schema", "goal": "按数据 Schema 生成全部对象",
+        "tasks": [{
+            "id": "task-schema", "resource_kind": "binding", "target_key": "__schema__",
+            "allowed_tools": ["sync_schema_objects"], "status": "staged",
+        }, {
+            "id": "task-semantics", "resource_kind": "other", "target_key": "__schema_semantics__",
+            "allowed_tools": ["stage_schema_semantic_changes", "confirm_schema_semantics"],
+            "status": "pending",
+        }],
+    }})
+    completed(messages, "sync_schema_objects", {}, {
+        "ok": True, "working_revision": "rev-schema-synced",
+    })
+
+    status_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert status_turn.name == "get_schema_semantics"
+
+    completed(messages, "get_schema_semantics", status_turn.arguments or {}, {
+        "working_revision": "rev-schema-synced",
+        "summary": {"pass": True},
+        "items": [],
+    })
+    confirm_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert confirm_turn.name == "confirm_schema_semantics"
+    assert confirm_turn.arguments == {
+        "plan_task_id": "task-semantics",
+        "expected_revision": "rev-schema-synced",
+        "mutation_id": "acceptance-schema-semantics-confirm-1",
+        "reason": "确定性复核合成 Schema 业务语义",
+    }
+    completed(messages, "confirm_schema_semantics", confirm_turn.arguments or {}, {
+        "ok": True,
+        "working_revision": "rev-schema-synced",
+        "relation_suggestion_required": True,
+    })
+    relation_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert relation_turn.name == "suggest_object_relations"
+    assert relation_turn.arguments == {
+        "working_revision": "rev-schema-synced",
+        "limit": 20,
+    }
+    completed(messages, relation_turn.name, relation_turn.arguments or {}, {
+        "ok": True,
+        "working_revision": "rev-schema-synced",
+        "relation_suggestion_recorded": False,
+        "hasMore": True,
+        "nextCursor": "next-page",
+    })
+    next_page = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert next_page.name == "suggest_object_relations"
+    assert next_page.arguments == {
+        "working_revision": "rev-schema-synced",
+        "cursor": "next-page",
+        "limit": 20,
+    }
+    completed(messages, next_page.name, next_page.arguments or {}, {
+        "ok": True,
+        "working_revision": "rev-schema-synced",
+        "relation_suggestion_recorded": True,
+        "hasMore": False,
+    })
+    post_relation_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert post_relation_turn.name == "list_domain_resources"
+    completed(messages, post_relation_turn.name, post_relation_turn.arguments or {}, {
+        "working_revision": "rev-schema-synced",
+        "kind": "object",
+        "items": [],
+    })
+    validation_turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert validation_turn.name == "validate_change_set"
+
+
+def test_schema_generation_can_start_from_semantic_only_reuse_plan() -> None:
+    messages = [{"role": "user", "content": "继续补全合成 Schema 业务语义。"}]
+    state_ready(messages)
+    completed(messages, "create_change_plan", {}, {"plan": {
+        "id": "cp-semantic-only", "mode": "generation", "approval_status": "approved",
+        "expected_revision": "rev-physical-ready", "goal": "补全 Schema 业务语义",
+        "tasks": [{
+            "id": "task-semantics", "resource_kind": "other", "target_key": "__schema_semantics__",
+            "allowed_tools": ["stage_schema_semantic_changes", "confirm_schema_semantics"],
+            "status": "pending",
+        }],
+    }})
+
+    turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert turn.name == "get_schema_semantics"
+
+
+def test_completed_schema_reuse_plan_does_not_replay_old_sync() -> None:
+    messages = [{"role": "user", "content": "再次核对相同的合成 Schema。"}]
+    state_ready(messages)
+    completed(messages, "sync_schema_objects", {}, {
+        "ok": True, "working_revision": "rev-old-plan",
+        "plan": {"id": "cp-old"},
+    })
+    completed(messages, "create_change_plan", {}, {"plan": {
+        "id": "cp-reused", "mode": "generation", "status": "completed",
+        "approval_status": "approved", "expected_revision": "rev-current",
+        "goal": "再次核对相同 Schema", "tasks": [],
+    }})
+
+    turn = plan_acceptance_turn(messages, TOOLS, "SCN-BINDING")
+    assert turn.name == ""
+    assert "无需重复执行" in turn.content
 
 
 def test_managed_file_redirect_retries_required_schema_tool() -> None:

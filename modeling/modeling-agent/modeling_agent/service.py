@@ -154,6 +154,8 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "patch_operation",
     "patch_metric",
     "sync_schema_objects",
+    "stage_schema_semantic_changes",
+    "confirm_schema_semantics",
     "patch_object_source_binding",
     "delete_domain_resource",
     "confirm_deterministic_scope",
@@ -2296,6 +2298,11 @@ class AgentService:
         arguments: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
+        if name == "revise_change_plan":
+            plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+            if plan.get("approval_status") == "pending":
+                live.plan_approval_required = True
+            return
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
             fault: dict[str, Any] = {}
@@ -2326,6 +2333,25 @@ class AgentService:
             plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
             if plan.get("approval_status") == "pending":
                 live.plan_approval_required = True
+            if result.get("relation_suggestion_required") is True:
+                live.required_tools.add("suggest_object_relations")
+                live.observed_tools.discard("suggest_object_relations")
+                live.attempted_tools.discard("suggest_object_relations")
+                live.stable_read_cache.clear()
+            return
+        if name == "confirm_schema_semantics":
+            if result.get("relation_suggestion_required") is True:
+                live.required_tools.add("suggest_object_relations")
+                live.observed_tools.discard("suggest_object_relations")
+                live.attempted_tools.discard("suggest_object_relations")
+                live.stable_read_cache.clear()
+            return
+        if name == "suggest_object_relations":
+            if result.get("hasMore") is True:
+                live.required_tools.add("suggest_object_relations")
+                live.observed_tools.discard("suggest_object_relations")
+                live.attempted_tools.discard("suggest_object_relations")
+                live.stable_read_cache.clear()
             return
         if name == "set_material_directive":
             document = result.get("document") if isinstance(result.get("document"), dict) else {}

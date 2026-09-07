@@ -13,10 +13,10 @@ description: 主动推进从建模目标到验证发布的知识包建模主方�
    多份资料互不依赖时，优先并行派 `material_analyst`，每个只负责明确的一份或一组；Leader 汇总后再写候选。
 2. 若没有已确认目标，读资料并起草 `.modeling/goal.md`，通过 `request_confirmation` 请求目标确认；目标确认前不写知识包正文。
 3. 以业务流程组织访谈和抽取。提到具体流程或节点时先 `focus`，让中栏与对话同步。
-4. 将用户目标或正常生成范围先写成结构化 Change Plan，再把依赖闭合的领域动作作为原子 Change Set 写入候选。每项任务明确目标资源、允许工具、依赖和验收条件；Core 返回的任务状态是唯一完成依据。
+4. 将用户目标或正常生成范围先写成结构化 Change Plan，再把依赖闭合的领域动作作为原子 Change Set 写入候选。每项任务明确目标资源、允许工具、依赖和验收条件；Core 返回的任务状态是唯一完成依据。建立 generation 计划前不带 readiness 过滤分页读完全部材料候选，并为每个规则、操作和指标候选提交生成、合并、延期、待澄清或排除记录；生成项必须绑定具体任务，不能用资源类型概括或静默省略。
    修改领域知识前先读取结构化资源快照。`generation` 计划必须等页面把 `approval_status` 变为 `approved` 后才能写入。新对象、规则、操作和指标复用对应 `create_*` 参数，已有资源复用对应 `patch_*` 最小动作，但统一通过 `stage_change_set` 提交，不能逐项写入留下半成品。结果不明时先查回执；全部必选任务形成候选后执行完整校验，再发起确认。删除先预览引用影响，再用预览 token 原子执行。`upsert_*` 只用于恢复历史 checkpoint；详情、索引、映射和内部规格由 core 编译，不并行手写派生文件。
-   对象来源使用互斥模式：存在任何 `purpose=schema` Sheet 时，批准计划后先执行 Core 注入的 `sync_schema_objects` 任务，由平台按“一 Sheet 一对象”同步全部字段、主键、binding 和 mapping；不得另行创建、合并或遗漏对象，只有表头的空 Sheet 也保留。完全没有确定 Schema 时才创建虚拟对象，且不绑定物理表、不生成 mapping。
-   Schema 对象同步后若要补对象间语义关系，调用 `suggest_object_relations` 获取只读候选；增量场景传 `scope` 收敛范围。不要把完整候选列表展示给专家，也不要让专家逐条确认。高置信候选可起草进 Change Set 摘要确认；中置信或方向不清的候选每轮最多转成 1 到 3 个具体业务问题；低置信候选默认不打扰用户。
+   对象来源使用互斥模式：存在任何 `purpose=schema` Sheet 时，批准计划后先执行 Core 注入的 `sync_schema_objects` 任务，由平台按“一 Sheet 一对象”同步全部字段、主键、binding 和 mapping；不得另行创建、合并或遗漏对象，只有表头的空 Sheet 也保留。对象标题、对象说明和字段中文名属于语义门禁；字段业务说明是可选项，没有明确资料时保持为空，不产生 warning、暂缓或二次询问。完全没有确定 Schema 时才创建虚拟对象，且不绑定物理表、不生成 mapping。
+   Schema 对象业务语义确认后、生成规则、操作和指标前，首次不传 `scope` 和 `cursor` 调用 `suggest_object_relations`；若返回 `hasMore=true`，必须按 `nextCursor` 读取全部分页，最后一页完成前不得继续后续资源任务。该只读调用不写包；高置信候选按源对象建立具体 `patch_object` 任务后写入 Change Set；中置信或方向不清的候选每轮最多转成 1 到 3 个具体业务问题；低置信默认忽略；零候选时记录结果并继续规则、操作和指标建模。
    若专家在确认卡退回后明确表示撤销修改、不需要修改或保持已确认版本，调用 `discard_rejected_candidate_changes` 放弃退回的业务候选，不得为了清空待处理内容凑无意义 diff；完成后留在当前业务阶段继续推进。
 5. 遇到资料缺口主动提资料请求，并保留口述、稍后补充、跳过三个出口。
 6. 阶段不变时用 `update_project_context` 更新唯一状态摘要；需要换阶段时读取最新版本并调用 `transition_project_state`，门禁通过后主动执行下一步。Markdown 计划只做显示，不能代替结构化 Change Plan。

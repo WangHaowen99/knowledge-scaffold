@@ -24,6 +24,8 @@ import {
   savePackageDataSource,
   startAgentIncrementRound,
   respondChangePlan as respondChangePlanRequest,
+  previewChangePlanDiscard as previewChangePlanDiscardRequest,
+  discardChangePlan as discardChangePlanRequest,
   getProgress,
   safeTerminateChangePlan as safeTerminateChangePlanRequest,
   terminateStaleRun as terminateStaleRunRequest,
@@ -463,6 +465,11 @@ if (eventType === 'state' && !replaying) {
       }));
     }
     if (eventType === 'change_plan' && event.plan) {
+      const current = store.get();
+      const previousPlan = current.changePlan?.id === event.plan.id
+        ? current.changePlan
+        : latestTimelinePlan(current.messages, event.plan.id);
+      const moveExistingToEnd = shouldRelocateChangePlanMessage(previousPlan, event.plan);
       store.set({ changePlan: event.plan });
       actions.appendMessage({
         id: `change-plan-${event.plan.id}`,
@@ -478,7 +485,7 @@ if (eventType === 'state' && !replaying) {
               : ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : '',
           })),
         }],
-      });
+      }, { moveExistingToEnd });
     }
     if (eventType === 'change_set' && !replaying) {
       store.set({ progress: null });
@@ -743,10 +750,19 @@ if (eventType === 'state' && !replaying) {
       ...(seq >= store.get().replayUntilSeq ? { replayUntilSeq: 0 } : {}),
     });
   },
-  appendMessage(message) {
+  appendMessage(message, options = {}) {
     store.set((state) => {
       const existingIndex = state.messages.findIndex((item) => item.id === message.id);
       if (existingIndex >= 0) {
+        if (options.moveExistingToEnd && existingIndex < state.messages.length - 1) {
+          return {
+            messages: [
+              ...state.messages.slice(0, existingIndex),
+              ...state.messages.slice(existingIndex + 1),
+              message,
+            ],
+          };
+        }
         const messages = [...state.messages];
         messages[existingIndex] = message;
         return { messages };
@@ -802,6 +818,62 @@ if (eventType === 'state' && !replaying) {
           },
         } : {}),
       });
+      return null;
+    }
+  },
+  async previewChangePlanDiscard(planId) {
+    const { projectId } = store.get();
+    if (!projectId || !planId) return null;
+    try {
+      const preview = await previewChangePlanDiscardRequest(projectId, planId);
+      store.set({ error: '' });
+      return preview;
+    } catch (error) {
+      store.set({ error: {
+        scope: 'change_plan',
+        message: error instanceof Error ? error.message : '无法读取计划放弃影响',
+        recovery: '计划和候选均未改变，请刷新后重新预览。',
+      } });
+      return null;
+    }
+  },
+  async discardChangePlan(planId, preview, reason) {
+    const { projectId, run } = store.get();
+    if (!projectId || !planId || !preview) return null;
+    if (run && ['queued', 'running', 'suspended'].includes(run.status)) {
+      const stopped = await actions.cancel();
+      if (!stopped) return null;
+    }
+    try {
+      const requestId = globalThis.crypto?.randomUUID?.()
+        || `discard-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const result = await discardChangePlanRequest(projectId, planId, {
+        expected_version: preview.plan_version,
+        expected_candidate_fingerprint: preview.candidate_fingerprint,
+        request_id: requestId,
+        reason,
+      });
+      store.set((state) => ({
+        changePlan: result.plan,
+        error: '',
+        statusText: result.display?.text || '已放弃当前建模计划',
+        messages: state.messages.map((message) => ({
+          ...message,
+          blocks: message.blocks?.map((block) => (
+            block.type === 'plan' && block.plan?.id === planId
+              ? { ...block, plan: result.plan }
+              : block
+          )) ?? [],
+        })),
+      }));
+      await actions.refreshSnapshot();
+      return result;
+    } catch (error) {
+      store.set({ error: {
+        scope: 'change_plan',
+        message: error instanceof Error ? error.message : '放弃计划失败',
+        recovery: '计划或候选可能已经变化，请重新预览后再确认。',
+      } });
       return null;
     }
   },
@@ -1564,6 +1636,38 @@ function messageFingerprint(message) {
   const block = message?.blocks?.[0] || {};
   if (block.type === 'answer') return `answer:${block.interactionId || ''}:${stableJson(block.answer || {})}`;
   return block.type === 'text' ? `text:${String(block.text || '').trim()}` : '';
+}
+
+function latestTimelinePlan(messages, planId) {
+  for (let index = (messages || []).length - 1; index >= 0; index -= 1) {
+    const block = (messages[index]?.blocks || []).find((item) => (
+      item.type === 'plan' && item.plan?.id === planId
+    ));
+    if (block?.plan) return block.plan;
+  }
+  return null;
+}
+
+function changePlanApprovalRevision(plan) {
+  return JSON.stringify({
+    version: plan?.version ?? null,
+    tasks: (plan?.tasks || []).map((task) => ({
+      id: task.id || task.client_key || '',
+      title: task.title || '',
+      target: task.target_key || '',
+      required: task.required !== false,
+      status: task.status || '',
+      tools: task.allowed_tools || [],
+      dependencies: task.depends_on || [],
+    })),
+  });
+}
+
+function shouldRelocateChangePlanMessage(previousPlan, nextPlan) {
+  if (!previousPlan || !nextPlan || previousPlan.id !== nextPlan.id) return false;
+  if (nextPlan.approval_status !== 'pending') return false;
+  return previousPlan.approval_status !== 'pending'
+    || changePlanApprovalRevision(previousPlan) !== changePlanApprovalRevision(nextPlan);
 }
 
 function enrichInteractionAnswer(interaction, answer) {

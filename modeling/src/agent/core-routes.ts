@@ -87,6 +87,35 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
   });
 
+  app.get('/api/projects/:id/schema-semantics/summary', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const result = await service.workbenchSchemaSemantics(project, request.user!.username, { limit: 1 });
+      return { working_revision: result.working_revision, summary: result.summary };
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/schema-semantics/items', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      return await service.workbenchSchemaSemantics(
+        project,
+        request.user!.username,
+        (request.query ?? {}) as Record<string, unknown>,
+      );
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
   app.put('/api/projects/:id/agent/confirm-policy', async (request, reply) => {
     const project = getProject(String((request.params as any).id ?? ''));
     if (!project || !canWriteProject(project.id, request.user!.username)) {
@@ -113,6 +142,41 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
         request.user!.username,
         String((request.params as any).planId ?? ''),
         approved,
+      );
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/agent/change-plans/:planId/discard-preview', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      return service.previewWorkbenchChangePlanDiscard(
+        project,
+        String((request.params as any).planId ?? ''),
+      );
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/agent/change-plans/:planId/discard', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const body = request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+        ? request.body as Record<string, unknown>
+        : {};
+      return await service.discardWorkbenchChangePlan(
+        project,
+        request.user!.username,
+        String((request.params as any).planId ?? ''),
+        body,
       );
     } catch (error) {
       return sendAgentCoreError(reply, error);
