@@ -51,7 +51,7 @@
 - 不校验 `agent_runs` 记录是否仍然存在。若运行记录缺失，`project_agent_state.run_id` 仍被保留，
   而 `suspended ∈ ACTIVE_RUN_STATUSES`，导致 `active_run()` / `create_run()` 持续返回 `RUN_ACTIVE`，
   形成「幽灵占用」；
-- 不校验 `checkpoints.sqlite` 中对应 session 是否存在。若检查点数据卷被更换或缺失，
+- 不校验 `checkpoints.sqlite.db` 中对应 session 是否存在。若检查点数据卷被更换或缺失，
   OpenJiuwen 会从空白继续，而 `agent_tool_receipts` 仍留在 `runtime.sqlite`，
   已完成任务可能被重新统计或重算；
 - 自动恢复失败只发布事件，不落可诊断状态，页面与后端状态继续矛盾。
@@ -135,10 +135,10 @@
 
 `startup()` 在 `Runner.start()` 后执行 `_storage_diagnostic()`：
 
-- 校验 `runtime.sqlite` 与 `checkpoints.sqlite` 位于同一目录（持久卷）；
+- 校验 `runtime.sqlite` 与 `checkpoints.sqlite.db` 位于同一目录（持久卷）；
 - 记录数据卷身份（`data_dir/.modeling_agent_identity` 中的 `volumeId`）与新建标记；
 - 统计 Run 数量与 Checkpoint 数量（只读打开两个 SQLite，不对 Checkpoint schema 做假设）；
-- 判定规则：两个数据库不同卷、`runtime.sqlite` 缺失、或「存在运行记录但 `checkpoints.sqlite` 缺失」时，
+- 判定规则：两个数据库不同卷、`runtime.sqlite` 缺失、或「存在运行记录但 `checkpoints.sqlite.db` 缺失」时，
   标记 `healthy = false`；
 - 诊断结果缓存在 `health()` / `project_state()` 中暴露。
 
@@ -250,7 +250,7 @@
 
 ## 6. 部署与运维注意事项
 
-- 两个 SQLite（`runtime.sqlite`、`checkpoints.sqlite`）必须挂载在同一个持久卷
+- 两个 SQLite（`runtime.sqlite`、`checkpoints.sqlite.db`）必须挂载在同一个持久卷
   （`docker-compose.release.yml` 中 `modeling-agent-data:/data`）；
 - 首次启动会在数据目录写入 `.modeling_agent_identity` 记录卷身份；
   更换数据卷后重启会因「存在运行记录但检查点缺失」被拦截并给出诊断；

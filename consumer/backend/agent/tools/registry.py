@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -179,6 +180,19 @@ def get_tool_schema_for_context(
     workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if spec.name == "execute_script":
+        from agent.core.shared.tool_context import (
+            current_ontology_preflight_tool_products_for_context,
+        )
+
+        admitted = current_ontology_preflight_tool_products_for_context(
+            workspace_id=workspace_id,
+            ontology_id=selected_ontology_id,
+            ontology_version=selected_ontology_version,
+        )
+        if admitted is not None:
+            if isinstance(admitted.execute_script_tool_schema, Mapping):
+                return _mutable_schema_copy(admitted.execute_script_tool_schema)
+            return _mutable_schema_copy(spec.schema)
         return build_execute_script_tool_schema(
             selected_ontology_id,
             selected_ontology_version=selected_ontology_version,
@@ -188,7 +202,20 @@ def get_tool_schema_for_context(
         return get_ontology_context_schema(
             structured_enabled=_evidence_visible(workspace_id, selected_ontology_id)
         )
+    if getattr(spec, "category", "") == "solver":
+        return _mutable_schema_copy(spec.schema)
     return spec.schema
+
+
+def _mutable_schema_copy(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _mutable_schema_copy(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_mutable_schema_copy(item) for item in value]
+    return value
 
 
 def get_regular_tools_schema(

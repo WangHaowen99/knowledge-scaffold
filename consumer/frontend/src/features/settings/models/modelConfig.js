@@ -211,15 +211,28 @@ export function isProfileTestResultCurrent(result, profile) {
   return Boolean(result?.fingerprint && result.fingerprint === profileFingerprint(profile));
 }
 
-export function deletionSnapshotDecision({ currentFingerprint, baselineFingerprint, openedFingerprint = '' } = {}) {
+export function deletionSnapshotDecision({
+  currentFingerprint,
+  baselineFingerprint,
+  openedFingerprint = '',
+  currentGeneration = '',
+  openedGeneration = '',
+  requireGeneration = false,
+} = {}) {
   if (!currentFingerprint || !baselineFingerprint) {
     return blocked('snapshot_unknown', '无法确认服务器模型快照，已阻止删除，请刷新后重试');
+  }
+  if (requireGeneration && !currentGeneration) {
+    return blocked('snapshot_unknown', '无法确认模型引用快照，已阻止删除，请刷新后重试');
   }
   if (currentFingerprint !== baselineFingerprint) {
     return blocked('snapshot_changed', '模型配置已被其他操作修改，已阻止删除，请刷新后重试');
   }
   if (openedFingerprint && currentFingerprint !== openedFingerprint) {
     return blocked('snapshot_changed', '删除确认期间模型配置发生变化，已阻止删除，请刷新后重试');
+  }
+  if (openedGeneration && currentGeneration !== openedGeneration) {
+    return blocked('snapshot_changed', '删除确认期间模型引用发生变化，已阻止删除，请刷新后重试');
   }
   return { allowed: true, code: 'ok', message: '服务器快照一致', usages: [] };
 }
@@ -237,6 +250,123 @@ function roleUsages(llm, scope, profileId, workspaceLabel = '') {
   return usages;
 }
 
+export function markGlobalProfileRename(profile, originalId, persistedProfileIds = []) {
+  const candidate = { ...(profile || {}) };
+  const persisted = new Set((persistedProfileIds || []).map(text).filter(Boolean));
+  const inheritedOrigin = text(candidate.rename_from);
+  const editedOrigin = text(originalId);
+  const origin = persisted.has(inheritedOrigin)
+    ? inheritedOrigin
+    : (persisted.has(editedOrigin) ? editedOrigin : '');
+  if (origin && text(candidate.id) !== origin) candidate.rename_from = origin;
+  else delete candidate.rename_from;
+  return candidate;
+}
+
+export function globalProfileDestructiveChanges(baseline, candidate) {
+  const baselineIds = (baseline?.profiles || []).map((profile) => text(profile?.id)).filter(Boolean);
+  const candidateIds = new Set(
+    (candidate?.profiles || []).map((profile) => text(profile?.id)).filter(Boolean),
+  );
+  const removedProfileIds = baselineIds.filter((profileId) => !candidateIds.has(profileId));
+  const removedSet = new Set(removedProfileIds);
+  const renames = [];
+  for (const profile of candidate?.profiles || []) {
+    const originalId = text(profile?.rename_from);
+    const newId = text(profile?.id);
+    if (!originalId || !newId || originalId === newId || !removedSet.has(originalId)) continue;
+    renames.push({ original_id: originalId, new_id: newId });
+  }
+  return { removedProfileIds, renames };
+}
+
+export function globalProfileMutationDecision({
+  baseline,
+  baselineSnapshot,
+  candidate,
+  serverConfig,
+  serverSnapshot,
+  inventory,
+  openedSnapshot = null,
+} = {}) {
+  const changes = globalProfileDestructiveChanges(baseline, candidate);
+  if (!changes.removedProfileIds.length) {
+    return { allowed: true, code: 'ok', message: '无需破坏性核验', precondition: null };
+  }
+  const baselineGeneration = baselineSnapshot?.generation;
+  const serverGeneration = serverSnapshot?.generation;
+  const baselineFingerprint = text(baselineSnapshot?.fingerprint);
+  const serverFingerprint = text(serverSnapshot?.fingerprint);
+  if (
+    !Number.isSafeInteger(baselineGeneration)
+    || baselineGeneration < 0
+    || !Number.isSafeInteger(serverGeneration)
+    || serverGeneration < 0
+    || !baselineFingerprint
+    || !serverFingerprint
+    || !text(inventory?.generation)
+  ) {
+    return blocked('snapshot_unknown', '无法确认服务器模型或引用快照，已阻止保存，请刷新后重试');
+  }
+  if (
+    baselineGeneration !== serverGeneration
+    || baselineFingerprint !== serverFingerprint
+  ) {
+    return blocked('snapshot_changed', '模型配置已被其他操作修改，已阻止保存，请刷新后重试');
+  }
+  if (openedSnapshot && (
+    openedSnapshot.configGeneration !== serverGeneration
+    || openedSnapshot.configFingerprint !== serverFingerprint
+    || openedSnapshot.referenceGeneration !== inventory.generation
+  )) {
+    return blocked('snapshot_changed', '确认期间模型配置或引用发生变化，已阻止保存，请刷新后重试');
+  }
+
+  for (const profileId of changes.removedProfileIds) {
+    const renamedSource = changes.renames.some((rename) => rename.original_id === profileId);
+    const decision = globalProfileDeleteDecision({
+      profileId,
+      config: {
+        ...serverConfig,
+        default_main_profile_ref: candidate?.default_main_profile_ref,
+        default_task_profile_ref: candidate?.default_task_profile_ref,
+      },
+      referenceInventory: inventory,
+      preservesProfileCount: renamedSource,
+    });
+    if (!decision.allowed) return decision;
+  }
+  return {
+    allowed: true,
+    code: 'ok',
+    message: '服务器模型与引用快照一致',
+    precondition: {
+      config_generation: serverGeneration,
+      config_fingerprint: serverFingerprint,
+      reference_generation: inventory.generation,
+      removed_profile_ids: changes.removedProfileIds,
+      renames: changes.renames,
+    },
+  };
+}
+
+function aggregateRoleUsages(references, scope, profileId, workspaceLabel = '') {
+  const usages = [];
+  for (const reference of references) {
+    const roleField = ROLE_FIELDS.find(([, field]) => field === reference?.field);
+    const referenceScope = text(reference?.scope);
+    const referenceId = text(reference?.profile_id);
+    if (!roleField || !['global', 'workspace'].includes(referenceScope) || !referenceId) {
+      usages.push({ kind: 'unknown', role: '', label: `${workspaceLabel}模型引用格式无法识别` });
+      continue;
+    }
+    if (referenceScope === scope && referenceId === profileId) {
+      usages.push({ kind: 'reference', role: roleField[0], label: `${workspaceLabel}${roleField[2]}` });
+    }
+  }
+  return usages;
+}
+
 function blocked(code, message, usages = []) {
   return { allowed: false, code, message, usages };
 }
@@ -245,13 +375,14 @@ export function globalProfileDeleteDecision({
   profileId,
   config,
   referenceInventory,
+  preservesProfileCount = false,
 } = {}) {
   const id = text(profileId);
   const profiles = Array.isArray(config?.profiles) ? config.profiles : [];
   if (!id || !profiles.some((profile) => text(profile.id) === id)) {
     return blocked('profile_missing', '未找到要删除的全局模型');
   }
-  if (profiles.length <= 1) {
+  if (profiles.length <= 1 && !preservesProfileCount) {
     return blocked('last_global_model', '全局至少需要保留一个模型，请先新增替代模型');
   }
 
@@ -277,11 +408,17 @@ export function globalProfileDeleteDecision({
   }
   const workspaceUsages = [];
   for (const entry of referenceInventory.entries) {
-    if (!entry || entry.runtimeKnown === false || !entry.runtime || typeof entry.runtime !== 'object') {
+    if (!entry || entry.runtimeKnown === false) {
       return blocked('references_incomplete', '部分工作空间的运行时引用加载失败，已阻止删除');
     }
     const label = `${text(entry.workspaceName) || text(entry.workspaceId) || '未知工作空间'} · `;
-    workspaceUsages.push(...roleUsages(entry.runtime.llm || {}, 'global', id, label));
+    if (Array.isArray(entry.references)) {
+      workspaceUsages.push(...aggregateRoleUsages(entry.references, 'global', id, label));
+    } else if (entry.runtime && typeof entry.runtime === 'object') {
+      workspaceUsages.push(...roleUsages(entry.runtime.llm || {}, 'global', id, label));
+    } else {
+      return blocked('references_incomplete', '部分工作空间的运行时引用加载失败，已阻止删除');
+    }
   }
   if (workspaceUsages.some((usage) => usage.kind === 'unknown')) {
     return blocked('references_unknown', '部分工作空间的模型引用无法识别，已阻止删除', workspaceUsages);

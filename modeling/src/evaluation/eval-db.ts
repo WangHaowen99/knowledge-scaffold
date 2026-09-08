@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
+import XLSX from 'xlsx';
 import { parseExcel } from '../documents/parser.js';
 import type { DataDictField, DataDictTable } from '../types.js';
 import type { ProjectDataSource } from './data-source-repo.js';
@@ -10,6 +11,11 @@ import {
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const INSERT_BATCH_SIZE = 200;
+
+export interface EvaluationDatabaseExcelFileInput {
+  filename: string;
+  buffer: Buffer;
+}
 
 export interface EvaluationDatabaseClient {
   query(sql: string, values?: unknown[]): Promise<unknown>;
@@ -56,6 +62,36 @@ export function validateEvaluationDatabaseExcelUpload(
     throw new Error('仅支持 .xlsx 或 .xls 文件');
   }
   if (buffer.byteLength > MAX_FILE_SIZE) throw new Error('Excel 文件不能超过 50MB');
+}
+
+export function mergeEvaluationDatabaseExcelFiles(
+  files: EvaluationDatabaseExcelFileInput[],
+): EvaluationDatabaseExcelFileInput {
+  if (!files.length) throw new Error('缺少 Excel 文件');
+  if (files.length === 1) {
+    validateEvaluationDatabaseExcelUpload(files[0].filename, files[0].buffer);
+    return files[0];
+  }
+  const totalSize = files.reduce((sum, file) => sum + file.buffer.byteLength, 0);
+  if (totalSize > MAX_FILE_SIZE) throw new Error('Excel 文件总大小不能超过 50MB');
+  const workbook = XLSX.utils.book_new();
+  const seenSheets = new Map<string, string>();
+  for (const file of files) {
+    validateEvaluationDatabaseExcelUpload(file.filename, file.buffer);
+    const parsed = XLSX.read(file.buffer, { type: 'buffer', cellDates: false, cellNF: true, cellText: false });
+    for (const sheetName of parsed.SheetNames) {
+      const previous = seenSheets.get(sheetName);
+      if (previous) {
+        throw new Error(`多个 Excel 中存在重复 Sheet「${sheetName}」：${previous}、${file.filename}`);
+      }
+      seenSheets.set(sheetName, file.filename);
+      XLSX.utils.book_append_sheet(workbook, parsed.Sheets[sheetName], sheetName);
+    }
+  }
+  return {
+    filename: files.map((file) => file.filename).join(' + '),
+    buffer: Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' })),
+  };
 }
 
 async function defaultConnector(
@@ -139,6 +175,14 @@ export function validateEvaluationDatabaseExcelContents(
       table.fields.forEach((field, column) => coerceValue(row[column], field));
     }
   }
+}
+
+export function validateEvaluationDatabaseExcelFilesContents(
+  files: EvaluationDatabaseExcelFileInput[],
+): EvaluationDatabaseExcelFileInput {
+  const merged = mergeEvaluationDatabaseExcelFiles(files);
+  validateEvaluationDatabaseExcelContents(merged.filename, merged.buffer);
+  return merged;
 }
 
 function insertSql(table: DataDictTable, rowCount: number, targetName = table.name): string {

@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 
 from agent.runtime.contracts import (
+    RunPreflightSnapshot,
     RunSnapshot,
     RunStatus,
     RuntimeResult,
@@ -73,15 +74,17 @@ class _Manager:
 
 
 class _Runtime:
-    def __init__(self, manager):
+    def __init__(self, manager, *, preflight_builder=None):
         self.manager = manager
         self.short_io = _InlinePool()
+        if preflight_builder is not None:
+            self.protocol_preflight_builder = preflight_builder
 
 
-def _service(tmp_path, manager=None):
+def _service(tmp_path, manager=None, *, preflight_builder=None):
     manager = manager or _Manager()
     return A2ATaskService(
-        runtime=_Runtime(manager),
+        runtime=_Runtime(manager, preflight_builder=preflight_builder),
         execution_store=ExecutionStore(str(tmp_path / "executions")),
         username="operator_a",
         workspace_id="workspace_demo",
@@ -112,6 +115,127 @@ def test_create_task_keeps_external_id_out_of_canonical_identity(tmp_path):
         "a2a", "external_task_demo"
     )
     assert turn["run_id"] == snapshot.run_id
+
+
+def test_create_task_builds_one_dynamic_preflight_before_each_durable_turn(
+    tmp_path,
+):
+    events = []
+    calls = []
+    expected = RunPreflightSnapshot(
+        workspace_id="workspace_demo",
+        workspace_config_generation=1,
+        system_config_generation=1,
+    )
+
+    def build_preflight(**kwargs):
+        events.append("preflight")
+        calls.append(kwargs)
+        return expected
+
+    service, manager = _service(
+        tmp_path,
+        preflight_builder=build_preflight,
+    )
+    create_turn = service.execution_store.create_turn_for_run
+
+    def tracked_create_turn(*args, **kwargs):
+        events.append("durable_turn")
+        return create_turn(*args, **kwargs)
+
+    service.execution_store.create_turn_for_run = tracked_create_turn
+    for index in range(2):
+        asyncio.run(
+            service.create_task(
+                A2ATaskCreateRequest(
+                    message=f"synthetic question {index}",
+                    session_id=f"session_dynamic_preflight_{index}",
+                    task_id=f"external_task_{index}",
+                    context={"model_profile_id": "global:synthetic"},
+                )
+            )
+        )
+
+    assert len(calls) == 2
+    assert [call["session_id"] for call in calls] == [
+        "session_dynamic_preflight_0",
+        "session_dynamic_preflight_1",
+    ]
+    assert events == [
+        "preflight",
+        "durable_turn",
+        "preflight",
+        "durable_turn",
+    ]
+    assert [context.preflight_snapshot for context in manager.contexts] == [
+        expected,
+        expected,
+    ]
+
+
+def test_create_task_releases_protocol_id_when_preflight_fails(tmp_path):
+    calls = []
+
+    def build_preflight(**_kwargs):
+        calls.append("preflight")
+        if len(calls) == 1:
+            raise ValueError("synthetic preflight failure")
+        return RunPreflightSnapshot(
+            workspace_id="workspace_demo",
+            workspace_config_generation=1,
+            system_config_generation=1,
+        )
+
+    service, manager = _service(tmp_path, preflight_builder=build_preflight)
+    request = A2ATaskCreateRequest(
+        message="synthetic question",
+        session_id="session_preflight_retry",
+        task_id="external_task_preflight_retry",
+    )
+
+    with pytest.raises(ValueError, match="synthetic preflight failure"):
+        asyncio.run(service.create_task(request))
+    assert service.execution_store.find_turn_by_protocol_id(
+        "a2a",
+        "external_task_preflight_retry",
+    ) == (None, None)
+
+    view, _snapshot = asyncio.run(service.create_task(request))
+
+    assert view.id == "external_task_preflight_retry"
+    assert len(manager.contexts) == 1
+    assert calls == ["preflight", "preflight"]
+
+
+def test_create_task_normalizes_operation_pin_for_preflight_and_execution(tmp_path):
+    calls = []
+
+    def build_preflight(**kwargs):
+        calls.append(kwargs)
+        return RunPreflightSnapshot(
+            workspace_id="workspace_demo",
+            workspace_config_generation=1,
+            system_config_generation=1,
+            deterministic_candidate=True,
+        )
+
+    service, manager = _service(tmp_path, preflight_builder=build_preflight)
+
+    asyncio.run(
+        service.create_task(
+            A2ATaskCreateRequest(
+                message="synthetic question",
+                session_id="session_operation_pin",
+                task_id="external_task_operation_pin",
+                context={"requested_operation_key": "  synthetic_operation  "},
+            )
+        )
+    )
+
+    assert calls[0]["user_context"]["requested_operation_key"] == (
+        "synthetic_operation"
+    )
+    assert manager.contexts[0].requested_operation_key == "synthetic_operation"
 
 
 def test_duplicate_external_task_id_is_rejected(tmp_path):

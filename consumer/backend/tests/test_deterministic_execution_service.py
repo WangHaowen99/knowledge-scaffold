@@ -383,6 +383,167 @@ def test_solver_only_package_bypasses_deterministic_preflight(tmp_path, monkeypa
     assert outcome.reason == "no_deterministic_operations"
 
 
+def test_preflight_can_reuse_an_already_resolved_exact_manifest(tmp_path, monkeypatch):
+    ontology_dir = _write_package(tmp_path)
+    from agent.direct_execution import service as service_module
+
+    monkeypatch.setattr(
+        service_module,
+        "get_ontology_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preflight must not resolve the manifest twice")
+        ),
+    )
+    manifest = SimpleNamespace(
+        id="test-ontology",
+        version="1.0.0",
+        ontology_dir=str(ontology_dir),
+    )
+
+    assert DeterministicExecutionService().is_potentially_applicable(
+        _request(),
+        ontology_manifest=manifest,
+    ) is True
+
+
+def test_execute_can_use_staged_manifest_without_live_package_lookup(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_package(tmp_path)
+    from agent.direct_execution import service as service_module
+
+    monkeypatch.setattr(
+        service_module,
+        "get_ontology_manifest",
+        lambda *_args, **_kwargs: pytest.fail(
+            "staged deterministic execution must not reload the live manifest"
+        ),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **_kwargs: json.dumps({"value": "CODE-42"}),
+    )
+    manifest = SimpleNamespace(
+        id="test-ontology",
+        version="1.0.0",
+        ontology_dir=str(ontology_dir),
+    )
+
+    outcome = DeterministicExecutionService().execute(
+        _request(arguments={"code": "CODE-42"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+        ontology_manifest=manifest,
+    )
+
+    assert isinstance(outcome, Completed)
+    assert outcome.envelope["structured_result"] == {"value": "CODE-42"}
+
+
+def test_staged_execute_keeps_admitted_package_after_same_version_resign(
+    tmp_path,
+    monkeypatch,
+):
+    from ontology.view_cache import (
+        build_package_content_revision,
+        stage_verified_package_revision,
+    )
+
+    ontology_dir = _write_package(tmp_path)
+    admitted_revision = build_package_content_revision(ontology_dir)
+    observed = {}
+    from agent.direct_execution import service as service_module
+
+    monkeypatch.setattr(
+        service_module,
+        "get_ontology_manifest",
+        lambda *_args, **_kwargs: pytest.fail(
+            "staged deterministic execution must not reload the replacement"
+        ),
+    )
+
+    def execute_staged(**kwargs):
+        staged_root = Path(kwargs["ontology_dir"])
+        observed["root"] = staged_root
+        observed["helper"] = (
+            staged_root / "scripts" / "query_helper.py"
+        ).read_text(encoding="utf-8")
+        return json.dumps({"value": "CODE-42"})
+
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        execute_staged,
+    )
+
+    with stage_verified_package_revision(
+        source_root=ontology_dir,
+        expected_content_revision=admitted_revision,
+        staging_root=tmp_path,
+    ) as staged_root:
+        ontology_dir.rename(tmp_path / "ontology-admitted-source")
+        replacement_dir = _write_package(tmp_path)
+        replacement_helper = replacement_dir / "scripts" / "query_helper.py"
+        replacement_helper.write_text(
+            "def normalize_code(value):\n    return str(value).upper()\n",
+            encoding="utf-8",
+        )
+        validate_and_lock_deterministic_operations(replacement_dir)
+        assert build_package_content_revision(replacement_dir) != admitted_revision
+
+        outcome = DeterministicExecutionService().execute(
+            _request(arguments={"code": "CODE-42"}),
+            enabled=True,
+            project_root=str(tmp_path),
+            timeout_seconds=30,
+            ontology_manifest=SimpleNamespace(
+                id="test-ontology",
+                version="1.0.0",
+                ontology_dir=str(staged_root),
+            ),
+        )
+
+        assert isinstance(outcome, Completed)
+        assert "return str(value)\n" in observed["helper"]
+        assert ".upper()" not in observed["helper"]
+        assert observed["root"] == staged_root
+
+    assert not observed["root"].exists()
+
+
+def test_staged_package_survives_deleting_its_workspace_root(tmp_path):
+    from ontology.view_cache import (
+        build_package_content_revision,
+        resolve_package_staging_boundary,
+        stage_verified_package_revision,
+    )
+
+    workspace_root = tmp_path / "workspaces" / "demo"
+    ontology_root = workspace_root / "ontologies" / "sample"
+    version_dir = _write_package(ontology_root / "versions" / "1.0.0")
+    admitted_revision = build_package_content_revision(version_dir)
+    staging_boundary = resolve_package_staging_boundary(
+        project_root=workspace_root,
+        workspace_id="demo",
+    )
+    assert staging_boundary == tmp_path
+
+    with stage_verified_package_revision(
+        source_root=version_dir,
+        expected_content_revision=admitted_revision,
+        staging_root=staging_boundary,
+    ) as staged_root:
+        deleted_root = workspace_root.with_name(".demo.deleted")
+        workspace_root.rename(deleted_root)
+
+        assert (staged_root / "scripts" / "query.py").is_file()
+
+    assert not staged_root.exists()
+
+
 def test_v01_solver_workflow_fails_closed_in_deterministic_preflight(
     tmp_path,
     monkeypatch,

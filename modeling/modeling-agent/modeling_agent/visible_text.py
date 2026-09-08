@@ -20,6 +20,7 @@ _PRIVATE_REASONING = re.compile(
     r"(?:system\s+prompt|developer\s+message|api[_-]?key|authorization|bearer\s+[A-Za-z0-9._-]+|"
     r"password|service[_-]?token|run[_-]?credential|token[_-]?fingerprint|sk-[A-Za-z0-9_-]{8,}|"
     r"tool\s*(?:call|arguments?)|工具参数|系统指令|系统提示|系统消息|开发者消息|密钥|认证信息|访问令牌|"
+    r"工具集中没有|工具集没有|没有(?:该|读取)能力|本会话工具|平台侧能力缺口|平台能力缺口|平台是否开放|"
     r"[\"']?(?:arguments|path|projectId|runId|sessionId)[\"']?\s*[:=])",
     re.IGNORECASE,
 )
@@ -86,6 +87,12 @@ _TOKEN_LABELS = {
     "bind_object_source": "绑定对象数据来源",
     "bind_object_sources": "绑定跨 Sheet 对象来源",
     "get_schema_mapping_plan": "核对数据 Schema 映射计划",
+    "get_product_ledger": "读取产品清单台账",
+    "stage_product_ledger": "校验产品清单台账",
+    "required_text_constraint": "绑定补充说明",
+    "get_schema_semantics": "检查 Schema 对象业务语义",
+    "stage_schema_semantic_changes": "批量补全 Schema 对象业务语义",
+    "confirm_schema_semantics": "确认 Schema 对象业务语义",
     "get_validation_summary": "查看校验摘要",
     "get_validation_findings": "查看校验明细",
     "discard_rejected_candidate_changes": "放弃已退回的修改",
@@ -120,6 +127,7 @@ _TOKEN_LABELS = {
     "evaluation_passed": "正式评测",
     "ready_for_eval": "评测准备",
     "deterministic_confirmed": "确定性计算范围确认",
+    "product_ledger_verified": "产品清单台账",
     "releasable": "发布条件",
     "revision": "版本",
     "query_eval_db": "查询评测数据",

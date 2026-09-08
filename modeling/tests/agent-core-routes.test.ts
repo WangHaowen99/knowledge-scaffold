@@ -17,7 +17,7 @@ const [
   { createProject, getProject },
   { getPackageArtifactStore },
   { getDb },
-  { getDocument, insertDocumentRevision },
+  { getDocument, insertDocument, insertDocumentRevision },
   { MaterialPurposeReviewStore, findMaterialPurposeReviewProblems },
   { requireAuth },
   { storePackageMergeSource },
@@ -209,7 +209,7 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
 
   assert.equal(claimed.statusCode, 200, claimed.body);
   const contract = claimed.json().packageContract;
-  assert.equal(contract.validatorVersion, 'package-contract-v6');
+  assert.equal(contract.validatorVersion, 'package-contract-v7');
   assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
   assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
   assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
@@ -421,6 +421,75 @@ test('阶段轨进度端点一次给出全部门禁，且没有工作区时如�
   assert.equal(single.statusCode, 200, single.body);
   assert.equal(single.json().pass, byId.get('process_confirmed').pass);
   assert.deepEqual(single.json().blockers, byId.get('process_confirmed').blockers);
+});
+
+test('产品清单台账在 advisory 模式下可持久化并确定性复核', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品清单台账观测', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+
+  const staged = await tool(app, project.id, 'stage_product_ledger', {
+    schemaVersion: 'product-ledger-v1',
+    sourceRevision: claimed.json().baseRevision,
+    scope: 'product_catalog',
+    rawCount: 3,
+    canonicalCount: 2,
+    mergedGroupCount: 1,
+    entries: [
+      {
+        canonicalItemId: 'product-a', ruleId: 'rule-a', sourceRecordIds: ['source-a'],
+        sourceLocator: 'manual#item-a', evidenceStatus: 'complete', processingStatus: 'ready',
+      },
+      {
+        canonicalItemId: 'product-b', ruleId: 'rule-b', sourceRecordIds: ['source-b', 'source-c'],
+        sourceLocator: 'manual#item-b', mergeGroupId: 'merge-1', evidenceStatus: 'complete',
+        processingStatus: 'ready',
+      },
+    ],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().validation.pass, true);
+  assert.equal(staged.json().counts.raw, 3);
+  assert.equal(staged.json().counts.canonical, 2);
+
+  const read = await tool(app, project.id, 'get_product_ledger', {}, runId);
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(read.json().available, true);
+  assert.equal(read.json().validation.pass, true);
+
+  const gate = await tool(app, project.id, 'gate_status', {
+    gate: 'product_ledger_verified',
+  }, runId);
+  assert.equal(gate.statusCode, 200, gate.body);
+  assert.equal(gate.json().pass, true);
+});
+
+test('enforce 模式下产品台账未通过会阻断规则 Change Set', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品台账规则门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const previousMode = config.productLedger.mode;
+  t.after(() => { config.productLedger.mode = previousMode; });
+  config.productLedger.mode = 'advisory';
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const staged = await tool(app, project.id, 'stage_product_ledger', {
+    scope: 'product_catalog', rawCount: 2, canonicalCount: 1, mergedGroupCount: 1, entries: [],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().validation.pass, false);
+
+  config.productLedger.mode = 'enforce';
+  const blocked = await tool(app, project.id, 'stage_change_set', {
+    plan_id: 'plan-product-ledger', expected_revision: 'revision-synthetic',
+    mutation_id: 'product-ledger-block-1',
+    actions: [{ task_id: 'task-rule', tool: 'create_rule', arguments: {} }],
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'PRODUCT_LEDGER_GATE_BLOCKED');
+  assert.equal(blocked.json().gate, 'product_ledger_verified');
 });
 
 test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
@@ -895,6 +964,7 @@ test('删除尚未确认的新增文件会撤销候选写入和变更组', async
   }, runId);
   assert.equal(preflight.statusCode, 409, preflight.body);
   assert.equal(preflight.json().code, 'NO_CANDIDATE');
+  assert.equal(preflight.json().retryable, false);
 });
 
 test('物理对象 mapping 是编译产物，Agent 不能按路径删除', async (t) => {
@@ -2521,7 +2591,9 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
   }, runId);
   assert.equal(planResponse.statusCode, 200, planResponse.body);
   const plan = planResponse.json().plan;
-  assert.deepEqual(plan.tasks[0].allowed_tools, ['sync_schema_objects']);
+  assert.deepEqual(plan.tasks[0].allowed_tools, [
+    'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
+  ]);
   const approved = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
@@ -2544,7 +2616,8 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
     summary: '按已确认用途同步 records 对象',
     change_groups: [{ id: 'schema_objects', tier: 'structural', title: 'Schema 对象同步' }],
   }, runId);
-  assert.equal(ready.statusCode, 200, ready.body);
+  assert.equal(ready.statusCode, 422, ready.body);
+  assert.equal(ready.json().code, 'CANDIDATE_SCHEMA_SEMANTICS_INVALID');
 });
 
 test('对象领域工具原子生成跨 Sheet 主表与扩展表映射', async (t) => {
@@ -2954,7 +3027,7 @@ test('平台保留 manifest 管理字段，底层预检仍把详细错误返回�
   assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
   assert.equal(receipt.baseRevision, current.revision.oid);
   assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
-  assert.equal(receipt.validatorVersion, 'package-contract-v6');
+  assert.equal(receipt.validatorVersion, 'package-contract-v7');
 });
 
 test('最终确认会校验用户实际选中的变更组快照', async (t) => {
@@ -4019,4 +4092,42 @@ test('正式发布绑定当前全量评测并要求项目负责人确认覆盖�
   const restoredGate = await tool(app, project.id, 'gate_status', { gate: 'releasable' }, restoredRunId);
   assert.equal(restoredGate.statusCode, 200, restoredGate.body);
   assert.equal(restoredGate.json().pass, true);
+});
+
+test('Schema 语义摘要路由返回分页问题而不暴露样例值', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成 Schema 语义路由', runtime: 'agent' });
+  const app = appFor(t);
+  insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_schema.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    purpose: 'schema',
+    tables: [{
+      name: 'synthetic_customer',
+      rowCount: 1,
+      fields: [{
+        name: 'customer_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1,
+      }],
+    }],
+  });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: `schema-semantic-route-${project.id}`,
+    name: '合成 Schema 语义路由',
+    description: '合成测试包',
+  });
+  const summary = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/summary`,
+  });
+  assert.equal(summary.statusCode, 200, summary.body);
+  assert.equal(summary.json().summary.available, true);
+  const items = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/items?level=error&offset=0&limit=10`,
+  });
+  assert.equal(items.statusCode, 200, items.body);
+  assert.equal(items.json().offset, 0);
+  assert.ok(Array.isArray(items.json().items));
+  assert.ok(items.json().items.every((item: any) => !('sampleValues' in item)));
 });

@@ -49,6 +49,9 @@ class NativeAsyncRuntimeConfig:
     max_subscribers_per_run: int = 3
     max_subscribers_total: int = 100
     completed_replay_ttl_seconds: float = 120.0
+    # High-frequency token deltas are coalesced by the Jiuwen bridge. This
+    # remains a bounded safety valve for protocol and terminal events.
+    runtime_event_buffer_size: int = 4096
 
     short_io_workers: int = 8
     short_io_max_pending: int = 64
@@ -82,6 +85,7 @@ class NativeAsyncRuntimeConfig:
             "subscriber_queue_size",
             "max_subscribers_per_run",
             "max_subscribers_total",
+            "runtime_event_buffer_size",
             "short_io_workers",
             "short_io_max_pending",
             "external_io_workers",
@@ -119,6 +123,10 @@ class NativeAsyncRuntimeConfig:
             max_subscribers_total=_positive_int(
                 "AGENTIC_SSE_MAX_SUBSCRIBERS_TOTAL",
                 100,
+            ),
+            runtime_event_buffer_size=_positive_int(
+                "AGENTIC_RUNTIME_EVENT_BUFFER_SIZE",
+                4096,
             ),
             completed_replay_ttl_seconds=_positive_float(
                 "AGENTIC_RUN_COMPLETED_REPLAY_TTL_SECONDS",
@@ -179,6 +187,7 @@ class NativeAsyncRuntimeConfig:
             "subscriber_queue_size": "AGENTIC_SSE_SUBSCRIBER_QUEUE_SIZE",
             "max_subscribers_per_run": "AGENTIC_SSE_MAX_SUBSCRIBERS_PER_RUN",
             "max_subscribers_total": "AGENTIC_SSE_MAX_SUBSCRIBERS_TOTAL",
+            "runtime_event_buffer_size": "AGENTIC_RUNTIME_EVENT_BUFFER_SIZE",
             "completed_replay_ttl_seconds": "AGENTIC_RUN_COMPLETED_REPLAY_TTL_SECONDS",
             "short_io_workers": "AGENTIC_SHORT_IO_WORKERS",
             "short_io_max_pending": "AGENTIC_SHORT_IO_MAX_PENDING",

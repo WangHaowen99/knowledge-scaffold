@@ -1,6 +1,7 @@
 import { api } from '../../api.js';
 
 const P = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/studio`;
+const S = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/schema-semantics`;
 const STUDIO_BOOTSTRAP_CACHE_TTL_MS = 15_000;
 const STUDIO_BOOTSTRAP_CACHE_LIMIT = 4;
 const bootstrapRequests = new Map();
@@ -14,6 +15,16 @@ function queryString(options = {}) {
 }
 
 export const getStudioSchema = (projectId) => api(`${P(projectId)}/schema`, { cache: 'no-cache' });
+
+export const getSchemaSemanticSummary = (projectId, options = {}) => api(
+  `${S(projectId)}/summary`,
+  options,
+);
+
+export const getSchemaSemanticItems = (projectId, options = {}, requestOptions = {}) => api(
+  `${S(projectId)}/items${queryString(options)}`,
+  requestOptions,
+);
 
 export function getStudioBootstrap(projectId, options = {}, requestOptions = {}) {
   const { signal, cache = 'default', ...apiOptions } = requestOptions;
@@ -122,10 +133,14 @@ export const applyStudioDeletions = async (projectId, input) => {
   return response;
 };
 
-export const requestStudioReview = (projectId, input) => api(`${P(projectId)}/review`, {
-  method: 'POST',
-  body: JSON.stringify(input),
-});
+export const requestStudioReview = async (projectId, input) => {
+  const response = await api(`${P(projectId)}/review`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  invalidateStudioBootstrap(projectId);
+  return response;
+};
 
 export function studioError(error) {
   const code = error?.data?.code || '';

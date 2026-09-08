@@ -73,12 +73,21 @@ def get_selected_ontology_context(state: Mapping[str, Any]) -> Optional[str]:
 
 def hydrate_selected_ontology_read_documents(state: Dict[str, Any]) -> None:
     selected_ontology_id = active_ontology_id_from_state(state)
-    records = build_selected_ontology_preload_records(
-        selected_ontology_id=selected_ontology_id,
-        selected_ontology_version=selected_ontology_version_from_state(state),
-        turn_id=int(state.get("current_turn_id") or 0),
-        workspace_id=str(state.get("workspace_id") or "").strip() or None,
-    )
+    turn_id = int(state.get("current_turn_id") or 0)
+    preflight_records = state.get("_preflight_selected_ontology_preload_records")
+    if isinstance(preflight_records, (list, tuple)):
+        records = [
+            {**dict(record), "turn_id": turn_id}
+            for record in preflight_records
+            if isinstance(record, Mapping)
+        ]
+    else:
+        records = build_selected_ontology_preload_records(
+            selected_ontology_id=selected_ontology_id,
+            selected_ontology_version=selected_ontology_version_from_state(state),
+            turn_id=turn_id,
+            workspace_id=str(state.get("workspace_id") or "").strip() or None,
+        )
     if not records:
         return
     _stamp_preload_evidence_context(

@@ -12,7 +12,7 @@ export default function EvaluationDatabaseImportPanel({
   databaseUrlSelection,
   onContinue,
 }) {
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [run, setRun] = useState(null);
@@ -48,7 +48,7 @@ export default function EvaluationDatabaseImportPanel({
   };
 
   useEffect(() => {
-    setFile(null);
+    setFiles([]);
     setBusy(false);
     setError('');
     setRun(null);
@@ -71,7 +71,7 @@ export default function EvaluationDatabaseImportPanel({
   }, [contextKey, run?.id, running]);
 
   const requestSubmit = async () => {
-    if (!file) { setError('请选择 Excel 文件'); return; }
+    if (!files.length) { setError('请选择 Excel 文件'); return; }
     const requestContext = contextKey;
     setTargetLoading(true); setError(''); setTargetError('');
     try {
@@ -93,10 +93,10 @@ export default function EvaluationDatabaseImportPanel({
     setBusy(true); setError(''); setRun(null);
     setTargetError('');
     try {
-      const response = await importEvaluationDatabase(projectId, file, true, selection);
+      const response = await importEvaluationDatabase(projectId, files, true, selection);
       if (contextRef.current !== requestContext) return;
       setRun(response.run);
-      setFile(null);
+      setFiles([]);
       setTargetRequest(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (importError) {
@@ -125,26 +125,26 @@ export default function EvaluationDatabaseImportPanel({
         <div className="edi-heading-actions">
           <label className={`btn ${controlsDisabled ? 'disabled' : ''}`}>
             {running ? '后台导入中…' : '选择 Excel'}
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" hidden disabled={controlsDisabled}
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" multiple hidden disabled={controlsDisabled}
               onChange={(event) => {
-                setFile(event.target.files?.[0] || null);
+                setFiles(Array.from(event.target.files || []));
                 setError('');
                 setRun(null);
                 setTargetRequest(null);
               }} />
           </label>
-          <button className="btn btn-p" disabled={controlsDisabled || !file} onClick={requestSubmit}>
+          <button className="btn btn-p" disabled={controlsDisabled || !files.length} onClick={requestSubmit}>
             {targetLoading ? '读取配置中…' : busy ? '提交中…' : running ? '后台导入中…' : '开始导入'}
           </button>
         </div>
       </div>
 
-      {file && (
+      {files.length > 0 && (
         <div className="gi-filebar">
-          <div><b>文件</b>{file.name}</div>
-          <div>{(file.size / 1024).toFixed(1)} KB</div>
+          <div><b>文件</b>{files.map((file) => file.name).join('、')}</div>
+          <div>{(files.reduce((total, file) => total + file.size, 0) / 1024).toFixed(1)} KB</div>
           <button className="btn btn-sm" disabled={controlsDisabled} onClick={() => {
-            setFile(null); setRun(null);
+            setFiles([]); setRun(null);
             setTargetRequest(null); setTargetError('');
             if (fileInputRef.current) fileInputRef.current.value = '';
           }}>移除</button>

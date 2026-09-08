@@ -200,9 +200,13 @@ test('StudioView 接线字段纠错、NO_CHANGES 同步和完整资源删除文�
   assert.match(source, /StudioPendingReviewBanner/);
   assert.match(source, /检查并应用修改/);
   assert.match(source, /response\.applied/);
+  assert.match(source, /response\.noOp \|\| response\.mode === 'noop'/);
+  assert.match(source, /loadStudio\(\{ cache: 'reload' \}\)/);
   assert.match(source, /不调用建模助手/);
   assert.match(source, /studioHasPendingLocalEdits\(sessionRef\.current\)/);
   assert.match(source, /disabled=\{state\.phase === 'saving' \|\| blocked\}/);
+  assert.match(source, /\{ key: 'required', label: '必填', type: 'boolean' \}/);
+  assert.doesNotMatch(source, /required-decision|<option value="unresolved">未确认/);
 
   const centerPane = readFileSync(
     new URL('../frontend/src/workbench/center/CenterPane.jsx', import.meta.url),
@@ -241,6 +245,8 @@ test('StudioView 接线字段纠错、NO_CHANGES 同步和完整资源删除文�
     'utf8',
   );
   assert.match(rightPane, /window\.addEventListener\('mw-pending-attention', focusPending\)/);
+  assert.match(rightPane, /answer\.displayText && answer\.text/);
+  assert.match(rightPane, /补充说明：\$\{visible\(answer\.text\)\}/);
 
   const blocks = readFileSync(
     new URL('../frontend/src/workbench/right/blocks/Blocks.jsx', import.meta.url),

@@ -21,8 +21,8 @@ from modeling_agent.rails import (
     tool_trace_group_id,
 )
 from modeling_agent.errors import AgentRuntimeError
-from modeling_agent.schemas import RUN_RUNNING, RunRecord
-from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
+from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
+from modeling_agent.service import AgentService, LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -39,6 +39,51 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_schema_semantic_confirmation_does_not_require_relation_suggestion() -> None:
+    live = SimpleNamespace(
+        required_tools=set(),
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+    )
+    result = {"ok": True}
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "confirm_schema_semantics",
+        {},
+        result,
+    )
+
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
+
+
+async def test_explicit_relation_suggestion_does_not_become_required() -> None:
+    live = SimpleNamespace(
+        required_tools=set(),
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+    )
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "suggest_object_relations",
+        {},
+        {"ok": True, "hasMore": True, "nextCursor": "synthetic-next-page"},
+    )
+
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
 
 
 async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: float = 15) -> dict:
@@ -110,6 +155,39 @@ async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypa
     assert case_schema["additionalProperties"] is False
     assert "argv" not in case_schema["properties"]
     assert "function" not in case_schema["properties"]
+
+
+async def test_schema_semantic_tool_uses_dedicated_field_update_contract() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    actions = specs["stage_schema_semantic_changes"].properties[
+        "objects"
+    ]["items"]["properties"]["actions"]
+    assert actions["maxItems"] == 500
+
+    variants = actions["items"]["oneOf"]
+    update = next(
+        variant for variant in variants
+        if variant["properties"]["op"]["enum"] == ["update_field"]
+    )
+    assert update["required"] == [
+        "op", "field_key", "expected_field_hash", "changes",
+    ]
+    assert set(update["properties"]) == {
+        "op", "field_key", "expected_field_hash", "changes",
+    }
+    assert update["additionalProperties"] is False
+    assert update["properties"]["changes"] == {
+        "type": "object",
+        "properties": {
+            "cn_name": tools_module.STRING,
+            "note": tools_module.STRING,
+            "alias": tools_module.STRING,
+            "required": {"type": "boolean"},
+        },
+        "minProperties": 1,
+        "additionalProperties": False,
+    }
+    assert "deferred_warnings" not in specs["confirm_schema_semantics"].properties
 
 
 async def test_phase_transition_forces_model_boundary_before_using_stale_tools() -> None:
@@ -1149,6 +1227,60 @@ async def test_ask_rejects_technical_question_while_recovery_tool_is_available()
     assert result["issueId"] == issue_id
     assert result["issueStatus"] == "repairing"
     assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+
+
+async def test_ask_rejects_platform_capability_question_without_recovery_record() -> None:
+    context = ToolContext(
+        project_id="project_capability_question",
+        run_id="run_capability_question",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    tool_call = type("Call", (), {
+        "arguments": json.dumps({
+            "question": "本会话工具集中没有该读取能力，请问平台侧能力是否已开放？",
+            "kind": "clarification",
+            "evidence": [],
+        }, ensure_ascii=False),
+    })()
+
+    decision = await AskRail(context).resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    result = json.loads(decision.tool_result)
+    assert result["error"] == "TECHNICAL_RECOVERY_REQUIRED"
+    assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+    assert context.technical_capability_claimed is True
+
+
+async def test_option_value_is_saved_as_latest_interaction_action_key(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_option_action_key",
+            project_id="project_option_action_key",
+            session_id="session_option_action_key",
+            status=RUN_RUNNING,
+            prompt="确认脚本范围",
+            token_fingerprint="fingerprint",
+        ))
+        interaction = InteractionRecord(
+            id="interaction_option_action_key",
+            project_id=run.project_id,
+            run_id=run.id,
+            tool_call_id="call_option_action_key",
+            kind="scope_confirmation",
+            payload={"question": "是否调整脚本范围？"},
+        )
+        runtime._persist_latest_interaction(  # noqa: SLF001
+            run,
+            interaction=interaction,
+            answer={"value": "adjust", "text": "保留可选输入"},
+        )
+        snapshot = runtime.store.require_run(run.id).latest_interaction
+        assert snapshot["actionKey"] == "adjust"
+    finally:
+        await runtime.shutdown()
 
 
 async def test_structured_issue_action_resumes_terminal_run_without_fake_user_message(settings) -> None:
@@ -3116,6 +3248,44 @@ async def test_agent_reads_and_transitions_single_project_state(settings) -> Non
         await runtime.shutdown()
 
 
+async def test_checkpoint_db_points_to_openjiuwen_physical_database(settings) -> None:
+    assert settings.checkpoint_db.name == "checkpoints.sqlite.db"
+
+
+async def test_global_checkpoint_failure_does_not_mark_idle_project_as_recovery(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    runtime._storage_diag = {"healthy": False, "checkpointDbExists": False}
+    try:
+        state = runtime.project_state("project_new")
+        assert "recovery" not in state["state"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_checkpoint_failure_is_reported_for_recoverable_project(settings) -> None:
+    runtime = service(settings, ScriptedModel([[]]), FakeGateway())
+    run = RunRecord(
+        id="run_checkpoint_missing",
+        project_id="project_checkpoint_missing",
+        session_id="session_checkpoint_missing",
+        status=RUN_RUNNING,
+        prompt="继续建模",
+        token_fingerprint="fingerprint",
+    )
+    runtime.store.create_run(run)
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    runtime._storage_diag = {"healthy": False, "checkpointDbExists": False}
+    try:
+        state = runtime.project_state(run.project_id)
+        assert state["state"]["recovery"] == {
+            "status": "volume_mismatch",
+            "missing": ["checkpoint"],
+            "nextSteps": ["核对建模服务数据卷与 checkpoints.sqlite.db 后重启"],
+        }
+    finally:
+        await runtime.shutdown()
+
+
 async def test_project_state_uses_authoritative_terminal_evaluation_and_rejects_stale_summary(settings) -> None:
     gateway = FakeGateway({"evaluation_status": {
         "available": True,
@@ -4419,6 +4589,18 @@ async def test_text_only_description_request_is_retried_until_input_card(setting
         await runtime.shutdown()
 
 
+async def test_delayed_expert_input_request_is_detected() -> None:
+    assert requests_user_input("下一步将在专家明确后继续处理")
+    assert requests_user_input("待业务专家确认范围之后再生成规则")
+    assert not requests_user_input("专家已经明确范围，继续生成规则")
+
+
+async def test_product_ledger_intent_requires_structured_ledger_tool_only_for_large_list() -> None:
+    intent = "调整规则内容/结构；重新给出资料完整/不足数量，保留 198 条与 3 组归并，不修改知识包"
+    assert "stage_product_ledger" in _required_tools_for_user_intent(intent)
+    assert "stage_product_ledger" not in _required_tools_for_user_intent("修改一条规则的描述")
+
+
 async def test_required_option_text_must_be_present_before_resume(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("ask", {
@@ -4471,6 +4653,122 @@ async def test_required_option_text_must_be_present_before_resume(settings) -> N
         completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
         assert completed["status"] == "completed", completed["error"]
         assert runtime.store.pending_interaction("project_required_option_text") is None
+        snapshot = runtime.store.require_run(started["id"]).latest_interaction
+        assert snapshot["requiredTextConstraint"]["text"] == "将客户分类从三级调整为四级。"
+        assert snapshot["requiredTextConstraint"]["textHash"].startswith("sha256:")
+        assert any("将客户分类从三级调整为四级。" in str(item) for item in model.stream_inputs)
+        assert any(
+            event.kind == "tool"
+            and event.payload.get("name") == "required_text_constraint"
+            and event.payload.get("phase") == "completed"
+            for event in runtime.store.events_after("project_required_option_text", 0)
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_required_text_guard_creates_actionable_card_when_model_does_not_acknowledge(
+    settings,
+) -> None:
+    model = ScriptedModel(
+        [[ToolTurn("ask", {
+            "question": "知识内容是否需要调整？",
+            "kind": "clarification",
+            "options": [{
+                "label": "内容需要修改",
+                "description": "说明需要修改的位置和内容",
+                "value": "content_fix",
+                "requiresText": True,
+                "textPrompt": "请描述具体需要修改的地方",
+            }],
+        })]],
+        final="这次处理无法继续。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_required_text_guard",
+            token="token_1",
+            message="核对知识内容",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        interaction = runtime.store.pending_interaction("project_required_text_guard")
+        assert interaction is not None
+
+        await runtime.answer_interaction(
+            project_id="project_required_text_guard",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "value": "content_fix",
+                "selected": ["content_fix"],
+                "text": "保留既有 ID，仅重新核对完整性。",
+            },
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        review = runtime.store.pending_interaction("project_required_text_guard")
+        assert review is not None
+        assert review.payload["requiredTextConstraint"]["text"] == "保留既有 ID，仅重新核对完整性。"
+        assert [item["value"] for item in review.payload["options"]] == [
+            "retry_required_text", "edit_required_text",
+        ]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_required_text_guard_replaces_repeated_original_question_with_review_card(
+    settings,
+) -> None:
+    original = {
+        "question": "知识内容是否需要调整？",
+        "kind": "clarification",
+        "options": [{
+            "label": "内容需要修改",
+            "description": "说明需要修改的位置和内容",
+            "value": "content_fix",
+            "requiresText": True,
+            "textPrompt": "请描述具体需要修改的地方",
+        }],
+    }
+    model = ScriptedModel([
+        [ToolTurn("ask", original)],
+        [ToolTurn("ask", original)],
+        [ToolTurn("ask", original)],
+    ])
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_required_text_repeated_question",
+            token="token_1",
+            message="核对知识内容",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting"})
+        interaction = runtime.store.pending_interaction(
+            "project_required_text_repeated_question",
+        )
+        assert interaction is not None
+
+        await runtime.answer_interaction(
+            project_id="project_required_text_repeated_question",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={
+                "value": "content_fix",
+                "selected": ["content_fix"],
+                "text": "只修改指定说明，保留既有 ID。",
+            },
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        review = runtime.store.pending_interaction(
+            "project_required_text_repeated_question",
+        )
+        assert review is not None
+        assert review.payload["question"].startswith("助手还没有明确响应")
+        assert review.payload["requiredTextConstraint"]["text"] == "只修改指定说明，保留既有 ID。"
     finally:
         await runtime.shutdown()
 
@@ -4542,6 +4840,103 @@ async def test_choice_text_with_ask_card_is_not_retried(settings) -> None:
         assert waiting["status"] == "waiting", waiting["error"]
         assert runtime.store.pending_interaction("project_decision_card_present") is not None
         assert model.calls == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_missing_confirmation_card_suspends_with_recovery_actions(settings) -> None:
+    model = ScriptedModel(
+        [[], [], []],
+        final="确认卡已生成，等待您确认。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_confirmation_review_recovery",
+            token="token_1",
+            message="继续复核当前候选",
+        )
+        suspended = await wait_for_status(runtime, started["id"], {"suspended", "failed"})
+
+        assert suspended["status"] == RUN_SUSPENDED
+        recoveries = runtime.store.technical_recoveries(started["id"])
+        assert len(recoveries) == 1
+        issue_id, recovery = next(iter(recoveries.items()))
+        assert issue_id == f"confirmation-review-{started['id']}"
+        assert recovery["strategy"] == "confirmation_review"
+        assert [item["id"] for item in recovery["recoveryActions"]] == [
+            "retry_from_latest", "keep_current_progress",
+        ]
+        events = runtime.store.events_after("project_confirmation_review_recovery", 0)
+        waiting = next(
+            event.payload for event in events
+            if event.kind == "tool" and event.payload.get("issueId") == issue_id
+        )
+        assert waiting["phase"] == "waiting"
+        assert waiting["code"] == "CONFIRMATION_CARD_NOT_CREATED"
+        assert waiting["projectPhase"] == "intake"
+        assert waiting["toolProfile"] == "domain-v2"
+        assert not any(
+            event.kind == "message"
+            and "助手未能形成整体确认" in str(event.payload)
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_confirmation_review_retries_from_latest_and_recreates_card(settings) -> None:
+    group = {"id": "script", "tier": "caliber", "title": "脚本范围"}
+    model = ScriptedModel(
+        [
+            [], [], [],
+            [ToolTurn("list_domain_resources", {"kind": "operation"})],
+            [ToolTurn("request_confirmation", {"summary": "请确认脚本范围"})],
+        ],
+        final="确认卡已生成，等待您确认。",
+    )
+    gateway = FakeGateway({
+        "list_domain_resources": {
+            "working_revision": "working-revision",
+            "kind": "operation",
+            "items": [],
+            "total": 0,
+        },
+        "prepare_confirmation_groups": {"change_groups": [group]},
+        "request_confirmation_preflight": {
+            "candidate_revision": "candidate-script",
+            "auto_approved": False,
+            "change_groups": [group],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_confirmation_review_resume",
+            token="token_1",
+            message="继续复核当前候选",
+        )
+        suspended = await wait_for_status(runtime, started["id"], {"suspended", "failed"})
+        assert suspended["status"] == RUN_SUSPENDED
+        issue_id = next(iter(runtime.store.technical_recoveries(started["id"])))
+
+        resumed = await runtime.resume_issue(
+            project_id="project_confirmation_review_resume",
+            token="token_2",
+            issue_id=issue_id,
+            action_id="retry_from_latest",
+        )
+        assert resumed["mode"] == "checkpoint_resume"
+        assert resumed["run"]["id"] == started["id"]
+
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting"
+        interaction = runtime.store.pending_interaction("project_confirmation_review_resume")
+        assert interaction is not None and interaction.kind == "confirmation"
+        assert [call["tool"] for call in gateway.calls].count("list_domain_resources") == 1
+        assert runtime.store.technical_recoveries(started["id"]) == {}
     finally:
         await runtime.shutdown()
 

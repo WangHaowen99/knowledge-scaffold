@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import threading
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 try:
     import fcntl
@@ -38,19 +38,47 @@ class IndexedLocalOTelStore:
         self._last_pruned_day = ""
 
     def append(self, record: dict[str, Any]) -> None:
-        payload = (json.dumps(record, ensure_ascii=True, default=str) + "\n").encode("utf-8")
-        day = _record_day(record)
-        with local_file_lock(self.lock_path):
-            self._prune(day)
-            data_path = self._writable_partition(day, len(payload))
-            with data_path.open("ab") as stream:
-                offset = stream.tell()
-                stream.write(payload)
-                data_size = stream.tell()
-            _append_index_entry(
-                data_path,
-                _index_entry(record, offset=offset, length=len(payload), data_size=data_size),
+        self.append_many((record,))
+
+    def append_many(self, records: Iterable[dict[str, Any]]) -> None:
+        prepared = [
+            (
+                record,
+                (json.dumps(record, ensure_ascii=True, default=str) + "\n").encode(
+                    "utf-8"
+                ),
+                _record_day(record),
             )
+            for record in records
+        ]
+        if not prepared:
+            return
+        with local_file_lock(self.lock_path):
+            for record, payload, day in prepared:
+                self._append_unlocked(record, payload=payload, day=day)
+
+    def _append_unlocked(
+        self,
+        record: dict[str, Any],
+        *,
+        payload: bytes,
+        day: str,
+    ) -> None:
+        self._prune(day)
+        data_path = self._writable_partition(day, len(payload))
+        with data_path.open("ab") as stream:
+            offset = stream.tell()
+            stream.write(payload)
+            data_size = stream.tell()
+        _append_index_entry(
+            data_path,
+            _index_entry(
+                record,
+                offset=offset,
+                length=len(payload),
+                data_size=data_size,
+            ),
+        )
 
     def _writable_partition(self, day: str, payload_size: int) -> Path:
         base = self.log_dir / "otel_trace-{}.log".format(day)

@@ -440,6 +440,9 @@ export function messageText(block = {}, sanitize = true) {
   if (block.text) return visible(block.text);
   if (block.type === 'answer') {
     const answer = block.answer || {};
+    if (answer.displayText && answer.text) {
+      return `${visible(answer.displayText)}\n补充说明：${visible(answer.text)}`;
+    }
     if (answer.displayText) return visible(answer.displayText);
     if (answer.approved === true) return '已接受所选修改';
     if (answer.approved === false) return answer.feedback ? `已退回调整：${visible(answer.feedback)}` : '已退回调整';

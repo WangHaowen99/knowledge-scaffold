@@ -155,6 +155,38 @@ def get_request_stores():
     )
 
 
+def prune_request_sessions(*, max_sessions: int, batch_size: int = 1) -> list[str]:
+    """Run the manager-owned bounded prune for the current request scope."""
+
+    user = get_current_user()
+    if not user:
+        raise RuntimeError("User not resolved for request")
+    if not _user_store_manager:
+        raise RuntimeError("User store manager not initialized")
+    return _user_store_manager.prune_sessions(
+        user.username,
+        get_request_workspace_id(),
+        max_sessions=max_sessions,
+        batch_size=batch_size,
+    )
+
+
+def prune_request_sessions_batch(*, max_sessions: int, batch_size: int = 25):
+    """Return explicit convergence state for one manager-owned prune batch."""
+
+    user = get_current_user()
+    if not user:
+        raise RuntimeError("User not resolved for request")
+    if not _user_store_manager:
+        raise RuntimeError("User store manager not initialized")
+    return _user_store_manager.prune_sessions_batch(
+        user.username,
+        get_request_workspace_id(),
+        max_sessions=max_sessions,
+        batch_size=batch_size,
+    )
+
+
 def get_user_stores(username: str, workspace_id: str):
     """Resolve durable stores for non-HTTP protocol adapters."""
     if not _user_store_manager:

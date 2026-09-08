@@ -34,6 +34,7 @@ import {
   resolveBootstrapFocus,
   SCENES,
   studioFocusFromLocation,
+  shouldUseStaleRunTermination,
 } from './lib/appStore.js';
 import ProcessDrawer, {
   humanizeTraceSummary,
@@ -1609,7 +1610,7 @@ store.set({
   materials: [{ id: 'doc-synthetic', filename: '合成资料说明.docx' }],
   candidateDiff: [{
     path: '.modeling/goal.md', before: '',
-    after: '# 目标\n\n资料：material:doc-synthetic#前言（合成资料说明，提供业务背景）',
+    after: '# 目标\n\n资料：`material:doc-synthetic#前言`（合成资料说明，提供业务背景）',
     additions: 3, deletions: 0,
   }],
 });
@@ -1832,6 +1833,7 @@ try {
   const message = restoredVersionMessage('1.0.0', {});
   const leakedText = "评测轮次 rd_64bea577-467，基于修订 588743e；request_release；evaluation:running；评测库查询失败：Unknown database 'mv_shadow_pj_796c0f3e_156'；结果 5/5，版本 v1.0.0。";
   const agentText = userFacingText(leakedText);
+  const capabilityClaim = userFacingText('脚本契约需要读取领域资源，但本会话工具集中没有该读取能力，请确认平台是否开放。');
   const agentHtml = renderToString(<Block block={{ type: 'text', text: leakedText }} />);
   const quotaText = userFacingText("[181001] model call failed: RateLimitError: Error code: 429 - {'code':'insufficient_quota','message':'Allocated quota exceeded'}");
   if (!html.includes('v1.0.0 · 已发布') || !html.includes('发布交付')) {
@@ -1839,6 +1841,9 @@ try {
   }
   if (/deadbeef|request_release|run-|cp-013|工具事件|工具边界/.test(html)) {
     throw new Error('主界面仍暴露运行时实现标识');
+  }
+  if (capabilityClaim !== '当前步骤需要系统继续核对，现有进展已保留。') {
+    throw new Error('主界面仍暴露平台内部能力缺口');
   }
   if (message !== '已从版本历史恢复到v1.0.0，无需重复评测。'
     || /request_|preflight|API|checkpoint|running/.test(message)) {
@@ -2261,5 +2266,15 @@ try {
   console.log('✓ 助手提供文件级资料用途批量确认卡');
 } catch (e) { console.log('✗ 资料用途批量确认卡:', e.message); bad++; }
 
+
+try {
+  if (!shouldUseStaleRunTermination({ status: 'stale_run' })
+    || !shouldUseStaleRunTermination({ status: 'plan_unreadable' })
+    || shouldUseStaleRunTermination({ status: 'resume_failed' })
+    || shouldUseStaleRunTermination(null)) {
+    throw new Error('恢复终止门控没有只覆盖 stale_run/plan_unreadable');
+  }
+  console.log('✓ stale-run 终止门控仅覆盖 stale_run/plan_unreadable');
+} catch (e) { console.log('✗ 恢复终止门控:', e.message); bad++; }
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

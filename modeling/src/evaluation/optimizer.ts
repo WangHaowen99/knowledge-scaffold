@@ -1,6 +1,12 @@
 import { Type } from '@earendil-works/pi-ai';
 import { buildTaskLlm, type LlmDeps } from '../llm/provider.js';
-import { AgentCaptureError, AgentRunTimeoutError, makeAgent, runAgentCaptured } from '../workflow/agent.js';
+import {
+  AgentCaptureError,
+  AgentRunTimeoutError,
+  isModelContextLengthExceeded,
+  makeAgent,
+  runAgentCaptured,
+} from '../workflow/agent.js';
 import { specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema } from '../workflow/tools.js';
 import { questionsMatch, validateSpecIntegrity } from '../workflow/spec-validation.js';
 import type { CheckFinding } from '../workflow/package-check.js';
@@ -56,11 +62,13 @@ const STABLE_DIAGNOSIS_ID = /^dg[_-][A-Za-z0-9][A-Za-z0-9_-]*$/u;
 const EVALUATION_ORACLE_LANGUAGE = /(?:标准答案|参考答案|地面真值|(?:智能体|模型)(?:回答|答案|输出原文)|评测(?:答案|结果|得分|通过率)|(?:当前|本次|该条|单个|全部|所有)用例)/u;
 const OPTIMIZATION_MAX_ATTEMPTS = 2;
 export const OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS = 12_000;
+export const OPTIMIZATION_PROPOSAL_BATCH_MAX_OUTPUT_TOKENS = 8_000;
 export const OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS = 32_000;
 export const OPTIMIZATION_TARGETED_APPLY_MAX_OUTPUT_TOKENS = 16_000;
 export const OPTIMIZATION_TARGETED_SHARD_MAX_OUTPUT_TOKENS = 10_000;
 export const OPTIMIZATION_TARGETED_OPERATION_MAX_OUTPUT_TOKENS = 4_096;
 export const OPTIMIZATION_PROPOSAL_TIMEOUT_MS = 3 * 60_000;
+export const OPTIMIZATION_PROPOSAL_TOTAL_TIMEOUT_MS = 10 * 60_000;
 export const OPTIMIZATION_APPLY_TIMEOUT_MS = 10 * 60_000;
 export const OPTIMIZATION_TARGETED_APPLY_TIMEOUT_MS = 5 * 60_000;
 const OPTIMIZATION_TARGETED_SHARD_CONCURRENCY = 2;
@@ -73,6 +81,15 @@ const OPTIMIZATION_TARGETED_MAX_FUNCTION_SOURCE_CHARS = 16_000;
 const OPTIMIZATION_TARGETED_MAX_WHOLE_SCRIPT_CHARS = 24_000;
 const OPTIMIZATION_TARGETED_SHARD_MAX_CAPTURE_ATTEMPTS = 2;
 const OPTIMIZATION_TARGETED_REPAIR_MAX_DRAFT_CHARS = 20_000;
+const OPTIMIZATION_PROPOSAL_MAX_DIAGNOSES_PER_BATCH = 2;
+const OPTIMIZATION_PROPOSAL_MAX_TARGETS_PER_BATCH = 2;
+const OPTIMIZATION_PROPOSAL_MAX_PROMPT_CHARS = 20_000;
+const OPTIMIZATION_PROPOSAL_MAX_RESOURCE_CATALOG_CHARS = 8_000;
+const OPTIMIZATION_PROPOSAL_MAX_SPLIT_DEPTH = 4;
+
+export function optimizationProposalModelCallLimit(diagnosisCount: number): number {
+  return Math.min(32, Math.max(12, Math.max(0, Math.floor(diagnosisCount)) * 3));
+}
 
 function targetedSymbolSourceLimit(kind: 'function' | 'assignment'): number {
   return kind === 'function'
@@ -652,20 +669,6 @@ function safeDiagnosisPrompt(diagnoses: OptimizationDiagnosis[]): string {
   })));
 }
 
-function optimizationResourceCatalog(spec: PackageSpec) {
-  return {
-    objects: spec.objects.map((item) => ({ key: item.key, title: item.title })),
-    operations: spec.operations.map((item) => ({
-      key: item.key, title: item.title, scriptKey: item.script?.key,
-    })),
-    rules: (spec.rules ?? []).map((item) => ({ key: item.key, title: item.title })),
-    metrics: (spec.metrics ?? []).map((item) => ({ key: item.key, title: item.title })),
-    scripts: (spec.scripts ?? []).map((item) => ({
-      key: item.key, title: item.title, boundOperation: item.boundOperation, entrypoint: item.entrypoint,
-    })),
-  };
-}
-
 function scriptDecisionPrompt(spec: PackageSpec, diagnoses: OptimizationDiagnosis[]): string {
   const decisions = diagnoses
     .filter((diagnosis) => diagnosis.category === 'needs_script')
@@ -743,6 +746,143 @@ export function validateOptimizationSuggestions(
   }
 }
 
+type OptimizationProposalBatch = {
+  diagnoses: OptimizationDiagnosis[];
+  inferredTargets: string[];
+};
+
+type OptimizationProposalBudget = {
+  startedAt: number;
+  modelCalls: number;
+};
+
+export class OptimizationProposalTruncatedError extends Error {
+  readonly code = 'OPTIMIZATION_SUGGESTION_OUTPUT_TRUNCATED';
+
+  constructor(readonly diagnosisIds: string[]) {
+    super(`诊断 ${diagnosisIds.join(', ') || '（缺少稳定编号）'} 在最小建议协议下仍达到模型输出上限，本次未保存任何优化建议`);
+    this.name = 'OptimizationProposalTruncatedError';
+  }
+}
+
+function truncatePromptValue(value: string, maxLength: number): string {
+  const normalized = safeDiagnosisPromptValue(value);
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength)}…`;
+}
+
+function minimalDiagnosisPrompt(diagnosis: OptimizationDiagnosis): string {
+  return JSON.stringify({
+    id: diagnosis.id,
+    category: diagnosis.category,
+    title: truncatePromptValue(diagnosis.title, 200),
+    summary: truncatePromptValue(diagnosis.summary, 1_200),
+    evidence: diagnosis.evidence.slice(0, 3).map((item) => truncatePromptValue(item, 500)),
+    repairScope: diagnosis.repairScope,
+    suggestedAction: truncatePromptValue(diagnosis.suggestedAction, 800),
+  });
+}
+
+function inferredDiagnosisTargets(spec: PackageSpec, diagnosis: OptimizationDiagnosis): string[] {
+  const text = diagnosisText(diagnosis);
+  const targets: string[] = [];
+  for (const kind of ['object', 'operation', 'rule', 'metric', 'script'] as ResourceKind[]) {
+    for (const item of catalogItems(spec, kind)) {
+      if (text.includes(item.key) || Boolean(item.title && text.includes(item.title))) {
+        targets.push(`${kind}:${item.key}`);
+      }
+    }
+  }
+  return [...new Set(targets)];
+}
+
+function proposalBatches(spec: PackageSpec, diagnoses: OptimizationDiagnosis[]): OptimizationProposalBatch[] {
+  const tasks = diagnoses.map((diagnosis) => ({
+    diagnosis,
+    targets: inferredDiagnosisTargets(spec, diagnosis),
+  }));
+  const batches: OptimizationProposalBatch[] = [];
+  let current: OptimizationProposalBatch | undefined;
+
+  for (const task of tasks) {
+    const mustRunAlone = task.targets.length === 0
+      || task.targets.length > OPTIMIZATION_PROPOSAL_MAX_TARGETS_PER_BATCH
+      || safeDiagnosisPrompt([task.diagnosis]).length > OPTIMIZATION_PROPOSAL_MAX_PROMPT_CHARS;
+    const combinedTargets = [...new Set([...(current?.inferredTargets ?? []), ...task.targets])];
+    const canAppend = current
+      && !mustRunAlone
+      && current.diagnoses.length < OPTIMIZATION_PROPOSAL_MAX_DIAGNOSES_PER_BATCH
+      && combinedTargets.length <= OPTIMIZATION_PROPOSAL_MAX_TARGETS_PER_BATCH
+      && safeDiagnosisPrompt([...current.diagnoses, task.diagnosis]).length <= OPTIMIZATION_PROPOSAL_MAX_PROMPT_CHARS;
+    if (canAppend && current) {
+      current.diagnoses.push(task.diagnosis);
+      current.inferredTargets = combinedTargets;
+      continue;
+    }
+    current = { diagnoses: [task.diagnosis], inferredTargets: task.targets };
+    batches.push(current);
+    if (mustRunAlone) current = undefined;
+  }
+  return batches;
+}
+
+function boundedResourceCatalog(spec: PackageSpec, inferredTargets: string[]): string {
+  const requested = new Set(inferredTargets);
+  const entries: Array<Record<string, unknown> & { kind: ResourceKind; key: string }> = [
+    ...spec.objects.map((item) => ({ kind: 'object' as const, key: item.key, title: item.title })),
+    ...spec.operations.map((item) => ({
+      kind: 'operation' as const, key: item.key, title: item.title, scriptKey: item.script?.key,
+    })),
+    ...(spec.rules ?? []).map((item) => ({ kind: 'rule' as const, key: item.key, title: item.title })),
+    ...(spec.metrics ?? []).map((item) => ({ kind: 'metric' as const, key: item.key, title: item.title })),
+    ...(spec.scripts ?? []).map((item) => ({
+      kind: 'script' as const, key: item.key, title: item.title,
+      boundOperation: item.boundOperation, entrypoint: item.entrypoint,
+    })),
+  ]
+    .filter((item) => !requested.size || requested.has(`${item.kind}:${item.key}`));
+  const selected: typeof entries = [];
+  for (const entry of entries) {
+    const candidate = JSON.stringify([...selected, entry]);
+    if (candidate.length > OPTIMIZATION_PROPOSAL_MAX_RESOURCE_CATALOG_CHARS) break;
+    selected.push(entry);
+  }
+  return JSON.stringify(selected);
+}
+
+function proposalCheckBlock(checkFindings: CheckFinding[], inferredTargets: string[]): string {
+  const targetKeys = new Set(inferredTargets.map((item) => item.slice(item.indexOf(':') + 1)));
+  const relevant = checkFindings.filter((finding) => !targetKeys.size || targetKeys.has(finding.target));
+  if (!relevant.length) return '';
+  const lines: string[] = [];
+  for (const finding of relevant) {
+    const line = `- [${finding.severity}/${finding.category}] ${finding.target}：${finding.message}`;
+    if ([...lines, line].join('\n').length > 4_000) break;
+    lines.push(line);
+  }
+  return lines.length ? `\n【当前批次相关的包体检发现】\n${lines.join('\n')}` : '';
+}
+
+function isProposalSizeFailure(error: unknown): boolean {
+  return (error instanceof AgentCaptureError && error.code === 'STRUCTURED_OUTPUT_TRUNCATED')
+    || isModelContextLengthExceeded(error);
+}
+
+function assertProposalCoverage(suggestions: RawSuggestion[], diagnoses: OptimizationDiagnosis[]): void {
+  const covered = new Set(suggestions.flatMap((item) => item.diagnosisIds ?? []));
+  const missing = diagnoses.flatMap((item) => item.id && !covered.has(item.id) ? [item.id] : []);
+  if (missing.length) throw new Error(`优化建议未覆盖诊断：${missing.join(', ')}`);
+}
+
+function dedupeProposalSuggestions(suggestions: RawSuggestion[]): RawSuggestion[] {
+  const seen = new Set<string>();
+  return suggestions.filter((suggestion) => {
+    const key = optimizationSuggestionDedupeKey(suggestion);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export async function proposeOptimizations(
   project: Project,
   spec: PackageSpec,
@@ -751,31 +891,7 @@ export async function proposeOptimizations(
   checkFindings: CheckFinding[] = [],
   diagnoses: OptimizationDiagnosis[] = [],
 ): Promise<RawSuggestion[]> {
-  const cap: { suggestions?: RawSuggestion[] } = {};
-  const submitSuggestions = {
-    name: 'submit_suggestions',
-    label: '提交优化建议',
-    description: '针对未通过的评测用例，提交对知识包规格的结构化优化建议（每条建议对应一处可落地的修改）',
-    parameters: Type.Object({
-      suggestions: Type.Array(Type.Object({
-        title: Type.String(),
-        detail: Type.String(),
-        kind: Type.Union(KIND_LITERALS.map((k) => Type.Literal(k)) as any),
-        target: Type.Optional(Type.String()),
-        relatedQuestion: Type.Optional(Type.String()),
-        diagnosisIds: Type.Array(Type.String()),
-        evidence: Type.Array(Type.String()),
-        generalizationPlan: Type.String(),
-        validationPlan: Type.String(),
-      })),
-    }),
-    async execute(_id: string, params: { suggestions: RawSuggestion[] }) {
-      cap.suggestions = params.suggestions;
-      return { content: [{ type: 'text' as const, text: `已提交 ${params.suggestions.length} 条建议。` }], details: {}, terminate: true };
-    },
-  };
-
-  const sys = [
+  const systemPrompt = (batch: OptimizationProposalBatch) => [
     '你是知识包优化器。评测中部分用例未通过，请先按执行痕迹诊断根因，再给可落地的优化建议：',
     '每条用例给出了「应答操作」（认领该问题的操作）与「实际引用」（回答里真实用到的操作）。三类根因分别处理：',
     'A) 知识缺失——先判断缺的资源类型：数据实体用 add_object，适用条件/判断门槛/例外用 add_rule，',
@@ -800,8 +916,8 @@ export async function proposeOptimizations(
     '修改建议的 target 必须严格填下方资源目录中的 key，不得填标题，不得填 key:title。新增建议的 target 填将创建的新 key。',
     '脚本诊断必须遵循服务端决策：已有脚本但未调用时先 modify_operation；同一职责能力不足时先 modify_script；只有无脚本或契约/职责不兼容时才 add_script。',
     `项目背景：${project.background || project.domain || project.name}`,
-    `当前资源目录：${JSON.stringify(optimizationResourceCatalog(spec))}`,
-    `脚本修复决策：${scriptDecisionPrompt(spec, diagnoses)}`,
+    `当前批次必要资源目录：${boundedResourceCatalog(spec, batch.inferredTargets)}`,
+    `脚本修复决策：${scriptDecisionPrompt(spec, batch.diagnoses)}`,
   ].join('\n');
 
   // 压成单行：faux 分支按行正则解析，多行的标准答案/回答会破坏对应关系
@@ -814,72 +930,168 @@ export async function proposeOptimizations(
       ` ｜应答操作：${claiming.join(',') || '（无认领）'} ｜实际引用：${cited.join(',') || '（未识别）'}` +
       ` ｜智能体回答：${answer.slice(0, 600)} ｜理由：${one(r.reason ?? '')}`;
   });
-  const checkBlock = checkFindings.length
-    ? `\n【包体检发现（确定性检查，可直接采信）】\n${checkFindings.map((f) => `- [${f.severity}/${f.category}] ${f.target}：${f.message}`).join('\n')}`
-    : '';
-  const diagnosisBlock = diagnoses.length
-    ? `\n【已确认的失败原因（只能针对 packageOptimizable=true 且 blocking=false 的诊断提建议）】\n${safeDiagnosisPrompt(diagnoses)}`
-    : '';
-  const initialPrompt = diagnoses.length
-    ? `请仅根据以下已确认诊断和包体检事实生成通用优化建议。不要索取、推测或复述原始评测问题与答案。${diagnosisBlock}${checkBlock}`
-    : `未通过的评测用例如下，请给出优化建议：\n${failLines.join('\n')}${checkBlock}`;
-  const llm = llmOverride ?? buildTaskLlm({ maxTokensCap: OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS });
-  const toolChoiceState = { mode: 'named' as const };
-  let validationError: Error | undefined;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    cap.suggestions = undefined;
-    const prompt = attempt === 1
-      ? initialPrompt
-      : [
-          '上一次提交的优化建议未通过服务端门禁，请根据以下准确原因重新生成并提交完整 suggestions 数组：',
-          validationError?.message ?? '未产出结构化建议。',
-          '不要绕过或弱化门禁。删除具体用例的批次范围、日期、答案数值和样例专用分支，把它们改为运行时参数、来源证据和可验证的通用约束。',
-          '删除标准答案、参考答案、地面真值、智能体回答、评测结果等裁判措辞；evidence 只保留资料、脚本错误、执行轨迹或稳定诊断依据。',
-          '验证方案不得复用失败轮次中的精确百分比、精确小数或长整数；改用符号变量、性质断言或新的边界组合。',
-          '本次重试的 validationPlan 不要写任何阿拉伯数字或带单位数值；使用“空输入、单位输入、满量程、缺失字段、字段顺序变化”等文字性质描述。',
-          '仍然只能处理 packageOptimizable=true 且 blocking=false 的诊断，并保留每条建议的 diagnosisIds、evidence、generalizationPlan 与 validationPlan。',
+  const legacyBatch: OptimizationProposalBatch = { diagnoses: [], inferredTargets: [] };
+  const batches = diagnoses.length ? proposalBatches(spec, diagnoses) : [legacyBatch];
+  const llm = llmOverride ?? buildTaskLlm({
+    maxTokensCap: diagnoses.length
+      ? OPTIMIZATION_PROPOSAL_BATCH_MAX_OUTPUT_TOKENS
+      : OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS,
+  });
+  const budget: OptimizationProposalBudget = { startedAt: Date.now(), modelCalls: 0 };
+  const maxModelCalls = optimizationProposalModelCallLimit(diagnoses.length);
+
+  const generateOne = async (batch: OptimizationProposalBatch, minimal: boolean): Promise<RawSuggestion[]> => {
+    const diagnosis = batch.diagnoses[0];
+    const toolName = minimal ? 'submit_minimal_suggestion' : 'submit_suggestions';
+    const cap: { suggestions?: RawSuggestion[] } = {};
+    const suggestionSchema = Type.Object({
+      title: Type.String(minimal ? { minLength: 1, maxLength: 120 } : {}),
+      detail: Type.String(minimal ? { minLength: 1, maxLength: 1_200 } : {}),
+      kind: Type.Union(KIND_LITERALS.map((kind) => Type.Literal(kind)) as any),
+      target: Type.Optional(Type.String(minimal ? { minLength: 1, maxLength: 160 } : {})),
+      relatedQuestion: Type.Optional(Type.String(minimal ? { maxLength: 300 } : {})),
+      diagnosisIds: minimal && diagnosis?.id
+        ? Type.Array(Type.Literal(diagnosis.id), { minItems: 1, maxItems: 1 })
+        : Type.Array(Type.String(), minimal ? { minItems: 1, maxItems: 1 } : {}),
+      evidence: Type.Array(
+        Type.String(minimal ? { minLength: 1, maxLength: 500 } : {}),
+        minimal ? { minItems: 1, maxItems: 3 } : {},
+      ),
+      generalizationPlan: Type.String(minimal ? { minLength: 1, maxLength: 800 } : {}),
+      validationPlan: Type.String(minimal ? { minLength: 1, maxLength: 800 } : {}),
+    });
+    const submitTool = {
+      name: toolName,
+      label: minimal ? '提交单条最小优化建议' : '提交优化建议',
+      description: minimal
+        ? '只针对当前单个诊断提交一条有长度边界的结构化优化建议'
+        : '针对当前批次诊断提交结构化优化建议',
+      parameters: Type.Object({
+        suggestions: Type.Array(suggestionSchema, minimal
+          ? { minItems: 1, maxItems: 1 }
+          : { minItems: 1, maxItems: Math.max(3, batch.diagnoses.length * 3) }),
+      }),
+      async execute(_id: string, params: { suggestions: RawSuggestion[] }) {
+        cap.suggestions = params.suggestions;
+        return { content: [{ type: 'text' as const, text: `已提交 ${params.suggestions.length} 条建议。` }], details: {}, terminate: true };
+      },
+    };
+    const checkBlock = proposalCheckBlock(checkFindings, batch.inferredTargets);
+    const diagnosisBlock = batch.diagnoses.length
+      ? `\n【当前批次已确认的失败原因】\n${minimal ? minimalDiagnosisPrompt(diagnosis) : safeDiagnosisPrompt(batch.diagnoses)}`
+      : '';
+    const initialPrompt = batch.diagnoses.length
+      ? [
+          minimal
+            ? '当前诊断的常规结构化输出达到长度上限。请只生成一条最小、完整、可执行的建议，所有字段保持简洁。'
+            : '请仅根据当前批次诊断和相关包体检事实生成通用优化建议，不得处理其他诊断。',
           diagnosisBlock,
           checkBlock,
-          '请立即调用 submit_suggestions 重新提交；未通过工具提交的正文不会保存。',
-        ].join('\n');
-    // 每次重试使用全新上下文，避免上一轮包含具体数值的建议继续锚定后续输出。
-    const agent = makeAgent(llm, sys, [submitSuggestions] as any);
-    await runAgentCaptured(
-      agent,
-      prompt,
-      () => Boolean(cap.suggestions),
-      '不要继续输出分析正文。请把结论整理为结构化参数，并立即调用 submit_suggestions 提交；未通过工具提交的内容不会保存。',
-      undefined,
-      {
-        timeoutMs: OPTIMIZATION_PROPOSAL_TIMEOUT_MS,
-        maxCaptureAttempts: 2,
-        requireCapture: true,
-        requiredToolName: 'submit_suggestions',
-        toolChoiceState,
-        resetCapture: () => { cap.suggestions = undefined; },
-        captureDiagnostics: {
-          targetToolName: 'submit_suggestions',
-          onAttempt: () => undefined,
-        },
-      },
-    );
-    const suggestions = cap.suggestions as RawSuggestion[] | undefined;
-    if (!suggestions?.length) {
-      validationError = new Error('优化器未产出建议，请重试');
-      if (attempt < 3) continue;
-      throw validationError;
+          `请立即调用 ${toolName}；未通过工具提交的正文不会保存。`,
+        ].join('\n')
+      : `未通过的评测用例如下，请给出优化建议：\n${failLines.join('\n')}${checkBlock}`;
+    const toolChoiceState = { mode: 'named' as const };
+    let validationError: Error | undefined;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const elapsed = Date.now() - budget.startedAt;
+      const remaining = OPTIMIZATION_PROPOSAL_TOTAL_TIMEOUT_MS - elapsed;
+      if (remaining <= 0) throw new AgentRunTimeoutError(OPTIMIZATION_PROPOSAL_TOTAL_TIMEOUT_MS);
+      if (budget.modelCalls >= maxModelCalls) {
+        throw new Error(`优化建议生成超过最大模型调用次数 ${maxModelCalls}，本次未保存任何建议`);
+      }
+      budget.modelCalls += 1;
+      cap.suggestions = undefined;
+      const prompt = attempt === 1
+        ? initialPrompt
+        : [
+            `上一次 ${toolName} 提交未通过，请只修复当前批次：`,
+            validationError?.message ?? '未产出结构化建议。',
+            '不要扩大诊断范围；删除裁判措辞、样例数值和样例专用分支，保留 diagnosisIds、evidence、generalizationPlan 与 validationPlan。',
+            diagnosisBlock,
+            checkBlock,
+            `请立即调用 ${toolName} 重新提交。`,
+          ].join('\n');
+      const agent = makeAgent(llm, systemPrompt(batch), [submitTool] as any);
+      try {
+        await runAgentCaptured(
+          agent,
+          prompt,
+          () => Boolean(cap.suggestions),
+          `不要继续输出分析正文。请立即调用 ${toolName} 提交结构化结果。`,
+          undefined,
+          {
+            timeoutMs: Math.max(1, Math.min(OPTIMIZATION_PROPOSAL_TIMEOUT_MS, remaining)),
+            maxCaptureAttempts: 1,
+            requireCapture: true,
+            requiredToolName: toolName,
+            toolChoiceState,
+            resetCapture: () => { cap.suggestions = undefined; },
+            captureDiagnostics: { targetToolName: toolName, onAttempt: () => undefined },
+          },
+        );
+      } catch (error) {
+        if (isProposalSizeFailure(error)) throw error;
+        validationError = error instanceof Error ? error : new Error(String(error));
+        if (attempt < 3) continue;
+        throw validationError;
+      }
+      const suggestions = cap.suggestions as RawSuggestion[] | undefined;
+      if (!suggestions?.length) {
+        validationError = new Error('优化器未产出建议，请重试');
+        if (attempt < 3) continue;
+        throw validationError;
+      }
+      try {
+        const normalized = normalizeOptimizationSuggestionTargets(suggestions, spec);
+        validateOptimizationSuggestions(normalized, batch.diagnoses, failedResults, spec);
+        validateScriptOptimizationDecisions(normalized, batch.diagnoses, spec);
+        assertProposalCoverage(normalized, batch.diagnoses);
+        return normalized;
+      } catch (error) {
+        validationError = error instanceof Error ? error : new Error(String(error));
+        if (attempt >= 3) throw validationError;
+      }
     }
+    throw validationError ?? new Error('优化器未产出建议，请重试');
+  };
+
+  const generateBatch = async (batch: OptimizationProposalBatch, depth: number): Promise<RawSuggestion[]> => {
+    const oversizedSingle = batch.diagnoses.length === 1
+      && safeDiagnosisPrompt(batch.diagnoses).length > OPTIMIZATION_PROPOSAL_MAX_PROMPT_CHARS;
     try {
-      const normalized = normalizeOptimizationSuggestionTargets(suggestions, spec);
-      validateOptimizationSuggestions(normalized, diagnoses, failedResults, spec);
-      validateScriptOptimizationDecisions(normalized, diagnoses, spec);
-      return normalized;
+      return await generateOne(batch, oversizedSingle);
     } catch (error) {
-      validationError = error instanceof Error ? error : new Error(String(error));
-      if (attempt >= 3) throw validationError;
+      if (!isProposalSizeFailure(error)) throw error;
+      if (batch.diagnoses.length > 1 && depth < OPTIMIZATION_PROPOSAL_MAX_SPLIT_DEPTH) {
+        const midpoint = Math.ceil(batch.diagnoses.length / 2);
+        const children = [batch.diagnoses.slice(0, midpoint), batch.diagnoses.slice(midpoint)];
+        const generated: RawSuggestion[] = [];
+        for (const childDiagnoses of children) {
+          generated.push(...await generateBatch({
+            diagnoses: childDiagnoses,
+            inferredTargets: [...new Set(childDiagnoses.flatMap((item) => inferredDiagnosisTargets(spec, item)))],
+          }, depth + 1));
+        }
+        return generated;
+      }
+      if (batch.diagnoses.length === 1 && !oversizedSingle) {
+        try {
+          return await generateOne(batch, true);
+        } catch (minimalError) {
+          if (!isProposalSizeFailure(minimalError)) throw minimalError;
+        }
+      }
+      throw new OptimizationProposalTruncatedError(batch.diagnoses.flatMap((item) => item.id ? [item.id] : []));
     }
-  }
-  throw validationError ?? new Error('优化器未产出建议，请重试');
+  };
+
+  const staged: RawSuggestion[] = [];
+  for (const batch of batches) staged.push(...await generateBatch(batch, 0));
+  const normalized = dedupeProposalSuggestions(normalizeOptimizationSuggestionTargets(staged, spec));
+  validateOptimizationSuggestions(normalized, diagnoses, failedResults, spec);
+  validateScriptOptimizationDecisions(normalized, diagnoses, spec);
+  assertProposalCoverage(normalized, diagnoses);
+  return normalized;
 }
 
 type RevisedSpec = {

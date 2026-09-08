@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -33,6 +34,12 @@ from ontology.ontology_catalog import (
     resolve_ontology_script_path,
 )
 from ontology.ontologies import OntologyManifest, OntologyRegistry
+from ontology.view_cache import (
+    OntologyPackageRevisionError,
+    get_ontology_mutation_revision,
+    resolve_package_staging_boundary,
+    stage_verified_package_revision,
+)
 from integration.sandbox.executor import SandboxScriptExecutor
 from integration.sandbox.errors import (
     SandboxExecError,
@@ -94,6 +101,9 @@ _SANDBOX_PERMISSION_FAILURE_MARKERS = (
 
 _SCRIPT_EXECUTION_INTERNAL_ERROR = (
     "Error: Script execution failed due to an internal error."
+)
+ONTOLOGY_PREFLIGHT_CHANGED_ERROR = (
+    "Error: Ontology package changed after run admission."
 )
 _PUBLIC_SCRIPT_ERROR_PREFIX = "ONTO_PUBLIC_ERROR:"
 _PUBLIC_SCRIPT_ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -242,69 +252,10 @@ def build_execute_script_tool_schema(
         if not catalog:
             return schema
 
-        parameters = schema["function"]["parameters"]
-        properties = parameters["properties"]
-        properties["ontology_id"]["enum"] = [
-            ontology.id for ontology in scripted_ontologies
-        ]
-        properties["operation_key"]["enum"] = list(
-            dict.fromkeys(
-                str(entry.get("operation_key") or "").strip()
-                for entry in catalog
-                if str(entry.get("operation_key") or "").strip()
-            )
+        return build_execute_script_tool_schema_from_catalog(
+            ontology_ids=tuple(ontology.id for ontology in scripted_ontologies),
+            script_catalog=tuple(catalog),
         )
-
-        argument_properties: Dict[str, Dict[str, Any]] = {}
-        required_by_operation: List[Set[str]] = []
-        operation_parameter_summaries: List[str] = []
-        for entry in catalog:
-            operation_required: Set[str] = set()
-            parameter_names: List[str] = []
-            for parameter in list(entry.get("parameters") or []):
-                if not isinstance(parameter, Mapping):
-                    continue
-                # Runtime identity/context values are injected by the backend
-                # and must never be exposed as model-controlled arguments.
-                if is_runtime_parameter(parameter):
-                    continue
-                name = _parameter_name(parameter)
-                if not name:
-                    continue
-                parameter_names.append(name)
-                if bool(parameter.get("required", True)):
-                    operation_required.add(name)
-                argument_properties[name] = _merge_script_parameter_property_schema(
-                    argument_properties.get(name),
-                    _script_parameter_property_schema(parameter),
-                )
-            required_by_operation.append(operation_required)
-            operation_parameter_summaries.append(
-                "{}: {}".format(
-                    str(entry.get("operation_key") or "").strip(),
-                    ", ".join(parameter_names) if parameter_names else "no arguments",
-                )
-            )
-
-        common_required = (
-            set.intersection(*required_by_operation)
-            if required_by_operation
-            else set()
-        )
-        argument_schema = properties["arguments"]
-        argument_schema["properties"] = argument_properties
-        argument_schema["required"] = [
-            name for name in argument_properties if name in common_required
-        ]
-        argument_schema["additionalProperties"] = False
-        if operation_parameter_summaries:
-            argument_schema["description"] = (
-                "{} Available operation inputs: {}.".format(
-                    str(argument_schema.get("description") or "").rstrip(". "),
-                    "; ".join(operation_parameter_summaries),
-                ).strip()
-            )
-        return schema
     except Exception:
         logger.warning(
             "Failed to specialize execute_script schema for ontology %s in workspace %s",
@@ -313,6 +264,94 @@ def build_execute_script_tool_schema(
             exc_info=True,
         )
         return schema
+
+
+def build_execute_script_tool_schema_from_catalog(
+    *,
+    ontology_ids: Sequence[str],
+    script_catalog: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Build a specialized schema from one already-admitted catalog."""
+
+    schema = deepcopy(EXECUTE_SCRIPT_TOOL_SCHEMA)
+    catalog = []
+    for entry in script_catalog:
+        if not isinstance(entry, Mapping):
+            continue
+        if not bool(entry.get("_is_bound_operation", True)):
+            continue
+        if entry.get("_is_deterministic_handler"):
+            continue
+        if str(entry.get("operation_key") or "").strip():
+            catalog.append(entry)
+    if not catalog:
+        return schema
+
+    parameters = schema["function"]["parameters"]
+    properties = parameters["properties"]
+    properties["ontology_id"]["enum"] = list(
+        dict.fromkeys(
+            str(ontology_id or "").strip()
+            for ontology_id in ontology_ids
+            if str(ontology_id or "").strip()
+        )
+    )
+    properties["operation_key"]["enum"] = list(
+        dict.fromkeys(
+            str(entry.get("operation_key") or "").strip()
+            for entry in catalog
+        )
+    )
+
+    argument_properties: Dict[str, Dict[str, Any]] = {}
+    required_by_operation: List[Set[str]] = []
+    operation_parameter_summaries: List[str] = []
+    for entry in catalog:
+        operation_required: Set[str] = set()
+        parameter_names: List[str] = []
+        for parameter in list(entry.get("parameters") or []):
+            if not isinstance(parameter, Mapping):
+                continue
+            # Runtime identity/context values are injected by the backend.
+            if is_runtime_parameter(parameter):
+                continue
+            name = _parameter_name(parameter)
+            if not name:
+                continue
+            parameter_names.append(name)
+            if bool(parameter.get("required", True)):
+                operation_required.add(name)
+            argument_properties[name] = _merge_script_parameter_property_schema(
+                argument_properties.get(name),
+                _script_parameter_property_schema(parameter),
+            )
+        required_by_operation.append(operation_required)
+        operation_parameter_summaries.append(
+            "{}: {}".format(
+                str(entry.get("operation_key") or "").strip(),
+                ", ".join(parameter_names) if parameter_names else "no arguments",
+            )
+        )
+
+    common_required = (
+        set.intersection(*required_by_operation)
+        if required_by_operation
+        else set()
+    )
+    argument_schema = properties["arguments"]
+    argument_schema["properties"] = argument_properties
+    argument_schema["required"] = [
+        name for name in argument_properties if name in common_required
+    ]
+    argument_schema["additionalProperties"] = False
+    if operation_parameter_summaries:
+        argument_schema["description"] = (
+            "{} Available operation inputs: {}.".format(
+                str(argument_schema.get("description") or "").rstrip(". "),
+                "; ".join(operation_parameter_summaries),
+            ).strip()
+        )
+    return schema
 
 
 def _get_schema_ontology_manifests(
@@ -2010,6 +2049,71 @@ def _extract_public_python_exception_type(stderr: str) -> Optional[str]:
     return "[SCRIPT_RUNTIME_ERROR] Python {}.".format(exception_name)
 
 
+def _validate_structured_result_consistency(content: str) -> Optional[str]:
+    """Guard the refinery load result against silent batch/monthly drift."""
+    try:
+        payload = json.loads(str(content or "").strip())
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    operation_key = str(payload.get("operation_key") or "").strip()
+    if operation_key != "装置负荷硬约束炼化装置容量约束与超限分流":
+        return None
+    batches = payload.get("batches")
+    monthly = payload.get("monthly_unit_load")
+    if not isinstance(batches, list) or not isinstance(monthly, Mapping):
+        return None
+    units = monthly.get("units")
+    if not isinstance(units, Mapping):
+        return None
+    totals: dict[str, float] = {}
+    for batch in batches:
+        if not isinstance(batch, Mapping):
+            continue
+        loads = batch.get("unit_loads")
+        if not isinstance(loads, Mapping):
+            continue
+        # The package deliberately uses different bases: diesel and the
+        # atmospheric unit are effective/load values, while the monthly VGO
+        # capacity check is defined on raw HC feed. Compare like with like.
+        basis_values = {
+            "2#常减压塔": (batch.get("input_weight_tons"), True),
+            "2#柴油加氢": (batch.get("diesel_load_effective_input_tons"), True),
+            # The package's monthly VGO load is RAW HC feed, while
+            # unit_loads[].input_tons is corrected effective feed. Do not
+            # compare them unless the script explicitly returns the RAW basis.
+            "蜡油加氢": (batch.get("vgo_load_raw_feed_tons"), False),
+        }
+        for unit_name, (value, allow_status_fallback) in basis_values.items():
+            if value is None and allow_status_fallback:
+                status = loads.get(unit_name)
+                value = status.get("input_tons") if isinstance(status, Mapping) else None
+            if value is None:
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            totals[unit_name] = totals.get(unit_name, 0.0) + numeric
+    aliases = {"柴油加氢": "2#柴油加氢"}
+    for monthly_name, status in units.items():
+        if not isinstance(status, Mapping):
+            continue
+        try:
+            actual = float(status.get("monthly_input_tons"))
+        except (TypeError, ValueError):
+            continue
+        batch_total = totals.get(str(monthly_name))
+        if batch_total is None:
+            batch_total = totals.get(aliases.get(str(monthly_name), str(monthly_name)))
+        if batch_total is None:
+            continue
+        if abs(batch_total - actual) > 0.01:
+            return "Error: BUSINESS_SUMMARY_INCONSISTENT"
+    return None
+
+
 def handle_execute_script(
     *,
     ontology_id: str,
@@ -2028,16 +2132,180 @@ def handle_execute_script(
     data_access: str = "live",
     expected_script_path: Optional[Path] = None,
     expected_script_digest: Optional[str] = None,
+    preflight_ontology_manifest: Optional[Mapping[str, Any]] = None,
+    preflight_ontology_source_signature: Optional[tuple[object, ...]] = None,
+    preflight_ontology_content_revision: Optional[str] = None,
+    preflight_ontology_script_entry: Optional[Mapping[str, Any]] = None,
+    preflight_ontology_mutation_revision: Optional[int] = None,
+    _resolved_ontology_dir: Optional[Path] = None,
+    _resolved_ontology_id: Optional[str] = None,
+    _resolved_script_entry: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    manifest_kwargs = {"workspace_id": workspace_id}
-    if str(ontology_version or "").strip():
-        manifest_kwargs["version"] = ontology_version
-    ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
-    if error:
-        return error
-    assert ontology is not None
+    pinned_digest: Optional[str] = None
+    preflight_supplied = any(
+        (
+            preflight_ontology_manifest is not None,
+            preflight_ontology_source_signature is not None,
+            preflight_ontology_content_revision is not None,
+            preflight_ontology_script_entry is not None,
+            preflight_ontology_mutation_revision is not None,
+        )
+    )
+    resolved_package_supplied = any(
+        (
+            _resolved_ontology_dir is not None,
+            _resolved_ontology_id is not None,
+            _resolved_script_entry is not None,
+        )
+    )
+    if resolved_package_supplied:
+        if _resolved_ontology_dir is None:
+            return _SCRIPT_EXECUTION_INTERNAL_ERROR
+        if not str(_resolved_ontology_id or "").strip():
+            return _SCRIPT_EXECUTION_INTERNAL_ERROR
+        if not isinstance(_resolved_script_entry, Mapping):
+            return _SCRIPT_EXECUTION_INTERNAL_ERROR
+        ontology_dir = Path(_resolved_ontology_dir).resolve()
+        resolved_ontology_id = str(_resolved_ontology_id).strip()
+        script_entry = _resolved_script_entry
+    elif preflight_supplied:
+        if not isinstance(preflight_ontology_manifest, Mapping):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not isinstance(preflight_ontology_source_signature, tuple):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if preflight_ontology_content_revision is None:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not isinstance(preflight_ontology_script_entry, Mapping):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not isinstance(preflight_ontology_mutation_revision, int):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if isinstance(preflight_ontology_mutation_revision, bool):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if preflight_ontology_mutation_revision < 0:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not workspace_id:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        normalized_ontology_id = str(ontology_id or "").strip()
+        normalized_ontology_version = str(ontology_version or "").strip()
+        manifest_id = str(preflight_ontology_manifest.get("id") or "").strip()
+        if manifest_id != normalized_ontology_id:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        manifest_version = str(
+            preflight_ontology_manifest.get("version") or ""
+        ).strip()
+        if manifest_version != normalized_ontology_version:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        entry_operation_key = str(
+            preflight_ontology_script_entry.get("operation_key") or ""
+        ).strip()
+        if entry_operation_key != str(operation_key or "").strip():
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not bool(preflight_ontology_script_entry.get("_is_bound_operation")):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        raw_ontology_dir = str(
+            preflight_ontology_manifest.get("ontology_dir") or ""
+        ).strip()
+        if not raw_ontology_dir:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        source_ontology_dir = Path(os.path.abspath(raw_ontology_dir))
+        raw_script_path = str(
+            preflight_ontology_script_entry.get("_script_path") or ""
+        ).strip()
+        pinned_path = str(
+            preflight_ontology_script_entry.get("_expected_script_path")
+            or preflight_ontology_script_entry.get("_resolved_script_path")
+            or ""
+        ).strip()
+        pinned_digest = str(
+            preflight_ontology_script_entry.get("_expected_script_digest") or ""
+        ).strip()
+        source_script_path = resolve_ontology_script_path(
+            source_ontology_dir,
+            raw_script_path,
+        )
+        if not raw_script_path:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if source_script_path is None:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not pinned_path:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if Path(pinned_path).resolve() != source_script_path:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", pinned_digest):
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+        if expected_script_path is not None and (
+            source_script_path != Path(expected_script_path).resolve()
+        ):
+            return "Error: Bound script identity changed for operation '{}'".format(
+                operation_key
+            )
+        project_root = Path(os.path.abspath(os.fspath(base_path))) if base_path else None
+        if project_root is None:
+            return "Error: Project base path not configured"
 
-    ontology_dir = Path(ontology.ontology_dir).resolve()
+        def mutation_revision_matches() -> bool:
+            try:
+                return get_ontology_mutation_revision(
+                    str(workspace_id),
+                    normalized_ontology_id,
+                ) == preflight_ontology_mutation_revision
+            except Exception:
+                return False
+
+        try:
+            staging_boundary = resolve_package_staging_boundary(
+                project_root=project_root,
+                workspace_id=str(workspace_id),
+            )
+            with stage_verified_package_revision(
+                source_root=source_ontology_dir,
+                expected_content_revision=preflight_ontology_content_revision,
+                staging_root=staging_boundary,
+                revision_guard=mutation_revision_matches,
+            ) as staged_ontology_dir:
+                staged_script_path = resolve_ontology_script_path(
+                    staged_ontology_dir,
+                    raw_script_path,
+                )
+                if staged_script_path is None:
+                    return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+                staged_entry = dict(preflight_ontology_script_entry)
+                staged_entry["_expected_script_path"] = str(staged_script_path)
+                return handle_execute_script(
+                    ontology_id=ontology_id,
+                    ontology_version=ontology_version,
+                    operation_key=operation_key,
+                    arguments=arguments,
+                    base_path=staging_boundary,
+                    timeout_seconds=timeout_seconds,
+                    tool_call_id=tool_call_id,
+                    caller=caller,
+                    run_id=run_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    workspace_id=workspace_id,
+                    runtime_context=runtime_context,
+                    data_access=data_access,
+                    expected_script_path=staged_script_path,
+                    expected_script_digest=pinned_digest,
+                    _resolved_ontology_dir=staged_ontology_dir,
+                    _resolved_ontology_id=normalized_ontology_id,
+                    _resolved_script_entry=staged_entry,
+                )
+        except OntologyPackageRevisionError:
+            return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
+    else:
+        manifest_kwargs = {"workspace_id": workspace_id}
+        if str(ontology_version or "").strip():
+            manifest_kwargs["version"] = ontology_version
+        ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
+        if error:
+            return error
+        assert ontology is not None
+        ontology_dir = Path(ontology.ontology_dir).resolve()
+        resolved_ontology_id = ontology.id
+        script_entry = None
+
     try:
         from ontology.operation_execution import is_deterministic_operation
 
@@ -2049,16 +2317,21 @@ def handle_execute_script(
     except Exception:
         logger.exception(
             "Failed to classify deterministic operation protection: ontology_id=%s operation_key=%s",
-            ontology.id,
+            resolved_ontology_id,
             operation_key,
         )
         return "Error: deterministic_operation_protection_unavailable"
-    script_catalog = load_script_catalog(ontology_dir)
-    script_entry = find_script_entry(script_catalog, operation_key, bound_only=True)
+    if not preflight_supplied and not resolved_package_supplied:
+        script_catalog = load_script_catalog(ontology_dir)
+        script_entry = find_script_entry(
+            script_catalog,
+            operation_key,
+            bound_only=True,
+        )
     if script_entry is None:
         return (
             "Error: Operation '{}' in ontology '{}' has no registered script implementation or is not a bound operation."
-        ).format(operation_key, ontology.id)
+        ).format(operation_key, resolved_ontology_id)
 
     raw_script_path = str(script_entry.get("_script_path") or "").strip()
     if not raw_script_path:
@@ -2078,7 +2351,6 @@ def handle_execute_script(
     if expected_script_path is not None and resolved_script_path != Path(expected_script_path).resolve():
         return "Error: Bound script identity changed for operation '{}'".format(operation_key)
     if expected_script_digest:
-        import hashlib
         actual_digest = "sha256:" + hashlib.sha256(resolved_script_path.read_bytes()).hexdigest()
         if actual_digest != str(expected_script_digest).strip():
             return "Error: Bound script digest changed for operation '{}'".format(operation_key)
@@ -2117,7 +2389,7 @@ def handle_execute_script(
         )
     except BusinessDataConnectionError:
         return _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR
-    return handle_execute_script_path(
+    result = handle_execute_script_path(
         script_path=script_path,
         args=cli_args,
         base_path=base_path,
@@ -2135,6 +2407,8 @@ def handle_execute_script(
         data_access=data_access,
         include_stderr_on_success=False,
     )
+    consistency_error = _validate_structured_result_consistency(result)
+    return consistency_error or result
 
 
 def _build_cli_args(
@@ -2638,6 +2912,49 @@ class ExecuteScriptTool:
             call_args["runtime_context"]["ontology_version"] = selected_ontology_version
         if context.selected_ontology_id and context.selected_ontology_id == str(call_args.get("ontology_id") or "").strip():
             call_args["ontology_version"] = selected_ontology_version
+            manifest = getattr(context, "preflight_ontology_manifest", None)
+            manifest_matches_selection = bool(selected_ontology_version)
+            if not isinstance(manifest, Mapping):
+                manifest_matches_selection = False
+            elif str(manifest.get("id") or "").strip() != context.selected_ontology_id:
+                manifest_matches_selection = False
+            elif (
+                str(manifest.get("version") or "").strip()
+                != selected_ontology_version
+            ):
+                manifest_matches_selection = False
+            if manifest_matches_selection:
+                bindings = getattr(
+                    context,
+                    "preflight_ontology_script_bindings",
+                    None,
+                )
+                script_entry = (
+                    bindings.get(operation_key)
+                    if isinstance(bindings, Mapping)
+                    else None
+                )
+                call_args.update(
+                    {
+                        "preflight_ontology_manifest": manifest,
+                        "preflight_ontology_source_signature": getattr(
+                            context,
+                            "preflight_ontology_source_signature",
+                            None,
+                        ),
+                        "preflight_ontology_content_revision": getattr(
+                            context,
+                            "preflight_ontology_content_revision",
+                            None,
+                        ),
+                        "preflight_ontology_script_entry": script_entry,
+                        "preflight_ontology_mutation_revision": getattr(
+                            context,
+                            "preflight_ontology_mutation_revision",
+                            None,
+                        ),
+                    }
+                )
         logger.info(
             (
                 "execute_script tool invoked: tool_call_id=%s caller=%s "
@@ -2667,6 +2984,7 @@ def _terminal_execute_script_error(content: str) -> Optional[Dict[str, str]]:
         return None
     terminal_prefixes = (
         _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
+        ONTOLOGY_PREFLIGHT_CHANGED_ERROR,
         "Error: deterministic_operation_protected",
         "Error: deterministic_operation_protection_unavailable",
         "Error: Sandbox ",
