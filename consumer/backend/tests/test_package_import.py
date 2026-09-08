@@ -75,6 +75,69 @@ bound_operation: QueryPart
     )
 
 
+def _write_v02_solver_package(root):
+    for directory in ("operations", "decision-models", "schemas", "presentations"):
+        (root / directory).mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "kind": "ontology-package",
+        "schema_version": "0.2",
+        "id": "solver-demo",
+        "name": "Solver demo",
+        "description": "Package for solver import tests",
+        "version": "2.0.11",
+        "capabilities": {
+            "decision_models": [
+                {
+                    "id": "route_choice",
+                    "entry": "decision-models/route-choice.yaml",
+                    "input_schema": "schemas/solver-input.schema.json",
+                    "result_schema": "schemas/solver-result.schema.json",
+                    "presentation": "presentations/solver-result.yaml",
+                    "engine_requirements": {
+                        "problem_family": "binary_ordered_route.v1",
+                        "capabilities": ["candidate_validation"],
+                    },
+                }
+            ]
+        },
+    }
+    (root / "manifest.yaml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
+    (root / "decision-models" / "route-choice.yaml").write_text(
+        "kind: decision-model\nid: route_choice\nvariables: [route_a, route_b]\n",
+        encoding="utf-8",
+    )
+    schema = {
+        "type": "object",
+        "properties": {"origin": {"type": "string"}},
+        "required": ["origin"],
+    }
+    for name in ("solver-input.schema.json", "solver-result.schema.json"):
+        (root / "schemas" / name).write_text(json.dumps(schema), encoding="utf-8")
+    (root / "presentations" / "solver-result.yaml").write_text(
+        "title: Route choice\n",
+        encoding="utf-8",
+    )
+    (root / "operations" / "solve-route.md").write_text(
+        "---\n"
+        "resource: operation\n"
+        "key: solve_route\n"
+        "title: Solve route\n"
+        "execution:\n"
+        "  mode: solver_workflow\n"
+        "  decision_model: route_choice\n"
+        "  validator_revision: route-validator.v1\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    (root / "operations-list.md").write_text(
+        "# Legacy operation catalog\n",
+        encoding="utf-8",
+    )
+
+
 def _write_legacy_package(root):
     (root / "objects").mkdir(parents=True)
     (root / "operations").mkdir()
@@ -279,6 +342,20 @@ def test_normalize_v01_keeps_only_new_layout_and_completes_required_indexes(tmp_
     assert entry is not None
     assert entry["_script_path"] == "scripts/query_part.py"
     assert entry["parameters"][0]["name"] == "part_code"
+
+
+def test_normalize_v02_solver_package_does_not_run_legacy_conversion(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_v02_solver_package(source)
+
+    result = normalize_imported_package(source, target)
+
+    manifest = yaml.safe_load((target / "manifest.yaml").read_text(encoding="utf-8"))
+    assert str(manifest["schema_version"]) == "0.2"
+    assert (target / "operations-list.md").is_file()
+    assert result.generated_files == ()
+    assert result.warnings == ()
 
 
 def test_normalize_v02_preserves_compat_list_index_and_solver_contract(tmp_path):
