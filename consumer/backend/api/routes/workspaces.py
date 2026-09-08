@@ -247,6 +247,7 @@ async def ensure_modeling_shadow_workspace_api(request: Request):
                 auth_manager,
                 workspace_id,
                 owner,
+                enforce_workspace_limit=False,
             )
         except _WORKSPACE_IDENTITY_ERRORS as exc:
             return _workspace_identity_error(exc)

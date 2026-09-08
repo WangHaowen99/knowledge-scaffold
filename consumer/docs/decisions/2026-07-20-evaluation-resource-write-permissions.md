@@ -46,7 +46,7 @@ consumer 前端同时把知识包导入、版本激活、删除、状态修改�
 - 普通用户可以创建归自己所有的评测 workspace，并在其中完成知识包和数据源的完整管理操作。
 - 普通用户不能通过创建请求把 owner 指向其他用户，也不能替换现有全局默认 workspace。
 - 普通用户可以删除自己拥有的 workspace；删除当前空间后，consumer UI 会切换到其余可访问空间或空状态。
-- 自助创建仍受现有全局 `workspace_max_count` 限制；当前没有新增按用户配额，部署方需要按容量设置合理上限。
+- （历史结论，已由后续配额调整取代）自助创建曾受全局 `workspace_max_count` 限制。现行语义为按 `workspace.json.owner` 统计的单用户上限；配置键保持不变，公共 `owner=None` 空间不计入任何用户，建模影子接口只豁免当次创建/绑定校验，持久化后仍按其 owner 计数。
 - workspace ACL 仍是服务端边界；对无权访问的私有 workspace，请求继续返回 `WORKSPACE_ACCESS_DENIED`。
 - 普通 member 在可访问 workspace 中只能读取和使用资源、执行评测，所有知识包和数据源写操作均由全局 admin 或 workspace owner 完成。
 - 默认 workspace 和无 owner workspace 仍按既有策略允许所有登录用户访问，但其中没有普通用户 owner，因此 owner 级高风险操作仍只允许全局 admin。

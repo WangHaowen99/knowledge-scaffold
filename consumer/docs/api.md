@@ -1469,7 +1469,7 @@ PUT 请求体：
 
 普通用户首次自动创建个人空间时，认证目录不可用返回 `503 AUTH_DIRECTORY_UNAVAILABLE`，身份删除状态不可用返回 `503 USER_DELETION_STATE_UNAVAILABLE`，身份正在删除返回 `409 USER_DELETION_RECONCILIATION_PENDING`；无法分配个人空间 ID 时返回 `409 PERSONAL_WORKSPACE_PROVISIONING_FAILED`。
 
-### 7.3 `POST /agentic/workspaces` (`admin`)
+### 7.3 `POST /agentic/workspaces`（已认证用户；`admin` 可指定 owner）
 
 创建工作空间。
 
@@ -1489,6 +1489,7 @@ PUT 请求体：
 - `id` 可选；不传时会根据 `name` 自动 slugify，并在冲突时追加随机后缀。匹配 `home-<20 位小写十六进制>` 或其 `-<8 位小写十六进制>` 冲突后缀形式的 ID 由系统个人空间保留，用户请求返回 `400`
 - `name` 必填
 - `description` 可选
+- 创建或转入同一 owner 的工作空间数量受 `WORKSPACE_MAX_COUNT` 限制，默认每个 owner 50 个；`owner=None` 的公共空间不占用任何用户配额；建模影子专用接口可显式跳过本次配额校验
 - `set_as_default` 可选
 - 全局 admin 显式指定的非空 `owner` 必须已存在；普通用户的 owner 固定为当前登录用户，并在创建时重新校验认证目录
 
@@ -1535,6 +1536,7 @@ PUT 请求体：
 - `409 USER_DELETION_RECONCILIATION_PENDING`：目标用户正在删除或等待清理
 - `503 USER_DELETION_STATE_UNAVAILABLE`：用户删除状态文件损坏或暂时无法读取
 - `503 AUTH_DIRECTORY_UNAVAILABLE`：认证目录暂不可用，无法完成最终校验
+- `400`：目标 owner 已达到 `WORKSPACE_MAX_COUNT` 工作空间上限，所有权不会改变
 
 #### `POST /agentic/workspaces/{workspace_id}/members/validate`
 
