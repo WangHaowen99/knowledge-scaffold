@@ -458,12 +458,13 @@ def _enforce_workspace_owner_limit_for_update(
     *,
     enforce_workspace_limit: bool,
 ) -> None:
-    if (
-        not enforce_workspace_limit
-        or requested_owner is _UNCHANGED
-        or requested_owner is None
-        or requested_owner == current_owner
-    ):
+    if not enforce_workspace_limit:
+        return
+    if requested_owner is _UNCHANGED:
+        return
+    if requested_owner is None:
+        return
+    if requested_owner == current_owner:
         return
     _enforce_workspace_owner_limit(
         _workspace_metadata_snapshot_for_limit(runtime_root),

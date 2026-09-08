@@ -1,3 +1,6 @@
+import ast
+import inspect
+import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -14,6 +17,25 @@ from workspace.workspaces import (
 def _create_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
+
+
+def _boolean_term_count(node):
+    if isinstance(node, ast.BoolOp):
+        return sum(_boolean_term_count(value) for value in node.values)
+    return 1
+
+
+def test_owner_update_quota_guard_stays_within_boolean_term_budget():
+    source = textwrap.dedent(
+        inspect.getsource(workspaces_module._enforce_workspace_owner_limit_for_update)
+    )
+    tree = ast.parse(source)
+
+    assert all(
+        _boolean_term_count(node.test) < 4
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+    )
 
 
 def test_runtime_root_uses_explicit_project_root(tmp_path, monkeypatch):
