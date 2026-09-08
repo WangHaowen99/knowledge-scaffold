@@ -30,7 +30,12 @@ FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
 EVALUATION_PENDING_MESSAGE = "正式评测任务已创建，可在评测界面查看实时进度。"
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
-LEADER_TABLE_SAMPLE_ROWS = 5
+# Keep the default leader read deliberately bounded, while allowing read-only
+# specialists to request a larger page when they are doing batch material
+# analysis.  The previous shared value of 5 caused every role to re-read the
+# same table page and made bulk analysis needlessly expensive.
+DEFAULT_TABLE_SAMPLE_ROWS = 20
+MATERIAL_ANALYST_TABLE_SAMPLE_ROWS = 50
 TABLE_FIELD_SAMPLE_VALUES = 3
 TABLE_SAMPLE_VALUE_CHARS = 120
 
@@ -2166,7 +2171,13 @@ PROJECT_STATE_TOOL_SPECS = (
 
 
 class CoreTool(Tool):
-    def __init__(self, spec: ToolSpec, context: ToolContext) -> None:
+    def __init__(
+        self,
+        spec: ToolSpec,
+        context: ToolContext,
+        *,
+        table_sample_row_limit: int | None = None,
+    ) -> None:
         super().__init__(
             ToolCard(
                 id=f"{spec.name}_{context.run_id}",
@@ -2182,6 +2193,10 @@ class CoreTool(Tool):
         )
         self.spec = spec
         self.context = context
+        self.table_sample_row_limit = _bounded_positive_integer(
+            table_sample_row_limit,
+            DEFAULT_TABLE_SAMPLE_ROWS,
+        )
 
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
         if self.context.cancel_event is not None and self.context.cancel_event.is_set():
@@ -2210,7 +2225,16 @@ class CoreTool(Tool):
                 ),
                 "display": {"text": "已阻止全量生成计划，请只规划本轮受影响内容"},
             }, ensure_ascii=False)
-        arguments = _bounded_source_arguments(self.spec.name, arguments)
+        arguments = _bounded_source_arguments(
+            self.spec.name,
+            arguments,
+            table_sample_row_limit=self.table_sample_row_limit,
+        )
+        cache_key = _stable_read_cache_key(self.spec.name, arguments)
+        if cache_key is not None:
+            cached = self.context.stable_read_cache.get(cache_key)
+            if cached is not None:
+                return json.dumps(cached, ensure_ascii=False)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         activity_id = f"{self.spec.name}:{started_after}"
         if self.spec.name == "read_documents_fully":
@@ -2286,6 +2310,8 @@ class CoreTool(Tool):
         finally:
             if self.context.inflight_core_calls is not None:
                 self.context.inflight_core_calls.discard(call)
+        if cache_key is not None and not result.get("error"):
+            self.context.stable_read_cache[cache_key] = result
         autonomous_recovery = _autonomous_recovery(self.spec.name, arguments, result, self.context)
         if autonomous_recovery is not None:
             result = autonomous_recovery
@@ -2341,7 +2367,12 @@ class CoreTool(Tool):
         yield await self.invoke(inputs, **kwargs)
 
 
-def _bounded_source_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _bounded_source_arguments(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    table_sample_row_limit: int = DEFAULT_TABLE_SAMPLE_ROWS,
+) -> dict[str, Any]:
     bounded = dict(arguments)
     if name == "read_document":
         bounded["limit"] = _bounded_positive_integer(
@@ -2349,9 +2380,21 @@ def _bounded_source_arguments(name: str, arguments: dict[str, Any]) -> dict[str,
         )
     elif name == "read_table_rows":
         bounded["limit"] = _bounded_positive_integer(
-            bounded.get("limit"), LEADER_TABLE_SAMPLE_ROWS,
+            bounded.get("limit"), table_sample_row_limit,
         )
     return bounded
+
+
+def _stable_read_cache_key(name: str, arguments: Mapping[str, Any]) -> str | None:
+    if name not in {"list_tables", "read_table_rows"}:
+        return None
+    return json.dumps(
+        {"tool": name, "arguments": dict(arguments)},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
 
 
 def _is_retryable_validation_failure(name: str, result: Mapping[str, Any]) -> bool:
@@ -2896,7 +2939,16 @@ def core_tool_specs_for_phase(
 
 def build_core_tools(context: ToolContext, names: set[str]) -> list[Tool]:
     """Build a least-privilege tool surface for an openJiuwen subagent."""
-    return [CoreTool(spec, context) for spec in CORE_TOOL_SPECS if spec.name in names]
+    table_limit = (
+        MATERIAL_ANALYST_TABLE_SAMPLE_ROWS
+        if "read_documents_fully" in names and "search_documents" in names
+        else DEFAULT_TABLE_SAMPLE_ROWS
+    )
+    return [
+        CoreTool(spec, context, table_sample_row_limit=table_limit)
+        for spec in CORE_TOOL_SPECS
+        if spec.name in names
+    ]
 
 
 def input_dict(inputs: Any) -> dict[str, Any]:

@@ -4460,13 +4460,21 @@ export class AgentCoreService {
   private readTableRows(projectId: string, args: Record<string, unknown>) {
     const table = this.findTable(projectId, args);
     const offset = integer(args.offset, 0, 0, table.rowCount);
-    const limit = integer(args.limit, 20, 1, 50);
+    const requestedLimit = integer(args.limit, 20, 1, 50);
+    const limit = requestedLimit;
     const rows = (table.rows ?? []).slice(offset, offset + limit);
+    const returned = rows.length;
+    const scanned = Math.min(table.rowCount - offset, limit);
     return {
       table: table.name,
       columns: table.fields.map((field) => field.name),
       rows,
       offset,
+      requestedLimit,
+      effectiveLimit: limit,
+      returned,
+      scanned,
+      truncated: offset + returned < table.rowCount,
       nextOffset: offset + rows.length < table.rowCount ? offset + rows.length : null,
       totalRows: table.rowCount,
       display: { text: `正在读取数据表《${table.name}》样例` },

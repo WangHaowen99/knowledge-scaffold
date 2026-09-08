@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from .agent import AgentBundle, build_agent, build_model, list_skills
+from .agent import AgentBundle, build_agent, build_model, list_skills, output_budget_for_phase
 from .core_client import CoreGateway, HttpCoreGateway
 from .errors import AgentRuntimeError
 from .events import EventHub
@@ -3144,10 +3144,12 @@ class AgentService:
 
         run = self.store.require_run(live.run_id)
         try:
+            initial_phase = self.store.project_state(run.project_id).state.partition(":")[0]
+            output_budget = output_budget_for_phase(self.settings, initial_phase)
             if self._model_factory is not None:
                 model = self._model_factory()
             elif len(self.settings.service_token) < 32:
-                model = build_model(self.settings)
+                model = build_model(self.settings, output_tokens=output_budget)
             else:
                 runtime_llm = await self._gateway.model_config(
                     project_id=live.project_id,
@@ -3158,7 +3160,8 @@ class AgentService:
                     from .acceptance_model import AcceptanceModel
                     model = AcceptanceModel(str(runtime_llm.get("acceptanceScenario") or ""))
                 else:
-                    model = build_model(self.settings.with_runtime_llm(runtime_llm))
+                    runtime_settings = self.settings.with_runtime_llm(runtime_llm)
+                    model = build_model(runtime_settings, output_tokens=output_budget)
             self.store.update_run(run.id, status=RUN_RUNNING)
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})

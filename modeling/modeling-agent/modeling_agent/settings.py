@@ -38,6 +38,10 @@ class Settings:
     llm_extra_body_json: str = "{}"
     llm_first_chunk_timeout_seconds: float = 120.0
     llm_idle_timeout_seconds: float = 60.0
+    leader_output_tokens: int = 8_192
+    analyst_output_tokens: int = 4_096
+    script_output_tokens: int = 8_192
+    summary_output_tokens: int = 1_024
     context_max_messages: int = 64
     context_window_messages: int = 48
     context_window_rounds: int = 10
@@ -80,6 +84,10 @@ class Settings:
             llm_idle_timeout_seconds=_number(
                 "MODELING_LLM_IDLE_TIMEOUT_SECONDS", 60.0, 10.0, 300.0,
             ),
+            leader_output_tokens=_integer("MODELING_LEADER_OUTPUT_TOKENS", 8_192, 1_024, 32_768),
+            analyst_output_tokens=_integer("MODELING_ANALYST_OUTPUT_TOKENS", 4_096, 1_024, 16_384),
+            script_output_tokens=_integer("MODELING_SCRIPT_OUTPUT_TOKENS", 8_192, 2_048, 32_768),
+            summary_output_tokens=_integer("MODELING_SUMMARY_OUTPUT_TOKENS", 1_024, 512, 4_096),
             context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
             context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
             context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 30),

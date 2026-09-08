@@ -53,7 +53,6 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 用户可见回复只写标准 Markdown，不输出 HTML 标签或用 `<details>/<summary>` 自制交互控件；需要确认时必须调用 ask 或 request_confirmation 生成内联卡片，不能在普通文字结尾让用户自行回复“确认”。
 - 互斥业务口径、范围或处理方式必须调用 ask 生成选项卡；正文可以先解释判断依据，但不能用“请选择”“供您选择”或罗列若干选项来承载待用户决定。request_confirmation 只接受或退回已经冻结的整体候选，绝不能把多个业务方案塞进正文后再发候选确认。
 - ask 的某个选项若还需要用户继续描述，必须设置 requiresText=true 和明确的 textPrompt；该选项收到非空 text 后才算完整回答。不得先结束问题卡，再用普通正文索要下一次输入。
-- requiredText 中的 answer.text 是用户本轮必须遵守的业务约束原文。恢复后先逐项核对并执行，不能丢弃、改写、降级为备注或用旧计划替代；最终回复必须明确说明每项已满足，无法满足时必须说明具体原因并调用 ask 生成可操作卡片，不能只写“待专家明确后继续”。
 - 用户从版本历史恢复内容后，自行核对当前包与项目阶段；若恢复的是已正式发布内容，禁止重新运行评测，直接按已有发布事实把项目对齐到发布交付，不要求用户再次确认同一版本，也不要求用户输入额外指令。
 - 需要人决定时只用 ask 或 request_confirmation。即便等待决定，用户也可以自由插话；若收到反问，先回答，再重新提出仍未解决的原问题。
 - 收到插话或反问后，直接用最终自然语言回答并结束这次小回合；服务端会自动恢复仍未解决的原问题。不要在同一小回合再次调用 ask 或 request_confirmation。
@@ -72,7 +71,6 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 资料不足时主动 ask(kind='material_request')。允许口述、稍后补资料或跳过，不把文件当唯一出口。
 - 资料默认先轻量预判用途并等待用户确认。优先依据文件名、类型、目录和表结构；普通文档仅在依据不足时读取开头片段，不得为了用途预判自行全文精读。每份已解析资料都要提交文件级用途建议，表格还必须逐 Sheet 提交用途建议；全部确认前不得提交知识候选。用户在上传卡或自然语言中明确指定“建模目标依据”“数据 Schema”“通用业务依据”或“全文精读”时也要忠实记录，不能用模型判断覆盖用户决定。
 - 全部资料用途确认后先继续完成建模目标和业务流程；在流程确认前不得调用 upsert_object、bind_object_source 或 bind_object_sources。业务流程已确认且进入 knowledge 阶段后，先调用 get_schema_mapping_plan 读取完整台账，再按其中全部未闭环 Sheet 创建对象或绑定来源；完成后重新核对台账。每个确认为 object 的 Sheet 必须且只能归属一个对象；多个 Sheet 归属同一对象时必须明确唯一 primary 主表、extension 扩展表、统一主键和逐来源字段绑定。一对多明细或多对多中间表不得作为 extension，必须建成独立对象或关系。只有主键、主表或跨 Sheet 归属确有歧义时才向用户提问；台账 complete=true 前不得发起知识候选确认。
-- 用户明确要求核对产品/规则大清单的原始项、去重项、归并关系或资料完整性数量时，先调用 stage_product_ledger 提交 product-ledger-v1 结构化台账（sourceRevision 可留空，由核心绑定当前工作区修订），再以 get_product_ledger 取得确定性校验结果。台账模式为 advisory 时记录问题但不阻断普通建模；只有明确的大清单范围且部署启用 enforce 时，校验未通过不得进入正式规则批次生成，已通过后每批规则最多 10 项并按回执持久化推进。
 - 用户要求全文精读一份或多份资料时，调用 read_documents_fully。只有工具返回每份资料完整度 100% 才能声称全文已读；该工具会对多文档和超长文档确定性切块、并发读取并保留检查点，不得改成串行 read_document 翻页或抽样阅读。
 - 指定为数据 Schema 的表格必须使用资料 ID 和 Sheet 名读取结构，直接采用 set_material_directive 返回的 objects 作为对象与属性事实；字段只能来自真实 Sheet 和原始列，类型和主键候选必须说明是推断。样例行只用于 Core 的确定性类型、唯一率和无约束来源时的主键回退，不得据此推断业务名称、别名或普通字段必填性。required 采用 Core 同步结果，不为此提问；遇到空表头、重名列、主键或合并单元格歧义时再用业务选项询问。
 - 两份以上资料的批量阅读、三个以上数据表的结构盘点或跨资料归纳必须交给 material_analyst；Leader 只接收其结构化结论和证据引用。Leader 仅为核对当前决策直接读取少量相关分页或至多两个表，不把整份长文档和成批表结构累积在主会话。
@@ -95,14 +93,14 @@ class AgentBundle:
     model: Any
 
 
-def build_model(settings: Settings) -> Any:
+def build_model(settings: Settings, *, output_tokens: int | None = None) -> Any:
     if not settings.llm_base_url or not settings.llm_model:
         raise RuntimeError("未配置建模模型，请设置 MODELING_LLM_BASE_URL 和 MODELING_LLM_MODEL")
     request_config: dict[str, Any] = {
         "model": settings.llm_model,
         "temperature": 0.2,
         "top_p": 0.1,
-        "max_tokens": settings.llm_max_tokens,
+        "max_tokens": min(settings.llm_max_tokens, output_tokens or settings.llm_max_tokens),
     }
     extra_body = settings.llm_request_extra_body()
     if extra_body:
@@ -124,6 +122,24 @@ def build_model(settings: Settings) -> Any:
         ),
         model_config=ModelRequestConfig(**request_config),
     )
+
+
+def output_budget_for_phase(settings: Settings, phase: str) -> int:
+    """Select a bounded output budget by role and phase.
+
+    The request-level budget prevents short analysis turns from inheriting the
+    deployment-wide 32K allowance, while script authoring keeps enough room for
+    a complete patch proposal.
+    """
+    if phase in {"validation", "increment"}:
+        return settings.script_output_tokens
+    if phase in {"goal", "process"}:
+        return settings.summary_output_tokens
+    return settings.leader_output_tokens
+
+
+def output_budget_for_context(settings: Settings, context: ToolContext) -> int:
+    return output_budget_for_phase(settings, context.phase)
 
 
 def context_engine_config(settings: Settings) -> ContextEngineConfig:
