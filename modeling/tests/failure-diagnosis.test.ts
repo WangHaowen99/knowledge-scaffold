@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   createFauxCore,
   fauxAssistantMessage,
@@ -22,6 +23,8 @@ import {
   optimizationSuggestionDedupeKey,
   OPTIMIZATION_PROPOSAL_MAX_OUTPUT_TOKENS,
   OPTIMIZATION_PROPOSAL_TIMEOUT_MS,
+  OptimizationProposalTruncatedError,
+  optimizationProposalModelCallLimit,
   proposeOptimizations,
   validateOptimizationSuggestions,
 } from '../src/evaluation/optimizer.js';
@@ -51,6 +54,20 @@ test('优化任务限制模型输出和单次等待时间', () => {
   assert.equal(OPTIMIZATION_APPLY_MAX_OUTPUT_TOKENS, 32_000);
   assert.equal(OPTIMIZATION_PROPOSAL_TIMEOUT_MS, 180_000);
   assert.equal(OPTIMIZATION_APPLY_TIMEOUT_MS, 600_000);
+  assert.equal(optimizationProposalModelCallLimit(1), 12);
+  assert.equal(optimizationProposalModelCallLimit(8), 24);
+  assert.equal(optimizationProposalModelCallLimit(20), 32);
+});
+
+test('优化建议生产路由只把已确认可优化诊断传给优化器', () => {
+  const source = readFileSync(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const routeStart = source.indexOf("r.post('/api/projects/:id/optimize/propose'");
+  const routeEnd = source.indexOf("r.get('/api/projects/:id/optimize/suggestions'", routeStart);
+  const routeSource = source.slice(routeStart, routeEnd);
+
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.match(routeSource, /proposeOptimizations\([\s\S]*?ruleFindings,\s*eligibleDiagnoses,\s*\)/u);
+  assert.doesNotMatch(routeSource, /proposeOptimizations\([\s\S]*?ruleFindings,\s*diagnoses,\s*\)/u);
 });
 
 test('同一根因和目标的优化建议不因标题改写而重复', () => {
@@ -95,6 +112,27 @@ const calculationScriptSpec = () => {
   };
   return spec;
 };
+
+const proposalProject = () => ({
+  id: 'project-1', owner: 'tester', name: '通用流程建模', domain: '生产', background: '', stage: 'optimize' as const,
+  createdAt: '2026-09-07T00:00:00.000Z', updatedAt: '2026-09-07T00:00:00.000Z',
+});
+
+const proposalDiagnosis = (index: number) => ({
+  id: `dg-proposal-${index}`, projectId: 'project-1', roundId: 'round-1', basedVersion: '1.0.0',
+  category: 'routing_issue' as const, title: `calculate_load_operation 路由诊断 ${index}`,
+  summary: '现有操作没有稳定进入已绑定的确定性脚本。', evidence: ['执行轨迹显示路由未进入目标操作'],
+  confidence: 'high' as const, blocking: false, repairScope: 'operation' as const, packageOptimizable: true,
+  resultIds: [`proposal-result-${index}`], relatedQuestions: [], suggestedAction: '修复 calculate_load_operation 的路由约束。',
+  createdAt: '2026-09-07T00:00:00.000Z',
+});
+
+const proposalSuggestion = (diagnosisIds: string[]) => ({
+  title: '修复确定性计算路由', detail: '收紧操作认领条件，并确保结构化输入进入已绑定脚本。',
+  kind: 'modify_operation', target: 'calculate_load_operation', diagnosisIds,
+  evidence: ['执行轨迹显示路由未进入目标操作'], generalizationPlan: '所有同类计算请求统一经过确定性执行入口。',
+  validationPlan: '使用空输入、缺失字段和字段顺序变化验证路由与阻断性质。',
+});
 
 test('优化建议目标将 key:title 和唯一标题规范化为真实资源 key', () => {
   const spec = scriptedSpec();
@@ -221,6 +259,119 @@ test('优化建议模型只输出正文时会被强制恢复为结构化提交',
   assert.equal(suggestions.length, 1);
   assert.equal(suggestions[0].kind, 'modify_script');
   assert.equal(suggestions[0].target, 'OperationScript_6c818957d1a1');
+});
+
+test('八条诊断按受限批次生成并在最终阶段合并', async () => {
+  const diagnoses = Array.from({ length: 8 }, (_, index) => proposalDiagnosis(index));
+  const failures = diagnoses.map((_, index) => result(`proposal-result-${index}`, '如何执行通用计算？', '返回结构化结果'));
+  const core = createFauxCore({ provider: 'proposal-batches', models: [{ id: 'proposal-batches' }] });
+  core.setResponses(Array.from({ length: 4 }, (_, batchIndex) => {
+    const diagnosisIds = diagnoses.slice(batchIndex * 2, batchIndex * 2 + 2).map((item) => item.id);
+    return fauxAssistantMessage([fauxToolCall('submit_suggestions', { suggestions: [proposalSuggestion(diagnosisIds)] })]);
+  }));
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  const suggestions = await proposeOptimizations(proposalProject(), calculationScriptSpec(), failures, llm, [], diagnoses);
+
+  assert.equal(core.state.callCount, 4);
+  assert.equal(suggestions.length, 4);
+  assert.deepEqual(new Set(suggestions.flatMap((item) => item.diagnosisIds ?? [])), new Set(diagnoses.map((item) => item.id)));
+});
+
+test('八条诊断连续截断时允许完成二十次降级调用', async () => {
+  const diagnoses = Array.from({ length: 8 }, (_, index) => proposalDiagnosis(100 + index));
+  const failures = diagnoses.map((_, index) => result(`proposal-result-${100 + index}`, '如何执行通用计算？', '返回结构化结果'));
+  const responses = [];
+  for (let batchIndex = 0; batchIndex < 4; batchIndex += 1) {
+    const left = diagnoses[batchIndex * 2];
+    const right = diagnoses[batchIndex * 2 + 1];
+    responses.push(
+      fauxAssistantMessage(`TRUNCATED_BATCH_${batchIndex}`, { stopReason: 'length' }),
+      fauxAssistantMessage(`TRUNCATED_SINGLE_${batchIndex}_LEFT`, { stopReason: 'length' }),
+      fauxAssistantMessage([fauxToolCall('submit_minimal_suggestion', { suggestions: [proposalSuggestion([left.id])] })]),
+      fauxAssistantMessage(`TRUNCATED_SINGLE_${batchIndex}_RIGHT`, { stopReason: 'length' }),
+      fauxAssistantMessage([fauxToolCall('submit_minimal_suggestion', { suggestions: [proposalSuggestion([right.id])] })]),
+    );
+  }
+  const core = createFauxCore({ provider: 'proposal-dynamic-call-budget', models: [{ id: 'proposal-dynamic-call-budget' }] });
+  core.setResponses(responses);
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  const suggestions = await proposeOptimizations(proposalProject(), calculationScriptSpec(), failures, llm, [], diagnoses);
+
+  assert.equal(core.state.callCount, 20);
+  assert.equal(suggestions.length, 8);
+  assert.deepEqual(new Set(suggestions.flatMap((item) => item.diagnosisIds ?? [])), new Set(diagnoses.map((item) => item.id)));
+});
+
+test('多诊断批次输出截断后拆成单诊断并分别成功', async () => {
+  const diagnoses = [proposalDiagnosis(20), proposalDiagnosis(21)];
+  const failures = diagnoses.map((_, index) => result(`proposal-result-${20 + index}`, '如何执行通用计算？', '返回结构化结果'));
+  const core = createFauxCore({ provider: 'proposal-split', models: [{ id: 'proposal-split' }] });
+  core.setResponses([
+    fauxAssistantMessage('TRUNCATED_BATCH', { stopReason: 'length' }),
+    fauxAssistantMessage([fauxToolCall('submit_suggestions', { suggestions: [proposalSuggestion([diagnoses[0].id])] })]),
+    fauxAssistantMessage([fauxToolCall('submit_suggestions', { suggestions: [proposalSuggestion([diagnoses[1].id])] })]),
+  ]);
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  const suggestions = await proposeOptimizations(proposalProject(), calculationScriptSpec(), failures, llm, [], diagnoses);
+
+  assert.equal(core.state.callCount, 3);
+  assert.equal(suggestions.length, 2);
+});
+
+test('单诊断常规输出截断后降级为最小建议协议', async () => {
+  const diagnosis = proposalDiagnosis(30);
+  const failed = result('proposal-result-30', '如何执行通用计算？', '返回结构化结果');
+  const core = createFauxCore({ provider: 'proposal-minimal', models: [{ id: 'proposal-minimal' }] });
+  core.setResponses([
+    fauxAssistantMessage('TRUNCATED_SINGLE', { stopReason: 'length' }),
+    fauxAssistantMessage([fauxToolCall('submit_minimal_suggestion', { suggestions: [proposalSuggestion([diagnosis.id])] })]),
+  ]);
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  const suggestions = await proposeOptimizations(proposalProject(), calculationScriptSpec(), [failed], llm, [], [diagnosis]);
+
+  assert.equal(core.state.callCount, 2);
+  assert.equal(suggestions.length, 1);
+  assert.deepEqual(suggestions[0].diagnosisIds, [diagnosis.id]);
+});
+
+test('单诊断最小建议仍截断时返回稳定错误且不产生结果', async () => {
+  const diagnosis = proposalDiagnosis(40);
+  const failed = result('proposal-result-40', '如何执行通用计算？', '返回结构化结果');
+  const core = createFauxCore({ provider: 'proposal-minimal-failed', models: [{ id: 'proposal-minimal-failed' }] });
+  core.setResponses([
+    fauxAssistantMessage('TRUNCATED_SINGLE', { stopReason: 'length' }),
+    fauxAssistantMessage('TRUNCATED_MINIMAL', { stopReason: 'length' }),
+  ]);
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  await assert.rejects(
+    proposeOptimizations(proposalProject(), calculationScriptSpec(), [failed], llm, [], [diagnosis]),
+    (error: unknown) => error instanceof OptimizationProposalTruncatedError
+      && error.code === 'OPTIMIZATION_SUGGESTION_OUTPUT_TRUNCATED'
+      && error.diagnosisIds[0] === diagnosis.id,
+  );
+  assert.equal(core.state.callCount, 2);
+});
+
+test('批次建议未覆盖全部诊断时只重试当前批次并拒绝部分结果', async () => {
+  const diagnoses = [proposalDiagnosis(50), proposalDiagnosis(51)];
+  const failures = diagnoses.map((_, index) => result(`proposal-result-${50 + index}`, '如何执行通用计算？', '返回结构化结果'));
+  const incomplete = fauxAssistantMessage([fauxToolCall('submit_suggestions', {
+    suggestions: [proposalSuggestion([diagnoses[0].id])],
+  })]);
+  const core = createFauxCore({ provider: 'proposal-coverage', models: [{ id: 'proposal-coverage' }] });
+  core.setResponses([incomplete, incomplete, incomplete]);
+  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+
+  await assert.rejects(
+    proposeOptimizations(proposalProject(), calculationScriptSpec(), failures, llm, [], diagnoses),
+    /未覆盖诊断.*dg-proposal-51/u,
+  );
+  assert.equal(core.state.callCount, 3);
 });
 
 test('相同问题的标准答案冲突时阻止生成知识包优化建议', async () => {
@@ -1346,6 +1497,23 @@ test('优化建议持久化根因、证据、通用化和验证方案', () => {
   assert.equal(saved.generalizationPlan, '批次和日期作为输入');
   assert.equal(saved.validationPlan, '用新的批次组合验证');
   assert.equal(saved.basedRevisionOid, 'revision-1');
+});
+
+test('优化建议批量插入中途失败时回滚整批数据', () => {
+  const project = createProject({ owner: 'suggestion-atomic', name: 'suggestion-atomic', domain: 'demo', background: '' });
+  const round = createRound(project.id, '1.0.0', 1);
+  const circular: any[] = [];
+  circular.push(circular);
+
+  assert.throws(() => insertSuggestions(project.id, round.id, '1.0.0', 'revision-1', [{
+    title: '第一条建议', detail: '该条会先执行插入。', kind: 'modify_operation', target: 'operation_a',
+    diagnosisIds: ['dg-atomic-a'], evidence: ['执行轨迹'], generalizationPlan: '统一路由', validationPlan: '边界验证',
+  }, {
+    title: '第二条建议', detail: '序列化失败应触发整批回滚。', kind: 'modify_operation', target: 'operation_b',
+    diagnosisIds: ['dg-atomic-b'], evidence: circular, generalizationPlan: '统一路由', validationPlan: '边界验证',
+  }]), /circular|cyclic/i);
+
+  assert.deepEqual(listSuggestions(project.id, round.id), []);
 });
 
 test('失败诊断重跑写入失败时回滚删除并保留上一批诊断', () => {
