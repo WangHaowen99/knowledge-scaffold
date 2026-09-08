@@ -499,7 +499,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
           request.log.warn({ err: error, projectId: project.id }, 'Studio revision 刷新事件发送失败');
         }
       }
-      return reply.code(response.applied ? 200 : 202).send(response);
+      return reply.code(response.mode === 'agent' ? 202 : 200).send(response);
     } catch (error) {
       return sendStudioError(reply, error);
     }

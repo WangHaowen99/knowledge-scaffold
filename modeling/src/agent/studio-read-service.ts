@@ -18,6 +18,7 @@ export interface StudioWorkingPackage {
   workingRevision: string;
   baseRevision: string;
   candidateRevision: string | null;
+  hasReviewableChanges?: boolean;
   files: Record<string, string>;
 }
 
@@ -273,7 +274,8 @@ export class StudioReadService {
       workingRevision: this.workingPackage.workingRevision,
       baseRevision: this.workingPackage.baseRevision,
       candidateRevision: this.workingPackage.candidateRevision,
-      hasStagedChanges: this.workingPackage.workingRevision !== this.workingPackage.baseRevision,
+      hasStagedChanges: this.workingPackage.hasReviewableChanges
+        ?? this.workingPackage.workingRevision !== this.workingPackage.baseRevision,
       items,
       total: filtered.length,
       kindTotals: this.kindTotals(),

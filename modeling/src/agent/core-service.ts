@@ -177,11 +177,15 @@ import {
   parseChangeSetActions,
   type ChangeSetActionInput,
 } from './change-control.js';
+import {
+  COMPILED_RESOURCES_GROUP,
+  isHiddenCandidateGroup,
+  LEGACY_RUNTIME_GROUP,
+  RUNTIME_GROUP,
+} from './candidate-change-scope.js';
+import { publicKnowledgePackageFiles } from '../workflow/package-file-scope.js';
 
 const WORKSPACE_LEASE_MS = 30 * 60 * 1000;
-const RUNTIME_GROUP = 'runtime_context';
-const LEGACY_RUNTIME_GROUP = '__runtime_context';
-const COMPILED_RESOURCES_GROUP = 'compiled_resources';
 const MAX_FILE_CHARS = 1_000_000;
 const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
 const PACKAGE_REQUIRED_FILE_SET: ReadonlySet<string> = new Set(PACKAGE_REQUIRED_FILES);
@@ -355,6 +359,7 @@ export class AgentCoreService {
     }
     const readableWorkspace = this.readableWorkspace(project.id, username, current.revision.oid);
     const studioChanges = readableWorkspace ? this.changes(readableWorkspace) : [];
+    const reviewableStudioChanges = studioChanges.filter((change) => !isHiddenCandidateGroup(change.group_id));
     const packageFiles = readableWorkspace
       ? await this.overlay(readableWorkspace)
       : await this.artifacts.readPackageFiles(project.id, current.revision.oid);
@@ -369,7 +374,7 @@ export class AgentCoreService {
       packageVersion: packageFiles.spec.version,
       packageStatus: packageFiles.spec.status,
       candidateRevision: readableWorkspace?.candidate_id ?? null,
-      studioPendingCount: studioChanges.length ? 1 : 0,
+      studioPendingCount: reviewableStudioChanges.length ? 1 : 0,
       files: Object.keys(packageFiles.files).sort(),
       binaryFiles: packageFiles.binaryFiles,
       materials,
@@ -444,6 +449,7 @@ export class AgentCoreService {
         : current.revision.oid,
       baseRevision: current.revision.oid,
       candidateRevision: readableWorkspace?.candidate_id ?? null,
+      hasReviewableChanges: workspaceChanges.some((change) => !isHiddenCandidateGroup(change.group_id)),
       files: studioFiles,
     };
   }
@@ -5902,7 +5908,13 @@ export class AgentCoreService {
       !isHiddenCandidateGroup(change.group_id)
     ));
     if (!changes.length) {
-      throw new AgentCoreError('NO_CANDIDATE', '没有需要专家确认的业务候选', ['先完成候选内容，再发起确认']);
+      throw new AgentCoreError(
+        'NO_CANDIDATE',
+        '没有需要专家确认的业务候选',
+        ['仅有内部工作记录时直接结束当前复核'],
+        409,
+        { retryable: false },
+      );
     }
     const groups = confirmationGroupAssignments(changes);
     const currentByPath = new Map(changes.map((change) => [change.path, change.group_id]));
@@ -6650,7 +6662,13 @@ export class AgentCoreService {
       };
     }
     if (!businessIds.length) {
-      throw new AgentCoreError('NO_CANDIDATE', '没有需要专家确认的业务候选', ['先用 write_file 写入业务候选']);
+      throw new AgentCoreError(
+        'NO_CANDIDATE',
+        '没有需要专家确认的业务候选',
+        ['仅有内部工作记录时直接结束当前复核'],
+        409,
+        { retryable: false },
+      );
     }
     const requestedIds = new Set(requested.map((group) => group.id));
     const missing = businessIds.filter((id) => !requestedIds.has(id));
@@ -6827,7 +6845,7 @@ export class AgentCoreService {
     if (plan?.mode !== 'generation' && !(physicalTables.length && touchesObjects)) return;
     const issues = schemaObjectPolicyIssues(
       candidate.spec,
-      knowledgePackageFiles(candidate.files),
+      publicKnowledgePackageFiles(candidate.files),
       this.tables(workspace.project_id),
     );
     if (!issues.length) return;
@@ -6968,8 +6986,8 @@ export class AgentCoreService {
     base: Pick<PackageArtifactFiles, 'spec' | 'files'>,
     candidate: Pick<PackageArtifactFiles, 'spec' | 'files'>,
   ) {
-    const baseFiles = knowledgePackageFiles(base.files);
-    const candidateFiles = knowledgePackageFiles(candidate.files);
+    const baseFiles = publicKnowledgePackageFiles(base.files);
+    const candidateFiles = publicKnowledgePackageFiles(candidate.files);
     const baselineErrors = runFormatChecks(base.spec, baseFiles)
       .filter((finding) => finding.severity === '错误');
     const baselineIdentities = new Set(baselineErrors.map(formatFindingIdentity));
@@ -9475,12 +9493,6 @@ function expectedTier(path: string): Tier | null {
   return null;
 }
 
-function isHiddenCandidateGroup(groupId: string): boolean {
-  return groupId === RUNTIME_GROUP
-    || groupId === LEGACY_RUNTIME_GROUP
-    || groupId === COMPILED_RESOURCES_GROUP;
-}
-
 function suggestChangeGroupAssignments(changes: ChangeRow[]) {
   const titleFor = (tier: Tier, category: string) => {
     if (category === 'goal') return '建模目标确认';
@@ -9611,10 +9623,6 @@ function materialPurposeReviewPayload(
       })),
     },
   };
-}
-
-function knowledgePackageFiles(files: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(files).filter(([path]) => !path.startsWith('.modeling/')));
 }
 
 function candidateDiff(base: Record<string, string>, changes: ChangeRow[]): ArtifactFileDiff[] {

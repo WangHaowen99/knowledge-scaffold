@@ -163,7 +163,7 @@ test('package mapping format：纯渲染产物符合语义 mapping 契约', () =
 test('package mapping contract：mapping 只在物理 Schema 模式下生成', () => {
   const contract = packageGenerationContract();
 
-  assert.equal(contract.validatorVersion, 'package-contract-v6');
+  assert.equal(contract.validatorVersion, 'package-contract-v7');
   assert.ok(!contract.packageFormat.requiredFiles.includes('mappings/object-data-mappings.json'));
   assert.equal(contract.packageFormat.mappings.required, 'when_physical_schema_exists');
   assert.equal(contract.packageFormat.mappings.forbidden, 'when_physical_schema_absent');

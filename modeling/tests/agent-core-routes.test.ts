@@ -209,7 +209,7 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
 
   assert.equal(claimed.statusCode, 200, claimed.body);
   const contract = claimed.json().packageContract;
-  assert.equal(contract.validatorVersion, 'package-contract-v6');
+  assert.equal(contract.validatorVersion, 'package-contract-v7');
   assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
   assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
   assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
@@ -964,6 +964,7 @@ test('删除尚未确认的新增文件会撤销候选写入和变更组', async
   }, runId);
   assert.equal(preflight.statusCode, 409, preflight.body);
   assert.equal(preflight.json().code, 'NO_CANDIDATE');
+  assert.equal(preflight.json().retryable, false);
 });
 
 test('物理对象 mapping 是编译产物，Agent 不能按路径删除', async (t) => {
@@ -3026,7 +3027,7 @@ test('平台保留 manifest 管理字段，底层预检仍把详细错误返回�
   assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
   assert.equal(receipt.baseRevision, current.revision.oid);
   assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
-  assert.equal(receipt.validatorVersion, 'package-contract-v6');
+  assert.equal(receipt.validatorVersion, 'package-contract-v7');
 });
 
 test('最终确认会校验用户实际选中的变更组快照', async (t) => {
