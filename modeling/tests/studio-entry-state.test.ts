@@ -200,6 +200,8 @@ test('StudioView 接线字段纠错、NO_CHANGES 同步和完整资源删除文�
   assert.match(source, /StudioPendingReviewBanner/);
   assert.match(source, /检查并应用修改/);
   assert.match(source, /response\.applied/);
+  assert.match(source, /response\.noOp \|\| response\.mode === 'noop'/);
+  assert.match(source, /loadStudio\(\{ cache: 'reload' \}\)/);
   assert.match(source, /不调用建模助手/);
   assert.match(source, /studioHasPendingLocalEdits\(sessionRef\.current\)/);
   assert.match(source, /disabled=\{state\.phase === 'saving' \|\| blocked\}/);

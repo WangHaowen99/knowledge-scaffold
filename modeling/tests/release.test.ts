@@ -5,6 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { unzipSync } from 'fflate';
 import multipart from '@fastify/multipart';
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from 'jose';
 
@@ -256,13 +257,25 @@ test('发布接口列出未通过项，且他人不能访问项目', async () =>
 
 test('发布成功后写入新版本并发出版本事件', async () => {
   const { project, store, current } = await createPackage('发布成功');
+  const candidate = await store.saveFiles(project.id, {
+    expectedRevision: current.revision.oid,
+    files: {
+      'package/.modeling/plan.md': '# Synthetic release plan\n\nInternal progress only.\n',
+    },
+    action: {
+      cause: 'synthetic_release_note',
+      summary: 'Add a synthetic release work note',
+      actorKind: 'system',
+      actorName: 'test-system',
+    },
+  });
   const [m3repo, { saveCheck }] = await Promise.all([
     import('../src/workflow/m3-repo.js'),
     import('../src/workflow/package-check.js'),
   ]);
-  saveCheck(project.id, current.packageVersion, [], current.revision.oid);
+  saveCheck(project.id, candidate.packageVersion, [], candidate.revision.oid);
   const testcase = m3repo.addTestcase(project.id, '该推荐什么产品？', '按客户情况推荐');
-  const round = m3repo.createRound(project.id, current.packageVersion, 1, current.revision.oid);
+  const round = m3repo.createRound(project.id, candidate.packageVersion, 1, candidate.revision.oid);
   m3repo.addResult(round.id, {
     testcaseId: testcase.id,
     question: testcase.question,
@@ -296,6 +309,104 @@ test('发布成功后写入新版本并发出版本事件', async () => {
   const revisionEvent = events.json().events.find((event: any) => event.type === 'package.revision.created');
   assert.equal(revisionEvent.payload.revisionId, response.json().revision);
   assert.equal(revisionEvent.payload.packageVersion, '1.2.10');
+
+  const exported = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/package/export?version=1.2.10`,
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(exported.statusCode, 200, exported.body);
+  assert.ok(Object.keys(unzipSync(new Uint8Array(exported.rawPayload)))
+    .every((path) => !path.includes('/.modeling/')));
+});
+
+test('导出排除内部工作记录并继续报告非法公开文件路径', async () => {
+  const { project, store, current } = await createPackage('Synthetic export boundary');
+  const withInternal = await store.saveFiles(project.id, {
+    expectedRevision: current.revision.oid,
+    files: {
+      'package/.modeling/plan.md': '# Synthetic internal plan\n\nInternal progress only.\n',
+    },
+    action: {
+      cause: 'synthetic_internal_note',
+      summary: 'Add a synthetic internal work note',
+      actorKind: 'system',
+      actorName: 'test-system',
+    },
+  });
+  const token = await tokenFor();
+  const exported = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/package/export`,
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(exported.statusCode, 200, exported.body);
+  const entries = Object.keys(unzipSync(new Uint8Array(exported.rawPayload)));
+  assert.ok(entries.length > 0);
+  assert.ok(entries.every((path) => !path.includes('/.modeling/')));
+
+  await store.saveFiles(project.id, {
+    expectedRevision: withInternal.revision.oid,
+    files: { 'package/index.md': '# Invalid synthetic public index\n' },
+    action: {
+      cause: 'synthetic_invalid_public_file',
+      summary: 'Add a synthetic invalid public file',
+      actorKind: 'system',
+      actorName: 'test-system',
+    },
+  });
+  const blocked = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/package/export`,
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(blocked.statusCode, 400, blocked.body);
+  assert.ok(blocked.json().findings.some((finding: any) => finding.target === 'index.md'));
+  assert.ok(blocked.json().findings.every((finding: any) => finding.target !== '.modeling/plan.md'));
+});
+
+test('发布前重新验证公开交付包并阻断无法导出的候选', async () => {
+  const { project, store, current } = await createPackage('Synthetic release delivery gate');
+  const invalid = await store.saveFiles(project.id, {
+    expectedRevision: current.revision.oid,
+    files: { 'package/index.md': '# Invalid synthetic public index\n' },
+    action: {
+      cause: 'synthetic_invalid_release_file',
+      summary: 'Add a synthetic invalid release file',
+      actorKind: 'system',
+      actorName: 'test-system',
+    },
+  });
+  const [m3repo, { saveCheck }] = await Promise.all([
+    import('../src/workflow/m3-repo.js'),
+    import('../src/workflow/package-check.js'),
+  ]);
+  saveCheck(project.id, invalid.packageVersion, [], invalid.revision.oid);
+  const testcase = m3repo.addTestcase(project.id, 'What is the synthetic result?', 'A synthetic result');
+  const round = m3repo.createRound(project.id, invalid.packageVersion, 1, invalid.revision.oid);
+  m3repo.addResult(round.id, {
+    testcaseId: testcase.id,
+    question: testcase.question,
+    groundTruth: testcase.groundTruth,
+    finalAnswer: testcase.groundTruth,
+    verdict: 'pass',
+  });
+  m3repo.roundProgress(round.id, 1, 1);
+  m3repo.finishRound(round.id, 'done');
+
+  const token = await tokenFor();
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/release`,
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().error, '发布条件未满足');
+  assert.deepEqual(response.json().gates.at(-1), {
+    id: 'delivery', label: '交付包', passed: false, detail: '1 个公开包格式错误',
+  });
+  assert.ok(response.json().findings.some((finding: any) => finding.target === 'index.md'));
+  assert.equal((await store.current(project.id))?.spec.status, 'review');
 });
 
 test('发布候选通过全部门禁后提升为对应稳定版本而不是再加补丁号', async () => {

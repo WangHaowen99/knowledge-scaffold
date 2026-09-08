@@ -50,6 +50,8 @@ import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { parsePackageArchive, renameImportedPackageArchive } from './workflow/package-import.js';
+import { publicKnowledgePackageFiles } from './workflow/package-file-scope.js';
+import { updateManifestPlatformMetadata } from './workflow/package-contract.js';
 import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
@@ -2176,7 +2178,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           findings: bad,
         });
       }
-      const zip = zipPackage(archive.files);
+      const zip = zipPackage(publicKnowledgePackageFiles(archive.files));
       reply.header('Content-Type', 'application/zip');
       reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.packageVersion}.zip"`);
       return reply.send(Buffer.from(zip));
@@ -3333,6 +3335,49 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             });
           }
           const version = promoteReleaseCandidate(current.packageVersion);
+          const releasedSpec = { ...current.spec, version, status: 'released' as const };
+          const [deliverySnapshot, deliveryArchive] = await Promise.all([
+            packageArtifacts.readPackageFiles(c.p.id, current.revision.oid),
+            packageArtifacts.readPackageArchiveFiles(c.p.id, current.revision.oid),
+          ]);
+          const deliveryFiles = publicKnowledgePackageFiles(deliverySnapshot.files);
+          let deliveryFailure = '';
+          try {
+            if (deliveryFiles['manifest.yaml'] !== undefined) {
+              deliveryFiles['manifest.yaml'] = updateManifestPlatformMetadata(
+                deliveryFiles['manifest.yaml'],
+                releasedSpec,
+              );
+            }
+          } catch (error) {
+            deliveryFailure = error instanceof Error ? error.message : '交付包 manifest 无法更新';
+          }
+          const deliveryErrors = deliveryFailure
+            ? []
+            : runFormatChecks(releasedSpec, deliveryFiles).filter((finding) => finding.severity === '错误');
+          if (!deliveryFailure && !deliveryErrors.length) {
+            try {
+              const archiveFiles = publicKnowledgePackageFiles(deliveryArchive.files);
+              if (deliveryFiles['manifest.yaml'] !== undefined) {
+                archiveFiles['manifest.yaml'] = new TextEncoder().encode(deliveryFiles['manifest.yaml']);
+              }
+              zipPackage(archiveFiles);
+            } catch (error) {
+              deliveryFailure = error instanceof Error ? error.message : '交付包无法生成 ZIP';
+            }
+          }
+          if (deliveryFailure || deliveryErrors.length) {
+            const detail = deliveryFailure
+              || `${deliveryErrors.length} 个公开包格式错误`;
+            return reply.code(409).send({
+              error: '发布条件未满足',
+              gates: [
+                ...readiness.gates,
+                { id: 'delivery', label: '交付包', passed: false, detail },
+              ],
+              findings: deliveryErrors,
+            });
+          }
           const action = {
             cause: 'release',
             summary: `发布 ${version}`,

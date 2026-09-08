@@ -133,10 +133,14 @@ export const applyStudioDeletions = async (projectId, input) => {
   return response;
 };
 
-export const requestStudioReview = (projectId, input) => api(`${P(projectId)}/review`, {
-  method: 'POST',
-  body: JSON.stringify(input),
-});
+export const requestStudioReview = async (projectId, input) => {
+  const response = await api(`${P(projectId)}/review`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  invalidateStudioBootstrap(projectId);
+  return response;
+};
 
 export function studioError(error) {
   const code = error?.data?.code || '';
