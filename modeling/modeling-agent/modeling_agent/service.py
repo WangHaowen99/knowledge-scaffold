@@ -3147,6 +3147,8 @@ class AgentService:
             initial_phase = self.store.project_state(run.project_id).state.partition(":")[0]
             output_budget = output_budget_for_phase(self.settings, initial_phase)
             analyst_model = None
+            model_settings = self.settings
+            acceptance_model = False
             if self._model_factory is not None:
                 model = self._model_factory()
             elif len(self.settings.service_token) < 32:
@@ -3164,8 +3166,10 @@ class AgentService:
                 if runtime_llm.get("acceptanceDriver") is True:
                     from .acceptance_model import AcceptanceModel
                     model = AcceptanceModel(str(runtime_llm.get("acceptanceScenario") or ""))
+                    acceptance_model = True
                 else:
                     runtime_settings = self.settings.with_runtime_llm(runtime_llm)
+                    model_settings = runtime_settings
                     model = build_model(runtime_settings, output_tokens=output_budget)
                     analyst_model = build_model(
                         runtime_settings,
@@ -3181,6 +3185,7 @@ class AgentService:
             confirmation_card_retries = 0
             model_operation_seq = 0
             current_query = query
+            active_phase = initial_phase
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
                     if kind == "tool":
@@ -3253,6 +3258,17 @@ class AgentService:
                     cancel_event=live.cancel_event,
                     inflight_core_calls=live.inflight_core_calls,
                 )
+                phase = context.phase
+                if phase != active_phase and self._model_factory is None and not acceptance_model:
+                    model = build_model(
+                        model_settings,
+                        output_tokens=output_budget_for_phase(self.settings, phase),
+                    )
+                    analyst_model = build_model(
+                        model_settings,
+                        output_tokens=model_settings.analyst_output_tokens,
+                    )
+                    active_phase = phase
                 live.bundle = build_agent(
                     self.settings,
                     context,
