@@ -16,7 +16,6 @@ import {
 
 const TABS = [
   ['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果'],
-  ['diagnose', '失败诊断'], ['optimize', '优化建议'],
 ];
 const STATUS = { running: ['运行中', 'wait'], done: ['已完成', 'ok'], failed: ['运行失败', 'stale'] };
 const KINDS = [
