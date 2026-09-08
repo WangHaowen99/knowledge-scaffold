@@ -184,6 +184,7 @@ import {
   RUNTIME_GROUP,
 } from './candidate-change-scope.js';
 import { publicKnowledgePackageFiles } from '../workflow/package-file-scope.js';
+import { SchemaProfileCache, SCHEMA_PROFILE_ANALYSIS_VERSION } from '../workflow/schema-profile-cache.js';
 
 const WORKSPACE_LEASE_MS = 30 * 60 * 1000;
 const MAX_FILE_CHARS = 1_000_000;
@@ -333,6 +334,7 @@ export class AgentCoreService {
   private readonly changeControl: ChangeControlStore;
   private readonly materialPurposeReviews: MaterialPurposeReviewStore;
   private readonly schemaSemanticStatusCache = new Map<string, SchemaSemanticStatus>();
+  private readonly schemaProfileCache: SchemaProfileCache;
 
   constructor(
     db: DatabaseSync = getDb(),
@@ -345,6 +347,7 @@ export class AgentCoreService {
     this.studioReviews = new StudioReviewService(db, this.artifacts);
     this.changeControl = new ChangeControlStore(db);
     this.materialPurposeReviews = new MaterialPurposeReviewStore(db);
+    this.schemaProfileCache = new SchemaProfileCache(db);
   }
 
   async workbenchSnapshot(project: Project, username: string) {
@@ -4431,23 +4434,32 @@ export class AgentCoreService {
   }
 
   private getSchemaOverview(projectId: string) {
-    const tables = this.tables(projectId).map((table) => ({
-      name: table.name,
-      documentId: table.documentId,
-      rowCount: table.rowCount,
-      fieldCount: table.fields.length,
-      fields: table.fields.map((field) => ({
-        name: field.name,
-        inferredType: field.inferredType,
-        ...(field.note ? { note: field.note } : {}),
-        ...(field.sourceColumn ? { sourceColumn: field.sourceColumn } : {}),
-        ...(typeof field.nonEmptyRatio === 'number' ? { nonEmptyRatio: field.nonEmptyRatio } : {}),
-        ...(typeof field.distinctRatio === 'number' ? { distinctRatio: field.distinctRatio } : {}),
-        ...(field.primaryKey ? { primaryKey: true } : {}),
-        sampleValues: (field.sampleValues ?? []).slice(0, 3),
-      })),
-    }));
-    return { tables, tableCount: tables.length, display: { text: `已生成 ${tables.length} 张表的结构摘要` } };
+    const documents = new Map(listDocuments(projectId).map((document) => [document.id, document]));
+    let cacheHits = 0;
+    const tables = this.tables(projectId).map((table) => {
+      const document = table.documentId ? documents.get(table.documentId) : undefined;
+      const key = {
+        projectId,
+        documentId: table.documentId ?? `table:${table.name}`,
+        contentHash: document?.contentHash ?? '',
+        sheetName: table.name,
+        purposeRevision: `${document?.directiveRevision ?? 0}:${table.materialPurpose ?? document?.purpose ?? 'auto'}`,
+        analysisVersion: SCHEMA_PROFILE_ANALYSIS_VERSION,
+      };
+      const cached = this.schemaProfileCache.get(key);
+      if (cached) {
+        cacheHits += 1;
+        return { ...cached, cacheHit: true };
+      }
+      return { ...this.schemaProfileCache.save(key, table), cacheHit: false };
+    });
+    return {
+      tables,
+      tableCount: tables.length,
+      cacheHits,
+      analysisVersion: SCHEMA_PROFILE_ANALYSIS_VERSION,
+      display: { text: `已生成 ${tables.length} 张表的结构摘要${cacheHits ? `，复用 ${cacheHits} 张缓存` : ''}` },
+    };
   }
 
   private findTable(projectId: string, args: Record<string, unknown>) {

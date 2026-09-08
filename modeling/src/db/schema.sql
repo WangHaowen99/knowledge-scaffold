@@ -1477,6 +1477,22 @@ CREATE TABLE IF NOT EXISTS material_analysis_document_summaries (
 CREATE INDEX IF NOT EXISTS idx_material_analysis_document_summaries_status
   ON material_analysis_document_summaries(run_id, status, document_key);
 
+-- 表结构摘要缓存。只保存字段统计和有限样例，不保存业务数据行；资料版本、用途版本或摘要算法变化时自然失效。
+CREATE TABLE IF NOT EXISTS schema_profile_cache (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  document_id         TEXT NOT NULL,
+  content_hash        TEXT NOT NULL,
+  sheet_name          TEXT NOT NULL,
+  purpose_revision    TEXT NOT NULL,
+  analysis_version    TEXT NOT NULL,
+  profile_json        TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY (project_id, document_id, content_hash, sheet_name, purpose_revision, analysis_version)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_profile_cache_current
+  ON schema_profile_cache(project_id, document_id, sheet_name, updated_at DESC);
+
 -- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
 -- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，
 -- 因为上个进程的登记不可能再续期（见 authoring/restart-recovery.ts）。

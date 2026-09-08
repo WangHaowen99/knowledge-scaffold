@@ -2765,6 +2765,32 @@ test('Schema 结构摘要一次返回字段统计且不搬运业务行', async (
   assert.ok(JSON.stringify(payload).length < 2_000);
 });
 
+test('Schema 结构摘要命中持久化缓存并在资料版本变化后失效', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Schema 缓存验收' });
+  const app = appFor(t);
+  const first = insertDocumentRevision({
+    projectId: project.id, filename: '缓存表.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: '设备', rowCount: 2, fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1, nonEmptyRatio: 1 }], rows: [['1'], ['2']] }],
+  }).document;
+  const runId = `run-cache-${project.id}`;
+  const cold = await tool(app, project.id, 'get_schema_overview', {}, runId);
+  assert.equal(cold.statusCode, 200, cold.body);
+  assert.equal(cold.json().cacheHits, 0);
+  const hot = await tool(app, project.id, 'get_schema_overview', {}, runId);
+  assert.equal(hot.statusCode, 200, hot.body);
+  assert.equal(hot.json().cacheHits, 1);
+  assert.equal(hot.json().tables[0].cacheHit, true);
+  const second = insertDocumentRevision({
+    projectId: project.id, filename: '缓存表.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: '设备', rowCount: 3, fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1, nonEmptyRatio: 1 }], rows: [['1'], ['2'], ['3']] }],
+  }).document;
+  assert.notEqual(second.contentHash, first.contentHash);
+  const changed = await tool(app, project.id, 'get_schema_overview', {}, runId);
+  assert.equal(changed.statusCode, 200, changed.body);
+  assert.equal(changed.json().cacheHits, 0);
+  assert.equal(changed.json().tables[0].rowCount, 3);
+});
+
 test('表格全文精读从原文件覆盖超过普通解析上限的全部行', async (t) => {
   const project = createProject({ owner: 'alice', name: '表格全文精读覆盖' });
   const app = appFor(t);
