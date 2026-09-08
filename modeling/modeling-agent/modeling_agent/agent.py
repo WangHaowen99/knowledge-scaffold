@@ -78,7 +78,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 现有知识包导入后从唯一的 increment 阶段直接接增量工作，不重新补跑目标、流程或知识全量阶段，也不把导入基线说成已发布版本。
 - 导入基线可能使用历史知识格式；只修改真实受影响的文件，不得为了迁移格式重写无关对象、操作或脚本。门禁只阻断本次候选新增的问题，基线历史问题另行治理。
 - 用户补充或替换资料后，先调用 analyze_material_impact。若 scopeResolved=false，只把未决状态交给 focus(kind='impact')，不得把全包说成受影响；读完新资料和相关知识文件后，再次调用并用 direct_resources 提交直接影响起点。两份以上资料都界定完成后，必须用 sources 取得核心去重后的批量 view，原样交给 focus(kind='impact')，不得自行拼接清单或估算数量。以上字段和调用均不得出现在用户可见正文中。若工具显示语义未变化，主动说明无需生成候选并结束本次增量。
-- Excel 或 CSV 需要更新知识包数据集时调用 stage_tabular_dataset，由服务端完整同步全部已展开行；绝不能分页读取后把整表正文拼进 write_file。数据超出知识包上限时保留在项目数据源，只更新对象字段和映射。
+- Excel 或 CSV 需要更新知识包数据集时调用 stage_tabular_dataset，由服务端完整同步全部已展开行；绝不能分页读取后把整表正文拼进 write_file。数据超出知识包上限时保留在项目数据源，只更新对象字段和映射。Schema 盘点优先调用 get_schema_overview；只有需要核对具体关系或异常值时才调用 describe_table/read_table_rows。
 - 对象来源采用互斥模式：只要存在 purpose=schema 的已解析表格，计划必须以 Core 返回的同一项“按全部 Schema Sheet 同步物理对象”任务为准，先逐 Sheet 同步全部物理对象，再在该任务的最后补全并确认对象标题、说明、字段中文名和 required 二态语义；不得另加语义补全任务卡，不得 create_object、合并 Sheet、遗漏空 Sheet 或追加派生对象。字段业务说明没有明确资料时保持为空，不产生阻断或二次询问；已确认语义在再次同步时应保留。只有完全没有确定 Schema 时才可 create_object 生成虚拟对象；虚拟对象不得绑定物理表，也不得生成 mapping。
 - 用户导入两个以上来源知识包后，必须走一次性批量融合：先盘点来源并建立融合计划，把逐元素未裁决账本交给 focus(kind='conflict')；默认无损保留来源视图，遇到语义关系不清时只问业务含义，不暴露工具或内部 ID。全部元素有明确去向后一次编译为一个整体候选并直接 request_confirmation，禁止按上传顺序反复执行 analyze_package_merge/stage_package_merge。只有一个来源且用户明确要求选择性导入时，才使用旧的范围分析和单包候选工具。
 - 正式评测用例只能由用户在评测界面录入真实场景。不得向 tests/ 或其他知识包路径写评测题，不得从知识内容反推问题或参考答案；缺少用例或数据源时，引导用户完成评测准备并留在验证阶段。事实齐备后主动转换阶段并调用 run_evaluation。该工具只创建后台任务；创建成功后立即结束当前回合，不得轮询状态或读取尚未结束的结果，真实进度由评测界面展示。
@@ -235,11 +235,11 @@ def _system_prompt(leader_skill: str, package_contract: dict[str, Any]) -> str:
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:
     material_tools = build_core_tools(context, {
         "list_documents", "read_document", "read_documents_fully", "search_documents",
-        "list_tables", "describe_table", "read_table_rows",
+        "list_tables", "get_schema_overview", "describe_table", "read_table_rows",
     })
     package_read_names = {
         "list_documents", "read_document", "search_documents",
-        "list_tables", "describe_table", "read_table_rows",
+        "list_tables", "get_schema_overview", "describe_table", "read_table_rows",
         "list_dir", "read_file", "grep_package", "who_references", "diff", "gate_status",
         "list_package_sources", "list_package_fusion_plans", "get_package_fusion_plan",
         "analyze_package_merge", "read_package_source_file",

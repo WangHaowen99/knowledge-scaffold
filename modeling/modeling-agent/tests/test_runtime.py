@@ -2535,6 +2535,12 @@ async def test_source_tools_bound_leader_context_without_losing_schema_fields() 
     assert gateway.calls[-1]["arguments"]["limit"] == 6_000
 
 
+async def test_schema_overview_tool_is_available_to_read_only_material_agents() -> None:
+    names = {spec.name for spec in CORE_TOOL_SPECS}
+    assert "get_schema_overview" in names
+    assert "read_table_rows" in names
+
+
 async def test_repeated_read_table_rows_uses_run_cache(settings) -> None:
     gateway = FakeGateway({
         "read_table_rows": {

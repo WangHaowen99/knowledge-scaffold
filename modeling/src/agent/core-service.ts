@@ -725,6 +725,7 @@ export class AgentCoreService {
       case 'read_documents_fully': return this.readDocumentsFully(context, args);
       case 'search_documents': return this.searchDocuments(context.project.id, args);
       case 'list_tables': return this.listTables(context.project.id);
+      case 'get_schema_overview': return this.getSchemaOverview(context.project.id);
       case 'describe_table': return this.describeTable(context.project.id, args);
       case 'read_table_rows': return this.readTableRows(context.project.id, args);
       case 'apply_ontology_object_patch': return this.applyOntologyObjectPatch(context, args);
@@ -4427,6 +4428,26 @@ export class AgentCoreService {
       };
     });
     return { tables, display: { text: `已查看 ${tables.length} 张数据表` } };
+  }
+
+  private getSchemaOverview(projectId: string) {
+    const tables = this.tables(projectId).map((table) => ({
+      name: table.name,
+      documentId: table.documentId,
+      rowCount: table.rowCount,
+      fieldCount: table.fields.length,
+      fields: table.fields.map((field) => ({
+        name: field.name,
+        inferredType: field.inferredType,
+        ...(field.note ? { note: field.note } : {}),
+        ...(field.sourceColumn ? { sourceColumn: field.sourceColumn } : {}),
+        ...(typeof field.nonEmptyRatio === 'number' ? { nonEmptyRatio: field.nonEmptyRatio } : {}),
+        ...(typeof field.distinctRatio === 'number' ? { distinctRatio: field.distinctRatio } : {}),
+        ...(field.primaryKey ? { primaryKey: true } : {}),
+        sampleValues: (field.sampleValues ?? []).slice(0, 3),
+      })),
+    }));
+    return { tables, tableCount: tables.length, display: { text: `已生成 ${tables.length} 张表的结构摘要` } };
   }
 
   private findTable(projectId: string, args: Record<string, unknown>) {

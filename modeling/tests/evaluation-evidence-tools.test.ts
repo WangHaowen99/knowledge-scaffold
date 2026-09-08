@@ -26,6 +26,21 @@ test('read_table_rows 按字段名返回有边界的代表行', async () => {
   assert.deepEqual(payload.page, { offset: 1, limit: 1, returned: 1, total: 3, nextOffset: 2 });
 });
 
+test('get_schema_overview 一次返回结构统计而不返回业务行', async () => {
+  const tools = buildTools({
+    tables: [{ name: 'synthetic', rowCount: 10_000, fields: [
+      { name: 'id', sourceColumn: 'A', inferredType: 'string', sampleValues: ['1', '2', '3'], distinctRatio: 1, nonEmptyRatio: 1 },
+    ], rows: Array.from({ length: 10_000 }, (_, i) => [String(i)]) }],
+    documents: [], captured: {},
+  });
+  const tool = tools.find((item) => item.name === 'get_schema_overview');
+  assert.ok(tool);
+  const payload = JSON.parse((await tool.execute('overview', {} as never)).content[0].text);
+  assert.equal(payload.tableCount, 1);
+  assert.equal(payload.tables[0].rowCount, 10_000);
+  assert.equal('rows' in payload.tables[0], false);
+});
+
 test('read_table_rows 强制限制单次读取行数', async () => {
   const rows = Array.from({ length: 80 }, (_, index) => [String(index)]);
   const tool = buildTools({

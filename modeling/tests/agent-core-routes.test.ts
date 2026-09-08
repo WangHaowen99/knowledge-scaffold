@@ -2739,6 +2739,32 @@ test('同名 Sheet 必须用资料 ID 稳定寻址', async (t) => {
   assert.equal(exact.json().table.fields[0].name, '一号字段');
 });
 
+test('Schema 结构摘要一次返回字段统计且不搬运业务行', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Schema 结构摘要' });
+  const app = appFor(t);
+  insertDocumentRevision({
+    projectId: project.id, filename: '合成结构.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: '设备', rowCount: 10_000, fields: [
+      {
+        name: '设备编码', sourceColumn: 'A', inferredType: 'string', sampleValues: ['P-1', 'P-2', 'P-3', 'P-4'],
+        distinctRatio: 1, nonEmptyRatio: 0.99, note: '唯一设备编号', primaryKey: true,
+      },
+      { name: '温度', sourceColumn: 'B', inferredType: 'number', sampleValues: ['350', '351'], distinctRatio: 0.2, nonEmptyRatio: 0.8 },
+    ], rows: Array.from({ length: 10_000 }, (_, index) => [`P-${index + 1}`, String(350 + index % 2)]) }] as any,
+  });
+
+  const response = await tool(app, project.id, 'get_schema_overview', {}, `run-schema-overview-${project.id}`);
+  assert.equal(response.statusCode, 200, response.body);
+  const payload = response.json();
+  assert.equal(payload.tableCount, 1);
+  assert.equal(payload.tables[0].rowCount, 10_000);
+  assert.equal(payload.tables[0].fields[0].nonEmptyRatio, 0.99);
+  assert.equal(payload.tables[0].fields[0].primaryKey, true);
+  assert.equal(payload.tables[0].fields[0].sampleValues.length, 3);
+  assert.equal('rows' in payload.tables[0], false);
+  assert.ok(JSON.stringify(payload).length < 2_000);
+});
+
 test('表格全文精读从原文件覆盖超过普通解析上限的全部行', async (t) => {
   const project = createProject({ owner: 'alice', name: '表格全文精读覆盖' });
   const app = appFor(t);

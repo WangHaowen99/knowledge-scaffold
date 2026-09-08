@@ -81,6 +81,30 @@ export function buildTools(ctx: ToolContext) {
     },
   };
 
+  const schemaOverview = {
+    name: 'get_schema_overview',
+    label: '查看表结构摘要',
+    description: '一次返回所有上传表的结构统计和少量字段样例，不返回业务数据行。',
+    parameters: Type.Object({}),
+    async execute() {
+      const tables = ctx.tables.map((table) => ({
+        name: table.name,
+        rowCount: table.rowCount,
+        fieldCount: table.fields.length,
+        fields: table.fields.map((field) => ({
+          name: field.name,
+          inferredType: field.inferredType,
+          ...(field.note ? { note: field.note } : {}),
+          ...(field.sourceColumn ? { sourceColumn: field.sourceColumn } : {}),
+          ...(typeof field.nonEmptyRatio === 'number' ? { nonEmptyRatio: field.nonEmptyRatio } : {}),
+          distinctRatio: field.distinctRatio,
+          sampleValues: field.sampleValues.slice(0, 3),
+        })),
+      }));
+      return text(JSON.stringify({ tables, tableCount: tables.length }));
+    },
+  };
+
   const readTableRows = {
     name: 'read_table_rows',
     label: '读取表格数据行',
@@ -239,6 +263,7 @@ export function buildTools(ctx: ToolContext) {
 
   return [
     listTables,
+    schemaOverview,
     describeTable,
     ...(hasRuntimeSource ? [] : [readTableRows]),
     ...(runtimeBusinessDataSearch ? [runtimeBusinessDataSearch] : []),

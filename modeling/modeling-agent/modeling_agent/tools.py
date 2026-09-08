@@ -1098,6 +1098,12 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("search_documents", "跨资料搜索原文，query 中的词按 OR 匹配。", {"query": STRING}, ("query",), display="正在检索资料"),
     ToolSpec("list_tables", "列出从表格资料解析出的数据字典。", {}, display="正在查看数据表"),
+    ToolSpec(
+        "get_schema_overview",
+        "一次返回已解析表格的结构摘要：表名、行数、字段类型、非空率、唯一性和少量样例；不返回业务数据行。用于 Schema 盘点，避免逐表分页读取整张表。",
+        {},
+        display="正在生成表结构摘要",
+    ),
     ToolSpec("describe_table", "按资料 ID 和 Sheet 名查看字段、类型、样例和唯一性，避免同名 Sheet 混淆。", {"document_id": STRING, "table": STRING}, ("document_id", "table"), display="正在分析数据表"),
     ToolSpec(
         "read_table_rows",
