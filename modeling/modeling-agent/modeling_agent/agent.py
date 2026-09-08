@@ -162,6 +162,7 @@ def build_agent(
     context: ToolContext,
     *,
     model: Any | None = None,
+    analyst_model: Any | None = None,
     package_contract: dict[str, Any] | None = None,
 ) -> AgentBundle:
     resolved_model = model or build_model(settings)
@@ -201,7 +202,7 @@ def build_agent(
         tool_owner_id=context.run_id,
         system_prompt=_system_prompt(leader_skill, package_contract or {}),
         tools=build_tools(context),
-        subagents=_subagents(settings, context, resolved_model),
+        subagents=_subagents(settings, context, analyst_model or resolved_model),
         rails=rails,
         # 子代理作为同步 task 工具运行，沿用项目 run 的检查点与工具边界；
         # 不启用 sessions_spawn 所需的外层 task loop，避免产生第二套运行状态。

@@ -3146,10 +3146,15 @@ class AgentService:
         try:
             initial_phase = self.store.project_state(run.project_id).state.partition(":")[0]
             output_budget = output_budget_for_phase(self.settings, initial_phase)
+            analyst_model = None
             if self._model_factory is not None:
                 model = self._model_factory()
             elif len(self.settings.service_token) < 32:
                 model = build_model(self.settings, output_tokens=output_budget)
+                analyst_model = build_model(
+                    self.settings,
+                    output_tokens=self.settings.analyst_output_tokens,
+                )
             else:
                 runtime_llm = await self._gateway.model_config(
                     project_id=live.project_id,
@@ -3162,6 +3167,10 @@ class AgentService:
                 else:
                     runtime_settings = self.settings.with_runtime_llm(runtime_llm)
                     model = build_model(runtime_settings, output_tokens=output_budget)
+                    analyst_model = build_model(
+                        runtime_settings,
+                        output_tokens=runtime_settings.analyst_output_tokens,
+                    )
             self.store.update_run(run.id, status=RUN_RUNNING)
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
@@ -3248,6 +3257,7 @@ class AgentService:
                     self.settings,
                     context,
                     model=model,
+                    analyst_model=analyst_model,
                     package_contract=live.package_contract,
                 )
                 boundary = self.events.publish(
