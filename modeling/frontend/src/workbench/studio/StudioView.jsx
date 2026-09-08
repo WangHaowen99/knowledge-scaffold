@@ -496,10 +496,14 @@ export default function StudioView({ focus }) {
         clientMutationId: mutationId('studio-review-recovery'),
       });
       update({ studioPendingReview: false });
-      if (response.applied) {
+      if (response.noOp || response.mode === 'noop') {
+        store.set({ studioPendingCount: 0 });
+        setReviewSubmitState({ phase: 'saved', message: response.display?.text || '仅有工作记录，无需应用' });
+        await loadStudio({ cache: 'reload' });
+      } else if (response.applied) {
         store.set({ studioPendingCount: 0 });
         setReviewSubmitState({ phase: 'saved', message: response.display?.text || '确定性检查通过，修改已应用' });
-        await loadStudio();
+        await loadStudio({ cache: 'reload' });
         window.dispatchEvent(new Event('mw-package-updated'));
       } else {
         setReviewSubmitState({ phase: 'saved', message: response.display?.text || '已提交复核' });

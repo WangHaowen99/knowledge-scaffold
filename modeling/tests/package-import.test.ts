@@ -95,6 +95,7 @@ function replaceZipEntryName(archive: Uint8Array, from: string, to: Uint8Array):
 test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   const spec = demoSpec();
   const files = renderPackage(spec);
+  files['.modeling/plan.md'] = '# Synthetic internal plan\n';
   const imported = parsePackageArchive(zipPackage(files, 'import-demo'));
 
   assert.equal(imported.spec.id, spec.id);
@@ -152,6 +153,8 @@ test('标准知识包 ZIP 可导入为统一规格和文件快照', () => {
   });
   assert.equal(imported.files['manifest.yaml'], files['manifest.yaml']);
   assert.equal(imported.files['objects/Customer.md'], files['objects/Customer.md']);
+  assert.equal(imported.files['.modeling/plan.md'], undefined);
+  assert.equal(imported.rawFiles['.modeling/plan.md'], undefined);
 });
 
 test('导入副本改名会同步更新规格、文本 manifest 和原始 manifest 字节', () => {
