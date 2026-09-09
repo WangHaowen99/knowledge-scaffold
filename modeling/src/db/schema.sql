@@ -240,6 +240,22 @@ CREATE TABLE IF NOT EXISTS product_ledger_snapshots (
 CREATE INDEX IF NOT EXISTS idx_product_ledger_project
   ON product_ledger_snapshots(project_id, updated_at DESC);
 
+-- v2 台账按范围和真实依赖指纹保存历史；ruleRefs 可被多个条目共享。
+CREATE TABLE IF NOT EXISTS product_ledger_v2_snapshots (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  scope               TEXT NOT NULL,
+  dependency_fingerprint TEXT NOT NULL,
+  source_revision     TEXT NOT NULL,
+  required            INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0, 1)),
+  ledger_json         TEXT NOT NULL,
+  validation_json     TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY (project_id, scope, dependency_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_product_ledger_v2_project
+  ON product_ledger_v2_snapshots(project_id, scope, updated_at DESC);
+
 -- 资料用途建议与用户确认分离；表格额外保存逐 Sheet 处置。审查绑定不可变资料修订。
 CREATE TABLE IF NOT EXISTS material_purpose_reviews (
   document_id             TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,

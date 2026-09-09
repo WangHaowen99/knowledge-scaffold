@@ -5,7 +5,9 @@ export type ProductLedgerProcessingStatus = 'pending' | 'ready' | 'generated' | 
 
 export interface ProductLedgerEntry {
   canonicalItemId: string;
-  ruleId: string;
+  ruleRefs: string[];
+  /** v1 compatibility input; normalized into ruleRefs. */
+  ruleId?: string;
   sourceRecordIds: string[];
   sourceLocator: string;
   mergeGroupId?: string;
@@ -15,7 +17,7 @@ export interface ProductLedgerEntry {
 }
 
 export interface ProductLedger {
-  schemaVersion: 'product-ledger-v1';
+  schemaVersion: 'product-ledger-v1' | 'product-ledger-v2';
   sourceRevision: string;
   scope: string;
   rawCount: number;
@@ -46,7 +48,7 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
   const mergedGroupCount = nonNegativeInteger(ledger.mergedGroupCount);
   const entries = Array.isArray(ledger.entries) ? ledger.entries : [];
 
-  if (ledger.schemaVersion !== 'product-ledger-v1') errors.push('schemaVersion 必须为 product-ledger-v1');
+  if (ledger.schemaVersion !== 'product-ledger-v1' && ledger.schemaVersion !== 'product-ledger-v2') errors.push('schemaVersion 必须为 product-ledger-v1 或 product-ledger-v2');
   if (!String(ledger.sourceRevision ?? '').trim()) errors.push('sourceRevision 不能为空');
   if (!String(ledger.scope ?? '').trim()) errors.push('scope 不能为空');
   if (rawCount < canonicalCount) errors.push('rawCount 不能小于 canonicalCount');
@@ -67,7 +69,7 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
     const entry = isRecord(rawEntry) ? rawEntry : {};
     const prefix = `entries[${index}]`;
     const canonicalItemId = text(entry.canonicalItemId);
-    const ruleId = text(entry.ruleId);
+    const ruleRefs = stringArray(entry.ruleRefs ?? (text(entry.ruleId) ? [entry.ruleId] : []));
     const sourceLocator = text(entry.sourceLocator);
     const sourceRecordIds = stringArray(entry.sourceRecordIds);
     const evidenceStatus = text(entry.evidenceStatus);
@@ -77,9 +79,8 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
     if (!canonicalItemId) errors.push(`${prefix}.canonicalItemId 不能为空`);
     else if (canonicalIds.has(canonicalItemId)) errors.push(`${prefix}.canonicalItemId 重复：${canonicalItemId}`);
     else canonicalIds.add(canonicalItemId);
-    if (!ruleId) errors.push(`${prefix}.ruleId 不能为空`);
-    else if (ruleIds.has(ruleId)) errors.push(`${prefix}.ruleId 重复：${ruleId}`);
-    else ruleIds.add(ruleId);
+    if (!ruleRefs.length) errors.push(`${prefix}.ruleRefs 不能为空`);
+    for (const ruleId of ruleRefs) ruleIds.add(ruleId);
     if (!sourceLocator) errors.push(`${prefix}.sourceLocator 不能为空`);
     if (!sourceRecordIds.length) errors.push(`${prefix}.sourceRecordIds 不能为空`);
     for (const sourceId of sourceRecordIds) {

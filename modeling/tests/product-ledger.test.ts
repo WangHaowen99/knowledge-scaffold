@@ -75,3 +75,15 @@ test('product ledger rejects duplicate IDs and contradictory counts', () => {
   assert.ok(result.errors.some((message) => message.includes('canonicalItemId 重复')));
   assert.ok(result.errors.some((message) => message.includes('rawCount - canonicalCount')));
 });
+
+test('product-ledger-v2 允许多个条目共享同一条规则引用', () => {
+  const result = validateProductLedger({
+    schemaVersion: 'product-ledger-v2', sourceRevision: 'revision-v2', scope: 'product_catalog',
+    rawCount: 2, canonicalCount: 2, mergedGroupCount: 0,
+    entries: [
+      { canonicalItemId: 'product-a', ruleRefs: ['rule-shared'], sourceRecordIds: ['source-a'], sourceLocator: 'manual#a', evidenceStatus: 'complete', processingStatus: 'ready' },
+      { canonicalItemId: 'product-b', ruleRefs: ['rule-shared'], sourceRecordIds: ['source-b'], sourceLocator: 'manual#b', evidenceStatus: 'complete', processingStatus: 'ready' },
+    ],
+  });
+  assert.equal(result.pass, true);
+});

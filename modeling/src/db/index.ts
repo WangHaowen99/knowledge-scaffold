@@ -348,6 +348,8 @@ export function getDb(): DatabaseSync {
   ensureFlowchartReviewInteraction(db);
   ensureEvaluationRepairTaskKind(db);
   ensureTaskKindCoverage(db);
+  ensureColumn(db, 'generation_batch_checkpoints', 'unit_id', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'generation_batch_checkpoints', 'target_ids_json', "TEXT NOT NULL DEFAULT '[]'");
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
   ensureColumn(db, 'projects', 'runtime', "TEXT NOT NULL DEFAULT 'legacy'");

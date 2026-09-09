@@ -1021,7 +1021,7 @@ CORE_TOOL_SPECS = (
         "stage_product_ledger",
         "提交产品/规则大清单的结构化台账。sourceRevision 可留空，由核心绑定当前工作区修订；必须提供每个 canonical item 的唯一 ID、rule ID、原始记录定位、归并组、证据覆盖状态和处理状态；核心会确定性校验数量闭合和 ID 唯一性。",
         {
-            "schemaVersion": {"type": "string", "enum": ["product-ledger-v1"]},
+            "schemaVersion": {"type": "string", "enum": ["product-ledger-v1", "product-ledger-v2"]},
             "sourceRevision": STRING,
             "scope": STRING,
             "rawCount": {"type": "integer", "minimum": 0},
@@ -1036,6 +1036,7 @@ CORE_TOOL_SPECS = (
                     "properties": {
                         "canonicalItemId": STRING,
                         "ruleId": STRING,
+                        "ruleRefs": {"type": "array", "items": STRING, "minItems": 1, "uniqueItems": True},
                         "sourceRecordIds": {"type": "array", "items": STRING, "minItems": 1},
                         "sourceLocator": STRING,
                         "mergeGroupId": STRING,
@@ -1043,7 +1044,7 @@ CORE_TOOL_SPECS = (
                         "processingStatus": {"type": "string", "enum": ["pending", "ready", "generated", "blocked"]},
                         "insufficiencyReason": STRING,
                     },
-                    "required": ["canonicalItemId", "ruleId", "sourceRecordIds", "sourceLocator", "evidenceStatus", "processingStatus"],
+                    "required": ["canonicalItemId", "sourceRecordIds", "sourceLocator", "evidenceStatus", "processingStatus"],
                     "additionalProperties": False,
                 },
             },

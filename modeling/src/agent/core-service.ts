@@ -5382,6 +5382,7 @@ export class AgentCoreService {
         : {};
       return {
         canonicalItemId: item.canonicalItemId ?? item.canonical_item_id,
+        ruleRefs: item.ruleRefs ?? item.rule_refs ?? (item.ruleId ?? item.rule_id ? [item.ruleId ?? item.rule_id] : []),
         ruleId: item.ruleId ?? item.rule_id,
         sourceRecordIds: item.sourceRecordIds ?? item.source_record_ids,
         sourceLocator: item.sourceLocator ?? item.source_locator,
@@ -5392,7 +5393,7 @@ export class AgentCoreService {
       } as ProductLedger['entries'][number];
     };
     const ledger: ProductLedger = {
-      schemaVersion: 'product-ledger-v1',
+      schemaVersion: raw.schemaVersion === 'product-ledger-v2' ? 'product-ledger-v2' : 'product-ledger-v1',
       sourceRevision: String(raw.sourceRevision ?? raw.source_revision ?? '').trim()
         || workspace.base_revision_oid,
       scope: String(raw.scope ?? 'product_catalog').trim(),
@@ -5407,6 +5408,7 @@ export class AgentCoreService {
       || /(?:product|catalog|产品|商品|规则|手册|台账|清单)/iu.test(ledger.scope);
     ledger.required = required;
     const validation = validateProductLedger(ledger);
+    const dependencyFingerprint = validation.fingerprint;
     const timestamp = nowIso();
     this.db.prepare(`INSERT INTO product_ledger_snapshots
       (project_id, source_revision, scope, required, ledger_json, validation_json, created_at, updated_at)
@@ -5426,6 +5428,16 @@ export class AgentCoreService {
       timestamp,
       timestamp,
     );
+    if (ledger.schemaVersion === 'product-ledger-v2') {
+      this.db.prepare(`INSERT INTO product_ledger_v2_snapshots
+        (project_id, scope, dependency_fingerprint, source_revision, required, ledger_json, validation_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id, scope, dependency_fingerprint) DO UPDATE SET
+          source_revision = excluded.source_revision, required = excluded.required,
+          ledger_json = excluded.ledger_json, validation_json = excluded.validation_json, updated_at = excluded.updated_at`)
+        .run(workspace.project_id, ledger.scope, dependencyFingerprint, ledger.sourceRevision, required ? 1 : 0,
+          JSON.stringify(ledger), JSON.stringify(validation), timestamp, timestamp);
+    }
     if (!validation.pass && config.productLedger.mode === 'enforce' && required) {
       throw new AgentCoreError(
         'PRODUCT_LEDGER_INVALID',
