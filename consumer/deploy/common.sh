@@ -1235,13 +1235,8 @@ assert_no_existing_install_for_install() {
 
     local evidence=""
     for marker in \
-        "${BUNDLE_ROOT}/backend/.env" \
         "${BUNDLE_ROOT}/.onto-runtime" \
         "${BUNDLE_ROOT}/.onto-auth"; do
-        if [ "${marker}" = "${BUNDLE_ROOT}/backend/.env" ] && [ -e "${marker}" ]; then
-            evidence="${marker}"
-            break
-        fi
         if [ -d "${marker}" ] && find "${marker}" -mindepth 1 \( -type f -o -type l \) -print -quit | grep -q .; then
             evidence="${marker}"
             break
