@@ -123,6 +123,7 @@ def test_internal_chat_revalidates_scope_and_passes_runtime_store(monkeypatch):
 def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch):
     app = _app()
     app.state.services["AUTH_MANAGER"] = _AuthBackend()
+    captured = {}
     scope = MCPRequestScope(
         username="operator_a",
         workspace_id="workspace_demo",
@@ -151,6 +152,7 @@ def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch)
     )
 
     async def execute(**kwargs):
+        captured.update(kwargs)
         await kwargs["progress_sink"](
             {
                 "schema_version": "1.0",
@@ -203,6 +205,7 @@ def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch)
     assert '"event":"run.started"' in content
     assert "event: result" in content
     assert '"content":"synthetic answer"' in content
+    assert captured["concurrency_limit"] == 5
 
 
 def test_internal_chat_rejects_workspace_scope_mismatch(monkeypatch):

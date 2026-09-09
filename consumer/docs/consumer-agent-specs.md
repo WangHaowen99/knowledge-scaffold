@@ -7,7 +7,7 @@
 | 规格项 | 当前值 | 配置字段 | 行为 |
 | --- | ---: | --- | --- |
 | 用户请求 TPS | 50/s，burst=50 | `ops_config.limits.run_tps` / `AGENT_RUN_TPS` | 单进程全局 token bucket；超限直接返回 HTTP 429 |
-| 同时运行请求数 | 所有用户每 workspace 100 | 共享常量 `USER_WORKSPACE_RUN_CONCURRENCY_LIMIT` | Web 异步/同步、ACP、MCP 与 A2A 使用同一上限；保持现有 FIFO 排队语义，同步入口等待槽位最多 300 秒，超时返回 HTTP 503 |
+| 同时运行请求数 | 普通用户 MCP Progress 流式 Chat 每 workspace 5；其余入口及管理员 100 | `MCP_STREAM_USER_WORKSPACE_RUN_CONCURRENCY_LIMIT`（流式普通用户）与共享常量 `USER_WORKSPACE_RUN_CONCURRENCY_LIMIT`（平台上限） | 按 `user + workspace` FIFO 排队；同一 `session_id` 仍单飞。Web/ACP/A2A、MCP 普通 JSON Chat 和管理员 MCP 流式 Chat 使用 100；普通用户 MCP Progress 流式 Chat 使用 5；各入口按自身等待超时返回超时错误 |
 | 单用户工作空间数 | 每个 owner 50 个 | `ops_config.limits.workspace_max_count` / `WORKSPACE_MAX_COUNT` | 只限制新增或转入该 owner 的工作空间；成员访问不计入配额；owner=None 的公共空间不计入任何用户；建模影子接口可显式豁免本次创建/绑定校验；不迁移、不删除已有工作空间 |
 | 总本体数 | 每 workspace 10 个 | `ops_config.limits.ontology_max_count_per_workspace` / `ONTOLOGY_MAX_COUNT_PER_WORKSPACE` | 导入新本体时按当前 workspace 下本体目录数量校验；覆盖或新增版本不增加本体数 |
 | 单本体实体数 | 200 个 | `ops_config.limits.ontology_object_max_count` / `ONTOLOGY_OBJECT_MAX_COUNT` | 导入 converted/source 两类包及编辑器新增对象文件时，按最终 `objects/*.md` 数量校验 |
