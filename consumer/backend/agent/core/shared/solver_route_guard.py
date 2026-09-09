@@ -171,6 +171,7 @@ def resolve_solver_route_requirement(
     selected_ontology_version: str | None,
     workspace_id: str | None,
     root_payload: Mapping[str, Any] | None = None,
+    solver_capabilities: Sequence[Mapping[str, Any]] | None = None,
 ) -> SolverRouteRequirement | None:
     package_id = str(selected_ontology_id or "").strip()
     package_revision = str(selected_ontology_version or "").strip()
@@ -193,7 +194,15 @@ def resolve_solver_route_requirement(
         )
     )
     operations = payload.get("operations_catalog")
-    solvers = payload.get("solver_catalog")
+    # Progressive root contexts expose lightweight summaries.  A preflight
+    # snapshot may still carry the legacy/full catalog for compatibility; use
+    # either representation for routing, while ToolCard construction remains
+    # package-bound and schema-aware.
+    solvers = solver_capabilities
+    if not _is_catalog_sequence(solvers) or not solvers:
+        solvers = payload.get("solver_summary")
+    if not _is_catalog_sequence(solvers) or not solvers:
+        solvers = payload.get("solver_catalog")
     if not _is_catalog_sequence(operations) or not _is_catalog_sequence(solvers):
         return None
 
@@ -241,7 +250,16 @@ def resolve_solver_route_requirement(
                 "The request matches more than one Solver Operation.",
             )
         _, operation_key, capability = top_matches[0]
-        spec = _build_solver_spec(capability)
+        # Route discovery may use a summary, but a strict ToolCard must come
+        # from the admitted/private capability set.  If only summary metadata
+        # is available, defer schema construction to the normal tool registry
+        # instead of treating the summary as a full contract.
+        try:
+            spec = _build_solver_spec(capability)
+        except SolverRouteGuardError:
+            if _is_catalog_sequence(solver_capabilities):
+                raise
+            return None
         if not _has_execution_intent(query) and not _arguments_match_solver_spec(
             arguments, spec
         ):
@@ -257,7 +275,10 @@ def resolve_solver_route_requirement(
             operation_key, capability, spec = argument_matches[0]
         elif _has_implicit_solver_intent(query) and len(solver_rows) == 1:
             operation_key, capability = solver_rows[0]
-            spec = _build_solver_spec(capability)
+            try:
+                spec = _build_solver_spec(capability)
+            except SolverRouteGuardError:
+                return None
         else:
             return None
 
@@ -438,6 +459,7 @@ def _load_solver_root_payload(
     return build_root_payload(
         ontology=ontology,
         ontology_dir=Path(ontology.ontology_dir).resolve(),
+        include_solver_catalog=False,
     )
 
 

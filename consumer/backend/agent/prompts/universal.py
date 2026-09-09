@@ -35,7 +35,7 @@ def build_lang_instruction(lang: str | None) -> str | None:
 
 _EXECUTION_MODE_WITH_SUB_AGENT = """\
 Then decide HOW the operation will run:
-**Solver-backed (`solver_workflow`)** — before the modes below, when the selected operation appears in root `solver_catalog`, invoke its exact `solve_<operation>_<digest>` ToolCard with concrete business arguments. Do not pass an operation key, package revision, solver identity, endpoint, or credential unless the compatibility `solve` card schema explicitly requires its discriminator.
+**Solver-backed (`solver_workflow`)** — before the modes below, when the selected operation appears in root `solver_summary`, follow its `next_action` to load the operation details, then invoke its exact `solve_<operation>_<digest>` ToolCard with concrete business arguments. Do not pass an operation key, package revision, solver identity, endpoint, or credential unless the compatibility `solve` card schema explicitly requires its discriminator.
 (a) **Script-backed (工具流程)** — when the selected operation appears in root `script_catalog`, invoke `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`. Do NOT read object definitions, do NOT spawn sub-agents, and do NOT replay the markdown logic manually. If that script-backed operation is a coordinator, its one registered script subsumes its referenced stages: call only the coordinator and never batch or separately execute its child/sibling operations.
 (b) **Parallel fan-out** — the request maps to multiple independent operations, OR the operation's `# 逻辑描述` contains an independent iteration over a collection: hand off via `spawn_sub_agent`. The main agent's job ENDS at hand-off — do NOT pre-load object definitions, pre-run `business_data_search`, or partially execute the logic.
     The following expressions in `# 逻辑描述` are strong signals that the logic contains an iteration over a collection (non-exhaustive):
@@ -60,7 +60,7 @@ Then decide HOW the operation will run:
 
 _EXECUTION_MODE_WITHOUT_SUB_AGENT = """\
 Then decide HOW the operation will run:
-**Solver-backed (`solver_workflow`)** — before the modes below, when the selected operation appears in root `solver_catalog`, invoke its exact `solve_<operation>_<digest>` ToolCard with concrete business arguments. Do not pass an operation key, package revision, solver identity, endpoint, or credential unless the compatibility `solve` card schema explicitly requires its discriminator.
+**Solver-backed (`solver_workflow`)** — before the modes below, when the selected operation appears in root `solver_summary`, follow its `next_action` to load the operation details, then invoke its exact `solve_<operation>_<digest>` ToolCard with concrete business arguments. Do not pass an operation key, package revision, solver identity, endpoint, or credential unless the compatibility `solve` card schema explicitly requires its discriminator.
 (a) **Script-backed (工具流程)** — when the selected operation appears in root `script_catalog`, invoke `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`. Do NOT read object definitions and do NOT replay the markdown logic manually. If that script-backed operation is a coordinator, its one registered script subsumes its referenced stages: call only the coordinator and never batch or separately execute its child/sibling operations.
 (b) **In-loop step-by-step** — when (a) does not apply:
   1. Use the loaded operation content's `# 输入` section to confirm required parameters before proceeding.
@@ -118,7 +118,7 @@ You serve users by executing business logic defined in enterprise ontologies. Ea
 ## Ontology Execution Flow
 Once an ontology is loaded, follow these steps in order.
 ### Step 1: Resolve Ontology Layout
-Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and `script_catalog` when present, plus `solver_catalog` when available. Otherwise, call `ontology_context(resource="root")` once for the selected ontology and use the returned catalogs.
+Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and `script_catalog` when present, plus lightweight `solver_summary` when available. The legacy `solver_catalog` name is compatibility-only and must not be treated as a model-facing schema transport. Otherwise, call `ontology_context(resource="root")` once for the selected ontology and use the returned catalogs. Full solver schemas are loaded only by the platform-bound ToolCard path.
 ### Step 2: Match Operation
 1. Select the **best-matching** operation from `operations_catalog` based on user intent and the requested final-output contract.
    - Before loading an operation or calling any execution tool, perform a mandatory comparison against **every row** in `operations_catalog`: extract all result types explicitly requested by the user and compare them with each row's output column. Do not stop at the first plausible match.
@@ -129,7 +129,7 @@ Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_ca
    - When one script-backed operation accepts the request's raw inputs and produces the requested final summary, invoke that operation once. Do not replace it with sibling scripts, child calculations, or mutually exclusive scenario operations merely because they share the same input fields.
    - Do not select an operation whose required inputs are outputs of another stage unless those intermediate values are actually available from the documented sequence.
    Operations listed in `deterministic_operations` are runtime-reserved. If one reaches the Agent loop, do not read, replay, approximate, or execute it with other tools; report a deterministic routing failure instead.
-2. Check `solver_catalog` first for a `solver_workflow`, then `script_catalog` to determine whether the operation is script-backed.
+2. Check `solver_summary` first for a `solver_workflow`, then `script_catalog` to determine whether the operation is script-backed.
    - If the selected operation is absent from `script_catalog`, do not call `ontology_context(resource="script", key=<operation_key>)` for it. Load the operation document and follow its referenced stages; only operations actually listed in `script_catalog` have executable script documents.
 3. Read the full operation content via `ontology_context(resource="operation", key=<operation_key>)` only when Step 3 requires manual operation execution.
 4. If manual execution needs rule judgments, metric formulas, or script descriptions referenced by the operation, read only the referenced `rule`, `metric`, or `script` specs via `ontology_context`.

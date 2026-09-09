@@ -335,6 +335,100 @@ def public_solver_catalog(
     ]
 
 
+def public_solver_summary(
+    records: tuple[SolverOperationCapability, ...] | list[SolverOperationCapability],
+) -> list[dict[str, Any]]:
+    """Project solver capabilities for the progressive root context.
+
+    The root ontology context is model-facing and is intentionally a discovery
+    surface, not a ToolCard schema transport.  Keep this projection limited to
+    routing and display metadata; callers that need input/result schemas must
+    use :func:`load_public_solver_capabilities` (the private, package-bound
+    loader) instead.
+    """
+
+    return [
+        {
+            "package_id": record.package_id,
+            "package_revision": record.package_revision,
+            "operation_key": record.operation_key,
+            "decision_model_id": record.decision_model_id,
+            "problem_family": record.problem_family,
+            "validator_revision": record.validator_revision,
+            "enabled": record.enabled,
+            "contract_digest": record.contract_digest,
+            "engine_capabilities": list(record.engine_capabilities),
+            "load_policy": "progressive",
+            "next_action": {
+                "resource": "operation",
+                "key": record.operation_key,
+            },
+        }
+        for record in records
+    ]
+
+
+def load_public_solver_capabilities(
+    package_root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    package_revision: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load the complete, package-bound capability projection for execution.
+
+    Despite the historical ``public`` name, this function is not used for the
+    model-facing root context.  It is the explicit full-contract loading path
+    for platform code that must build a strict Solver ToolCard.  The returned
+    records include the validated input/result schemas, while still excluding
+    runtime binding data through the catalog loader's existing checks.
+    """
+
+    records = load_solver_capability_catalog(
+        package_root,
+        manifest,
+        package_revision=package_revision,
+    )
+    return public_solver_catalog(records)
+
+
+def load_solver_summary_catalog(
+    package_root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    package_revision: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load only the progressive solver summary from package declarations.
+
+    This intentionally delegates validation and digest construction to the
+    canonical catalog loader for now, then discards schema documents before
+    returning.  The public contract is therefore stable while package-level
+    validation remains identical to the full execution path; a future lazy
+    reader can replace the internal implementation without changing callers.
+    """
+
+    records = load_solver_capability_catalog(
+        package_root,
+        manifest,
+        package_revision=package_revision,
+    )
+    return public_solver_summary(records)
+
+
+def load_full_solver_capability_catalog(
+    package_root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    package_revision: str | None = None,
+) -> list[dict[str, Any]]:
+    """Compatibility alias for callers that prefer an explicit full name."""
+
+    return load_public_solver_capabilities(
+        package_root,
+        manifest,
+        package_revision=package_revision,
+    )
+
+
 def _read_operation_frontmatter(path: Path) -> Mapping[str, Any] | None:
     try:
         text = path.read_text(encoding="utf-8")

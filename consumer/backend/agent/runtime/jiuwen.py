@@ -830,6 +830,11 @@ class JiuwenAsyncAgentRuntime:
                     if isinstance(preflight.root_payload, Mapping)
                     else {}
                 )
+                solver_kwargs["solver_capabilities"] = (
+                    preflight.solver_capabilities
+                    if isinstance(preflight.solver_capabilities, (tuple, list))
+                    else ()
+                )
             solver_requirement = resolve_solver_route_requirement(**solver_kwargs)
             user_context = bind_solver_route_requirement(
                 user_context,

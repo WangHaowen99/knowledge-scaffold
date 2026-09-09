@@ -863,6 +863,7 @@ def build_selected_ontology_preload_context_from_manifest(
             root_payload = build_root_payload(
                 ontology=ontology,
                 ontology_dir=Path(ontology.ontology_dir).resolve(),
+                include_solver_catalog=False,
             )
         lines.extend([
             *format_root_payload_compact(ontology_id=ontology.id, root_payload=root_payload),

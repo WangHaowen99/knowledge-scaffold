@@ -429,14 +429,34 @@ def _admitted_public_capabilities(
         for capability in public
     ):
         return ()
+    # A preflight product is the private execution surface.  If a caller
+    # accidentally binds the lightweight ``solver_summary`` here, fail closed
+    # rather than attempting a live package read or exposing an underspecified
+    # ToolCard.
+    if any(
+        not isinstance(capability.get("input_schema"), Mapping)
+        for capability in public
+    ):
+        return ()
     return public
 
 
 def _load_public_capabilities(
     *, package_id: str, package_revision: str, workspace_id: str
 ) -> list[Mapping[str, Any]]:
+    """Load full ToolCard capabilities from the locked package revision.
+
+    Root ontology context is intentionally progressive and may contain only
+    ``solver_summary``.  Solver ToolCards still require the strict input
+    schema, therefore this fallback path resolves the exact manifest and uses
+    the package-bound full catalog loader instead of reading a model-facing
+    root payload.
+    """
     try:
-        from ontology.ontology_catalog import build_root_payload, get_ontology_manifest
+        from ontology.ontology_catalog import get_ontology_manifest
+        from solver_coordination.capability_catalog import (
+            load_public_solver_capabilities,
+        )
 
         ontology, error = get_ontology_manifest(
             package_id,
@@ -445,13 +465,19 @@ def _load_public_capabilities(
         )
         if error or ontology is None or ontology.version != package_revision:
             return []
-        payload = build_root_payload(
-            ontology=ontology,
-            ontology_dir=Path(ontology.ontology_dir).resolve(),
-        )
-        catalog = payload.get("solver_catalog")
-        if not isinstance(catalog, list):
+        manifest_path = Path(ontology.manifest_path).resolve()
+        if not manifest_path.is_file() or manifest_path.is_symlink():
             return []
+        import yaml
+
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(manifest, Mapping):
+            return []
+        catalog = load_public_solver_capabilities(
+            Path(ontology.ontology_dir).resolve(),
+            manifest,
+            package_revision=package_revision,
+        )
         return [item for item in catalog if isinstance(item, Mapping)]
     except Exception:
         return []
