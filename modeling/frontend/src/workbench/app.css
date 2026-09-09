@@ -152,13 +152,15 @@
 .tabs-fill button.on .wb-tab-count { background: var(--c-accent-bg); color: var(--c-accent); }
 
 /* ---------- 左栏：资料 ---------- */
-.wb-mat { display: flex; align-items: center; gap: var(--s-2); width: 100%; padding: 7px var(--s-4); text-align: left; border-left: 3px solid transparent; transition: background var(--e-fast), border-color var(--e-fast); }
+.wb .wb-mat { display: flex; align-items: center; gap: var(--s-3); width: 100%; min-height: 58px; padding: 10px var(--s-4); text-align: left; border-left: 3px solid transparent; transition: background var(--e-fast), border-color var(--e-fast); }
 .wb-mat:hover { background: var(--c-surface-3); }
 .wb-mat.on { background: var(--c-accent-bg); border-left-color: var(--c-accent); }
 .wb-mat .mat-icon { flex: none; color: var(--c-faint); }
 .wb-mat.on .mat-icon { color: var(--c-accent); }
-.wb-mat .mn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wb-mat .mc { color: var(--c-faint); font-size: var(--t-xs); flex: none; }
+.wb-mat .mat-body { display: grid; gap: 5px; min-width: 0; flex: 1; }
+.wb-mat .mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.35; }
+.wb-mat .mc { display: flex; align-items: center; gap: 6px; color: var(--c-muted); font-size: var(--t-xs); white-space: nowrap; line-height: 1.35; }
+.wb-mat:focus-visible { outline: 2px solid var(--c-accent); outline-offset: -2px; }
 
 /* ---------- 中栏 ---------- */
 .wb-canvas { padding: var(--s-6) var(--s-6) var(--s-8); max-width: 940px; margin-inline: auto; }
@@ -262,6 +264,7 @@
 .wb-doc h5:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .wb-doc p { margin: 0 0 var(--s-5); }
 .wb-doc-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: var(--s-5); align-items: start; }
+.wb-doc-layout > .wb-doc { min-width: 0; overflow-wrap: anywhere; }
 .wb-doc-refs { position: sticky; top: 0; }
 .wb-file-toolbar {
   display: flex; align-items: center; justify-content: space-between; gap: var(--s-3);
@@ -325,6 +328,14 @@
 }
 .wb-evidence-target { margin-inline: calc(var(--s-2) * -1); padding-inline: var(--s-2); background: #fff9e8; }
 .wb-evidence-mark { padding: 1px 2px; background: #f8dd88; color: inherit; box-shadow: 0 0 0 1px #e3c987; }
+.wb-evidence-location > span { flex: 1; min-width: 0; }
+.wb-evidence-location .btn { flex: none; }
+.wb-material-markdown { max-width: none; }
+.wb-material-table { max-width: 100%; overflow-x: auto; }
+.wb-material-table table { min-width: 360px; }
+.wb-material-markdown h5, .wb-material-markdown h6 { margin: var(--s-5) 0 var(--s-2); padding: 0; border: 0; font-size: var(--t-md); color: var(--c-ink); }
+.wb-evidence-table { border-color: #e3c987; box-shadow: 0 0 0 2px #fff3c4; }
+.wb-document-paragraph { white-space: pre-wrap; }
 
 .wb-structured { max-width: 800px; }
 .wb-structured-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-5); padding-bottom: var(--s-4); border-bottom: 1px solid var(--c-line); }
@@ -589,6 +600,17 @@
 .wb-backref a > div { min-width: 0; flex: 1; }
 .wb-backref a b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-backref a span { display: block; color: var(--c-faint); font-size: var(--t-xs); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-referrer { border-bottom: 1px solid var(--c-line-soft); }
+.wb-referrer.on { background: var(--c-accent-bg); }
+.wb .wb-referrer-locate { display: flex; align-items: flex-start; gap: var(--s-3); width: 100%; padding: var(--s-3) var(--s-4) var(--s-2); color: var(--c-ink-2); text-align: left; }
+.wb-referrer-locate:hover { color: var(--c-accent); background: var(--c-accent-bg); }
+.wb-referrer-locate .ref-icon { flex: none; margin-top: 2px; color: var(--c-faint); }
+.wb-referrer-locate > span { display: grid; gap: 3px; min-width: 0; }
+.wb-referrer-locate b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-referrer-locate small { color: var(--c-muted); font-size: var(--t-xs); }
+.wb-referrer-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: 0 var(--s-4) var(--s-3) 43px; color: var(--c-muted); font-size: var(--t-xs); }
+.wb-referrer-actions button { color: var(--c-accent); font-size: inherit; }
+.wb-referrer button:focus-visible { outline: 2px solid var(--c-accent); outline-offset: -2px; }
 
 /* ---------- 活动行（三级递进的第一级） ---------- */
 .wb-act {
@@ -599,7 +621,6 @@
 .wb-act .sp { width: 12px; height: 12px; border: 2px solid var(--c-agent); border-right-color: transparent; border-radius: 50%; animation: wb-spin .9s linear infinite; flex: none; }
 @keyframes wb-spin { to { transform: rotate(360deg); } }
 .wb-act .tx { flex: 1; min-width: 0; color: var(--c-ink-2); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.45; }
-.wb-act .el { color: var(--c-muted); font-size: var(--t-sm); flex: none; font-variant-numeric: tabular-nums; }
 .wb-act-status { padding: 0 var(--s-4) 8px 31px; }
 .wb-act-meter { height: 4px; overflow: hidden; border-radius: var(--r-full); background: rgba(74,95,168,.14); }
 .wb-act-meter i { display: block; height: 100%; border-radius: inherit; background: var(--c-agent); transition: width 240ms linear; }
