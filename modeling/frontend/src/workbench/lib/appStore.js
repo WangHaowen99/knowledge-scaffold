@@ -47,10 +47,9 @@ function sceneFromUrl() {
   return SCENES.some((s) => s.id === q) ? q : null;
 }
 const DEFAULT_STUDIO_FOCUS = { kind: 'studio', target: '知识包 Studio', view: 'graph' };
-const DEFAULT_BOOT = { id: 'studio', label: '知识包 Studio', focus: DEFAULT_STUDIO_FOCUS, leftTab: 'pkg' };
-const boot = SCENES.find((s) => s.id === sceneFromUrl()) || DEFAULT_BOOT;
+const boot = SCENES.find((s) => s.id === sceneFromUrl()) || SCENES[0];
 const initialProjectId = projectFromUrl();
-const initialStudioFocus = initialProjectId ? studioFocusFromLocation() : null;
+const initialStudioFocus = initialProjectId ? studioFocusFromLocation() || { ...DEFAULT_STUDIO_FOCUS } : null;
 if (initialProjectId && initialStudioFocus) {
   void prefetchStudioBootstrap(initialProjectId, { limit: 200 }).catch(() => undefined);
 }
@@ -92,9 +91,9 @@ const initial = {
   scene: boot.id,
   leftTab: boot.leftTab,                // pkg | mat
   focus: initialProjectId
-    ? initialStudioFocus || { ...DEFAULT_STUDIO_FOCUS, source: 'default' }
+    ? initialStudioFocus
     : { ...boot.focus, target: focusTargetFor(boot.focus.kind), node: boot.id === 'modeling' ? 'D2' : undefined },
-  follow: true,                         // 是否跟随助手的 focus
+  follow: !initialProjectId,            // 项目首页停留在 Studio；可主动开启跟随助手
   pendingFocus: null,                   // follow=false 时助手想去的地方，攒着等用户「跟上」
   selectedPath: initialProjectId ? '' : 'diagrams/采购申请.mmd',
   selectedMaterial: initialProjectId ? '' : 'm1',
@@ -1630,13 +1629,11 @@ export function resolveBootstrapFocus({
   candidateFiles = [],
   interaction,
   agentFocus,
-  initialPath = '',
   routeFocus,
   workflowPhase = '',
 }) {
   const currentFocus = resolveProjectFocusForPhase(current, workflowPhase);
-  const isDefaultStudio = currentFocus?.kind === 'studio' && current?.source === 'default';
-  if (currentFocus?.kind && currentFocus.kind !== 'empty' && !isDefaultStudio) return currentFocus;
+  if (currentFocus?.kind && currentFocus.kind !== 'empty') return currentFocus;
   const routedFocus = resolveProjectFocusForPhase(routeFocus, workflowPhase);
   if (routedFocus?.kind) return routedFocus;
   if (interaction?.kind === 'confirmation' && candidateFiles[0]?.path) {

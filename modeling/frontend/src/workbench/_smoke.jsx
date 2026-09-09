@@ -135,7 +135,7 @@ try {
   const appSource = readFileSync('src/workbench/App.jsx', 'utf8');
   const apiSource = readFileSync('src/workbench/studio/studio-api.js', 'utf8');
   const studioSource = readFileSync('src/workbench/studio/StudioView.jsx', 'utf8');
-  if (!storeSource.includes('const initialStudioFocus = initialProjectId ? studioFocusFromLocation() : null')
+  if (!storeSource.includes('const initialStudioFocus = initialProjectId ? studioFocusFromLocation() || { ...DEFAULT_STUDIO_FOCUS } : null')
     || !storeSource.includes('prefetchStudioBootstrap(initialProjectId, { limit: 200 })')
     || !appSource.includes("store.get().focus.kind === 'studio'")
     || !appSource.includes('prefetchStudioBootstrap(projectId, { limit: 200 })')
@@ -1593,15 +1593,15 @@ try {
     initialPath: 'index.md',
   });
   const defaultStudio = resolveBootstrapFocus({ current: { kind: 'empty', target: '' }, initialPath: 'index.md' });
-  const agentOverridesDefaultStudio = resolveBootstrapFocus({
-    current: { kind: 'studio', target: '知识包 Studio', view: 'graph', source: 'default' },
+  const retainedStudio = resolveBootstrapFocus({
+    current: { kind: 'studio', target: '知识包 Studio', view: 'graph' },
     agentFocus: { kind: 'flow', target: 'diagrams/current.mmd', node: 'D3' },
     initialPath: 'index.md',
   });
   if (kept !== streamFocus || recovered.kind !== 'diff' || recovered.target !== '.modeling/goal.md'
     || activeRecovered.kind !== 'flow' || activeRecovered.node !== 'D3'
     || defaultStudio.kind !== 'studio' || defaultStudio.view !== 'graph'
-    || agentOverridesDefaultStudio.kind !== 'flow' || agentOverridesDefaultStudio.node !== 'D3') {
+    || retainedStudio.kind !== 'studio' || retainedStudio.view !== 'graph') {
     throw new Error('启动快照覆盖了 Agent 焦点');
   }
   console.log('✓ 启动竞态保持 Agent 焦点');
