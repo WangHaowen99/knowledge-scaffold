@@ -461,7 +461,6 @@ def _load_solver_root_payload(
     return build_root_payload(
         ontology=ontology,
         ontology_dir=Path(ontology.ontology_dir).resolve(),
-        include_solver_catalog=False,
     )
 
 
