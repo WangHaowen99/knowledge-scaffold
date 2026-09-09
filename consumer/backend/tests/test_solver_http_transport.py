@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 
 from solver_coordination.connectors.endpoint_policy import EndpointPolicy
@@ -16,7 +17,7 @@ class _Response:
         self.status_code = status_code
         self._payload = payload
         self.headers = headers or {}
-        self.content = __import__("json").dumps(payload).encode("utf-8")
+        self.content = json.dumps(payload).encode("utf-8")
 
     def close(self):
         pass

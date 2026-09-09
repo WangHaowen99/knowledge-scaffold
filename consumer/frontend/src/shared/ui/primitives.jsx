@@ -103,8 +103,7 @@ export function Modal({
         dialog?.focus();
         return;
       }
-      const first = items[0];
-      const last = items.at(-1);
+      const [first, last] = [items[0], items.at(-1)];
       if (!dialog?.contains(document.activeElement)) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();

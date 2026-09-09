@@ -469,15 +469,15 @@ def test_concurrent_subscribers_converge_across_repeated_start_races(tmp_path):
     for index, marker in enumerate(markers):
         start_barrier = threading.Barrier(2)
 
-        def launch(orchestrator, suffix):
+        def launch(orchestrator, suffix, *, run_index=index, marker_value=marker):
             start_barrier.wait(timeout=3)
             return _start(
                 orchestrator,
-                run_suffix="concurrent_{}_{}".format(index, suffix),
+                run_suffix="concurrent_{}_{}".format(run_index, suffix),
                 attempt_id="attempt_synthetic_concurrent_{}_{}".format(
-                    index, suffix
+                    run_index, suffix
                 ),
-                problem_marker=marker,
+                problem_marker=marker_value,
             )
 
         with ThreadPoolExecutor(max_workers=2) as executor:

@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from agent.tools.base import ToolContext
@@ -17,7 +18,7 @@ def _tool_call(call_id, arguments):
             "id": call_id,
             "function": {
                 "name": "execute_script",
-                "arguments": __import__("json").dumps(arguments, ensure_ascii=False),
+                "arguments": json.dumps(arguments, ensure_ascii=False),
             },
         }],
     }

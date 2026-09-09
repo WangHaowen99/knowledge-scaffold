@@ -546,7 +546,7 @@ const unauthorizedResponse = () => new Response(null, { status: 401 });
 
 const tokenNeedsRefresh = (token, now = Date.now()) => {
   try {
-    const payload = String(token || '').split('.')[1];
+    const [, payload] = String(token || '').split('.');
     if (!payload) return false;
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');

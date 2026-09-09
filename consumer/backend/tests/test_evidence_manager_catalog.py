@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import importlib
 from pathlib import Path
 import os
 import threading
@@ -153,10 +154,7 @@ def test_manager_single_flight_builds_one_generation_and_persists_transitions(
     manager_a = EvidenceIndexManager(runtime)
     manager_b = EvidenceIndexManager(runtime)
     original_build = EvidenceIndexManager._build_generation
-    original_write = __import__(
-        "ontology.evidence.manager",
-        fromlist=["_atomic_json_write"],
-    )._atomic_json_write
+    original_write = importlib.import_module("ontology.evidence.manager")._atomic_json_write
     entered = threading.Event()
     release = threading.Event()
     calls = 0

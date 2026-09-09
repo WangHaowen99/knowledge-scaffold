@@ -54,8 +54,7 @@ export function trapWizardTab(event, card, activeElement, resolveStyle) {
     return true;
   }
 
-  const first = items[0];
-  const last = items.at(-1);
+  const [first, last] = [items[0], items.at(-1)];
   let target = null;
   if (!card.contains(activeElement)) target = event.shiftKey ? last : first;
   else if (event.shiftKey && activeElement === first) target = last;

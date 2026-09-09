@@ -105,8 +105,10 @@ def _normalized_input(
 def _snapshot(
     normalized_input: NormalizedInput,
     *,
-    fact_value: Any = ROUTE_FACT,
+    fact_value: Any = None,
 ) -> FactSnapshot:
+    if fact_value is None:
+        fact_value = ROUTE_FACT
     return FactSnapshot(
         workspace_id="workspace-synthetic",
         owner_id="owner-synthetic",

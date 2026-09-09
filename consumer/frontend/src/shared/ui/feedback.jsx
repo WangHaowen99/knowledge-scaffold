@@ -70,8 +70,7 @@ function useDialogA11y(open, onCancel, busy) {
       if (event.key !== 'Tab') return;
       const items = focusable();
       if (!items.length) { event.preventDefault(); return; }
-      const first = items[0];
-      const last = items[items.length - 1];
+      const [first, last] = [items[0], items[items.length - 1]];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (
         !event.shiftKey && document.activeElement === last
       ) { event.preventDefault(); first.focus(); }

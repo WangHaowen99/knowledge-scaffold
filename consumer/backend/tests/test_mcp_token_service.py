@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -113,7 +114,7 @@ def test_wrong_scope_and_expired_mcp_tokens_are_rejected(tmp_path, monkeypatch):
         verify_mcp_token(created["token"], required_scope="mcp:chat", config=cfg)
     assert scope_error.value.code == "MCP_SCOPE_FORBIDDEN"
 
-    created_at = __import__("time").time()
+    created_at = time.time()
     monkeypatch.setattr("integration.mcp.token_crypto.time.time", lambda: created_at + 2)
     with pytest.raises(MCPTokenAuthError, match="过期"):
         verify_mcp_token(created["token"], required_scope="mcp:search", config=cfg)

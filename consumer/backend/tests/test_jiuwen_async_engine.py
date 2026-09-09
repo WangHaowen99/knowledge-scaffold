@@ -199,14 +199,14 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
         with _patched_engine(create_agent, dispose):
             engine = JiuwenReactLoopEngine(agent_config=_agent_config())
             for mode in ("quick", "thinking", "multi_agent"):
-                async def exercise():
+                async def exercise(agent_mode=mode):
                     first = await engine.arun(
-                        _state("run-first-{}".format(mode), agent_mode=mode),
+                        _state("run-first-{}".format(agent_mode), agent_mode=agent_mode),
                         caller="main",
                         system_prompt="offline",
                     )
                     second = await engine.arun(
-                        _state("run-second-{}".format(mode), agent_mode=mode),
+                        _state("run-second-{}".format(agent_mode), agent_mode=agent_mode),
                         caller="main",
                         system_prompt="offline",
                     )
