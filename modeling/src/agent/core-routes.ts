@@ -20,6 +20,7 @@ import {
 import { StudioOperationFlowService } from './studio-operation-flow-service.js';
 import { StudioReviewService } from './studio-review-service.js';
 import { StudioWriteError, StudioWriteService } from './studio-write-service.js';
+import { getPerformanceEvents, getPerformanceRun, listPerformanceRuns } from '../workflow/performance-stats.js';
 import {
   acceptanceAgentToolAfter,
   acceptanceAgentToolBefore,
@@ -61,6 +62,37 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       if (studioReadInFlight.get(requestKey) === promise) studioReadInFlight.delete(requestKey);
     }
   };
+
+  app.get('/api/projects/:id/agent/performance/runs', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    const rawLimit = Number((request.query as any)?.limit ?? 20);
+    return { runs: listPerformanceRuns(project.id, Number.isFinite(rawLimit) ? rawLimit : 20) };
+  });
+
+  app.get('/api/projects/:id/agent/performance/runs/:runId', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    const runId = String((request.params as any).runId ?? '');
+    const run = getPerformanceRun(project.id, runId);
+    if (!run) return reply.code(404).send({ error: '性能运行记录不存在' });
+    return run;
+  });
+
+  app.get('/api/projects/:id/agent/performance/runs/:runId/timeline', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    const runId = String((request.params as any).runId ?? '');
+    const events = getPerformanceEvents(project.id, runId);
+    if (!events) return reply.code(404).send({ error: '性能运行记录不存在' });
+    return { runId, events };
+  });
 
   app.get('/api/projects/:id/agent/snapshot', async (request, reply) => {
     let project = getProject(String((request.params as any).id ?? ''));
