@@ -200,9 +200,11 @@ def resolve_solver_route_requirement(
     # package-bound and schema-aware.
     solvers = solver_capabilities
     if not _is_catalog_sequence(solvers) or not solvers:
-        solvers = payload.get("solver_summary")
-    if not _is_catalog_sequence(solvers) or not solvers:
+        # A legacy preflight/root payload may still carry the full catalog;
+        # prefer it over the summary because it can construct a strict card.
         solvers = payload.get("solver_catalog")
+    if not _is_catalog_sequence(solvers) or not solvers:
+        solvers = payload.get("solver_summary")
     if not _is_catalog_sequence(operations) or not _is_catalog_sequence(solvers):
         return None
 
