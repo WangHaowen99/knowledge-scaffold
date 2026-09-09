@@ -118,6 +118,10 @@
 .wb-tree-dir.contains-active { color: var(--c-accent); font-weight: 600; }
 .wb-tree-dir > svg:not(.wb-tree-chevron) { flex: none; color: #6f9bc9; }
 .wb-tree-dir .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-dir-name { display: inline-flex; align-items: baseline; gap: 7px; }
+.wb-dir-name-en { color: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+.wb-dir-name-zh { color: var(--c-muted); font-size: .88em; font-weight: 560; }
+.wb-tree-dir.contains-active .wb-dir-name-zh { color: inherit; opacity: .8; }
 .wb-tree-dir .count { margin-left: auto; color: var(--c-faint); font-size: var(--t-xs); font-weight: 400; }
 .wb-tree-chevron { flex: none; color: var(--c-faint); transition: transform var(--e-fast); }
 .wb-tree-dir[aria-expanded="true"] .wb-tree-chevron { transform: rotate(90deg); }

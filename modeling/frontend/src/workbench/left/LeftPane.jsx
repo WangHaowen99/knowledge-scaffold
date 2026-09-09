@@ -2,9 +2,13 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react';
 import {
   buildPackageFileTree,
-  directoryPathsForFile,
   listDirectoryPaths,
 } from '../../packageFileTree.js';
+import {
+  directoryLabel,
+  displayDirectoryPathsForFile,
+  presentPackageFileTree,
+} from '../../packageFileTreePresentation.js';
 import { decodeLegacyArchiveName, displayPackageEntryName } from '../../legacyArchiveFilename.js';
 import { store, actions } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
@@ -50,7 +54,7 @@ function PackageTree() {
     () => files.filter((item) => !item.startsWith('.modeling/')),
     [files],
   );
-  const tree = useMemo(() => buildPackageFileTree(packageFiles), [packageFiles]);
+  const tree = useMemo(() => presentPackageFileTree(buildPackageFileTree(packageFiles)), [packageFiles]);
   const allDirectories = useMemo(() => listDirectoryPaths(tree), [tree]);
   const directoryKey = allDirectories.join('|');
   const heat = demo ? scene === 'increment'
@@ -62,7 +66,7 @@ function PackageTree() {
       ...(focus.data?.chains || []).map((item) => item.dstPath || item.dst),
     ].filter(Boolean))];
   const [expanded, setExpanded] = useState(() => new Set([
-    ...directoryPathsForFile(path),
+    ...displayDirectoryPathsForFile(path),
     ...(heat ? allDirectories : []),
   ]));
   const changes = scene === 'confirm';
@@ -70,7 +74,7 @@ function PackageTree() {
   useEffect(() => {
     if (demo) return;
     const valid = new Set(allDirectories);
-    const ancestors = directoryPathsForFile(path);
+    const ancestors = displayDirectoryPathsForFile(path);
     setExpanded((current) => new Set([
       ...[...current].filter((directory) => valid.has(directory)),
       ...ancestors,
@@ -174,7 +178,9 @@ function TreeNodes({ nodes, expanded, onToggle, selectedPath, heat, hitPaths, le
 
 function DirectoryNode({ node, expanded, onToggle, selectedPath, heat, hitPaths, level }) {
   const open = expanded.has(node.path);
-  const containsActive = selectedPath?.startsWith(`${node.path}/`);
+  const name = decodeLegacyArchiveName(node.name);
+  const label = directoryLabel(name);
+  const containsActive = displayDirectoryPathsForFile(selectedPath).includes(node.path);
   return (
     <div className="wb-tree-directory">
       <button className={`wb-tree-dir${containsActive ? ' contains-active' : ''}`}
@@ -182,7 +188,10 @@ function DirectoryNode({ node, expanded, onToggle, selectedPath, heat, hitPaths,
         onClick={() => onToggle(node.path)} title={`${open ? '收起' : '展开'} ${node.path}`}>
         <ChevronRight className="wb-tree-chevron" size={13} aria-hidden="true" />
         {open ? <FolderOpen size={14} aria-hidden="true" /> : <Folder size={14} aria-hidden="true" />}
-        <span className="nm">{decodeLegacyArchiveName(node.name)}</span>
+        <span className="nm wb-dir-name">
+          <span className="wb-dir-name-en">{name}</span>
+          {label && <> <span className="wb-dir-name-zh">{label}</span></>}
+        </span>
         <span className="count">{node.fileCount}</span>
       </button>
       {open && (

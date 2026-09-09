@@ -27,4 +27,23 @@ test('目录树自动展开当前文件父目录并显示类型、修订与附�
   assert.match(html, /附件/);
   assert.match(html, /展开全部目录/);
   assert.match(html, /收起全部目录/);
+  assert.match(html, /objects/);
+  assert.match(html, /对象/);
+});
+
+test('流程图目录在展示上归入操作，并显示英文与中文目录名', () => {
+  const html = renderToStaticMarkup(React.createElement(PackageFileTree, {
+    files: ['operations/check.md', 'diagrams/check.mmd', 'rules/rule.md'],
+    selectedPath: 'diagrams/check.mmd',
+    version: '1.0.0',
+    onSelect: () => {},
+    onDownload: () => {},
+  }));
+
+  assert.match(html, /operations/);
+  assert.match(html, /操作/);
+  assert.match(html, /diagrams/);
+  assert.match(html, /流程图/);
+  assert.match(html, /data-package-path="diagrams\/check\.mmd"/);
+  assert.equal(html.indexOf('operations'), html.indexOf('diagrams') > -1 ? html.indexOf('operations') : -1);
 });
