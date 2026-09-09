@@ -31,6 +31,20 @@ class ProviderField:
     default: Any = ""
 
 
+# Fields accepted by the previous graph-provider schema and removed from the
+# current contract.  Migrations use this set to clean persisted configurations.
+LEGACY_PROVIDER_ATTESTATION_FIELDS = frozenset(
+    {
+        "data_revision",
+        "snapshot_selector",
+        "access_scope_revision",
+        "deterministic_read_only",
+        "deterministic_snapshot_immutable",
+        "deterministic_scope_isolated",
+    }
+)
+
+
 @dataclass(frozen=True)
 class BusinessDataProviderSpec:
     name: str
@@ -117,12 +131,6 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("workspace_value", "图数据 Workspace 值"),
             ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
             ProviderField("ontology_value", "图数据 Ontology 值"),
-            ProviderField("data_revision", "确定性数据快照版本"),
-            ProviderField("snapshot_selector", "不可变快照数据库名"),
-            ProviderField("access_scope_revision", "只读凭证权限范围版本"),
-            ProviderField("deterministic_read_only", "确定性只读快照", type="bool", default=False),
-            ProviderField("deterministic_snapshot_immutable", "快照物理不可变", type="bool", default=False),
-            ProviderField("deterministic_scope_isolated", "Workspace/Ontology 物理隔离", type="bool", default=False),
         ],
     ),
     "hugegraph": BusinessDataProviderSpec(
@@ -148,12 +156,6 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("workspace_value", "图数据 Workspace 值"),
             ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
             ProviderField("ontology_value", "图数据 Ontology 值"),
-            ProviderField("data_revision", "确定性数据快照版本"),
-            ProviderField("snapshot_selector", "不可变快照 Graph/Graph Space"),
-            ProviderField("access_scope_revision", "只读凭证权限范围版本"),
-            ProviderField("deterministic_read_only", "确定性只读快照", type="bool", default=False),
-            ProviderField("deterministic_snapshot_immutable", "快照物理不可变", type="bool", default=False),
-            ProviderField("deterministic_scope_isolated", "Workspace/Ontology 物理隔离", type="bool", default=False),
         ],
     ),
 }
