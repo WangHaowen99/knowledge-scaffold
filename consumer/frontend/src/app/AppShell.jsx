@@ -151,7 +151,11 @@ export default function AppShell() {
     const previouslyFocused = document.activeElement;
     const fallbackTrigger = mobileMenuButtonRef.current;
     const focusable = () => Array.from(navigation?.querySelectorAll(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      [
+        'button:not([disabled])', 'input:not([disabled])',
+        'select:not([disabled])', 'textarea:not([disabled])',
+        'a[href]', '[tabindex]:not([tabindex="-1"])',
+      ].join(', '),
     ) || []).filter((element) => {
       const style = window.getComputedStyle(element);
       return style.display !== 'none' && style.visibility !== 'hidden';
@@ -204,7 +208,14 @@ export default function AppShell() {
   }, [kb]);
 
   if (status === 'checking') {
-    return <div className="mwr" style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#898781' }}>加载中…</div>;
+    return (
+      <div className="mwr" style={{
+        display: 'flex', height: '100vh', alignItems: 'center',
+        justifyContent: 'center', color: '#898781',
+      }}>
+        加载中…
+      </div>
+    );
   }
   if (status !== 'authenticated') return <LoginPage />;
   const navigate = ({ surface: sf, scope, sec, tab, ontologyId }) => {
@@ -253,7 +264,8 @@ export default function AppShell() {
           <div className="grp">工作</div>
           <button className={surface === 'chat' && !chat.currentChatId ? 'on' : ''} data-wiz="nav-chat" title="新建对话"
             onClick={() => { setSurface('chat'); setMobileNavOpen(false); chat.startNewChat(); }}>
-            <MessageSquarePlus className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">新建对话</span>
+            <MessageSquarePlus className="nav-icon" size={17} strokeWidth={1.9} />
+            <span className="nav-label">新建对话</span>
           </button>
           {navBtn('kb', PackageOpen, '知识包工作台', 'nav-kb')}
           <div className="grp">管理</div>
@@ -295,7 +307,9 @@ export default function AppShell() {
             <button className="wschip" type="button" aria-haspopup="menu" aria-expanded={wsMenu}
               onClick={() => setWsMenu((v) => !v)}>
               <FolderKanban size={15} strokeWidth={1.9} />
-              <span className="wschip-label">{workspaces.find((w) => w.id === workspaceId)?.name || workspaceId || '选择工作空间'}</span>
+              <span className="wschip-label">
+                {workspaces.find((w) => w.id === workspaceId)?.name || workspaceId || '选择工作空间'}
+              </span>
               <ChevronDown size={14} strokeWidth={1.9} />
             </button>
             {wsMenu && (
@@ -303,7 +317,9 @@ export default function AppShell() {
                 <div className="wm-h">切换工作空间</div>
                 {workspaces.map((w) => (
                   <button key={w.id} onClick={() => { switchWorkspace(w.id); setWsMenu(false); }}>
-                    <span className={w.id === workspaceId ? 'cur' : ''}>{w.name}{w.id === workspaceId ? ' ✓' : ''}</span>
+                    <span className={w.id === workspaceId ? 'cur' : ''}>
+                      {w.name}{w.id === workspaceId ? ' ✓' : ''}
+                    </span>
                     {(w.is_default || w.id === defaultWorkspaceId) && <span className="default-flag">默认</span>}
                   </button>
                 ))}
@@ -311,11 +327,17 @@ export default function AppShell() {
                   <>
                     <div className="div" />
                     {canCreateWorkspace && (
-                      <button className="new" onClick={() => { setWsMenu(false); navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' }); }}>
+                      <button className="new" onClick={() => {
+                        setWsMenu(false);
+                        navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' });
+                      }}>
                         <span><Plus size={14} /> 新建工作空间</span>
                       </button>
                     )}
-                    <button style={{ color: 'var(--ink2)' }} onClick={() => { setWsMenu(false); navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' }); }}>
+                    <button style={{ color: 'var(--ink2)' }} onClick={() => {
+                      setWsMenu(false);
+                      navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' });
+                    }}>
                       管理工作空间…
                     </button>
                   </>
@@ -347,11 +369,19 @@ export default function AppShell() {
               <div className="wsmenu" style={{ width: 220 }}>
                 <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid #efeee9', marginBottom: 4 }}>
                   <div style={{ fontWeight: 650, fontSize: 13 }}>{user.username}</div>
-                  <span className={`tag ${isAdmin ? 'tag-ok' : 'tag-lang'}`} style={{ marginTop: 5, display: 'inline-block' }}>
+                  <span
+                    className={`tag ${isAdmin ? 'tag-ok' : 'tag-lang'}`}
+                    style={{ marginTop: 5, display: 'inline-block' }}
+                  >
                     {isAdmin ? '平台管理员' : '普通用户'}
                   </span>
                 </div>
-                <button onClick={() => { setUserMenu(false); navigate({ surface: 'config', scope: 'personal', sec: 'prefs' }); }}><SlidersHorizontal size={14} />个人设置</button>
+                <button onClick={() => {
+                  setUserMenu(false);
+                  navigate({ surface: 'config', scope: 'personal', sec: 'prefs' });
+                }}>
+                  <SlidersHorizontal size={14} />个人设置
+                </button>
                 <button onClick={() => { setUserMenu(false); setWizardOpen(true); }}><Compass size={14} />操作向导</button>
                 <div className="div" />
                 <button className="menu-danger" onClick={handleLogout}><LogOut size={14} />退出登录</button>
@@ -397,21 +427,38 @@ export default function AppShell() {
                 onOpenObservability={openObservability}
                 onConfigureDataSource={(ontologyId) => navigate({ surface: 'kb', tab: 'data', ontologyId })} />
             )}
-            {surface === 'kb' && workspaceDataReady && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} traceMessages={chat.messages} traceMetadata={currentTraceMetadata} /></Suspense>}
-            {surface === 'solver' && workspaceDataReady && (
-              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载求解器协同" /></div>}>
-                <SolverCoordinationWorkbench key={workspaceId} workspaceId={workspaceId} resetToken={solverResetToken} />
+            {surface === 'kb' && workspaceDataReady && (
+              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}>
+                <KnowledgeWorkbench
+                  kb={kb}
+                  focusRequest={kbFocus}
+                  traceMessages={chat.messages}
+                  traceMetadata={currentTraceMetadata}
+                />
               </Suspense>
             )}
-            {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter
-              scope={cfgScope}
-              section={cfgSec}
-              onNavigate={navigate}
-              ontologies={kb.packages}
-              ontologiesLoading={kb.pkgsLoading}
-              ontologiesError={kb.packagesError}
-              onRetryOntologies={kb.retryPackages}
-            /></Suspense>}
+            {surface === 'solver' && workspaceDataReady && (
+              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载求解器协同" /></div>}>
+                <SolverCoordinationWorkbench
+                  key={workspaceId}
+                  workspaceId={workspaceId}
+                  resetToken={solverResetToken}
+                />
+              </Suspense>
+            )}
+            {surface === 'config' && (
+              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}>
+                <ConfigCenter
+                  scope={cfgScope}
+                  section={cfgSec}
+                  onNavigate={navigate}
+                  ontologies={kb.packages}
+                  ontologiesLoading={kb.pkgsLoading}
+                  ontologiesError={kb.packagesError}
+                  onRetryOntologies={kb.retryPackages}
+                />
+              </Suspense>
+            )}
             {surface === 'observability' && !workspaceSurfaceBlocked && (
               <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载可观测性" /></div>}>
                 <ObservabilityFeature view={observabilityView} sessionId={chat.currentChatId} user={user}
