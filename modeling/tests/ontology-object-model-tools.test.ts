@@ -17,12 +17,14 @@ const [
   { getPackageArtifactStore },
   { getDb },
   { insertDocument },
+  { StudioWriteService, StudioWriteError },
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
   import('../src/db/index.js'),
   import('../src/documents/repo.js'),
+  import('../src/agent/studio-write-service.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -1320,6 +1322,220 @@ test('Change Plan 用一个原子 Change Set 完成跨类型修改并可重放�
   const completedPlan = await tool(app, project.id, 'get_change_plan', { plan_id: plan.id }, runId);
   assert.equal(completedPlan.json().plan.status, 'completed');
   assert.deepEqual(completedPlan.json().plan.tasks.map((item: any) => item.status), ['accepted', 'accepted']);
+});
+
+test('Change Set 发现工作版本冲突后刷新基线并自动重试一次', async (t) => {
+  const project = createProject({ owner: 'alice', name: '版本冲突自动恢复', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-revision-retry-${project.id}`;
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'operation' }, runId);
+  const baseline = listed.json().working_revision as string;
+  const operation = listed.json().items.find((item: any) => item.key === 'render_synthetic_summary');
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '更新操作说明并验证版本冲突自动恢复', mode: 'expert_edit', expected_revision: baseline,
+    tasks: [{ client_key: 'operation-description', title: '更新操作说明', resource_kind: 'operation',
+      target_key: 'render_synthetic_summary', allowed_tools: ['patch_operation'], acceptance: '只改变操作说明' }],
+  }, runId);
+  const plan = planResponse.json().plan;
+  const artifacts = getPackageArtifactStore();
+  const current = await artifacts.current(project.id);
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: current.revision.oid,
+    spec: {
+      ...structuredClone(current.spec),
+      rules: [...(current.spec.rules ?? []), {
+        key: 'concurrent_revision_note',
+        title: '并发版本备注',
+        description: '用于推进工作版本但不修改本批目标资源。',
+        content: '保持其他操作不变。',
+        evidence: ['test:revision-retry'],
+      }],
+    },
+    coverage: current.coverage,
+    note: '并发修改使工作版本前进',
+    action: {
+      cause: 'test_revision_advance',
+      summary: '并发修改使工作版本前进',
+      actorKind: 'system',
+      actorName: '测试系统',
+    },
+  });
+  const staged = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id, expected_revision: baseline, mutation_id: 'revision-retry-once',
+    actions: [{ task_id: plan.tasks[0].id, tool: 'patch_operation', arguments: {
+      resource_id: operation.resource_id,
+      expected_resource_hash: operation.resource_hash,
+      actions: [{ op: 'set_description', value: '版本冲突后自动恢复的操作说明。' }],
+    } }],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().status, 'staged');
+  const events = getDb().prepare(`SELECT event_type FROM agent_change_control_events WHERE change_set_id = ?`)
+    .all(staged.json().change_set_id) as Array<{ event_type: string }>;
+  assert.ok(events.some((event) => event.event_type === 'change_set.rebased'));
+});
+
+async function revisionRetryFixture(t: test.TestContext) {
+  const project = createProject({ owner: 'alice', name: '版本重试边界', runtime: 'agent' });
+  const app = appFor(t);
+  await seedProject(project.id);
+  const runId = `run-retry-${project.id}`;
+  const resource = await tool(app, project.id, 'get_domain_resource', {
+    resource_id: 'operation:render_synthetic_summary',
+  }, runId);
+  assert.equal(resource.statusCode, 200, resource.body);
+  const baseline = resource.json().working_revision;
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '更新操作说明并保留其他已完成内容', mode: 'expert_edit', expected_revision: baseline,
+    tasks: [{ client_key: 'operation', title: '更新操作说明', resource_kind: 'operation',
+      target_key: 'render_synthetic_summary', allowed_tools: ['patch_operation'], acceptance: '只更新操作说明' }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  const args = {
+    plan_id: plan.id, expected_revision: baseline, mutation_id: `retry-${project.id}`,
+    actions: [{ task_id: plan.tasks[0].id, tool: 'patch_operation', arguments: {
+      resource_id: 'operation:render_synthetic_summary', expected_resource_hash: resource.json().resource.resource_hash,
+      actions: [{ op: 'set_description', value: '本批修改后的操作说明。' }],
+    } }],
+  };
+  // A read/plan alone does not create an Agent workspace. Establish this run's
+  // workspace before simulating a Studio write so it cannot claim a new run.
+  const workspace = await tool(app, project.id, 'list_documents', {}, runId);
+  assert.equal(workspace.statusCode, 200, workspace.body);
+  const originalWrite = StudioWriteService.prototype.batchDomainModel;
+  const externalWrite = (writer: InstanceType<typeof StudioWriteService>, elementId: string) => (
+    originalWrite.call(writer, project, 'alice', {
+      expectedRevision: baseline, clientMutationId: `external-${project.id}`, creates: [],
+      patches: [{ elementId, changes: { description: '其他操作刚写入的说明。' } }],
+    }, `external-hash-${project.id}`)
+  );
+  const submit = () => tool(app, project.id, 'stage_change_set', args, runId);
+  const rows = () => getDb().prepare('SELECT * FROM agent_change_sets WHERE project_id = ?').all(project.id) as any[];
+  const rebaseEvents = () => getDb().prepare(`SELECT * FROM agent_change_control_events
+    WHERE project_id = ? AND event_type = 'change_set.rebased'`).all(project.id);
+  return { app, project, runId, baseline, plan, args, originalWrite, externalWrite, submit, rows, rebaseEvents };
+}
+
+test('Change Set 提交时版本变化后重新编译并保留其他候选，重复请求只返回一份回执', async (t) => {
+  const f = await revisionRetryFixture(t);
+  let attempts = 0;
+  t.mock.method(StudioWriteService.prototype, 'batchDomainModel', async function (this: InstanceType<typeof StudioWriteService>, ...args: Parameters<typeof f.originalWrite>) {
+    attempts += 1;
+    if (attempts === 1) await f.externalWrite(this, 'object:customer');
+    return f.originalWrite.apply(this, args);
+  });
+  const result = await f.submit();
+  assert.equal(result.statusCode, 200, result.body);
+  assert.equal(result.json().revision_retry_count, 1);
+  assert.equal(attempts, 2);
+  const replay = await f.submit();
+  assert.equal(replay.json().replayed, true);
+  assert.equal(replay.json().change_set_id, result.json().change_set_id);
+  assert.equal(replay.json().working_revision, result.json().working_revision);
+  assert.equal(attempts, 2);
+  assert.equal(f.rows().length, 1);
+  assert.equal(f.rows()[0].status, 'staged');
+  assert.equal(f.rebaseEvents().length, 1);
+  const customer = await tool(f.app, f.project.id, 'get_domain_resource', { resource_id: 'object:customer' }, f.runId);
+  assert.equal(customer.json().resource.values.description, '其他操作刚写入的说明。');
+  const operation = await tool(f.app, f.project.id, 'get_domain_resource', { resource_id: 'operation:render_synthetic_summary' }, f.runId);
+  assert.equal(operation.json().resource.values.description, '本批修改后的操作说明。');
+  const plan = await tool(f.app, f.project.id, 'get_change_plan', { plan_id: f.plan.id }, f.runId);
+  assert.equal(plan.json().plan.tasks[0].status, 'staged');
+  assert.equal(plan.json().plan.expected_revision, result.json().working_revision);
+  const receipt = await tool(f.app, f.project.id, 'get_change_set_receipt', { mutation_id: f.args.mutation_id }, f.runId);
+  assert.equal(receipt.json().change_set.status, 'staged');
+});
+
+test('Change Set 目标同时被修改时保留新内容并交回 Agent 重新生成', async (t) => {
+  const f = await revisionRetryFixture(t);
+  let attempts = 0;
+  t.mock.method(StudioWriteService.prototype, 'batchDomainModel', async function (this: InstanceType<typeof StudioWriteService>, ...args: Parameters<typeof f.originalWrite>) {
+    attempts += 1;
+    await f.externalWrite(this, 'operation:render_synthetic_summary');
+    return f.originalWrite.apply(this, args);
+  });
+  const result = await f.submit();
+  assert.equal(result.statusCode, 409, result.body);
+  assert.equal(result.json().code, 'RESOURCE_HASH_CONFLICT');
+  assert.equal(result.json().recovery.strategy, 'refresh_change_set');
+  assert.equal(attempts, 1);
+  assert.equal(f.rebaseEvents().length, 0);
+  assert.equal(f.rows()[0].status, 'failed');
+  const current = await tool(f.app, f.project.id, 'get_domain_resource', { resource_id: 'operation:render_synthetic_summary' }, f.runId);
+  assert.equal(current.json().resource.values.description, '其他操作刚写入的说明。');
+  const plan = await tool(f.app, f.project.id, 'get_change_plan', { plan_id: f.plan.id }, f.runId);
+  assert.equal(plan.json().plan.tasks[0].status, 'pending');
+});
+
+test('Change Set 连续版本冲突最多提交两次并保留有限的 Agent 恢复入口', async (t) => {
+  const f = await revisionRetryFixture(t);
+  let attempts = 0;
+  t.mock.method(StudioWriteService.prototype, 'batchDomainModel', async () => {
+    attempts += 1;
+    throw new StudioWriteError('REVISION_CONFLICT', '写入前版本再次变化', 409, {
+      expectedRevision: f.baseline, actualRevision: 'sha256:new',
+    });
+  });
+  const result = await f.submit();
+  assert.equal(result.statusCode, 409, result.body);
+  assert.equal(result.json().code, 'REVISION_CONFLICT');
+  assert.equal(result.json().recovery.maxAttempts, 2);
+  assert.equal(attempts, 2);
+  assert.equal(f.rebaseEvents().length, 1);
+  assert.equal(f.rows()[0].status, 'failed');
+  assert.equal(getDb().prepare('SELECT count(*) AS count FROM studio_mutation_receipts WHERE project_id = ?').get(f.project.id)?.count, 0);
+});
+
+test('Change Set 起始版本已旧后再次冲突也只允许一次自动刷新', async (t) => {
+  const f = await revisionRetryFixture(t);
+  await f.externalWrite(new StudioWriteService(), 'object:customer');
+  let attempts = 0;
+  t.mock.method(StudioWriteService.prototype, 'batchDomainModel', async () => {
+    attempts += 1;
+    throw new StudioWriteError('WORKING_REVISION_CHANGED', '重试前版本再次变化', 409);
+  });
+  const result = await f.submit();
+  assert.equal(result.statusCode, 409, result.body);
+  assert.equal(result.json().code, 'WORKING_REVISION_CHANGED');
+  assert.equal(attempts, 1);
+  assert.equal(f.rebaseEvents().length, 1);
+});
+
+test('Change Set 重试前重新检查计划批准状态', async (t) => {
+  const f = await revisionRetryFixture(t);
+  let attempts = 0;
+  t.mock.method(StudioWriteService.prototype, 'batchDomainModel', async () => {
+    attempts += 1;
+    getDb().prepare("UPDATE agent_change_plans SET approval_status = 'rejected' WHERE id = ?").run(f.plan.id);
+    throw new StudioWriteError('REVISION_CONFLICT', '版本变化', 409);
+  });
+  const result = await f.submit();
+  assert.equal(result.statusCode, 409, result.body);
+  assert.equal(result.json().code, 'CHANGE_PLAN_APPROVAL_REQUIRED');
+  assert.equal(attempts, 1);
+  assert.equal(f.rebaseEvents().length, 0);
+});
+
+test('Change Set 普通错误及超时不触发版本重试', async (t) => {
+  for (const failure of [
+    new StudioWriteError('NO_CHANGES', '没有变化', 400),
+    new StudioWriteError('STUDIO_WRITE_LOCKED', '候选已冻结', 409),
+    new StudioWriteError('TIMEOUT', '响应超时', 504),
+  ]) {
+    await t.test(failure.code, async (t) => {
+      const f = await revisionRetryFixture(t);
+      let attempts = 0;
+      t.mock.method(StudioWriteService.prototype, 'batchDomainModel', async () => { attempts += 1; throw failure; });
+      const result = await f.submit();
+      assert.equal(result.statusCode, failure.statusCode, result.body);
+      assert.equal(result.json().code, failure.code);
+      assert.equal(attempts, 1);
+      assert.equal(f.rebaseEvents().length, 0);
+    });
+  }
 });
 
 test('Schema 生成计划由 Core 注入全量同步任务并逐 Sheet 原子生成对象和 mapping', async (t) => {

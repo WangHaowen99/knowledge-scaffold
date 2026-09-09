@@ -1424,6 +1424,10 @@ export class AgentCoreService {
   }
 
   private async stageChangeSet(context: AgentToolContext, args: Record<string, unknown>) {
+    return runProjectWriteExclusive(context.project.id, () => this.stageChangeSetExclusive(context, args));
+  }
+
+  private async stageChangeSetExclusive(context: AgentToolContext, args: Record<string, unknown>) {
     let changeSetId = '';
     try {
       const planId = text(args.plan_id, 'plan_id');
@@ -1453,61 +1457,83 @@ export class AgentCoreService {
             : '上一批修改没有生效，请根据失败原因生成新的操作标识' },
         };
       }
-      const working = await this.workbenchStudioFiles(context.project, context.username);
-      if (expectedRevision !== working.workingRevision) {
-        throw new AgentCoreError(
-          'REVISION_CONFLICT',
-          '知识包内容已经变化，请重新读取计划目标后生成新的 Change Set',
-          ['读取当前建模计划和资源快照，不要原样重试旧参数'],
-          409,
-          {
-            expected_revision: expectedRevision,
-            current_revision: working.workingRevision,
-            retryable: false,
-            recovery: {
-              owner: 'agent',
-              strategy: 'refresh_change_set',
-              requiredTool: 'stage_change_set',
-              maxAttempts: 2,
+      let attemptRevision = expectedRevision;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const working = await this.workbenchStudioFiles(context.project, context.username);
+          if (attemptRevision !== working.workingRevision) {
+            throw new AgentCoreError(
+              'REVISION_CONFLICT', '知识包内容已经变化，请同步最新内容', [], 409,
+              { expected_revision: attemptRevision, current_revision: working.workingRevision },
+            );
+          }
+          const activePlan = this.changeControl.activePlan(context.project.id, context.runId);
+          if (activePlan?.id === planId && activePlan.mode === 'generation'
+            && actions.some((action) => action.tool !== 'sync_schema_objects')
+            && this.schemaSemanticEnforcementEnabled(context.project.id)) {
+            const planWorkspace = this.workspace(context.project.id);
+            if (planWorkspace) this.assertSchemaSemantics(planWorkspace, await this.overlay(planWorkspace));
+          }
+          // Always compile against the latest snapshot without replacing the caller's
+          // resource hashes. A changed target must be reconsidered by the Agent.
+          const batch = this.compileChangeSetBatch(context, working, actions);
+          const response = await this.studioWrites.batchDomainModel(
+            context.project,
+            context.username,
+            {
+              expectedRevision: attemptRevision,
+              clientMutationId: mutationId,
+              editSessionId: changeSetId,
+              creates: batch.creates,
+              patches: batch.patches,
             },
+            requestHash,
+          );
+          const staged = {
+            ...domainMutationResponse(response, batch.summary),
+            action_count: batch.summary.action_count,
+            operations: batch.summary.operations,
+            change_set_id: changeSetId,
+            plan_id: planId,
+            mutation_id: mutationId,
+            status: 'staged',
+            revision_retry_count: attempt,
+          };
+          this.changeControl.completeChangeSet(changeSetId, staged);
+          return staged;
+        } catch (error) {
+          const normalized = normalizeDomainAgentError(error);
+          // Only an explicit revision rejection proves this attempt did not write.
+          // Timeouts/unknown outcomes still follow the existing receipt lookup path.
+          if (!['REVISION_CONFLICT', 'WORKING_REVISION_CHANGED'].includes(normalized.code) || attempt >= 1) {
+            throw normalized;
+          }
+          const latest = await this.workbenchStudioFiles(context.project, context.username);
+          this.compileChangeSetBatch(context, latest, actions);
+          this.assertProductLedgerBeforeRuleBatch(context, actions);
+          this.changeControl.refreshChangeSetRevision({
+            changeSetId, projectId: context.project.id, runId: context.runId,
+            expectedRevision: latest.workingRevision,
+          });
+          attemptRevision = latest.workingRevision;
+        }
+      }
+    } catch (error) {
+      let normalized = error instanceof ChangeControlError
+        ? normalizeChangeControlError(error)
+        : normalizeDomainAgentError(error);
+      if (['REVISION_CONFLICT', 'WORKING_REVISION_CHANGED', 'RESOURCE_HASH_CONFLICT'].includes(normalized.code)) {
+        normalized = new AgentCoreError(
+          normalized.code, normalized.message,
+          ['重新读取当前计划及涉及资源，按最新内容生成增量修改和新的 mutation_id，不要原样重放旧参数'],
+          normalized.statusCode,
+          {
+            ...normalized.details,
+            retryable: false,
+            recovery: { owner: 'agent', strategy: 'refresh_change_set', requiredTool: 'stage_change_set', maxAttempts: 2 },
           },
         );
       }
-      const activePlan = this.changeControl.activePlan(context.project.id, context.runId);
-      if (activePlan?.id === planId && activePlan.mode === 'generation'
-        && actions.some((action) => action.tool !== 'sync_schema_objects')
-        && this.schemaSemanticEnforcementEnabled(context.project.id)) {
-        const planWorkspace = this.workspace(context.project.id);
-        if (planWorkspace) this.assertSchemaSemantics(planWorkspace, await this.overlay(planWorkspace));
-      }
-      const batch = this.compileChangeSetBatch(context, working, actions);
-      const response = await this.studioWrites.batchDomainModel(
-        context.project,
-        context.username,
-        {
-          expectedRevision,
-          clientMutationId: mutationId,
-          editSessionId: changeSetId,
-          creates: batch.creates,
-          patches: batch.patches,
-        },
-        requestHash,
-      );
-      const staged = {
-        ...domainMutationResponse(response, batch.summary),
-        action_count: batch.summary.action_count,
-        operations: batch.summary.operations,
-        change_set_id: changeSetId,
-        plan_id: planId,
-        mutation_id: mutationId,
-        status: 'staged',
-      };
-      this.changeControl.completeChangeSet(changeSetId, staged);
-      return staged;
-    } catch (error) {
-      const normalized = error instanceof ChangeControlError
-        ? normalizeChangeControlError(error)
-        : normalizeDomainAgentError(error);
       if (changeSetId) {
         this.changeControl.failChangeSet(changeSetId, {
           code: normalized.code,

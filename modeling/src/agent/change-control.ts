@@ -563,48 +563,7 @@ export class ChangeControlStore {
       };
       return { changeSetId: existing.id, staging: existing.status === 'staging' };
     }
-    const plan = this.requirePlan(input.projectId, input.runId, input.planId);
-    if (plan.status !== 'active') throw new ChangeControlError('CHANGE_PLAN_CLOSED', '这份建模计划已经结束', 409);
-    if (plan.approval_status !== 'approved') {
-      throw new ChangeControlError(
-        'CHANGE_PLAN_APPROVAL_REQUIRED',
-        '正常生成计划尚未由用户批准，不能开始写入',
-        409,
-        { retryable: false, requires_user_decision: true, plan_id: plan.id },
-      );
-    }
-    const tasks = this.taskRows(plan.id);
-    const taskById = new Map(tasks.map((task) => [task.id, task]));
-    const actions = input.actions.map((action) => alignSameKindActionTask(tasks, taskById, action));
-    const included = new Set(actions.map((action) => action.taskId));
-    if (included.size !== actions.length) throw invalid('actions.task_id', '同一批不能重复执行同一计划任务');
-    for (const action of actions) {
-      const task = taskById.get(action.taskId);
-      if (!task) throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', '修改动作不属于当前计划', 409, { task_id: action.taskId });
-      if (task.status !== 'pending') {
-        throw new ChangeControlError('CHANGE_PLAN_TASK_ALREADY_SETTLED', `计划任务已经处理：${task.title}`, 409, {
-          task_id: task.id, status: task.status,
-        });
-      }
-      const allowed = new Set(parseStringArray(task.allowed_tools_json));
-      if (!allowed.has(action.tool)) {
-        throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', `计划未授权这项修改：${task.title}`, 409, {
-          task_id: task.id, tool: action.tool, allowed_tools: [...allowed],
-        });
-      }
-      assertActionTarget(task, action);
-      const dependencies = parseStringArray(task.depends_on_json);
-      const unresolved = dependencies.filter((dependencyId) => {
-        const dependency = taskById.get(dependencyId);
-        return !included.has(dependencyId)
-          && dependency && !['staged', 'validated', 'waiting_user', 'accepted', 'skipped'].includes(dependency.status);
-      });
-      if (unresolved.length) {
-        throw new ChangeControlError('CHANGE_SET_DEPENDENCY_MISSING', `计划任务依赖尚未完成：${task.title}`, 409, {
-          task_id: task.id, unresolved,
-        });
-      }
-    }
+    const { plan, actions } = this.authorizeChangeSet(input);
     const changeSetId = `cs_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
     const timestamp = nowIso();
     this.db.prepare(`INSERT INTO agent_change_sets (
@@ -657,6 +616,89 @@ export class ChangeControlStore {
     this.db.prepare(`UPDATE agent_change_sets SET status = 'failed', error_json = ?, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(error), timestamp, row.id);
     this.event(row.project_id, row.run_id, row.plan_id, row.id, 'change_set.failed', '本批修改未生效', error);
+  }
+
+  refreshChangeSetRevision(input: {
+    changeSetId: string;
+    projectId: string;
+    runId: string;
+    expectedRevision: string;
+  }) {
+    const row = this.requireChangeSet(input.changeSetId);
+    if (row.project_id !== input.projectId || row.run_id !== input.runId || row.status !== 'staging') {
+      throw new ChangeControlError('CHANGE_SET_NOT_PENDING', '这批修改已结束或不属于当前运行，不能自动重试', 409);
+    }
+    // Recheck approval, task status and dependencies after refreshing the snapshot.
+    // Keep normalized task IDs and original resource hashes unchanged.
+    this.authorizeChangeSet({
+      projectId: input.projectId, runId: input.runId, planId: row.plan_id,
+      actions: parseActions(row.actions_json),
+    });
+    const timestamp = nowIso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`UPDATE agent_change_sets SET expected_revision = ?, updated_at = ? WHERE id = ?`)
+        .run(input.expectedRevision, timestamp, row.id);
+      this.event(row.project_id, row.run_id, row.plan_id, row.id, 'change_set.rebased',
+        '目标内容校验通过，已同步最新版本并自动重试', {
+          previousRevision: row.expected_revision, expectedRevision: input.expectedRevision, attempt: 1,
+        });
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private authorizeChangeSet(input: {
+    projectId: string;
+    runId: string;
+    planId: string;
+    actions: ChangeSetActionInput[];
+  }) {
+    const plan = this.requirePlan(input.projectId, input.runId, input.planId);
+    if (plan.status !== 'active') throw new ChangeControlError('CHANGE_PLAN_CLOSED', '这份建模计划已经结束', 409);
+    if (plan.approval_status !== 'approved') {
+      throw new ChangeControlError(
+        'CHANGE_PLAN_APPROVAL_REQUIRED',
+        '正常生成计划尚未由用户批准，不能开始写入',
+        409,
+        { retryable: false, requires_user_decision: true, plan_id: plan.id },
+      );
+    }
+    const tasks = this.taskRows(plan.id);
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const actions = input.actions.map((action) => alignSameKindActionTask(tasks, taskById, action));
+    const included = new Set(actions.map((action) => action.taskId));
+    if (included.size !== actions.length) throw invalid('actions.task_id', '同一批不能重复执行同一计划任务');
+    for (const action of actions) {
+      const task = taskById.get(action.taskId);
+      if (!task) throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', '修改动作不属于当前计划', 409, { task_id: action.taskId });
+      if (task.status !== 'pending') {
+        throw new ChangeControlError('CHANGE_PLAN_TASK_ALREADY_SETTLED', `计划任务已经处理：${task.title}`, 409, {
+          task_id: task.id, status: task.status,
+        });
+      }
+      const allowed = new Set(parseStringArray(task.allowed_tools_json));
+      if (!allowed.has(action.tool)) {
+        throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', `计划未授权这项修改：${task.title}`, 409, {
+          task_id: task.id, tool: action.tool, allowed_tools: [...allowed],
+        });
+      }
+      assertActionTarget(task, action);
+      const dependencies = parseStringArray(task.depends_on_json);
+      const unresolved = dependencies.filter((dependencyId) => {
+        const dependency = taskById.get(dependencyId);
+        return !included.has(dependencyId)
+          && dependency && !['staged', 'validated', 'waiting_user', 'accepted', 'skipped'].includes(dependency.status);
+      });
+      if (unresolved.length) {
+        throw new ChangeControlError('CHANGE_SET_DEPENDENCY_MISSING', `计划任务依赖尚未完成：${task.title}`, 409, {
+          task_id: task.id, unresolved,
+        });
+      }
+    }
+    return { plan, actions };
   }
 
   changeSetReceipt(projectId: string, runId: string, mutationId: string) {
