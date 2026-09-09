@@ -172,6 +172,8 @@ def _read_limited_zip_upload(
 
 
 ONTOLOGY_VERSIONED_SKIP_NAMES = {"manifest.yaml", "versions"}
+
+
 class OntologyImportError(ValueError):
     """A stable client-visible import validation error."""
 

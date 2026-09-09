@@ -65,6 +65,7 @@ _TERMINAL_CONNECTOR_STATES = frozenset(
     {"completed", "failed", "cancelled", "attempt_lost"}
 )
 
+
 class ControlledValidationError(RuntimeError):
     """A generic, caller-safe controlled validation failure."""
 

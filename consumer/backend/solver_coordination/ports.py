@@ -31,7 +31,8 @@ class FactSnapshotProducer(Protocol):
 
 
 class DecisionModelLoader(Protocol):
-    def load(self, *, capability: Any) -> Mapping[str, Any]: ...
+    def load(self, *, capability: Any) -> Mapping[str, Any]:
+        ...
 
 
 class ProblemCompiler(Protocol):
@@ -69,9 +70,11 @@ class ProblemFamilyAdapter(Protocol):
 
 
 class ProblemFamilyRegistryPort(Protocol):
-    def get(self, family_key: str) -> ProblemFamilyAdapter: ...
+    def get(self, family_key: str) -> ProblemFamilyAdapter:
+        ...
 
-    def compile_problem(self, family_key: str, **kwargs: Any) -> Any: ...
+    def compile_problem(self, family_key: str, **kwargs: Any) -> Any:
+        ...
 
 
 __all__ = [

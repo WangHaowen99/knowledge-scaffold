@@ -330,6 +330,7 @@ def endorse_proposal(
     fingerprint: str,
     workspace_id: str = Depends(require_workspace_id),
 ):
+    """Record an endorsement for one operation-evolution proposal."""
     buf = get_proposal_buffer()
     buf.endorse(
         ontology_id,
@@ -349,6 +350,7 @@ def reject_proposal(
     fingerprint: str,
     workspace_id: str = Depends(require_workspace_id),
 ):
+    """Reject one operation-evolution proposal."""
     buf = get_proposal_buffer()
     buf.reject(
         ontology_id,
@@ -369,6 +371,7 @@ async def edit_proposal(
     request: Request,
     workspace_id: str = Depends(require_workspace_id),
 ):
+    """Replace a proposal's canonical content after validating the request."""
     data = await read_optional_json_object(request)
     new_content = str(data.get("content") or "").strip()
     if len(new_content) < 4:
@@ -560,11 +563,13 @@ def apply_staged(
         precondition = _file_content_precondition(op_path, current_bytes)
 
         def commit() -> None:
+            """Archive the original operation and commit the staged version."""
             nonlocal archived_to
             archived_to = _archive_original(op_path)
             file_commit()
 
         def rollback() -> None:
+            """Restore the original operation and remove its archive."""
             file_rollback()
             if archived_to is not None:
                 archived_to.unlink(missing_ok=True)

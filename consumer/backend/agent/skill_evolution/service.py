@@ -85,6 +85,7 @@ class SkillEvolverClient:
         baseline_bytes: bytes,
         request_json: Dict[str, Any],
     ) -> str:
+        """Submit trace and baseline bytes to the configured skill-evolver."""
         if not self._base_url:
             raise RuntimeError("skill-evolver base_url 未配置")
         files = {
@@ -109,6 +110,7 @@ class SkillEvolverClient:
         return run_id
 
     def get_run_status(self, run_id: str) -> Dict[str, Any]:
+        """Fetch the current status payload for a skill-evolver run."""
         response = requests.get(
             self._base_url + RUNS_PATH + "/" + run_id,
             headers=self._headers(),
@@ -121,6 +123,7 @@ class SkillEvolverClient:
         return response.json() or {}
 
     def download_artifact(self, run_id: str) -> bytes:
+        """Download the evolved artifact for a completed run."""
         response = requests.get(
             self._base_url + RUNS_PATH + "/" + run_id + "/artifact",
             headers=self._headers(),
@@ -266,6 +269,7 @@ def _canonical_revision_manifest(version_dir: Path) -> Optional[bytes]:
 def _locate_evolved_root(extract_dir: Path) -> Path:
     """Find the ontology root inside the extracted artifact (has operations/)."""
     def has_ops(d: Path) -> bool:
+        """Return whether a directory contains the expected operations index."""
         return (d / "operations" / "index.md").is_file()
 
     if has_ops(extract_dir):
@@ -337,6 +341,7 @@ class SkillEvolutionService:
         )
 
     def is_enabled(self) -> bool:
+        """Return whether skill evolution is enabled in system configuration."""
         return bool(self._config().get("enabled", False))
 
     # ------------------------------------------------------------- ontology
@@ -380,6 +385,7 @@ class SkillEvolutionService:
         we can't distinguish an intentional deletion from an omission, and the
         component-level check guards the data-loss case (a whole tree gone)."""
         def top_entries(d: Path) -> set:
+            """Return non-excluded top-level entries for a snapshot root."""
             if not d.is_dir():
                 return set()
             return {p.name for p in d.iterdir() if p.name not in skip_names}
@@ -539,6 +545,7 @@ class SkillEvolutionService:
         triggered_by: str,
         execution_store: ExecutionStore,
     ) -> TaskRecord:
+        """Create a skill-evolution task after validating submit gates."""
         if not self.is_enabled():
             raise GateError("本体进化功能未启用")
 
@@ -725,6 +732,7 @@ class SkillEvolutionService:
         return record
 
     def fail_task(self, record: TaskRecord, *, stage: str, message: str) -> TaskRecord:
+        """Mark an in-flight task failed and clean its temporary artifacts."""
         # Re-read the latest on-disk state so we never clobber a concurrent
         # terminal decision (approve/reject/cancel) made by a route.
         latest = self._store.get_task(record.workspace_id, record.task_id)
@@ -769,6 +777,7 @@ class SkillEvolutionService:
         return self.compute_diff(record)
 
     def compute_diff(self, record: TaskRecord) -> DiffResult:
+        """Compute the persisted baseline-to-evolved operation diff."""
         baseline_path = self._store.baseline_path(record.workspace_id, record.task_id)
         baseline_files: Dict[str, str] = {}
         if baseline_path.exists():
@@ -831,6 +840,7 @@ class SkillEvolutionService:
 
     # ------------------------------------------------------------------ drift
     def detect_drift(self, record: TaskRecord) -> DriftStatus:
+        """Check whether the submitted ontology changed before approval."""
         try:
             ontology = self._resolve_ontology(record.workspace_id, record.ontology_id)
         except GateError:
@@ -878,6 +888,7 @@ class SkillEvolutionService:
         version_name: Optional[str],
         decided_by: str,
     ) -> TaskRecord:
+        """Approve and install an evolved ontology snapshot."""
         if record.status != "completed":
             raise ValueError("仅待审批任务可执行审批")
         if mode not in ("overwrite", "new_version"):
@@ -1003,6 +1014,7 @@ class SkillEvolutionService:
 
     # ----------------------------------------------------------------- reject
     def reject(self, record: TaskRecord, *, decided_by: str) -> TaskRecord:
+        """Reject a completed evolution task and retain its decision history."""
         if record.status != "completed":
             raise ValueError("仅待审批任务可执行拒绝")
         record.status = "rejected"
@@ -1037,6 +1049,7 @@ class SkillEvolutionService:
 
     # ----------------------------------------------------------------- cancel
     def cancel(self, record: TaskRecord, *, decided_by: str) -> TaskRecord:
+        """Cancel an in-flight evolution task and clean temporary artifacts."""
         if record.status not in ("submitted", "running", "downloading"):
             raise ValueError("仅进行中的任务可取消")
         record.status = "cancelled"

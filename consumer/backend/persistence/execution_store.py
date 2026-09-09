@@ -2791,7 +2791,10 @@ class ExecutionStore:
                     return 0
             except Exception:
                 # The index is derived state; authoritative history remains the fallback.
-                pass
+                logger.warning(
+                    "Session summary turn-count lookup failed; falling back to execution history",
+                    exc_info=True,
+                )
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             return len(history.get("turns", []))

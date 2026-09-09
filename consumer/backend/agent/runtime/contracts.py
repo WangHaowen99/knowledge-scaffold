@@ -237,6 +237,7 @@ class RuntimeInvocationContext(BaseModel):
             return None
         return str(value).strip() or None
 
+
 class RuntimeErrorInfo(BaseModel):
     """Sanitized runtime error independent from HTTP and protocol errors."""
 
@@ -317,7 +318,10 @@ class RuntimeResult(BaseModel):
 class RuntimeEventSink(Protocol):
     """Backpressure-aware destination for line-A runtime events."""
 
-    async def emit(self, event: "RuntimeEvent") -> None: ...
+    async def emit(
+        self,
+        event: "RuntimeEvent",
+    ) -> None: ...
 
 
 class AsyncAgentRuntime(Protocol):
@@ -334,9 +338,11 @@ class AsyncAgentRuntime(Protocol):
         context: RuntimeInvocationContext,
     ) -> AsyncIterator["RuntimeEvent"]: ...
 
-    async def cancel(self, run_id: str, reason: str) -> bool: ...
+    async def cancel(self, run_id: str, reason: str) -> bool:
+        ...
 
-    async def release(self, jiuwen_session_id: str) -> None: ...
+    async def release(self, jiuwen_session_id: str) -> None:
+        ...
 
 
 class RunStatus(str, Enum):
@@ -442,7 +448,10 @@ if TYPE_CHECKING:
 
 
 class PublicEventSink(Protocol):
-    async def emit(self, draft: "PublicEventDraft") -> None: ...
+    async def emit(
+        self,
+        draft: "PublicEventDraft",
+    ) -> None: ...
 
 
 # Re-export event models for the public A/B import surface without duplicating
