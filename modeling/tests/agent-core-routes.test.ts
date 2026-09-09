@@ -4212,8 +4212,12 @@ test('建模目标按结构化分段提交并由核心最终组装', async (t) =
   const runId = `run-goal-draft-${project.id}`;
   const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
   assert.equal(claimed.statusCode, 200, claimed.body);
+  const currentFile = await tool(app, project.id, 'read_file', { path: 'manifest.yaml' }, runId);
+  assert.equal(currentFile.statusCode, 200, currentFile.body);
+  const baseRevision = String(currentFile.json().working_revision ?? currentFile.json().revision ?? '');
+  assert.ok(baseRevision);
   const begun = await tool(app, project.id, 'begin_goal_draft', {
-    draft_id: 'goal-demo', change_group: 'goal_draft',
+    draft_id: 'goal-demo', change_group: 'goal_draft', base_revision: baseRevision, request_id: 'goal-begin-1',
   }, runId);
   assert.equal(begun.statusCode, 200, begun.body);
   for (const [section, summary] of [
@@ -4224,11 +4228,16 @@ test('建模目标按结构化分段提交并由核心最终组装', async (t) =
   ] as const) {
     const response = await tool(app, project.id, 'put_goal_section', {
       draft_id: 'goal-demo', section,
-      data: { summary, evidence: ['user-decision:synthetic'] },
+      base_revision: baseRevision, request_id: `goal-section-${section}`,
+      data: section === 'objective'
+        ? { problem: summary, target_users: '合成用户', success_criteria: '可追溯', evidence: ['user-decision:synthetic'] }
+        : section === 'scope'
+          ? { included: [summary], excluded: [], evidence: ['user-decision:synthetic'] }
+          : { items: [summary], evidence: ['user-decision:synthetic'] },
     }, runId);
     assert.equal(response.statusCode, 200, response.body);
   }
-  const finalized = await tool(app, project.id, 'finalize_goal_draft', { draft_id: 'goal-demo' }, runId);
+  const finalized = await tool(app, project.id, 'finalize_goal_draft', { draft_id: 'goal-demo', base_revision: baseRevision, request_id: 'goal-finalize-1' }, runId);
   assert.equal(finalized.statusCode, 200, finalized.body);
   const goal = await tool(app, project.id, 'read_file', { path: '.modeling/goal.md' }, runId);
   assert.equal(goal.statusCode, 200, goal.body);

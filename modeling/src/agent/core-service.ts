@@ -335,13 +335,6 @@ export class AgentCoreService {
   private readonly materialPurposeReviews: MaterialPurposeReviewStore;
   private readonly schemaSemanticStatusCache = new Map<string, SchemaSemanticStatus>();
   private readonly schemaProfileCache: SchemaProfileCache;
-  private readonly goalDrafts = new Map<string, {
-    draftId: string;
-    projectId: string;
-    runId: string;
-    groupId: string;
-    sections: Map<string, Record<string, unknown>>;
-  }>();
 
   constructor(
     db: DatabaseSync = getDb(),
@@ -731,6 +724,7 @@ export class AgentCoreService {
     const workspace = await this.ensureWorkspace(context);
     switch (tool) {
       case 'list_documents': return this.listDocuments(context.project.id);
+      case 'get_goal_context': return this.goalContext(context.project.id, workspace);
       case 'get_product_ledger': return this.getProductLedger(workspace);
       case 'stage_product_ledger': return this.stageProductLedger(workspace, args);
       case 'read_document': return this.readDocument(context.project.id, args);
@@ -4132,6 +4126,42 @@ export class AgentCoreService {
     };
   }
 
+  private goalContext(projectId: string, workspace: WorkspaceRow) {
+    const row = this.db.prepare(`SELECT result_json, updated_at FROM material_analysis_runs
+      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
+      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(projectId) as
+      | { result_json: string; updated_at: string }
+      | undefined;
+    const documents = listDocuments(projectId).map((document) => ({
+      id: document.id,
+      filename: document.filename,
+      revision: document.revisionNo ?? 1,
+    }));
+    let analysis: Record<string, any> = {};
+    try { analysis = row ? JSON.parse(row.result_json) as Record<string, any> : {}; } catch { /* 旧分析损坏时返回可恢复空简报 */ }
+    const compact = (value: unknown, limit: number) => String(value ?? '').trim().slice(0, limit);
+    const openQuestions = Array.isArray(analysis.openQuestions) ? analysis.openQuestions.slice(0, 20).map((item: any) => ({
+      topic: compact(item?.topic, 300), why: compact(item?.why, 600),
+    })).filter((item) => item.topic && item.why) : [];
+    const candidates = Array.isArray(analysis.candidateArtifacts) ? analysis.candidateArtifacts.slice(0, 40).map((item: any) => ({
+      kind: compact(item?.kind, 40), name: compact(item?.name, 200), rationale: compact(item?.rationale, 600),
+      evidence: stringArray(item?.evidence).slice(0, 8),
+    })).filter((item) => item.name) : [];
+    return {
+      version: 'goal-context-v1',
+      workingRevision: workspace.base_revision_oid,
+      sourceRevisions: documents,
+      analysisUpdatedAt: row?.updated_at ?? null,
+      coverageComplete: Boolean(row),
+      domainOverview: compact(analysis.domainOverview, 4_000),
+      candidateGoals: Array.isArray(analysis.candidateGoals) ? analysis.candidateGoals.slice(0, 3) : [],
+      candidateProcesses: Array.isArray(analysis.candidateProcesses) ? analysis.candidateProcesses.slice(0, 3) : [],
+      candidates,
+      openQuestions,
+      display: { text: row ? '已整理可用于目标生成的结构化资料依据' : '当前没有已完成的资料分析，目标只可依据用户明确说明生成' },
+    };
+  }
+
   private readDocument(projectId: string, args: Record<string, unknown>) {
     const filename = text(args.filename, 'filename');
     const document = listDocuments(projectId).find((item) => item.filename === filename || item.id === filename);
@@ -5646,6 +5676,15 @@ export class AgentCoreService {
 
   private async writeFile(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
     const path = packagePath(text(args.path, 'path'));
+    if (path === '.modeling/goal.md' && String(args.content ?? '').length > 4_000) {
+      throw new AgentCoreError(
+        'GOAL_DRAFT_REQUIRED',
+        '建模目标必须按结构化分段提交，不能一次性写入完整文件',
+        ['依次使用 begin_goal_draft、put_goal_section 和 finalize_goal_draft'],
+        409,
+        { requiredTools: ['begin_goal_draft', 'put_goal_section', 'finalize_goal_draft'], retryable: false },
+      );
+    }
     let content = text(args.content, 'content', true);
     const evidence = stringArray(args.evidence);
     let manifestNormalization: { ignoredFields: string[] } | undefined;
@@ -5867,20 +5906,33 @@ export class AgentCoreService {
       display: { text: `已写入候选文件《${path}》` } };
   }
 
-  private goalDraftKey(context: AgentToolContext, draftId: string): string {
-    return `${context.project.id}:${context.runId}:${draftId}`;
-  }
-
   private async beginGoalDraft(context: AgentToolContext, args: Record<string, unknown>) {
     const draftId = String(args.draft_id ?? `goal-${randomUUID().slice(0, 12)}`).trim();
     const groupId = changeGroupId(args.change_group, 'change_group');
     const workspace = await this.ensureWorkspace(context);
     await this.assertCandidateStageGate(workspace, '.modeling/goal.md');
-    this.goalDrafts.set(this.goalDraftKey(context, draftId), {
-      draftId, projectId: context.project.id, runId: context.runId,
-      groupId, sections: new Map(),
-    });
-    return { ok: true, draftId, sections: [], display: { text: '已建立结构化建模目标草稿' } };
+    const prior = this.db.prepare(`SELECT status FROM agent_goal_drafts WHERE project_id = ? AND run_id = ? AND draft_id = ?`)
+      .get(context.project.id, context.runId, draftId) as { status?: string } | undefined;
+    if (prior?.status === 'finalized') throw new AgentCoreError('GOAL_DRAFT_FINALIZED', '这个目标草稿已经完成，不能重新打开', ['建立新的草稿标识后继续调整'], 409);
+    const current = await this.workbenchStudioFiles(context.project, context.username);
+    const baseRevision = text(args.base_revision, 'base_revision');
+    if (baseRevision !== current.workingRevision) throw new AgentCoreError('GOAL_DRAFT_REVISION_CONFLICT', '目标草稿基于旧版本，不能继续提交', ['重新读取当前项目状态后建立草稿'], 409, { currentRevision: current.workingRevision });
+    const requestId = String(args.request_id ?? '').trim();
+    const requestHash = hashStructuredValue('goal-draft-begin-v1', { draftId, groupId, baseRevision });
+    if (requestId) {
+      const replay = this.replayStructuredMutation(context, 'begin_goal_draft', requestId, requestHash);
+      if (replay) return replay;
+    }
+    this.db.prepare(`INSERT INTO agent_goal_drafts (project_id, run_id, draft_id, group_id, base_revision, sections_json, section_revisions_json, updated_at)
+      VALUES (?,?,?,?,?,'{}','{}',?)
+      ON CONFLICT(project_id, run_id, draft_id) DO NOTHING`)
+      .run(context.project.id, context.runId, draftId, groupId, baseRevision, nowIso());
+    const saved = this.db.prepare(`SELECT group_id, base_revision, sections_json FROM agent_goal_drafts WHERE project_id = ? AND run_id = ? AND draft_id = ?`).get(context.project.id, context.runId, draftId) as any;
+    if (String(saved.group_id) !== groupId || String(saved.base_revision) !== baseRevision) throw new AgentCoreError('GOAL_DRAFT_CONFLICT', '这个目标草稿标识已绑定到另一份候选或版本', ['使用新的 draft_id 建立目标草稿'], 409);
+    const savedSections = JSON.parse(String(saved.sections_json || '{}')) as Record<string, unknown>;
+    const response = { ok: true, draftId, baseRevision, sections: Object.keys(savedSections), recovered: Object.keys(savedSections).length > 0, display: { text: Object.keys(savedSections).length ? '已恢复结构化建模目标草稿' : '已建立结构化建模目标草稿' } };
+    if (requestId) this.saveStructuredMutation(context, 'begin_goal_draft', requestId, requestHash, response);
+    return response;
   }
 
   private async putGoalSection(context: AgentToolContext, args: Record<string, unknown>) {
@@ -5888,47 +5940,88 @@ export class AgentCoreService {
     const section = text(args.section, 'section');
     const allowed = new Set(['objective', 'scope', 'constraints', 'outputs', 'open_questions']);
     if (!allowed.has(section)) throw new AgentCoreError('GOAL_SECTION_INVALID', '目标草稿分段类型不正确', ['使用 objective、scope、constraints、outputs 或 open_questions'], 400);
-    const key = this.goalDraftKey(context, draftId);
-    const draft = this.goalDrafts.get(key);
-    if (!draft) throw new AgentCoreError('GOAL_DRAFT_NOT_FOUND', '目标草稿不存在或已过期', ['先建立新的目标草稿'], 404);
+    const requestId = text(args.request_id, 'request_id');
+    const requestedRevision = text(args.base_revision, 'base_revision');
     const data = args.data;
+    const requestHash = hashStructuredValue('goal-draft-section-request-v1', { draftId, section, data, baseRevision: requestedRevision });
+    const replay = this.replayStructuredMutation(context, 'put_goal_section', requestId, requestHash);
+    if (replay) return replay;
+    const row = this.db.prepare(`SELECT group_id, base_revision, status, sections_json, section_revisions_json FROM agent_goal_drafts WHERE project_id = ? AND run_id = ? AND draft_id = ?`).get(context.project.id, context.runId, draftId) as any;
+    if (!row || row.status !== 'draft') throw new AgentCoreError('GOAL_DRAFT_NOT_FOUND', '目标草稿不存在或已过期', ['先建立新的目标草稿'], 404);
+    const current = await this.workbenchStudioFiles(context.project, context.username);
+    if (String(row.base_revision) !== current.workingRevision) throw new AgentCoreError('GOAL_DRAFT_REVISION_CONFLICT', '目标草稿基于旧版本，不能继续提交', ['重新读取当前项目状态后建立草稿'], 409, { currentRevision: current.workingRevision });
+    if (requestedRevision !== String(row.base_revision)) throw new AgentCoreError('GOAL_DRAFT_REVISION_CONFLICT', '目标草稿版本已变化，不能覆盖已有分段', ['重新读取当前项目状态后使用最新版本继续'], 409, { currentRevision: row.base_revision });
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new AgentCoreError('GOAL_SECTION_INVALID', '目标草稿分段必须是对象', ['提交合法的 data 对象'], 400);
     const raw = data as Record<string, unknown>;
-    const unknown = Object.keys(raw).filter((item) => !['title', 'summary', 'items', 'evidence'].includes(item));
+    const allowedFields: Record<string, string[]> = {
+      objective: ['problem', 'target_users', 'success_criteria', 'evidence'],
+      scope: ['included', 'excluded', 'evidence'],
+      constraints: ['items', 'evidence'],
+      outputs: ['items', 'evidence'],
+      open_questions: ['items', 'evidence'],
+    };
+    const unknown = Object.keys(raw).filter((item) => !allowedFields[section].includes(item));
     if (unknown.length) throw new AgentCoreError('GOAL_SECTION_UNKNOWN_FIELD', `目标草稿包含未知字段：${unknown.join('、')}`, ['删除未定义字段后重试'], 400);
-    const summary = raw.summary === undefined ? '' : text(raw.summary, 'data.summary', true);
-    const items = raw.items === undefined ? [] : stringArray(raw.items);
+    const summary = section === 'objective'
+      ? [raw.problem, raw.target_users, raw.success_criteria].map((item, index) => (
+        item === undefined ? '' : text(item, `data.${['problem', 'target_users', 'success_criteria'][index]}`, true)
+      )).filter(Boolean).join('\n')
+      : '';
+    const items = section === 'scope'
+      ? [
+        ...stringArray(raw.included).map((item) => `纳入：${item}`),
+        ...stringArray(raw.excluded).map((item) => `不纳入：${item}`),
+      ]
+      : raw.items === undefined ? [] : stringArray(raw.items);
     const evidence = raw.evidence === undefined ? [] : stringArray(raw.evidence);
-    if (!summary.trim() && !items.length) throw new AgentCoreError('GOAL_SECTION_EMPTY', '目标草稿分段不能为空', ['填写 summary 或 items'], 400);
+    const oversized = [summary, ...items, ...evidence].find((item) => item.length > 4000);
+    if (oversized) throw new AgentCoreError('GOAL_SECTION_TOO_LONG', '目标草稿分段超过长度上限', ['缩短该分段内容后重试'], 400);
+    if (items.length > 30 || evidence.length > 30) throw new AgentCoreError('GOAL_SECTION_TOO_LARGE', '目标草稿分段条目数量超过上限', ['减少条目后重试'], 400);
+    if (!summary.trim() && !items.length) throw new AgentCoreError('GOAL_SECTION_EMPTY', '目标草稿分段不能为空', ['填写该分段规定的业务字段'], 400);
     if (section !== 'open_questions' && !evidence.length) throw new AgentCoreError('GOAL_SECTION_EVIDENCE_REQUIRED', '目标草稿分段缺少证据', ['为该分段提供 material:<资料>#<原文锚点> 或 user-decision:... 证据'], 400);
     for (const token of evidence) {
       if (!/^(?:material:[^#\s]+#[^\s]+|user-decision:.+)$/u.test(token)) {
         throw new AgentCoreError('GOAL_SECTION_EVIDENCE_INVALID', `证据格式不正确：${token}`, ['使用 material:<资料 id>#<原文锚点> 或 user-decision:<说明>'], 400);
       }
     }
+    assertGoalMaterialEvidenceReferences(context.project.id, evidence);
     const normalized = {
-      ...(raw.title === undefined ? {} : { title: text(raw.title, 'data.title') }),
       ...(summary ? { summary: summary.slice(0, 4000) } : {}),
       ...(items.length ? { items: items.slice(0, 30).map((item) => item.slice(0, 1000)) } : {}),
       ...(evidence.length ? { evidence: evidence.slice(0, 30) } : {}),
     };
-    draft.sections.set(section, normalized);
-    return { ok: true, draftId, section, sections: [...draft.sections.keys()], display: { text: `已保存目标草稿“${section}”分段` } };
+    const sections = JSON.parse(String(row.sections_json || '{}')) as Record<string, unknown>;
+    sections[section] = normalized;
+    const revisions = JSON.parse(String(row.section_revisions_json || '{}')) as Record<string, number>;
+    revisions[section] = Number(revisions[section] || 0) + 1;
+    this.db.prepare(`UPDATE agent_goal_drafts SET sections_json = ?, section_revisions_json = ?, updated_at = ? WHERE project_id = ? AND run_id = ? AND draft_id = ?`)
+      .run(JSON.stringify(sections), JSON.stringify(revisions), nowIso(), context.project.id, context.runId, draftId);
+    const response = { ok: true, draftId, section, sectionRevision: revisions[section], sections: Object.keys(sections), display: { text: `已保存目标草稿“${section}”分段` } };
+    this.saveStructuredMutation(context, 'put_goal_section', requestId, requestHash, response);
+    return response;
   }
 
   private async finalizeGoalDraft(context: AgentToolContext, args: Record<string, unknown>) {
     const draftId = text(args.draft_id, 'draft_id');
-    const key = this.goalDraftKey(context, draftId);
-    const draft = this.goalDrafts.get(key);
-    if (!draft) throw new AgentCoreError('GOAL_DRAFT_NOT_FOUND', '目标草稿不存在或已过期', ['先建立新的目标草稿'], 404);
+    const requestId = text(args.request_id, 'request_id');
+    const requestedRevision = text(args.base_revision, 'base_revision');
+    const replayHash = hashStructuredValue('goal-draft-finalize-v1', { draftId, baseRevision: requestedRevision });
+    const replay = this.replayStructuredMutation(context, 'finalize_goal_draft', requestId, replayHash);
+    if (replay) return replay;
+    const row = this.db.prepare(`SELECT group_id, base_revision, status, sections_json FROM agent_goal_drafts WHERE project_id = ? AND run_id = ? AND draft_id = ?`).get(context.project.id, context.runId, draftId) as any;
+    if (!row || row.status !== 'draft') throw new AgentCoreError('GOAL_DRAFT_NOT_FOUND', '目标草稿不存在或已过期', ['先建立新的目标草稿'], 404);
+    const current = await this.workbenchStudioFiles(context.project, context.username);
+    if (String(row.base_revision) !== current.workingRevision) throw new AgentCoreError('GOAL_DRAFT_REVISION_CONFLICT', '目标草稿基于旧版本，不能完成', ['重新读取当前项目状态后建立草稿'], 409, { currentRevision: current.workingRevision });
+    if (requestedRevision !== String(row.base_revision)) throw new AgentCoreError('GOAL_DRAFT_REVISION_CONFLICT', '目标草稿版本已变化，不能完成', ['重新读取当前项目状态后使用最新版本继续'], 409, { currentRevision: row.base_revision });
+    const sections = JSON.parse(String(row.sections_json || '{}')) as Record<string, any>;
     const required = ['objective', 'scope', 'constraints', 'outputs'];
-    const missing = required.filter((section) => !draft.sections.has(section));
+    const missing = required.filter((section) => !sections[section]);
     if (missing.length) throw new AgentCoreError('GOAL_DRAFT_INCOMPLETE', `目标草稿缺少必需分段：${missing.join('、')}`, ['补齐缺少的目标分段后再完成'], 400, { missing });
     const labels: Record<string, string> = { objective: '目标', scope: '范围', constraints: '约束', outputs: '产出', open_questions: '待确认问题' };
     const lines = ['# 建模目标', ''];
     const evidence: string[] = [];
     for (const section of [...required, 'open_questions']) {
-      const data = draft.sections.get(section);
+      const data = sections[section];
       if (!data) continue;
       lines.push(`## ${labels[section]}`, '');
       if (data.title) lines.push(`**${data.title}**`, '');
@@ -5946,10 +6039,12 @@ export class AgentCoreService {
     await this.discardFrozenCandidate(workspace, context, '结构化目标草稿继续修改，旧确认请求已失效');
     await this.upsertChange(workspace, {
       path: '.modeling/goal.md', kind: 'write', content: lines.join('\n').trimEnd() + '\n',
-      groupId: draft.groupId, evidence, reason: null,
+      groupId: row.group_id, evidence, reason: null,
     });
-    this.goalDrafts.delete(key);
-    return { ok: true, draftId, path: '.modeling/goal.md', candidate: true, sections: required, display: { text: '已完成结构化建模目标草稿' } };
+    this.db.prepare(`UPDATE agent_goal_drafts SET status = 'finalized', updated_at = ? WHERE project_id = ? AND run_id = ? AND draft_id = ?`).run(nowIso(), context.project.id, context.runId, draftId);
+    const response = { ok: true, draftId, path: '.modeling/goal.md', candidate: true, sections: required, display: { text: '已完成结构化建模目标草稿' } };
+    this.saveStructuredMutation(context, 'finalize_goal_draft', requestId, replayHash, response);
+    return response;
   }
 
   private async deleteFile(workspace: WorkspaceRow, context: AgentToolContext, args: Record<string, unknown>) {
@@ -9901,6 +9996,31 @@ function assertMaterialEvidenceReferences(projectId: string, evidence: string[])
         400,
         { reference },
       );
+    }
+  }
+}
+
+function assertGoalMaterialEvidenceReferences(projectId: string, evidence: string[]) {
+  const documents = listDocuments(projectId);
+  for (const reference of evidence) {
+    const normalized = reference.normalize('NFKC').trim();
+    if (!normalized.startsWith('material:')) continue;
+    const body = normalized.slice('material:'.length);
+    const hash = body.indexOf('#');
+    const source = body.slice(0, hash).trim();
+    const anchor = body.slice(hash + 1).trim();
+    const document = documents.find((item) => (
+      item.id === source || item.sourceKey === source || item.filename === source
+    ));
+    if (!document || !anchor) {
+      throw new AgentCoreError('GOAL_EVIDENCE_UNLOCATABLE', '目标分段中的资料证据无法定位', ['使用当前资料 id 和真实原文锚点重新提交该分段'], 400, { reference });
+    }
+    const content = document.textContent ?? '';
+    const offset = anchor.match(/^(?:offset:|@)(\d+)$/iu);
+    const validOffset = offset && Number(offset[1]) >= 0 && Number(offset[1]) < content.length;
+    const validText = !offset && content.includes(anchor.replace(/^§/u, ''));
+    if (!validOffset && !validText) {
+      throw new AgentCoreError('GOAL_EVIDENCE_UNLOCATABLE', '目标分段中的资料锚点没有命中原文', ['先检索或读取原文，再使用真实章节文字或 offset 提交'], 400, { reference });
     }
   }
 }
