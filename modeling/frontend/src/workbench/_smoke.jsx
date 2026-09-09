@@ -1592,8 +1592,16 @@ try {
     agentFocus: { kind: 'flow', target: 'diagrams/current.mmd', node: 'D3' },
     initialPath: 'index.md',
   });
+  const defaultStudio = resolveBootstrapFocus({ current: { kind: 'empty', target: '' }, initialPath: 'index.md' });
+  const agentOverridesDefaultStudio = resolveBootstrapFocus({
+    current: { kind: 'studio', target: '知识包 Studio', view: 'graph', source: 'default' },
+    agentFocus: { kind: 'flow', target: 'diagrams/current.mmd', node: 'D3' },
+    initialPath: 'index.md',
+  });
   if (kept !== streamFocus || recovered.kind !== 'diff' || recovered.target !== '.modeling/goal.md'
-    || activeRecovered.kind !== 'flow' || activeRecovered.node !== 'D3') {
+    || activeRecovered.kind !== 'flow' || activeRecovered.node !== 'D3'
+    || defaultStudio.kind !== 'studio' || defaultStudio.view !== 'graph'
+    || agentOverridesDefaultStudio.kind !== 'flow' || agentOverridesDefaultStudio.node !== 'D3') {
     throw new Error('启动快照覆盖了 Agent 焦点');
   }
   console.log('✓ 启动竞态保持 Agent 焦点');

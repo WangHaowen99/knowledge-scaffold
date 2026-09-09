@@ -46,7 +46,9 @@ function sceneFromUrl() {
   const q = new URLSearchParams(window.location.search).get('scene');
   return SCENES.some((s) => s.id === q) ? q : null;
 }
-const boot = SCENES.find((s) => s.id === sceneFromUrl()) || SCENES[0];
+const DEFAULT_STUDIO_FOCUS = { kind: 'studio', target: '知识包 Studio', view: 'graph' };
+const DEFAULT_BOOT = { id: 'studio', label: '知识包 Studio', focus: DEFAULT_STUDIO_FOCUS, leftTab: 'pkg' };
+const boot = SCENES.find((s) => s.id === sceneFromUrl()) || DEFAULT_BOOT;
 const initialProjectId = projectFromUrl();
 const initialStudioFocus = initialProjectId ? studioFocusFromLocation() : null;
 if (initialProjectId && initialStudioFocus) {
@@ -90,7 +92,7 @@ const initial = {
   scene: boot.id,
   leftTab: boot.leftTab,                // pkg | mat
   focus: initialProjectId
-    ? initialStudioFocus || { kind: 'empty', target: '' }
+    ? initialStudioFocus || { ...DEFAULT_STUDIO_FOCUS, source: 'default' }
     : { ...boot.focus, target: focusTargetFor(boot.focus.kind), node: boot.id === 'modeling' ? 'D2' : undefined },
   follow: true,                         // 是否跟随助手的 focus
   pendingFocus: null,                   // follow=false 时助手想去的地方，攒着等用户「跟上」
@@ -1596,7 +1598,7 @@ export function materialPurposeLabel(purpose) {
 
 function focusTargetFor(kind) {
   return { flow: 'diagrams/采购申请.mmd', diff: 'rules/安全库存判断.md', doc: '作业手册.pdf',
-    impact: '影响分析', conflict: '冲突清单', gates: '正式发布门禁' }[kind];
+    impact: '影响分析', conflict: '冲突清单', gates: '正式发布门禁', studio: '知识包 Studio' }[kind];
 }
 
 /** 文件类型 → 中栏视图。这是「点左栏跳中栏」的唯一映射点。 */
@@ -1633,7 +1635,8 @@ export function resolveBootstrapFocus({
   workflowPhase = '',
 }) {
   const currentFocus = resolveProjectFocusForPhase(current, workflowPhase);
-  if (currentFocus?.kind && currentFocus.kind !== 'empty') return currentFocus;
+  const isDefaultStudio = currentFocus?.kind === 'studio' && current?.source === 'default';
+  if (currentFocus?.kind && currentFocus.kind !== 'empty' && !isDefaultStudio) return currentFocus;
   const routedFocus = resolveProjectFocusForPhase(routeFocus, workflowPhase);
   if (routedFocus?.kind) return routedFocus;
   if (interaction?.kind === 'confirmation' && candidateFiles[0]?.path) {
@@ -1642,7 +1645,7 @@ export function resolveBootstrapFocus({
   const restoredFocus = resolveProjectFocusForPhase(agentFocus, workflowPhase);
   if (restoredFocus?.kind) return restoredFocus;
   if (workflowPhase === 'evaluation') return { kind: 'evaluation', target: '正式评测' };
-  return initialPath ? focusForPath(initialPath) : { kind: 'empty', target: '' };
+  return { ...DEFAULT_STUDIO_FOCUS };
 }
 
 export function studioFocusFromLocation(location = globalThis.window?.location) {
