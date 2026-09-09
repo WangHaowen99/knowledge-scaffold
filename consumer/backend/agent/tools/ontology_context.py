@@ -28,7 +28,6 @@ from ontology.ontology_catalog import (
     read_required_text,
     read_required_asset_text,
     resolve_object_reference,
-    find_asset_file,
 )
 from ontology.package_browser import PackageBrowserError, read_package_text
 from ontology.resource_parser import parse_resource_cached
@@ -171,7 +170,8 @@ def _handle_ontology_context_result(
     ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
     if error:
         return _OntologyContextResult(content=error)
-    assert ontology is not None
+    if ontology is None:
+        return _OntologyContextResult(content="Error: ontology manifest is unavailable.")
 
     normalized_resource = str(resource or "").strip()
     ontology_dir = Path(ontology.ontology_dir).resolve()
@@ -202,7 +202,8 @@ def _handle_ontology_context_result(
         resolution, resolution_error = resolve_object_reference(ontology_dir, key)
         if resolution_error:
             return _OntologyContextResult(content=resolution_error)
-        assert resolution is not None
+        if resolution is None:
+            return _OntologyContextResult(content="Error: object reference is unavailable.")
         content, read_error = read_required_text(
             resolution.path,
             "object '{}'".format(key),
@@ -287,7 +288,8 @@ def _handle_ontology_context_result(
         path, asset_error = find_asset_file(ontology_dir, BUSINESS_CHECKPOINT_TEMPLATE_KEY)
         if asset_error:
             return _OntologyContextResult(content=asset_error)
-        assert path is not None
+        if path is None:
+            return _OntologyContextResult(content="Error: CheckPoint template is unavailable.")
         content, read_error = read_required_asset_text(
             path,
             "asset '{}'".format(BUSINESS_CHECKPOINT_TEMPLATE_KEY),
@@ -342,7 +344,10 @@ def _build_markdown_result(
     path, error = find_markdown_file(directory.resolve(), key, resource_name)
     if error:
         return _OntologyContextResult(content=error)
-    assert path is not None
+    if path is None:
+        return _OntologyContextResult(
+            content="Error: {} '{}' could not be resolved.".format(resource_name, key)
+        )
 
     if path_protection is not None:
         try:
@@ -534,7 +539,8 @@ def _build_structured_context(
         pointer_after = active_manager.active_pointer(ontology.id)
     except EvidenceIndexManagerError as exc:
         return "Error: {}".format(exc.code), None
-    assert pointer is not None
+    if pointer is None:
+        return "Error: INDEX_NOT_READY", None
     if not pointer_after or any(
         pointer.get(field) != pointer_after.get(field)
         for field in ("mutation_revision", "expected_epoch", "active_generation", "status")

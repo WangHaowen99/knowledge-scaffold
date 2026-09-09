@@ -60,7 +60,8 @@ def handle_skill(
     skill, error = _get_skill(skill_name, workspace_id=workspace_id)
     if error:
         return error
-    assert skill is not None
+    if skill is None:
+        return "Error: skill '{}' is unavailable.".format(str(skill_name or "").strip())
 
     normalized_resource = str(resource or "").strip()
     skill_dir = Path(skill.file_path).resolve().parent

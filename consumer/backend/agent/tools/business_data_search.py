@@ -525,7 +525,8 @@ class BusinessDataSearchTool:
         )
         if ontology_error:
             return ToolOutcome(content=ontology_error)
-        assert ontology is not None
+        if ontology is None:
+            return ToolOutcome(content="Error: ontology manifest is unavailable.")
         ontology_dir = Path(ontology.ontology_dir).resolve()
         graph_fallback_connection: Optional[ResolvedBusinessDataSource] = None
         reference_result = resolve_object_reference_result(

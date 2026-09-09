@@ -211,8 +211,6 @@ def _read_json_object(
             raise _ProblemError(_problem(invalid_code, object_id, f"{label}不是普通文件"))
         raw_bytes = path.read_bytes()
         payload = json.loads(raw_bytes.decode("utf-8"))
-    except _ProblemError:
-        raise
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _ProblemError(
             _operation_problem(invalid_code, object_id, f"读取或解析{label}", exc)
@@ -429,15 +427,12 @@ def _validate_workspace_config(
 ) -> dict[str, Any]:
     path = _workspace_config_path(runtime_root, workspace_id)
     object_id = _object_id(path, runtime_root)
-    try:
-        _, raw = _read_json_object(
-            path,
-            runtime_root=runtime_root,
-            invalid_code="INVALID_WORKSPACE_OBSERVABILITY_TARGET",
-            label="workspace observability config",
-        )
-    except _ProblemError:
-        raise
+    _, raw = _read_json_object(
+        path,
+        runtime_root=runtime_root,
+        invalid_code="INVALID_WORKSPACE_OBSERVABILITY_TARGET",
+        label="workspace observability config",
+    )
 
     langfuse = raw.get("langfuse")
     raw_secret = str(langfuse.get("secret_key") or "") if isinstance(langfuse, dict) else ""

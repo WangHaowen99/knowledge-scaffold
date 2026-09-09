@@ -202,10 +202,7 @@ class HugeGraphBackend:
     def verify_connectivity(self) -> None:
         if not self.url:
             raise GraphBackendError("HugeGraph URL 未配置")
-        try:
-            self._request("GET", self._graph_path("/schema"))
-        except GraphBackendError:
-            raise
+        self._request("GET", self._graph_path("/schema"))
 
     def get_nodes_schema(
         self,

@@ -690,8 +690,11 @@ def _run_with_live_logging(
     label = " [{}]".format(script_name) if script_name else ""
 
     def _read_stdout() -> None:
-        assert proc.stdout is not None
-        for line in proc.stdout:
+        stdout = proc.stdout
+        if stdout is None:
+            logger.error("[script:stdout]%s stream is unavailable", label)
+            return
+        for line in stdout:
             stdout_lines.append(line)
             logger.info(
                 "[script:stdout]%s line_chars=%s",
@@ -700,8 +703,11 @@ def _run_with_live_logging(
             )
 
     def _read_stderr() -> None:
-        assert proc.stderr is not None
-        for line in proc.stderr:
+        stderr = proc.stderr
+        if stderr is None:
+            logger.error("[script:stderr]%s stream is unavailable", label)
+            return
+        for line in stderr:
             stderr_lines.append(line)
             logger.info(
                 "[script:stderr]%s line_chars=%s",
@@ -2236,7 +2242,8 @@ def handle_execute_script(
         ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
         if error:
             return error
-        assert ontology is not None
+        if ontology is None:
+            return "Error: ontology manifest is unavailable."
         ontology_dir = Path(ontology.ontology_dir).resolve()
         resolved_ontology_id = ontology.id
         script_entry = None
