@@ -156,8 +156,8 @@ const normalizeWebSources = (parsedOutput) => {
 
 const resultCountFromProgress = (progress) => {
   for (let index = progress.length - 1; index >= 0; index -= 1) {
-    const match = stringValue(progress[index]?.text).match(/(?:返回|共)\s*(\d+)\s*条/u);
-    if (match) return Number(match[1]);
+  const [, countText] = stringValue(progress[index]?.text).match(/(?:返回|共)\s*(\d+)\s*条/u) || [];
+  if (countText) return Number(countText);
   }
   return null;
 };

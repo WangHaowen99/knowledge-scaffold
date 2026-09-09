@@ -11,8 +11,8 @@ const cleanText = (value) => String(value ?? '').trim();
 
 const batchLabel = (itemId) => {
   const text = cleanText(itemId);
-  const match = text.match(/(?:^|[_-])0*(\d+)$/u);
-  return match ? String(Number(match[1])) : text;
+  const [, numericSuffix] = text.match(/(?:^|[_-])0*(\d+)$/u) || [];
+  return numericSuffix ? String(Number(numericSuffix)) : text;
 };
 
 const batchList = (itemIds) => (

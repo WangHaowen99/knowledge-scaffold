@@ -194,8 +194,8 @@ const iterationNodes = (turn, turnKey) => (turn.iterationMetrics || []).map((met
 });
 
 const iterationFromParentKey = (parentKey) => {
-  const match = String(parentKey || '').match(/^iteration:[^:]+:(\d+)$/);
-  return match ? Number(match[1]) : null;
+  const [, iterationText] = String(parentKey || '').match(/^iteration:[^:]+:(\d+)$/) || [];
+  return iterationText ? Number(iterationText) : null;
 };
 
 const iterationForBlock = (block) => (

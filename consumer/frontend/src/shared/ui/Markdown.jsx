@@ -86,7 +86,8 @@ export default function Markdown({ children }) {
           table: ScrollableTable,
           pre({ children: preChildren, ...props }) {
             const code = Array.isArray(preChildren) ? preChildren[0] : preChildren;
-            const lang = /language-(\w+)/.exec(code?.props?.className || '')?.[1] || '';
+            const [, language = ''] = /language-(\w+)/.exec(code?.props?.className || '') || [];
+            const lang = language;
             return <pre data-lang={lang} {...props}>{preChildren}</pre>;
           },
           a({ ...props }) {
