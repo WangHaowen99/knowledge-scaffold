@@ -51,6 +51,10 @@ from workspace.workspaces import (
 
 mcp_router = APIRouter(prefix=MCP_API_PREFIX)
 _MCPChatAuthorization = tuple[MCPRequestScope, Any] | JSONResponse
+# Streaming MCP Chat is deliberately lower than the platform-wide Run cap so
+# one ordinary user cannot monopolize the single-worker runtime.  Keep this a
+# named policy constant so the route and its regression tests share one value.
+MCP_STREAM_USER_WORKSPACE_RUN_CONCURRENCY_LIMIT = 5
 
 
 def _runtime(request: Request):
@@ -383,7 +387,11 @@ async def stream_internal_mcp_chat(
                 execution_store=execution_store,
                 scope=scope,
                 payload=payload,
-                concurrency_limit=100 if str(user.role or "") == "admin" else 1,
+                concurrency_limit=(
+                    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+                    if str(user.role or "") == "admin"
+                    else MCP_STREAM_USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+                ),
                 queue_wait_seconds=min(
                     30,
                     max(1, int(cfg.http_timeout_seconds)),
