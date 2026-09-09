@@ -420,6 +420,6 @@ def translate_text(text: str, target_lang: str, source_lang: str = "auto") -> st
         if result:
             return result
     except Exception as e:
-        logger.warning(f"[lang] Translation failed for {target_lang}: {e}")
+        logger.warning("[lang] Translation failed for %s: %s", target_lang, e)
 
     return text

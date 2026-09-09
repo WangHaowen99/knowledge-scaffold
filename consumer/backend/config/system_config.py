@@ -145,7 +145,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "main_agent_max_iterations": {"env": "AGENT_MAIN_LOOP_MAX_ITERATIONS", "type": "int", "default": 50},
         "sub_agent_max_iterations": {"env": "AGENT_SUB_AGENT_MAX_ITERATIONS", "type": "int", "default": 20},
         "sub_agent_max_concurrency": {"env": "AGENT_SUB_AGENT_MAX_CONCURRENCY", "type": "int", "default": 6},
-        "sub_agent_max_depth": {"env": "AGENT_SUB_AGENT_MAX_DEPTH", "type": "int", "default":10},
+        "sub_agent_max_depth": {"env": "AGENT_SUB_AGENT_MAX_DEPTH", "type": "int", "default": 10},
         "parallel_default_max_workers": {"env": "AGENT_PARALLEL_DEFAULT_MAX_WORKERS", "type": "int", "default": 10},
         "tool_timeout_seconds": {"env": "AGENT_TOOL_TIMEOUT_SECONDS", "type": "int", "default": 600},
         "shutdown_total_deadline_seconds": {"env": "AGENTIC_SHUTDOWN_TOTAL_DEADLINE_SECONDS", "type": "float", "default": 30.0},
