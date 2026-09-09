@@ -376,11 +376,12 @@ def _get_schema_ontology_manifests(
     )
     registry.discover_ontologies()
     if not ontology_id:
-        return [
-            ontology
-            for item in sorted(registry.list_enabled_ontologies())
-            if (ontology := registry.get_ontology(item)) is not None
-        ], None
+        ontologies: List[OntologyManifest] = []
+        for item in sorted(registry.list_enabled_ontologies()):
+            ontology = registry.get_ontology(item)
+            if ontology is not None:
+                ontologies.append(ontology)
+        return ontologies, None
 
     manifest_kwargs = {"workspace_id": workspace_id}
     if str(ontology_version or "").strip():

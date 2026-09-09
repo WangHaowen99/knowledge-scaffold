@@ -31,11 +31,6 @@ from .candidate_results import (
     CandidateResultsArtifact,
     build_candidate_results,
 )
-from .candidate_results import (
-    CANDIDATE_RESULTS_SCHEMA_VERSION,
-    CandidateResultsArtifact,
-    build_candidate_results,
-)
 from .validation_service import (
     SyntheticValidationService,
     ValidationContext,
@@ -89,8 +84,6 @@ __all__ = [
     "CandidateSet",
     "CANDIDATE_RESULTS_SCHEMA_VERSION",
     "CandidateResultsArtifact",
-    "CANDIDATE_RESULTS_SCHEMA_VERSION",
-    "CandidateResultsArtifact",
     "FactSnapshot",
     "NormalizedInput",
     "Option",
@@ -100,7 +93,6 @@ __all__ = [
     "SolverContractError",
     "SolverResult",
     "VerificationResult",
-    "build_candidate_results",
     "build_candidate_results",
     "CandidateValidationResult",
     "CandidateValidationStatus",

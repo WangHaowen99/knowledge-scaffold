@@ -648,11 +648,12 @@ def _cache_metrics_by_run(records: Iterable[dict[str, Any]]) -> dict[str, dict[s
         run_id = str(record.get("run_id") or "")
         if run_id and record.get("kind") == "llm_call":
             calls_by_run[run_id].append(record)
-    return {
-        run_id: metrics
-        for run_id, calls in calls_by_run.items()
-        if (metrics := _cache_metrics_from_llm_calls(calls))
-    }
+    metrics_by_run: dict[str, dict[str, Any]] = {}
+    for run_id, calls in calls_by_run.items():
+        metrics = _cache_metrics_from_llm_calls(calls)
+        if metrics:
+            metrics_by_run[run_id] = metrics
+    return metrics_by_run
 
 
 def _reasoning_rollup_from_llm_calls(records: Iterable[dict[str, Any]]) -> dict[str, Any]:

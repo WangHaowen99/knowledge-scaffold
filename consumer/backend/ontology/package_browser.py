@@ -258,11 +258,11 @@ def _normalize_relative_parts(
 def _normalize_extensions(extensions: Optional[Iterable[str]]) -> Optional[frozenset[str]]:
     if extensions is None:
         return None
-    normalized = {
-        value if value.startswith(".") else ".{}".format(value)
-        for item in extensions
-        if (value := str(item or "").strip().lower())
-    }
+    normalized = set()
+    for item in extensions:
+        value = str(item or "").strip().lower()
+        if value:
+            normalized.add(value if value.startswith(".") else ".{}".format(value))
     return frozenset(normalized)
 
 
