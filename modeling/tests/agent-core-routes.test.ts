@@ -4183,3 +4183,56 @@ test('Schema 语义摘要路由返回分页问题而不暴露样例值', async (
   assert.ok(Array.isArray(items.json().items));
   assert.ok(items.json().items.every((item: any) => !('sampleValues' in item)));
 });
+
+test('资料检索合并重复位置并限制单次回执大小', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成资料检索边界', runtime: 'agent' });
+  const app = appFor(t);
+  insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_material.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: Array.from({ length: 20 }, (_, index) => `客户营销规则${index}：客户需要按区域和行业筛选。`).join('\n'),
+  });
+  const runId = `run-search-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const response = await tool(app, project.id, 'search_documents', { query: '客户 营销' }, runId);
+  assert.equal(response.statusCode, 200, response.body);
+  const payload = response.json();
+  assert.ok(payload.hits.length <= 8);
+  assert.equal(new Set(payload.hits.map((hit: any) => `${hit.filename}:${hit.offset}`)).size, payload.hits.length);
+  assert.ok(payload.hits.every((hit: any) => Array.isArray(hit.terms) && hit.terms.length >= 1));
+  assert.equal(payload.truncated, true);
+});
+
+test('建模目标按结构化分段提交并由核心最终组装', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成结构化目标草稿', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-goal-draft-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const begun = await tool(app, project.id, 'begin_goal_draft', {
+    draft_id: 'goal-demo', change_group: 'goal_draft',
+  }, runId);
+  assert.equal(begun.statusCode, 200, begun.body);
+  for (const [section, summary] of [
+    ['objective', '识别营销机会'],
+    ['scope', '覆盖企业客户营销场景'],
+    ['constraints', '必须保留人工确认'],
+    ['outputs', '输出可追溯的营销建议'],
+  ] as const) {
+    const response = await tool(app, project.id, 'put_goal_section', {
+      draft_id: 'goal-demo', section,
+      data: { summary, evidence: ['user-decision:synthetic'] },
+    }, runId);
+    assert.equal(response.statusCode, 200, response.body);
+  }
+  const finalized = await tool(app, project.id, 'finalize_goal_draft', { draft_id: 'goal-demo' }, runId);
+  assert.equal(finalized.statusCode, 200, finalized.body);
+  const goal = await tool(app, project.id, 'read_file', { path: '.modeling/goal.md' }, runId);
+  assert.equal(goal.statusCode, 200, goal.body);
+  assert.match(goal.json().content, /## 目标/u);
+  assert.match(goal.json().content, /## 范围/u);
+  assert.match(goal.json().content, /识别营销机会/u);
+});

@@ -39,8 +39,10 @@ class Settings:
     llm_first_chunk_timeout_seconds: float = 120.0
     llm_idle_timeout_seconds: float = 60.0
     leader_output_tokens: int = 8_192
-    analyst_output_tokens: int = 4_096
+    analyst_output_tokens: int = 8_192
     script_output_tokens: int = 8_192
+    # 目标和流程需要生成完整的结构化候选，不能复用短摘要预算。
+    goal_output_tokens: int = 8_192
     summary_output_tokens: int = 1_024
     context_max_messages: int = 64
     context_window_messages: int = 48
@@ -85,8 +87,9 @@ class Settings:
                 "MODELING_LLM_IDLE_TIMEOUT_SECONDS", 60.0, 10.0, 300.0,
             ),
             leader_output_tokens=_integer("MODELING_LEADER_OUTPUT_TOKENS", 8_192, 1_024, 32_768),
-            analyst_output_tokens=_integer("MODELING_ANALYST_OUTPUT_TOKENS", 4_096, 1_024, 16_384),
+            analyst_output_tokens=_integer("MODELING_ANALYST_OUTPUT_TOKENS", 8_192, 2_048, 16_384),
             script_output_tokens=_integer("MODELING_SCRIPT_OUTPUT_TOKENS", 8_192, 2_048, 32_768),
+            goal_output_tokens=_integer("MODELING_GOAL_OUTPUT_TOKENS", 8_192, 2_048, 16_384),
             summary_output_tokens=_integer("MODELING_SUMMARY_OUTPUT_TOKENS", 1_024, 512, 4_096),
             context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
             context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
