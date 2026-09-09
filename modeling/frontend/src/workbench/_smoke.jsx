@@ -1032,7 +1032,7 @@ try {
   const html = renderToString(<ActivityLine />);
   if (!html.includes('role="progressbar"') || !html.includes('aria-valuenow="67"')
     || !html.includes('8/12 个处理检查点') || !html.includes('全文覆盖 67%')
-    || !html.includes('已 45 秒') || !html.includes('aria-live="polite"')
+    || html.includes('已 45 秒') || !html.includes('aria-live="polite"')
     || !html.includes('title="正在全文精读《工艺规程.docx》"')) {
     throw new Error('全文精读进度缺少真实计数、覆盖率或可访问性信息');
   }
@@ -1207,8 +1207,8 @@ try {
   const streamingHtml = renderToString(<App />);
   const activityCount = (streamingHtml.match(/class="wb-act"/g) || []).length;
   if (!activityHtml.includes('助手正在生成回复') || !activityHtml.includes('indeterminate')
-    || activityHtml.includes('aria-valuenow') || !/已 (?:4|5|6) 秒/u.test(activityHtml)
-    || activityHtml.includes('分钟')
+    || activityHtml.includes('aria-valuenow') || /已 (?:4|5|6) 秒/u.test(activityHtml)
+    || activityHtml.includes('分钟') || activityHtml.includes('运行时长')
     || activityCount !== 1 || !streamingHtml.includes('正在持续生成知识内容')
     || !streamingHtml.includes('wb-stream-cursor') || !streamingHtml.includes('<textarea')
     || streamingHtml.includes('aria-label="发送" disabled')

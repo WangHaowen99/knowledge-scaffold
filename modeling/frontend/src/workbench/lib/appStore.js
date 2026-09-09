@@ -420,7 +420,7 @@ export const actions = {
       if (!material) throw new Error('这处依据对应的资料已不在当前项目中');
       const [document, references] = await Promise.all([
         getMaterial(projectId, material.id),
-        getMaterialReferrers(projectId, material.id, location.anchor || ''),
+        getMaterialReferrers(projectId, material.id),
       ]);
       store.set((state) => ({
         leftTab: 'mat',

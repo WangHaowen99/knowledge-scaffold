@@ -261,11 +261,12 @@ function MaterialList() {
             const iconName = ['xlsx', 'xls', 'csv'].includes(ext) ? 'sheet' : 'file';
             return (
               <button key={m.id} className={`wb-mat${cur === m.id ? ' on' : ''}`}
-                onClick={() => actions.selectMaterial(m.id)} title={m.name}>
-                <Icon name={iconName} size={14} className="mat-icon" />
-                <span className={`dot dot-${m.st}`} />
-                <span className="mn">{m.name}</span>
-                <span className="mc">{m.st === 'stale' ? '无法解析' : `v${m.v} · 引用 ${m.refs}`}</span>
+                onClick={() => actions.selectMaterial(m.id)} title={m.name} aria-pressed={cur === m.id}>
+                <Icon name={iconName} size={17} className="mat-icon" />
+                <span className="mat-body">
+                  <span className="mn">{m.name}</span>
+                  <span className="mc"><span className={`dot dot-${m.st}`} />{m.st === 'stale' ? '无法解析' : `v${m.v} · 引用 ${m.refs}`}</span>
+                </span>
               </button>
             );
           })}
