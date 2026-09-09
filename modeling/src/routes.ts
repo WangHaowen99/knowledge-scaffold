@@ -50,6 +50,7 @@ import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { parsePackageArchive, renameImportedPackageArchive } from './workflow/package-import.js';
+import { publicKnowledgePackageFiles } from './workflow/package-file-scope.js';
 import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
@@ -2365,14 +2366,15 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         packageArtifacts.readPackageArchiveFiles(c.p.id, pv.revision.oid),
       ]);
       // 导出前仍执行确定性渲染格式校验，防止异常规格产出无效交付包。
-      const bad = runFormatChecks(pv.spec, snapshot.files).filter((f) => f.severity === '错误');
+      const exportFiles = publicKnowledgePackageFiles(snapshot.files);
+      const bad = runFormatChecks(pv.spec, exportFiles).filter((f) => f.severity === '错误');
       if (bad.length) {
         return reply.code(400).send({
           error: `导出中止：包格式校验未通过——${bad.map((f) => f.message).join('；')}`,
           findings: bad,
         });
       }
-      const zip = zipPackage(archive.files);
+      const zip = zipPackage(publicKnowledgePackageFiles(archive.files));
       reply.header('Content-Type', 'application/zip');
       reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.packageVersion}.zip"`);
       return reply.send(Buffer.from(zip));
