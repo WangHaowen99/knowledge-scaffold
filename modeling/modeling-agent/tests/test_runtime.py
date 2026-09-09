@@ -299,7 +299,9 @@ async def test_model_uses_stream_specific_timeouts(settings) -> None:
 
 
 async def test_model_output_budget_is_phase_specific(settings) -> None:
-    assert output_budget_for_phase(settings, "goal") == 1_024
+    assert output_budget_for_phase(settings, "goal") == 8_192
+    assert output_budget_for_phase(settings, "process") == 8_192
+    assert settings.analyst_output_tokens == 8_192
     assert output_budget_for_phase(settings, "knowledge") == 8_192
     assert output_budget_for_phase(settings, "validation") == 8_192
     model = build_model(settings, output_tokens=1_024)

@@ -71,6 +71,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 资料不足时主动 ask(kind='material_request')。允许口述、稍后补资料或跳过，不把文件当唯一出口。
 - 资料默认先轻量预判用途并等待用户确认。优先依据文件名、类型、目录和表结构；普通文档仅在依据不足时读取开头片段，不得为了用途预判自行全文精读。每份已解析资料都要提交文件级用途建议，表格还必须逐 Sheet 提交用途建议；全部确认前不得提交知识候选。用户在上传卡或自然语言中明确指定“建模目标依据”“数据 Schema”“通用业务依据”或“全文精读”时也要忠实记录，不能用模型判断覆盖用户决定。
 - 全部资料用途确认后先继续完成建模目标和业务流程；在流程确认前不得调用 upsert_object、bind_object_source 或 bind_object_sources。业务流程已确认且进入 knowledge 阶段后，先调用 get_schema_mapping_plan 读取完整台账，再按其中全部未闭环 Sheet 创建对象或绑定来源；完成后重新核对台账。每个确认为 object 的 Sheet 必须且只能归属一个对象；多个 Sheet 归属同一对象时必须明确唯一 primary 主表、extension 扩展表、统一主键和逐来源字段绑定。一对多明细或多对多中间表不得作为 extension，必须建成独立对象或关系。只有主键、主表或跨 Sheet 归属确有歧义时才向用户提问；台账 complete=true 前不得发起知识候选确认。
+- 生成或调整建模目标时，必须使用 begin_goal_draft、put_goal_section、finalize_goal_draft 分段提交 objective、scope、constraints、outputs 和 open_questions；不要一次性用 write_file 写入完整 .modeling/goal.md。每个分段只提交结构化 data，证据使用可定位的 material token 或 user-decision 说明；服务端校验通过并完成 finalize 后才算目标候选生成成功。
 - 用户要求全文精读一份或多份资料时，调用 read_documents_fully。只有工具返回每份资料完整度 100% 才能声称全文已读；该工具会对多文档和超长文档确定性切块、并发读取并保留检查点，不得改成串行 read_document 翻页或抽样阅读。
 - 指定为数据 Schema 的表格必须使用资料 ID 和 Sheet 名读取结构，直接采用 set_material_directive 返回的 objects 作为对象与属性事实；字段只能来自真实 Sheet 和原始列，类型和主键候选必须说明是推断。样例行只用于 Core 的确定性类型、唯一率和无约束来源时的主键回退，不得据此推断业务名称、别名或普通字段必填性。required 采用 Core 同步结果，不为此提问；遇到空表头、重名列、主键或合并单元格歧义时再用业务选项询问。
 - 两份以上资料的批量阅读、三个以上数据表的结构盘点或跨资料归纳必须交给 material_analyst；Leader 只接收其结构化结论和证据引用。Leader 仅为核对当前决策直接读取少量相关分页或至多两个表，不把整份长文档和成批表结构累积在主会话。
@@ -134,7 +135,7 @@ def output_budget_for_phase(settings: Settings, phase: str) -> int:
     if phase in {"validation", "increment"}:
         return settings.script_output_tokens
     if phase in {"goal", "process"}:
-        return settings.summary_output_tokens
+        return settings.goal_output_tokens
     return settings.leader_output_tokens
 
 

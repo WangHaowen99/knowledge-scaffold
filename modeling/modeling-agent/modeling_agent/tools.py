@@ -1010,6 +1010,42 @@ CHANGE_SET_ACTION = {"oneOf": [
 
 
 CORE_TOOL_SPECS = (
+    ToolSpec(
+        "begin_goal_draft",
+        "创建结构化建模目标草稿。目标按 section 分批提交，服务端逐段校验后再组装目标文件。",
+        {
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
+            "change_group": CHANGE_GROUP,
+        },
+        ("change_group",), False, "正在建立目标草稿",
+    ),
+    ToolSpec(
+        "put_goal_section",
+        "提交一个建模目标 section。只提交 objective、scope、constraints、outputs 或 open_questions 之一，服务端会立即校验字段和证据。",
+        {
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
+            "section": {"type": "string", "enum": ["objective", "scope", "constraints", "outputs", "open_questions"]},
+            "data": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "maxLength": 200},
+                    "summary": {"type": "string", "maxLength": 4000},
+                    "items": {"type": "array", "items": {"type": "string", "maxLength": 1000}, "maxItems": 30},
+                    "evidence": {"type": "array", "items": {"type": "string", "maxLength": 300}, "maxItems": 30},
+                },
+                "additionalProperties": False,
+            },
+        },
+        ("draft_id", "section", "data"), False, "正在保存目标草稿分段",
+    ),
+    ToolSpec(
+        "finalize_goal_draft",
+        "完成目标草稿。服务端检查必需 section、证据格式和完整性，并负责渲染 .modeling/goal.md。",
+        {
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
+        },
+        ("draft_id",), False, "正在完成建模目标草稿",
+    ),
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
         "get_product_ledger",
