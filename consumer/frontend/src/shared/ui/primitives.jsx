@@ -59,8 +59,16 @@ export function Table({ children, className = '', ...props }) {
   return <table className={`dt ${className}`.trim()} {...props}>{children}</table>;
 }
 
-export function Modal({ title, description, children, actions, onClose, wide = false,
-                       closeOnOverlayClick = true, closeOnEscape = true }) {
+export function Modal({
+  title,
+  description,
+  children,
+  actions,
+  onClose,
+  wide = false,
+  closeOnOverlayClick = true,
+  closeOnEscape = true,
+}) {
   const dialogRef = useRef(null);
   const closeRef = useRef(onClose);
   const closeOnOverlayClickRef = useRef(closeOnOverlayClick);
@@ -146,9 +154,21 @@ export function EmptyState({ title = '暂无数据', description, action, compac
 }
 
 const STATUS_CLASS = {
-  success: 'tag-ok', enabled: 'tag-ok', active: 'tag-ok', approved: 'tag-ok', completed: 'tag-ok', finished: 'tag-ok',
-  warning: 'tag-draft', queued: 'tag-draft', pending: 'tag-draft', awaiting: 'tag-draft',
-  error: 'tag-error', failed: 'tag-error', rejected: 'tag-error', disabled: 'tag-off', cancelled: 'tag-off',
+  success: 'tag-ok',
+  enabled: 'tag-ok',
+  active: 'tag-ok',
+  approved: 'tag-ok',
+  completed: 'tag-ok',
+  finished: 'tag-ok',
+  warning: 'tag-draft',
+  queued: 'tag-draft',
+  pending: 'tag-draft',
+  awaiting: 'tag-draft',
+  error: 'tag-error',
+  failed: 'tag-error',
+  rejected: 'tag-error',
+  disabled: 'tag-off',
+  cancelled: 'tag-off',
 };
 
 export function StatusTag({ status, children, className = '' }) {

@@ -28,7 +28,13 @@ const ConfigCenter = lazy(() => import('../features/settings/ConfigCenter'));
 const ObservabilityFeature = lazy(() => import('../features/observability/index.jsx'));
 const SolverCoordinationWorkbench = lazy(() => import('../features/solver/SolverCoordinationWorkbench'));
 
-const SURFACES = { chat: '新建对话', kb: '知识包工作台', solver: '求解器协同', config: '配置中心', observability: '可观测性' };
+const SURFACES = {
+  chat: '新建对话',
+  kb: '知识包工作台',
+  solver: '求解器协同',
+  config: '配置中心',
+  observability: '可观测性',
+};
 const EMPTY_TRACE_METADATA = Object.freeze({});
 
 export default function AppShell() {

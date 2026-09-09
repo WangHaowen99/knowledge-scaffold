@@ -72,8 +72,9 @@ function useDialogA11y(open, onCancel, busy) {
       if (!items.length) { event.preventDefault(); return; }
       const first = items[0];
       const last = items[items.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (
+        !event.shiftKey && document.activeElement === last
+      ) { event.preventDefault(); first.focus(); }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => {
