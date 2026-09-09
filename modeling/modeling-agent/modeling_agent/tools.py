@@ -1016,8 +1016,10 @@ CORE_TOOL_SPECS = (
         {
             "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
             "change_group": CHANGE_GROUP,
+            "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
         },
-        ("change_group",), False, "正在建立目标草稿",
+        ("change_group", "base_revision", "request_id"), False, "正在建立目标草稿",
     ),
     ToolSpec(
         "put_goal_section",
@@ -1025,26 +1027,26 @@ CORE_TOOL_SPECS = (
         {
             "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
             "section": {"type": "string", "enum": ["objective", "scope", "constraints", "outputs", "open_questions"]},
-            "data": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "maxLength": 200},
-                    "summary": {"type": "string", "maxLength": 4000},
-                    "items": {"type": "array", "items": {"type": "string", "maxLength": 1000}, "maxItems": 30},
-                    "evidence": {"type": "array", "items": {"type": "string", "maxLength": 300}, "maxItems": 30},
-                },
-                "additionalProperties": False,
-            },
+            "data": {"type": "object"},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+            "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
         },
-        ("draft_id", "section", "data"), False, "正在保存目标草稿分段",
+        ("draft_id", "section", "data", "request_id", "base_revision"), False, "正在保存目标草稿分段",
     ),
     ToolSpec(
         "finalize_goal_draft",
         "完成目标草稿。服务端检查必需 section、证据格式和完整性，并负责渲染 .modeling/goal.md。",
         {
             "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+            "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
         },
-        ("draft_id",), False, "正在完成建模目标草稿",
+        ("draft_id", "request_id", "base_revision"), False, "正在完成建模目标草稿",
+    ),
+    ToolSpec(
+        "get_goal_context",
+        "读取服务端生成的有界目标上下文，只返回结构化资料结论、约束、候选和证据引用，不返回长篇原文工具历史。",
+        {}, display="正在整理目标生成依据",
     ),
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(

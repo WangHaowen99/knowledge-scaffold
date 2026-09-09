@@ -845,6 +845,23 @@ CREATE TABLE IF NOT EXISTS agent_structured_mutation_receipts (
   PRIMARY KEY (project_id, mutation_id)
 );
 
+-- 结构化建模目标草稿：按项目/run/draft 持久化分段，支持服务重启后继续提交。
+CREATE TABLE IF NOT EXISTS agent_goal_drafts (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id        TEXT NOT NULL,
+  draft_id      TEXT NOT NULL,
+  group_id      TEXT NOT NULL,
+  base_revision TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'finalized', 'abandoned')),
+  sections_json TEXT NOT NULL DEFAULT '{}',
+  section_revisions_json TEXT NOT NULL DEFAULT '{}',
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id, draft_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_goal_drafts_project
+  ON agent_goal_drafts(project_id, updated_at DESC);
+
 -- 兼容旧版本的可选关系推荐进度结构；当前版本不以它作为建模门禁，也不要求写入。
 CREATE TABLE IF NOT EXISTS agent_schema_relation_suggestions (
   project_id              TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
