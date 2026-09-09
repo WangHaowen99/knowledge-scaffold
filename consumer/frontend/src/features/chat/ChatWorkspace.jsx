@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUpRight, BrainCircuit, Check, ChevronDown, Gauge, GitBranch, PanelRightClose, PanelRightOpen, ShieldCheck, Sparkles } from 'lucide-react';
+import {
+  ArrowDown, ArrowUpRight, BrainCircuit, Check, ChevronDown, Gauge, GitBranch,
+  PanelRightClose, PanelRightOpen, ShieldCheck, Sparkles,
+} from 'lucide-react';
 import { useAuthContext } from '../auth';
 import { packageDisplayLabel } from '../knowledge';
 import { authFetch } from '../../shared/api/auth';

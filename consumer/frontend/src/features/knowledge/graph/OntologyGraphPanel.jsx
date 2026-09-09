@@ -110,7 +110,8 @@ export default function OntologyGraphPanel({
     const focusable = () => Array.from(shell?.querySelectorAll(
       'button:not([disabled]), [role="button"][tabindex="0"], a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
     ) || []);
-    (focusable()[0] || shell)?.focus();
+    const [initialTarget] = focusable();
+    (initialTarget || shell)?.focus();
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -124,8 +125,7 @@ export default function OntologyGraphPanel({
         shell?.focus();
         return;
       }
-      const first = items[0];
-      const last = items.at(-1);
+      const [first, last] = [items[0], items.at(-1)];
       if (!shell?.contains(document.activeElement)) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();

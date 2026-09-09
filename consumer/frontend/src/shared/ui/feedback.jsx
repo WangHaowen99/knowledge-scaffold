@@ -58,8 +58,8 @@ function useDialogA11y(open, onCancel, busy) {
       'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
     ) || [])];
     const focusTimer = setTimeout(() => {
-      const preferred = dialog?.querySelector('[autofocus]') || focusable()[0];
-      preferred?.focus();
+      const [firstFocusable] = focusable();
+      (dialog?.querySelector('[autofocus]') || firstFocusable)?.focus();
     }, 0);
     const onKeyDown = (event) => {
       if (event.key === 'Escape' && !busyRef.current) {

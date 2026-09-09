@@ -88,7 +88,8 @@ export function Modal({
     const focusable = () => Array.from(dialog?.querySelectorAll(
       'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
     ) || []);
-    (focusable()[0] || dialog)?.focus();
+    const [initialTarget] = focusable();
+    (initialTarget || dialog)?.focus();
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         if (!closeOnEscapeRef.current) return;

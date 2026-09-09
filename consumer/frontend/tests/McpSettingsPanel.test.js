@@ -189,7 +189,7 @@ test('workspace switch never projects the previous ontology list into a loading 
     await flush();
 
     const createSection = document.querySelector('.settings-mcp-create');
-    const ontologySelect = createSection.querySelectorAll('select')[1];
+    const [, ontologySelect] = createSection.querySelectorAll('select');
     const createButton = createSection.querySelector('.btn.btn-p');
     assert.doesNotMatch(createSection.textContent, /Ontology A/);
     assert.equal(ontologySelect.disabled, true);

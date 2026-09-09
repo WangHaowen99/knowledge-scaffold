@@ -32,7 +32,13 @@ function BlockMeta({ status, durationMs }) {
   const duration = formatDurationMs(durationMs);
   return (
     <span className={`conversation-block-meta status-${status || 'idle'}`}>
-      {status === 'running' ? <Loader2 className="spin" size={11} /> : status === 'error' ? <AlertCircle size={11} /> : status === 'cancelled' ? <Circle size={11} /> : <Check size={11} />}
+      {status === 'running'
+        ? <Loader2 className="spin" size={11} />
+        : status === 'error'
+          ? <AlertCircle size={11} />
+          : status === 'cancelled'
+            ? <Circle size={11} />
+            : <Check size={11} />}
       {statusLabel(status)}{duration ? ` · ${duration}` : ''}
     </span>
   );

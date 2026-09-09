@@ -1,4 +1,7 @@
-import { Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch, Globe2, Wrench } from 'lucide-react';
+import {
+  Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database,
+  GitBranch, Globe2, Wrench,
+} from 'lucide-react';
 
 import {
   businessDataTraceLabel,

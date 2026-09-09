@@ -44,7 +44,7 @@ test('canonical messages keep latest terminal run recent and earlier runs histor
 });
 
 test('structured tool output lights exact nodes and an existing graph edge', () => {
-  const edge = graph.edges[1];
+  const [, edge] = graph.edges;
   const state = deriveGraphRuntimeState(graph, [{
     runId: 'run-edge',
     status: 'finished',

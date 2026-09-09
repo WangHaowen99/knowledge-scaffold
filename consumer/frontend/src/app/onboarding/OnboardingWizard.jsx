@@ -71,8 +71,8 @@ export function activateWizardFocus(card, onDismiss, options = {}) {
   const documentRef = options.documentRef || document;
   const resolveStyle = options.resolveStyle || ((element) => window.getComputedStyle(element));
   const previouslyFocused = documentRef.activeElement;
-  const initialTarget = getWizardFocusableElements(card, resolveStyle)[0] || card;
-  initialTarget.focus();
+  const [initialTarget] = getWizardFocusableElements(card, resolveStyle);
+  (initialTarget || card).focus();
 
   const onKeyDown = (event) => {
     if (event.key === 'Escape') {

@@ -105,7 +105,11 @@ export default function AuthProvider({ children }) {
     workspacesError,
     switchWorkspace,
     reloadWorkspaces: loadWorkspaces,
-  }), [auth, protectedDataReady, workspacesLoaded, workspacesLoading, workspaceDataReady, workspaces, wsRoles, workspaceId, defaultWorkspaceId, workspacesError, switchWorkspace, loadWorkspaces]);
+  }), [
+    auth, protectedDataReady, workspacesLoaded, workspacesLoading,
+    workspaceDataReady, workspaces, wsRoles, workspaceId, defaultWorkspaceId,
+    workspacesError, switchWorkspace, loadWorkspaces,
+  ]);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

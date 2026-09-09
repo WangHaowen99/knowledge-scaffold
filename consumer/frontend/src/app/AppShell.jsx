@@ -39,7 +39,11 @@ const EMPTY_TRACE_METADATA = Object.freeze({});
 
 export default function AppShell() {
   const auth = useAuthContext();
-  const { status, user, workspacesLoaded, workspacesLoading, workspaceDataReady, logout, isAdmin, workspaces, workspaceId, defaultWorkspaceId, workspacesError, reloadWorkspaces, switchWorkspace, can } = auth;
+  const {
+    status, user, workspacesLoaded, workspacesLoading, workspaceDataReady,
+    logout, isAdmin, workspaces, workspaceId, defaultWorkspaceId,
+    workspacesError, reloadWorkspaces, switchWorkspace, can,
+  } = auth;
   const [surface, setSurface] = useState('chat');
   const [cfgScope, setCfgScope] = useState('global');
   const [cfgSec, setCfgSec] = useState('llm');
@@ -162,8 +166,7 @@ export default function AppShell() {
       if (event.key !== 'Tab') return;
       const items = focusable();
       if (!items.length) return;
-      const first = items[0];
-      const last = items.at(-1);
+      const [first, last] = [items[0], items.at(-1)];
       if (!navigation?.contains(document.activeElement)) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();
