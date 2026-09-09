@@ -598,17 +598,19 @@ body { background: #f2f4f8; overflow: hidden; }
   transition: color .13s, background .13s, border-color .13s;
 }
 .mwr .rv-tree-dir:hover, .mwr .rv-file:hover { background: #eef2f7; color: var(--ink); }
-.mwr .rv-tree-dir.contains-active { color: var(--blue-dd); font-weight: 650; }
+.mwr .rv-tree-dir { min-height: 34px; margin-block: 2px; }
+.mwr .rv-tree-dir.contains-active { color: var(--blue-dd); font-weight: 650; background: #eef5fd; }
+.mwr .rv-tree-dir:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .mwr .rv-chevron { width: 12px; flex: none; color: #8d96a5; font-size: 18px; line-height: 1; transform: rotate(0); transition: transform .14s; }
 .mwr .rv-chevron.open { transform: rotate(90deg); }
 .mwr .rv-folder-mark { position: relative; width: 15px; height: 11px; flex: none; border-radius: 2px; background: #7ea9d9; }
 .mwr .rv-folder-mark::before { content: ''; position: absolute; left: 1px; top: -3px; width: 7px; height: 4px; border-radius: 2px 2px 0 0; background: #7ea9d9; }
 .mwr .rv-dir-name, .mwr .rv-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mwr .rv-dir-name { display: inline-flex; align-items: baseline; gap: 7px; font-size: 12.5px; }
-.mwr .rv-dir-name-en { color: var(--ink2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
-.mwr .rv-dir-name-zh { color: #65758a; font-size: 11px; font-weight: 620; }
+.mwr .rv-dir-name { display: inline-flex; flex: 1; align-items: baseline; gap: 7px; font-size: 12.5px; }
+.mwr .rv-dir-name-en { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+.mwr .rv-dir-name-zh { flex: none; color: #65758a; font-size: 11px; font-weight: 620; }
 .mwr .rv-tree-dir.contains-active .rv-dir-name-en, .mwr .rv-tree-dir.contains-active .rv-dir-name-zh { color: inherit; }
-.mwr .rv-dir-count { min-width: 20px; margin-left: auto; color: #8d96a5; font-size: 10.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.mwr .rv-dir-count { flex: none; min-width: 20px; margin-left: auto; padding: 1px 5px; border-radius: 99px; background: #eaf0f7; color: #65758a; font-size: 10.5px; text-align: center; font-variant-numeric: tabular-nums; }
 .mwr .rv-dir-modified, .mwr .rv-modified { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px #fff; }
 .mwr .rv-tree-children { margin-left: 13px; padding-left: 6px; border-left: 1px solid #dce3ed; }
 .mwr .rv-file { font-size: 12px; font-family: ui-monospace, monospace; line-height: 1.35; }

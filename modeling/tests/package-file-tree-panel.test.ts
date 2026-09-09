@@ -45,5 +45,7 @@ test('流程图目录在展示上归入操作，并显示英文与中文目录�
   assert.match(html, /diagrams/);
   assert.match(html, /流程图/);
   assert.match(html, /data-package-path="diagrams\/check\.mmd"/);
-  assert.equal(html.indexOf('operations'), html.indexOf('diagrams') > -1 ? html.indexOf('operations') : -1);
+  assert.match(html, /aria-level="1" aria-expanded="true" title="收起 operations"/);
+  assert.match(html, /aria-level="2" aria-expanded="true" title="收起 diagrams"/);
+  assert.match(html, /aria-level="3" aria-selected="true"[^>]+data-package-path="diagrams\/check\.mmd"/);
 });
