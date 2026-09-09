@@ -7,6 +7,7 @@ import copy
 import json
 import threading
 import uuid
+from builtins import BaseExceptionGroup
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass

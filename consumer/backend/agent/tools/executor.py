@@ -7,6 +7,7 @@ import json
 import threading
 import time
 import weakref
+from builtins import BaseExceptionGroup
 from collections.abc import Sequence
 from contextvars import copy_context
 from dataclasses import dataclass, field
