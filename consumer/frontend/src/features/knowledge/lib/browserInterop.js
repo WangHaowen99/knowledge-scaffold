@@ -65,7 +65,7 @@ export function useNativeFilePicker({ onSelect, onCancel } = {}) {
   }, [controller]);
 
   const handleChange = useCallback((event) => {
-    const file = event.target.files?.[0] || null;
+    const [file = null] = event.target.files || [];
     controller.handleChange(file);
     event.target.value = '';
   }, [controller]);

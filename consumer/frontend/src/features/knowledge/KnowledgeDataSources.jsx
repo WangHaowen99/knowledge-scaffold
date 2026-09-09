@@ -131,7 +131,8 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       if (!isCurrentRequest()) return false;
       if (!sourceResponse.ok) throw new Error(sourcePayload.detail || '加载数据源失败');
       const source = sourcePayload.source || null;
-      const nextProviderName = source?.provider || nextProviders[0]?.name || '';
+      const [firstProvider] = nextProviders;
+      const nextProviderName = source?.provider || firstProvider?.name || '';
       const nextProvider = nextProviders.find((item) => item.name === nextProviderName) || null;
       setConfigured(Boolean(sourcePayload.configured));
       setProvider(nextProviderName);

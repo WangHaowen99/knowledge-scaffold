@@ -172,7 +172,8 @@ export function normalizeGlobalModelConfig(section = {}) {
     : [];
   let mainRef = parseProfileRef(section.default_main_profile_ref);
   if (!mainRef || mainRef.scope !== 'global' || !profiles.some((profile) => profile.id === mainRef.id)) {
-    const fallback = profiles.find((profile) => profile.enabled) || profiles[0];
+    const [firstProfile] = profiles;
+    const fallback = profiles.find((profile) => profile.enabled) || firstProfile;
     mainRef = fallback ? { scope: 'global', id: fallback.id } : null;
   }
   let taskRef = parseProfileRef(section.default_task_profile_ref);

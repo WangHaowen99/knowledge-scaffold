@@ -50,7 +50,8 @@ export default function ConfigCenter({
   } = useAuthContext();
   const sc = SCOPES[scope] || SCOPES.global;
   const sections = sc.sections;
-  const active = sections.find((s) => s.id === section) || sections[0];
+  const [firstSection] = sections;
+  const active = sections.find((s) => s.id === section) || firstSection;
   const workspaceScopedSection = configSectionRequiresWorkspace(scope, active.id);
   const workspaceAccess = resolveWorkspaceAccess({
     workspaceDataReady,

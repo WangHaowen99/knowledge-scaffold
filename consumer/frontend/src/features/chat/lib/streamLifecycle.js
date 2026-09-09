@@ -62,7 +62,8 @@ export const formatElapsedMs = (elapsedMs) => {
 const startedAtFromRunId = (runId) => {
   const match = String(runId || '').trim().match(/^agentic-(\d{13})(?:-|$)/);
   if (!match) return null;
-  const timestamp = Number(match[1]);
+  const [, timestampText] = match;
+  const timestamp = Number(timestampText);
   return Number.isFinite(timestamp) ? timestamp : null;
 };
 

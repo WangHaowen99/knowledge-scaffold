@@ -65,7 +65,7 @@ export default function SystemConfigTransfer({
   };
 
   const readImportFile = async (event) => {
-    const file = event.target.files?.[0];
+    const [file] = event.target.files || [];
     if (!file || !canEdit) return;
     setFeedback(null);
     setPendingImport(null);

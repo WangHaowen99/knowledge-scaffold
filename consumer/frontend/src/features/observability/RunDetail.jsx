@@ -137,7 +137,7 @@ function CallChain({ rows }) {
   return (
     <div className="obs-call-chain">
       {rows.map((row) => {
-        const llm = row.llm_calls?.[0] || null;
+        const [llm = null] = Array.isArray(row.llm_calls) ? row.llm_calls : [];
         const tools = row.tools || [];
         return (
           <section className="obs-call-chain-group" key={`${row.caller}-${row.iteration}`}>

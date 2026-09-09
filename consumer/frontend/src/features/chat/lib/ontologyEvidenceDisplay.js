@@ -177,7 +177,8 @@ export const parseRuntimeEvidenceOutput = (value) => {
 
   const tagged = /<runtime-evidence>\s*([\s\S]*?)\s*<\/runtime-evidence>/.exec(source);
   if (!tagged) return null;
-  const metadata = parseJsonObject(tagged[1]);
+  const [, metadataSource] = tagged;
+  const metadata = parseJsonObject(metadataSource);
   const receipt = metadata?.runtime_evidence;
   if (!receipt || typeof receipt !== 'object') return null;
   return { receipt, payload: metadata };
@@ -232,7 +233,8 @@ export const collectOntologyEvidence = (segments = []) => {
     Number(right.relevance_score || 0) - Number(left.relevance_score || 0)
     || String(left.title || '').localeCompare(String(right.title || ''), 'zh-CN')
   ));
-  const primary = searches.find((search) => search.success) || searches[0];
+  const [firstSearch] = searches;
+  const primary = searches.find((search) => search.success) || firstSearch;
 
   return {
     searches,
