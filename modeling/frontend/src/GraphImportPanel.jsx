@@ -186,9 +186,9 @@ export default function GraphImportPanel({ projectId, dataSource }) {
   };
 
   const chooseFile = async (event) => {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files || []);
     event.target.value = '';
-    if (!file) return;
+    if (!files.length) return;
     const contextKey = importContextRef.current;
     const requestProjectId = projectId;
     const previousUploadId = preview?.id;
@@ -197,7 +197,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
       const outcome = await runGraphImportContextRequest({
         contextKey,
         isCurrent: (key) => importContextRef.current === key,
-        request: () => uploadGraphImport(requestProjectId, file),
+        request: () => uploadGraphImport(requestProjectId, files),
         onStale: (result) => result?.upload?.id
           ? cancelGraphImport(requestProjectId, result.upload.id)
           : undefined,
@@ -416,7 +416,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
         </div>
         <label className={`btn ${controlsDisabled ? 'disabled' : ''}`}>
           {activeRunId || hasRunningImport ? '后台导入执行中' : busy === 'upload' ? '上传解析中…' : preview ? '更换 Excel' : '选择 Excel'}
-          <input type="file" accept=".xlsx,.xls" hidden disabled={controlsDisabled} onChange={chooseFile} />
+          <input type="file" accept=".xlsx,.xls" multiple hidden disabled={controlsDisabled} onChange={chooseFile} />
         </label>
       </div>
 
