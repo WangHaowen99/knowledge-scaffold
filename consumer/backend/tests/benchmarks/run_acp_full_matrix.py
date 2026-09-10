@@ -26,7 +26,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -450,7 +450,7 @@ def _generate_summary_report(all_results: list[dict], run_dir: str, total_wall: 
     a = lines.append
     a("# ACP 全场景测试矩阵 汇总报告")
     a(f"")
-    a(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    a(f"> 生成时间: {datetime.now(timezone.utc).isoformat()}")
     a(f"> 工作空间: {WORKSPACE_ID} | 后端: {BASE_URL}")
     a(f"> ACP_MATRIX_SAMPLE_SIZE={EVAL_SAMPLE_SIZE_INPUT} | ACP_MATRIX_RUNS={RUNS_PER_QUESTION_INPUT}")
     a(f"")
@@ -635,7 +635,7 @@ def main():
         return
 
     # 创建运行目录
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(_RESULT_BASE_DIR, f"full_matrix_{ts}")
     os.makedirs(run_dir, exist_ok=True)
 

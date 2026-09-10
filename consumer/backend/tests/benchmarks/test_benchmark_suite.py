@@ -50,7 +50,7 @@ import sys
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 
 from lang import translate_text, get_lang_display_name, SUPPORTED_LANGUAGES, get_env, _LANG_DISPLAY_NAMES
 
@@ -1252,9 +1252,12 @@ def parse_sse_stream(response_text: str) -> dict:
                 event_ts = data.get("ts")
                 if event_ts is None and data.get("created_at"):
                     try:
-                        event_ts = datetime.fromisoformat(
+                        event_time = datetime.fromisoformat(
                             str(data["created_at"]).replace("Z", "+00:00")
-                        ).timestamp() * 1000
+                        )
+                        if event_time.tzinfo is None:
+                            event_time = event_time.replace(tzinfo=timezone.utc)
+                        event_ts = event_time.astimezone(timezone.utc).timestamp() * 1000
                     except ValueError:
                         event_ts = None
 
@@ -2189,7 +2192,7 @@ def _save_run_log(
     lines.append(f"{'='*60}")
     lines.append(f"问题: {sheet_name}")
     lines.append(f"第 {run_index} 次执行")
-    lines.append(f"开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"开始时间: {start_time.astimezone(timezone.utc).isoformat()}")
     lines.append(f"Session ID: {session_id}")
     lines.append(f"Run ID: {run_id}")
     lines.append(f"耗时: {format_duration(elapsed)} ({elapsed:.2f}s)")
@@ -2593,7 +2596,7 @@ def _find_backend_log() -> str | None:
         os.path.join(_TEST_DIR, "..", "backend", "logs"),
         os.path.join(_TEST_DIR, "..", "logs"),
     ]
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     for log_dir in log_candidates:
         if not os.path.isdir(log_dir):
             continue
@@ -2856,7 +2859,7 @@ def _generate_md_report(
 ):
     run_dir = _current_run_dir or os.path.join(_RESULT_BASE_DIR, "misc")
     os.makedirs(run_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filename = "benchmark_%s.md" % ts
     filepath = os.path.join(run_dir, filename)
 
@@ -2865,7 +2868,7 @@ def _generate_md_report(
     lines = []
     lines.append("# Benchmark 测试报告")
     lines.append("")
-    lines.append("> 自动生成于 %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    lines.append("> 自动生成于 %s" % datetime.now(timezone.utc).isoformat())
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -3289,7 +3292,7 @@ def _execute_single_run(
         generate_session_title(session_id, display_title)
         print(f"  Session ID: {session_id}")
 
-    start_time = datetime.now()
+    start_time = datetime.now(timezone.utc)
     start_ts = time.time()
 
     rd: dict = {
@@ -3641,7 +3644,7 @@ def run_tests():
     run_details_log: list[dict] = []  # 逐次执行详情，用于 Markdown 报告
     flywheel_wos_track: dict[str, dict] = {}
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     if get_env("BENCHMARK_RESULT_DIR"):
         run_dir = _RESULT_BASE_DIR
     else:

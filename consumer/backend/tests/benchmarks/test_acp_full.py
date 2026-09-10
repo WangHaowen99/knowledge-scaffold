@@ -34,7 +34,7 @@ import sys
 import time
 import uuid
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from dataclasses import dataclass, field
 
@@ -1220,7 +1220,7 @@ def main():
     print()
     print("  " + "=" * 64)
     print("    ACP 协议全端点自动化测试")
-    print("    " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    print("    " + datetime.now(timezone.utc).isoformat())
     print("  " + "=" * 64)
     print(f"    后端地址: {BASE_URL}")
     print(f"    工作空间: {WORKSPACE_ID}")
@@ -1333,11 +1333,12 @@ def main():
 
     result_dir = os.path.join(_SCRIPT_DIR, "result")
     os.makedirs(result_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = os.path.join(result_dir, f"acp_test_{timestamp}.json")
+    generated_at = datetime.now(timezone.utc)
+    filename_timestamp = generated_at.strftime("%Y%m%d_%H%M%S")
+    report_path = os.path.join(result_dir, f"acp_test_{filename_timestamp}.json")
 
     report = {
-        "timestamp": timestamp,
+        "timestamp": generated_at.isoformat(),
         "base_url": BASE_URL,
         "workspace_id": WORKSPACE_ID,
         "group_filter": group_filter,
