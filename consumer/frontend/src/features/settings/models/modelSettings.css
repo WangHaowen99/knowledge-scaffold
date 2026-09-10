@@ -36,10 +36,42 @@
 .mw-model-table-wrap {
   width: 100%;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid var(--border-subtle, var(--hair));
+  border-radius: var(--radius-sm, 8px);
 }
 
-.mw-model-table-wrap table {
-  min-width: 880px;
+.mw-model-table {
+  min-width: 840px;
+  table-layout: fixed;
+  background: var(--surface-card, var(--surface));
+}
+
+.mw-model-table .mw-model-col-identity { width: 170px; }
+.mw-model-table .mw-model-col-endpoint { width: 234px; }
+.mw-model-table .mw-model-col-secret { width: 76px; }
+.mw-model-table .mw-model-col-state { width: 62px; }
+.mw-model-table .mw-model-col-test { width: 132px; }
+.mw-model-table .mw-model-col-actions { width: 166px; }
+
+.mw-model-table th {
+  background: var(--surface-subtle, #f7f8fa);
+}
+
+.mw-model-table td {
+  height: 58px;
+  vertical-align: middle;
+}
+
+.mw-model-table td:nth-child(1),
+.mw-model-table td:nth-child(2) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mw-model-status-cell,
+.mw-model-status-cell .tag {
+  white-space: nowrap;
 }
 
 .mw-model-id,
@@ -57,7 +89,7 @@
 }
 
 .mw-model-actions .btn {
-  margin: 2px 4px 2px 0;
+  margin: 2px 2px 2px 0;
   padding: 4px 8px;
   font-size: 12px;
 }
@@ -95,16 +127,23 @@
 }
 
 /* 模型编辑弹窗使用默认 560px 宽度，标签列缩窄以让输入框获得更多空间 */
-.mw-model-form .fieldrow { padding: 4px 0; }
+.mw-model-form .fieldrow {
+  align-items: flex-start;
+  padding: 5px 0;
+}
 .mw-model-form .fieldrow .fl {
   width: 150px;
+  min-width: 0;
 }
 
 .mw-model-form .fieldrow > input,
 .mw-model-form .fieldrow > select {
+  width: 100%;
   min-width: 0;
+  min-height: 38px;
   max-width: 100%;
   flex: 1;
+  box-sizing: border-box;
 }
 
 .mw-model-form-grid {
@@ -117,15 +156,30 @@
 .mw-model-form-grid label {
   display: grid;
   gap: 5px;
+  min-width: 0;
   color: var(--ink2);
   font-size: 12px;
 }
 
+.mw-model-form-grid input[type='number'] {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  box-sizing: border-box;
+  padding: 7px 11px;
+  color: var(--control-fg);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  font: inherit;
+}
+
 .mw-model-form-grid .mw-model-check {
   display: flex;
+  grid-column: 1 / -1;
   align-items: center;
   align-self: end;
-  min-height: 36px;
+  min-height: 38px;
 }
 
 .mw-model-inline-error {
@@ -145,6 +199,14 @@
 }
 
 @media (max-width: 760px) {
+  .mw-model-form .fieldrow {
+    align-items: stretch;
+  }
+
+  .mw-model-form .fieldrow .fl {
+    width: auto;
+  }
+
   .mw-model-form-grid {
     grid-template-columns: 1fr;
   }

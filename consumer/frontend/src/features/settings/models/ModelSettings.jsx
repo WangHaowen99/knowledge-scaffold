@@ -201,7 +201,15 @@ function DeleteDialog({ title, profile, busy, onClose, onConfirm }) {
 function GlobalModelTable({ config, canEdit, busy, tests, inventory, onEdit, onTest, onDelete }) {
   return (
     <div className="mw-model-table-wrap">
-      <Table>
+      <Table className="mw-model-table">
+        <colgroup>
+          <col className="mw-model-col-identity" />
+          <col className="mw-model-col-endpoint" />
+          <col className="mw-model-col-secret" />
+          <col className="mw-model-col-state" />
+          <col className="mw-model-col-test" />
+          {canEdit && <col className="mw-model-col-actions" />}
+        </colgroup>
         <thead><tr><th>模型</th><th>模型厂商 / 接口</th><th>密钥</th><th>状态</th><th>连接测试</th>{canEdit && <th>操作</th>}</tr></thead>
         <tbody>
           {config.profiles.map((profile) => {
@@ -211,9 +219,9 @@ function GlobalModelTable({ config, canEdit, busy, tests, inventory, onEdit, onT
               <tr key={profile.id}>
                 <td><strong>{profile.name}</strong><span className="mw-model-id">{profile.id} · {profile.model}</span></td>
                 <td>{profile.provider}<span className="mw-model-id">{profile.base_url || '未填写接口地址'}</span></td>
-                <td><SecretStatus profile={profile} /></td>
-                <td><StatusTag status={profile.enabled ? 'enabled' : 'disabled'}>{profile.enabled ? '启用' : '停用'}</StatusTag></td>
-                <td><ConnectionStatus result={tests[profile.id]} profile={profile} /></td>
+                <td className="mw-model-status-cell"><SecretStatus profile={profile} /></td>
+                <td className="mw-model-status-cell"><StatusTag status={profile.enabled ? 'enabled' : 'disabled'}>{profile.enabled ? '启用' : '停用'}</StatusTag></td>
+                <td className="mw-model-status-cell"><ConnectionStatus result={tests[profile.id]} profile={profile} /></td>
                 {canEdit && <td className="mw-model-actions">
                   <button type="button" className="btn" disabled={busy} onClick={() => onTest(profile.id)}>测试</button>
                   <button type="button" className="btn" disabled={busy} onClick={() => onEdit(profile)}>编辑</button>
@@ -767,16 +775,24 @@ export function WorkspaceModelSettings({ workspaceId, canEdit = false, request =
       </div>
       <h4 className="mw-model-subtitle">空间私有模型</h4>
       {!draftProfiles.length ? <EmptyState title="当前空间暂无私有模型" description="可继续使用全局模型，或新增仅本空间可见的模型。" /> : (
-        <div className="mw-model-table-wrap"><Table>
+        <div className="mw-model-table-wrap"><Table className="mw-model-table">
+          <colgroup>
+            <col className="mw-model-col-identity" />
+            <col className="mw-model-col-endpoint" />
+            <col className="mw-model-col-secret" />
+            <col className="mw-model-col-state" />
+            <col className="mw-model-col-test" />
+            {canEdit && <col className="mw-model-col-actions" />}
+          </colgroup>
           <thead><tr><th>模型</th><th>模型厂商 / 接口</th><th>密钥</th><th>状态</th><th>连接测试</th>{canEdit && <th>操作</th>}</tr></thead>
           <tbody>{draftProfiles.map((profile) => {
             const decision = workspaceProfileDeleteDecision({ profileId: profile.id, profiles: draftProfiles, runtime, runtimeKnown });
             return <tr key={profile.id}>
               <td><strong>{profile.name}</strong><span className="mw-model-id">{profile.id} · {profile.model}</span></td>
               <td>{profile.provider}<span className="mw-model-id">{profile.base_url || '未填写接口地址'}</span></td>
-              <td><SecretStatus profile={profile} /></td>
-              <td><StatusTag status={profile.enabled ? 'enabled' : 'disabled'}>{profile.enabled ? '启用' : '停用'}</StatusTag></td>
-              <td><ConnectionStatus result={tests[profile.id]} profile={profile} /></td>
+              <td className="mw-model-status-cell"><SecretStatus profile={profile} /></td>
+              <td className="mw-model-status-cell"><StatusTag status={profile.enabled ? 'enabled' : 'disabled'}>{profile.enabled ? '启用' : '停用'}</StatusTag></td>
+              <td className="mw-model-status-cell"><ConnectionStatus result={tests[profile.id]} profile={profile} /></td>
               {canEdit && <td className="mw-model-actions">
                 <button type="button" className="btn" disabled={Boolean(busy)} onClick={() => runTest(draftProfiles, profile.id)}>测试</button>
                 <button type="button" className="btn" disabled={Boolean(busy)} onClick={() => setEditor({ profile })}>编辑</button>
