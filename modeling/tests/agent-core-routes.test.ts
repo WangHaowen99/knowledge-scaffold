@@ -24,6 +24,7 @@ const [
   { renderPackage },
   { parseExcel },
   { config },
+  { normalizePlanTargetKey },
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/projects/repo.js'),
@@ -36,6 +37,7 @@ const [
   import('../src/workflow/package-render.js'),
   import('../src/documents/parser.js'),
   import('../src/config.js'),
+  import('../src/agent/change-control.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -4244,4 +4246,87 @@ test('建模目标按结构化分段提交并由核心最终组装', async (t) =
   assert.match(goal.json().content, /## 目标/u);
   assert.match(goal.json().content, /## 范围/u);
   assert.match(goal.json().content, /识别营销机会/u);
+});
+
+test('create_* 动作省略 key 时按计划补齐，写错 key 则报错并给出计划登记的目标', async (t) => {
+  const project = createProject({ owner: 'alice', name: '计划目标标识对齐', runtime: 'agent' });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: 'plan-target-package',
+    name: '计划目标标识对齐',
+    description: '验证 create_* 动作与计划目标标识的对齐方式。',
+  });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'rule' }, runId);
+  assert.equal(listed.statusCode, 200, listed.body);
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '登记一条融资规则',
+    mode: 'generation',
+    expected_revision: listed.json().working_revision,
+    tasks: [{
+      client_key: 'procurement-rule',
+      title: '政府采购订单融资规则',
+      resource_kind: 'rule',
+      target_key: 'government-procurement-order-financing',
+      allowed_tools: ['create_rule'],
+      acceptance: '写入融资比例与金额阈值',
+    }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  const approved = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
+    payload: { approved: true },
+  });
+  assert.equal(approved.statusCode, 200, approved.body);
+
+  // 模型写了另一个 key：仍然拒绝，但必须把计划登记的目标交回去，让模型能自行改正。
+  const mismatched = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'plan-target-mismatch',
+    actions: [{
+      task_id: plan.tasks[0].id,
+      tool: 'create_rule',
+      arguments: { key: 'gov-procurement-financing' },
+    }],
+  }, runId);
+  assert.equal(mismatched.statusCode, 409, mismatched.body);
+  assert.equal(mismatched.json().code, 'CHANGE_SET_OUT_OF_SCOPE');
+  assert.equal(mismatched.json().expected_target, 'government-procurement-order-financing');
+  assert.ok(
+    mismatched.json().next.some((step: string) => step.includes('government-procurement-order-financing')),
+    `恢复提示没有给出计划登记的目标：${mismatched.body}`,
+  );
+
+  // 省略 key：按计划补齐，不再要求模型跨轮次复述自己写下的字符串。
+  const omitted = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'plan-target-filled',
+    actions: [{
+      task_id: plan.tasks[0].id,
+      tool: 'create_rule',
+      arguments: {},
+    }],
+  }, runId);
+  assert.notEqual(omitted.json().code, 'CHANGE_SET_OUT_OF_SCOPE', omitted.body);
+});
+
+test('计划 target_key 剥掉资源类型前缀，避免生成带冒号的文件名', () => {
+  // 模型常把 resource_id 的 `<kind>:<key>` 写法搬进计划的 target_key；
+  // 不归一化就会落成 rules/rule:xxx.md（Windows 上非法）。
+  assert.equal(normalizePlanTargetKey('rule', 'rule:marketing-decision-ipo'), 'marketing-decision-ipo');
+  assert.equal(normalizePlanTargetKey('metric', 'metric:customer-relationship-rating'), 'customer-relationship-rating');
+  assert.equal(normalizePlanTargetKey('operation', 'OPERATION:customer-intelligence-query'), 'customer-intelligence-query');
+  // 裸 key 原样保留
+  assert.equal(normalizePlanTargetKey('rule', 'marketing-decision-ipo'), 'marketing-decision-ipo');
+  // 不同类型的前缀不误剥
+  assert.equal(normalizePlanTargetKey('rule', 'metric:customer-relationship-rating'), 'metric:customer-relationship-rating');
+  // 只有前缀时保留原值，不产生空 key
+  assert.equal(normalizePlanTargetKey('rule', 'rule:'), 'rule:');
 });

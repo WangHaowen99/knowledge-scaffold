@@ -668,7 +668,11 @@ export class ChangeControlStore {
     }
     const tasks = this.taskRows(plan.id);
     const taskById = new Map(tasks.map((task) => [task.id, task]));
-    const actions = input.actions.map((action) => alignSameKindActionTask(tasks, taskById, action));
+    const actions = input.actions.map((action) => {
+      const aligned = alignSameKindActionTask(tasks, taskById, action);
+      const task = taskById.get(aligned.taskId);
+      return task ? fillPlannedActionTarget(task, aligned) : aligned;
+    });
     const included = new Set(actions.map((action) => action.taskId));
     if (included.size !== actions.length) throw invalid('actions.task_id', '同一批不能重复执行同一计划任务');
     for (const action of actions) {
@@ -974,7 +978,7 @@ function parseTasks(value: unknown, allowEmpty = false): TaskInput[] {
       clientKey,
       title: requiredText(raw.title, `tasks[${index}].title`, 300),
       resourceKind,
-      targetKey: requiredText(raw.target_key, `tasks[${index}].target_key`, 160),
+      targetKey: normalizePlanTargetKey(resourceKind, requiredText(raw.target_key, `tasks[${index}].target_key`, 160)),
       allowedTools: [...new Set(allowedTools)],
       dependsOn: stringArray(raw.depends_on, `tasks[${index}].depends_on`, 100),
       acceptance: requiredText(raw.acceptance, `tasks[${index}].acceptance`, 1_000),
@@ -1011,6 +1015,18 @@ function assertAcyclic(tasks: TaskInput[]) {
   for (const task of tasks) visit(task.clientKey);
 }
 
+/**
+ * 计划经用户批准，是目标资源标识的权威来源。create_* 动作省略 key 时按计划补齐，
+ * 免去模型跨轮次凭记忆复述自己写下的字符串——那是 CHANGE_SET_OUT_OF_SCOPE 的主要来源。
+ * 显式给了 key 仍然照常校验，避免掩盖模型真想改别的资源的情况。
+ */
+function fillPlannedActionTarget(task: TaskRow, action: ChangeSetActionInput): ChangeSetActionInput {
+  if (!action.tool.startsWith('create_')) return action;
+  if (action.tool.split('_').at(-1) !== task.resource_kind) return action;
+  if (String(action.arguments.key ?? '').trim()) return action;
+  return { ...action, arguments: { ...action.arguments, key: task.target_key } };
+}
+
 function assertActionTarget(task: TaskRow, action: ChangeSetActionInput) {
   const expectedKind = action.tool.split('_').at(-1);
   if (expectedKind !== task.resource_kind) {
@@ -1018,12 +1034,23 @@ function assertActionTarget(task: TaskRow, action: ChangeSetActionInput) {
       task_id: task.id, expected_kind: task.resource_kind, actual_kind: expectedKind,
     });
   }
-  const target = actionTarget(action);
+  const target = normalizePlanTargetKey(task.resource_kind, actionTarget(action));
   if (target !== task.target_key) {
     throw new ChangeControlError('CHANGE_SET_OUT_OF_SCOPE', `动作目标与计划不一致：${task.title}`, 409, {
       task_id: task.id, expected_target: task.target_key, actual_target: target,
     });
   }
+}
+
+/** 计划里的 target_key 必须是裸资源 key。模型常照搬 resource_id 的 `<kind>:<key>` 写法，
+ *  不剥掉前缀就会一路传到 create_* 的 key，最终落成 `rules/rule:xxx.md` 这种带冒号的文件名
+ *  （Windows 上非法）。patch_* 分支本来就按同样规则剥前缀，这里保持一致。 */
+export function normalizePlanTargetKey(resourceKind: string, rawTargetKey: string): string {
+  const value = rawTargetKey.trim();
+  const prefix = `${resourceKind}:`;
+  return value.toLowerCase().startsWith(prefix.toLowerCase())
+    ? value.slice(prefix.length).trim() || value
+    : value;
 }
 
 function actionTarget(action: ChangeSetActionInput): string {

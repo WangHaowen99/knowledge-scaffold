@@ -4325,14 +4325,9 @@ export class AgentCoreService {
     if (!selected.length) {
       throw new AgentCoreError('NO_FULL_READ_DOCUMENTS', '当前没有指定需要全文精读的资料', ['根据用户要求先设置资料的阅读方式'], 400);
     }
-    for (const document of selected) {
-      if (document.readingMode !== 'full') {
-        updateDocumentDirectives(document.id, {
-          purpose: document.purpose ?? 'auto',
-          readingMode: 'full',
-        });
-      }
-    }
+    // 点名精读是一次性动作，不改写资料的常驻阅读方式。
+    // 早先这里会把 readingMode 升级为 full，于是一次误触发的精读会永久改掉用户
+    // 已保存的 on_demand 设置，之后每一轮都按全文精读对待（见 #1）。
     const fullTables = new Map<string, DataDictTable[]>();
     const readableDocuments = await parallelMap(selected, 5, async (document) => {
       if (document.textContent) {
@@ -9277,15 +9272,24 @@ function domainKindLabel(kind: DomainKind): string {
   return ({ object: '对象', rule: '规则', operation: '操作', metric: '指标' } as const)[kind];
 }
 
+// 目标不一致时 details 里已经带着计划登记的正确值，必须把它变成可执行的下一步，
+// 否则模型只知道「不一致」，不知道该改成什么，只能放弃本轮。
+function changeControlRecovery(error: ChangeControlError): string[] {
+  if (error.details.requires_user_decision) return ['先通过问题卡获得用户决定，再修订原建模计划'];
+  const expected = String(error.details.expected_target ?? '');
+  if (error.code === 'CHANGE_SET_OUT_OF_SCOPE' && expected) {
+    return [`改用计划登记的目标标识「${expected}」重新提交这项修改；计划已经用户批准，不要改名或修订计划`];
+  }
+  return [];
+}
+
 function normalizeChangeControlError(error: unknown): AgentCoreError {
   if (error instanceof AgentCoreError) return error;
   if (error instanceof ChangeControlError) {
     return new AgentCoreError(
       error.code,
       error.message,
-      error.details.requires_user_decision
-        ? ['先通过问题卡获得用户决定，再修订原建模计划']
-        : [],
+      changeControlRecovery(error),
       error.statusCode,
       {
         error_class: error.statusCode === 409 ? 'conflict' : 'deterministic',
@@ -9320,7 +9324,11 @@ function normalizeDomainAgentError(error: unknown): AgentCoreError {
     return new AgentCoreError(
       error.code,
       error.message,
-      ['只修正错误 path 对应的动作后，使用同一业务语义重新提交'],
+      error.code === 'ITEM_HASH_CONFLICT'
+        // 字段级乐观锁是可选的：撞锁时最省事的恢复是直接省掉 expected_field_hash，
+        // 而不是把整份资源重读一遍（见 #32）。
+        ? ['省略该动作的 expected_field_hash 后按同一业务语义重新提交；对象级 expected_resource_hash 已提供并发保护，不需要重读整个资源']
+        : ['只修正错误 path 对应的动作后，使用同一业务语义重新提交'],
       error.code.endsWith('_CONFLICT') ? 409 : 400,
       {
         error_class: error.code.endsWith('_CONFLICT') ? 'conflict' : 'deterministic',
