@@ -3223,7 +3223,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         try {
           const ruleFindings = runRuleChecks(pv.spec, c.ctx.tables, packageIntentQuestions(pv.spec));
           const raw = await proposeOptimizations(
-            c.p, pv.spec, optimizableFailures, undefined, ruleFindings, diagnoses,
+            c.p, pv.spec, optimizableFailures, undefined, ruleFindings, eligibleDiagnoses,
           );
           const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
             .filter((item) => item.status !== 'rejected')
