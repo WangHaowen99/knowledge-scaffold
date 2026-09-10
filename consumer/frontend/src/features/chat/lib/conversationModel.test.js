@@ -101,7 +101,7 @@ test('system cancellation notice remains a standalone non-turn message', () => {
 
 test('conversation blocks keep source segment order and add lifecycle last', () => {
   const model = buildConversationViewModel([assistantMessage]);
-  const turn = model.turns[0];
+  const [turn] = model.turns;
 
   assert.equal(model.kind, 'conversation');
   assert.equal(turn.runId, 'run-1');
@@ -150,7 +150,7 @@ test('solver tool segments project progress and authoritative result separately'
     }],
   }]);
 
-  const block = model.turns[0].blocks[0];
+  const [block] = model.turns[0].blocks;
   assert.equal(block.kind, 'solver');
   assert.deepEqual(block.progress.map((item) => item.phase), ['solve', 'verify']);
   assert.equal(block.solverResult.authoritative, true);
@@ -197,8 +197,8 @@ test('deterministic artifact segments normalize download metadata', () => {
 test('conversation keys and timing are deterministic across rebuilds', () => {
   const first = buildConversationViewModel([assistantMessage]);
   const second = buildConversationViewModel([assistantMessage]);
-  const firstTurn = first.turns[0];
-  const secondTurn = second.turns[0];
+  const [firstTurn] = first.turns;
+  const [secondTurn] = second.turns;
 
   assert.equal(firstTurn.key, secondTurn.key);
   assert.deepEqual(

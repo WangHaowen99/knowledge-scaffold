@@ -57,14 +57,16 @@ export function importSystemConfig(config, request = authFetch) {
 export function systemConfigTemplateFileName(contentDisposition = '') {
   const extendedMatch = String(contentDisposition).match(/filename\*=UTF-8''([^;]+)/i);
   if (extendedMatch) {
+    const [, encodedName = ''] = extendedMatch;
     try {
-      return decodeURIComponent(extendedMatch[1].trim().replace(/^"|"$/g, ''));
+      return decodeURIComponent(encodedName.trim().replace(/^"|"$/g, ''));
     } catch {
       // Fall through to the regular filename parser.
     }
   }
   const regularMatch = String(contentDisposition).match(/filename\s*=\s*"?([^";]+)"?/i);
-  return regularMatch?.[1]?.trim() || 'system_config.template.json';
+  const [, regularName = ''] = regularMatch || [];
+  return regularName.trim() || 'system_config.template.json';
 }
 
 export async function fetchSystemConfigTemplate(request = authFetch) {

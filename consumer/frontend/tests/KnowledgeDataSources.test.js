@@ -232,11 +232,12 @@ test('a successful save notifies its original scope after the user switches pack
       });
     }
     const match = /^\/agentic\/ontologies\/(onto-[12])\/data-source$/.exec(url);
-    if (match && method === 'GET') {
-      getCalls.set(match[1], (getCalls.get(match[1]) || 0) + 1);
+    const [, ontologyKey] = match || [];
+    if (ontologyKey && method === 'GET') {
+      getCalls.set(ontologyKey, (getCalls.get(ontologyKey) || 0) + 1);
       return jsonResponse({
         configured: true,
-        source: { provider: 'postgres', config: { dsn: `postgres://${match[1]}` } },
+        source: { provider: 'postgres', config: { dsn: `postgres://${ontologyKey}` } },
       });
     }
     if (url === '/agentic/ontologies/onto-1/data-source' && method === 'PUT') {

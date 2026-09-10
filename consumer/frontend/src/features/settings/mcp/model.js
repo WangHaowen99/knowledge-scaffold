@@ -134,7 +134,8 @@ export function resolveMcpOntologySelection({ ontologies = [], scopes = MCP_SCOP
   const eligible = ontologies.filter((ontology) => mcpOntologyEligibility(ontology, scopes).eligible);
   const normalizedCurrentId = text(currentId);
   if (eligible.some((ontology) => ontology.id === normalizedCurrentId)) return normalizedCurrentId;
-  return eligible.length === 1 ? eligible[0].id : '';
+  const [onlyEligible] = eligible;
+  return eligible.length === 1 ? onlyEligible.id : '';
 }
 
 export function createdMcpToken(payload = {}) {

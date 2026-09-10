@@ -242,7 +242,7 @@ test('nested subagent groups attach under parent subagent child', () => {
   });
 
   assert.equal(state.streamSegments.length, 1);
-  const rootGroup = state.streamSegments[0];
+  const [rootGroup] = state.streamSegments;
   assert.equal(rootGroup.groupId, 'group-root');
   assert.deepEqual(rootGroup.taskOrder, ['sub-root']);
 
@@ -250,7 +250,7 @@ test('nested subagent groups attach under parent subagent child', () => {
   assert.equal(rootChild.taskId, 'root-task');
   assert.equal(rootChild.childGroups.length, 1);
 
-  const nestedGroup = rootChild.childGroups[0];
+  const [nestedGroup] = rootChild.childGroups;
   assert.equal(nestedGroup.groupId, 'group-child');
   assert.equal(nestedGroup.status, 'completed');
   assert.equal(nestedGroup.finished, true);
@@ -513,7 +513,7 @@ test('completed tools with an empty error field do not gain a fallback error', (
     error: '',
   }, 2));
 
-  const tool = state.streamSegments[0];
+  const [tool] = state.streamSegments;
   assert.equal(tool.toolStatus, 'completed');
   assert.equal(tool.meta.error, '');
 
@@ -717,9 +717,9 @@ test('cancelled turns recursively close unfinished subagent tools as cancelled',
     }, 6),
   ].forEach((event) => { state = applyPublicEvent(state, event); });
 
-  const group = state.streamSegments[0];
+  const [group] = state.streamSegments;
   const child = group.children['cancel-agent'];
-  const tool = child.events[0];
+  const [tool] = child.events;
   assert.equal(state.status, 'aborted');
   assert.equal(group.status, 'cancelled');
   assert.equal(group.finished, true);
@@ -854,7 +854,7 @@ test('solver events resume by event_seq and retain only public authoritative fie
     fact_snapshot_digest: 'sha256:synthetic',
   }, 5));
 
-  const segment = state.streamSegments[0];
+  const [segment] = state.streamSegments;
   assert.equal(segment.meta.solver_events.length, 3);
   assert.deepEqual(segment.meta.solver_events.map((event) => event.event_seq), [2, 3, 4]);
   assert.equal(segment.meta.solver_result.authoritative, true);
@@ -953,7 +953,7 @@ test('streamed agent output is grouped under its runtime iteration', () => {
     iterationMetrics: state.iterationMetrics,
     streamSegments: state.streamSegments,
   }]);
-  const iteration = trace.turns[0].iterations[0];
+  const [iteration] = trace.turns[0].iterations;
   assert.equal(iteration.metrics.iteration, 2);
   assert.deepEqual(iteration.children.map((node) => node.type), ['content']);
   assert.equal(
@@ -998,7 +998,7 @@ test('public async runtime tool payload uses the contracted name field', () => {
     iterationMetrics: state.iterationMetrics,
     streamSegments: state.streamSegments,
   }]);
-  const tool = trace.turns[0].iterations[0].children[0];
+  const [tool] = trace.turns[0].iterations[0].children;
   assert.equal(tool.toolName, 'ontology_context');
   assert.deepEqual(tool.input, { resource: 'root' });
   assert.equal(tool.outputSize, 128);

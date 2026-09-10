@@ -159,6 +159,7 @@ def _format_proposals_block(actionable: List[Aggregate]) -> str:
 
 @dataclass
 class PatcherConfig:
+    """Thresholds and scheduling options for the proposal patcher worker."""
     min_occurrences: int = 3
     min_applied: int = 2
     max_rejection: int = 0

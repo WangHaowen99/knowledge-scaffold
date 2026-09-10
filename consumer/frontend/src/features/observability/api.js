@@ -26,8 +26,9 @@ export async function requestObservabilityDownload(
   }
   const contentDisposition = response.headers?.get?.('content-disposition') || '';
   const match = contentDisposition.match(/filename="?([^";]+)"?/i);
+  const [, fileName = ''] = match || [];
   return {
     blob: await response.blob(),
-    fileName: match?.[1] || '',
+    fileName,
   };
 }

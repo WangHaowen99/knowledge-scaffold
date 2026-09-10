@@ -58,6 +58,7 @@ _EVOLVED_OPS_RELPREFIX = "operations/"
 
 
 def _utc_now() -> str:
+    """Return the current UTC timestamp without sub-second precision."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
@@ -297,6 +298,7 @@ def _normalize_eol(text: str) -> str:
 
 
 def _line_diff_counts(original: str, evolved: str) -> Tuple[int, int]:
+    """Count added and removed lines in a normalized text diff."""
     diff = list(
         difflib.unified_diff(
             original.splitlines(),

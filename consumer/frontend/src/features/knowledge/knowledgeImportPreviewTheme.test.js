@@ -12,7 +12,8 @@ const baseCss = readFileSync(join(currentDir, '../../shared/styles/base.css'), '
 function parseHexColor(value) {
   const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
   assert.ok(match, `expected a six-digit hex color, received ${value}`);
-  return match.slice(1).map((channel) => Number.parseInt(channel, 16) / 255);
+  const [, red, green, blue] = match;
+  return [red, green, blue].map((channel) => Number.parseInt(channel, 16) / 255);
 }
 
 function relativeLuminance(value) {
@@ -27,7 +28,7 @@ function contrastRatio(first, second) {
 }
 
 function readThemeToken(block, token) {
-  const value = new RegExp(`--${token}:\\s*(#[0-9a-f]{6})\\b`, 'i').exec(block)?.[1];
+  const [, value] = new RegExp(`--${token}:\\s*(#[0-9a-f]{6})\\b`, 'i').exec(block) || [];
   assert.ok(value, `missing --${token} hex value`);
   return value;
 }

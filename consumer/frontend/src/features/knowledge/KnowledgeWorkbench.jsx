@@ -157,7 +157,10 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   const versions = [...(pkg?.versions || [])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   const activeVersion = pkg?.active_version || pkg?.version || '';
   const parts = sel.file?.split('/') || [];
-  const editableFolder = parts.length === 2 && ['objects', 'operations'].includes(parts[0]) ? parts[0] : '';
+  const [folderName] = parts;
+  const editableFolder = parts.length === 2 && ['objects', 'operations'].includes(folderName)
+    ? folderName
+    : '';
   const canEditFile = canManage && viewingActive && isMd && Boolean(editableFolder);
   const uploadFolder = ['objects', 'operations'].includes(sel.dir) ? sel.dir : '';
 

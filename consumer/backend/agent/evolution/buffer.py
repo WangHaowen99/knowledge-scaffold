@@ -54,14 +54,17 @@ def _safe_segment(value: str) -> str:
 
 
 def _normalize_operation_key(operation_key: Optional[str]) -> Optional[str]:
+    """Normalize an operation key while preserving an empty value as None."""
     return str(operation_key or "").strip() or None
 
 
 def _storage_operation_key(operation_key: Optional[str]) -> str:
+    """Return the on-disk operation key, including the ontology-level sentinel."""
     return _normalize_operation_key(operation_key) or ONTOLOGY_LEVEL_OPERATION_KEY
 
 
 def _semantic_operation_key(storage_operation_key: str) -> Optional[str]:
+    """Convert a storage key back to its semantic operation key."""
     normalized = str(storage_operation_key or "").strip()
     if normalized == ONTOLOGY_LEVEL_OPERATION_KEY:
         return None
@@ -69,6 +72,7 @@ def _semantic_operation_key(storage_operation_key: str) -> Optional[str]:
 
 
 def _thread_lock_for(path: Path) -> RLock:
+    """Return the process-local lock associated with an operation directory."""
     key = str(path)
     with _THREAD_LOCKS_GUARD:
         lock = _THREAD_LOCKS.get(key)
@@ -80,6 +84,7 @@ def _thread_lock_for(path: Path) -> RLock:
 
 @contextmanager
 def _file_lock(op_dir: Path):
+    """Acquire the process and, when available, filesystem lock for an op dir."""
     op_dir.mkdir(parents=True, exist_ok=True)
     sentinel = op_dir / ".lock"
     tlock = _thread_lock_for(op_dir)

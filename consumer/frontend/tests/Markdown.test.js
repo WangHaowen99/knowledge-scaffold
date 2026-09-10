@@ -34,11 +34,11 @@ test('GFM tables render without adding a focus stop before overflow is measured'
 });
 
 test('table styles prefer readable wrapping before local horizontal scrolling', () => {
-  const markdownRule = uiCss.match(/\.mwr \.mdv\s*\{([^}]*)\}/)?.[1] || '';
-  const shellRule = uiCss.match(/\.mwr \.mdv-table-shell\s*\{([^}]*)\}/)?.[1] || '';
-  const scrollRule = uiCss.match(/\.mwr \.mdv-table-scroll\s*\{([^}]*)\}/)?.[1] || '';
-  const tableRule = uiCss.match(/\.mwr \.mdv-table-scroll table\s*\{([^}]*)\}/)?.[1] || '';
-  const headerRule = uiCss.match(/\.mwr \.mdv th\s*\{([^}]*)\}/)?.[1] || '';
+  const [, markdownRule = ''] = uiCss.match(/\.mwr \.mdv\s*\{([^}]*)\}/) || [];
+  const [, shellRule = ''] = uiCss.match(/\.mwr \.mdv-table-shell\s*\{([^}]*)\}/) || [];
+  const [, scrollRule = ''] = uiCss.match(/\.mwr \.mdv-table-scroll\s*\{([^}]*)\}/) || [];
+  const [, tableRule = ''] = uiCss.match(/\.mwr \.mdv-table-scroll table\s*\{([^}]*)\}/) || [];
+  const [, headerRule = ''] = uiCss.match(/\.mwr \.mdv th\s*\{([^}]*)\}/) || [];
 
   assert.match(markdownRule, /min-width:\s*0/);
   assert.match(markdownRule, /max-width:\s*100%/);

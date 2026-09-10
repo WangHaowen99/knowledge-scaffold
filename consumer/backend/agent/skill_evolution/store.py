@@ -35,6 +35,7 @@ class PendingTaskExists(RuntimeError):
 
 
 def _utc_now() -> str:
+    """Return the current UTC timestamp without sub-second precision."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 

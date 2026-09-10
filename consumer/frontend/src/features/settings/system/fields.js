@@ -65,7 +65,8 @@ export function systemSettingsModuleKey(section, importRevision = 0) {
 export function nextSystemSettingsTab(section, key) {
   const normalized = normalizePanelSection(section);
   const index = SYSTEM_SETTINGS_PANEL_SECTIONS.indexOf(normalized);
-  if (key === 'Home') return SYSTEM_SETTINGS_PANEL_SECTIONS[0];
+  const [firstSection] = SYSTEM_SETTINGS_PANEL_SECTIONS;
+  if (key === 'Home') return firstSection;
   if (key === 'End') return SYSTEM_SETTINGS_PANEL_SECTIONS.at(-1);
   if (key === 'ArrowRight' || key === 'ArrowDown') {
     return SYSTEM_SETTINGS_PANEL_SECTIONS[(index + 1) % SYSTEM_SETTINGS_PANEL_SECTIONS.length];

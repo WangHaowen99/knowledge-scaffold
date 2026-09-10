@@ -147,7 +147,8 @@ export function reconcileSkillTaskSelection(tasks, selectedId = '') {
   const approval = list.find((task) => task.status === 'completed');
   if (approval) return approval.task_id;
   const active = list.find(isActiveSkillTask);
-  return active?.task_id || list[0]?.task_id || '';
+  const [firstTask] = list;
+  return active?.task_id || firstTask?.task_id || '';
 }
 
 function splitLines(value) {

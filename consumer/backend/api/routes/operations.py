@@ -72,14 +72,17 @@ operations_router = APIRouter(prefix="/agentic/operations")
 
 
 def _aggregate_to_dict(agg) -> Dict[str, Any]:
+    """Serialize one proposal aggregate for the operations API."""
     return agg.to_dict()
 
 
 def _proposal_to_dict(proposal) -> Dict[str, Any]:
+    """Serialize one proposal record for the operations API."""
     return proposal.to_dict()
 
 
 def _read_meta(meta_path: Path) -> Dict[str, Any]:
+    """Read staged-operation metadata, returning an empty object on failure."""
     if not meta_path.exists():
         return {}
     try:
@@ -89,10 +92,12 @@ def _read_meta(meta_path: Path) -> Dict[str, Any]:
 
 
 def _sha256_text(text: str) -> str:
+    """Return the SHA-256 digest of UTF-8 encoded text."""
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 def _parse_statuses(request: Request, default: set) -> set:
+    """Parse the optional comma-separated status filter from a request."""
     raw_filter = (request.query_params.get("status") or "").strip()
     if raw_filter.lower() == "all":
         return {"pending", "promoted", "rejected", "applied"}
@@ -108,6 +113,7 @@ def _operation_summary(
     operation_key: str,
     aggregates: List[Any],
 ) -> Dict[str, Any]:
+    """Aggregate proposal counts and timing metadata for one operation."""
     status_counts: Dict[str, int] = {}
     kind_counts: Dict[str, int] = {}
     source_counts: Dict[str, int] = {}
@@ -667,6 +673,7 @@ def _reject_staged(
     workspace_id: str,
     reject_proposals: bool,
 ):
+    """Build the response that rejects a staged operation patch."""
     paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
     if paths is None:
         return JSONResponse(

@@ -80,7 +80,7 @@ const messages = [
 
 test('trace groups assistant work by turn and run while preserving root order', () => {
   const trace = buildTraceViewModel(messages);
-  const turn = trace.turns[0];
+  const [turn] = trace.turns;
 
   assert.equal(trace.kind, 'trace');
   assert.equal(trace.turns.length, 1);
@@ -99,7 +99,7 @@ test('trace groups assistant work by turn and run while preserving root order', 
 test('trace and conversation share stable source keys', () => {
   const conversation = buildConversationViewModel(messages);
   const trace = buildTraceViewModel(conversation);
-  const turn = trace.turns[0];
+  const [turn] = trace.turns;
 
   assert.equal(turn.sourceKey, conversation.turns[0].key);
   assert.deepEqual(
@@ -113,9 +113,10 @@ test('trace and conversation share stable source keys', () => {
 });
 
 test('nested subagent events keep task and event order with typed tool progress', () => {
-  const subagentNode = buildTraceViewModel(messages).turns[0].nodes[1];
-  const groupNode = subagentNode.children[0];
-  const taskNode = groupNode.children[0];
+  const [firstTurn] = buildTraceViewModel(messages).turns;
+  const subagentNode = firstTurn.nodes[1];
+  const [groupNode] = subagentNode.children;
+  const [taskNode] = groupNode.children;
 
   assert.equal(groupNode.subtype, 'group');
   assert.equal(taskNode.subagentId, 'sub-1');
@@ -155,7 +156,7 @@ test('trace tool nodes forward full-output references and web result metadata', 
       },
     }],
   }]);
-  const node = trace.turns[0].nodes[0];
+  const [node] = trace.turns[0].nodes;
 
   assert.equal(node.outputRef, '/agentic/sessions/s1/runs/run-web/tool-outputs/web-output');
   assert.equal(node.outputSize, 2048);
@@ -167,7 +168,7 @@ test('trace tool nodes forward full-output references and web result metadata', 
 });
 
 test('trace exposes stable iteration metrics separately from ordered event nodes', () => {
-  const turn = buildTraceViewModel(messages).turns[0];
+  const [turn] = buildTraceViewModel(messages).turns;
 
   assert.equal(turn.iterations.length, 1);
   assert.equal(turn.iterations[0].key, `${turn.key}:iteration:2`);
@@ -209,8 +210,8 @@ test('status nodes carry errors and terminal time without a second derivation', 
     meta: { error: 'provider timeout' },
     streamSegments: [],
   }]);
-  const turn = trace.turns[0];
-  const status = turn.nodes[0];
+  const [turn] = trace.turns;
+  const [status] = turn.nodes;
 
   assert.equal(status.type, 'status');
   assert.equal(status.status, 'error');
@@ -241,7 +242,9 @@ test('nested child groups remain between events in chronological order', () => {
     id: 'nested-order', role: 'assistant', runId: 'nested-order-run', status: 'finished',
     streamSegments: [segment],
   }]);
-  const taskNode = trace.turns[0].nodes[0].children[0].children[0];
+  const [rootNode] = trace.turns[0].nodes;
+  const [groupNode] = rootNode.children;
+  const [taskNode] = groupNode.children;
 
   assert.deepEqual(taskNode.children.map((node) => node.subtype), ['event', 'group', 'event']);
   assert.deepEqual(taskNode.children.map((node) => node.text), ['before', 'nested-between', 'after']);
@@ -267,7 +270,7 @@ test('trace attaches tools to their declared iterations', () => {
       { iteration: 2, status: 'completed', totalElapsedMs: 200, ts: 200 },
     ],
   }]);
-  const turn = trace.turns[0];
+  const [turn] = trace.turns;
 
   assert.deepEqual(turn.iterations.map((iteration) => iteration.children[0].toolName), ['first_tool', 'second_tool']);
   assert.deepEqual(turn.iterations.map((iteration) => iteration.children[0].parentKey), turn.iterations.map((iteration) => iteration.key));
@@ -296,7 +299,7 @@ test('trace parent span id overrides conflicting legacy iteration keys', () => {
       { iteration: 2, spanId: 'bbbbbbbbbbbbbbbb', status: 'completed', totalElapsedMs: 200, ts: 200 },
     ],
   }]);
-  const turn = trace.turns[0];
+  const [turn] = trace.turns;
 
   assert.deepEqual(
     turn.iterations.map((iteration) => iteration.children[0].toolName),
@@ -326,7 +329,7 @@ test('trace attaches narrative output to iterations from persisted segment metad
       { iteration: 2, status: 'completed', totalElapsedMs: 200, ts: 200 },
     ],
   }]);
-  const turn = trace.turns[0];
+  const [turn] = trace.turns;
 
   assert.deepEqual(
     turn.iterations.map((iteration) => iteration.children.map((node) => node.type)),

@@ -83,7 +83,7 @@ test('wizard dialog exposes modal and labelled semantics', () => {
   assert.match(markup, /role="dialog"/);
   assert.match(markup, /aria-modal="true"/);
   assert.match(markup, /tabindex="-1"/);
-  const labelledBy = markup.match(/aria-labelledby="([^"]+)"/)?.[1];
+  const [, labelledBy] = markup.match(/aria-labelledby="([^"]+)"/) || [];
   assert.ok(labelledBy);
   assert.ok(markup.includes(`id="${labelledBy}"`));
 });
