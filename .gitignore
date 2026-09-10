@@ -66,3 +66,4 @@ consumer/.onto-auth/**
 # Local isolated worktrees
 /.worktrees/
 .gstack/
+PERF-MODELING-ISSUES.md
