@@ -571,6 +571,7 @@ def test_create_app_runs_solver_recovery_at_startup(monkeypatch):
         def __init__(self, service):
             self.service = service
             self.started = False
+            self.timeout_seconds = None
             workers.append(self)
 
         def start(self):

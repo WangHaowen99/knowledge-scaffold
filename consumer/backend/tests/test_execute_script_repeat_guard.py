@@ -1,4 +1,5 @@
 import json
+
 from types import SimpleNamespace
 
 from agent.tools.base import ToolContext

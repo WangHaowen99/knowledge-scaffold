@@ -171,8 +171,8 @@ def test_all_terminal_statuses_seal_after_persist_and_fanout():
             contexts[status] = context
             stream = event_bus.stream(context.run_id)
 
-            async def collect_live_events():
-                return [event async for event in stream]
+            async def collect_live_events(event_stream=stream):
+                return [event async for event in event_stream]
 
             collector = asyncio.create_task(collect_live_events())
             for _ in range(100):

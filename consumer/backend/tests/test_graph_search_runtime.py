@@ -25,6 +25,7 @@ def _collect(stream):
 class _StaticResolver:
     def __init__(self, mapping):
         self.mapping = mapping
+        self.entity = None
 
     def resolve(self, entity):
         self.entity = entity

@@ -50,8 +50,11 @@ logger = get_logger("evolution.patcher")
 
 
 class StagedMergeOutput(BaseModel):
-    """Structured output from the merge LLM. Keeping it simple — the model
-    rewrites the full markdown and we diff/replace at the file level."""
+    """Structured output from the merge model for one staged patch.
+
+    The model rewrites the full markdown; the service compares and replaces it
+    at file level after human review.
+    """
 
     new_markdown: str = Field(
         ...,

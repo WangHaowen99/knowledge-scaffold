@@ -137,6 +137,9 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
     registry.reset_operation_patcher()
 
     class _Buffer:
+        def __init__(self):
+            self.listener = None
+
         def set_change_listener(self, listener):
             self.listener = listener
 
@@ -145,6 +148,7 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
             self.buffer = buffer
             self.config = config
             self.updated = []
+            self.cancelled = False
 
         def on_buffer_change(self, *args, **kwargs):
             del args, kwargs

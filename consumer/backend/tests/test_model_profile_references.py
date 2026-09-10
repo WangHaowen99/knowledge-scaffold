@@ -424,7 +424,11 @@ def test_runtime_config_reader_rejects_file_replaced_between_metadata_and_open(
             replacement_path.replace(config_path)
             swapped = True
         if original_secure_open is None:
-            return os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            return os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
         return original_secure_open(path)
 
     monkeypatch.setattr(

@@ -154,7 +154,8 @@ def test_manager_single_flight_builds_one_generation_and_persists_transitions(
     manager_a = EvidenceIndexManager(runtime)
     manager_b = EvidenceIndexManager(runtime)
     original_build = EvidenceIndexManager._build_generation
-    original_write = importlib.import_module("ontology.evidence.manager")._atomic_json_write
+    manager_module = importlib.import_module("ontology.evidence.manager")
+    original_write = manager_module._atomic_json_write
     entered = threading.Event()
     release = threading.Event()
     calls = 0

@@ -24,8 +24,11 @@ logger = get_logger("direct_execution.router")
 
 
 class OperationDirectRouter:
-    """Determines whether the current user request can be handled by the
-    direct script execution branch, bypassing the AgentLoopEngine."""
+    """Determine whether a request can use direct script execution.
+
+    The router bypasses the AgentLoopEngine only when the selected operation
+    and runtime requirements are satisfied.
+    """
 
     def __init__(self, config: DirectExecutionConfig) -> None:
         self._config = config

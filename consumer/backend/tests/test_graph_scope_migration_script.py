@@ -48,6 +48,7 @@ class _FakeSession:
 class _FakeDriver:
     def __init__(self):
         self.session_obj = _FakeSession()
+        self.database = None
 
     def session(self, database):
         self.database = database

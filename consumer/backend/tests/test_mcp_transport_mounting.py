@@ -876,6 +876,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
         )
 
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
+
     async def execute_chat_tool(_args, *, scope, progress_callback=None):
         assert progress_callback is None
         return {

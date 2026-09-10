@@ -148,6 +148,7 @@ def test_query_path_allows_empty_value_inputs(monkeypatch, include_action):
     }
     if include_action:
         args["action"] = "query"
+
     outcome = _execute(BusinessDataSearchTool(),
         args=args,
         context=_make_context(),
@@ -162,6 +163,7 @@ def test_query_path_allows_non_array_or_null_value_inputs(monkeypatch, value_inp
     action defaults to 'query' — they are treated as omitted."""
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
+
     outcome = _execute(BusinessDataSearchTool(),
         args={
             "ontology_id": "demo",

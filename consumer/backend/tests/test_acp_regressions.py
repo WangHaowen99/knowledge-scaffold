@@ -224,6 +224,7 @@ def test_protocol_preflight_uses_orchestrator_for_runtime_container(monkeypatch)
 
     class _ProductionRuntime(RuntimeContainer):
         def __init__(self):
+            super().__init__()
             self.short_io = _InlinePool()
 
     monkeypatch.setattr(

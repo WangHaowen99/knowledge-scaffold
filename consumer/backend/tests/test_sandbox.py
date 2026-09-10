@@ -670,6 +670,10 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
 
 def test_deterministic_runtime_attestation_rejects_mismatched_image(monkeypatch):
     class MismatchedRegistry:
+        def __init__(self):
+            self.command = None
+            self.kwargs = {}
+
         def exec_in_sandbox(self, _sandbox_id, command, **kwargs):
             self.command = command
             self.kwargs = kwargs

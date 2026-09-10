@@ -706,8 +706,7 @@ class ProposalBuffer:
         return out[: max(0, int(k))]
 
     def iter_op_dirs(self) -> List[tuple]:
-        """Return all (workspace_id, ontology_id, operation_key) triples currently on disk.
-        Used by the patcher sweep loop and the pending-badge endpoint."""
+        """Return all persisted workspace, ontology, and operation triples."""
         out: List[tuple] = []
         if not self._root.exists():
             return out

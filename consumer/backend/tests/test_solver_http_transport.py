@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+
 import pytest
 
 from solver_coordination.connectors.endpoint_policy import EndpointPolicy

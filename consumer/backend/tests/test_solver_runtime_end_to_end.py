@@ -52,6 +52,9 @@ def _capability_fingerprint(payload):
 class _FixtureOnlyBackend:
     """Connector-neutral backend double for platform orchestration tests."""
 
+    def __init__(self):
+        self.problem = None
+
     def capabilities(self, *, binding=None):
         return _CONNECTOR_CAPABILITIES
 

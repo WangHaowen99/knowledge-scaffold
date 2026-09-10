@@ -76,7 +76,12 @@ def _stream_response(*frames):
     lines = []
     for frame in frames:
         lines.extend(["data: {}".format(json.dumps(frame)), ""])
-    response.iter_lines = lambda decode_unicode=True: iter(lines)
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter(lines)
+
+    response.iter_lines = iter_lines
     return response
 
 
@@ -380,8 +385,10 @@ def test_mindsdb_anonymous_401_is_not_replayed_with_empty_credentials():
 
 def test_mindsdb_native_event_sequence_uses_shared_contract():
     response = _Response({})
-    response.iter_lines = lambda decode_unicode=True: iter(
-        [
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter([
             'data: {"type":"start","prompt":"starting"}',
             "",
             'data: {"output":"final answer"}',
@@ -390,8 +397,8 @@ def test_mindsdb_native_event_sequence_uses_shared_contract():
             "",
             'data: {"type":"end"}',
             "",
-        ]
-    )
+        ])
+    response.iter_lines = iter_lines
     session = _Session(response)
     provider = MindsDBProvider(
         _connection(
@@ -510,14 +517,16 @@ def test_mindsdb_chunk_events_preserve_pre_refactor_branch_priority_and_content(
 
 def test_mindsdb_query_without_final_is_not_reported_as_success():
     response = _Response({})
-    response.iter_lines = lambda decode_unicode=True: iter(
-        [
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter([
             'data: {"type":"start","prompt":"starting"}',
             "",
             'data: {"type":"end"}',
             "",
-        ]
-    )
+        ])
+    response.iter_lines = iter_lines
     session = _Session(response)
     sleep_calls = []
     provider = MindsDBProvider(
@@ -539,8 +548,10 @@ def test_mindsdb_query_without_final_is_not_reported_as_success():
 
 def test_mindsdb_native_error_chunk_is_failure_and_redacts_secrets():
     response = _Response({})
-    response.iter_lines = lambda decode_unicode=True: iter(
-        [
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter([
             (
                 'data: {"error":"token-x and password-x rejected by '
                 'https://provider.example.com"}'
@@ -548,8 +559,8 @@ def test_mindsdb_native_error_chunk_is_failure_and_redacts_secrets():
             "",
             'data: {"type":"end"}',
             "",
-        ]
-    )
+        ])
+    response.iter_lines = iter_lines
     session = _Session(response)
     sleep_calls = []
     provider = MindsDBProvider(

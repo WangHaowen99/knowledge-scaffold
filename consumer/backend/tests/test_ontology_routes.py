@@ -2935,10 +2935,10 @@ def test_combined_prepared_steps_roll_back_the_in_progress_filesystem_step(
         )
         replace_calls = 0
 
-        def fail_one_replace(source, target):
+        def fail_one_replace(source, target, failure_at=fail_at):
             nonlocal replace_calls
             replace_calls += 1
-            if replace_calls == fail_at:
+            if replace_calls == failure_at:
                 raise OSError("synthetic replace failure")
             return original_replace(source, target)
 

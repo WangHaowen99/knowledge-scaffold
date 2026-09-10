@@ -30,8 +30,7 @@ _SKILL_EVOLUTION_DIR_NAME = "skill-evolution"
 
 
 class PendingTaskExists(RuntimeError):
-    """Raised when a pending task already exists for an ontology. Used by
-    create_task_if_no_pending to make the gate-4 check-then-act atomic."""
+    """Raised when an ontology already has a pending evolution task."""
 
 
 def _utc_now() -> str:

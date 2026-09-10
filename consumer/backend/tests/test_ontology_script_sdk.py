@@ -113,6 +113,9 @@ def test_script_client_delegates_query_sql_and_events(monkeypatch):
             query=True, query_sql=True, native_streaming=False, probe=True
         )
 
+        def __init__(self):
+            self.closed = False
+
         def query(self, question):
             return ProviderResult(success=True, data={"question": question})
 

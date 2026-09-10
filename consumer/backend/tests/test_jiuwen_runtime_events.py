@@ -522,7 +522,11 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             )
         ]
         adapter = PublicEventAdapter(include_trace=False, max_text_length=64)
-        drafts = [draft for event in runtime_events if (draft := adapter.adapt(event))]
+        drafts = []
+        for event in runtime_events:
+            draft = adapter.adapt(event)
+            if draft:
+                drafts.append(draft)
 
         self.assertEqual(
             [draft.event_type for draft in drafts],
@@ -1100,11 +1104,12 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 "turn.finished",
             ],
         )
-        drafts = [
-            draft
-            for event in events
-            if (draft := PublicEventAdapter(include_trace=False).adapt(event))
-        ]
+        drafts = []
+        adapter = PublicEventAdapter(include_trace=False)
+        for event in events:
+            draft = adapter.adapt(event)
+            if draft:
+                drafts.append(draft)
         self.assertEqual(
             [draft.event_type for draft in drafts],
             [

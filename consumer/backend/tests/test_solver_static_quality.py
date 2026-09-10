@@ -340,11 +340,11 @@ def test_solver_exception_handlers_do_not_repeat_parent_and_child_types():
                 node.type, ast.Tuple
             ):
                 continue
-            resolved = [
-                (name, EXCEPTION_TYPES[name])
-                for item in node.type.elts
-                if (name := _qualified_name(item)) in EXCEPTION_TYPES
-            ]
+            resolved = []
+            for item in node.type.elts:
+                name = _qualified_name(item)
+                if name in EXCEPTION_TYPES:
+                    resolved.append((name, EXCEPTION_TYPES[name]))
             for index, (left_name, left_type) in enumerate(resolved):
                 for right_name, right_type in resolved[index + 1 :]:
                     if issubclass(left_type, right_type) or issubclass(
