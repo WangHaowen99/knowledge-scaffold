@@ -7,7 +7,7 @@ import re
 import time
 import glob
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_PATH = os.path.join(_SCRIPT_DIR, "test_benchmark_suite.py")
@@ -76,7 +76,7 @@ _all_results: list[dict] = []
 
 def _init_run_dir() -> str:
     global _run_dir, _report_path
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     _run_dir = os.path.join(_RESULT_BASE_DIR, f"multilang_{ts}")
     os.makedirs(os.path.join(_run_dir, "logs"), exist_ok=True)
     _report_path = os.path.join(_run_dir, "report.md")
@@ -347,7 +347,7 @@ def _parse_output(text: str, lang_code: str, lang_name: str, wall_seconds: float
 def _save_lang_log(lang_code: str, lang_name: str, output: str, result: dict):
     log_dir = os.path.join(_run_dir or _RESULT_BASE_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(log_dir, f"benchmark_{lang_code}_{ts}.log")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"{'='*80}\n")
@@ -449,7 +449,7 @@ def _print_final_report(results: list[dict]):
 
     a("# 多语言基准测试 汇总报告")
     a(f"")
-    a(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    a(f"> 生成时间: {datetime.now(timezone.utc).isoformat()}")
     a(f"")
     a(f"| 指标 | 值 |")
     a(f"|------|-----|")
@@ -642,7 +642,8 @@ def _print_final_report(results: list[dict]):
     print(f"\n\n{report_text}")
 
     save_path = _report_path or os.path.join(
-        _RESULT_BASE_DIR, f"multilang_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        _RESULT_BASE_DIR,
+        f"multilang_report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.md",
     )
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     with open(save_path, "w", encoding="utf-8") as f:
@@ -893,7 +894,7 @@ def main():
     if "--replay" in sys.argv:
         print(f"\n{'#'*80}")
         print(f"  多语言基准测试 — 从日志重新生成报告")
-        print(f"  时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  时间: {datetime.now(timezone.utc).isoformat()}")
         print(f"{'#'*80}")
         results = _replay_from_logs()
         if not results:
@@ -908,7 +909,7 @@ def main():
     print(f"\n{'#'*80}")
     print(f"  多语言基准测试 — 自动循环执行")
     print(f"  语言序列: {' -> '.join(f'{n}({c})' for c, n in LANGUAGES)}")
-    print(f"  开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  开始时间: {datetime.now(timezone.utc).isoformat()}")
     print(f"  结果目录: {run_dir}")
     print(f"{'#'*80}")
 

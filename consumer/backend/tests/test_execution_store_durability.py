@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -190,6 +191,9 @@ def test_fresh_store_marks_queued_and_running_turns_service_restarted(tmp_path):
 
     execution_path = storage_dir / session_id / "execution.json"
     durable = json.loads(execution_path.read_text(encoding="utf-8"))
+    durable["created_at"] = "2026-01-02T03:04:05"
+    durable["updated_at"] = "2026-01-02T11:04:05+08:00"
+    durable["turns"][0]["start_time"] = "2026-01-02T03:04:06"
     durable["turns"][0]["status"] = "running"
     durable["turns"][1]["status"] = "queued"
     execution_path.write_text(json.dumps(durable), encoding="utf-8")
@@ -204,6 +208,13 @@ def test_fresh_store_marks_queued_and_running_turns_service_restarted(tmp_path):
         "SERVICE_RESTARTED",
     ]
     assert all(turn["end_time"] for turn in history["turns"])
+    assert history["created_at"] == "2026-01-02T03:04:05+00:00"
+    assert history["updated_at"].endswith("+00:00")
+    assert history["turns"][0]["start_time"] == "2026-01-02T03:04:06+00:00"
+    assert all(
+        datetime.fromisoformat(turn["end_time"]).tzinfo == timezone.utc
+        for turn in history["turns"]
+    )
     assert all(
         turn["final_output"]["error_code"] == "SERVICE_RESTARTED"
         for turn in history["turns"]
@@ -213,6 +224,8 @@ def test_fresh_store_marks_queued_and_running_turns_service_restarted(tmp_path):
         "SERVICE_RESTARTED",
         "SERVICE_RESTARTED",
     ]
+    assert persisted["created_at"] == "2026-01-02T03:04:05+00:00"
+    assert persisted["turns"][0]["start_time"] == "2026-01-02T03:04:06+00:00"
 
 
 def test_awaiting_input_checkpoint_survives_restart_and_remains_consumable(tmp_path):
