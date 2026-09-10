@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import agent.direct_execution.service as service_module
+import agent.direct_execution.service as direct_execution_service_module
 
 from agent.direct_execution.contracts import (
     AwaitingInput,
@@ -827,13 +827,13 @@ def test_preflight_routes_malformed_package_to_fail_closed_execution(
     _patch_manifest(monkeypatch, ontology_dir)
 
     def fail_package_load(*_args, **_kwargs):
-        raise service_module.DeterministicPackageError(
+        raise direct_execution_service_module.DeterministicPackageError(
             "invalid_deterministic_package",
             "invalid package",
         )
 
     monkeypatch.setattr(
-        service_module,
+        direct_execution_service_module,
         "load_deterministic_operation_specs",
         fail_package_load,
     )
@@ -2472,7 +2472,11 @@ def test_artifact_staging_cleans_only_stale_owned_directories(tmp_path, monkeypa
     recent.mkdir()
     unrelated.mkdir()
     (stale / "payload.txt").write_text("stale", encoding="utf-8")
-    stale_timestamp = time.time() - service_module.STALE_ARTIFACT_STAGING_SECONDS - 1
+    stale_timestamp = (
+        time.time()
+        - direct_execution_service_module.STALE_ARTIFACT_STAGING_SECONDS
+        - 1
+    )
     os.utime(stale, (stale_timestamp, stale_timestamp))
     os.utime(leased, (stale_timestamp, stale_timestamp))
     DeterministicExecutionService._refresh_artifact_staging_lease(leased)
@@ -2505,7 +2509,11 @@ def test_artifact_staging_lease_uses_windows_compatible_utime_fallback(
             raise NotImplementedError("synthetic Windows behavior")
         return original_utime(path, *args, **kwargs)
 
-    monkeypatch.setattr(service_module.os, "utime", windows_compatible_utime)
+    monkeypatch.setattr(
+        direct_execution_service_module.os,
+        "utime",
+        windows_compatible_utime,
+    )
 
     DeterministicExecutionService._refresh_artifact_staging_lease(staging_dir)
 

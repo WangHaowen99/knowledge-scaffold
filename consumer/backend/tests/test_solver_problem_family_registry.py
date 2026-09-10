@@ -187,16 +187,16 @@ def test_binary_adapter_rejects_ambiguous_or_non_binary_decision_space_shape(
 
 def test_task2_public_surface_is_available_from_solver_coordination_package():
     from solver_coordination import (
-        FactSnapshotBuilder,
-        ProblemFamilyRegistry,
+        FactSnapshotBuilder as ExportedFactSnapshotBuilder,
+        ProblemFamilyRegistry as ExportedProblemFamilyRegistry,
         ProblemIRCompiler,
         SolverInputBinder,
     )
 
     assert SolverInputBinder is not None
-    assert FactSnapshotBuilder is not None
+    assert ExportedFactSnapshotBuilder is not None
     assert ProblemIRCompiler is not None
-    assert ProblemFamilyRegistry is not None
+    assert ExportedProblemFamilyRegistry is not None
 
 
 def test_legacy_candidate_service_dispatches_through_injected_registry():

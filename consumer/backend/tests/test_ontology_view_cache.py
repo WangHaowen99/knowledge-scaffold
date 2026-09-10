@@ -691,7 +691,6 @@ def test_tree_route_uses_one_manifest_snapshot_for_cache_version_and_directory(
     tmp_path,
 ):
     from api.routes import ontologies as routes
-    import json
     import ontology.view_cache as view_cache_module
 
     ontology_dir = tmp_path / "ontology-race"
