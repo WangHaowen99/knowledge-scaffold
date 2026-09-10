@@ -252,7 +252,8 @@ function LiveAsk({ interaction }) {
               setFollowUpOption(null);
               setSelectedOption(option);
             }}>
-            <b>{userFacingText(option.label)}</b><span>{userFacingText(option.description)}</span>
+            <b>{userFacingText(option.label)}</b>
+            <span>{userFacingText(option.description)}{option.route === 'evaluation' ? '（将直接打开评测界面）' : ''}</span>
           </button>
         ))}
         {material && (
@@ -288,6 +289,9 @@ function LiveAsk({ interaction }) {
             event.preventDefault();
             if (selectedOption) {
               const value = selectedOption.value || selectedOption.label;
+              // 选项声明了 route 就真的跳过去，否则用户点的是一句「我这就去」，
+              // 界面却一动不动，只把这句话发回给助手（见 #39）。
+              if (selectedOption.route === 'evaluation') actions.openEvaluation();
               void submit({ value, selected: [value] });
               return;
             }

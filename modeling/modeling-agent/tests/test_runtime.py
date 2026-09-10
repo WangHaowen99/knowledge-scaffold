@@ -5450,7 +5450,7 @@ def test_loop_detection_distinguishes_stuck_from_quiet() -> None:
     other = LiveRun(run_id="run_o", project_id="project_o", token="token")
     for _ in range(3):
         _record_turn_output(other, "让我重新理解用户的意思。")
-    assert "完全相同的内容" in _detect_loop(other)
+    assert "重复同样的内容" in _detect_loop(other)
 
     # 空输出不参与判定
     blank = LiveRun(run_id="run_b", project_id="project_b", token="token")
@@ -5530,3 +5530,47 @@ def test_batch_purpose_confirmation_settles_pending_cards(tmp_path) -> None:
 
     # 幂等：没有挂起项时返回空，不报错
     assert store.settle_interactions_resolved_elsewhere(run.id, reason="再来一次") == []
+
+
+def test_loop_detection_catches_paraphrased_repeats() -> None:
+    """#39：真实的打转是「换个说法再说一遍」，只比对逐字相同会全部漏掉。"""
+    from modeling_agent.service import LiveRun, _detect_loop, _record_turn_output
+
+    live = LiveRun(run_id="run_p", project_id="project_p", token="token")
+    _record_turn_output(live, "请您前往评测界面完成以下两步：录入真实场景用例、配置数据源。")
+    _record_turn_output(live, "请您在评测界面完成以下两项：录入真实场景用例，以及配置数据源。")
+    _record_turn_output(live, "请您到评测界面完成这两步：录入真实场景用例、配置数据源即可。")
+    assert "重复同样的内容" in _detect_loop(live)
+
+    # 内容真的不同就不该判为打转
+    other = LiveRun(run_id="run_q", project_id="project_q", token="token")
+    _record_turn_output(other, "已同步 9 个物理对象，接下来补全字段业务语义。")
+    _record_turn_output(other, "字段语义补全完成，现在开始创建营销决策规则。")
+    _record_turn_output(other, "规则创建完成，接下来生成业务操作和确定性脚本。")
+    assert _detect_loop(other) == ""
+
+
+def test_awaiting_user_action_settles_the_turn() -> None:
+    """#39：剩余事项只能由用户在别的界面完成时，应结束本轮而不是反复宣告。"""
+    from modeling_agent.service import LiveRun, _absorb_awaiting_user
+
+    live = LiveRun(run_id="run_w", project_id="project_w", token="token")
+    assert live.situation.awaiting_user_action is False
+
+    _absorb_awaiting_user(live, {
+        "gate": "ready_for_eval",
+        "awaitingUser": True,
+        "blockers": ["先在评测界面录入至少 1 条用户真实场景用例", "先在评测界面完成数据源配置"],
+    })
+    assert live.situation.awaiting_user_action is True
+    assert "录入" in live.situation.awaiting_user_reason
+
+    # 阻塞项被清掉后恢复正常轮转
+    _absorb_awaiting_user(live, {"gate": "ready_for_eval", "awaitingUser": False, "blockers": []})
+    assert live.situation.awaiting_user_action is False
+    assert live.situation.awaiting_user_reason == ""
+
+    # 不带该字段的结果不改变状态
+    live.situation.awaiting_user_action = True
+    _absorb_awaiting_user(live, {"gate": "releasable", "blockers": []})
+    assert live.situation.awaiting_user_action is True

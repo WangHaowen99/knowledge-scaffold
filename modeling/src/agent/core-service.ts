@@ -212,7 +212,14 @@ const CHANGE_CONTROL_TOOLS = new Set([
 const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
 const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
 const MANAGED_SCRIPT_SOURCE_PATH = /^scripts\/[A-Za-z0-9_.-]+\.py$/u;
-type GateResult = { pass: boolean; blockers: string[]; warnings?: string[] };
+type GateResult = {
+  pass: boolean;
+  blockers: string[];
+  warnings?: string[];
+  /** 只剩用户要在别的界面自己完成的事情。助手再宣告多少遍也推不动，
+   *  应当结束本轮等待外部事件，而不是一轮轮重复同一段话（见 #39）。 */
+  awaitingUser?: boolean;
+};
 type GateResults = Record<string, GateResult>;
 
 const GATE_LABELS: Record<string, string> = {
@@ -7875,14 +7882,21 @@ export class AgentCoreService {
     ]);
     const dataSource = getProjectDataSource(workspace.project_id);
     const runningImport = getRunningEvaluationDatabaseImportRun(workspace.project_id);
+    // 这两项只能由用户在评测界面完成，助手无权代劳
+    const userSideBlockers = [
+      ...(manualCases.length ? [] : ['先在评测界面录入至少 1 条用户真实场景用例，Agent 不能从知识包生成']),
+      ...(dataSource ? [] : ['先在评测界面完成数据源配置；判断类问题可显式选择“无数据源”']),
+    ];
     const readyForEval = {
       pass: modelingReady.pass && manualCases.length > 0 && Boolean(dataSource) && !runningImport,
       blockers: [
         ...modelingReady.blockers,
-        ...(manualCases.length ? [] : ['先在评测界面录入至少 1 条用户真实场景用例，Agent 不能从知识包生成']),
-        ...(dataSource ? [] : ['先在评测界面完成数据源配置；判断类问题可显式选择“无数据源”']),
+        ...userSideBlockers,
         ...(runningImport ? [`评测库数据仍在后台导入：${runningImport.filename}`] : []),
       ],
+      awaitingUser: !modelingReady.blockers.length
+        && userSideBlockers.length > 0
+        && !runningImport,
     };
     gates.ready_for_eval = readyForEval;
     gates.releasable = {

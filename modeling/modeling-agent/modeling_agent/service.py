@@ -257,6 +257,11 @@ class RunSituation:
     # 本轮切换过阶段但新阶段尚无产出。用于区分「刚进新阶段」和「本阶段做完了」。
     stage_started_without_delivery: bool = False
 
+    # 剩余阻塞项全部要用户在别的界面自己完成。助手再宣告多少遍也推不动，
+    # 继续轮转只会一轮轮重复同一段话（见 #39）。
+    awaiting_user_action: bool = False
+    awaiting_user_reason: str = ""
+
     def has_full_read_materials(self) -> Verdict:
         if not self.materials_observed:
             return Verdict.UNKNOWN
@@ -293,7 +298,7 @@ class LiveRun:
     # 「没产出」和「卡住」是两件事——今天见过助手逐字重复同一段推理却因为
     # 期间调过写工具而不被计为停滞，现有机制对真打转完全无感（见 #35 讨论）。
     recent_tool_calls: list[str] = field(default_factory=list)
-    recent_outputs: list[str] = field(default_factory=list)
+    recent_outputs: list[frozenset[str]] = field(default_factory=list)
     tool_summaries: list[str] = field(default_factory=list)
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_chars_published: int = 0
@@ -575,6 +580,9 @@ _LANGUAGE_REMINDER = (
 
 LOOP_TOOL_REPEAT_THRESHOLD = 3
 LOOP_OUTPUT_REPEAT_THRESHOLD = 2
+# 归一化后 4-gram 的 Jaccard 相似度阈值：换个说法重复也算打转。
+# 实测同领域但内容不同的相邻输出 ≤0.12，换说法重复 ≥0.25，取中间偏保守值。
+LOOP_OUTPUT_SIMILARITY = 0.22
 LOOP_TRACE_WINDOW = 12
 
 
@@ -594,11 +602,34 @@ def _record_tool_call(live: LiveRun, name: str, args: Any) -> None:
     del live.recent_tool_calls[:-LOOP_TRACE_WINDOW]
 
 
+_LOOP_NOISE = re.compile(r"[\s，。、；：！？…—·「」『』（）()\[\]{}<>\"'`*#\-]+")
+
+
+def _shingles(text: str) -> frozenset[str]:
+    """归一化后的字符 4-gram。用于识别「换个说法再说一遍」——
+    真实的打转极少逐字相同，只比对完全相同的指纹会全部漏掉（见 #39）。"""
+    normalized = _LOOP_NOISE.sub("", str(text or ""))
+    # 太短的输出（「好的」「完成」）没有判别力，不参与判定
+    if len(normalized) < 8:
+        return frozenset()
+    # 短句不足以切出有意义的 4-gram，按整体比对：重复三遍的短句同样是打转
+    if len(normalized) < 12:
+        return frozenset({normalized})
+    return frozenset(normalized[i:i + 4] for i in range(len(normalized) - 3))
+
+
+def _similarity(left: frozenset[str], right: frozenset[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = len(left | right)
+    return len(left & right) / union if union else 0.0
+
+
 def _record_turn_output(live: LiveRun, output: str) -> None:
-    text = " ".join(str(output or "").split())
-    if not text:
+    marks = _shingles(output)
+    if not marks:
         return
-    live.recent_outputs.append(_fingerprint(text))
+    live.recent_outputs.append(marks)
     del live.recent_outputs[:-LOOP_TRACE_WINDOW]
 
 
@@ -620,9 +651,12 @@ def _detect_loop(live: LiveRun) -> str:
             return f"连续 {repeats} 次以相同参数调用同一工具"
     if len(live.recent_outputs) > LOOP_OUTPUT_REPEAT_THRESHOLD:
         latest = live.recent_outputs[-1]
-        repeats = sum(1 for item in live.recent_outputs if item == latest)
-        if repeats > LOOP_OUTPUT_REPEAT_THRESHOLD:
-            return f"连续 {repeats} 轮产出完全相同的内容"
+        near = sum(
+            1 for item in live.recent_outputs[:-1]
+            if _similarity(item, latest) >= LOOP_OUTPUT_SIMILARITY
+        )
+        if near >= LOOP_OUTPUT_REPEAT_THRESHOLD:
+            return f"最近 {near + 1} 轮在重复同样的内容"
     return ""
 
 
@@ -2707,6 +2741,7 @@ class AgentService:
         _absorb_plan_progress(live, result)
         _absorb_reading_modes(live, result)
         _absorb_stage_delivery(live, name, result)
+        _absorb_awaiting_user(live, result)
         _record_tool_call(live, name, arguments)
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
@@ -3688,6 +3723,10 @@ class AgentService:
                     logger.warning(
                         "autonomous loop detected run=%s reason=%s", run.id, loop_reason,
                     )
+                # 剩下的事只能由用户在别的界面完成时，继续轮转推不动任何进展，
+                # 只会一轮轮重复同一段话。结束本轮，等外部事件把它唤醒。
+                if live.situation.awaiting_user_action:
+                    loop_reason = loop_reason or "剩余事项需要用户在其它界面完成"
                 if (
                     autonomous
                     and not loop_reason
@@ -4769,6 +4808,26 @@ def _autonomous_work_requested(text: str) -> bool:
 _STAGE_DELIVERY_TOOLS = frozenset(
     AUTONOMOUS_PROGRESS_TOOLS - {"transition_project_state"}
 )
+
+
+def _absorb_awaiting_user(live: LiveRun, result: Any) -> None:
+    """从门禁结果里回填「只剩用户要自己完成的事情」。
+
+    判据由核心侧结构化下发（GateResult.awaitingUser），不靠在阻塞文案里
+    找关键词——那正是 #1/#24 反复栽过的代理指标。
+    """
+    if not isinstance(result, dict):
+        return
+    if "awaitingUser" not in result:
+        return
+    waiting = result.get("awaitingUser") is True
+    live.situation.awaiting_user_action = waiting
+    if waiting:
+        blockers = result.get("blockers")
+        items = [str(item) for item in blockers if str(item).strip()] if isinstance(blockers, list) else []
+        live.situation.awaiting_user_reason = "；".join(items[:3])
+    else:
+        live.situation.awaiting_user_reason = ""
 
 
 def _absorb_stage_delivery(live: LiveRun, name: str, result: Any) -> None:

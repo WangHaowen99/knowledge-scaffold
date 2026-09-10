@@ -2826,6 +2826,9 @@ class AskTool(Tool):
                                     "value": STRING,
                                     "requiresText": {"type": "boolean"},
                                     "textPrompt": {"type": "string", "minLength": 1, "maxLength": 500},
+                                    # 选项需要用户去别的界面完成时必须声明 route，
+                                    # 否则点了只是把这句话发回来，界面不会跳转（见 #39）。
+                                    "route": {"type": "string", "enum": ["evaluation"]},
                                 },
                                 "required": ["label", "description", "value"],
                                 "additionalProperties": False,
