@@ -3017,6 +3017,136 @@ def test_runtime_owned_checkpoint_argument_is_rejected_as_stale(tmp_path, monkey
     assert calls == []
 
 
+def test_matching_legacy_routing_checkpoint_arguments_are_migrated(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_package(tmp_path)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "ok"}),
+    )
+    service = DeterministicExecutionService()
+
+    awaiting = service.execute(
+        _request(context={"supports_user_interaction": True}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+    assert isinstance(awaiting, AwaitingInput)
+    checkpoint = dict(awaiting.checkpoint)
+    checkpoint["arguments"] = {
+        **dict(awaiting.checkpoint["arguments"]),
+        "selected_ontology_id": "test-ontology",
+        "selected_ontology_version": "1.0.0",
+        "selected_version": "1.0.0",
+    }
+
+    resumed = service.execute(
+        _request(checkpoint=checkpoint, response={"value": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(resumed, Completed)
+    assert calls[0]["args"] == ["--code", "A"]
+    assert resumed.envelope["execution"]["arguments_sha256"] == canonical_sha256(
+        {"code": "A"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("selected_ontology_id", "other-ontology"),
+        ("selected_ontology_version", "2.0.0"),
+        ("selected_version", "2.0.0"),
+    ],
+)
+def test_mismatched_legacy_routing_checkpoint_argument_is_stale(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    ontology_dir = _write_package(tmp_path)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "unexpected"}),
+    )
+    service = DeterministicExecutionService()
+
+    awaiting = service.execute(
+        _request(context={"supports_user_interaction": True}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+    assert isinstance(awaiting, AwaitingInput)
+    checkpoint = dict(awaiting.checkpoint)
+    checkpoint["arguments"] = {field: value}
+
+    resumed = service.execute(
+        _request(checkpoint=checkpoint, response={"value": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(resumed, Failed)
+    assert resumed.code == "stale_checkpoint"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "selected_ontology_id",
+        "selected_ontology_version",
+        "selected_version",
+    ],
+)
+def test_routing_field_in_input_schema_is_rejected_as_runtime_owned(
+    tmp_path,
+    monkeypatch,
+    field,
+):
+    ontology_dir = _write_package(tmp_path)
+    schema_path = ontology_dir / "schemas" / "query.input.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"][field] = {"type": "string"}
+    schema["required"].append(field)
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    validate_and_lock_deterministic_operations(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "unexpected"}),
+    )
+
+    outcome = DeterministicExecutionService().execute(
+        _request(arguments={"code": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == "execution_schema_invalid"
+    assert outcome.internal_detail == field
+    assert calls == []
+
+
 def test_runtime_owned_input_schema_field_fails_before_prompt_or_handler(
     tmp_path,
     monkeypatch,

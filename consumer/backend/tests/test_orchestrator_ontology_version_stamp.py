@@ -249,6 +249,53 @@ def test_requested_ontology_version_skips_active_registry_resolution(
     assert prepared.arguments["selected_ontology_version"] == ACTIVE_VERSION
 
 
+def test_protocol_deterministic_preflight_passes_only_business_arguments(
+    tmp_path,
+    monkeypatch,
+):
+    _write_ontology_manifest()
+    captured = []
+
+    def capture_request(_service, request, *, ontology_manifest):
+        assert ontology_manifest.id == ONTOLOGY_ID
+        captured.append(request)
+        return True
+
+    monkeypatch.setattr(
+        "agent.direct_execution.service.DeterministicExecutionService.is_potentially_applicable",
+        capture_request,
+    )
+    orchestrator, _adapter = _services(tmp_path)
+
+    applicable = orchestrator.is_deterministic_request_potentially_applicable(
+        user_request="synthetic deterministic request",
+        user_context={
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+            "selected_version": ACTIVE_VERSION,
+        },
+        arguments={
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+            "selected_version": ACTIVE_VERSION,
+            "synthetic_argument": "synthetic_value",
+        },
+        session_id="session-protocol-preflight",
+        user_id="user_demo",
+        workspace_id=WORKSPACE_ID,
+    )
+
+    assert applicable is True
+    assert captured[-1].arguments == {
+        "synthetic_argument": "synthetic_value",
+    }
+    assert captured[-1].runtime_context.selected_ontology_id == ONTOLOGY_ID
+    assert (
+        captured[-1].runtime_context.selected_ontology_version
+        == ACTIVE_VERSION
+    )
+
+
 def test_prepare_reuses_matching_preflight_manifest_and_profile(tmp_path, monkeypatch):
     _orchestrator, adapter = _services(tmp_path)
     monkeypatch.setattr(

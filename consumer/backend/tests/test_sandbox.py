@@ -399,8 +399,22 @@ def test_policy_builder_mounts_workspace_and_runtime_same_path(tmp_path):
     workspace_path = str(workspace_root.resolve()).replace("\\", "/")
 
     assert bind_by_sandbox_path[workspace_path]["host_path"] == workspace_path
-    assert bind_by_sandbox_path["/app/sandbox-runtime/python"]["host_path"] == "/app/sandbox-runtime/python"
-    assert all(item["sandbox_path"] not in {"/backend", "/workspace", "/ontology"} for item in bind_mounts)
+    assert (
+        bind_by_sandbox_path["/app/sandbox-runtime/python"]["host_path"]
+        == "/app/sandbox-runtime/python"
+    )
+    assert (
+        bind_by_sandbox_path["/app/sandbox-runtime/runtime-contract.json"]["host_path"]
+        == "/app/sandbox-runtime/runtime-contract.json"
+    )
+    assert (
+        "/app/sandbox-runtime/runtime-contract.json"
+        in policy["filesystem_policy"]["read_only"]
+    )
+    assert all(
+        item["sandbox_path"] not in {"/backend", "/workspace", "/ontology"}
+        for item in bind_mounts
+    )
     assert policy["network"]["egress"]["default"] == "deny"
     assert policy["network"]["egress"]["allowed_domains"] == []
     assert policy["network"]["egress"]["allowed_ips"] == ["192.0.2.44/32"]

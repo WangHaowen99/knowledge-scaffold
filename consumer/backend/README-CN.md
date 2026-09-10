@@ -30,6 +30,7 @@
 - 支持流式 LLM 响应中的工具调用组装与执行
 - 支持 `read_documents` 结构化账本，用于约束本体检索前置阅读条件
 - 支持 `ontology_context` 本体定义读取、`skill` 技能说明读取、`business_data_search` 业务数据检索、可选 `web_search` 联网搜索和 `execute_script` 脚本流程执行
+- 普通 Agent 脚本支持[生成标识声明、当前请求证据校验与结构化失败原因](../../docs/script-argument-evidence.md)
 - 支持统一 `memory` 工具，用于显式记忆沉淀，并在后台路由到普通记忆或 operation evolution
 - 支持 `spawn_sub_agent` 批量子任务分解、并发执行和嵌套深度限制
 - 支持技能 CRUD、本体文件管理、本体导入、工作区管理、工作区运行配置和系统配置管理

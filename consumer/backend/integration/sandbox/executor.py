@@ -13,6 +13,7 @@ from .data_proxy import PreparedDataConnection, get_data_connection_secret_manag
 from .env_allowlist import build_script_env
 from .errors import SandboxExecError, SandboxUnavailableError
 from .paths import posix_path_string, to_sandbox_script_path
+from .package_revision import current_verified_package_execution
 from .policy_builder import PolicyContext
 from .registry import get_run_sandbox_registry
 from .runtime_contract import sandbox_runtime_revision, sandbox_runtime_revision_file
@@ -128,7 +129,18 @@ class SandboxScriptExecutor:
         cancel_event: Any = None,
         restrict_filesystem_to_ontology: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        workspace_root = _resolve_workspace_mount_root(workspace_id)
+        verified_package = current_verified_package_execution(
+            workspace_id=workspace_id, ontology_id=ontology_id,
+            run_id=run_id, ontology_dir=ontology_dir,
+        )
+        if verified_package is not None:
+            if read_only_paths or writable_paths:
+                raise SandboxUnavailableError("verified package cannot add filesystem mounts")
+            workspace_root = verified_package.package_root
+            run_id = verified_package.sandbox_run_id
+            restrict_filesystem_to_ontology = True
+        else:
+            workspace_root = _resolve_workspace_mount_root(workspace_id)
         sandbox_script_path = Path(
             to_sandbox_script_path(
                 script_path,

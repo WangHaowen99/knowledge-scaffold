@@ -44,6 +44,7 @@ _RUNTIME_KEY_TO_CTX_FIELD: Dict[str, str] = {
     "ontology_id": "selected_ontology_id",
     "selected_ontology_version": "selected_ontology_version",
     "ontology_version": "selected_ontology_version",
+    "selected_version": "selected_ontology_version",
 }
 
 def _canonical_runtime_key(key: str) -> str:

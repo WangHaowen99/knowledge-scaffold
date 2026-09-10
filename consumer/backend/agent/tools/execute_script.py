@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -41,6 +42,7 @@ from ontology.view_cache import (
     stage_verified_package_revision,
 )
 from integration.sandbox.executor import SandboxScriptExecutor
+from integration.sandbox.package_revision import verified_package_execution
 from integration.sandbox.errors import (
     SandboxExecError,
     SandboxUnavailableError,
@@ -48,6 +50,7 @@ from integration.sandbox.errors import (
 )
 from integration.sandbox.config import load_sandbox_config
 from integration.sandbox.alerts import log_sandbox_security_fallback
+from agent.script_argument_errors import script_argument_error_content
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
@@ -332,6 +335,13 @@ def build_execute_script_tool_schema_from_catalog(
                 ", ".join(parameter_names) if parameter_names else "no arguments",
             )
         )
+        generated_identifiers = entry.get("generated_identifiers")
+        if isinstance(generated_identifiers, Mapping) and generated_identifiers:
+            operation_parameter_summaries.append(
+                "{} creates UUID4 result identifiers at: {}".format(
+                    entry.get("operation_key"), ", ".join(sorted(generated_identifiers))
+                )
+            )
 
     common_required = (
         set.intersection(*required_by_operation)
@@ -477,7 +487,7 @@ def _is_successful_script_output(content: Any) -> bool:
         payload = json.loads(text)
     except (TypeError, ValueError):
         return True
-    return not (isinstance(payload, Mapping) and payload.get("error"))
+    return not _tool_payload_failed(payload)
 
 
 def _prior_successful_operation_calls(
@@ -487,6 +497,11 @@ def _prior_successful_operation_calls(
     operation_key: str,
     current_tool_call_id: Optional[str],
 ) -> List[Dict[str, Any]]:
+    latest_user_index = next((
+        index for index in range(len(messages) - 1, -1, -1)
+        if str(messages[index].get("role") or "").lower() == "user"
+    ), -1)
+    messages = messages[latest_user_index + 1:]
     outputs = {
         str(message.get("tool_call_id") or "").strip(): str(message.get("content") or "")
         for message in messages
@@ -1700,6 +1715,9 @@ def _validate_structured_arguments_against_request(
     arguments: Mapping[str, Any],
     request_text: str,
     trusted_tool_evidence: str = "",
+    *,
+    generated_identifiers: Optional[Mapping[str, str]] = None,
+    issues: Optional[List[Dict[str, str]]] = None,
 ) -> List[str]:
     """Reject cross-item value pairing when the current request enumerates a collection.
 
@@ -1709,20 +1727,53 @@ def _validate_structured_arguments_against_request(
     internal data, or requests without item-level evidence, are ignored.
     """
     full_request = _normalize_argument_evidence(request_text)
-    if not full_request:
-        return []
     normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
     errors: List[str] = []
+
+    def reject(
+        code: str, path: str, message: str, field_paths: Sequence[str] = (),
+    ) -> None:
+        errors.append(message)
+        if issues is not None:
+            issues.extend({"code": code, "path": field_path} for field_path in field_paths or (path,))
+
+    evidence_records = _tool_evidence_records(trusted_tool_evidence)
+    generated_values = _generated_identifier_values(arguments, generated_identifiers or {})
+    for path, raw_value in generated_values.items():
+        if not _is_generated_uuid4(raw_value):
+            reject(
+                "invalid_generated_identifier", path,
+                "{} must be a generated UUID4 identifier".format(path),
+            )
     for path, value in _identity_field_evidence(arguments):
+        if path in generated_values:
+            continue
         if value in full_request:
             continue
-        if normalized_tool_evidence and value in normalized_tool_evidence:
+        field = path.rsplit(".", 1)[-1]
+        if any(record.get(field) == value for record in evidence_records):
             continue
-        errors.append(
+        reject(
+            "ungrounded_identity", path,
             "{} identity value is not grounded in the current request or current tool evidence".format(
                 path
             )
         )
+    for path, record in _argument_records(arguments):
+        supported = {
+            field: value for field, value in record.items()
+            if any(evidence.get(field) == value for evidence in evidence_records)
+        }
+        if (
+            len(supported) >= 2
+            and any(_is_identity_field(field) for field in supported)
+            and not any(
+                all(evidence.get(field) == value for field, value in supported.items())
+                for evidence in evidence_records
+            )
+        ):
+            reject("evidence_record_mismatch", path,
+                   "{} combines fields from different tool-result records".format(path))
     raw_segments = [
         part.strip()
         for part in _REQUEST_ITEM_SPLIT_PATTERN.split(request_text)
@@ -1733,7 +1784,10 @@ def _validate_structured_arguments_against_request(
         return errors
     for path, items in _structured_collections(arguments):
         if normalized_tool_evidence and all(
-            _item_is_grounded_in_tool_evidence(item, normalized_tool_evidence)
+            _item_is_grounded_in_tool_evidence(item, evidence_records)
+            for item in items
+        ) and not any(
+            sum(value in full_request for _field, value in _flatten_item_field_evidence(item)) >= 2
             for item in items
         ):
             continue
@@ -1803,6 +1857,7 @@ def _validate_structured_arguments_against_request(
             }
             conflicting_items: List[tuple[int, int]] = []
             conflicting_fields: Set[str] = set()
+            conflicting_field_paths: List[str] = []
             for index, segment_position, fields in anchored:
                 segment = segments[segment_position]
                 mismatched = {
@@ -1813,6 +1868,9 @@ def _validate_structured_arguments_against_request(
                 if mismatched:
                     conflicting_items.append((index + 1, segment_position))
                     conflicting_fields.update(mismatched)
+                    conflicting_field_paths.extend(
+                        "{}[{}].{}".format(path, index, field) for field in sorted(mismatched)
+                    )
 
             if conflicting_items:
                 request_evidence = " | ".join(
@@ -1822,14 +1880,16 @@ def _validate_structured_arguments_against_request(
                     )
                     for item_number, segment_position in conflicting_items
                 )
-                errors.append(
+                reject(
+                    "request_field_mismatch", path,
                     "{} item {} fields {} conflict with the corresponding "
                     "current-request items. Request evidence: {}".format(
                         path,
                         ", ".join(str(index) for index, _position in conflicting_items),
                         ", ".join(sorted(conflicting_fields)),
                         request_evidence,
-                    )
+                    ),
+                    conflicting_field_paths,
                 )
                 continue
 
@@ -1850,7 +1910,7 @@ def _validate_structured_arguments_against_request(
                     anchored_positions[1:],
                 )
             ):
-                errors.append("{} item order conflicts with the current request".format(path))
+                reject("request_item_order", path, "{} item order conflicts with the current request".format(path))
                 continue
 
         evidenced: List[tuple[int, List[int]]] = []
@@ -1870,7 +1930,8 @@ def _validate_structured_arguments_against_request(
         matched_count = sum(1 for _index, candidates in evidenced if candidates)
         unmatched = [index + 1 for index, candidates in evidenced if not candidates]
         if unmatched and matched_count >= max(1, (len(evidenced) + 1) // 2):
-            errors.append(
+            reject(
+                "request_record_mismatch", path,
                 "{} item {} combines values that do not co-occur in the current request".format(
                     path,
                     ", ".join(str(index) for index in unmatched),
@@ -1892,53 +1953,177 @@ def _validate_structured_arguments_against_request(
                 break
             previous = next_position
         if not ordered:
-            errors.append("{} item order conflicts with the current request".format(path))
+            reject("request_item_order", path, "{} item order conflicts with the current request".format(path))
     return errors
+
+
+def _generated_identifier_values(
+    value: Any, rules: Mapping[str, str], path: str = "arguments",
+) -> Dict[str, Any]:
+    if not rules:
+        return {}
+    parsed = _parse_embedded_json_container(value)
+    rule_path = re.sub(r"\[\d+\]", "[]", path.removeprefix("arguments."))
+    values = {path: parsed} if rules.get(rule_path) == "uuid4" else {}
+    if isinstance(parsed, Mapping):
+        for field, nested in parsed.items():
+            values.update(_generated_identifier_values(nested, rules, "{}.{}".format(path, field)))
+    elif isinstance(parsed, (list, tuple)):
+        for index, nested in enumerate(parsed):
+            values.update(_generated_identifier_values(nested, rules, "{}[{}]".format(path, index)))
+    return values
+
+
+def _is_generated_uuid4(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        identifier = uuid.UUID(value)
+    except ValueError:
+        return False
+    return identifier.version == 4 and str(identifier) == value.lower()
+
+
+def _argument_records(value: Any, path: str = "arguments") -> List[tuple[str, Dict[str, str]]]:
+    """Keep scalar field associations within each JSON object, including embedded JSON."""
+    value = _parse_embedded_json_container(value)
+    records: List[tuple[str, Dict[str, str]]] = []
+    if isinstance(value, Mapping):
+        record = {}
+        for field, nested in value.items():
+            parsed = _parse_embedded_json_container(nested)
+            if not isinstance(parsed, (Mapping, list, tuple)) and parsed is not None:
+                record[str(field)] = _normalize_argument_evidence(parsed)
+            records.extend(_argument_records(parsed, "{}.{}".format(path, field)))
+        if record:
+            records.append((path, record))
+    elif isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value):
+            records.extend(_argument_records(nested, "{}[{}]".format(path, index)))
+    return records
+
+
+def _tool_evidence_records(evidence: str) -> List[Dict[str, str]]:
+    records = []
+    try:
+        documents = [json.loads(evidence)]
+    except (ValueError, TypeError):
+        documents = []
+        for line in str(evidence or "").splitlines():
+            try:
+                documents.append(json.loads(line))
+            except ValueError:
+                continue
+    for document in documents:
+        records.extend(_successful_evidence_records(document))
+    return records
+
+
+def _successful_evidence_records(value: Any) -> List[Dict[str, str]]:
+    """Do not promote failed rows or their nested diagnostics into evidence."""
+    if _tool_payload_failed(value):
+        return []
+    records = []
+    if isinstance(value, Mapping):
+        scalars = {
+            str(key): _normalize_argument_evidence(item)
+            for key, item in value.items()
+            if item is not None and not isinstance(item, (Mapping, list))
+        }
+        if scalars:
+            records.append(scalars)
+        for item in value.values():
+            records.extend(_successful_evidence_records(item))
+    elif isinstance(value, list):
+        for item in value:
+            records.extend(_successful_evidence_records(item))
+    return records
+
+
+def _tool_payload_failed(payload: Any) -> bool:
+    return isinstance(payload, Mapping) and (
+        any(payload.get(key) is False for key in ("ok", "success", "_success"))
+        or any(bool(payload.get(key)) for key in ("error", "_error", "error_code"))
+        or str(payload.get("status") or "").strip().casefold()
+        in {"error", "failed", "failure", "cancelled", "timeout"}
+    )
 
 
 def _item_is_grounded_in_tool_evidence(
     item: Mapping[str, Any],
-    normalized_evidence: str,
+    evidence_records: Sequence[Mapping[str, str]],
 ) -> bool:
-    """Return whether a structured item is substantially present in trusted tool output.
+    records = _argument_records(item)
+    return bool(records) and all(
+        len(record) >= 2 and any(
+            all(evidence.get(field) == value for field, value in record.items())
+            for evidence in evidence_records
+        )
+        for _path, record in records
+    )
 
-    Business query results are legitimate script inputs even when they do not occur in
-    the user's prose. Requiring every usable scalar avoids treating a collection as
-    trusted merely because it shares generic IDs or labels with a query result.
-    """
-    values = _flatten_item_evidence(item)
-    if len(values) < 2:
-        return False
-    supported = sum(1 for value in values if value in normalized_evidence)
-    return supported / len(values) >= 0.75
+
+def _successful_structured_tool_output(content: Any) -> Any:
+    if isinstance(content, list) and all(isinstance(item, Mapping) for item in content):
+        content = "\n".join(str(item.get("text") or item.get("content") or "") for item in content)
+    try:
+        payload = json.loads(content) if isinstance(content, str) else content
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, (Mapping, list)):
+        return None
+    if _tool_payload_failed(payload):
+        return None
+    return payload
 
 
 def _current_turn_business_data_evidence(
     messages: Sequence[Mapping[str, Any]],
+    *,
+    ontology_id: str = "",
 ) -> str:
-    """Collect business-data tool output produced after the latest user request."""
-    latest_user_index = -1
-    for index, message in enumerate(messages):
-        if str(message.get("role") or "").lower() == "user":
-            latest_user_index = index
+    """Collect successful data/script results only after the latest user request.
 
-    evidence: List[str] = []
+    Script evidence requires a preceding execute_script call with the same call ID
+    and selected package. Assistant prose and uncorrelated tool messages do not count.
+    """
+    latest_user_index = next((
+        index for index in range(len(messages) - 1, -1, -1)
+        if str(messages[index].get("role") or "").lower() == "user"
+    ), -1)
+    if latest_user_index < 0:
+        return ""
+    script_calls: Dict[str, Mapping[str, Any]] = {}
+    evidence = []
     for message in messages[latest_user_index + 1:]:
-        if str(message.get("role") or "").lower() != "tool":
+        role = str(message.get("role") or "").lower()
+        if role == "assistant":
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, Mapping):
+                    continue
+                function = call.get("function") or call
+                if not isinstance(function, Mapping) or function.get("name") != "execute_script":
+                    continue
+                arguments = _parse_tool_call_arguments(function.get("arguments"))
+                call_id = str(call.get("id") or "")
+                if call_id and arguments and arguments.get("operation_key"):
+                    script_calls[call_id] = arguments
+            continue
+        if role != "tool":
             continue
         tool_name = str(message.get("name") or message.get("tool_name") or "")
-        if tool_name != "business_data_search":
+        if tool_name == "execute_script":
+            call = script_calls.pop(str(message.get("tool_call_id") or ""), None)
+            if call is None or not ontology_id or call.get("ontology_id") != ontology_id:
+                continue
+        elif tool_name != "business_data_search":
             continue
-        content = message.get("content")
-        if isinstance(content, str):
-            evidence.append(content)
-        elif isinstance(content, list):
-            evidence.extend(
-                str(item.get("text") or item.get("content") or "")
-                for item in content
-                if isinstance(item, Mapping)
-            )
-    return "\n".join(part for part in evidence if part)
+        if message.get("is_error") is True or str(message.get("status") or "").lower() in {"error", "failed"}:
+            continue
+        payload = _successful_structured_tool_output(message.get("content"))
+        if payload is not None:
+            evidence.append(json.dumps(payload, ensure_ascii=False))
+    return "\n".join(evidence)
 
 
 def _latest_user_request(messages: Sequence[Mapping[str, Any]]) -> str:
@@ -2064,6 +2249,7 @@ def handle_execute_script(
     turn_id: Optional[int] = None,
     workspace_id: Optional[str] = None,
     runtime_context: Optional[Mapping[str, Any]] = None,
+    argument_validation_context: Optional[tuple[str, str]] = None,
     data_access: str = "live",
     expected_script_path: Optional[Path] = None,
     expected_script_digest: Optional[str] = None,
@@ -2206,27 +2392,32 @@ def handle_execute_script(
                     return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
                 staged_entry = dict(preflight_ontology_script_entry)
                 staged_entry["_expected_script_path"] = str(staged_script_path)
-                return handle_execute_script(
-                    ontology_id=ontology_id,
-                    ontology_version=ontology_version,
-                    operation_key=operation_key,
-                    arguments=arguments,
-                    base_path=staging_boundary,
-                    timeout_seconds=timeout_seconds,
-                    tool_call_id=tool_call_id,
-                    caller=caller,
-                    run_id=run_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    workspace_id=workspace_id,
-                    runtime_context=runtime_context,
-                    data_access=data_access,
-                    expected_script_path=staged_script_path,
-                    expected_script_digest=pinned_digest,
-                    _resolved_ontology_dir=staged_ontology_dir,
-                    _resolved_ontology_id=normalized_ontology_id,
-                    _resolved_script_entry=staged_entry,
-                )
+                with verified_package_execution(
+                    staged_ontology_dir, workspace_id=str(workspace_id),
+                    ontology_id=normalized_ontology_id, run_id=run_id,
+                ):
+                    return handle_execute_script(
+                        ontology_id=ontology_id,
+                        ontology_version=ontology_version,
+                        operation_key=operation_key,
+                        arguments=arguments,
+                        base_path=staging_boundary,
+                        timeout_seconds=timeout_seconds,
+                        tool_call_id=tool_call_id,
+                        caller=caller,
+                        run_id=run_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        workspace_id=workspace_id,
+                        runtime_context=runtime_context,
+                        argument_validation_context=argument_validation_context,
+                        data_access=data_access,
+                        expected_script_path=staged_script_path,
+                        expected_script_digest=pinned_digest,
+                        _resolved_ontology_dir=staged_ontology_dir,
+                        _resolved_ontology_id=normalized_ontology_id,
+                        _resolved_script_entry=staged_entry,
+                    )
         except OntologyPackageRevisionError:
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
     else:
@@ -2295,6 +2486,17 @@ def handle_execute_script(
         return "Error: Registered script for operation '{}' is outside project root.".format(
             operation_key
         )
+
+    if argument_validation_context is not None:
+        request_text, trusted_evidence = argument_validation_context
+        issues: List[Dict[str, str]] = []
+        _validate_structured_arguments_against_request(
+            dict(arguments or {}), request_text, trusted_evidence,
+            generated_identifiers=script_entry.get("generated_identifiers"),
+            issues=issues,
+        )
+        if issues:
+            return script_argument_error_content(issues)
 
     cli_args, missing_args, invalid_args = _build_cli_args(
         script_args=list(script_entry.get("arguments") or []),
@@ -2797,27 +2999,16 @@ class ExecuteScriptTool:
                     "result and produce the final user answer now. Only a new, explicitly requested "
                     "independent scenario justifies another execution."
                 ))
-        argument_values = args.get("arguments")
-        if isinstance(argument_values, Mapping):
-            consistency_errors = _validate_structured_arguments_against_request(
-                argument_values,
-                _latest_user_request(context_messages),
-                _current_turn_business_data_evidence(context_messages),
-            )
-            if consistency_errors:
-                return ToolOutcome(content=(
-                    "Error: Script argument consistency check failed: {}. "
-                    "The script did not run. "
-                    "Rebuild the complete collection from the current user request, "
-                    "preserve item order, and retry the complete call without using "
-                    "ontology examples or history. Do not provide computed results or "
-                    "claim success until execute_script returns a successful result."
-                ).format("; ".join(consistency_errors)))
         call_args = {
             key: args[key]
             for key in ("ontology_id", "operation_key", "arguments")
             if key in args
         }
+        if isinstance(args.get("arguments"), Mapping):
+            call_args["argument_validation_context"] = (
+                _latest_user_request(context_messages),
+                _current_turn_business_data_evidence(context_messages, ontology_id=ontology_id),
+            )
         if context.project_root:
             # Keep the caller's path representation intact; normalize it at the
             # execution boundary so POSIX-style paths remain observable on

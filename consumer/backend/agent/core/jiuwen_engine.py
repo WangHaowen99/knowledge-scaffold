@@ -1273,9 +1273,20 @@ class JiuwenReactLoopEngine:
         )
 
     def _seed_initial_messages(self, state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
-        if state.get("messages"):
-            return
         user_content = str(state.get("user_request") or "").strip()
+        if state.get("messages"):
+            messages = list(state["messages"])
+            latest = messages[-1]
+            if user_content and not (
+                isinstance(latest, Mapping) and latest.get("role") == "user"
+                and str(latest.get("content") or "").strip() == user_content
+            ):
+                # ContextEngine receives the query separately, but tools and
+                # persisted state also need the current turn's user boundary.
+                state["messages"] = [
+                    *messages, {"role": "user", "content": user_content},
+                ]
+            return
         if not user_content or not str(system_prompt or "").strip():
             return
         state["messages"] = [

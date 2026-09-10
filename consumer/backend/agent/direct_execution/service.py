@@ -21,6 +21,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry
 from referencing.exceptions import NoSuchResource
 
+from agent.core.shared.interaction_policy import user_interaction_supported_from_context
 from agent.direct_execution.arguments import (
     build_direct_cli_args,
     extract_runtime_argument_keys,
@@ -41,6 +42,10 @@ from agent.direct_execution.provider_broker import (
     DeterministicProviderBroker,
     DeterministicProviderBrokerError,
 )
+from agent.runtime_fields import (
+    DETERMINISTIC_ROUTING_ARGUMENT_FIELDS,
+    deterministic_business_arguments,
+)
 from agent.tools.business_data.deterministic import (
     DeterministicProviderBinding,
     DeterministicProviderError,
@@ -49,7 +54,6 @@ from agent.tools.business_data.deterministic import (
 )
 from agent.tools.business_data.endpoint_security import endpoint_secret_values
 from agent.tools.execute_script import handle_execute_script_path
-from agent.core.shared.interaction_policy import user_interaction_supported_from_context
 from integration.sandbox.registry import (
     register_run_sandbox_companion,
     release_run_sandbox,
@@ -145,11 +149,17 @@ def _runtime_owned_argument_names(
 def _runtime_owned_checkpoint_names(
     checkpoint: Mapping[str, Any],
     runtime_argument_keys: frozenset[str],
+    *,
+    ignored_argument_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     names: set[str] = set()
     arguments = checkpoint.get("arguments")
     if isinstance(arguments, Mapping):
-        names.update(_runtime_owned_argument_names(arguments, runtime_argument_keys))
+        argument_names = set(
+            _runtime_owned_argument_names(arguments, runtime_argument_keys)
+        )
+        argument_names.difference_update(ignored_argument_names)
+        names.update(argument_names)
     missing_fields = checkpoint.get("missing_fields")
     if isinstance(missing_fields, list):
         for field in missing_fields:
@@ -165,6 +175,39 @@ def _runtime_owned_checkpoint_names(
         if field in runtime_argument_keys:
             names.add(field)
     return sorted(names, key=lambda item: item.encode("utf-8"))
+
+
+def _compatible_legacy_checkpoint_routing_argument_names(
+    checkpoint: Mapping[str, Any],
+    *,
+    ontology_id: str,
+    ontology_version: str,
+) -> Optional[frozenset[str]]:
+    """Return removable routing fields from a checkpoint written by old code.
+
+    Older runtime adapters persisted package-selection metadata inside the
+    business ``arguments`` object.  It is safe to migrate only when every such
+    value exactly matches the immutable ontology identity already validated on
+    the checkpoint.
+    """
+
+    arguments = checkpoint.get("arguments")
+    if not isinstance(arguments, Mapping):
+        return frozenset()
+    expected = {
+        "selected_ontology_id": str(ontology_id),
+        "selected_ontology_version": str(ontology_version),
+        "selected_version": str(ontology_version),
+    }
+    present = frozenset(
+        key for key in DETERMINISTIC_ROUTING_ARGUMENT_FIELDS if key in arguments
+    )
+    if any(
+        str(arguments.get(key) or "").strip() != expected.get(key, "")
+        for key in present
+    ):
+        return None
+    return present
 
 
 class _AnyCancelEvent:
@@ -402,10 +445,13 @@ class DeterministicExecutionService:
             list(script_entry.get("arguments") or [])
         )
         runtime_argument_keys = frozenset(
-            extract_runtime_argument_keys(
-                script_args=script_args,
-                script_parameters=script_parameters,
-            )
+            {
+                *extract_runtime_argument_keys(
+                    script_args=script_args,
+                    script_parameters=script_parameters,
+                ),
+                *DETERMINISTIC_ROUTING_ARGUMENT_FIELDS,
+            }
         )
         request_runtime_fields = _runtime_owned_argument_names(
             request.arguments,
@@ -480,7 +526,11 @@ class DeterministicExecutionService:
             )
             if checkpoint_error is not None:
                 return checkpoint_error
-            checkpoint_arguments.update(dict(request.checkpoint.get("arguments") or {}))
+            checkpoint_arguments.update(
+                deterministic_business_arguments(
+                    request.checkpoint.get("arguments")
+                )
+            )
             response_error = self._merge_interaction_response(
                 checkpoint_arguments,
                 checkpoint=request.checkpoint,
@@ -1865,13 +1915,29 @@ class DeterministicExecutionService:
             for key, value in expected.items()
         )
         invalid_dependency = checkpoint_provider != expected_provider
+        compatible_legacy_routing_names = (
+            _compatible_legacy_checkpoint_routing_argument_names(
+                checkpoint,
+                ontology_id=ontology_id,
+                ontology_version=ontology_version,
+            )
+        )
         runtime_fields_present = bool(
             _runtime_owned_checkpoint_names(
                 checkpoint,
                 runtime_argument_keys,
+                ignored_argument_names=(
+                    compatible_legacy_routing_names or frozenset()
+                ),
             )
         )
-        if invalid_shape or revision_mismatch or invalid_dependency:
+        checkpoint_is_stale = (
+            invalid_shape
+            or revision_mismatch
+            or invalid_dependency
+            or compatible_legacy_routing_names is None
+        )
+        if checkpoint_is_stale:
             return Failed(
                 "stale_checkpoint",
                 "Deterministic checkpoint no longer matches the active version.",

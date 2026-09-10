@@ -31,6 +31,7 @@ from agent.runtime.contracts import (
     RuntimeResult,
 )
 from agent.runtime.events import RuntimeEvent
+from agent.runtime_fields import deterministic_business_arguments
 from utils.logging import get_logger
 
 try:
@@ -1892,7 +1893,7 @@ class OrchestratorSessionAdapter:
                                 ),
                                 **arguments,
                             },
-                            arguments=arguments,
+                            arguments=deterministic_business_arguments(arguments),
                             runtime_context=RuntimeContext(
                                 session_id=context.session_id,
                                 run_id=context.run_id,
@@ -2410,7 +2411,7 @@ class OrchestratorSessionAdapter:
                     ),
                     **arguments,
                 },
-                arguments=arguments,
+                arguments=deterministic_business_arguments(arguments),
                 runtime_context=runtime_context,
                 checkpoint=checkpoint,
                 interaction_response=(

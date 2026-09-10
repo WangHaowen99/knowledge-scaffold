@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, List, Mapping, Optional
 
+from agent.runtime_fields import DETERMINISTIC_ROUTING_ARGUMENT_FIELDS
+
 
 # These values are supplied by the request lifecycle.  They must never be
 # sourced from model-provided operation arguments.  Keep both dashed and
@@ -17,11 +19,12 @@ _RUNTIME_PARAMETER_FIELDS = {
     "workspace_id",
     "selected_ontology_id",
 }
-_EXPLICIT_RUNTIME_PARAMETER_FIELDS = _RUNTIME_PARAMETER_FIELDS | {
-    "ontology_id",
-    "ontology_version",
-    "selected_ontology_version",
-}
+
+_EXPLICIT_RUNTIME_PARAMETER_FIELDS = (
+    _RUNTIME_PARAMETER_FIELDS
+    | {"ontology_id", "ontology_version"}
+    | set(DETERMINISTIC_ROUTING_ARGUMENT_FIELDS)
+)
 
 # Runtime identity and package-selection fields are reserved by the execution
 # layer.  Catalog metadata is untrusted configuration and cannot downgrade one
